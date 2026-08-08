@@ -114,13 +114,17 @@ def resume_target_monitor(
 
 
 @router.post("/target/{target_type}/{target_id}/check")
-def run_target_check(
+async def run_target_check(
     target_type: TargetType,
     target_id: int,
     user_id: int = Depends(require_write_auth),
     db: Session = Depends(get_db),
 ) -> Any:
-    if not monitor_service.run_target_check(db, target_type, target_id):
+    """Async, unlike its pause/resume siblings: a `def` route is handed to
+    FastAPI's threadpool, which has no event loop for the dispatch publish to
+    run on — and this route opens a probe run that only that publish makes
+    live."""
+    if not await monitor_service.run_target_check(db, target_type, target_id):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     return {"status": "ok"}
 

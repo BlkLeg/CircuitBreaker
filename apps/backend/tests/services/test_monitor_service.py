@@ -212,6 +212,9 @@ def test_get_uptime_no_data_is_none(db_session):
         db_session, MonitorCreate(name="n", check_type="icmp", host="192.0.2.22", config={})
     )
     uptime = monitor_service.get_uptime(db_session, created["id"])
+    # Every percentage is None ("no data yet"), but coverage is 0-of-window
+    # rather than None: the monitor exists, so how much of the window went
+    # unobserved is a known fact, not an unknown one (D-12).
     assert uptime == {
         "pct_24h": None,
         "pct_7d": None,
@@ -219,4 +222,96 @@ def test_get_uptime_no_data_is_none(db_session):
         "pct_365d": None,
         "pct_total": None,
         "last_polled_at": None,
+        "coverage_24h": {"observed_minutes": 0, "window_minutes": 1440, "pct": 0.0},
+        "coverage_7d": {"observed_minutes": 0, "window_minutes": 10080, "pct": 0.0},
+        "coverage_30d": {"observed_minutes": 0, "window_minutes": 43200, "pct": 0.0},
     }
+
+
+# ── D-12: observed coverage ──────────────────────────────────────────────────
+#
+# An agent that cannot run a check writes no `avail` sample (§2), so an
+# unobserved stretch shrinks the uptime denominator instead of showing as
+# downtime. These pin the other half of D-12: the response says how much of the
+# window was actually observed, so a 100% is readable as the claim it is.
+
+
+def _seed_avail(db_session, item_id, *, count, every_mins, value=1.0, now=None):
+    """`count` avail samples ending now, spaced `every_mins` apart."""
+    now = now or datetime.now(UTC)
+    db_session.add_all(
+        [
+            TelemetryTimeseries(
+                entity_type="monitor",
+                entity_id=0,
+                item_id=item_id,
+                metric="avail",
+                value=value,
+                ts=now - timedelta(minutes=every_mins * k),
+            )
+            for k in range(count)
+        ]
+    )
+    db_session.commit()
+
+
+def test_get_uptime_reports_observed_coverage_for_a_partly_observed_window(db_session):
+    """20 of 24 hours unobserved must not read as an unqualified 100%."""
+    created = monitor_service.create_monitor(
+        db_session,
+        MonitorCreate(
+            name="cov", check_type="icmp", host="192.0.2.30", config={}, interval_secs=60
+        ),
+    )
+    _seed_avail(db_session, created["id"], count=240, every_mins=1)
+
+    uptime = monitor_service.get_uptime(db_session, created["id"])
+
+    assert uptime["pct_24h"] == 100.0
+    assert uptime["coverage_24h"] == {
+        "observed_minutes": 240,
+        "window_minutes": 1440,
+        "pct": 16.7,
+    }
+    assert uptime["coverage_7d"] == {
+        "observed_minutes": 240,
+        "window_minutes": 10080,
+        "pct": 2.4,
+    }
+    assert uptime["coverage_30d"] == {
+        "observed_minutes": 240,
+        "window_minutes": 43200,
+        "pct": 0.6,
+    }
+
+
+def test_get_uptime_coverage_is_full_when_every_scheduled_check_landed(db_session):
+    """Coverage is scaled by the monitor's interval, not counted in minutes.
+
+    288 five-minute checks *is* a fully observed day; a bucket count would call
+    it 20% covered and cry wolf on every monitor that polls slower than 60s.
+    """
+    created = monitor_service.create_monitor(
+        db_session,
+        MonitorCreate(
+            name="cov5", check_type="icmp", host="192.0.2.31", config={}, interval_secs=300
+        ),
+    )
+    _seed_avail(db_session, created["id"], count=288, every_mins=5)
+
+    coverage = monitor_service.get_uptime(db_session, created["id"])["coverage_24h"]
+    assert coverage == {"observed_minutes": 1440, "window_minutes": 1440, "pct": 100.0}
+
+
+def test_get_uptime_coverage_never_exceeds_the_window(db_session):
+    """Retry polls sample faster than the interval; coverage still tops out at 100%."""
+    created = monitor_service.create_monitor(
+        db_session,
+        MonitorCreate(
+            name="cov-retry", check_type="icmp", host="192.0.2.32", config={}, interval_secs=300
+        ),
+    )
+    _seed_avail(db_session, created["id"], count=1440, every_mins=1)
+
+    coverage = monitor_service.get_uptime(db_session, created["id"])["coverage_24h"]
+    assert coverage == {"observed_minutes": 1440, "window_minutes": 1440, "pct": 100.0}

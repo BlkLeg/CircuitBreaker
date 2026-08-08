@@ -26,12 +26,20 @@ invariants, in a fixed order, and each one is pinned by a named test in
 4. **Idempotency.** A run that is no longer open is inert — no second sample, no
    second transition, no second event.
 
-Only `outcome="completed"` reaches the shared result service
-(`services/monitoring/result_service.py`, Global Constraints' one result path).
-`execution_error`, `rejected` and `cancelled` say nothing about the target: they
-close the run, record the execution condition on the monitor, and deliberately
-never write an `avail` sample or touch the retry counter (§6, D-12) — even when
-the payload claims to carry one.
+Every outcome that touches the monitor reaches the shared result service
+(`services/monitoring/result_service.py`, Global Constraints' one result path) —
+`completed` on its state-machine branch, `execution_error` and `rejected` on its
+execution branch. The latter two say nothing about the target and deliberately
+never write an `avail` sample or touch the retry counter (§6, D-12) even when the
+payload claims to carry one, but they are not silent either: the service is what
+closes the run, records §6's one-event-per-change-of-reason `execution` event,
+and publishes D-13's live refresh (which carries no `status` key). Recording the
+condition inline here instead would leave the monitor's history empty for the
+whole outage and push nothing.
+
+`cancelled` is the exception, and only because it is not an execution condition
+at all: the server asked for the stop (§4, Task 14), so the lease closes as audit
+and the monitor is left entirely alone.
 
 Secrets travel outbound only (D-10). §4 forbids credentials, authorization
 headers and response bodies coming back, the agent is built not to echo them,
@@ -112,13 +120,13 @@ _ERROR_FOR_OUTCOME = {
     OUTCOME_REJECTED: REASON_AGENT_REJECTED,
     OUTCOME_CANCELLED: REASON_AGENT_CANCELLED,
 }
+# The outcomes that mean "the vantage could not answer". Both are execution
+# conditions and both go through the shared result service's execution branch,
+# which is what writes the run, the `monitor_events` row and the live refresh.
+_EXECUTION_CONDITION_OUTCOMES = frozenset({OUTCOME_EXECUTION_ERROR, OUTCOME_REJECTED})
 # A cancellation is something the server asked for (§4, Task 14), so it closes
 # the run without claiming the vantage is broken.
-_RUN_STATUS_FOR_OUTCOME = {
-    OUTCOME_EXECUTION_ERROR: "execution_error",
-    OUTCOME_REJECTED: "execution_error",
-    OUTCOME_CANCELLED: "cancelled",
-}
+RUN_STATUS_CANCELLED = "cancelled"
 
 # The audit trail a rejection lands in. `capability_violation` is reserved for
 # the cases where the agent reached for something that is not its to touch —
@@ -279,24 +287,19 @@ async def ingest_probe_result(
         db.commit()
         return DISPOSITION_LATE
 
-    if result.outcome != OUTCOME_COMPLETED:
-        reason = _ERROR_FOR_OUTCOME[result.outcome]
+    if result.outcome == OUTCOME_CANCELLED:
+        # The one outcome that is neither a target result nor an execution
+        # condition: the server asked for the stop, so the lease closes and
+        # nothing about the monitor changes — no condition, no event, no push.
         _close_run(
             run,
             result,
-            status=_RUN_STATUS_FOR_OUTCOME[result.outcome],
-            error_code=reason,
+            status=RUN_STATUS_CANCELLED,
+            error_code=REASON_AGENT_CANCELLED,
             msg=msg,
             details=details,
             completed_at=_aware(result.finished_at),
         )
-        if result.outcome != OUTCOME_CANCELLED:
-            # An unavailable vantage is an execution condition, never a target
-            # state: no avail sample, no retry increment, no transition, and
-            # `probe_last_result_at` deliberately untouched so D-4's staleness
-            # rule still sees a monitor that is producing no real results.
-            monitor.probe_execution_status = "unavailable"
-            monitor.probe_execution_reason = reason[:128]
         db.commit()
         return DISPOSITION_AUDIT_ONLY
 
@@ -312,14 +315,29 @@ async def ingest_probe_result(
         # check ran, and a spooled result must not land in the timeseries at the
         # moment the link happened to come back.
         checked_at=_aware(result.finished_at),
+        # Carried through verbatim so the run keeps the agent's own word for
+        # audit; the service switches on "is this `completed`", so `rejected`
+        # takes the same inert branch `execution_error` does.
         outcome=result.outcome,
         details=details,
         source=result_service.SOURCE_AGENT,
         agent_id=agent.id,
         run_id=run.run_id,
+        execution_reason=_ERROR_FOR_OUTCOME.get(result.outcome),
     )
+    # Both branches go through the one result path (Global Constraints).
+    # `execution_error`/`rejected` are inert with respect to the target — no
+    # avail sample, no retry increment, no transition, and `probe_last_result_at`
+    # deliberately untouched so D-4's staleness rule still sees a monitor that is
+    # producing no real results — but they are *not* invisible: the service is
+    # where the run closes, where §6's "one execution event per change of reason"
+    # is enforced, and where D-13's status-less live refresh is published.
+    # Writing the probe columns here instead would leave the monitor's history
+    # empty for the whole outage and push nothing to `monitor:{id}`.
     persisted = result_service.persist_results(db, [record])
     await result_service.publish_results(persisted)
+    if result.outcome in _EXECUTION_CONDITION_OUTCOMES:
+        return DISPOSITION_AUDIT_ONLY
     return DISPOSITION_ACCEPTED
 
 

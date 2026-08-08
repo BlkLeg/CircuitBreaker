@@ -13,8 +13,30 @@ import {
 import { useMonitorStream } from '../hooks/useMonitorStream';
 import { useToast } from '../components/common/Toast';
 import CheckHistoryBar from '../components/monitors/CheckHistoryBar';
+import { formatCoverageShortfall } from '../components/monitors/monitorFormat';
 import LatencyChart from '../components/monitors/LatencyChart';
 import StatusPill from '../components/monitors/StatusPill';
+
+/**
+ * The observed-coverage caveat under an uptime percentage (D-12).
+ *
+ * A vantage that could not run a check writes no availability sample, so hours
+ * it was gone shrink the denominator rather than counting as downtime. Rendered
+ * only when there is both a percentage to qualify and a real gap to report.
+ */
+function CoverageNote({ pct, coverage }) {
+  const shortfall = pct == null ? null : formatCoverageShortfall(coverage);
+  if (!shortfall) return null;
+  return (
+    <span
+      className="text-muted"
+      style={{ display: 'block', fontSize: '0.72rem' }}
+      title="A vantage that could not run a check records no availability sample, so this percentage covers only the observed part of the window."
+    >
+      {shortfall}
+    </span>
+  );
+}
 
 export default function MonitorDetailPage() {
   const { id } = useParams();
@@ -129,11 +151,20 @@ export default function MonitorDetailPage() {
         <dt className="text-muted">Last Polled</dt>
         <dd>{lastPolled ? new Date(lastPolled).toLocaleString() : '—'}</dd>
         <dt className="text-muted">24 Hour</dt>
-        <dd>{uptime?.pct_24h != null ? `${uptime.pct_24h}%` : '—'}</dd>
+        <dd>
+          {uptime?.pct_24h != null ? `${uptime.pct_24h}%` : '—'}
+          <CoverageNote pct={uptime?.pct_24h} coverage={uptime?.coverage_24h} />
+        </dd>
         <dt className="text-muted">7-Day</dt>
-        <dd>{uptime?.pct_7d != null ? `${uptime.pct_7d}%` : '—'}</dd>
+        <dd>
+          {uptime?.pct_7d != null ? `${uptime.pct_7d}%` : '—'}
+          <CoverageNote pct={uptime?.pct_7d} coverage={uptime?.coverage_7d} />
+        </dd>
         <dt className="text-muted">30-Day</dt>
-        <dd>{uptime?.pct_30d != null ? `${uptime.pct_30d}%` : '—'}</dd>
+        <dd>
+          {uptime?.pct_30d != null ? `${uptime.pct_30d}%` : '—'}
+          <CoverageNote pct={uptime?.pct_30d} coverage={uptime?.coverage_30d} />
+        </dd>
         <dt className="text-muted">365-Day</dt>
         <dd>{uptime?.pct_365d != null ? `${uptime.pct_365d}%` : '—'}</dd>
       </dl>

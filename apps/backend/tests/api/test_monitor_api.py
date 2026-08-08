@@ -75,6 +75,11 @@ async def test_uptime_and_history_empty_ok(client, auth_headers):
         "pct_365d": None,
         "pct_total": None,
         "last_polled_at": None,
+        # D-12: the window is fully unobserved, which the response says out loud
+        # rather than leaving the reader to infer it from a null percentage.
+        "coverage_24h": {"observed_minutes": 0, "window_minutes": 1440, "pct": 0.0},
+        "coverage_7d": {"observed_minutes": 0, "window_minutes": 10080, "pct": 0.0},
+        "coverage_30d": {"observed_minutes": 0, "window_minutes": 43200, "pct": 0.0},
     }
     history = await client.get(f"/api/v1/monitors/{mid}/history", headers=auth_headers)
     assert history.json() == []
@@ -373,6 +378,26 @@ def presence(monkeypatch):
     return mark
 
 
+@pytest.fixture
+def nats_publish(monkeypatch):
+    """Record every JetStream publish and report success.
+
+    The real `js_publish` returns False with no broker, which is
+    indistinguishable from "never called" — and "never called" is exactly the
+    regression these tests exist to catch, so it has to be observable.
+    """
+    published: list[tuple[str, dict]] = []
+
+    async def _publish(subject: str, payload: dict) -> bool:
+        published.append((subject, payload))
+        return True
+
+    from app.core.nats_client import nats_client
+
+    monkeypatch.setattr(nats_client, "js_publish", _publish)
+    return published
+
+
 def _probe_agent(factories, name: str = "branch-office", **kwargs):
     """An agent that passes every §2 precondition except liveness."""
     agent = factories.agent(status="active", name=name, **kwargs)
@@ -523,8 +548,9 @@ async def test_check_now_on_a_server_monitor_still_returns_200(client, auth_head
 
 @pytest.mark.asyncio
 async def test_check_now_on_an_eligible_agent_opens_a_run(
-    client, auth_headers, factories, db_session, presence
+    client, auth_headers, factories, db_session, presence, nats_publish
 ):
+    from app.core.subjects import MONITOR_PROBE_REMOTE
     from app.db.models import MonitorProbeRun
 
     agent = _probe_agent(factories)
@@ -537,6 +563,39 @@ async def test_check_now_on_an_eligible_agent_opens_a_run(
     runs = db_session.query(MonitorProbeRun).filter(MonitorProbeRun.monitor_id == mid).all()
     assert [r.status for r in runs] == ["queued"]
     assert runs[0].agent_id == agent.id
+    # A run nobody was told about is a wedge, not a check: it holds
+    # uq_monitor_probe_runs_active until the reconciliation pass expires it.
+    assert nats_publish == [(MONITOR_PROBE_REMOTE, {"run_id": runs[0].run_id})]
+
+
+@pytest.mark.asyncio
+async def test_check_now_that_cannot_be_dispatched_answers_409_and_closes_the_run(
+    client, auth_headers, factories, db_session, presence, monkeypatch
+):
+    """D-14: "accepted" is a claim this route must be able to stand behind, so a
+    publish that never left the building is a refusal, not a 200 — and the run
+    it opened has to be closed instead of holding the active-run index."""
+    from app.core.nats_client import nats_client
+    from app.db.models import MonitorItem, MonitorProbeRun
+
+    async def _fails(subject: str, payload: dict) -> bool:
+        return False
+
+    monkeypatch.setattr(nats_client, "js_publish", _fails)
+
+    agent = _probe_agent(factories)
+    presence(agent)
+    mid = (await _create_icmp(client, auth_headers, probe_agent_id=agent.id)).json()["id"]
+
+    resp = await client.post(f"/api/v1/monitors/{mid}/check", headers=auth_headers)
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "dispatch_failed"
+    db_session.expire_all()
+    runs = db_session.query(MonitorProbeRun).filter(MonitorProbeRun.monitor_id == mid).all()
+    assert [r.status for r in runs] == ["execution_error"]
+    assert runs[0].error_code == "dispatch_failed"
+    assert db_session.get(MonitorItem, mid).probe_execution_status == "unavailable"
 
 
 @pytest.mark.asyncio
@@ -654,10 +713,11 @@ async def test_assignment_to_an_unknown_agent_is_rejected(client, auth_headers):
 
 @pytest.mark.asyncio
 async def test_target_check_routes_an_assigned_monitor_to_its_agent_not_the_server(
-    client, auth_headers, factories, db_session
+    client, auth_headers, factories, db_session, nats_publish
 ):
     """§2 allows no automatic fallback: a target-scoped "check now" must not
     quietly have the server execute a check the operator assigned to an agent."""
+    from app.core.subjects import MONITOR_PROBE_REMOTE
     from app.db.models import MonitorProbeRun
 
     agent = _probe_agent(factories)
@@ -677,3 +737,69 @@ async def test_target_check_routes_an_assigned_monitor_to_its_agent_not_the_serv
     runs = db_session.query(MonitorProbeRun).filter(MonitorProbeRun.monitor_id == mid).all()
     assert [r.status for r in runs] == ["queued"]
     assert runs[0].agent_id == agent.id
+    assert nats_publish == [(MONITOR_PROBE_REMOTE, {"run_id": runs[0].run_id})]
+
+
+@pytest.mark.asyncio
+async def test_target_check_on_a_server_monitor_publishes_a_poll(
+    client, auth_headers, factories, nats_publish
+):
+    """The server half of the same route: an unassigned monitor still has to
+    reach `mon.poll.item`, or "check now" is a 200 that does nothing at all."""
+    from app.core.subjects import MONITOR_POLL_ITEM
+
+    hw = factories.hardware(ip_address="10.0.0.9")
+    created = await client.post(f"/api/v1/monitors/target/hardware/{hw.id}", headers=auth_headers)
+    mid = created.json()["id"]
+
+    resp = await client.post(
+        f"/api/v1/monitors/target/hardware/{hw.id}/check", headers=auth_headers
+    )
+
+    assert resp.status_code == 200
+    assert [subject for subject, _ in nats_publish] == [MONITOR_POLL_ITEM]
+    assert nats_publish[0][1]["item_id"] == mid
+
+
+@pytest.mark.asyncio
+async def test_target_check_closes_the_run_when_the_dispatch_publish_fails(
+    client, auth_headers, factories, db_session, monkeypatch
+):
+    """An undispatchable run must not be left holding the active-run index.
+
+    Otherwise the next due tick takes D-6's `previous_run_in_flight` skip and
+    the D-5 reconciliation pass writes a spurious `result_timeout` ~50 s later.
+    """
+    from app.core.nats_client import nats_client
+    from app.db.models import MonitorItem, MonitorProbeRun
+
+    async def _fails(subject: str, payload: dict) -> bool:
+        return False
+
+    monkeypatch.setattr(nats_client, "js_publish", _fails)
+
+    agent = _probe_agent(factories)
+    hw = factories.hardware(ip_address="10.0.0.9")
+    mid = (
+        await client.post(f"/api/v1/monitors/target/hardware/{hw.id}", headers=auth_headers)
+    ).json()["id"]
+    await client.patch(
+        f"/api/v1/monitors/{mid}", headers=auth_headers, json={"probe_agent_id": agent.id}
+    )
+    due_before = db_session.get(MonitorItem, mid).next_due_at
+
+    resp = await client.post(
+        f"/api/v1/monitors/target/hardware/{hw.id}/check", headers=auth_headers
+    )
+
+    assert resp.status_code == 200
+    db_session.expire_all()
+    runs = db_session.query(MonitorProbeRun).filter(MonitorProbeRun.monitor_id == mid).all()
+    assert [r.status for r in runs] == ["execution_error"]
+    assert runs[0].error_code == "dispatch_failed"
+    assert runs[0].completed_at is not None
+    monitor = db_session.get(MonitorItem, mid)
+    assert monitor.probe_execution_status == "unavailable"
+    assert monitor.probe_execution_reason == "dispatch_failed"
+    # A manual check that could not be dispatched must not move the schedule.
+    assert monitor.next_due_at == due_before

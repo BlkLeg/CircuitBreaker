@@ -31,3 +31,25 @@ export function formatSince(iso, now = Date.now()) {
   const d = Math.floor(delta / DAY);
   return `${d}d ${Math.floor((delta - d * DAY) / HOUR)}h`;
 }
+
+/**
+ * Coverage at or above this reads as "the whole window". A monitor can miss the
+ * odd scheduled check without that being a reporting-integrity problem; the
+ * note exists for the vantage that was gone for hours, not for rounding.
+ */
+const COVERAGE_FULL_PCT = 99;
+
+/**
+ * "240 of 1440 min observed (16.7%)" — what an uptime percentage is actually
+ * based on, or null when the window was observed end to end.
+ *
+ * A vantage that cannot run a check writes no availability sample, so an
+ * unobserved stretch shrinks the uptime denominator instead of showing as
+ * downtime. Without this, "100% over the last day" and "100% over the four
+ * hours we could see" are the same number on screen.
+ */
+export function formatCoverageShortfall(coverage) {
+  if (!coverage || typeof coverage.pct !== 'number') return null;
+  if (coverage.pct >= COVERAGE_FULL_PCT) return null;
+  return `${coverage.observed_minutes} of ${coverage.window_minutes} min observed (${coverage.pct}%)`;
+}

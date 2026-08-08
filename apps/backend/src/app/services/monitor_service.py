@@ -7,7 +7,6 @@ import re
 from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from functools import partial
 from typing import Any, NamedTuple
 from urllib.parse import urlparse
 
@@ -94,15 +93,20 @@ def _publish_soon(what: str, factory: Callable[[], Coroutine[Any, Any, Any]]) ->
     """Fire-and-forget an async publish from a synchronous caller.
 
     The single home of the `asyncio.get_running_loop()` + `create_task` idiom,
-    so every cancellation trigger and the check-now path behave identically.
-    Takes a factory rather than a coroutine so nothing is ever constructed and
-    then abandoned unawaited.
+    so every cancellation trigger behaves identically. Takes a factory rather
+    than a coroutine so nothing is ever constructed and then abandoned
+    unawaited.
 
     Returns False, having published nothing, when no loop is running — which is
     the case for every `def` route FastAPI hands to its threadpool. That is what
     "best-effort" means concretely in §4: the run is already closed in the
     database by the time this is called, so an undelivered `probe.cancel` costs
     the agent one wasted check and costs the backend nothing at all.
+
+    **Cancellation only.** Anything that *opens* a run must await its publish
+    instead (`_dispatch_probe_run`): there the run is live and unannounced until
+    the frame lands, so silently publishing nothing wedges the monitor rather
+    than costing it a wasted check.
     """
     try:
         loop = asyncio.get_running_loop()
@@ -358,7 +362,14 @@ def _latest_metric_map(db: Session, item_ids: list[int], metric: str) -> dict[in
     return {r.item_id: r.value for r in rows if r.item_id is not None}
 
 
-def _uptime_pct_map(db: Session, item_ids: list[int], hours: int = 24) -> dict[int, float]:
+def _avail_agg(db: Session, item_ids: list[int], hours: int) -> dict[int, tuple[float | None, int]]:
+    """Mean `avail` and how many samples that mean is made of, per monitor.
+
+    The count is what makes the mean readable (D-12): an agent that could not
+    run a check writes no `avail` sample at all (§2), so an unobserved stretch
+    shrinks the denominator instead of showing as downtime and the average of
+    the rows that happen to exist reads 100%.
+    """
     if not item_ids:
         return {}
     since = datetime.now(UTC) - timedelta(hours=hours)
@@ -366,6 +377,7 @@ def _uptime_pct_map(db: Session, item_ids: list[int], hours: int = 24) -> dict[i
         select(
             TelemetryTimeseries.item_id,
             func.avg(TelemetryTimeseries.value),
+            func.count(TelemetryTimeseries.value),
         )
         .where(
             TelemetryTimeseries.item_id.in_(item_ids),
@@ -374,7 +386,39 @@ def _uptime_pct_map(db: Session, item_ids: list[int], hours: int = 24) -> dict[i
         )
         .group_by(TelemetryTimeseries.item_id)
     ).all()
-    return {item_id: round(avg * 100, 1) for item_id, avg in rows if avg is not None}
+    return {item_id: (avg, int(count)) for item_id, avg, count in rows}
+
+
+def _uptime_pct_map(db: Session, item_ids: list[int], hours: int = 24) -> dict[int, float]:
+    return {
+        item_id: round(avg * 100, 1)
+        for item_id, (avg, _count) in _avail_agg(db, item_ids, hours).items()
+        if avg is not None
+    }
+
+
+def _window_coverage(sample_count: int, interval_secs: int, hours: int) -> dict:
+    """Observed vs window minutes for one uptime window (D-12).
+
+    Observation is counted in *scheduled checks*, not in minutes that happen to
+    contain a sample: a landed check speaks for the interval it was scheduled
+    on, so a 300s monitor with 288 samples observed the whole day. Counting
+    minute buckets the way `workers/rollup_worker.py` does would call that same
+    fully-observed day 20% covered and cry wolf on every monitor polling slower
+    than once a minute. Retry polls run faster than the interval and can push
+    the product past the window, hence the clamp.
+
+    The denominator is the full window, never the monitor's age: shortening it
+    would be the same silent denominator shrink this field exists to expose.
+    """
+    window_minutes = hours * 60
+    interval_minutes = max(interval_secs, 1) / 60
+    observed = min(window_minutes, round(sample_count * interval_minutes))
+    return {
+        "observed_minutes": observed,
+        "window_minutes": window_minutes,
+        "pct": round(observed / window_minutes * 100, 1),
+    }
 
 
 def _latency_series_map(db: Session, item_ids: list[int], limit: int) -> dict[int, list[float]]:
@@ -702,15 +746,41 @@ def _rollup_pct(db: Session, item_id: int, *, since_date: str | None = None) -> 
 
 
 def get_uptime(db: Session, monitor_id: int) -> dict:
+    """Availability per window, each short window qualified by its coverage.
+
+    `pct_*` alone cannot be read honestly: the short windows average the `avail`
+    rows that exist, and a vantage that was unavailable wrote none (D-12). Every
+    telemetry-backed window therefore ships `coverage_*` beside it. The
+    rollup-backed windows (365d, total) do not, because `MonitorDailyStats`
+    keeps no row for a wholly unobserved day and "all time" has no fixed
+    denominator to compare against.
+    """
     item = db.get(MonitorItem, monitor_id)
     since_365d = (datetime.now(UTC) - timedelta(days=365)).strftime("%Y-%m-%d")
+    agg = {
+        hours: _avail_agg(db, [monitor_id], hours).get(monitor_id, (None, 0))
+        for hours in (24, 24 * 7, 24 * 30)
+    }
+
+    def _pct(hours: int) -> float | None:
+        avg, _count = agg[hours]
+        return None if avg is None else round(avg * 100, 1)
+
+    def _coverage(hours: int) -> dict | None:
+        if item is None:
+            return None
+        return _window_coverage(agg[hours][1], item.interval_secs, hours)
+
     return {
-        "pct_24h": _uptime_pct_map(db, [monitor_id], hours=24).get(monitor_id),
-        "pct_7d": _uptime_pct_map(db, [monitor_id], hours=24 * 7).get(monitor_id),
-        "pct_30d": _uptime_pct_map(db, [monitor_id], hours=24 * 30).get(monitor_id),
+        "pct_24h": _pct(24),
+        "pct_7d": _pct(24 * 7),
+        "pct_30d": _pct(24 * 30),
         "pct_365d": _rollup_pct(db, monitor_id, since_date=since_365d),
         "pct_total": _rollup_pct(db, monitor_id),
         "last_polled_at": item.last_polled_at if item else None,
+        "coverage_24h": _coverage(24),
+        "coverage_7d": _coverage(24 * 7),
+        "coverage_30d": _coverage(24 * 30),
     }
 
 
@@ -728,6 +798,44 @@ class CheckDispatch:
     ok: bool
     reason: str | None = None
     found: bool = True
+
+
+async def _dispatch_probe_run(db: Session, item: MonitorItem, run_id: str) -> str | None:
+    """Announce a freshly opened run to the dispatch worker, or close it again.
+
+    Awaited, never handed to `_publish_soon`: that helper is best-effort because
+    the run it announces is *already closed*, so a lost frame costs nothing.
+    Here the run is freshly **open** and this publish is the only thing that
+    makes it live. A run left `queued` holds `uq_monitor_probe_runs_active`, so
+    the next tick that finds the monitor due takes D-6's `previous_run_in_flight`
+    skip and the D-5 reconciliation pass then writes a spurious `result_timeout`
+    — an operator's successful button press turning into a lost interval and a
+    false "vantage timed out".
+
+    A publish that fails therefore closes the run exactly as
+    `monitor_probe_dispatch` closes one it cannot deliver — same status, same
+    `dispatch_failed` code, same execution condition on the monitor — with one
+    difference: `next_due_at` is left alone. The scheduler pulls it back because
+    it had already advanced it when it claimed the item; a manual check never
+    touched the schedule and must not start now.
+
+    Returns None when the assignment is on its way, or the `error_code` written
+    to the run — which doubles as the availability reason "check now" answers
+    409 with.
+    """
+    if await nats_client.js_publish(MONITOR_PROBE_REMOTE, {"run_id": run_id}):
+        return None
+    # Reaching into the dispatch worker on purpose: it owns the single
+    # definition of "the assignment could not be delivered" (§8), and a second
+    # copy here would be free to drift from it.
+    from app.workers import monitor_probe_dispatch
+
+    reason = monitor_probe_dispatch._DISPATCH_FAILED
+    logger.warning("Failed to dispatch probe run %s for monitor %s", run_id, item.id)
+    run = db.scalars(select(MonitorProbeRun).where(MonitorProbeRun.run_id == run_id)).first()
+    if run is not None:
+        monitor_probe_dispatch._close_unavailable(db, run, item, reason)
+    return reason
 
 
 def _poll_payload(item: MonitorItem) -> dict:
@@ -760,8 +868,7 @@ async def run_immediate_check(db: Session, monitor_id: int) -> CheckDispatch:
         return CheckDispatch(ok=False, found=False)
 
     if item.probe_agent_id is None:
-        payload = _poll_payload(item)
-        _publish_soon("immediate check", lambda: nats_client.js_publish(MONITOR_POLL_ITEM, payload))
+        await nats_client.js_publish(MONITOR_POLL_ITEM, _poll_payload(item))
         return CheckDispatch(ok=True)
 
     from app.services.monitoring import probe_eligibility, scheduler
@@ -771,16 +878,18 @@ async def run_immediate_check(db: Session, monitor_id: int) -> CheckDispatch:
         return CheckDispatch(ok=False, reason=decision.reason)
 
     # The same run-opening path the scheduler uses, so a manual check and a due
-    # check are indistinguishable downstream and share one deadline constant.
+    # check are indistinguishable downstream and derive one deadline from the
+    # monitor's own configured budget.
     run_id = scheduler._create_probe_run(
         db, _poll_payload(item) | {"probe_agent_id": item.probe_agent_id}
     )
     if run_id is None:
         return CheckDispatch(ok=False, reason=probe_eligibility.REASON_PREVIOUS_RUN_IN_FLIGHT)
-    _publish_soon(
-        "immediate probe",
-        lambda: nats_client.js_publish(MONITOR_PROBE_REMOTE, {"run_id": run_id}),
-    )
+    undelivered = await _dispatch_probe_run(db, item, run_id)
+    if undelivered is not None:
+        # The run has been closed again, so this is a refusal like any other:
+        # §2's "accepted" claim has to survive the broker being down too.
+        return CheckDispatch(ok=False, reason=undelivered)
     return CheckDispatch(ok=True)
 
 
@@ -991,7 +1100,7 @@ def set_target_paused(db: Session, target_type: str, target_id: int, paused: boo
     return True
 
 
-def run_target_check(db: Session, target_type: str, target_id: int) -> bool:
+async def run_target_check(db: Session, target_type: str, target_id: int) -> bool:
     """Publish an immediate check for every monitor attached to an inventory entity.
 
     Each monitor goes to its own vantage. §2 allows no automatic fallback, so an
@@ -1001,6 +1110,12 @@ def run_target_check(db: Session, target_type: str, target_id: int) -> bool:
     agent. Eligibility is left to the dispatcher, which re-checks it and closes
     the run with a reason if the vantage cannot take the work; this path answers
     for a whole target, so there is no single reason it could return.
+
+    Async for the same reason `run_immediate_check` is (D-14): both publishes
+    have to actually happen before the response. A `def` route runs in FastAPI's
+    threadpool, where there is no event loop for `_publish_soon` to schedule on —
+    it would open a run, publish nothing, and answer 200, leaving the monitor
+    wedged behind its own queued run until the reconciliation pass expired it.
 
     Returns False only when the target has no monitors at all — the 404 the
     inventory routes render.
@@ -1012,20 +1127,14 @@ def run_target_check(db: Session, target_type: str, target_id: int) -> bool:
 
     for item in items:
         if item.probe_agent_id is None:
-            payload = _poll_payload(item)
-            _publish_soon(
-                "immediate check", partial(nats_client.js_publish, MONITOR_POLL_ITEM, payload)
-            )
+            await nats_client.js_publish(MONITOR_POLL_ITEM, _poll_payload(item))
             continue
         run_id = scheduler._create_probe_run(
             db, _poll_payload(item) | {"probe_agent_id": item.probe_agent_id}
         )
         if run_id is None:
             continue
-        _publish_soon(
-            "immediate probe",
-            partial(nats_client.js_publish, MONITOR_PROBE_REMOTE, {"run_id": run_id}),
-        )
+        await _dispatch_probe_run(db, item, run_id)
     return True
 
 

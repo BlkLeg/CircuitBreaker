@@ -6,16 +6,32 @@ from sqlalchemy import insert, text
 
 from app.core.subjects import MONITOR_POLL_ITEM, MONITOR_PROBE_REMOTE
 from app.db.models import MonitorItem, MonitorProbeRun
-from app.services.monitoring.scheduler import claim_due_items, enqueue_due
+from app.services.monitoring.scheduler import (
+    _PROBE_BUDGET_MAX_S,
+    _PROBE_DEADLINE_HEADROOM_S,
+    _PROBE_DEADLINE_MIN_S,
+    claim_due_items,
+    enqueue_due,
+    probe_deadline_seconds,
+)
 
 
-def _mk(db, *, due_offset_s, enabled=True, interval=60, probe_agent_id=None):
+def _mk(
+    db,
+    *,
+    due_offset_s,
+    enabled=True,
+    interval=60,
+    probe_agent_id=None,
+    check_type="icmp",
+    params=None,
+):
     item = MonitorItem(
         target_type="ip",
         target_id=None,
         host="10.0.0.9",
-        check_type="icmp",
-        params={},
+        check_type=check_type,
+        params=params if params is not None else {},
         interval_secs=interval,
         enabled=enabled,
         next_due_at=datetime.now(UTC) + timedelta(seconds=due_offset_s),
@@ -275,3 +291,92 @@ async def test_claim_still_never_wedges_an_item_after_a_publish_crash(db_session
     db_session.expire_all()
     refreshed = db_session.get(MonitorItem, item.id)
     assert refreshed.next_due_at > _sql_now(db_session)
+
+
+# ── Probe deadline derived from the monitor's own budget ─────────────────────
+# A run whose deadline is shorter than what the check actually spends expires,
+# the agent answers `execution_error`, and an execution error never moves
+# monitor state — so the monitor keeps reporting its last status forever while
+# the server-executed twin reports DOWN. The deadline therefore has to come from
+# the monitor's own configuration, using the same defaults the collectors apply
+# (the parity contract's numbers), not from one fixed constant.
+
+
+@pytest.mark.parametrize(
+    ("check_type", "params", "spends_s"),
+    [
+        # Parity contract: ICMP defaults packet_count=5, timeout=1.5.
+        ("icmp", {}, 5 * 1.5),
+        # The reported failure: 20 packets x the default 1.5 s = 30 s of work.
+        ("icmp", {"packet_count": 20}, 20 * 1.5),
+        ("icmp", {"packet_count": 10, "timeout": 4.0}, 40.0),
+        # TCP tries each port in order, one timeout each — and then each
+        # resolved address per port, so a dual-stack name costs twice that.
+        ("tcp", {}, 1.0),
+        ("tcp", {"ports": [22, 80, 443, 8080], "timeout": 5.0}, 2 * 4 * 5.0),
+        # HTTP spends the request timeout, then the separate TLS capture.
+        ("http", {}, 2 * 10.0),
+        ("http", {"timeout": 30.0}, 60.0),
+        # DNS bounds the whole resolution by one timeout.
+        ("dns", {}, 5.0),
+        ("dns", {"timeout": 20.0}, 20.0),
+    ],
+)
+def test_probe_deadline_covers_what_the_check_actually_spends(check_type, params, spends_s):
+    assert probe_deadline_seconds(check_type, params) > spends_s
+
+
+def test_probe_deadline_keeps_a_floor_for_cheap_checks():
+    assert probe_deadline_seconds("tcp", {}) == _PROBE_DEADLINE_MIN_S
+    assert probe_deadline_seconds("icmp", None) == _PROBE_DEADLINE_MIN_S
+
+
+def test_probe_deadline_is_bounded_and_survives_junk_config():
+    ceiling = _PROBE_BUDGET_MAX_S + _PROBE_DEADLINE_HEADROOM_S
+    assert probe_deadline_seconds("tcp", {"ports": list(range(1, 4000)), "timeout": 30}) == ceiling
+    # params is free-form JSONB; a junk value must fall back to the collector
+    # default rather than take down the whole scheduler tick.
+    assert probe_deadline_seconds("icmp", {"packet_count": "lots"}) == _PROBE_DEADLINE_MIN_S
+    assert probe_deadline_seconds("nonsense", {}) == _PROBE_DEADLINE_MIN_S
+
+
+async def test_run_deadline_is_derived_from_the_monitors_configured_budget(db_session, factories):
+    """The concrete failure: 20 packets at the default 1.5 s timeout needs 30 s
+    to observe 100% loss. A fixed 20 s deadline expires the run mid-check."""
+    agent = factories.agent(status="active")
+    db_session.flush()
+    item = _mk(
+        db_session,
+        due_offset_s=-5,
+        probe_agent_id=agent.id,
+        check_type="icmp",
+        params={"packet_count": 20},
+    )
+
+    published: list[tuple[str, dict]] = []
+    assert await enqueue_due(db_session, _collecting_publish(published), batch=200) == 1
+
+    run = db_session.query(MonitorProbeRun).filter_by(monitor_id=item.id).one()
+    assert (run.deadline_at - run.scheduled_at).total_seconds() > 20 * 1.5
+
+
+async def test_default_http_run_deadline_covers_request_plus_tls_capture(db_session, factories):
+    """Sparse config is the normal case (`model_dump(exclude_unset=True)`), so
+    the collector-side defaults have to be applied here too: an empty HTTP
+    config still spends timeout=10 on the request and another 10 on the
+    separate TLS connection."""
+    agent = factories.agent(status="active")
+    db_session.flush()
+    item = _mk(
+        db_session,
+        due_offset_s=-5,
+        probe_agent_id=agent.id,
+        check_type="http",
+        params={},
+    )
+
+    published: list[tuple[str, dict]] = []
+    assert await enqueue_due(db_session, _collecting_publish(published), batch=200) == 1
+
+    run = db_session.query(MonitorProbeRun).filter_by(monitor_id=item.id).one()
+    assert (run.deadline_at - run.scheduled_at).total_seconds() > 2 * 10.0

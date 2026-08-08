@@ -31,10 +31,108 @@ from app.core.subjects import MONITOR_POLL_ITEM, MONITOR_PROBE_REMOTE
 
 logger = logging.getLogger(__name__)
 
+# ── The run deadline ─────────────────────────────────────────────────────────
 # How long an agent has to return a result before the run is expired. §4's
-# `probe.assign` example is scheduled_at + 20s; the reconciliation pass gives it
-# a further 30 s of grace before the run is written off.
-_PROBE_DEADLINE_S = int(os.getenv("CB_MONITOR_PROBE_DEADLINE_S", "20"))
+# `probe.assign` example shows scheduled_at + 20s, but that is only what the
+# *default* ICMP check costs; it is an example, not a constant.
+#
+# A fixed deadline is a silent-failure generator. `internal/collect/probe`'s
+# runtime.go runs every check under `context.WithDeadline(ctx, DeadlineAt)`, so
+# a deadline shorter than the configured budget aborts the check mid-flight and
+# reports `outcome="execution_error"` — and by design an execution error never
+# moves monitor state. An ICMP monitor with `packet_count=20` (allowed by
+# `schemas/monitor.py`'s `le=20`, and offered by MonitorForm.jsx) needs
+# 20 x 1.5 s = 30 s to observe 100% packet loss; at 20 s it would report
+# `probe_execution_status='unavailable'` forever while the byte-identical
+# server-executed monitor reports DOWN. §6's parity requirement is exactly what
+# that breaks.
+#
+# So the deadline is derived from the monitor's own configuration, using the
+# collector-side defaults from the parity contract. Stored configs are sparse —
+# `_MonitorBase._validate_config` persists `model_dump(exclude_unset=True)` —
+# so every value has to come through `params.get(key, default)` here too.
+#
+# The three knobs are the operator escape hatch:
+#   * headroom covers the dispatch hop, the runtime's pre-dial scope resolve
+#     (`resolveTimeout = 5s`) and clock skew, and is always added on top;
+#   * the floor keeps a cheap check from getting an unreasonably tight window
+#     and preserves the historical 20 s for every default-configured monitor;
+#   * the ceiling bounds how long any single check may occupy a run — a
+#     pathological config (the `ports` list has no length bound) must not leave
+#     a monitor un-reconciled for hours.
+_PROBE_DEADLINE_HEADROOM_S = float(os.getenv("CB_MONITOR_PROBE_DEADLINE_HEADROOM_S", "10"))
+_PROBE_DEADLINE_MIN_S = float(os.getenv("CB_MONITOR_PROBE_DEADLINE_MIN_S", "20"))
+_PROBE_BUDGET_MAX_S = float(os.getenv("CB_MONITOR_PROBE_BUDGET_MAX_S", "600"))
+
+# A TCP host is dialled once per resolved address per port on both sides. The
+# scheduler cannot know how many addresses a name will yield, so budget for the
+# dual-stack case (one A + one AAAA), which is the common one.
+_TCP_ADDRESS_FANOUT = 2
+
+
+def _positive_float(params: dict, key: str, default: float) -> float:
+    """`params` is free-form JSONB. A junk value falls back to the collector
+    default rather than raising inside the scheduler tick."""
+    try:
+        value = float(params.get(key, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _positive_int(params: dict, key: str, default: int) -> int:
+    try:
+        value = int(params.get(key, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _check_budget_seconds(check_type: str, params: dict) -> float:
+    """Wall-clock a check can legitimately spend, per the parity contract.
+
+    Mirrors what the collectors — and their Go twins in
+    `apps/agent/internal/collect/probe` — actually spend, not what pydantic
+    declares.
+    """
+    if check_type == "icmp":
+        # collect_icmp pings serially: packet_count x timeout.
+        return _positive_int(params, "packet_count", 5) * _positive_float(params, "timeout", 1.5)
+    if check_type == "tcp":
+        # collect_tcp tries `ports` IN ORDER, one timeout each, first success
+        # wins. Both socket.create_connection and tcp.go's dial loop then retry
+        # every *address* the host resolved to, with the full timeout each, so a
+        # dual-stack name costs twice a literal's — see _TCP_ADDRESS_FANOUT.
+        ports = params.get("ports") or [params.get("port", 80)]
+        attempts = len(ports) if isinstance(ports, list) and ports else 1
+        return attempts * _TCP_ADDRESS_FANOUT * _positive_float(params, "timeout", 1.0)
+    if check_type == "http":
+        # collect_http spends the request timeout, then _tls_details opens a
+        # second connection with the same timeout.
+        return 2 * _positive_float(params, "timeout", 10.0)
+    if check_type == "dns":
+        # dnspython's `lifetime` (and dns.go's lookupCtx) bound the whole
+        # resolution by one timeout, however many servers are tried.
+        return _positive_float(params, "timeout", 5.0)
+    return 0.0
+
+
+def probe_deadline_seconds(check_type: str, params: dict | None) -> float:
+    """Seconds an agent gets to return a result for this monitor's check."""
+    budget = _check_budget_seconds(check_type, params or {})
+    if budget > _PROBE_BUDGET_MAX_S:
+        # Never truncate silently: this is the same failure mode the fixed
+        # deadline had, just at a configuration nobody should be running.
+        logger.warning(
+            "A %s check's configured budget of %.0fs exceeds "
+            "CB_MONITOR_PROBE_BUDGET_MAX_S (%.0fs); the run will expire before it finishes",
+            check_type,
+            budget,
+            _PROBE_BUDGET_MAX_S,
+        )
+        budget = _PROBE_BUDGET_MAX_S
+    return max(budget + _PROBE_DEADLINE_HEADROOM_S, _PROBE_DEADLINE_MIN_S)
+
 
 # D-2. PostgreSQL rejects `FOR UPDATE is not allowed with window functions`, so
 # the per-vantage ranking cannot sit at the same query level as the claim: the
@@ -208,7 +306,7 @@ def _create_probe_run(db: Session, item: dict) -> str | None:
                 "run_id": run_id,
                 "monitor_id": monitor_id,
                 "agent_id": item["probe_agent_id"],
-                "deadline_s": _PROBE_DEADLINE_S,
+                "deadline_s": probe_deadline_seconds(item["check_type"], item["params"]),
             },
         )
         db.execute(_MARK_QUEUED_SQL, {"monitor_id": monitor_id})

@@ -181,8 +181,28 @@ class MonitorCheckPoint(BaseModel):
     created_at: datetime
 
 
+class MonitorWindowCoverage(BaseModel):
+    """How much of an uptime window the vantage actually observed (D-12).
+
+    A vantage that cannot run a check writes no `avail` sample at all, so an
+    unobserved stretch shrinks the uptime denominator instead of showing as
+    downtime. `observed_minutes` against `window_minutes` is what makes the
+    percentage beside it readable: 100% over 240 of 1440 minutes is not the
+    same claim as 100% over 1440.
+    """
+
+    observed_minutes: int
+    window_minutes: int
+    pct: float
+
+
 class MonitorUptimeRead(BaseModel):
-    """Availability across every window the detail page renders."""
+    """Availability across every window the detail page renders.
+
+    `coverage_*` accompanies the telemetry-backed windows only; 365d and total
+    are computed from `MonitorDailyStats`, which keeps no row for a wholly
+    unobserved day.
+    """
 
     pct_24h: float | None = None
     pct_7d: float | None = None
@@ -190,6 +210,9 @@ class MonitorUptimeRead(BaseModel):
     pct_365d: float | None = None
     pct_total: float | None = None
     last_polled_at: datetime | None = None
+    coverage_24h: MonitorWindowCoverage | None = None
+    coverage_7d: MonitorWindowCoverage | None = None
+    coverage_30d: MonitorWindowCoverage | None = None
 
 
 class MonitorOverview(MonitorRead):

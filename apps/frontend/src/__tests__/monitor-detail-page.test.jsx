@@ -36,6 +36,7 @@ import {
   getMonitorUptime,
 } from '../api/monitor';
 import MonitorDetailPage from '../pages/MonitorDetailPage.jsx';
+import { formatCoverageShortfall } from '../components/monitors/monitorFormat';
 
 const monitor = {
   id: 7,
@@ -200,5 +201,84 @@ describe('MonitorDetailPage probe vantage', () => {
     await waitFor(() => expect(screen.getByText('Circuit Breaker server')).toBeTruthy());
     expect(getMonitorProbeRuns).not.toHaveBeenCalled();
     expect(screen.queryByRole('region', { name: 'Probe runs' })).toBeNull();
+  });
+});
+
+// ── D-12: observed coverage ─────────────────────────────────────────────────
+//
+// A vantage that could not run a check writes no availability sample, so an
+// unobserved stretch shrinks the denominator instead of showing as downtime.
+// The percentage has to say what it is based on.
+
+describe('formatCoverageShortfall', () => {
+  it('describes the shortfall when a window was only partly observed', () => {
+    expect(
+      formatCoverageShortfall({ observed_minutes: 240, window_minutes: 1440, pct: 16.7 })
+    ).toBe('240 of 1440 min observed (16.7%)');
+  });
+
+  it('says nothing when the window was fully observed', () => {
+    expect(
+      formatCoverageShortfall({ observed_minutes: 1440, window_minutes: 1440, pct: 100 })
+    ).toBeNull();
+  });
+
+  it('says nothing when coverage is absent', () => {
+    expect(formatCoverageShortfall(null)).toBeNull();
+    expect(formatCoverageShortfall(undefined)).toBeNull();
+  });
+});
+
+describe('MonitorDetailPage observed coverage', () => {
+  const partlyObserved = {
+    data: {
+      pct_24h: 100,
+      pct_7d: 100,
+      pct_30d: 100,
+      pct_365d: null,
+      pct_total: null,
+      last_polled_at: '2026-08-07T18:05:00Z',
+      coverage_24h: { observed_minutes: 240, window_minutes: 1440, pct: 16.7 },
+      coverage_7d: { observed_minutes: 240, window_minutes: 10080, pct: 2.4 },
+      coverage_30d: { observed_minutes: 1440, window_minutes: 43200, pct: 3.3 },
+    },
+  };
+
+  it('qualifies a 100% that only covers part of its window', async () => {
+    getMonitorUptime.mockResolvedValue(partlyObserved);
+    render(<MonitorDetailPage />);
+
+    await waitFor(() => expect(screen.getByText('24 Hour')).toBeTruthy());
+    expect(screen.getByText('240 of 1440 min observed (16.7%)')).toBeTruthy();
+    expect(screen.getByText('240 of 10080 min observed (2.4%)')).toBeTruthy();
+    expect(screen.getByText('1440 of 43200 min observed (3.3%)')).toBeTruthy();
+  });
+
+  it('leaves a fully observed window unqualified', async () => {
+    getMonitorUptime.mockResolvedValue({
+      data: {
+        ...partlyObserved.data,
+        coverage_24h: { observed_minutes: 1440, window_minutes: 1440, pct: 100 },
+      },
+    });
+    render(<MonitorDetailPage />);
+
+    await waitFor(() => expect(screen.getByText('24 Hour')).toBeTruthy());
+    expect(screen.queryByText('1440 of 1440 min observed (100%)')).toBeNull();
+  });
+
+  it('does not qualify a window that has no percentage to qualify', async () => {
+    getMonitorUptime.mockResolvedValue({
+      data: {
+        ...noUptime.data,
+        coverage_24h: { observed_minutes: 0, window_minutes: 1440, pct: 0 },
+        coverage_7d: { observed_minutes: 0, window_minutes: 10080, pct: 0 },
+        coverage_30d: { observed_minutes: 0, window_minutes: 43200, pct: 0 },
+      },
+    });
+    render(<MonitorDetailPage />);
+
+    await waitFor(() => expect(screen.getByText('24 Hour')).toBeTruthy());
+    expect(screen.queryByText('0 of 1440 min observed (0%)')).toBeNull();
   });
 });

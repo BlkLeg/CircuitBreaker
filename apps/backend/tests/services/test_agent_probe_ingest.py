@@ -9,6 +9,7 @@ duplicate is inert.
 
 import json
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -322,7 +323,12 @@ async def test_execution_error_result_does_not_write_avail_or_touch_retries(db_s
     assert item.probe_execution_status == "unavailable"
     assert item.probe_execution_reason == agent_probe.REASON_AGENT_EXECUTION_ERROR
     assert _samples(db_session, monitor) == []
-    assert db_session.query(MonitorEvent).filter_by(item_id=monitor.id).count() == 0
+    # "Inert with respect to the target" is not "invisible": §6 requires an
+    # `execution` event so the outage shows up in the monitor's history. It is a
+    # vantage event, not a transition — `status_to` carries the target's own
+    # state through, so nothing here moves the UP/DOWN pill.
+    (event,) = db_session.query(MonitorEvent).filter_by(item_id=monitor.id).all()
+    assert (event.event_type, event.status_to) == ("execution", "up")
 
     stored = db_session.get(MonitorProbeRun, run.id)
     assert (stored.status, stored.outcome) == ("execution_error", "execution_error")
@@ -395,3 +401,163 @@ async def test_utc_naive_timestamps_are_accepted_as_utc(db_session, factories):
     )
 
     assert disposition == agent_probe.DISPOSITION_ACCEPTED
+
+
+async def test_execution_error_records_an_execution_event_and_a_live_refresh(db_session, factories):
+    """Global Constraints' one result path, applied to the branch that has no
+    samples: an execution error still goes through `result_service`, so §6's
+    "record an execution event only when the reason changes" and D-13's
+    status-less live refresh happen for an agent-reported outage exactly as they
+    do for a server-side one. Writing the probe columns inline instead would
+    leave the monitor's history empty for the whole outage and push nothing.
+    """
+    from app.services.monitoring import result_service
+
+    agent = _agent(factories)
+    monitor = _monitor(factories, agent)
+    run = _run(db_session, factories, monitor, agent)
+
+    published: list[tuple[str, str]] = []
+    fake_redis = AsyncMock()
+
+    async def fake_publish(channel, payload):
+        published.append((channel, payload))
+
+    fake_redis.publish.side_effect = fake_publish
+
+    with patch.object(result_service, "get_redis", AsyncMock(return_value=fake_redis)):
+        disposition = await agent_probe.ingest_probe_result(
+            db_session,
+            agent,
+            _payload(run, monitor, outcome="execution_error", msg="no icmp socket"),
+        )
+
+    assert disposition == agent_probe.DISPOSITION_AUDIT_ONLY
+
+    db_session.expire_all()
+    events = db_session.query(MonitorEvent).filter_by(item_id=monitor.id).all()
+    assert [(e.event_type, e.msg) for e in events] == [
+        (result_service.EVENT_EXECUTION, agent_probe.REASON_AGENT_EXECUTION_ERROR)
+    ]
+    # The target's own state rides through untouched — the execution event is
+    # about the vantage, not about the host (§7's status-pill contract).
+    assert (events[0].status_from, events[0].status_to) == ("up", "up")
+
+    assert len(published) == 1
+    channel, raw = published[0]
+    assert channel == f"monitor:{monitor.id}"
+    payload = json.loads(raw)
+    # D-13: `ws_monitors._redis_listener` splats the payload into the outbound
+    # frame, so a `status` key here would clobber the UP/DOWN pill.
+    assert "status" not in payload
+    assert payload["monitor_id"] == monitor.id
+    assert payload["probe_execution_status"] == "unavailable"
+    assert payload["probe_execution_reason"] == agent_probe.REASON_AGENT_EXECUTION_ERROR
+
+
+async def test_rejected_result_takes_the_same_shared_execution_path(db_session, factories):
+    """`rejected` is an execution condition too (§4): the agent refused the
+    assignment, which says nothing about the target. It must produce the same
+    event and live refresh as `execution_error`, while the run keeps the agent's
+    own word for audit."""
+    from app.services.monitoring import result_service
+
+    agent = _agent(factories)
+    monitor = _monitor(factories, agent)
+    run = _run(db_session, factories, monitor, agent)
+
+    published: list[tuple[str, str]] = []
+    fake_redis = AsyncMock()
+
+    async def fake_publish(channel, payload):
+        published.append((channel, payload))
+
+    fake_redis.publish.side_effect = fake_publish
+
+    with patch.object(result_service, "get_redis", AsyncMock(return_value=fake_redis)):
+        disposition = await agent_probe.ingest_probe_result(
+            db_session,
+            agent,
+            _payload(run, monitor, outcome="rejected", msg="assignment queue is full"),
+        )
+
+    assert disposition == agent_probe.DISPOSITION_AUDIT_ONLY
+
+    db_session.expire_all()
+    events = db_session.query(MonitorEvent).filter_by(item_id=monitor.id).all()
+    assert [(e.event_type, e.msg) for e in events] == [
+        (result_service.EVENT_EXECUTION, agent_probe.REASON_AGENT_REJECTED)
+    ]
+    assert len(published) == 1
+    refresh = json.loads(published[0][1])
+    assert refresh["probe_execution_reason"] == agent_probe.REASON_AGENT_REJECTED
+    assert "status" not in refresh
+
+    stored = db_session.get(MonitorProbeRun, run.id)
+    assert (stored.status, stored.outcome) == ("execution_error", "rejected")
+    assert stored.error_code == agent_probe.REASON_AGENT_REJECTED
+    item = db_session.get(MonitorItem, monitor.id)
+    assert item.last_status == "up"
+    assert item.consecutive_failures == 0
+    assert _samples(db_session, monitor) == []
+
+
+async def test_repeated_agent_execution_errors_record_only_one_event(db_session, factories):
+    """§6's dedupe has to hold on the ingest path, not only in the unit test for
+    the service: a silent agent produces one of these every interval, and one
+    event per interval would bury the monitor's real history."""
+    from app.services.monitoring import result_service
+
+    agent = _agent(factories)
+    monitor = _monitor(factories, agent)
+
+    for _ in range(2):
+        # A fresh lease each interval; the previous one is closed by the ingest
+        # above, which is what frees the partial unique index.
+        run = _run(db_session, factories, monitor, agent)
+        with patch.object(result_service, "get_redis", AsyncMock(return_value=None)):
+            await agent_probe.ingest_probe_result(
+                db_session,
+                agent,
+                _payload(run, monitor, outcome="execution_error", msg="no icmp socket"),
+            )
+
+    db_session.expire_all()
+    assert db_session.query(MonitorEvent).filter_by(item_id=monitor.id).count() == 1
+
+
+async def test_cancelled_result_is_run_audit_only_and_records_no_execution_event(
+    db_session, factories
+):
+    """A cancellation is something the server asked for (§4, Task 14). It closes
+    the lease and says nothing about the vantage, so it deliberately does not
+    become an execution condition, an event, or a live refresh."""
+    from app.services.monitoring import result_service
+
+    agent = _agent(factories)
+    monitor = _monitor(factories, agent)
+    run = _run(db_session, factories, monitor, agent)
+
+    published: list[tuple[str, str]] = []
+    fake_redis = AsyncMock()
+
+    async def fake_publish(channel, payload):
+        published.append((channel, payload))
+
+    fake_redis.publish.side_effect = fake_publish
+
+    with patch.object(result_service, "get_redis", AsyncMock(return_value=fake_redis)):
+        disposition = await agent_probe.ingest_probe_result(
+            db_session, agent, _payload(run, monitor, outcome="cancelled", msg="cancelled")
+        )
+
+    assert disposition == agent_probe.DISPOSITION_AUDIT_ONLY
+
+    db_session.expire_all()
+    stored = db_session.get(MonitorProbeRun, run.id)
+    assert (stored.status, stored.outcome) == ("cancelled", "cancelled")
+    item = db_session.get(MonitorItem, monitor.id)
+    assert item.probe_execution_status is None
+    assert item.probe_execution_reason is None
+    assert db_session.query(MonitorEvent).filter_by(item_id=monitor.id).count() == 0
+    assert published == []
