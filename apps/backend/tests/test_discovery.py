@@ -6,6 +6,7 @@ import pytest
 
 SCAN_URL = "/api/v1/discovery/scan"
 JOBS_URL = "/api/v1/discovery/jobs"
+PROFILES_URL = "/api/v1/discovery/profiles"
 
 
 # ---------------------------------------------------------------------------
@@ -240,3 +241,206 @@ async def test_import_as_network_router_override_is_tree_root(client, auth_heade
     assert all(c.source_hardware_id == router_hw.id for c in connections), (
         f"Expected all edges from router; got sources={[c.source_hardware_id for c in connections]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Scan-type vocabulary (Slice 4, D-6)
+# ---------------------------------------------------------------------------
+
+
+def _make_profile(db_session, *, scan_types_json: str):
+    """Persist a profile row directly, bypassing the request schema.
+
+    Rows written before the vocabulary existed hold arbitrary strings; this is
+    how a test can produce one without going through the validator under test.
+    """
+    from app.core.time import utcnow_iso
+    from app.db.models import DiscoveryProfile
+
+    now = utcnow_iso()
+    profile = DiscoveryProfile(
+        name="legacy-profile",
+        cidr="192.168.50.0/24",
+        scan_types=scan_types_json,
+        enabled=1,
+        created_at=now,
+        updated_at=now,
+    )
+    db_session.add(profile)
+    db_session.commit()
+    return profile.id
+
+
+@pytest.mark.asyncio
+async def test_profile_with_server_scan_type_and_agent_is_422(client, auth_headers):
+    """A server-only scan type may not be dispatched to an agent (plan §3)."""
+    payload = {
+        "name": "agent-profile",
+        "cidr": "10.88.0.0/24",
+        "scan_types": ["nmap"],
+        "scan_agent_id": 7,
+    }
+    resp = await client.post(PROFILES_URL, json=payload, headers=auth_headers)
+    assert resp.status_code == 422, resp.text
+    assert "nmap" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_profile_with_agent_scan_type_and_no_agent_is_422(client, auth_headers):
+    """`agent_connect` has no executor when no agent is selected."""
+    payload = {
+        "name": "server-profile",
+        "cidr": "10.88.0.0/24",
+        "scan_types": ["agent_connect"],
+    }
+    resp = await client.post(PROFILES_URL, json=payload, headers=auth_headers)
+    assert resp.status_code == 422, resp.text
+    assert "agent_connect" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_profile_with_unknown_scan_type_is_422(client, auth_headers):
+    payload = {
+        "name": "bogus-profile",
+        "cidr": "10.88.0.0/24",
+        "scan_types": ["bogus"],
+    }
+    resp = await client.post(PROFILES_URL, json=payload, headers=auth_headers)
+    assert resp.status_code == 422, resp.text
+    assert "bogus" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_profile_update_with_unknown_scan_type_is_422(client, auth_headers, db_session):
+    profile_id = _make_profile(db_session, scan_types_json='["nmap"]')
+    resp = await client.patch(
+        f"{PROFILES_URL}/{profile_id}",
+        json={"scan_types": ["bogus"]},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+async def test_profile_update_with_agent_scan_type_and_no_agent_is_422(
+    client, auth_headers, db_session
+):
+    profile_id = _make_profile(db_session, scan_types_json='["nmap"]')
+    resp = await client.patch(
+        f"{PROFILES_URL}/{profile_id}",
+        json={"scan_types": ["agent_connect"]},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+async def test_profile_update_without_scan_types_is_unaffected(client, auth_headers, db_session):
+    """A PATCH that does not mention scan_types must not be validated against them."""
+    profile_id = _make_profile(db_session, scan_types_json='["legacy_thing"]')
+    resp = await client.patch(
+        f"{PROFILES_URL}/{profile_id}",
+        json={"name": "renamed"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["name"] == "renamed"
+
+
+@pytest.mark.asyncio
+async def test_existing_profile_with_unknown_scan_type_still_loads(
+    client, auth_headers, db_session
+):
+    """Validation is write-only: rows predating the vocabulary must keep loading."""
+    profile_id = _make_profile(db_session, scan_types_json='["legacy_thing", "nmap"]')
+    resp = await client.get(PROFILES_URL, headers=auth_headers)
+    assert resp.status_code == 200, resp.text
+    loaded = [p for p in resp.json() if p["id"] == profile_id]
+    assert loaded, resp.text
+    assert loaded[0]["scan_types"] == ["legacy_thing", "nmap"]
+
+
+@pytest.mark.asyncio
+async def test_adhoc_scan_with_unknown_scan_type_is_422(client, auth_headers, nmap_enabled):
+    payload = {"cidr": "192.168.1.0/24", "scan_types": ["bogus"]}
+    resp = await client.post(SCAN_URL, json=payload, headers=auth_headers)
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+async def test_adhoc_scan_with_agent_scan_type_and_no_agent_is_422(
+    client, auth_headers, nmap_enabled
+):
+    payload = {"cidr": "192.168.1.0/24", "scan_types": ["agent_connect"]}
+    resp = await client.post(SCAN_URL, json=payload, headers=auth_headers)
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+async def test_adhoc_scan_with_server_scan_type_and_agent_is_422(
+    client, auth_headers, nmap_enabled
+):
+    payload = {"cidr": "192.168.1.0/24", "scan_types": ["nmap"], "scan_agent_id": 7}
+    resp = await client.post(SCAN_URL, json=payload, headers=auth_headers)
+    assert resp.status_code == 422, resp.text
+
+
+# ---------------------------------------------------------------------------
+# Execution location on the profile API (Slice 4, D-7)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_profile_persists_execution_location(
+    client, auth_headers, db_session, factories
+):
+    """The API writes `scan_agent_id` through and derives the canonical CIDR."""
+    from app.db.models import DiscoveryProfile
+
+    agent = factories.agent(status="active")
+    payload = {
+        "name": "agent-owned",
+        "cidr": "10.44.0.9/24",
+        "scan_types": ["agent_connect"],
+        "scan_agent_id": agent.id,
+    }
+    resp = await client.post(PROFILES_URL, json=payload, headers=auth_headers)
+    assert resp.status_code == 200, resp.text
+
+    row = db_session.get(DiscoveryProfile, resp.json()["id"])
+    assert row.scan_agent_id == agent.id
+    assert row.normalized_cidr == "10.44.0.0/24"
+
+
+@pytest.mark.asyncio
+async def test_create_profile_ignores_managed_by_in_the_body(client, auth_headers, db_session):
+    """`managed_by` is server-set only — a request that claims it is not obeyed.
+
+    Honouring it would let a client park a row on the partial unique index that
+    the system-profile bootstrap owns.
+    """
+    from app.db.models import DiscoveryProfile
+
+    payload = {
+        "name": "impostor",
+        "cidr": "10.45.0.0/24",
+        "scan_types": ["nmap"],
+        "managed_by": "system",
+    }
+    resp = await client.post(PROFILES_URL, json=payload, headers=auth_headers)
+    assert resp.status_code == 200, resp.text
+    assert db_session.get(DiscoveryProfile, resp.json()["id"]).managed_by is None
+
+
+@pytest.mark.asyncio
+async def test_update_profile_ignores_managed_by_in_the_body(client, auth_headers, db_session):
+    from app.db.models import DiscoveryProfile
+
+    profile_id = _make_profile(db_session, scan_types_json='["nmap"]')
+    resp = await client.patch(
+        f"{PROFILES_URL}/{profile_id}",
+        json={"name": "renamed", "managed_by": "system"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert db_session.get(DiscoveryProfile, profile_id).managed_by is None

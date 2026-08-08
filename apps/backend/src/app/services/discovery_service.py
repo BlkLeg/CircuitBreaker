@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.discovery_scan_types import validate_scan_types
 from app.core.log_sanitize import safe_log_fragment
 from app.core.nmap_args import validate_nmap_arguments
 from app.core.time import utcnow_iso
@@ -292,7 +293,11 @@ def create_scan_job(
 
     cidrs: list[str] = []
     network_ids: list[int] = []
-    effective_scan_types = scan_types or []
+    # Raises before anything is written. The execution location here is always
+    # the server: routing a job to an agent is not this function's job yet, so
+    # an agent-only scan type has no executor and must be refused rather than
+    # quietly run in-process.
+    effective_scan_types = validate_scan_types(scan_types, scan_agent_id=None)
     if _requires_nmap(effective_scan_types) and not getattr(app_cfg, "nmap_enabled", False):
         raise ValueError(
             "Nmap-based scans are disabled. Enable 'Nmap Active Scanning' in Discovery Settings."

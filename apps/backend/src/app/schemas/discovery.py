@@ -2,7 +2,9 @@ import ipaddress
 import json
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.core.discovery_scan_types import validate_scan_types
 
 
 def _validate_cron_expression(v: str | None) -> str | None:
@@ -23,6 +25,9 @@ class DiscoveryProfileCreate(BaseModel):
     cidr: str | None = None
     vlan_ids: list[int] = []
     scan_types: list[str] = ["nmap"]
+    # None means the existing server discovery engine — every profile that
+    # predates Slice 4. An id dispatches the profile to that agent instead.
+    scan_agent_id: int | None = None
     nmap_arguments: str | None = Field(None, max_length=256)
     snmp_community: str | None = None  # plaintext input only; never in output
     snmp_version: str = "2c"
@@ -38,12 +43,20 @@ class DiscoveryProfileCreate(BaseModel):
     def validate_schedule_cron(cls, v: str | None) -> str | None:
         return _validate_cron_expression(v)
 
+    @model_validator(mode="after")
+    def validate_scan_type_vocabulary(self) -> "DiscoveryProfileCreate":
+        # Cross-field, because which types are legal depends entirely on where
+        # the profile executes.
+        self.scan_types = validate_scan_types(self.scan_types, scan_agent_id=self.scan_agent_id)
+        return self
+
 
 class DiscoveryProfileUpdate(BaseModel):
     name: str | None = None
     cidr: str | None = None
     vlan_ids: list[int] | None = None
     scan_types: list[str] | None = None
+    scan_agent_id: int | None = None
     nmap_arguments: str | None = Field(None, max_length=256)
     snmp_community: str | None = None
     snmp_version: str | None = None
@@ -58,6 +71,16 @@ class DiscoveryProfileUpdate(BaseModel):
     @classmethod
     def validate_schedule_cron(cls, v: str | None) -> str | None:
         return _validate_cron_expression(v)
+
+    @model_validator(mode="after")
+    def validate_scan_type_vocabulary(self) -> "DiscoveryProfileUpdate":
+        # `None` means "leave the stored value alone", and the stored value may
+        # predate the vocabulary — validating it here would make an unrelated
+        # rename fail on a legacy row.
+        if self.scan_types is None:
+            return self
+        self.scan_types = validate_scan_types(self.scan_types, scan_agent_id=self.scan_agent_id)
+        return self
 
 
 class DiscoveryProfileOut(BaseModel):
@@ -215,6 +238,7 @@ class AdHocScanRequest(BaseModel):
     nmap_arguments: str | None = Field(None, max_length=256)
     snmp_community: str | None = None
     label: str | None = None
+    scan_agent_id: int | None = None
 
     @field_validator("cidrs")
     @classmethod
@@ -229,6 +253,11 @@ class AdHocScanRequest(BaseModel):
             except ValueError as err:
                 raise ValueError(f"Invalid CIDR: {entry}") from err
         return [e.strip() for e in v if e.strip()]
+
+    @model_validator(mode="after")
+    def validate_scan_type_vocabulary(self) -> "AdHocScanRequest":
+        self.scan_types = validate_scan_types(self.scan_types, scan_agent_id=self.scan_agent_id)
+        return self
 
 
 class MergeRequest(BaseModel):
