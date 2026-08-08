@@ -16,6 +16,13 @@ export const getMonitorHistory = (id, { metric = 'latency_ms', hours = 24 } = {}
   client.get(`/monitors/${id}/history`, { params: { metric, hours } });
 export const getMonitorUptime = (id) => client.get(`/monitors/${id}/uptime`);
 
+// Slice 3 §7: the bounded execution history of the assigned vantage. Kept apart
+// from getMonitorEvents on purpose — a probe run records what the *agent* did,
+// and folding execution errors into the target's transition log is exactly what
+// §7 says not to do.
+export const getMonitorProbeRuns = (id, limit = 20) =>
+  client.get(`/monitors/${id}/probe-runs`, { params: { limit } });
+
 // Target-scoped quick actions — target_type is
 // hardware | compute_unit | service | external_node.
 export const getTargetSummary = (targetType, targetIds) =>

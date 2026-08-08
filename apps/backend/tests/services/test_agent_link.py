@@ -683,3 +683,113 @@ async def test_dispatch_key_rotate_does_not_publish_ack_when_rejected(
     await agent_link.dispatch_frame(db_session, agent, frame)
 
     publish.assert_not_called()
+
+
+# ── probe.result dispatch (Slice 3 §4) ────────────────────────────────────────
+
+
+def _probe_result_frame(db_session, factories, agent, monitor=None):
+    """A monitor with a dispatched run, plus the frame that answers it."""
+    from datetime import timedelta
+
+    from app.core.time import utcnow
+
+    if monitor is None:
+        monitor = factories.monitor_item(
+            check_type="icmp",
+            host="10.0.0.9",
+            probe_agent_id=agent.id,
+            last_status="up",
+            max_retries=0,
+        )
+    now = utcnow()
+    run = factories.monitor_probe_run(
+        monitor,
+        agent,
+        status="dispatched",
+        scheduled_at=now,
+        dispatched_at=now,
+        deadline_at=now + timedelta(seconds=20),
+    )
+    db_session.flush()
+    frame = AgentFrame(
+        type="probe.result",
+        ts=now,
+        payload={
+            "run_id": run.run_id,
+            "monitor_id": monitor.id,
+            "outcome": "completed",
+            "up": False,
+            "started_at": (now - timedelta(seconds=1)).isoformat(),
+            "finished_at": now.isoformat(),
+            "samples": [{"metric": "avail", "value": 0}],
+            "msg": "100% packet loss (5 probes)",
+        },
+    )
+    return monitor, run, frame
+
+
+@pytest.mark.asyncio
+async def test_probe_result_without_the_grant_records_a_capability_violation(db_session, factories):
+    """Already true via `CAPABILITY_FOR_TYPE[TYPE_PROBE_RESULT]`; pinned here
+    because it is the outermost of §4's authorization checks — an agent whose
+    `remote_probe` grant is off must never reach the ingest handler at all, so
+    nothing it claims can touch monitor state."""
+    from app.db.models import AgentEvent, MonitorItem, MonitorProbeRun
+
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="remote_probe", enabled=False)
+    monitor, run, frame = _probe_result_frame(db_session, factories, agent)
+
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    violation = (
+        db_session.query(AgentEvent)
+        .filter_by(agent_id=agent.id, event_type="capability_violation")
+        .one()
+    )
+    assert violation.detail == {"frame_type": "probe.result"}
+
+    db_session.expire_all()
+    assert db_session.get(MonitorProbeRun, run.id).status == "dispatched"
+    assert db_session.get(MonitorItem, monitor.id).last_status == "up"
+
+
+@pytest.mark.asyncio
+async def test_probe_result_dispatch_commits_exactly_once(db_session, factories):
+    """Samples, state, the transition event and the run's completion have to
+    become durable together (§6): a reader must never be able to observe a
+    monitor that went DOWN while the run that says why is still open.
+
+    Only commits that actually carry pending work are counted. `dispatch_frame`
+    always ends with its own `db.commit()`, which by then has nothing left to
+    flush — one *transaction*, not one call, is what the invariant is about.
+    """
+    from app.db.models import MonitorEvent, MonitorItem, MonitorProbeRun, TelemetryTimeseries
+
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="remote_probe", enabled=True)
+    monitor, run, frame = _probe_result_frame(db_session, factories, agent)
+
+    effective = []
+    original_commit = db_session.commit
+
+    def counting_commit():
+        pending = bool(db_session.new or db_session.dirty or db_session.deleted)
+        original_commit()
+        if pending:
+            effective.append(1)
+
+    db_session.commit = counting_commit
+    try:
+        await agent_link.dispatch_frame(db_session, agent, frame)
+    finally:
+        db_session.commit = original_commit
+
+    assert effective == [1]
+
+    db_session.expire_all()
+    assert db_session.get(MonitorProbeRun, run.id).status == "completed"
+    assert db_session.get(MonitorItem, monitor.id).last_status == "down"
+    assert db_session.query(MonitorEvent).filter_by(item_id=monitor.id).count() == 1
+    assert db_session.query(TelemetryTimeseries).filter_by(item_id=monitor.id).count() == 1

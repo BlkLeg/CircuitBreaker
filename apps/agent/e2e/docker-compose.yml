@@ -1,28 +1,56 @@
 name: cb-agent-e2e
 
-# Network topology (Task 31): cb-agent gets its OWN network namespace on a
-# dedicated Docker bridge network (agent-net), not
+# Network topology (Task 31; probe-net added by Slice 3 Task 22): cb-agent
+# gets its OWN network namespace on dedicated Docker bridge networks, not
 # `network_mode: service:circuitbreaker` (the old, pre-Task-31 setup, which
 # had the agent share the server's network namespace entirely — no real
 # network boundary at all, and a direct conflict with the "no inbound route"
 # requirement below).
 #
-# circuitbreaker is attached to BOTH the implicit default network (so its
-# ports: mapping keeps working for the host-side test client hitting
-# localhost:8443) and agent-net (so the agent can reach it there). cb-agent
-# is attached ONLY to agent-net, and — critically — publishes/exposes no
-# ports at all: nothing outside this compose project, and nothing else on
-# agent-net either, has any route INTO the agent's container. The agent
-# dials OUT to circuitbreaker over agent-net (Docker's embedded DNS resolves
-# the "circuitbreaker" service name); nothing ever dials in. This is the
-# realistic "no extra setup, outbound-only HTTPS/WSS, never listen on a
-# remote-subnet port" shape the whole feature guarantees (see
-# test_agent_e2e.py's test_agent_full_lifecycle_enroll_through_revoke_and_reconnect
-# step 11/isolation probe for the connectivity-probe proof).
+# Three networks, and which service is on which is the whole point:
+#
+#   default    circuitbreaker only — its ports: mapping is what lets the
+#              host-side test client reach localhost:8443.
+#   agent-net  circuitbreaker + cb-agent. The agent dials OUT to
+#              circuitbreaker here (Docker's embedded DNS resolves the
+#              "circuitbreaker" service name); nothing ever dials in.
+#   probe-net  cb-agent + probe-target, and *deliberately not*
+#              circuitbreaker.
+#
+# cb-agent publishes/exposes no ports at all: nothing outside this compose
+# project, and nothing else on agent-net or probe-net either, has any route
+# INTO the agent's container. This is the realistic "no extra setup,
+# outbound-only HTTPS/WSS, never listen on a remote-subnet port" shape the
+# whole feature guarantees (see test_agent_e2e.py's
+# test_agent_full_lifecycle_enroll_through_revoke_and_reconnect step
+# 11/isolation probe for the connectivity-probe proof).
+#
+# probe-net exists because Slice 3 §9 step 1 — "place a target where the
+# backend cannot reach it but an agent can" — is not expressible otherwise.
+# Before it, circuitbreaker sat on both `default` and `agent-net`, so every
+# address cb-agent could reach the backend could reach too, and a remote
+# probe was indistinguishable from a server-executed check. Docker's
+# inter-bridge isolation rules drop forwarding between two different bridge
+# networks, so circuitbreaker has no route to 10.77.0.0/24 at all —
+# test_remote_probe_assignment_execution_and_unavailability asserts exactly
+# that before it asserts anything else, because every later assertion in
+# that test is worthless if the backend could have run the checks itself.
+#
+# The subnet is pinned rather than auto-allocated so the monitors under test
+# can name a literal address: Docker's default pools are 172.17-172.31/16
+# and 192.168.0.0/16, so 10.77.0.0/24 cannot collide with an auto-assigned
+# network, and being RFC1918 it lands inside the agent's automatically
+# derived `direct_private` scope with no operator scope edit — which is what
+# §9 step 11 requires.
 networks:
   default: {}
   agent-net:
     driver: bridge
+  probe-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.77.0.0/24
 
 services:
   circuitbreaker:
@@ -69,6 +97,19 @@ services:
     # is scoped to this throwaway e2e container only; it is not carried into
     # any production compose file.
     read_only: false
+    # A name that RESOLVES from the backend but is not ROUTABLE from it.
+    #
+    # The DNS monitor under test names `probe-target` as the record to look up
+    # and 10.77.0.10 as the resolver. `probe_eligibility.evaluate_eligibility`
+    # resolves any non-literal monitor host on the *server* before it will
+    # dispatch (an unresolvable name is refused as `unresolved_host`), and the
+    # server is not on probe-net, so Docker's embedded DNS will never answer for
+    # it here. glibc reads /etc/hosts first, which is what this entry writes, so
+    # the backend can resolve the name — and still has no route to the address,
+    # which is the whole point of probe-net. cb-agent needs no equivalent: it IS
+    # on probe-net, so 127.0.0.11 answers for `probe-target` there.
+    extra_hosts:
+      - "probe-target:10.77.0.10"
     networks:
       - default
       - agent-net
@@ -101,10 +142,64 @@ services:
       # log-poll-then-disconnect trigger can reliably beat. See
       # cmd/cb-agent/main.go's reExecDelayEnvOverride.
       - CB_AGENT_TEST_PRE_REEXEC_DELAY_MS=${CB_AGENT_TEST_PRE_REEXEC_DELAY_MS:-}
-    # ONLY agent-net — no `default`, no published/exposed ports anywhere in
-    # this file for this service. See the top-of-file topology note.
+    # Unprivileged datagram ICMP, which is the only ICMP the agent ships with
+    # (internal/collect/probe/icmp.go opens "udp4", never a raw socket, and
+    # readiness reports `probe.icmp: unavailable` when the kernel refuses).
+    # Docker already defaults this sysctl open, but the ICMP half of the
+    # remote-probe test turns on it, so it is pinned here rather than inherited
+    # from whatever the local engine happens to default to. It is a namespaced
+    # sysctl: it changes nothing on the host.
+    sysctls:
+      net.ipv4.ping_group_range: "0 2147483647"
+    # agent-net (the server) and probe-net (the probe targets) — no `default`,
+    # and no published/exposed ports anywhere in this file for this service.
+    # See the top-of-file topology note. `_agent_network_name` in
+    # test_agent_e2e.py pins this exact set, and `_cut_agent_network` severs
+    # agent-net specifically: cutting the route to the *server* while the agent
+    # keeps its route to the probe targets is what makes "the vantage is
+    # unavailable" distinguishable from "the target went down".
     networks:
       - agent-net
+      - probe-net
+
+  # The remote-probe target (§9 step 1): reachable from cb-agent, unreachable
+  # from circuitbreaker. One container answers all four check types the slice
+  # supports — ICMP (the kernel), TCP + HTTP (busybox httpd on 8080) and DNS
+  # (dnsmasq on 53, authoritative for the one name the DNS monitor looks up).
+  #
+  # Built inline rather than from a file of its own so the entire topology this
+  # test depends on stays readable in one place, and from alpine because the
+  # image is already present for the rest of this repo's tooling. `--no-resolv`
+  # + `--no-hosts` make dnsmasq answer from `--address=` alone, so the check
+  # result cannot depend on the host's own resolver configuration.
+  probe-target:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM alpine:3.20
+        RUN apk add --no-cache dnsmasq busybox-extras \
+            && mkdir -p /www/cgi-bin \
+            && printf 'cb-agent e2e remote-probe target\n' > /www/index.html \
+            && printf '#!/bin/sh\nsleep 120\nprintf "Content-type: text/plain\\n\\nslow\\n"\n' \
+                 > /www/cgi-bin/slow \
+            && chmod 0755 /www/cgi-bin/slow
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        httpd -p 8080 -h /www
+        exec dnsmasq -k --no-resolv --no-hosts --log-facility=- \
+          --address=/probe-target/10.77.0.10
+    # ONLY probe-net, and a pinned address so the monitors under test can name
+    # a literal rather than depending on whatever Docker's IPAM happened to
+    # hand out. /cgi-bin/slow is what the reassignment scenario points at: a
+    # check that is still running when its own deadline expires, so the
+    # reassignment has a genuinely in-flight run to take away instead of a race
+    # against a check that finishes in milliseconds.
+    networks:
+      probe-net:
+        ipv4_address: 10.77.0.10
 
 volumes:
   cb-agent-state:

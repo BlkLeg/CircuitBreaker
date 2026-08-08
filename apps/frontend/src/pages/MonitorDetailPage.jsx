@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   getMonitor,
   getMonitorEvents,
   getMonitorHistory,
+  getMonitorProbeRuns,
   getMonitorUptime,
   pauseMonitor,
   resumeMonitor,
@@ -12,8 +13,30 @@ import {
 import { useMonitorStream } from '../hooks/useMonitorStream';
 import { useToast } from '../components/common/Toast';
 import CheckHistoryBar from '../components/monitors/CheckHistoryBar';
+import { formatCoverageShortfall } from '../components/monitors/monitorFormat';
 import LatencyChart from '../components/monitors/LatencyChart';
 import StatusPill from '../components/monitors/StatusPill';
+
+/**
+ * The observed-coverage caveat under an uptime percentage (D-12).
+ *
+ * A vantage that could not run a check writes no availability sample, so hours
+ * it was gone shrink the denominator rather than counting as downtime. Rendered
+ * only when there is both a percentage to qualify and a real gap to report.
+ */
+function CoverageNote({ pct, coverage }) {
+  const shortfall = pct == null ? null : formatCoverageShortfall(coverage);
+  if (!shortfall) return null;
+  return (
+    <span
+      className="text-muted"
+      style={{ display: 'block', fontSize: '0.72rem' }}
+      title="A vantage that could not run a check records no availability sample, so this percentage covers only the observed part of the window."
+    >
+      {shortfall}
+    </span>
+  );
+}
 
 export default function MonitorDetailPage() {
   const { id } = useParams();
@@ -24,6 +47,7 @@ export default function MonitorDetailPage() {
   const [events, setEvents] = useState([]);
   const [history, setHistory] = useState([]);
   const [uptime, setUptime] = useState(null);
+  const [probeRuns, setProbeRuns] = useState([]);
   const { statuses } = useMonitorStream({ monitorIds: [monitorId] });
 
   const refresh = useCallback(async () => {
@@ -37,6 +61,15 @@ export default function MonitorDetailPage() {
     setEvents(ev.data);
     setHistory(hist.data);
     setUptime(up.data);
+    // Fetched only for an agent-executed monitor, and never allowed to fail the
+    // page: a server-executed monitor has no probe runs and the caller treats a
+    // rejected refresh as "monitor is gone".
+    if (m.data?.probe_agent_id != null) {
+      const runs = await getMonitorProbeRuns(monitorId, 20).catch(() => null);
+      setProbeRuns(runs?.data || []);
+    } else {
+      setProbeRuns([]);
+    }
   }, [monitorId]);
 
   useEffect(() => {
@@ -50,6 +83,12 @@ export default function MonitorDetailPage() {
   const status = statuses.get(monitorId)?.status || monitor.status;
   const tls = monitor.check_type === 'http' && monitor.config?.url?.startsWith('https');
   const lastPolled = uptime?.last_polled_at ?? monitor.last_polled_at;
+  const probeAgentId = monitor.probe_agent_id ?? null;
+  const probeAgentName =
+    monitor.probe_agent?.name || (probeAgentId ? `agent ${probeAgentId}` : null);
+  // §7: the execution condition is reported beside the target state, never
+  // folded into it — the pill above still shows the last target state.
+  const executionStatus = probeAgentId == null ? null : monitor.probe_execution_status || 'unknown';
 
   const handleCheck = () =>
     runCheck(monitorId)
@@ -91,16 +130,41 @@ export default function MonitorDetailPage() {
         <dd>{monitor.config?.url || monitor.host}</dd>
         <dt className="text-muted">Interval</dt>
         <dd>{monitor.interval_secs}s</dd>
+        <dt className="text-muted">Run from</dt>
+        <dd>
+          {probeAgentId == null ? (
+            'Circuit Breaker server'
+          ) : (
+            <Link to={`/agents/${probeAgentId}`}>{probeAgentName}</Link>
+          )}
+        </dd>
+        <dt className="text-muted">Execution status</dt>
+        <dd>
+          {executionStatus == null
+            ? '—'
+            : `${executionStatus}${
+                monitor.probe_execution_reason ? ` (${monitor.probe_execution_reason})` : ''
+              }`}
+        </dd>
         <dt className="text-muted">Total Uptime</dt>
         <dd>{uptime?.pct_total != null ? `${uptime.pct_total}%` : '—'}</dd>
         <dt className="text-muted">Last Polled</dt>
         <dd>{lastPolled ? new Date(lastPolled).toLocaleString() : '—'}</dd>
         <dt className="text-muted">24 Hour</dt>
-        <dd>{uptime?.pct_24h != null ? `${uptime.pct_24h}%` : '—'}</dd>
+        <dd>
+          {uptime?.pct_24h != null ? `${uptime.pct_24h}%` : '—'}
+          <CoverageNote pct={uptime?.pct_24h} coverage={uptime?.coverage_24h} />
+        </dd>
         <dt className="text-muted">7-Day</dt>
-        <dd>{uptime?.pct_7d != null ? `${uptime.pct_7d}%` : '—'}</dd>
+        <dd>
+          {uptime?.pct_7d != null ? `${uptime.pct_7d}%` : '—'}
+          <CoverageNote pct={uptime?.pct_7d} coverage={uptime?.coverage_7d} />
+        </dd>
         <dt className="text-muted">30-Day</dt>
-        <dd>{uptime?.pct_30d != null ? `${uptime.pct_30d}%` : '—'}</dd>
+        <dd>
+          {uptime?.pct_30d != null ? `${uptime.pct_30d}%` : '—'}
+          <CoverageNote pct={uptime?.pct_30d} coverage={uptime?.coverage_30d} />
+        </dd>
         <dt className="text-muted">365-Day</dt>
         <dd>{uptime?.pct_365d != null ? `${uptime.pct_365d}%` : '—'}</dd>
       </dl>
@@ -125,7 +189,46 @@ export default function MonitorDetailPage() {
         </section>
       )}
 
-      <section style={{ marginTop: 20 }}>
+      {probeAgentId != null && (
+        <section aria-label="Probe runs" style={{ marginTop: 20 }}>
+          <h3>Probe runs</h3>
+          <p className="text-muted" style={{ fontSize: '0.72rem' }}>
+            What the assigned vantage did. Execution errors are recorded here and never in the
+            target event log below.
+          </p>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Status</th>
+                <th>Outcome</th>
+                <th>Message</th>
+                <th>Error</th>
+              </tr>
+            </thead>
+            <tbody>
+              {probeRuns.map((run) => (
+                <tr key={run.run_id}>
+                  <td>{new Date(run.scheduled_at).toLocaleString()}</td>
+                  <td>{run.status}</td>
+                  <td>{run.outcome || '—'}</td>
+                  <td>{run.msg || '—'}</td>
+                  <td>{run.error_code || '—'}</td>
+                </tr>
+              ))}
+              {probeRuns.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="text-muted">
+                    No probe runs yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </section>
+      )}
+
+      <section aria-label="Events" style={{ marginTop: 20 }}>
         <h3>Events</h3>
         <table className="data-table">
           <thead>

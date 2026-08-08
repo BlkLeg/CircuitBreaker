@@ -257,8 +257,37 @@ class MonitorItem(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
+    # Slice 3 §1: the vantage. NULL is server execution — today's behaviour and
+    # the only value any pre-Slice-3 monitor has. RESTRICT, unlike every other
+    # agents FK in this module, because unassigning a monitor is a decision the
+    # user makes explicitly; deleting the agent must fail with 409 instead of
+    # silently moving its monitors back to the server.
+    probe_agent_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("agents.id", ondelete="RESTRICT", name="fk_monitor_items_probe_agent_id_agents"),
+        nullable=True,
+    )
+    # ready|queued|running|unavailable|stale — whether the *vantage* can run the
+    # check, which is orthogonal to `last_status` (whether the target is up).
+    # NULL while the monitor executes on the server.
+    probe_execution_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Why the vantage is in that state: agent_offline, capability_disabled,
+    # out_of_scope, dispatch_failed, result_timeout, previous_run_in_flight, …
+    probe_execution_reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    probe_last_dispatched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    probe_last_result_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
-    __table_args__ = (Index("ix_monitor_items_due", "enabled", "next_due_at"),)
+    __table_args__ = (
+        Index("ix_monitor_items_due", "enabled", "next_due_at"),
+        # Serves both the per-vantage assignment listings and the scheduler's
+        # oversampled fair-share claim (D-2), whose ORDER BY would otherwise
+        # degrade to a full sort over every due row.
+        Index("ix_monitor_items_probe_due", "probe_agent_id", "enabled", "next_due_at"),
+    )
 
 
 class MonitorEvent(Base):
@@ -280,6 +309,74 @@ class MonitorEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     __table_args__ = (Index("ix_monitor_events_item_time", "item_id", "created_at"),)
+
+
+class MonitorProbeRun(Base):
+    """One remote check handed to an agent — the durable lease behind it (§1).
+
+    A run exists from the moment the scheduler decides an agent-assigned monitor
+    is due until a `probe.result` lands, the deadline passes, or it is cancelled.
+    It is the audit record for a check the server did not perform itself, and the
+    only place `CheckResult.details` and per-sample `error_reason` are persisted:
+    `telemetry_timeseries` deliberately keeps neither for server-executed checks
+    (D-8), and adding them there would mean altering a compressed hypertable for
+    metadata monitor state does not depend on.
+
+    Retention is seven days; long-term availability stays in
+    `telemetry_timeseries` and the monitor rollups.
+    """
+
+    __tablename__ = "monitor_probe_runs"
+
+    # Deliberately a plain single-column PK: this is not a hypertable, and the
+    # composite `(id, <time>)` shape the Timescale tables use is what made
+    # SQLAlchemy decline to emit a sequence in the 0001 bootstrap (F-7).
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # Opaque random 128-bit token. It is the only identifier that travels to the
+    # agent, so a leaked or guessed monitor id cannot be used to post a result.
+    run_id: Mapped[str] = mapped_column(String(32), nullable=False, unique=True, index=True)
+    monitor_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("monitor_items.id", ondelete="CASCADE"), nullable=False
+    )
+    # CASCADE, unlike `monitor_items.probe_agent_id` above: the RESTRICT there
+    # already blocks deleting an agent that still holds assignments, so anything
+    # reachable here is finished history, not a live vantage.
+    agent_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
+    )
+    # queued|dispatched|completed|execution_error|expired|cancelled
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # completed|execution_error|cancelled|rejected — what the agent reported,
+    # which is not the same question as `status` (where the run got to).
+    outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    msg: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    __table_args__ = (
+        Index("ix_monitor_probe_runs_agent_status", "agent_id", "status", "scheduled_at"),
+        Index("ix_monitor_probe_runs_monitor_time", "monitor_id", "created_at"),
+        # One in-flight run per monitor, enforced by the database rather than by
+        # whichever caller remembers to look. Partial, because completed history
+        # accumulates — a full unique index would wedge the monitor after its
+        # first run. This predicate is why `monitor_probe_runs` must stay out of
+        # 0001_init's bootstrap: its index-copy loop cannot carry a WHERE clause.
+        Index(
+            "uq_monitor_probe_runs_active",
+            "monitor_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'dispatched')"),
+        ),
+    )
 
 
 class Agent(Base):
@@ -485,6 +582,35 @@ class AgentCapabilityReadiness(Base):
     missing: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     __table_args__ = (Index("ix_agent_readiness_agent_time", "agent_id", "updated_at"),)
+
+
+class AgentNetwork(Base):
+    """The agent's current directly connected networks, as reported on `hello` (D-1).
+
+    One row per agent — this is the *latest* report, not a history — holding the
+    normalized `HelloPayload.networks` list (see
+    `agent_registry.record_network_facts`). It is the sole input to the derived
+    half of an agent's probe scope, so the scheduler, the UI and the audit trail
+    can all point at one generation and agree on what produced that scope.
+
+    `generation` advances only when the normalized facts actually differ, which
+    is what makes "the agent's scope changed" a decidable question; `observed_at`
+    is correspondingly when *these* facts were first seen, not when the agent
+    last mentioned them (liveness is `agents.last_seen_at`).
+    """
+
+    __tablename__ = "agent_networks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
+    )
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    # [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}, ...]
+    facts: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+
+    __table_args__ = (UniqueConstraint("agent_id", name="uq_agent_networks_agent_id"),)
 
 
 class UptimeEvent(Base):

@@ -43,6 +43,7 @@ func Collect(agentVersion string) frame.HelloPayload {
 		Arch:             goArch(),
 		AgentVersion:     agentVersion,
 		PrimaryMACs:      primaryMACs(),
+		Networks:         networkFacts(),
 		Readiness:        identityReadiness(machineIDHash),
 		CapabilitySchema: 2,
 	}

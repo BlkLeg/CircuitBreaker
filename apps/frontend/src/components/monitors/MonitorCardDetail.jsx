@@ -54,6 +54,12 @@ export default function MonitorCardDetail({
               <b>{formatSince(monitor.last_status_change_at)}</b>
               <span>In state</span>
             </div>
+            <div>
+              {/* §7's "last successful result time". A server-executed monitor
+                  has no probe run, so it falls back to its last poll. */}
+              <b>{formatSince(monitor.probe_last_result_at || monitor.last_polled_at)}</b>
+              <span>Last result</span>
+            </div>
           </div>
 
           <CheckHistoryBar events={events} size="md" />
@@ -88,6 +94,11 @@ export default function MonitorCardDetail({
         <button type="button" className="btn btn-sm" disabled={busy} onClick={onDelete}>
           Delete
         </button>
+        {monitor.probe_agent_id != null && (
+          <Link className="btn btn-sm" to={`/agents/${monitor.probe_agent_id}`}>
+            {monitor.probe_agent?.name ? `Agent: ${monitor.probe_agent.name}` : 'View agent'} →
+          </Link>
+        )}
         <Link className="btn btn-sm" to={`/monitors/${monitor.id}`}>
           Open full page →
         </Link>

@@ -205,10 +205,50 @@ def test_pause_and_resume_target(db_session):
     assert monitor_service.list_monitors(db_session, target_type="hardware")[0]["enabled"] is True
 
 
-def test_pause_unmonitored_target_returns_false(db_session):
+async def test_pause_unmonitored_target_returns_false(db_session):
     hw = _hardware(db_session)
     assert monitor_service.set_target_paused(db_session, "hardware", hw.id, True) is False
-    assert monitor_service.run_target_check(db_session, "hardware", hw.id) is False
+    assert await monitor_service.run_target_check(db_session, "hardware", hw.id) is False
+
+
+async def test_target_check_publishes_one_message_per_vantage(db_session, factories, monkeypatch):
+    """A target with both vantages on it: the server monitor goes to the poll
+    subject, the assigned one gets a run and its id goes to the probe subject.
+    Neither may be silently dropped — the assigned one especially, because the
+    run it opens holds the active-run index until something dispatches it."""
+    from app.core.nats_client import nats_client
+    from app.core.subjects import MONITOR_POLL_ITEM, MONITOR_PROBE_REMOTE
+    from app.db.models import MonitorProbeRun
+
+    published: list[tuple[str, dict]] = []
+
+    async def _publish(subject, payload):
+        published.append((subject, payload))
+        return True
+
+    monkeypatch.setattr(nats_client, "js_publish", _publish)
+
+    agent = factories.agent(status="active")
+    hw = _hardware(db_session)
+    server_monitor = monitor_service._build_target_monitor(db_session, "hardware", hw.id)
+    agent_monitor = monitor_service._build_target_monitor(
+        db_session, "hardware", hw.id, check_type="tcp", config={"port": 22}
+    )
+    agent_monitor.probe_agent_id = agent.id
+    db_session.commit()
+
+    assert await monitor_service.run_target_check(db_session, "hardware", hw.id) is True
+
+    run = (
+        db_session.query(MonitorProbeRun)
+        .filter(MonitorProbeRun.monitor_id == agent_monitor.id)
+        .one()
+    )
+    assert run.status == "queued"
+    assert published == [
+        (MONITOR_POLL_ITEM, monitor_service._poll_payload(server_monitor)),
+        (MONITOR_PROBE_REMOTE, {"run_id": run.run_id}),
+    ]
 
 
 # ── Summaries ────────────────────────────────────────────────────────────────

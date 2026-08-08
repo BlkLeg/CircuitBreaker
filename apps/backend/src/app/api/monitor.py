@@ -12,6 +12,7 @@ from app.schemas.monitor import (
     MonitorEventRead,
     MonitorHistoryPoint,
     MonitorOverview,
+    MonitorProbeRunRead,
     MonitorRead,
     MonitorUpdate,
     MonitorUptimeRead,
@@ -113,13 +114,17 @@ def resume_target_monitor(
 
 
 @router.post("/target/{target_type}/{target_id}/check")
-def run_target_check(
+async def run_target_check(
     target_type: TargetType,
     target_id: int,
     user_id: int = Depends(require_write_auth),
     db: Session = Depends(get_db),
 ) -> Any:
-    if not monitor_service.run_target_check(db, target_type, target_id):
+    """Async, unlike its pause/resume siblings: a `def` route is handed to
+    FastAPI's threadpool, which has no event loop for the dispatch publish to
+    run on — and this route opens a probe run that only that publish makes
+    live."""
+    if not await monitor_service.run_target_check(db, target_type, target_id):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     return {"status": "ok"}
 
@@ -130,7 +135,12 @@ def create_monitor(
     user_id: int = Depends(require_write_auth),
     db: Session = Depends(get_db),
 ) -> Any:
-    return monitor_service.create_monitor(db, payload)
+    try:
+        return monitor_service.create_monitor(db, payload)
+    except monitor_service.InvalidAssignment as exc:
+        # §7/D-9: an unknown agent or an incompatible tenant is a bad request,
+        # not a 500 from the RESTRICT FK underneath.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/{monitor_id}", response_model=MonitorRead)
@@ -148,7 +158,10 @@ def update_monitor(
     user_id: int = Depends(require_write_auth),
     db: Session = Depends(get_db),
 ) -> Any:
-    monitor = monitor_service.update_monitor(db, monitor_id, payload)
+    try:
+        monitor = monitor_service.update_monitor(db, monitor_id, payload)
+    except monitor_service.InvalidAssignment as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not monitor:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     return monitor
@@ -189,15 +202,26 @@ def resume_monitor(
 
 
 @router.post("/{monitor_id}/check", response_model=MonitorRead)
-def run_immediate_check(
+async def run_immediate_check(
     monitor_id: int,
     user_id: int = Depends(require_write_auth),
     db: Session = Depends(get_db),
 ) -> Any:
+    """D-14: a server monitor keeps today's 200; an agent-assigned monitor whose
+    vantage cannot take the check answers 409 with the availability reason.
+
+    Async because the eligibility precheck has to complete before the response —
+    §2 forbids executing an assigned check from the server, so "accepted" is a
+    claim this route must be able to stand behind.
+    """
     monitor = monitor_service.get_monitor(db, monitor_id)
     if not monitor:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
-    monitor_service.run_immediate_check(db, monitor_id)
+    result = await monitor_service.run_immediate_check(db, monitor_id)
+    if not result.ok:
+        if not result.found:
+            raise HTTPException(status_code=404, detail=_NOT_FOUND)
+        raise HTTPException(status_code=409, detail=result.reason)
     return monitor
 
 
@@ -222,6 +246,23 @@ def get_history(
     if not monitor_service.get_monitor(db, monitor_id):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     return monitor_service.get_history(db, monitor_id, metric=metric, hours=hours)
+
+
+@router.get("/{monitor_id}/probe-runs", response_model=list[MonitorProbeRunRead])
+def get_probe_runs(
+    monitor_id: int,
+    limit: int = Query(default=20, ge=1, le=200),
+    db: Session = Depends(get_db),
+) -> Any:
+    """§7's bounded execution history, newest first.
+
+    Deliberately separate from `/events`: a probe run records what the *vantage*
+    did, and folding execution errors into the target's transition log is
+    exactly what §7 says not to do.
+    """
+    if not monitor_service.get_monitor(db, monitor_id):
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    return monitor_service.get_probe_runs(db, monitor_id, limit=limit)
 
 
 @router.get("/{monitor_id}/uptime", response_model=MonitorUptimeRead)

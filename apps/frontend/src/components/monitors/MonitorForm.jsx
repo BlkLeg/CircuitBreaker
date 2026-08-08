@@ -1,4 +1,5 @@
 import React, { useRef, useState } from 'react';
+import RunFromSelect from './RunFromSelect';
 
 const CHECK_TYPES = ['http', 'icmp', 'tcp', 'dns'];
 const HTTP_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
@@ -14,8 +15,33 @@ const DEFAULTS = {
   enabled: true,
   target_type: null,
   target_id: null,
+  // Slice 3 §7: the vantage. null is Circuit Breaker server execution — today's
+  // behaviour and the only value any pre-Slice-3 monitor has.
+  probe_agent_id: null,
   config: {},
 };
+
+/**
+ * The server-derived half of the probe block. `MonitorUpdate` does not accept
+ * any of them, and MonitorsPage seeds edit state with `{...DEFAULTS, ...initial}`
+ * and posts the form verbatim, so they have to be dropped here or a stale
+ * execution condition rides back to the API on every save.
+ */
+const READ_ONLY_PROBE_FIELDS = new Set([
+  'probe_mode',
+  'probe_agent',
+  'probe_execution_status',
+  'probe_execution_reason',
+  'probe_last_dispatched_at',
+  'probe_last_result_at',
+]);
+
+/** Object.fromEntries rather than `delete form[key]` — no dynamic indexing. */
+export function stripReadOnlyProbeFields(form) {
+  return Object.fromEntries(
+    Object.entries(form).filter(([key]) => !READ_ONLY_PROBE_FIELDS.has(key))
+  );
+}
 
 /**
  * MonitorForm — modal create/edit form. Check-type selector drives per-type
@@ -36,7 +62,7 @@ export default function MonitorForm({ initial = null, onSubmit, onCancel }) {
     setSaving(true);
     setError(null);
     try {
-      await onSubmit(form);
+      await onSubmit(stripReadOnlyProbeFields(form));
     } catch (err) {
       setError(err?.response?.data?.detail || 'Failed to save monitor');
     } finally {
@@ -98,6 +124,17 @@ export default function MonitorForm({ initial = null, onSubmit, onCancel }) {
               onChange={(e) => set('host', e.target.value)}
             />
           </div>
+
+          <RunFromSelect
+            value={form.probe_agent_id ?? null}
+            onChange={(agentId) => set('probe_agent_id', agentId)}
+            monitorId={initial?.id ?? null}
+            assignedAgentName={initial?.probe_agent?.name ?? null}
+            host={form.host}
+            checkType={form.check_type}
+            targetType={form.target_type}
+            targetId={form.target_id}
+          />
 
           {form.check_type === 'http' && (
             <>

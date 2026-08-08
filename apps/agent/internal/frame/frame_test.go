@@ -157,7 +157,7 @@ func TestKeyRotatePayload_EncodeDecode(t *testing.T) {
 func TestIsDataFrame_ControlAndHeartbeatTypesReturnFalse(t *testing.T) {
 	controlTypes := []string{
 		TypeHello, TypeHeartbeat, TypeUninstall,
-		TypeHelloAck, TypeCapabilitiesSet, TypeProbeAssign, TypeDiscoveryRequest,
+		TypeHelloAck, TypeCapabilitiesSet, TypeProbeAssign, TypeProbeCancel, TypeDiscoveryRequest,
 		TypeKeyRotate, TypeUpdate, TypeDisconnect, TypePing,
 		TypeTransportRekey,
 	}
@@ -209,5 +209,58 @@ func TestHelloAckPayload_ServerTimeOmittedWhenNil(t *testing.T) {
 	}
 	if !got.Accepted || got.AgentID != 7 {
 		t.Errorf("round-trip = %+v, want Accepted=true AgentID=7", got)
+	}
+}
+
+// TestProbeResultPayload_FalseUpSurvivesRoundTrip pins the one field in the result payload where
+// omitempty would be a correctness bug rather than a cosmetic choice. A DOWN target reports
+// up=false, and Go's omitempty drops a false bool entirely — the server would then read the
+// absent key as its own default and a genuine outage would arrive as "no opinion". Same
+// reasoning as HeartbeatPayload's spool fields: the zero value here is a fact about the target,
+// not the absence of one.
+func TestProbeResultPayload_FalseUpSurvivesRoundTrip(t *testing.T) {
+	payload := ProbeResultPayload{
+		RunID:      "3f9c1a7be04d42a1b8e6c05d7f1a2b3c",
+		MonitorID:  42,
+		Outcome:    "completed",
+		Up:         false,
+		StartedAt:  time.Date(2026, 8, 7, 18, 0, 11, 0, time.UTC),
+		FinishedAt: time.Date(2026, 8, 7, 18, 0, 12, 8000000, time.UTC),
+		Samples:    []ProbeSample{{Metric: "avail", Value: 0, ErrorReason: "http_error"}},
+		Msg:        "request failed: ConnectTimeout",
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if _, present := raw["up"]; !present {
+		t.Fatalf("up absent from %s, want an explicit false", data)
+	}
+	if string(raw["up"]) != "false" {
+		t.Errorf("up = %s, want false", raw["up"])
+	}
+
+	var got ProbeResultPayload
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if got.Up {
+		t.Error("Up = true after round-trip, want false")
+	}
+	if !reflect.DeepEqual(got.Samples, payload.Samples) {
+		t.Errorf("Samples round-trip = %+v, want %+v", got.Samples, payload.Samples)
+	}
+	if got.RunID != payload.RunID || got.MonitorID != payload.MonitorID ||
+		got.Outcome != payload.Outcome || got.Msg != payload.Msg {
+		t.Errorf("round-trip = %+v, want %+v", got, payload)
+	}
+	if !got.StartedAt.Equal(payload.StartedAt) || !got.FinishedAt.Equal(payload.FinishedAt) {
+		t.Errorf("timestamp round-trip = %v/%v, want %v/%v",
+			got.StartedAt, got.FinishedAt, payload.StartedAt, payload.FinishedAt)
 	}
 }

@@ -35,6 +35,7 @@ TYPE_UPDATE_STATUS = "update.status"
 TYPE_HELLO_ACK = "hello.ack"
 TYPE_CAPABILITIES_SET = "capabilities.set"
 TYPE_PROBE_ASSIGN = "probe.assign"
+TYPE_PROBE_CANCEL = "probe.cancel"
 TYPE_DISCOVERY_REQUEST = "discovery.request"
 TYPE_KEY_ROTATE = "key.rotate"
 TYPE_UPDATE = "update"
@@ -72,6 +73,22 @@ class Readiness(BaseModel):
     missing: list[str] = Field(default_factory=list)
 
 
+class NetworkFacts(BaseModel):
+    """One of the agent host's directly connected networks, carried in HelloPayload.networks
+    (D-1), mirroring apps/agent/internal/frame/frame.go's NetworkFacts.
+
+    ``addrs`` are CIDR strings holding the interface's own address *with* its prefix length
+    ("10.0.0.5/24", "fd00::1/64") — the prefix is what makes the network directly connected and
+    is the whole input to the slice-3 scope evaluator. ``flags`` uses Go's net.Flags vocabulary
+    ("up", "broadcast", "pointtopoint", ...). These are reported facts, not policy: the agent
+    reports every usable address it has and the server decides which fall inside scope.
+    """
+
+    name: str
+    flags: list[str] = Field(default_factory=list)
+    addrs: list[str] = Field(default_factory=list)
+
+
 class HelloPayload(BaseModel):
     """agent -> server `hello` payload (specs/2026-07-26-cb-agent-design.md §3.4, §4.3, §4.6).
 
@@ -88,6 +105,7 @@ class HelloPayload(BaseModel):
     agent_version: str | None = None
     primary_macs: list[str] = Field(default_factory=list)
     readiness: list[Readiness] = Field(default_factory=list)
+    networks: list[NetworkFacts] = Field(default_factory=list)
     spool_depth: int = 0
     capability_schema: int = 1
 
@@ -195,6 +213,88 @@ class UpdateStatusPayload(BaseModel):
     version: str
     phase: str  # "started" | "succeeded" | "failed" | "rolled_back"
     error: str | None = None
+
+
+class ProbeAssignPayload(BaseModel):
+    """server -> agent `probe.assign` payload (§4), mirroring
+    apps/agent/internal/frame/frame.go's ProbeAssignPayload field-for-field: exactly one remote
+    check, fully specified, with no schedule for the agent to keep.
+
+    ``run_id`` is the server-minted 32-hex token that is the only identifier a result may be
+    posted against, so a leaked or guessed ``monitor_id`` buys nothing. ``config`` is the
+    monitor's complete validated configuration and therefore carries HTTP credentials when the
+    monitor has them (D-10): the agent holds it in memory for the life of the run and it must
+    never reach ``status.json``, ``grants.json``, a log line, or ``probe.result``.
+
+    ``scheduled_at``/``deadline_at`` must be serialized with ``.isoformat()``, never left as raw
+    ``datetime`` objects: ``agent_registry.publish_agent_control_frame`` dumps with
+    ``default=str``, which renders a space separator that Go's ``time.Time`` rejects.
+    """
+
+    run_id: str
+    monitor_id: int
+    check_type: str  # icmp | tcp | http | dns
+    host: str
+    config: dict[str, Any] = Field(default_factory=dict)
+    scheduled_at: datetime
+    deadline_at: datetime
+
+
+class ProbeCancelPayload(BaseModel):
+    """server -> agent `probe.cancel` payload (§4), sent when a monitor is paused, deleted,
+    reassigned, has its capability disabled, or the agent is revoked.
+
+    ``reason`` is advisory. Cancellation is best-effort and the backend stays authoritative: a
+    result for a run it has already closed is rejected on arrival regardless of whether the
+    cancel was ever delivered.
+    """
+
+    run_id: str
+    reason: str | None = None
+
+
+class ProbeSample(BaseModel):
+    """One observation from a completed check, mirroring
+    ``app.services.monitoring.collectors.Sample`` so a remote result reaches the shared result
+    service in the same shape a server-executed one does.
+
+    ``error_reason`` is the collectors' own per-sample annotation ("http_error", "dns_error").
+    It is audit metadata: it lands in ``monitor_probe_runs.result_metadata`` and nowhere else,
+    exactly as it is dropped for server-executed checks today (D-8).
+    """
+
+    metric: str
+    value: float
+    error_reason: str | None = None
+
+
+class ProbeResultPayload(BaseModel):
+    """agent -> server `probe.result` payload (§4), mirroring
+    apps/agent/internal/frame/frame.go's ProbeResultPayload field-for-field.
+
+    ``outcome`` is closed: "completed" (a real target result, feed the monitor state machine),
+    "execution_error" (the agent could not perform the probe), "cancelled", or "rejected"
+    (invalid, unauthorized, out-of-scope or capacity-limited assignment). Only "completed" says
+    anything about the target — the other three preserve its last known state, which is why
+    ``up`` is meaningless outside "completed" rather than a fallback DOWN.
+
+    ``up`` is required rather than defaulted, and the Go side deliberately carries no
+    ``omitempty`` for it: false is what a DOWN target reports, so an absent key must be a
+    protocol error and never silently read as "no opinion".
+
+    The 64 KiB ``details`` and 2000-character ``msg`` limits are enforced by the ingest handler
+    on the raw frame before this model ever runs — nothing upstream bounds inbound frame size.
+    """
+
+    run_id: str
+    monitor_id: int
+    outcome: str  # completed | execution_error | cancelled | rejected
+    up: bool
+    started_at: datetime
+    finished_at: datetime
+    samples: list[ProbeSample] = Field(default_factory=list)
+    msg: str = ""
+    details: dict[str, Any] | None = None
 
 
 _HEX_PK_RE = re.compile(r"^[0-9a-f]{64}$")

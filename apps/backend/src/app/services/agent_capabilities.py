@@ -10,10 +10,13 @@ and `AgentDetailPage.jsx`'s `HOST_DEFAULTS` — the last two of which now read
 `apps/agent/internal/capability`'s `configNormalizers`. **A new slice adds
 exactly one entry here and one there, and touches nothing else.**
 
-This module imports nothing from `app` (typing/stdlib only) per **D-14**, so
-both the service layer (`services/agent_registry.py`) and the schema layer
+This module imports nothing from `app` outside `core` per **D-14**, so both the
+service layer (`services/agent_registry.py`) and the schema layer
 (`schemas/agents.py`) can import it at module scope with no cycle and without
-the schema layer pulling in a DB-touching service.
+the schema layer pulling in a DB-touching service. `core.agent_scope` is the
+one exception and stays inside that rule: it is stdlib-only itself, and the
+alternative — a second CIDR rule set written here — is the duplication the
+"one scope evaluator" constraint exists to forbid.
 
 **Invariant — upgrades never silently enable a new capability on an
 already-approved agent.** `default_enabled` is consulted *only* by
@@ -33,6 +36,13 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
+
+from app.core.agent_scope import (
+    SCOPE_MODE_DIRECT_PRIVATE,
+    SCOPE_MODES,
+    normalize_scope_cidrs,
+    normalize_scope_hostname,
+)
 
 
 @dataclass(frozen=True)
@@ -76,14 +86,77 @@ def _normalize_host_telemetry_config(config: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+_REMOTE_PROBE_DEFAULT_CONFIG: Mapping[str, Any] = MappingProxyType(
+    {
+        "max_concurrent": 20,
+        "scope_mode": SCOPE_MODE_DIRECT_PRIVATE,
+        "excluded_cidrs": (),
+        "additional_cidrs": (),
+        "additional_hostnames": (),
+    }
+)
+
+
+def _materialized(defaults: Mapping[str, Any]) -> dict[str, Any]:
+    """A mutable copy of `defaults` with its tuple values turned into lists.
+
+    List-valued defaults are stored as tuples so the registry itself cannot be
+    mutated through them, but a tuple must never leave this module: it would be
+    handed to a normalizer that type-checks for `list`, and JSON round-trips it
+    to a list anyway, so the two would disagree about a config that never
+    changed. This is the single place that conversion happens.
+    """
+    return {key: list(v) if isinstance(v, tuple) else v for key, v in defaults.items()}
+
+
+def _normalize_remote_probe_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Validate a `remote_probe` grant config (design §3).
+
+    Every CIDR and hostname rule is delegated to `core.agent_scope`, which is
+    also what the dispatcher and the Go agent evaluate against — an
+    administrator must not be able to save a scope entry that the evaluator
+    would later read differently, or "the backend approved it" stops implying
+    "the agent will accept it". That includes the *type* checks: each field is
+    passed through untouched so `agent_scope` raises its own `ValueError`,
+    which `schemas/agents.py::_validate_capability_map` turns into a 422.
+    Widening a value on the way in (`list(...)`) would defeat the check and
+    surface administrator error as a 500 instead.
+    """
+    unknown = set(config) - set(_REMOTE_PROBE_DEFAULT_CONFIG)
+    if unknown:
+        raise ValueError(f"unknown remote probe settings: {', '.join(sorted(unknown))}")
+    normalized = _materialized(_REMOTE_PROBE_DEFAULT_CONFIG) | config
+    limit = normalized["max_concurrent"]
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValueError("remote probe max_concurrent must be between 1 and 100")
+    # `in` on a frozenset is a hash lookup, so an unhashable value raises
+    # `TypeError` rather than answering False — the type test has to come first.
+    if not isinstance(normalized["scope_mode"], str) or normalized["scope_mode"] not in SCOPE_MODES:
+        known = ", ".join(sorted(SCOPE_MODES))
+        raise ValueError(f"remote probe scope_mode must be one of: {known}")
+    normalized["excluded_cidrs"] = normalize_scope_cidrs(
+        normalized["excluded_cidrs"], field="excluded_cidrs"
+    )
+    normalized["additional_cidrs"] = normalize_scope_cidrs(
+        normalized["additional_cidrs"], field="additional_cidrs"
+    )
+    hostnames = normalized["additional_hostnames"]
+    if not isinstance(hostnames, list):
+        raise ValueError("additional_hostnames must be a list of hostnames")
+    normalized["additional_hostnames"] = sorted(
+        {normalize_scope_hostname(name) for name in hostnames}
+    )
+    return normalized
+
+
 def _reject_unknown_keys(capability: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Normalizer for a capability that has no configurable settings *yet*.
 
     The allow-set is `default_config`'s own keys, which is empty today for
-    `remote_probe` and `local_discovery` — so any config supplied for them is
-    rejected rather than silently persisted and shipped to an agent that has
-    no idea what to do with it. Slices 3 and 4 replace these entries with real
-    defaults plus a real normalizer; nothing else has to change.
+    `local_discovery` — so any config supplied for it is rejected rather than
+    silently persisted and shipped to an agent that has no idea what to do with
+    it. Slice 4 replaces that entry with real defaults plus a real normalizer;
+    nothing else has to change.
     """
 
     def normalize(config: dict[str, Any]) -> dict[str, Any]:
@@ -111,8 +184,8 @@ CAPABILITY_DEFINITIONS: dict[str, CapabilityDefinition] = {
     "remote_probe": CapabilityDefinition(
         name="remote_probe",
         default_enabled=True,
-        default_config=MappingProxyType({}),
-        normalize=_reject_unknown_keys("remote_probe"),
+        default_config=_REMOTE_PROBE_DEFAULT_CONFIG,
+        normalize=_normalize_remote_probe_config,
     ),
     "local_discovery": CapabilityDefinition(
         name="local_discovery",
@@ -162,7 +235,7 @@ def normalize_grant(
         known = ", ".join(sorted(CAPABILITY_DEFINITIONS))
         raise ValueError(f"unknown capability '{capability}' (known: {known})")
     enabled, supplied = _grant_parts(value)
-    merged = dict(definition.default_config) | dict(current_config or {}) | supplied
+    merged = _materialized(definition.default_config) | dict(current_config or {}) | supplied
     return enabled, definition.normalize(merged)
 
 
@@ -174,6 +247,12 @@ def default_config_for(capability: str) -> dict[str, Any]:
     `structured_grants_dict` run over whatever grant rows exist, which may name
     a capability this build's registry no longer declares (a removed slice, a
     downgrade). Those rows must still render, not raise.
+
+    Fresh lists on every read (`_materialized`): callers merge this into the
+    config they hand to an API response or a grant row, and a shared `[]` would
+    let one of them widen every future agent's default scope.
     """
     definition = CAPABILITY_DEFINITIONS.get(capability)
-    return dict(definition.default_config) if definition is not None else {}
+    if definition is None:
+        return {}
+    return _materialized(definition.default_config)

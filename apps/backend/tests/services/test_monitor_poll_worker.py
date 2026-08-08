@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 from app.db.models import MonitorItem, TelemetryTimeseries
+from app.services.monitoring import result_service
 from app.services.monitoring.collectors import CheckResult, Sample
 from app.workers import monitor_poll_worker as mpw
 from app.workers.monitor_poll_worker import poll_one, process_batch
@@ -24,11 +25,16 @@ def test_poll_one_runs_collector():
         "app.workers.monitor_poll_worker.COLLECTORS",
         {"icmp": lambda host, params: up_result},
     ):
-        row, up, msg = asyncio.run(poll_one(item))
+        row, up, msg, outcome, details = asyncio.run(poll_one(item))
     item_id, entity_type, entity_id, samples, ts = row
     assert item_id == 5
     assert samples[0].metric == "avail"
     assert up is True and msg == "ok"
+    # The tuple carries execution outcome and collector details so the shape
+    # matches what a remote vantage reports; a server collector never errors
+    # out at the execution level and has nowhere to persist details (D-8).
+    assert outcome == result_service.OUTCOME_COMPLETED
+    assert details is None
 
 
 def test_poll_one_unknown_check_type_is_down():
@@ -41,11 +47,12 @@ def test_poll_one_unknown_check_type_is_down():
         "params": {},
         "interval_secs": 60,
     }
-    row, up, msg = asyncio.run(poll_one(item))
+    row, up, msg, outcome, _details = asyncio.run(poll_one(item))
     _, _, _, samples, _ = row
     assert samples[0].metric == "avail" and samples[0].value == 0.0
     assert samples[0].error_reason == "unknown_check_type"
     assert up is False
+    assert outcome == result_service.OUTCOME_COMPLETED
 
 
 def _noop_close_factory(session):
@@ -88,7 +95,7 @@ def test_process_batch_writes_all(db_session):
             "app.workers.monitor_poll_worker.COLLECTORS",
             {"icmp": lambda host, params: CheckResult(up=True, samples=[Sample("avail", 1.0)])},
         ),
-        patch.object(mpw, "get_redis", AsyncMock(return_value=None)),
+        patch.object(result_service, "get_redis", AsyncMock(return_value=None)),
     ):
         written = asyncio.run(process_batch(items, factory))
     db_session.close = orig_close  # restore
@@ -107,7 +114,7 @@ async def test_poll_one_returns_up_and_msg():
         "app.workers.monitor_poll_worker.COLLECTORS",
         {"fake_up": lambda host, params: up_result},
     ):
-        row, up, msg = await poll_one(
+        row, up, msg, _outcome, _details = await poll_one(
             {
                 "item_id": 1,
                 "target_type": "ip",
@@ -152,7 +159,7 @@ async def test_process_batch_applies_proxmox_override(db_session, factories):
                 )
             },
         ),
-        patch.object(mpw, "get_redis", AsyncMock(return_value=fake_redis)),
+        patch.object(result_service, "get_redis", AsyncMock(return_value=fake_redis)),
     ):
         await process_batch(
             [
@@ -213,7 +220,7 @@ async def test_process_batch_applies_state_and_publishes(db_session):
             },
         ),
         patch.object(mpw.nats_client, "js_publish", side_effect=fake_js_publish),
-        patch.object(mpw, "get_redis", AsyncMock(return_value=fake_redis)),
+        patch.object(result_service, "get_redis", AsyncMock(return_value=fake_redis)),
     ):
         await process_batch(
             [

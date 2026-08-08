@@ -19,6 +19,7 @@ from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
+from sqlalchemy import text
 from starlette.websockets import WebSocketState
 
 from app.core import agent_crypto
@@ -51,6 +52,26 @@ from app.services.settings_service import get_or_create_settings
 from app.services.user_service import is_session_revoked
 
 _logger = logging.getLogger(__name__)
+
+# Slice 3 D-16: an agent's assigned monitors become due again the moment it
+# reconnects — but jittered, never all at `now()`. An agent with 300 assignments
+# waking up at exactly the same instant gets a whole per-vantage batch claimed on
+# the very next scheduler tick and dispatched into a bounded queue, turning a
+# healthy reconnect into a burst of capacity-exhausted execution errors. The
+# window is `least(interval_secs, 30)` so a fast monitor is not delayed past its
+# own interval; the idiom is the one `services/monitoring/scheduler.py` already
+# uses for its post-downtime spread.
+#
+# Runs inside the same `with SessionLocal() as db:` block that records the
+# "connected" event, so a connection that fails before that commit leaves the
+# schedule untouched.
+_REMOTE_PROBE_RECONNECT_SQL = text(
+    """
+    UPDATE monitor_items
+    SET next_due_at = now() + make_interval(secs => random() * least(interval_secs, 30))
+    WHERE probe_agent_id = :agent_id AND enabled
+    """
+)
 
 unauthenticated_router = APIRouter()
 authenticated_router = APIRouter()
@@ -557,6 +578,7 @@ async def link_stream(websocket: WebSocket) -> None:
             agent_registry.update_hello_metadata(db, agent, hello_payload)
         grants = agent_registry.structured_grants_dict(db, agent_id)
         agent_registry.record_event(db, agent_id, "connected")
+        db.execute(_REMOTE_PROBE_RECONNECT_SQL, {"agent_id": agent_id})
         db.commit()
 
     worker = socket.gethostname()

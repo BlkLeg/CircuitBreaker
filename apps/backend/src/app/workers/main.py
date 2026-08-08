@@ -15,6 +15,7 @@ _TYPE_MAP = {
     "4": "monitor_scheduler",
     "5": "monitor_poll",
     "6": "monitor_poll",
+    "7": "monitor_probe_dispatch",
 }
 
 
@@ -48,6 +49,12 @@ async def _run_monitor_poll() -> None:
     await run_with_graceful_shutdown(monitor_poll_worker.run_worker)
 
 
+async def _run_monitor_probe_dispatch() -> None:
+    from app.workers import monitor_probe_dispatch
+
+    await run_with_graceful_shutdown(monitor_probe_dispatch.run_worker)
+
+
 async def _dispatch(kind: str) -> None:
     if kind == "discovery":
         await _run_discovery()
@@ -60,6 +67,8 @@ async def _dispatch(kind: str) -> None:
         await _run_monitor_scheduler()
     elif kind == "monitor_poll":
         await _run_monitor_poll()
+    elif kind == "monitor_probe_dispatch":
+        await _run_monitor_probe_dispatch()
     else:
         raise SystemExit(f"Unknown worker type: {kind!r}")
 
@@ -71,9 +80,10 @@ def main() -> None:
         required=True,
         help=(
             "Worker type: discovery, notification, telemetry,"
-            " monitor_scheduler, monitor_poll, or numeric"
+            " monitor_scheduler, monitor_poll, monitor_probe_dispatch, or numeric"
             " (0=discovery,2=notification,3=telemetry,"
-            "4=monitor_scheduler,5=monitor_poll,6=monitor_poll)"
+            "4=monitor_scheduler,5=monitor_poll,6=monitor_poll,"
+            "7=monitor_probe_dispatch)"
         ),
     )
     args = parser.parse_args()

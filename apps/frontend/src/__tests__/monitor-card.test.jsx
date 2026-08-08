@@ -7,7 +7,12 @@ vi.mock('../components/monitors/MonitorCardDetail.jsx', () => ({
   default: ({ monitor }) => <div data-testid="detail">detail for {monitor.name}</div>,
 }));
 
-import MonitorCard, { groupStatusOf, headlineOf } from '../components/monitors/MonitorCard.jsx';
+import MonitorCard, {
+  executionConditionOf,
+  groupStatusOf,
+  headlineOf,
+  probeVantageLabel,
+} from '../components/monitors/MonitorCard.jsx';
 
 const up = {
   id: 1,
@@ -100,6 +105,69 @@ describe('MonitorCard', () => {
     );
     expect(screen.getByRole('button', { expanded: true })).toBeTruthy();
     expect(screen.getByTestId('detail')).toBeTruthy();
+  });
+
+  it('shows via Server for an unassigned monitor', () => {
+    renderCard(up);
+    expect(screen.getByText('· via Server')).toBeTruthy();
+    expect(probeVantageLabel(up)).toBe('via Server');
+  });
+
+  it('shows via <agent name> for an assigned monitor', () => {
+    const assigned = {
+      ...up,
+      probe_agent_id: 7,
+      probe_agent: { id: 7, name: 'branch-office' },
+      probe_execution_status: 'ready',
+    };
+    renderCard(assigned);
+    expect(screen.getByText('· via branch-office')).toBeTruthy();
+    // A healthy vantage is not a condition worth showing.
+    expect(screen.queryByText(/^probe /)).toBeNull();
+    expect(probeVantageLabel({ ...assigned, probe_agent: null })).toBe('via agent 7');
+  });
+
+  it('renders probe unavailable as a secondary condition without changing the status pill', () => {
+    const stalled = {
+      ...up,
+      probe_agent_id: 7,
+      probe_agent: { id: 7, name: 'branch-office' },
+      probe_execution_status: 'unavailable',
+      probe_execution_reason: 'agent_offline',
+    };
+    const { container } = renderCard(stalled);
+    const exec = container.querySelector('.mon-exec');
+    expect(exec.textContent).toBe('probe unavailable');
+    expect(exec.getAttribute('title')).toBe('agent_offline');
+    // The target state the card reports is untouched: still up, still "14 ms".
+    expect(container.querySelector('.mon-card').dataset.status).toBe('up');
+    expect(screen.getByText('14 ms')).toBeTruthy();
+    expect(executionConditionOf({ ...stalled, probe_execution_status: 'queued' })).toBe(
+      'probe queued'
+    );
+    expect(executionConditionOf({ ...stalled, probe_execution_status: 'stale' })).toBe(
+      'probe stale'
+    );
+    // A server-executed monitor has no execution condition at all.
+    expect(executionConditionOf({ ...up, probe_execution_status: 'unavailable' })).toBeNull();
+  });
+
+  it('groupStatusOf is unchanged by probe_execution_status', () => {
+    // MonitorsPage imports groupStatusOf for the summary counts, the group
+    // buckets and the status filter, so folding the execution condition into it
+    // would silently rewrite the dashboard (D-13).
+    for (const execStatus of ['ready', 'queued', 'running', 'stale', 'unavailable']) {
+      const assigned = {
+        ...up,
+        probe_agent_id: 7,
+        probe_execution_status: execStatus,
+        probe_execution_reason: 'agent_offline',
+      };
+      expect(groupStatusOf(assigned)).toBe('up');
+      expect(headlineOf(assigned)).toBe('14 ms');
+      expect(groupStatusOf({ ...assigned, enabled: false })).toBe('paused');
+      expect(groupStatusOf({ ...assigned, status: 'down' })).toBe('down');
+    }
   });
 
   it('derives its group and headline', () => {

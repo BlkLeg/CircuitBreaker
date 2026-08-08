@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
   getAgent,
   getAgentEvents,
+  getAgentProbes,
   getAgentTelemetry,
   getAgentTelemetryHistory,
   getAgentsPresence,
@@ -17,6 +18,11 @@ import { useAgentLive } from '../hooks/useAgentLive';
 import { isLivePushFresh } from '../utils/agentPresenceFreshness';
 import { useToast } from '../components/common/Toast';
 import ConfirmDialog from '../components/common/ConfirmDialog';
+import AssignedProbesSection from '../components/agents/AssignedProbesSection';
+import RemoteProbeConfigEditor, {
+  REMOTE_PROBE_MAX_CONCURRENT,
+  REMOTE_PROBE_MIN_CONCURRENT,
+} from '../components/agents/RemoteProbeConfigEditor';
 
 const CAPABILITY_LABELS = {
   host_telemetry: 'Host telemetry',
@@ -158,6 +164,12 @@ export default function AgentDetailPage() {
   // stays in a loading state until then rather than rendering a guessed set of
   // settings that a subsequent edit would then persist.
   const [capabilityDefaults, setCapabilityDefaults] = useState(null);
+  // Slice 3 §7. null until GET /agents/{id}/probes resolves; the section
+  // renders a loading line rather than pretending the agent has no assignments,
+  // because "no assignments" is exactly what decides whether disabling the
+  // capability needs a confirmation.
+  const [probes, setProbes] = useState(null);
+  const [disableProbeOpen, setDisableProbeOpen] = useState(false);
 
   const { statuses } = useAgentLive();
   const telemetryEntities = useMemo(() => [{ entity_type: 'agent', entity_id: Number(id) }], [id]);
@@ -202,10 +214,25 @@ export default function AgentDetailPage() {
   }, []);
 
   const hostDefaults = capabilityDefaults?.host_telemetry?.config ?? {};
+  const probeDefaults = capabilityDefaults?.remote_probe?.config ?? {};
 
   useEffect(() => {
     load();
   }, [load]);
+
+  // Own request, own catch: the assigned-probes section is additive and a
+  // failure here must not blank the rest of the page. Re-run after every
+  // mutation the section performs (check now / reassign / return to server) so
+  // the execution conditions it renders are the ones the backend just wrote.
+  const loadProbes = useCallback(() => {
+    getAgentProbes(id)
+      .then(({ data }) => setProbes(data))
+      .catch(() => setProbes(null));
+  }, [id]);
+
+  useEffect(() => {
+    loadProbes();
+  }, [loadProbes]);
 
   const loadTelemetry = useCallback(() => {
     // The request time, not the response time: a readiness push that arrived
@@ -303,7 +330,7 @@ export default function AgentDetailPage() {
     return presence?.online ?? null;
   }, [statuses, id, presence, presenceFetchedAt]);
 
-  const handleToggleCapability = async (capability, enabled) => {
+  const applyCapabilityToggle = async (capability, enabled) => {
     const previous = agent;
     setAgent((currentAgent) => ({
       ...currentAgent,
@@ -322,6 +349,26 @@ export default function AgentDetailPage() {
       setAgent(previous);
       toast.error('Could not update capability');
     }
+  };
+
+  const assignedProbeCount = probes?.assignments?.length ?? 0;
+
+  // §7: turning remote probing off while monitors still run from this vantage
+  // is confirmation-worthy, because nothing is deleted — the assignments and
+  // their last known target state survive, and only the execution condition
+  // changes. The user has to be told that before it happens. With no
+  // assignments there is nothing to retain, so there is nothing to confirm.
+  const handleToggleCapability = async (capability, enabled) => {
+    if (capability === 'remote_probe' && !enabled && assignedProbeCount > 0) {
+      setDisableProbeOpen(true);
+      return;
+    }
+    await applyCapabilityToggle(capability, enabled);
+  };
+
+  const handleConfirmDisableProbe = async () => {
+    setDisableProbeOpen(false);
+    await applyCapabilityToggle('remote_probe', false);
   };
 
   const updateHostConfig = async (patch) => {
@@ -355,6 +402,45 @@ export default function AgentDetailPage() {
     } catch (error) {
       setAgent(previous);
       toast.error(error?.response?.data?.detail ?? 'Could not update telemetry settings');
+    }
+  };
+
+  // Same optimistic-update-with-rollback shape as updateHostConfig — a config
+  // the server refuses must leave the editor showing the value that is really
+  // persisted, not the one that was rejected.
+  const updateProbeConfig = async (patch) => {
+    // Global Constraints, "one capability registry": this bound is
+    // `_normalize_remote_probe_config`'s, byte-identical, and it is checked
+    // here so an out-of-range value never reaches the API at all.
+    if (
+      patch.max_concurrent != null &&
+      (!Number.isInteger(patch.max_concurrent) ||
+        patch.max_concurrent < REMOTE_PROBE_MIN_CONCURRENT ||
+        patch.max_concurrent > REMOTE_PROBE_MAX_CONCURRENT)
+    ) {
+      toast.error(
+        `Concurrent checks must be between ${REMOTE_PROBE_MIN_CONCURRENT} and ${REMOTE_PROBE_MAX_CONCURRENT}`
+      );
+      return;
+    }
+    const current = normalizeCapability(agent.capabilities?.remote_probe);
+    const config = { ...probeDefaults, ...current.config, ...patch };
+    const previous = agent;
+    setAgent((currentAgent) => ({
+      ...currentAgent,
+      capabilities: {
+        ...currentAgent.capabilities,
+        remote_probe: { ...current, config },
+      },
+    }));
+    try {
+      const { data } = await setAgentCapabilities(id, {
+        remote_probe: { enabled: current.enabled, config },
+      });
+      setAgent(data);
+    } catch (error) {
+      setAgent(previous);
+      toast.error(error?.response?.data?.detail ?? 'Could not update remote probe settings');
     }
   };
 
@@ -612,6 +698,24 @@ export default function AgentDetailPage() {
         )}
       </section>
 
+      <AssignedProbesSection
+        agentId={Number(id)}
+        probes={probes}
+        granted={normalizeCapability(agent.capabilities?.remote_probe).enabled}
+        onChanged={loadProbes}
+      >
+        {normalizeCapability(agent.capabilities?.remote_probe).enabled &&
+          (capabilityDefaults === null ? (
+            <p>Loading remote probe settings…</p>
+          ) : (
+            <RemoteProbeConfigEditor
+              config={normalizeCapability(agent.capabilities.remote_probe).config}
+              defaults={probeDefaults}
+              onChange={updateProbeConfig}
+            />
+          ))}
+      </AssignedProbesSection>
+
       <section aria-label="Linked hardware">
         <h2>Linked hardware</h2>
         {presence?.hardware ? (
@@ -641,6 +745,18 @@ export default function AgentDetailPage() {
         message={`Revoke ${agent.hostname ?? 'this agent'}? It will stop reporting immediately.`}
         onConfirm={handleRevoke}
         onCancel={() => setRevokeOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={disableProbeOpen}
+        message={
+          `Disable remote probing on ${agent.name ?? agent.hostname ?? 'this agent'}? ` +
+          `${assignedProbeCount} assigned monitor${assignedProbeCount === 1 ? '' : 's'} ` +
+          'will stay assigned and will retain their last known target state, but they will ' +
+          'become probe-unavailable and run no checks until remote probing is re-enabled.'
+        }
+        onConfirm={handleConfirmDisableProbe}
+        onCancel={() => setDisableProbeOpen(false)}
       />
     </div>
   );

@@ -8,13 +8,21 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+
+	"circuitbreaker.dev/cb-agent/internal/netscope"
 )
 
 const grantsFilename = "grants.json"
 
+// Bounds are a cross-language constant: they must stay byte-identical to the
+// backend's CAPABILITY_DEFINITIONS normalizers, or an agent accepts a setting
+// the server rejects and runs a configuration no operator ever approved.
 const (
 	MinHostInterval = 10
 	MaxHostInterval = 900
+
+	MinProbeConcurrent = 1
+	MaxProbeConcurrent = 100
 )
 
 type HostConfig struct {
@@ -29,6 +37,21 @@ type HostConfig struct {
 
 func DefaultHostConfig() HostConfig {
 	return HostConfig{IntervalS: 30, IncludeFilesystems: true, IncludeDisks: true, IncludeNetwork: true, IncludeTemperatures: true}
+}
+
+// RemoteProbeConfig is the server's normalized `remote_probe` grant config.
+//
+// The scope half is netscope.Config embedded rather than restated: its fields
+// promote to the same flat JSON the server sends, and there is exactly one Go
+// declaration of what a scope is — the same "one scope evaluator" rule that
+// keeps this package from growing a CIDR opinion of its own.
+type RemoteProbeConfig struct {
+	MaxConcurrent int `json:"max_concurrent"`
+	netscope.Config
+}
+
+func DefaultRemoteProbeConfig() RemoteProbeConfig {
+	return RemoteProbeConfig{MaxConcurrent: 20, Config: netscope.Config{ScopeMode: netscope.ScopeModeDirectPrivate}}
 }
 
 type Grant struct {
@@ -70,10 +93,19 @@ type GrantFault struct {
 // what keeps per-capability isolation from being re-broken by the next slice.
 var configNormalizers = map[string]func(json.RawMessage) (json.RawMessage, error){
 	"host_telemetry": normalizeHostConfigRaw,
+	"remote_probe":   normalizeRemoteProbeConfigRaw,
 }
 
 func normalizeHostConfigRaw(raw json.RawMessage) (json.RawMessage, error) {
 	cfg, err := normalizeHostConfig(raw)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(cfg)
+}
+
+func normalizeRemoteProbeConfigRaw(raw json.RawMessage) (json.RawMessage, error) {
+	cfg, err := normalizeRemoteProbeConfig(raw)
 	if err != nil {
 		return nil, err
 	}
@@ -196,6 +228,53 @@ func normalizeHostConfig(raw json.RawMessage) (HostConfig, error) {
 	return cfg, nil
 }
 
+// normalizeRemoteProbeConfig mirrors the backend's
+// _normalize_remote_probe_config, minus its CIDR and hostname parsing: those
+// entries were validated at write time, and netscope.Derive already drops a
+// malformed one and refuses a /0, so re-parsing here would only add a second
+// place for the two languages to disagree about what a scope entry means.
+//
+// An unknown scope_mode *is* rejected. netscope.Derive would fail closed on it
+// and derive nothing, which is safe but silent; a fault reports the capability
+// as degraded, which is the only form an operator ever sees.
+func normalizeRemoteProbeConfig(raw json.RawMessage) (RemoteProbeConfig, error) {
+	cfg := DefaultRemoteProbeConfig()
+	if len(bytes.TrimSpace(raw)) != 0 && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			return RemoteProbeConfig{}, fmt.Errorf("capability: invalid remote_probe config: %w", err)
+		}
+		apply := func(key string, target any) error {
+			v, ok := fields[key]
+			if !ok {
+				return nil
+			}
+			if err := json.Unmarshal(v, target); err != nil {
+				return fmt.Errorf("capability: invalid remote_probe.%s", key)
+			}
+			return nil
+		}
+		if err := apply("max_concurrent", &cfg.MaxConcurrent); err != nil {
+			return RemoteProbeConfig{}, err
+		}
+		if err := apply("scope_mode", &cfg.ScopeMode); err != nil {
+			return RemoteProbeConfig{}, err
+		}
+		for key, target := range map[string]*[]string{"additional_cidrs": &cfg.AdditionalCIDRs, "excluded_cidrs": &cfg.ExcludedCIDRs, "additional_hostnames": &cfg.AdditionalHostnames} {
+			if err := apply(key, target); err != nil {
+				return RemoteProbeConfig{}, err
+			}
+		}
+	}
+	if cfg.MaxConcurrent < MinProbeConcurrent || cfg.MaxConcurrent > MaxProbeConcurrent {
+		return RemoteProbeConfig{}, fmt.Errorf("capability: remote_probe.max_concurrent must be between %d and %d", MinProbeConcurrent, MaxProbeConcurrent)
+	}
+	if cfg.ScopeMode != netscope.ScopeModeDirectPrivate {
+		return RemoteProbeConfig{}, fmt.Errorf("capability: remote_probe.scope_mode %q is not a policy this build can evaluate", cfg.ScopeMode)
+	}
+	return cfg, nil
+}
+
 // LoadCached restores the on-disk grant cache. Faults isolate exactly as they
 // do in ApplyGrants: a single unreadable cached grant must not make a restarted
 // agent forget every capability it had. The returned faults are the daemon's to
@@ -306,6 +385,28 @@ func (g *Gate) HostConfig() (HostConfig, bool) {
 	if len(grant.Config) > 0 {
 		if err := json.Unmarshal(grant.Config, &cfg); err != nil {
 			return DefaultHostConfig(), true
+		}
+	}
+	return cfg, true
+}
+
+// RemoteProbeConfig returns the effective remote_probe config, and whether the
+// capability is granted at all. Like HostConfig it does no validation — decode
+// is the sole validation point, so a stored config is one that passed
+// normalizeRemoteProbeConfig, the last one that did, or the package default.
+//
+// The config it returns is the *server's*, always: grants.json is a cache that
+// keeps a disconnected agent useful, never a local source of authority, so a
+// host-side edit to the scope survives exactly until the next capabilities.set.
+func (g *Gate) RemoteProbeConfig() (RemoteProbeConfig, bool) {
+	grant, ok := g.Grant("remote_probe")
+	if !ok || !grant.Enabled {
+		return RemoteProbeConfig{}, false
+	}
+	cfg := DefaultRemoteProbeConfig()
+	if len(grant.Config) > 0 {
+		if err := json.Unmarshal(grant.Config, &cfg); err != nil {
+			return DefaultRemoteProbeConfig(), true
 		}
 	}
 	return cfg, true
