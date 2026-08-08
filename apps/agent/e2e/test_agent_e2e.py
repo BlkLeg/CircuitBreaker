@@ -5,16 +5,19 @@ Requires Docker; not run by default pytest invocations.
 Run explicitly (from this directory):
     pytest test_agent_e2e.py -v -m e2e
 
-Topology: `docker-compose.yml`'s `cb-agent` service runs on its own Docker
-bridge network (`agent-net`), publishing/exposing no ports at all — the
-agent dials OUT to `circuitbreaker` (Docker DNS-resolved service name) over
-that network; nothing has a route IN. This is what makes "outbound only,
-never listen on a remote-subnet port" a property this harness actually
-proves rather than merely asserts (see docker-compose.yml's top-of-file
-comment, and test_agent_full_lifecycle_enroll_through_revoke_and_reconnect's
-step 11/isolation probe below).
+Topology: `docker-compose.yml`'s `cb-agent` service runs in its own network
+namespace on two Docker bridge networks, publishing/exposing no ports at all
+— `agent-net`, where it dials OUT to `circuitbreaker` (Docker DNS-resolved
+service name), and `probe-net`, where the remote-probe target lives and
+which `circuitbreaker` is deliberately NOT attached to. Nothing has a route
+IN to the agent on either. That is what makes "outbound only, never listen
+on a remote-subnet port" a property this harness actually proves rather than
+merely asserts (see docker-compose.yml's top-of-file comment, and
+test_agent_full_lifecycle_enroll_through_revoke_and_reconnect's step
+11/isolation probe below) — and what makes "the backend cannot reach this
+target, so a passing check can only have come from the agent" provable too.
 
-Structure — seven test functions, each bringing up (and tearing down) its own
+Structure — eight test functions, each bringing up (and tearing down) its own
 full stack, so failures/timing in one scenario can't leak into another:
 
   * test_agent_full_lifecycle_enroll_through_revoke_and_reconnect
@@ -64,6 +67,17 @@ full stack, so failures/timing in one scenario can't leak into another:
       the link down on that silence and diverts collection into the spool,
       which is the one outage shape nothing exercised before. Pays the real
       60s deadline; no test-only override.
+
+  * test_remote_probe_assignment_execution_and_unavailability
+      Slice 3 §9 steps 1-6 and 9-11, in one stack lifetime: an ICMP, TCP,
+      HTTP and DNS monitor executed by the agent against a target the
+      backend provably cannot reach; the same events/history/uptime/retry
+      semantics a server-executed check produces; an unavailable vantage
+      that retains target state and writes no avail=0 sample; the warning
+      clearing on reconnect; a reassignment that retires the in-flight run
+      so the old vantage's result is inert; and an explicit return to server
+      execution. Steps 7 and 8 (scope narrowing, fairness under concurrency)
+      are unit/integration-covered elsewhere and are not repeated here.
 """
 
 from __future__ import annotations
@@ -411,11 +425,24 @@ def _enroll_agent(client: httpx.Client, headers: dict, *, env: dict | None = Non
 
 
 def _agent_network_name(env: dict | None = None) -> tuple[str, str]:
-    """Resolves the live container name + the (compose-project-prefixed)
-    Docker network name cb-agent is attached to, for the network
-    disconnect/reconnect used by the rollback and topology-isolation tests.
-    Looked up dynamically rather than hardcoded so this doesn't silently
-    break if Compose's project/network naming ever changes.
+    """Resolves the live container name + the (compose-project-prefixed) Docker
+    network name that carries cb-agent's route to the SERVER, for the network
+    disconnect/reconnect used by the rollback, partition and remote-probe tests.
+    Looked up dynamically rather than hardcoded so this doesn't silently break
+    if Compose's project/network naming ever changes.
+
+    cb-agent sits on two networks (see docker-compose.yml's topology note):
+    agent-net, which reaches circuitbreaker, and probe-net, which reaches the
+    remote-probe target and which circuitbreaker is deliberately not on. Only
+    agent-net is returned, because every caller wants the route to the server
+    specifically — cutting probe-net as well would make "the vantage went away"
+    indistinguishable from "the target went away", which is exactly the
+    distinction the remote-probe test exists to prove.
+
+    The attached set is asserted rather than merely filtered: cb-agent silently
+    gaining `default` (or losing probe-net) would quietly invalidate both the
+    no-inbound-route proof and the backend-cannot-reach-the-target proof, and
+    the resulting test would still pass.
     """
     container = subprocess.run(
         [*COMPOSE, "ps", "-q", "cb-agent"],
@@ -433,11 +460,13 @@ def _agent_network_name(env: dict | None = None) -> tuple[str, str]:
         check=True,
     ).stdout
     networks = json.loads(networks_json)
-    assert len(networks) == 1, (
-        f"expected cb-agent to be attached to exactly one network (agent-net "
-        f"only — see docker-compose.yml's topology comment), got {list(networks)}"
+    suffixes = {name.rsplit("_", 1)[-1] for name in networks}
+    assert suffixes == {"agent-net", "probe-net"}, (
+        f"expected cb-agent to be attached to exactly agent-net + probe-net "
+        f"(see docker-compose.yml's topology comment), got {sorted(networks)}"
     )
-    return container, next(iter(networks))
+    server_net = next(name for name in networks if name.rsplit("_", 1)[-1] == "agent-net")
+    return container, server_net
 
 
 @contextlib.contextmanager
@@ -445,10 +474,14 @@ def _cut_agent_network(env: dict | None = None):
     """Severs cb-agent's only route to the server for the duration of the
     block, and restores it on the way out (including on failure).
 
-    cb-agent is attached to exactly one network (see _agent_network_name's
-    assertion), so detaching it makes every *new* dial fail immediately —
-    which is precisely what the forced-rollback scenario needs: a re-exec'd
-    daemon that can never complete its post-update hello.ack.
+    Only agent-net is detached (see _agent_network_name): cb-agent keeps
+    probe-net and therefore keeps reaching the remote-probe target, which is
+    what lets the remote-probe test tell "the vantage is unavailable" apart
+    from "the target went down". agent-net is the container's only route to
+    circuitbreaker AND the only place Docker's embedded DNS answers for the
+    "circuitbreaker" service name, so detaching it makes every *new* dial fail
+    immediately — which is precisely what the forced-rollback scenario needs: a
+    re-exec'd daemon that can never complete its post-update hello.ack.
 
     A detached interface is a black hole, not a closed socket: no FIN or RST
     ever arrives, the already-established connection stays open from the
@@ -1762,6 +1795,652 @@ def test_agent_black_hole_partition_is_detected_and_spools():
                         agent_id,
                         {"enabled": True, "config": {"interval_s": 30}},
                     )
+        finally:
+            stream.close()
+    finally:
+        _down()
+        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Slice 3 §9 steps 1-6 and 9-11: remote-probe acceptance
+# ─────────────────────────────────────────────────────────────────────────
+
+# probe-net's pinned addresses (docker-compose.yml). probe-target answers all
+# four check types the slice supports.
+_PROBE_TARGET_IP = "10.77.0.10"
+_PROBE_TARGET_NAME = "probe-target"
+_PROBE_TARGET_HTTP_PORT = 8080
+# Nothing listens here. A TCP check against it is a *target* failure — refused
+# in microseconds, no execution error — which is what makes it the right
+# stimulus for the retry/alert-parity monitor.
+_PROBE_TARGET_CLOSED_PORT = 9999
+_PROBE_NET_CIDR = "10.77.0.0/24"
+
+# The four monitors under test poll on this cadence. Fast enough that a
+# scheduler tick, a dispatch and a result are all observable inside a
+# reasonable wait; slow enough that the assertions below are not racing a
+# check that starts between two API calls.
+_PROBE_INTERVAL_S = 30
+
+# Everything before the first result has to happen once: capability grant ->
+# probe readiness report -> readiness ingest -> scheduler tick -> dispatch ->
+# check -> result. 180s is several times the worst observed path and is the
+# same order as this file's other first-sample budgets.
+_PROBE_FIRST_RESULT_BUDGET_S = 180
+
+# `_cut_agent_network` produces a black hole, not a closed socket (see its
+# docstring): the agent needs a full readTimeout (60s) to notice, and the
+# server needs its own presence TTL to expire on top of that before dispatch
+# starts refusing. Both are paid in series here, plus one monitor interval.
+_PROBE_UNAVAILABLE_BUDGET_S = 300
+
+# Reconnect after a partition of this length is dominated by internal/link's
+# 1s-doubling backoff, not by anything under test.
+_PROBE_RECONNECT_BUDGET_S = 300
+
+
+def _up_probe_target(env: dict | None = None) -> None:
+    """Brings up the isolated target. Built separately from `_up_server`
+    because it is on a network the server is not, and because a test that
+    does not use it should not pay for it."""
+    subprocess.run(
+        [*COMPOSE, "up", "-d", "--build", "probe-target"], check=True, cwd=E2E_DIR, env=env
+    )
+
+
+def _backend_sh(command: str, env: dict | None = None) -> subprocess.CompletedProcess:
+    """Runs a shell command inside the backend container. Deliberately not
+    `check=True`: every caller below is asking whether something FAILS."""
+    return subprocess.run(
+        [*COMPOSE, "exec", "-T", "circuitbreaker", "sh", "-c", command],
+        cwd=E2E_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _create_monitor(client: httpx.Client, **body) -> dict:
+    resp = client.post("/api/v1/monitors", json=body)
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def _monitor(client: httpx.Client, monitor_id: int) -> dict:
+    resp = client.get(f"/api/v1/monitors/{monitor_id}")
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _monitor_samples(client: httpx.Client, monitor_id: int, metric: str) -> list[float]:
+    """Every `metric` value in `telemetry_timeseries` for this monitor in the
+    last hour — the same rows uptime and the history graph are computed from."""
+    resp = client.get(
+        f"/api/v1/monitors/{monitor_id}/history", params={"metric": metric, "hours": 1}
+    )
+    resp.raise_for_status()
+    return [point["value"] for point in resp.json()]
+
+
+def _monitor_events(client: httpx.Client, monitor_id: int) -> list[dict]:
+    resp = client.get(f"/api/v1/monitors/{monitor_id}/events")
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _probe_runs(client: httpx.Client, monitor_id: int) -> list[dict]:
+    """Newest first. `limit` is pinned at the route's maximum rather than left
+    at its 20-row default: a monitor polling every 30s through a multi-minute
+    outage produces more runs than that, and a silently truncated list would
+    turn "the scheduler kept opening runs" into an assertion that stops being
+    true for the wrong reason."""
+    resp = client.get(f"/api/v1/monitors/{monitor_id}/probe-runs", params={"limit": 200})
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _probe_run(client: httpx.Client, monitor_id: int, run_id: str) -> dict:
+    for run in _probe_runs(client, monitor_id):
+        if run["run_id"] == run_id:
+            return run
+    raise AssertionError(f"run {run_id} is no longer in monitor {monitor_id}'s run history")
+
+
+def _probe_eligible_row(
+    client: httpx.Client, agent_id: int, *, host: str, check_type: str = "icmp"
+) -> dict:
+    """§7's eligible-agent listing, reduced to the one agent this stack has."""
+    resp = client.get(
+        "/api/v1/agents/probe-eligible", params={"host": host, "check_type": check_type}
+    )
+    resp.raise_for_status()
+    for row in resp.json():
+        if row["agent_id"] == agent_id:
+            return row
+    raise AssertionError(f"agent {agent_id} is absent from probe-eligible for {host}")
+
+
+@pytest.mark.e2e
+def test_remote_probe_assignment_execution_and_unavailability():
+    """Slice 3 §9's acceptance list, steps 1-6 and 9-11, in one stack lifetime.
+
+    The premise is step 1 and it is asserted before anything else: probe-target
+    sits on probe-net, circuitbreaker does not, and Docker's inter-bridge
+    isolation means the backend has no route to 10.77.0.10 at all. Every
+    "the check succeeded" assertion below therefore has exactly one possible
+    explanation — the agent ran it — and the check that closes the test (step
+    10) proves the converse by returning a monitor to server execution and
+    watching it go DOWN against the same address the agent had UP.
+
+    Steps 7 (narrowing scope refuses on both ends) and 8 (fair sharing under
+    concurrency) are not repeated here: both are pinned by named unit tests on
+    both sides of the wire, and neither needs a container to be true. What
+    genuinely needs this harness is the parts where a real agent, a real
+    partition and a real scheduler interact.
+
+    Step 9 is exercised with the vantage this single-agent stack has: the
+    monitor is reassigned away from the agent while a run is genuinely in
+    flight (an HTTP check against a CGI endpoint that sleeps past its own
+    deadline), which retires the run through the same
+    `CANCEL_MONITOR_REASSIGNED` path a hand-off to a second agent takes. The
+    PATCH route is synchronous, so `_publish_soon` finds no running loop and
+    the advisory `probe.cancel` is never delivered — the agent runs the check
+    to its deadline and posts a result for a run the server has already closed,
+    which is precisely the "old vantage's late result" §9 step 9 is about. What
+    is observable is that the result changes nothing: the run row keeps the
+    cancellation the server wrote, `outcome` stays NULL (it records what the
+    agent reported, and the agent's report was refused), and the monitor's
+    `probe_last_result_at` is never set.
+    """
+    _up_server()
+    try:
+        client = _new_client()
+        _wait_until(lambda: client.get("/api/v1/bootstrap/status").status_code == 200, timeout=60)
+        token = _bootstrap_admin(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        client.headers.update(headers)
+
+        material = _fetch_install_material(client, headers)
+        _write_agent_toml(material["server_pk"], material["tls_pin"])
+        _up_probe_target()
+
+        agent_id, stream = _enroll_agent(client, headers)
+        try:
+            subprocess.run([*COMPOSE, "up", "-d", "cb-agent"], check=True, cwd=E2E_DIR)
+            _wait_until(
+                lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
+                timeout=20,
+            )
+            _wait_until(lambda: _agent_status()["link_state"] == "accepted", timeout=30)
+
+            # ---- Step 1: the backend genuinely cannot reach the target ----
+            # Asserted first because it is the premise of every later
+            # assertion. `getent` is checked too: the DNS monitor names
+            # `probe-target` as the record to look up, and
+            # probe_eligibility.evaluate_eligibility resolves any non-literal
+            # host on the SERVER before it will dispatch. The name resolving
+            # (docker-compose.yml's extra_hosts) while the address stays
+            # unroutable is what makes that monitor dispatchable without
+            # weakening the isolation this step exists to prove.
+            getent = _backend_sh(f"getent hosts {_PROBE_TARGET_NAME}")
+            assert getent.returncode == 0 and getent.stdout.split()[0] == _PROBE_TARGET_IP, (
+                f"the backend cannot resolve {_PROBE_TARGET_NAME} — docker-compose.yml's "
+                f"extra_hosts entry is missing: {getent.stdout!r} {getent.stderr!r}"
+            )
+            for description, command in (
+                ("ICMP", f"ping -c 2 -W 2 {_PROBE_TARGET_IP}"),
+                ("TCP", f"nc -z -w 3 {_PROBE_TARGET_IP} {_PROBE_TARGET_HTTP_PORT}"),
+                ("DNS/TCP", f"nc -z -w 3 {_PROBE_TARGET_IP} 53"),
+                ("HTTP", f"curl -sS -m 5 -o /dev/null http://{_PROBE_TARGET_IP}:{_PROBE_TARGET_HTTP_PORT}/"),
+            ):
+                probe = _backend_sh(command)
+                assert probe.returncode != 0, (
+                    f"the backend reached the probe target over {description} — probe-net is "
+                    "not isolated from circuitbreaker, and every remote-probe assertion in "
+                    "this test would be unable to tell an agent-executed check from a "
+                    "server-executed one"
+                )
+
+            # ---- Step 11: eligible on the agent's own reported networks,
+            # with no scope edit whatsoever ----
+            # Nothing in this test ever PUTs /capabilities. The agent was
+            # provisioned by _enroll_agent (the Slice 1 install path) and the
+            # only thing that put 10.77.0.0/24 in its scope is the interface
+            # facts it reported in `hello`.
+            _wait_until(
+                lambda: _probe_eligible_row(client, agent_id, host=_PROBE_TARGET_IP)["eligible"],
+                timeout=_PROBE_FIRST_RESULT_BUDGET_S,
+            )
+            eligible = _probe_eligible_row(client, agent_id, host=_PROBE_TARGET_IP)
+            assert eligible["in_scope"] is True, eligible
+            assert eligible["reason"] is None, eligible
+            assert eligible["granted"] is True and eligible["online"] is True, eligible
+            assert eligible["readiness"] == "ready", eligible
+            assert eligible["readiness_collector"] == "probe.icmp", eligible
+            assert eligible["max_concurrent"] == 20, eligible
+            assert _PROBE_NET_CIDR in eligible["scope_networks"], (
+                f"{_PROBE_NET_CIDR} is not in the agent's derived scope {eligible['scope_networks']} "
+                "— the directly-connected facts in `hello` did not produce it, and §9 step 11 "
+                "(select the agent without first editing scope) does not hold"
+            )
+            grant = client.get(f"/api/v1/agents/{agent_id}").json()["capabilities"]["remote_probe"]
+            assert grant == {
+                "enabled": True,
+                "config": {
+                    "max_concurrent": 20,
+                    "scope_mode": "direct_private",
+                    "excluded_cidrs": [],
+                    "additional_cidrs": [],
+                    "additional_hostnames": [],
+                },
+            }, "the remote_probe grant is not the untouched approval default"
+
+            # ---- Steps 2-3: one monitor per check type, all on the agent ----
+            common = {
+                "interval_secs": _PROBE_INTERVAL_S,
+                "max_retries": 0,
+                "enabled": True,
+                "probe_agent_id": agent_id,
+            }
+            monitors = {
+                "icmp": _create_monitor(
+                    client,
+                    name="e2e remote icmp",
+                    check_type="icmp",
+                    host=_PROBE_TARGET_IP,
+                    config={"packet_count": 3, "timeout": 1.5},
+                    **common,
+                ),
+                "tcp": _create_monitor(
+                    client,
+                    name="e2e remote tcp",
+                    check_type="tcp",
+                    host=_PROBE_TARGET_IP,
+                    config={"port": _PROBE_TARGET_HTTP_PORT, "timeout": 2.0},
+                    **common,
+                ),
+                "http": _create_monitor(
+                    client,
+                    name="e2e remote http",
+                    check_type="http",
+                    host=_PROBE_TARGET_IP,
+                    config={"url": f"http://{_PROBE_TARGET_IP}:{_PROBE_TARGET_HTTP_PORT}/"},
+                    **common,
+                ),
+                # The one monitor whose host is a NAME rather than a literal:
+                # it is resolved on the server (extra_hosts) to decide scope,
+                # resolved again on the agent (Docker DNS) immediately before
+                # connecting, and the resolver it queries — probe-target's own
+                # dnsmasq — is itself scope-checked by the agent (§3).
+                "dns": _create_monitor(
+                    client,
+                    name="e2e remote dns",
+                    check_type="dns",
+                    host=_PROBE_TARGET_NAME,
+                    config={
+                        "record_type": "A",
+                        "resolver": _PROBE_TARGET_IP,
+                        "expected_values": [_PROBE_TARGET_IP],
+                        "timeout": 5.0,
+                    },
+                    **common,
+                ),
+            }
+            for check_type, monitor in monitors.items():
+                assert monitor["probe_mode"] == "agent", (check_type, monitor)
+                assert monitor["probe_agent_id"] == agent_id, (check_type, monitor)
+                assert monitor["probe_agent"]["id"] == agent_id, (check_type, monitor)
+                assert monitor["status"] == "pending", (check_type, monitor)
+
+            # ---- Step 3: results enter the existing history/state pipeline
+            # ---- Step 4 (first half): identical event and uptime semantics
+            for check_type, created in monitors.items():
+                monitor_id = created["id"]
+
+                def _is_up(monitor_id: int = monitor_id) -> dict | None:
+                    current = _monitor(client, monitor_id)
+                    if current["status"] == "up" and current["probe_execution_status"] == "ready":
+                        return current
+                    return None
+
+                current = _wait_until_and_return(_is_up, timeout=_PROBE_FIRST_RESULT_BUDGET_S)
+                assert current["probe_execution_reason"] is None, (check_type, current)
+                assert current["probe_last_dispatched_at"] is not None, (check_type, current)
+                assert current["probe_last_result_at"] is not None, (check_type, current)
+
+                # The samples are ordinary monitor telemetry — same table, same
+                # metric names, same `source="monitor"` — which is what lets
+                # uptime and the history graph aggregate agent-executed and
+                # server-executed checks without splitting the denominator.
+                avail = _monitor_samples(client, monitor_id, "avail")
+                assert avail and set(avail) == {1.0}, (check_type, avail)
+                assert _monitor_samples(client, monitor_id, "latency_ms"), check_type
+                uptime = client.get(f"/api/v1/monitors/{monitor_id}/uptime").json()
+                assert uptime["pct_24h"] == 100.0, (check_type, uptime)
+                assert uptime["last_polled_at"] is not None, (check_type, uptime)
+
+                # One transition, recorded by the shared state machine — not an
+                # execution event and not a second "up" per check.
+                events = _monitor_events(client, monitor_id)
+                # `execution` events describe the vantage, never the target, so
+                # they are filtered out of the transition log rather than
+                # asserted absent — §7 is explicit that the two must not fold
+                # into one another.
+                transitions = [e for e in events if e["event_type"] != "execution"]
+                assert [e["event_type"] for e in transitions] == ["up"], (check_type, events)
+                assert transitions[0]["status_from"] == "pending", (check_type, events)
+                assert transitions[0]["status_to"] == "up", (check_type, events)
+
+                # And the vantage's own audit trail, which a server-executed
+                # check has none of.
+                runs = _probe_runs(client, monitor_id)
+                assert runs, check_type
+                completed = [r for r in runs if r["status"] == "completed"]
+                assert completed, (check_type, runs)
+                assert completed[0]["outcome"] == "completed", (check_type, completed[0])
+                assert completed[0]["agent_id"] == agent_id, (check_type, completed[0])
+                assert completed[0]["error_code"] is None, (check_type, completed[0])
+                assert completed[0]["started_at"] is not None, (check_type, completed[0])
+
+            # ---- Step 4 (second half): retries and the down/alert path are
+            # the same code for both vantages ----
+            # A closed port on the same target: a genuine target failure, not
+            # an execution error, so it goes through `state.decide` exactly as a
+            # server-executed failure does. DOWN is the transition that carries
+            # `notify="down"` into result_service's alert publish, and that is
+            # one implementation for both vantages rather than two that agree.
+            retry_monitor = _create_monitor(
+                client,
+                name="e2e remote tcp closed port",
+                check_type="tcp",
+                host=_PROBE_TARGET_IP,
+                config={"port": _PROBE_TARGET_CLOSED_PORT, "timeout": 2.0},
+                interval_secs=_PROBE_INTERVAL_S,
+                retry_interval_secs=10,
+                max_retries=1,
+                enabled=True,
+                probe_agent_id=agent_id,
+            )
+            retry_id = retry_monitor["id"]
+
+            def _is_down() -> dict | None:
+                current = _monitor(client, retry_id)
+                return current if current["status"] == "down" else None
+
+            down = _wait_until_and_return(_is_down, timeout=_PROBE_FIRST_RESULT_BUDGET_S)
+            assert down["probe_mode"] == "agent", down
+            retry_events = [
+                e for e in _monitor_events(client, retry_id) if e["event_type"] != "execution"
+            ]
+            # Exactly ONE transition, and it is the DOWN. `state.decide` records
+            # a `pending` event only on a *change into* PENDING, and a freshly
+            # created monitor already starts there — so the retry that
+            # max_retries=1 buys is silent in the event log for a monitor that
+            # has never been UP. That is pre-existing shared behaviour, not
+            # something the agent vantage changes, which is the point: the event
+            # log a remote check produces is the one a server check produces.
+            assert [e["event_type"] for e in retry_events] == ["down"], retry_events
+            assert retry_events[0]["status_from"] == "pending", retry_events
+            assert retry_events[0]["status_to"] == "down", retry_events
+            avail = _monitor_samples(client, retry_id, "avail")
+            assert set(avail) == {0.0}, (retry_id, avail)
+            # The retry itself, asserted where it IS observable: DOWN was not
+            # declared on the first failure. With max_retries=1 the state
+            # machine owes a second observation — pulled in to
+            # retry_interval_secs rather than waiting a full interval — before
+            # it may transition, so there has to be more than one sample behind
+            # this transition.
+            assert len(avail) >= 2, (
+                "the monitor went DOWN on its first failed check; max_retries=1 was not "
+                f"honoured for an agent-executed check ({avail})"
+            )
+            # Failure carries no latency sample (the parity contract's TCP row).
+            assert _monitor_samples(client, retry_id, "latency_ms") == [], retry_id
+
+            # ---- Step 5: the vantage goes away; the target's state does not
+            icmp_id = monitors["icmp"]["id"]
+            events_before_cut = _monitor_events(client, icmp_id)
+            runs_before_cut = len(_probe_runs(client, icmp_id))
+            result_at_before_cut = _monitor(client, icmp_id)["probe_last_result_at"]
+
+            with _cut_agent_network():
+                # The agent learns about a black hole only from silence — a
+                # full readTimeout — and the server only after its presence
+                # key expires. Both are paid here on purpose; see
+                # _cut_agent_network's docstring and _PROBE_UNAVAILABLE_BUDGET_S.
+                _wait_until(
+                    lambda: _agent_status()["link_state"] == "disconnected",
+                    timeout=_PROBE_UNAVAILABLE_BUDGET_S,
+                )
+
+                def _is_unavailable() -> dict | None:
+                    current = _monitor(client, icmp_id)
+                    return current if current["probe_execution_status"] == "unavailable" else None
+
+                unavailable = _wait_until_and_return(
+                    _is_unavailable, timeout=_PROBE_UNAVAILABLE_BUDGET_S
+                )
+                # §2's vocabulary: we know *why* the vantage cannot run the
+                # check. Which of these lands depends only on whether the
+                # presence key expired before or after the next scheduler tick.
+                assert unavailable["probe_execution_reason"] in {
+                    "agent_offline",
+                    "no_link_owner",
+                    "dispatch_failed",
+                    "result_timeout",
+                }, unavailable
+                # The target is still up as far as anyone knows, and the
+                # assignment is retained — an unavailable vantage never falls
+                # back to the server (§2, and step 10 below is the only way
+                # back).
+                assert unavailable["status"] == "up", unavailable
+                assert unavailable["probe_agent_id"] == agent_id, unavailable
+
+                # Give it two more intervals so this is "no avail=0 sample for
+                # the whole outage", not "none in the first second of it".
+                time.sleep(_PROBE_INTERVAL_S * 2)
+
+                during = _monitor(client, icmp_id)
+                assert during["status"] == "up", during
+                assert during["probe_agent_id"] == agent_id, during
+                assert during["probe_last_result_at"] == result_at_before_cut, (
+                    "probe_last_result_at moved while the agent was unreachable — something "
+                    "wrote a result the agent cannot have produced"
+                )
+                assert set(_monitor_samples(client, icmp_id, "avail")) == {1.0}, (
+                    "an avail=0 sample was written while the vantage was unavailable — §2/D-12 "
+                    "forbid it: agent unavailability is not target downtime, and this sample "
+                    "would corrupt uptime for the outage's whole duration"
+                )
+                assert client.get(f"/api/v1/monitors/{icmp_id}/uptime").json()["pct_24h"] == 100.0
+
+                # No target transition was recorded either. The execution
+                # condition may add `execution` events (one per change of
+                # reason, §6) and those carry the target's state through
+                # unchanged rather than rewriting it.
+                events_during = _monitor_events(client, icmp_id)
+                new_events = events_during[: len(events_during) - len(events_before_cut)]
+                assert {e["event_type"] for e in new_events} <= {"execution"}, new_events
+                for event in new_events:
+                    assert event["status_from"] == "up" and event["status_to"] == "up", event
+
+                # The runs the scheduler kept opening were all closed rather
+                # than left in flight — a run stuck in `queued`/`dispatched`
+                # holds the partial unique index and would wedge this monitor
+                # for good. A run legitimately stays `dispatched` until
+                # deadline_at (scheduled_at + 20s) plus the reconciliation
+                # pass's 30s grace, so only rows well past that are evidence of
+                # a wedge rather than of a lease still running its course.
+                wedged = [
+                    r
+                    for r in _probe_runs(client, icmp_id)
+                    if r["status"] in ("queued", "dispatched")
+                    and _parse_ts(r["scheduled_at"])
+                    < datetime.now(timezone.utc) - timedelta(seconds=120)
+                ]
+                assert not wedged, (
+                    "a probe run is still in flight long past its lease after the agent "
+                    f"vanished — the monitor is wedged behind the partial unique index: {wedged}"
+                )
+                assert len(_probe_runs(client, icmp_id)) > runs_before_cut, (
+                    "the scheduler stopped opening runs for an assigned monitor whose agent is "
+                    "offline — the monitor has to keep trying on its normal interval (§2)"
+                )
+
+            # ---- Step 6: the route comes back and the warning clears ----
+            _wait_until(
+                lambda: _agent_status()["link_state"] == "accepted",
+                timeout=_PROBE_RECONNECT_BUDGET_S,
+            )
+            _wait_until(
+                lambda: _probe_eligible_row(client, agent_id, host=_PROBE_TARGET_IP)["online"],
+                timeout=_PROBE_RECONNECT_BUDGET_S,
+            )
+
+            # "Check now" is accepted again rather than answering D-14's 409.
+            # It is retried because a scheduled run may legitimately be in
+            # flight at any moment (409 `previous_run_in_flight`), which is a
+            # different answer from "this vantage cannot take the check".
+            refusals: list[str] = []
+            deadline = time.monotonic() + 120
+            while True:
+                accepted = client.post(f"/api/v1/monitors/{icmp_id}/check")
+                if accepted.status_code == 200:
+                    break
+                assert accepted.status_code == 409, accepted.text
+                refusals.append(str(accepted.json().get("detail")))
+                assert time.monotonic() < deadline, (
+                    "check-now never stopped answering 409 after the route was restored; "
+                    f"reasons seen: {sorted(set(refusals))}"
+                )
+                time.sleep(2)
+
+            def _cleared() -> dict | None:
+                current = _monitor(client, icmp_id)
+                if current["probe_execution_status"] != "ready":
+                    return None
+                if current["probe_last_result_at"] == result_at_before_cut:
+                    return None
+                return current
+
+            cleared = _wait_until_and_return(_cleared, timeout=_PROBE_RECONNECT_BUDGET_S)
+            assert cleared["probe_execution_reason"] is None, cleared
+            assert cleared["status"] == "up", cleared
+            assert set(_monitor_samples(client, icmp_id, "avail")) == {1.0}, (
+                "the outage left an avail=0 sample behind after all"
+            )
+
+            # ---- Step 9: reassignment retires the run; the old vantage's
+            # late result is inert ----
+            slow_monitor = _create_monitor(
+                client,
+                name="e2e remote http slow",
+                check_type="http",
+                host=_PROBE_TARGET_IP,
+                # /cgi-bin/slow sleeps for two minutes, so this check cannot
+                # finish before the run's own 20s deadline — which is what
+                # gives the reassignment below a genuinely in-flight run to
+                # take away instead of a race against a millisecond check.
+                config={
+                    "url": f"http://{_PROBE_TARGET_IP}:{_PROBE_TARGET_HTTP_PORT}/cgi-bin/slow",
+                    "timeout": 100.0,
+                },
+                # Long enough that the scheduler opens exactly one run for it
+                # during this test, and never a second one after the monitor
+                # returns to server execution.
+                interval_secs=600,
+                max_retries=0,
+                enabled=True,
+                probe_agent_id=agent_id,
+            )
+            slow_id = slow_monitor["id"]
+
+            def _dispatched_run() -> dict | None:
+                for run in _probe_runs(client, slow_id):
+                    if run["status"] == "dispatched":
+                        return run
+                return None
+
+            in_flight = _wait_until_and_return(_dispatched_run, timeout=120)
+            run_id = in_flight["run_id"]
+            assert in_flight["agent_id"] == agent_id, in_flight
+            assert in_flight["dispatched_at"] is not None, in_flight
+
+            reassign = client.patch(
+                f"/api/v1/monitors/{slow_id}", json={"probe_agent_id": None}
+            )
+            assert reassign.status_code == 200, reassign.text
+            assert reassign.json()["probe_mode"] == "server", reassign.text
+            assert reassign.json()["probe_agent_id"] is None, reassign.text
+            # The previous vantage's condition is cleared with it: it says
+            # nothing about the new one.
+            assert reassign.json()["probe_execution_status"] is None, reassign.text
+
+            cancelled = _probe_run(client, slow_id, run_id)
+            assert cancelled["status"] == "cancelled", cancelled
+            assert cancelled["error_code"] == "monitor_reassigned", cancelled
+            assert cancelled["outcome"] is None, cancelled
+
+            # The agent was never told (the PATCH route is synchronous, so the
+            # advisory probe.cancel had no loop to publish on), so it keeps
+            # running the check and posts a result for this run once its
+            # deadline expires. Wait past that, with the link verifiably up and
+            # nothing left in the spool, so the frame has demonstrably been
+            # written to the server.
+            time.sleep(60)
+            assert _agent_status()["link_state"] == "accepted"
+            assert _agent_status()["spool_depth"] == 0, (
+                "the agent still has frames queued, so the result it posted for the retired run "
+                "may not have reached the server yet and the assertion below would be vacuous"
+            )
+
+            after_late_result = _probe_run(client, slow_id, run_id)
+            assert after_late_result == cancelled, (
+                "the old vantage's result was applied to a run the server had already retired: "
+                f"{cancelled} -> {after_late_result}"
+            )
+            slow_after = _monitor(client, slow_id)
+            assert slow_after["probe_last_result_at"] is None, slow_after
+            assert slow_after["probe_execution_status"] is None, slow_after
+            assert _monitor_events(client, slow_id) == [], (
+                "the retired run's result moved the monitor's target state"
+            )
+
+            # ---- Step 10: back to server execution, and only by asking ----
+            # The HTTP monitor has been UP for the whole test from the agent's
+            # vantage. The server cannot reach that address at all (step 1), so
+            # flipping the vantage — and nothing else about the monitor — must
+            # turn it DOWN. That is the sharpest available proof that the check
+            # really did move, and the converse of every earlier assertion.
+            http_id = monitors["http"]["id"]
+            runs_before_return = len(_probe_runs(client, http_id))
+            assert _monitor(client, http_id)["status"] == "up"
+
+            returned = client.patch(f"/api/v1/monitors/{http_id}", json={"probe_agent_id": None})
+            assert returned.status_code == 200, returned.text
+            assert returned.json()["probe_mode"] == "server", returned.text
+            assert returned.json()["probe_agent"] is None, returned.text
+
+            def _server_executed() -> dict | None:
+                current = _monitor(client, http_id)
+                return current if current["status"] == "down" else None
+
+            server_down = _wait_until_and_return(
+                _server_executed, timeout=_PROBE_FIRST_RESULT_BUDGET_S
+            )
+            assert server_down["probe_execution_status"] is None, server_down
+            assert 0.0 in _monitor_samples(client, http_id, "avail"), server_down
+            assert _monitor_events(client, http_id)[0]["event_type"] == "down"
+            assert len(_probe_runs(client, http_id)) == runs_before_return, (
+                "a probe run was opened for a monitor that is back on server execution"
+            )
+
+            # ...and the vantage that was taken away is still working for the
+            # monitors that kept it, which is what makes step 10 a per-monitor
+            # user action rather than a global fallback.
+            assert _monitor(client, icmp_id)["probe_mode"] == "agent"
+            assert _monitor(client, icmp_id)["status"] == "up"
         finally:
             stream.close()
     finally:
