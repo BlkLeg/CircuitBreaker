@@ -28,7 +28,7 @@ from app.db.models import (
 )
 from app.db.session import SessionLocal, get_session_context
 from app.schemas.discovery import ScanResultOut
-from app.services import discovery_eligibility
+from app.services import discovery_eligibility, discovery_result_service
 from app.services.agent_capabilities import (
     _LOCAL_DISCOVERY_BOUNDS,
     _LOCAL_DISCOVERY_DEFAULT_CONFIG,
@@ -60,7 +60,6 @@ from app.services.discovery_network import (
     _NMAP_OVERRIDE_PREFIX,
     PORT_SERVICE_MAP,
     _decrypt_community,
-    _match_ip_to_network,
     _validate_cidr,
     resolve_vlans_to_cidrs,
 )
@@ -997,17 +996,14 @@ def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
 
         _res_list: list[ScanResult] = []
         for raw in raw_results:
+            # Only what the prober-dedup branch below needs. Everything else the
+            # row is built from — the docker network_id resolution, the override
+            # fields, the whole match/conflict verdict — belongs to
+            # discovery_result_service.build_and_classify_result (D-9), which is
+            # the one path both this batch caller and the agent's per-finding
+            # caller go through.
             ip = raw.get("ip")
             mac_address = raw.get("mac_address")
-            hostname = raw.get("hostname")
-            snmp_data = raw.get("snmp_data", {})
-            source = raw.get("source", "nmap")
-            network_id = raw.get("network_id")
-            vlan_id = raw.get("vlan_id")
-
-            # For docker results, resolve network_id/vlan_id if not already set
-            if source == "docker" and network_id is None and ip:
-                network_id, vlan_id = _match_ip_to_network(db, ip)
 
             # Dedup: for prober-triggered jobs, skip creating a new ScanResult row
             # when an identical pending row (same MAC or IP) already exists.
@@ -1045,87 +1041,16 @@ def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
                         db.flush()
                     continue  # skip new ScanResult row creation
 
-            res = ScanResult(
-                scan_job_id=job_id,
-                ip_address=ip,
-                mac_address=mac_address,
-                hostname=hostname or snmp_data.get("sys_name"),
-                open_ports_json=raw.get("open_ports_json"),
-                os_family=raw.get("os_family"),
-                os_vendor=raw.get("os_vendor"),
-                os_accuracy=raw.get("os_accuracy"),
-                device_type=raw.get("device_type"),
-                device_confidence=raw.get("device_confidence"),
-                banner=raw.get("banner"),
-                source_type=raw.get("source_type", source),
-                snmp_sys_name=snmp_data.get("sys_name"),
-                snmp_sys_descr=snmp_data.get("sys_descr"),
-                raw_nmap_xml=raw.get("raw_nmap_xml", ""),
-                network_id=network_id,
-                vlan_id=vlan_id,
-                lldp_neighbors_json=raw.get("lldp_neighbors"),
-                state="new",
-                merge_status="pending",
-                created_at=utcnow_iso(),
-            )
+            res, classification = discovery_result_service.build_and_classify_result(db, job, raw)
 
-            # docker-sourced results have os_vendor/os_family/hostname preset via override fields
-            if raw.get("os_vendor_override"):
-                res.os_vendor = raw["os_vendor_override"]
-            if raw.get("os_family_override"):
-                res.os_family = raw["os_family_override"]
-            if raw.get("hostname_override"):
-                res.hostname = raw["hostname_override"]
-
-            db.add(res)
-
-            # Match against existing hardware
-            matched_hardware = None
-            if mac_address:
-                matched_hardware = (
-                    db.query(Hardware).filter(Hardware.mac_address == mac_address).first()
-                )
-            if not matched_hardware and ip:
-                matched_hardware = db.query(Hardware).filter(Hardware.ip_address == ip).first()
-
-            if matched_hardware:
-                res.matched_entity_type = "hardware"
-                res.matched_entity_id = matched_hardware.id
-
-                conflict_fields = []
-                if (
-                    mac_address
-                    and matched_hardware.mac_address
-                    and mac_address.upper() != matched_hardware.mac_address.upper()
-                ):
-                    conflict_fields.append(
-                        {
-                            "field": "mac_address",
-                            "stored": matched_hardware.mac_address,
-                            "discovered": mac_address,
-                        }
-                    )
-                discovered_hostname = hostname or snmp_data.get("sys_name")
-                if (
-                    discovered_hostname
-                    and matched_hardware.name
-                    and discovered_hostname.lower() != matched_hardware.name.lower()
-                ):
-                    conflict_fields.append(
-                        {
-                            "field": "hostname",
-                            "stored": matched_hardware.name,
-                            "discovered": discovered_hostname,
-                        }
-                    )
-
-                if conflict_fields:
-                    res.state = "conflict"
-                    res.conflicts_json = json.dumps(conflict_fields)  # type: ignore[assignment]
-                    hosts_conflict += 1
-                else:
-                    res.state = "matched"
-                    hosts_updated += 1
+            # The counters stay here, and stay absolute (D-10): this function
+            # owns a whole batch and overwrites `job.hosts_*` at the end, while
+            # the agent path increments them one finding at a time. That is the
+            # reason the shared builder returns a verdict instead of counting.
+            if classification == discovery_result_service.CLASSIFICATION_CONFLICT:
+                hosts_conflict += 1
+            elif classification == discovery_result_service.CLASSIFICATION_MATCHED:
+                hosts_updated += 1
             else:
                 hosts_new += 1
 
