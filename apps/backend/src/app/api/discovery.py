@@ -343,6 +343,7 @@ async def get_eligible_discovery_agents(
             EligibleDiscoveryAgent(
                 agent_id=agent.id,
                 name=agent.name,
+                hostname=agent.hostname,
                 online=await agent_registry.is_agent_online(agent.id),
                 granted=bool((grant or {}).get("enabled")),
                 paused=agent.id in paused_agents,

@@ -8,6 +8,12 @@ import { useSettings } from '../../context/SettingsContext';
 import { useToast } from '../common/Toast';
 import NmapArgsField from './NmapArgsField.jsx';
 import ScanAckModal from './ScanAckModal.jsx';
+import {
+  AGENT_SCAN_TYPES,
+  ScanFromSelect,
+  CIDR_RE,
+  executionLocationMessage,
+} from './ScanProfileForm.jsx';
 
 function composeNmapArgs(baseArgs, timingTemplate, ports) {
   const base = (baseArgs || '-sV -O --open -T4').trim();
@@ -103,6 +109,9 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
   const [availableVlans, setAvailableVlans] = useState([]);
   const [vlansLoading, setVlansLoading] = useState(false);
 
+  // Plan §3's execution location: `null` is the existing server discovery
+  // engine, an id dispatches this ad hoc scan to that agent.
+  const [scanAgentId, setScanAgentId] = useState(null);
   const [selectedProfileId, setSelectedProfileId] = useState('');
   const [profileSectionOpen, setProfileSectionOpen] = useState(false);
   const [dockerNetworks, setDockerNetworks] = useState([]);
@@ -206,6 +215,29 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
     setScanTypes((prev) => (checked ? [...prev, type] : prev.filter((t) => t !== type)));
   };
 
+  // Moving the execution location rewrites both the mode and the scan-type
+  // list. The two vocabularies are disjoint (`core/discovery_scan_types`), and
+  // §3 forbids sending a server-only type to an agent outright, so an agent
+  // scan is always the connect sweep and always from the Safe mode's fields —
+  // no nmap arguments, no SNMP community, no Docker socket.
+  const handleScanAgentChange = (next) => {
+    setScanAgentId(next);
+    if (next != null) {
+      setScanMode('safe');
+      setScanTypes([...AGENT_SCAN_TYPES]);
+    } else {
+      // Back to the server: `scanMode` is necessarily 'safe' (every other card
+      // is disabled while an agent is selected), so this restores that mode's
+      // own types rather than leaving `agent_connect` behind.
+      handleModeSelect(scanMode);
+    }
+  };
+
+  const onAgent = scanAgentId != null;
+  // What the eligible-agent listing is asked to judge each agent against. Only a
+  // complete prefix is a question; `ScanFromSelect` ignores anything else.
+  const scopeCidr = (targetMode === 'cidr' ? cidrs : []).find((c) => CIDR_RE.test(c.trim())) || '';
+
   const handleStart = () => {
     requireAck(async () => {
       if (launching) return;
@@ -215,6 +247,18 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
         if (profileSectionOpen && selectedProfileId) {
           await runProfile(Number(selectedProfileId));
           toast.success('Profile scan started');
+        } else if (onAgent) {
+          // Only the target and the location travel: the agent runs its own
+          // bounded connect sweep and has no nmap invocation or SNMP community
+          // to be handed one.
+          jobRes = await startAdHocScan({
+            ...(targetMode === 'cidr'
+              ? { cidrs: cidrs.map((c) => c.trim()).filter(Boolean) }
+              : { vlan_ids: selectedVlans }),
+            scan_types: [...AGENT_SCAN_TYPES],
+            scan_agent_id: scanAgentId,
+          });
+          toast.success('Agent scan started');
         } else if (scanMode === 'docker') {
           jobRes = await startAdHocScan({
             cidr: dockerCidr.trim() || 'docker',
@@ -246,9 +290,16 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
         }
         onStarted(jobRes?.data ?? null);
       } catch (err) {
+        const refusal = executionLocationMessage(err);
         if (err?.response?.status === 429) {
           const retryAfter = Number(err?.response?.headers?.['retry-after']) || 60;
           toast.warn(`Rate limited. Please wait ${retryAfter}s.`);
+        } else if (refusal) {
+          // An agent-targeted refusal is deterministic and structured: the
+          // backend created nothing, so the "navigate back and refresh, it may
+          // have started anyway" fallback below would be wrong — and its object
+          // detail means `err.message` reads "[object Object]".
+          toast.error(refusal);
         } else {
           toast.error(err?.message || 'Failed to start scan');
           // Navigate back to scan list and refresh — the backend may have
@@ -314,12 +365,26 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
           gap: 20,
         }}
       >
+        {/* Execution location — plan §6's "Scan from" */}
+        <ScanFromSelect
+          selectId="ns-scan-agent"
+          value={scanAgentId}
+          onChange={handleScanAgentChange}
+          cidr={scopeCidr}
+        />
+
         {/* Mode Cards */}
         <div className="scan-mode-cards">
           {SCAN_MODES.map(({ key, label, Icon, color, bg, desc }) => {
             const isDocker = key === 'docker';
             const requiresNmap = key === 'full' || key === 'deep_dive';
-            const disabled = (isDocker && !dockerAvailable) || (requiresNmap && !nmapEnabled);
+            // §3: an agent runs the connect sweep and nothing else. Every other
+            // mode is server-only, so it is disabled rather than hidden while an
+            // agent is the execution location — same treatment nmap and Docker
+            // already get when the server cannot run them.
+            const serverOnlyMode = onAgent && key !== 'safe';
+            const disabled =
+              (isDocker && !dockerAvailable) || (requiresNmap && !nmapEnabled) || serverOnlyMode;
             const selected = scanMode === key && !disabled;
             return (
               <button
@@ -400,11 +465,13 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
                   )}
                 </div>
                 <div className="scan-mode-card-desc">
-                  {isDocker && !dockerAvailable
-                    ? 'Socket unavailable'
-                    : requiresNmap && !nmapEnabled
-                      ? 'Enable Nmap Active Scanning in Discovery Settings to use this mode.'
-                      : desc}
+                  {serverOnlyMode
+                    ? 'Server-only — not available from an agent.'
+                    : isDocker && !dockerAvailable
+                      ? 'Socket unavailable'
+                      : requiresNmap && !nmapEnabled
+                        ? 'Enable Nmap Active Scanning in Discovery Settings to use this mode.'
+                        : desc}
                 </div>
               </button>
             );
@@ -563,17 +630,21 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
               <div className="cb-field">
                 <span className="cb-label">Scan Types</span>
                 <div className="cb-scan-type-row">
-                  {(scanMode === 'safe'
-                    ? ['snmp', 'http']
-                    : scanMode === 'deep_dive'
-                      ? ['nmap', 'arp', 'snmp', 'http', 'deep_dive']
-                      : ['nmap', 'arp', 'snmp', 'http']
+                  {(onAgent
+                    ? [...AGENT_SCAN_TYPES, 'snmp', 'http']
+                    : scanMode === 'safe'
+                      ? ['snmp', 'http']
+                      : scanMode === 'deep_dive'
+                        ? ['nmap', 'arp', 'snmp', 'http', 'deep_dive']
+                        : ['nmap', 'arp', 'snmp', 'http']
                   ).map((type) => (
                     <label key={type} className="cb-scan-type-option">
                       <input
                         type="checkbox"
                         checked={scanTypes.includes(type)}
-                        disabled={scanMode === 'deep_dive'}
+                        disabled={
+                          onAgent ? !AGENT_SCAN_TYPES.includes(type) : scanMode === 'deep_dive'
+                        }
                         onChange={(e) => handleToggleScanType(type, e.target.checked)}
                       />
                       {type.toUpperCase()}
@@ -583,7 +654,7 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
               </div>
             </div>
 
-            {(scanMode === 'full' || scanMode === 'deep_dive') && (
+            {!onAgent && (scanMode === 'full' || scanMode === 'deep_dive') && (
               <NmapArgsField value={nmapArgs} onChange={setNmapArgs} />
             )}
 

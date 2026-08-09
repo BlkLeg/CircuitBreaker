@@ -6,6 +6,21 @@ export const createProfile = (data) => client.post('/discovery/profiles', data);
 export const updateProfile = (id, data) => client.patch(`/discovery/profiles/${id}`, data);
 export const deleteProfile = (id) => client.delete(`/discovery/profiles/${id}`);
 export const runProfile = (id) => client.post(`/discovery/profiles/${id}/run`);
+// Slice 4 §6 / M14's per-subnet hold. A pause withholds future scheduling and
+// deletes nothing — no profile, job or result — and `paused_at` is "held since",
+// so pausing an already-held profile keeps the original timestamp. Both answer
+// with the `DiscoveryProfileOut` they changed.
+export const pauseProfile = (id) => client.post(`/discovery/profiles/${id}/pause`);
+export const resumeProfile = (id) => client.post(`/discovery/profiles/${id}/resume`);
+// M14's fleet-wide hold, on *agent-executed* discovery only: `discovery_enabled`
+// stays the product's master switch, so holding the fleet never stops the
+// server scanning the networks it can see itself. No precedence over the
+// per-subnet or per-agent holds in either direction — each is released by the
+// call that set it — so resuming here does not restart a paused agent, which is
+// exactly what `AgentDiscoveryRead.globally_paused` warns about on Agent Detail.
+// Both answer with `{paused}`.
+export const pauseDiscovery = () => client.post('/discovery/pause');
+export const resumeDiscovery = () => client.post('/discovery/resume');
 export const startAdHocScan = (data) => client.post('/discovery/scan', data);
 export const getJobs = (params) => client.get('/discovery/jobs', { params });
 export const getJob = (id) => client.get(`/discovery/jobs/${id}`);
@@ -36,3 +51,14 @@ export const enrichOpnsenseJob = (jobId) => client.post(`/discovery/jobs/${jobId
 
 // Discovery readiness
 export const getDiscoveryReadiness = () => client.get('/discovery/readiness');
+
+// Slice 4 §6's "Scan from" selector. Every **active** agent comes back whether
+// or not it may be chosen, each carrying `eligible` plus the machine-readable
+// `reason`/`detail` pair `POST /discovery/scan` refuses with — produced by the
+// same call — so the selector can never advertise an agent the next request
+// rejects, and an unusable agent is shown with its cause rather than hidden.
+// `cidr` is optional, unlike `GET /agents/probe-eligible`'s destination: the
+// agent-level half of the answer (grant, readiness, limits, its own subnets) is
+// worth rendering before the operator has finished typing a target.
+export const getEligibleDiscoveryAgents = (params = {}) =>
+  client.get('/discovery/eligible-agents', { params });

@@ -4018,3 +4018,481 @@ body {
   max-width: 100%;
   overflow-x: auto;
 }
+
+/* ── Assigned probes (Slice 3, §7) ──────────────────────────────────────────
+   Shipped unstyled: the section, its two status vocabularies and the config
+   fieldset all rendered as bare browser defaults. Same rem scale and token set
+   as the agent-telemetry block above, since they are neighbours on the same
+   page. */
+.agent-probes {
+  margin-top: 1.5rem;
+}
+.agent-probes .table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.agent-probes__disabled {
+  border: 1px solid var(--color-warning);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--color-warning) 10%, transparent);
+  color: var(--color-text);
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0;
+}
+.agent-probes__concurrency {
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+  margin: 0.5rem 0;
+}
+
+/* Target state and execution condition are deliberately two cells (§7). They
+   get two visibly different shapes — a filled pill for the target, an
+   outlined tag for the vantage — so a glance never confuses one for the
+   other, and so neither reads as a colour swatch alone. */
+.agent-probes__status,
+.agent-probes__execution {
+  display: inline-block;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  padding: 0.1rem 0.5rem;
+  white-space: nowrap;
+}
+.agent-probes__status {
+  border: 1px solid var(--agent-probes-status-color, var(--color-border));
+  background: color-mix(
+    in srgb,
+    var(--agent-probes-status-color, var(--color-border)) 18%,
+    transparent
+  );
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+.agent-probes__status[data-status='up'] {
+  --agent-probes-status-color: var(--color-success);
+}
+.agent-probes__status[data-status='down'] {
+  --agent-probes-status-color: var(--color-danger);
+}
+.agent-probes__status[data-status='pending'] {
+  --agent-probes-status-color: var(--color-warning);
+}
+.agent-probes__status[data-status='maintenance'] {
+  --agent-probes-status-color: var(--color-info);
+}
+.agent-probes__status[data-status='paused'] {
+  --agent-probes-status-color: var(--color-muted);
+}
+.agent-probes__execution {
+  border: 1px dashed var(--agent-probes-execution-color, var(--color-border));
+  color: var(--color-text);
+  white-space: normal;
+}
+.agent-probes__execution[data-state='ready'] {
+  --agent-probes-execution-color: var(--color-success);
+}
+/* Not dead, despite `result_service.py`'s EXECUTION_* trio listing only
+   ready/unavailable/stale — that comment scopes the three statuses derived from
+   a *result*, not the column's vocabulary. `queued` and `running` are written
+   by the dispatch path: scheduler.py's _MARK_QUEUED_SQL and _MARK_IN_FLIGHT_SQL
+   and monitor_probe_dispatch.py's successful-publish branch, each pinned by a
+   backend test (test_monitor_scheduler.py, test_monitor_probe_dispatch.py).
+   Deleting these two selectors would drop the in-flight pill to the default
+   border mid-run, which is exactly when the operator is looking at it. */
+.agent-probes__execution[data-state='queued'],
+.agent-probes__execution[data-state='running'] {
+  --agent-probes-execution-color: var(--color-info);
+}
+.agent-probes__execution[data-state='stale'] {
+  --agent-probes-execution-color: var(--color-warning);
+}
+.agent-probes__execution[data-state='unavailable'] {
+  --agent-probes-execution-color: var(--color-danger);
+}
+
+.agent-probes__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+.agent-probes__actions button,
+.agent-probes__actions select {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.15rem 0.5rem;
+  cursor: pointer;
+}
+.agent-probes__actions button:not(:disabled):hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+.agent-probes__actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.agent-probes__actions :focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+.agent-probes__config {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  margin-top: 1rem;
+  display: grid;
+  gap: 0.6rem;
+}
+.agent-probes__config legend {
+  padding: 0 0.35rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.agent-probes__config label {
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.875rem;
+}
+.agent-probes__config input {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.875rem;
+  padding: 0.25rem 0.5rem;
+  max-width: 32rem;
+}
+.agent-probes__config input:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 25%, transparent);
+}
+.agent-probes__config input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.agent-probes__scope-mode {
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+  margin: 0;
+}
+.agent-probes__scope-mode code {
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  border-radius: 4px;
+  padding: 0 0.25rem;
+}
+.agent-probes__hint {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
+
+/* ── Discovery scope (Slice 4, plan §6) ─────────────────────────────────────
+   The Agent Detail section that owns local discovery. Same rem scale and token
+   set as the agent-telemetry and agent-probes blocks above — the three are
+   neighbours on one page and must not read as three designs. */
+.agent-discovery {
+  margin-top: 1.5rem;
+}
+.agent-discovery .table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.agent-discovery h3 {
+  font-size: 0.9375rem;
+  margin-top: 1rem;
+}
+.agent-discovery__disabled,
+.agent-discovery__global-pause {
+  border: 1px solid var(--color-warning);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--color-warning) 10%, transparent);
+  color: var(--color-text);
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0;
+}
+.agent-discovery aside[role='alert'] {
+  border: 1px solid var(--color-danger);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--color-danger) 10%, transparent);
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0;
+}
+.agent-discovery__eligibility {
+  font-size: 0.875rem;
+  margin: 0.5rem 0;
+  color: var(--color-text-muted);
+}
+.agent-discovery__eligibility[data-eligible='true'] {
+  color: var(--color-text);
+}
+.agent-discovery__eligibility code {
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  border-radius: 4px;
+  padding: 0 0.25rem;
+}
+.agent-discovery__pause {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.875rem;
+  margin: 0.5rem 0;
+  cursor: pointer;
+}
+.agent-discovery__pause input:disabled {
+  cursor: not-allowed;
+}
+.agent-discovery__group {
+  margin-top: 1rem;
+}
+.agent-discovery__hint {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  margin: 0.15rem 0 0.4rem;
+}
+
+/* Provenance is encoded three ways at once — border style, leading glyph and
+   colour — because plan §6's "visibly different provenance" has to survive a
+   colour-blind operator, a greyscale print and forced-colours mode, where a
+   hue-only badge collapses into one indistinguishable chip. */
+.agent-discovery__provenance {
+  display: inline-block;
+  border: 1px solid var(--agent-discovery-provenance-color, var(--color-border));
+  background: color-mix(
+    in srgb,
+    var(--agent-discovery-provenance-color, var(--color-border)) 14%,
+    transparent
+  );
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--color-text);
+}
+.agent-discovery__provenance[data-provenance='automatic'] {
+  --agent-discovery-provenance-color: var(--color-success);
+  border-style: solid;
+}
+.agent-discovery__provenance[data-provenance='automatic']::before {
+  content: '\25CF  ';
+  font-weight: 700;
+}
+.agent-discovery__provenance[data-provenance='override'] {
+  --agent-discovery-provenance-color: var(--color-primary);
+  border-style: double;
+  border-width: 3px;
+}
+.agent-discovery__provenance[data-provenance='override']::before {
+  content: '+ ';
+  font-weight: 700;
+}
+.agent-discovery__provenance[data-provenance='excluded'] {
+  --agent-discovery-provenance-color: var(--color-danger);
+  border-style: dashed;
+  text-decoration: line-through;
+}
+.agent-discovery__provenance[data-provenance='excluded']::before {
+  content: '\2715  ';
+  font-weight: 700;
+  text-decoration: none;
+  display: inline-block;
+}
+/* The verdict is the evaluator's answer, not a provenance restatement, so it
+   gets its own shape: a plain phrase when scanned, a boxed one when refused. */
+.agent-discovery__verdict {
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+}
+.agent-discovery__verdict[data-refused='true'] {
+  display: inline-block;
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--color-danger) 10%, transparent);
+  color: var(--color-text);
+  padding: 0.1rem 0.4rem;
+}
+.agent-discovery__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+.agent-discovery__actions button {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.15rem 0.5rem;
+  cursor: pointer;
+}
+.agent-discovery__actions button:not(:disabled):hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+.agent-discovery__actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.agent-discovery__actions button:focus-visible,
+.agent-discovery__cadence:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+.agent-discovery__effective-list,
+.agent-discovery__refused-list,
+.agent-discovery__history-link,
+.agent-discovery__active {
+  font-size: 0.875rem;
+  margin: 0.35rem 0;
+}
+.agent-discovery__refused-list {
+  color: var(--color-text-muted);
+}
+.agent-discovery__active {
+  border-left: 3px solid var(--color-info);
+  padding-left: 0.5rem;
+}
+.agent-discovery__history-link a {
+  color: var(--color-primary);
+}
+
+.agent-discovery__limits {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.2rem 0.75rem;
+  margin: 0.75rem 0;
+  font-size: 0.875rem;
+}
+.agent-discovery__limits dt {
+  color: var(--color-text-muted);
+}
+.agent-discovery__limits dd {
+  margin: 0;
+}
+
+/* Readiness reuses the probes execution tag's outlined shape: it is the same
+   kind of fact — the vantage's own condition — so it should not look like a
+   second, unrelated vocabulary. */
+.agent-discovery__readiness {
+  display: inline-block;
+  border: 1px dashed var(--agent-discovery-readiness-color, var(--color-border));
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.75rem;
+  color: var(--color-text);
+}
+.agent-discovery__readiness[data-state='ready'] {
+  --agent-discovery-readiness-color: var(--color-success);
+}
+.agent-discovery__readiness[data-state='degraded'] {
+  --agent-discovery-readiness-color: var(--color-warning);
+}
+.agent-discovery__readiness[data-state='unavailable'] {
+  --agent-discovery-readiness-color: var(--color-danger);
+}
+.agent-discovery__readiness[data-state='unknown'] {
+  --agent-discovery-readiness-color: var(--color-muted);
+}
+
+.agent-discovery__cadence {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 0.15rem 0.4rem;
+  width: 11rem;
+}
+.agent-discovery__cadence:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* The local_discovery grant editor. Same rules as agent-probes__config —
+   they are the same control, one capability apart. */
+.agent-discovery__config {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  margin-top: 1rem;
+  display: grid;
+  gap: 0.6rem;
+}
+.agent-discovery__config legend {
+  padding: 0 0.35rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.agent-discovery__config label {
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.875rem;
+}
+.agent-discovery__config input {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.875rem;
+  padding: 0.25rem 0.5rem;
+  max-width: 32rem;
+}
+.agent-discovery__config input:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 25%, transparent);
+}
+.agent-discovery__config input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.agent-discovery__scope-mode {
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+  margin: 0;
+}
+.agent-discovery__scope-mode code {
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  border-radius: 4px;
+  padding: 0 0.25rem;
+}
+
+/* Forced-colours mode drops every custom property, so the provenance and
+   verdict distinctions fall back to the border-style/glyph channel alone —
+   which is exactly why they were encoded there too. */
+@media (forced-colors: active) {
+  .agent-discovery__provenance,
+  .agent-discovery__readiness,
+  .agent-discovery__verdict[data-refused='true'],
+  .agent-probes__status,
+  .agent-probes__execution {
+    forced-color-adjust: none;
+    border-color: currentColor;
+    background: transparent;
+    color: CanvasText;
+  }
+}

@@ -93,11 +93,25 @@ async def _emit_result_processed_event(db: Session, result_id: int, status: str)
             logger.warning("Cannot emit result_processed event: result %d not found", result_id)
             return
 
-        # Prepare payload with result data and status
+        # Prepare payload with result data and status.
+        #
+        # `pending_count` is the review badge's authoritative number, and it is
+        # counted here rather than inferred by the client: `useDiscoveryStream`
+        # keeps an optimistic count between server events and replaces it with
+        # this one whenever a frame carries it. Without the key the optimistic
+        # count is never corrected, so every accept/reject the client did not
+        # originate — and every incremental agent finding merged out from under
+        # it — drifts the badge by one and it never recovers. Emitted after the
+        # caller's commit, exactly like `discovery_service`'s terminal
+        # `job_update`, so the number a client refetches against is already
+        # true.
         payload = {
             "job_id": result.scan_job_id,
             "result": ScanResultOut.model_validate(result).model_dump(),
             "status": status,
+            "pending_count": db.query(ScanResult)
+            .filter(ScanResult.merge_status == "pending")
+            .count(),
         }
 
         # Emit the event

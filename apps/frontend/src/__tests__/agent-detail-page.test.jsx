@@ -116,6 +116,13 @@ vi.mock('../api/agents', () => ({
   setAgentCapabilities: vi.fn(apiDefaults.setAgentCapabilities),
   revokeAgent: vi.fn(apiDefaults.revokeAgent),
   triggerAgentUpdate: vi.fn(apiDefaults.triggerAgentUpdate),
+  // Slice 4 Task 27: AgentDetailPage now also loads GET /agents/{id}/discovery
+  // for the Discovery scope section. Plain functions rather than vi.fn(): these
+  // tests assert nothing about discovery, and a stub with no implementation
+  // would throw inside the page's loader.
+  getAgentDiscovery: () => Promise.resolve({ data: null }),
+  pauseAgentDiscovery: () => Promise.resolve({ data: null }),
+  resumeAgentDiscovery: () => Promise.resolve({ data: null }),
 }));
 
 // See agents-page.test.jsx for why useAgentLive needs vi.hoisted() here.

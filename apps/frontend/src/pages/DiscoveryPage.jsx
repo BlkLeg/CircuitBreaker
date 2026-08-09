@@ -1,20 +1,24 @@
 /* eslint-disable security/detect-object-injection -- Map used for job-keyed state */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import '../styles/discovery.css';
 import {
   getProfiles,
   getJobs,
   getPendingResults,
   getDiscoveryStatus,
+  pauseDiscovery,
+  resumeDiscovery,
   startAdHocScan,
 } from '../api/discovery.js';
+import { getAgentDiscovery, listAgents } from '../api/agents.js';
 import { X } from 'lucide-react';
 import { systemApi } from '../api/client.jsx';
 import { discoveryEmitter } from '../hooks/useDiscoveryStream.js';
 import { useToast } from '../components/common/Toast';
 import logger from '../utils/logger.js';
 import { hasJobVisualDiff, mergeJobPatch, mergeJobsById } from '../lib/discoveryJobState.js';
+import { agentDisplayName } from '../lib/agentLabel.js';
 
 import DiscoverySidebar from '../components/discovery/DiscoverySidebar.jsx';
 import DiscoveryHistoryPage from './DiscoveryHistoryPage.jsx';
@@ -31,10 +35,16 @@ function logApiWarning(scope, error) {
 
 export default function DiscoveryPage() {
   const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
   const toast = useToast();
 
   const [jobs, setJobs] = useState([]);
   const [profiles, setProfiles] = useState([]);
+  const [agents, setAgents] = useState([]);
+  // `null` while unknown, and while there is no fleet to hold. The control is
+  // not rendered in that state rather than guessing a boolean.
+  const [fleetPaused, setFleetPaused] = useState(null);
+  const [fleetPauseBusy, setFleetPauseBusy] = useState(false);
   const [filter, setFilter] = useState('all');
   const [pendingReviewCount, setPendingReviewCount] = useState(0);
   const [discoveryCapabilities, setDiscoveryCapabilities] = useState({
@@ -67,10 +77,21 @@ export default function DiscoveryPage() {
       .catch((err) => logApiWarning('Failed to load profiles', err));
   }, []);
 
+  // The fleet, for the same reason `profiles` is loaded here: `ScanJobOut`
+  // carries only `scan_agent_id`, so this page is the one place that can turn
+  // the id on an agent-executed job into the agent's name before the history
+  // table renders it. Without it every such row reads `agent <id>`.
+  const loadAgents = useCallback(() => {
+    listAgents()
+      .then((res) => setAgents(Array.isArray(res.data) ? res.data : []))
+      .catch((err) => logApiWarning('Failed to load the agent fleet', err));
+  }, []);
+
   useEffect(() => {
     loadJobs();
     loadProfiles();
-  }, [loadJobs, loadProfiles]);
+    loadAgents();
+  }, [loadAgents, loadJobs, loadProfiles]);
 
   useEffect(() => {
     if (locationFilterAppliedRef.current) return;
@@ -241,15 +262,103 @@ export default function DiscoveryPage() {
     };
   }, [loadJobs]);
 
+  // The fleet-wide hold's current state. `AgentDiscoveryRead.globally_paused`
+  // is the only route that reports it — `app_settings.agent_discovery_paused`
+  // is deliberately absent from `AppSettingsRead`, and `POST
+  // /discovery/pause|resume` only answer with the value they just wrote — and
+  // the flag is a property of the installation rather than of the agent asked,
+  // so any one agent answers for the whole fleet. With no agents there is no
+  // fleet to hold, and the control is not rendered at all.
+  const fleetPauseProbeAgentId = agents.length > 0 ? agents[0].id : null;
+  useEffect(() => {
+    if (fleetPauseProbeAgentId == null) {
+      setFleetPaused(null);
+      return undefined;
+    }
+    let active = true;
+    getAgentDiscovery(fleetPauseProbeAgentId)
+      .then((res) => {
+        if (active) setFleetPaused(Boolean(res.data?.globally_paused));
+      })
+      .catch((err) => logApiWarning('Failed to read the fleet-wide discovery hold', err));
+    return () => {
+      active = false;
+    };
+  }, [fleetPauseProbeAgentId]);
+
+  const handleFleetPauseToggle = async () => {
+    if (fleetPaused == null || fleetPauseBusy) return;
+    setFleetPauseBusy(true);
+    try {
+      const { data } = fleetPaused ? await resumeDiscovery() : await pauseDiscovery();
+      const nowPaused = Boolean(data?.paused);
+      setFleetPaused(nowPaused);
+      toast.success(
+        nowPaused ? 'Agent discovery paused fleet-wide' : 'Agent discovery resumed across the fleet'
+      );
+      // The hold is read at scheduling time, so the job list changes underneath
+      // this page the moment it is applied.
+      loadJobs();
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.detail || err?.message || 'Could not change the fleet-wide hold'
+      );
+    } finally {
+      setFleetPauseBusy(false);
+    }
+  };
+
+  // `?agent=<id>` — how `DiscoveryScopeSection` deep-links one agent's job
+  // history. Read from the URL rather than passed as a prop, so the link is
+  // shareable and survives a reload; anything that is not an agent id is
+  // ignored rather than filtering the history down to nothing.
+  const agentFilterId = useMemo(() => {
+    const raw = searchParams.get('agent');
+    if (raw == null || raw.trim() === '') return null;
+    const parsed = Number(raw);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  }, [searchParams]);
+
+  const clearAgentFilter = useCallback(() => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('agent');
+        return next;
+      },
+      { replace: true }
+    );
+  }, [setSearchParams]);
+
+  const historyJobs = useMemo(
+    () => (agentFilterId == null ? jobs : jobs.filter((j) => j.scan_agent_id === agentFilterId)),
+    [agentFilterId, jobs]
+  );
+
+  const agentFilterName = useMemo(() => {
+    if (agentFilterId == null) return null;
+    // `agentFilterId` is passed as the fallback because nothing constrains
+    // `?agent=` to an agent that still exists — and because `name` alone is
+    // null for every agent nobody has renamed (see `lib/agentLabel.js`), which
+    // made this banner read "Showing discovery history for agent 7".
+    return agentDisplayName(
+      agents.find((agent) => agent.id === agentFilterId),
+      agentFilterId
+    );
+  }, [agentFilterId, agents]);
+
   const jobCounts = useMemo(
     () =>
       new Map([
-        ['all', jobs.length],
-        ['active', jobs.filter((j) => j.status === 'running').length],
-        ['completed', jobs.filter((j) => j.status === 'completed' || j.status === 'done').length],
-        ['queued', jobs.filter((j) => j.status === 'queued').length],
+        ['all', historyJobs.length],
+        ['active', historyJobs.filter((j) => j.status === 'running').length],
+        [
+          'completed',
+          historyJobs.filter((j) => j.status === 'completed' || j.status === 'done').length,
+        ],
+        ['queued', historyJobs.filter((j) => j.status === 'queued').length],
       ]),
-    [jobs]
+    [historyJobs]
   );
 
   // ── Actions ────────────────────────────────────────────────────────────
@@ -318,7 +427,39 @@ export default function DiscoveryPage() {
     mainContent = <ScanSettingsPanel />;
   } else {
     mainContent = (
-      <DiscoveryHistoryPage embedded jobsData={jobs} onRefreshJobs={loadJobs} profiles={profiles} />
+      <>
+        {agentFilterId != null && (
+          <div
+            role="status"
+            aria-label="Discovery history filter"
+            className="discovery-agent-filter"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              margin: '12px 16px 0',
+              padding: '8px 12px',
+              borderRadius: 6,
+              fontSize: 13,
+              color: 'var(--color-text)',
+              background: 'var(--color-surface)',
+              border: '1px solid var(--color-border)',
+            }}
+          >
+            <span style={{ flex: 1 }}>Showing discovery history for {agentFilterName}</span>
+            <button type="button" className="btn btn-secondary" onClick={clearAgentFilter}>
+              Show all scans
+            </button>
+          </div>
+        )}
+        <DiscoveryHistoryPage
+          embedded
+          jobsData={historyJobs}
+          onRefreshJobs={loadJobs}
+          profiles={profiles}
+          agents={agents}
+        />
+      </>
     );
   }
 
@@ -338,6 +479,49 @@ export default function DiscoveryPage() {
       />
 
       <div className="discovery-main">
+        {/* M14's fleet-wide hold. Agent Detail already tells an operator their
+            agent is held fleet-wide and that resuming it alone changes nothing;
+            this is the only place in the product that can release it. Scoped to
+            agent-executed discovery — the server's own crons are governed by
+            `discovery_enabled` in Settings and are not touched here. */}
+        {fleetPaused != null && (
+          <section
+            aria-label="Agent discovery"
+            className="discovery-fleet-hold"
+            data-paused={fleetPaused}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              margin: '12px 16px 0',
+              padding: '8px 12px',
+              borderRadius: 6,
+              fontSize: 13,
+              color: 'var(--color-text)',
+              background: fleetPaused ? 'rgba(234,179,8,0.1)' : 'var(--color-surface)',
+              border: `1px solid ${fleetPaused ? 'rgba(234,179,8,0.35)' : 'var(--color-border)'}`,
+            }}
+          >
+            <span style={{ flex: 1 }}>
+              {fleetPaused
+                ? 'Agent discovery is paused fleet-wide. No agent will start a scheduled scan until it is resumed; nothing has been deleted, and a scan started by hand still runs.'
+                : 'Agent discovery is running. Scheduled scans start on their own from every eligible agent.'}
+              {fleetPaused && (
+                <span style={{ display: 'block', color: 'var(--color-text-muted)' }}>
+                  Resuming here does not release a hold placed on a single agent or subnet.
+                </span>
+              )}
+            </span>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={fleetPauseBusy}
+              onClick={handleFleetPauseToggle}
+            >
+              {fleetPaused ? 'Resume agent discovery' : 'Pause agent discovery'}
+            </button>
+          </section>
+        )}
         {Object.keys(scanWarnings).length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '12px 16px 0' }}>
             {Object.entries(scanWarnings).map(([jobId, msg]) => (

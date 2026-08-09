@@ -180,6 +180,13 @@ vi.mock('../api/agents', () => ({
   revokeAgent: vi.fn(apiDefaults.revokeAgent),
   triggerAgentUpdate: vi.fn(apiDefaults.triggerAgentUpdate),
   listProbeEligibleAgents: vi.fn(apiDefaults.listProbeEligibleAgents),
+  // Slice 4 Task 27: AgentDetailPage now also loads GET /agents/{id}/discovery
+  // for the Discovery scope section. Plain functions rather than vi.fn(): these
+  // tests assert nothing about discovery, and a stub with no implementation
+  // would throw inside the page's loader.
+  getAgentDiscovery: () => Promise.resolve({ data: null }),
+  pauseAgentDiscovery: () => Promise.resolve({ data: null }),
+  resumeAgentDiscovery: () => Promise.resolve({ data: null }),
 }));
 
 vi.mock('../api/monitor', () => ({

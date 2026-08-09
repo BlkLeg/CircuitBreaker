@@ -330,6 +330,17 @@ class EligibleDiscoveryAgent(BaseModel):
 
     agent_id: int
     name: str | None = None
+    # Carried *alongside* `name`, not folded into it. `agents.name` is nullable
+    # and enrollment never writes it — `agent_registry.create_pending_agent`
+    # records hostname/os/arch, and the only writer of `name` is an explicit
+    # operator `PATCH /agents/{id}` — so `name is None` is the state of every
+    # agent nobody has renamed, and a selector with only `name` to render labels
+    # the common case "agent 7". Defaulting `name` to the hostname at enrollment
+    # was rejected: it would leave every existing un-renamed row still nameless,
+    # and it conflates "an operator named this" with "we guessed", so a later
+    # hostname change could not track. Resolving at display time fixes old and
+    # new rows alike and keeps `name` meaning what it means.
+    hostname: str | None = None
     online: bool
     granted: bool
     # The per-agent hold (M14). Not an ineligibility: a paused agent still

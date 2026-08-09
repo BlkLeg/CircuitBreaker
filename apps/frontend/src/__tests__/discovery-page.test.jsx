@@ -43,6 +43,15 @@ vi.mock('../api/discovery.js', () => ({
   syncDocker: vi.fn(),
 }));
 
+// DiscoveryPage resolves the agent name on every agent-executed history row,
+// so it loads the fleet on mount. The `../api/client` stand-in above returns
+// undefined from `get`, which is not a promise — stub the two calls the page
+// makes rather than teaching that mock to be an HTTP client.
+vi.mock('../api/agents.js', () => ({
+  listAgents: vi.fn().mockResolvedValue({ data: [] }),
+  getAgentDiscovery: vi.fn().mockResolvedValue({ data: { globally_paused: false } }),
+}));
+
 vi.mock('../components/common/Toast', () => ({
   useToast: () => ({
     success: vi.fn(),

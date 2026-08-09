@@ -2275,6 +2275,47 @@ async def test_eligible_discovery_agents_render_every_active_agent_with_its_reas
 
 
 @pytest.mark.asyncio
+async def test_eligible_discovery_agents_carry_the_hostname_enrollment_recorded(
+    client, auth_headers, factories
+):
+    """An un-renamed agent must not reach the "Scan from" selector as "agent 7".
+
+    `agents.name` is nullable and *enrollment never writes it* — see
+    `agent_registry.create_pending_agent`, whose only caller
+    (`ws_agents.enroll_stream`) passes hostname/os/arch and no name; the sole
+    writer is an explicit operator `PATCH /agents/{id}`. So `name is None` is
+    the state of every agent nobody has renamed, which is most of them, and a
+    selector with only `name` to render falls back to the bare id for the
+    common case rather than the rare one.
+
+    Rejected alternative: defaulting `Agent.name` to the hostname at
+    enrollment. That leaves every *existing* un-renamed row still nameless, and
+    it conflates "an operator named this" with "we guessed" — a later hostname
+    change would then not track, because a stored guess is indistinguishable
+    from a deliberate name. Carrying `hostname` alongside `name` and resolving
+    at display time fixes old and new rows alike and keeps `name` meaning what
+    it means.
+
+    The assertion below is deliberately about the *nameless* agent: a fixture
+    that supplies a name cannot see this bug, which is exactly why it shipped.
+    """
+    unnamed = _eligible_agent(factories, hostname="branch-office-01")
+    named = _eligible_agent(factories, name="renamed-by-hand", hostname="dc-rack-3")
+    # The premise, pinned against production rather than assumed: this is the
+    # row shape enrollment actually produces.
+    assert unnamed.name is None
+
+    rows = await _eligible_rows(client, auth_headers)
+
+    assert rows[unnamed.id]["name"] is None
+    assert rows[unnamed.id]["hostname"] == "branch-office-01"
+    # `hostname` is additional to `name`, never a replacement: an operator who
+    # renamed an agent must still see the name they chose.
+    assert rows[named.id]["name"] == "renamed-by-hand"
+    assert rows[named.id]["hostname"] == "dc-rack-3"
+
+
+@pytest.mark.asyncio
 async def test_eligible_discovery_agents_judge_scope_against_the_asked_subnet(
     client, auth_headers, factories
 ):

@@ -13,8 +13,13 @@ import { useToast } from '../components/common/Toast';
 import TimestampCell from '../components/TimestampCell.jsx';
 import logger from '../utils/logger.js';
 import AnimatedCounter from '../components/discovery/AnimatedCounter.jsx';
-import ScanDetailPanel from '../components/discovery/ScanDetailPanel.jsx';
+import ScanDetailPanel, {
+  DISCOVERY_ERROR_REASON_LABELS,
+  ExecutionLocation,
+  JobFailureNote,
+} from '../components/discovery/ScanDetailPanel.jsx';
 import ScanProgressAnimation from '../components/discovery/ScanProgressAnimation.jsx';
+import { agentDisplayName } from '../lib/agentLabel.js';
 import {
   SCAN_ROW_ENTRY_ANIMATION_MS,
   SCAN_STATUS_RUNNING_PULSE_DURATION_MS,
@@ -230,6 +235,7 @@ ExpandedResults.propTypes = {
 const ScanHistoryRow = React.memo(
   function ScanHistoryRow({
     item,
+    agentName,
     isExpanded,
     isSelected,
     jobResults,
@@ -295,6 +301,9 @@ const ScanHistoryRow = React.memo(
               )}
             </div>
           </td>
+          <td className="history-location">
+            <ExecutionLocation agentId={item.scan_agent_id ?? null} agentName={agentName ?? null} />
+          </td>
           <td>
             <div className="history-status-row">
               <HistoryStatusPill status={item.status} />
@@ -339,6 +348,7 @@ const ScanHistoryRow = React.memo(
             <div className={`history-live-message${liveMessage ? ' is-visible' : ''}`}>
               {liveMessage || EMPTY_VALUE}
             </div>
+            <JobFailureNote job={item} className="history-failure-note" />
           </td>
           <td className="history-counter-cell">
             <AnimatedCounter value={item.hosts_found ?? 0} className="history-counter-value" />
@@ -352,7 +362,7 @@ const ScanHistoryRow = React.memo(
         </tr>
         {isExpanded && (
           <tr className="history-expanded-row">
-            <td colSpan={8}>
+            <td colSpan={9}>
               <div className="history-expanded-shell">
                 <ExpandedResults jobResults={jobResults} />
               </div>
@@ -364,6 +374,7 @@ const ScanHistoryRow = React.memo(
   },
   (previousProps, nextProps) =>
     previousProps.item === nextProps.item &&
+    previousProps.agentName === nextProps.agentName &&
     previousProps.isExpanded === nextProps.isExpanded &&
     previousProps.isSelected === nextProps.isSelected &&
     previousProps.jobResults === nextProps.jobResults &&
@@ -374,6 +385,7 @@ const ScanHistoryRow = React.memo(
 
 ScanHistoryRow.propTypes = {
   item: PropTypes.object.isRequired,
+  agentName: PropTypes.string,
   isExpanded: PropTypes.bool.isRequired,
   isSelected: PropTypes.bool,
   jobResults: PropTypes.array,
@@ -389,6 +401,7 @@ export default function DiscoveryHistoryPage({
   jobsData = null,
   onRefreshJobs,
   profiles = [],
+  agents = [],
 }) {
   const toast = useToast();
   const [jobs, setJobs] = useState([]);
@@ -402,6 +415,15 @@ export default function DiscoveryHistoryPage({
   const [detailedLogs, setDetailedLogs] = useState([]);
 
   const profileMap = useMemo(() => new Map(profiles.map((p) => [p.id, p.name])), [profiles]);
+  // Plan §6: the history row names the agent a scan ran on. `ScanJobOut` carries
+  // only `scan_agent_id`, so the name is resolved against the fleet the parent
+  // already loaded — the same shape `profiles`/`profileMap` uses — and a job
+  // whose agent has since been deleted still renders, as `agent <id>`.
+  //
+  // The map holds the *resolved label*, not `a.name`: enrollment never sets
+  // `name` (see `lib/agentLabel.js`), so a map of raw names is a map of nulls
+  // for every agent nobody has renamed, and every such row read `agent 7`.
+  const agentMap = useMemo(() => new Map(agents.map((a) => [a.id, agentDisplayName(a)])), [agents]);
 
   useEffect(() => {
     if (selectedJobId == null) {
@@ -539,7 +561,8 @@ export default function DiscoveryHistoryPage({
         const matchesStatus =
           statusFilter === 'all' ||
           item.status === statusFilter ||
-          (statusFilter === 'completed' && item.status === 'done');
+          (statusFilter === 'completed' && item.status === 'done') ||
+          item.error_reason === statusFilter;
         return matchesText && matchesStatus;
       }),
     [filter, merged, sourceFilter, statusFilter]
@@ -597,6 +620,17 @@ export default function DiscoveryHistoryPage({
           <option value="completed">Completed</option>
           <option value="failed">Failed</option>
           <option value="cancelled">Cancelled</option>
+          {/* D-4: an agent failure closes the job as `failed` with a machine
+              readable `error_reason`. Filtering on the reason is the only way to
+              separate "the agent was offline" from "the agent refused the
+              scope", which the shared `failed` status cannot express. */}
+          <optgroup label="Agent failures">
+            {[...DISCOVERY_ERROR_REASON_LABELS].map(([reason, label]) => (
+              <option key={reason} value={reason}>
+                {label}
+              </option>
+            ))}
+          </optgroup>
         </select>
       </div>
 
@@ -615,6 +649,7 @@ export default function DiscoveryHistoryPage({
                 <th>Started</th>
                 <th>Target</th>
                 <th>Type</th>
+                <th>Ran on</th>
                 <th>Status</th>
                 <th>Found</th>
                 <th>New</th>
@@ -626,6 +661,7 @@ export default function DiscoveryHistoryPage({
                 <ScanHistoryRow
                   key={item.id}
                   item={item}
+                  agentName={item.scan_agent_id == null ? null : agentMap.get(item.scan_agent_id)}
                   isExpanded={expanded.has(item.id)}
                   isSelected={item.id === selectedJobId}
                   jobResults={results.get(item.id)}
@@ -647,6 +683,7 @@ export default function DiscoveryHistoryPage({
         etaSeconds={selectedJob?.eta_seconds}
         detailedLogs={detailedLogs}
         profileMap={profileMap}
+        agentMap={agentMap}
       />
     </div>
   );
@@ -657,4 +694,5 @@ DiscoveryHistoryPage.propTypes = {
   jobsData: PropTypes.array,
   onRefreshJobs: PropTypes.func,
   profiles: PropTypes.array,
+  agents: PropTypes.array,
 };

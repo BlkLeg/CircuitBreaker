@@ -291,3 +291,91 @@ def test_maybe_learn_oui_skips_missing_mac_or_vendor(db_session):
     maybe_learn_oui(_FakeScanResult(mac="00:11:22:AA:BB:CC", vendor=None), db_session)
 
     assert db_session.query(KbOui).count() == 0
+
+
+# ── result_processed: the review badge's authoritative count ──────────────────
+
+
+def _pending_result(db, job, ip: str, merge_status: str = "pending") -> ScanResult:
+    row = ScanResult(
+        scan_job_id=job.id,
+        ip_address=ip,
+        state="new",
+        merge_status=merge_status,
+        created_at=_iso_now(),
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+async def test_result_processed_event_carries_pending_count(db_session, monkeypatch):
+    """The badge is driven by this number, so the event has to carry it.
+
+    `useDiscoveryStream.js` reads `pending_count` off every `result_processed`
+    frame and replaces its optimistic count with it. Omitting the key left the
+    hook's optimistic decrement as the only source of truth, and an agent job
+    that streams findings in drifts the badge one row at a time.
+    """
+    job = ScanJob(
+        target_cidr="10.20.0.0/24",
+        scan_types_json='["agent_connect"]',
+        status="completed",
+        created_at=_iso_now(),
+    )
+    db_session.add(job)
+    db_session.flush()
+
+    accepted = _pending_result(db_session, job, "10.20.0.1", merge_status="accepted")
+    _pending_result(db_session, job, "10.20.0.2")
+    _pending_result(db_session, job, "10.20.0.3")
+    db_session.commit()
+
+    captured: list[tuple[str, dict]] = []
+
+    async def _capture(event_type: str, payload: dict) -> None:
+        captured.append((event_type, payload))
+
+    from app.services import discovery_service
+
+    monkeypatch.setattr(discovery_service, "_emit_ws_event", _capture)
+
+    from app.services.discovery_merge import _emit_result_processed_event
+
+    await _emit_result_processed_event(db_session, accepted.id, "accept")
+
+    assert [event_type for event_type, _ in captured] == ["result_processed"]
+    payload = captured[0][1]
+    assert payload["pending_count"] == 2
+    # The keys the hook already reads alongside it must not regress.
+    assert payload["status"] == "accept"
+    assert payload["job_id"] == job.id
+
+
+async def test_result_processed_pending_count_reaches_zero(db_session, monkeypatch):
+    """An emptied queue must report 0, not simply omit the key."""
+    job = ScanJob(
+        target_cidr="10.21.0.0/24",
+        scan_types_json='["agent_connect"]',
+        status="completed",
+        created_at=_iso_now(),
+    )
+    db_session.add(job)
+    db_session.flush()
+    only = _pending_result(db_session, job, "10.21.0.9", merge_status="rejected")
+    db_session.commit()
+
+    captured: list[dict] = []
+
+    async def _capture(event_type: str, payload: dict) -> None:
+        captured.append(payload)
+
+    from app.services import discovery_service
+
+    monkeypatch.setattr(discovery_service, "_emit_ws_event", _capture)
+
+    from app.services.discovery_merge import _emit_result_processed_event
+
+    await _emit_result_processed_event(db_session, only.id, "reject")
+
+    assert captured[0]["pending_count"] == 0

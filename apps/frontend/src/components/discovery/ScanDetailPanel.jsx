@@ -4,6 +4,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import PropTypes from 'prop-types';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Download, RefreshCw } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { getJobResults } from '../../api/discovery.js';
 import JobStatusBadge from './JobStatusBadge.jsx';
 import ScanProgressAnimation from './ScanProgressAnimation.jsx';
@@ -21,13 +22,123 @@ const PROBE_COLORS = {
   docker: '#0ea5e9',
 };
 
-const SOURCE_COLORS = {
+export const SOURCE_COLORS = {
   manual: '#6b7280',
   prober: '#f59e0b',
   scheduled: '#8b5cf6',
   deep_dive: '#f43f5e',
   docker: '#0ea5e9',
   listener_triggered: '#06b6d4',
+  // Slice 4. `ScanJobOut.source_type` gained `agent` alongside `scan_agent_id`,
+  // and without its own entry an agent run fell through to the same grey the
+  // unknown-source fallback uses — indistinguishable from a manual sweep in the
+  // one badge that is supposed to say where a scan ran.
+  agent: '#14b8a6',
+};
+
+// ── Execution location (plan §6) ──────────────────────────────────────────────
+
+/** What `scan_agent_id === null` means, in the operator's words rather than SQL's. */
+export const SERVER_EXECUTION_LABEL = 'Circuit Breaker server';
+
+/**
+ * The D-4 `scan_jobs.error_reason` vocabulary, in the server's exact spelling.
+ *
+ * Keys are copied from `agent_discovery.JOB_ERROR_REASONS`; a value the server
+ * grows before this map does still renders (as its raw code) rather than
+ * vanishing. A Map rather than an object literal so a reason read off the wire
+ * can index it without a prototype-pollution sink — the same reason
+ * `DiscoveryHistoryPage.TYPE_COLORS` is one.
+ */
+export const DISCOVERY_ERROR_REASON_LABELS = new Map([
+  ['agent_unavailable', 'Agent unavailable'],
+  ['agent_disconnected', 'Agent disconnected'],
+  ['agent_execution_error', 'Agent execution error'],
+  ['agent_rejected', 'Agent rejected the request'],
+  ['dispatch_failed', 'Dispatch failed'],
+  ['scope_changed', 'Scope changed'],
+  ['capability_disabled', 'Local discovery disabled'],
+  ['profile_disabled', 'Profile disabled'],
+]);
+
+export function discoveryErrorReasonLabel(reason) {
+  if (!reason) return null;
+  return DISCOVERY_ERROR_REASON_LABELS.get(reason) ?? reason;
+}
+
+/** `agent_discovery.PARTIAL_RESULTS_NOTE` — the marker inside `error_text`. */
+export const PARTIAL_RESULTS_NOTE = 'partial_results_retained';
+const PARTIAL_RESULTS_COUNT_RE = /partial_results_retained=(\d+)/;
+
+/**
+ * How many findings a failed job kept, or null when it kept none.
+ *
+ * D-4 gives an interrupted agent sweep no status of its own: it closes as
+ * `failed` with the hosts it did observe accepted and reviewable. A bare
+ * "Failed" on such a row is actively misleading — an operator will not think to
+ * open a failed scan looking for results — so the row has to say so, and the
+ * count comes from the server's own `partial_results_retained=<n>` marker
+ * rather than from the row's counters, which keep climbing for other reasons.
+ */
+export function partialFindingsKept(job) {
+  const errorText = job?.error_text;
+  if (!errorText || !errorText.includes(PARTIAL_RESULTS_NOTE)) return null;
+  const match = PARTIAL_RESULTS_COUNT_RE.exec(errorText);
+  const kept = match ? Number(match[1]) : (job?.hosts_found ?? 0);
+  return kept > 0 ? kept : null;
+}
+
+/**
+ * Where a scan ran. The agent name is a link into its detail page, mirroring
+ * Slice 3's `MonitorDetailPage:138` "Run from" row, and stops the click from
+ * reaching a row that would otherwise expand underneath it.
+ */
+export function ExecutionLocation({ agentId = null, agentName = null }) {
+  if (agentId == null) {
+    return (
+      <span className="execution-location execution-location--server">
+        {SERVER_EXECUTION_LABEL}
+      </span>
+    );
+  }
+  return (
+    <span className="execution-location execution-location--agent">
+      <Link
+        className="execution-location__agent-link"
+        to={`/agents/${agentId}`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        {agentName || `agent ${agentId}`}
+      </Link>
+    </span>
+  );
+}
+
+ExecutionLocation.propTypes = {
+  agentId: PropTypes.number,
+  agentName: PropTypes.string,
+};
+
+/** The failure reason and, when there is one, the partial-coverage note. */
+export function JobFailureNote({ job, className = 'job-failure-note' }) {
+  const label = discoveryErrorReasonLabel(job?.error_reason);
+  if (!label) return null;
+  const kept = partialFindingsKept(job);
+  return (
+    <div className={className}>
+      <span className={`${className}__reason`}>{label}</span>
+      {kept !== null && (
+        <span className={`${className}__partial`}>
+          Partial results — {kept} findings kept for review
+        </span>
+      )}
+    </div>
+  );
+}
+
+JobFailureNote.propTypes = {
+  job: PropTypes.object,
+  className: PropTypes.string,
 };
 
 function SourceBadge({ source }) {
@@ -161,6 +272,7 @@ export default function ScanDetailPanel({
   logEntries,
   detailedLogs,
   profileMap,
+  agentMap,
 }) {
   const [activeTab, setActiveTab] = useState('General');
   const [logLevelFilter, setLogLevelFilter] = useState('ALL');
@@ -343,6 +455,17 @@ export default function ScanDetailPanel({
                     </span>
                   </div>
                   <div className="detail-item">
+                    <span className="detail-item-label">Ran on</span>
+                    <span className="detail-item-value">
+                      <ExecutionLocation
+                        agentId={job.scan_agent_id ?? null}
+                        agentName={
+                          job.scan_agent_id == null ? null : agentMap?.get(job.scan_agent_id)
+                        }
+                      />
+                    </span>
+                  </div>
+                  <div className="detail-item">
                     <span className="detail-item-label">Found</span>
                     <span
                       className="detail-item-value"
@@ -378,6 +501,14 @@ export default function ScanDetailPanel({
                       {computeEta(job, pct, etaSeconds)}
                     </span>
                   </div>
+                  {job.error_reason && (
+                    <div className="detail-item" style={{ gridColumn: '1 / -1' }}>
+                      <span className="detail-item-label">Failure</span>
+                      <span className="detail-item-value">
+                        <JobFailureNote job={job} className="scan-detail-failure" />
+                      </span>
+                    </div>
+                  )}
                   {/* Progress bar + stage label (running only) */}
                   {job.status === 'running' && pct > 0 && (
                     <div
@@ -621,4 +752,5 @@ ScanDetailPanel.propTypes = {
   logEntries: PropTypes.array,
   detailedLogs: PropTypes.array,
   profileMap: PropTypes.object,
+  agentMap: PropTypes.object,
 };

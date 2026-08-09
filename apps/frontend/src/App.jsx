@@ -27,6 +27,20 @@ import ServerLifecycleBanner from './components/ServerLifecycleBanner.jsx';
 import LoadingScreen from './components/common/LoadingScreen.jsx';
 import { canEdit, isAdmin } from './utils/rbac';
 
+/**
+ * `/discovery/history` folded into `/discovery` — carrying the query string.
+ *
+ * A bare `<Navigate to="/discovery" />` drops it, and the search is load
+ * bearing: `DiscoveryScopeSection` deep-links an agent's job history as
+ * `?agent=<id>`, which `DiscoveryPage` reads to filter the history. Losing it
+ * here would land the operator on the unfiltered list with no sign anything
+ * had been asked for.
+ */
+export function DiscoveryHistoryRedirect() {
+  const { search } = useLocation();
+  return <Navigate to={{ pathname: '/discovery', search }} replace />;
+}
+
 // Heavy pages lazy-loaded so their chunks are only downloaded when first visited.
 const DocsPage = React.lazy(() => import('./pages/DocsPage'));
 const SettingsPage = React.lazy(() => import('./pages/SettingsPage'));
@@ -171,7 +185,7 @@ function AppInner() {
                     }
                   />
                   <Route path="/discovery" element={<DiscoveryPage />} />
-                  <Route path="/discovery/history" element={<Navigate to="/discovery" replace />} />
+                  <Route path="/discovery/history" element={<DiscoveryHistoryRedirect />} />
                   <Route path="/agents" element={<AgentsPage />} />
                   <Route path="/agents/enroll" element={<AgentsPage />} />
                   <Route path="/agents/:id" element={<AgentDetailPage />} />

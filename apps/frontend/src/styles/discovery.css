@@ -2110,3 +2110,154 @@ select.cb-input {
   color: #d97706;
   pointer-events: none;
 }
+
+/* ── Execution location (Slice 4, plan §6) ─────────────────────────────────── */
+
+/* Where a scan ran. Server and agent are told apart by shape and by the link
+   affordance, not by hue alone: the server chip is a flat muted tag, the agent
+   chip is a bordered, clickable one. Sized off `.history-state-pill` so a row
+   carrying both does not gain a second pill scale. */
+.execution-location {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.execution-location--server {
+  border: 1px dashed var(--border, var(--color-border, #2e3650));
+  color: var(--text-muted, var(--color-text-muted, #6b7a9e));
+  background: transparent;
+}
+
+.execution-location--agent {
+  border: 1px solid
+    color-mix(in srgb, var(--accent, var(--color-primary, #f5a623)) 45%, transparent);
+  background: color-mix(in srgb, var(--accent, var(--color-primary, #f5a623)) 12%, transparent);
+}
+
+.execution-location--agent::before {
+  content: '\2192  ';
+  color: var(--text-muted, var(--color-text-muted, #6b7a9e));
+}
+
+.execution-location__agent-link {
+  color: var(--accent, var(--color-primary, #f5a623));
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.execution-location__agent-link:hover,
+.execution-location__agent-link:focus-visible {
+  text-decoration: underline;
+}
+
+.history-location {
+  white-space: nowrap;
+}
+
+/* Why a job failed, and the partial-coverage note that goes with it. Same
+   warning treatment in the history row and the detail panel — one failure
+   vocabulary should not read as two. `.job-failure-note` is not decoration:
+   it is `JobFailureNote`'s default `className`, so a call site that passes no
+   className still lands here rather than rendering unstyled. */
+.history-failure-note,
+.scan-detail-failure,
+.job-failure-note {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted, var(--color-text-muted, #6b7a9e));
+  border-left: 2px solid rgba(239, 68, 68, 0.45);
+  padding-left: 7px;
+}
+
+/* The reason and the partial-coverage note are two separate facts, and the
+   component emits them as adjacent inline spans with no whitespace between
+   them. Blocking them apart is what stops "Agent execution errorPartial
+   results — 3 findings kept for review" rendering as one run-on line. */
+.history-failure-note__reason,
+.scan-detail-failure__reason,
+.job-failure-note__reason {
+  display: block;
+  font-weight: 600;
+  color: var(--color-text, #e6e6e6);
+}
+
+/* Load-bearing: this is how an operator learns a *failed* scan still produced
+   findings worth reviewing. It is a fact about the run, not a footnote, so it
+   gets its own line, full text colour and a leading glyph — the glyph keeps it
+   distinguishable from the reason in greyscale, forced-colours mode and for a
+   colour-blind operator, where the weight difference alone is not enough. */
+.history-failure-note__partial,
+.scan-detail-failure__partial,
+.job-failure-note__partial {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-text, #e6e6e6);
+}
+
+.history-failure-note__partial::before,
+.scan-detail-failure__partial::before,
+.job-failure-note__partial::before {
+  content: '\25B8\00A0';
+  color: var(--color-warning, #d79921);
+  font-weight: 700;
+}
+
+/* The detail panel has more room than a history cell and is read at arm's
+   length rather than scanned, so the same vocabulary is set one step larger. */
+.scan-detail-failure {
+  font-size: 12px;
+}
+
+/* ── Fleet-wide hold and the per-agent history filter ───────────────────────
+   Both banners in `DiscoveryPage` carry an inline `style` for their box (the
+   idiom that file already uses), so these rules deliberately add only what
+   inline styles cannot or do not set: the paused state's non-colour marker,
+   and wrapping so the sentence and its button do not collide on a narrow
+   viewport. Setting box colours here as well would be dead CSS — inline wins. */
+.discovery-fleet-hold,
+.discovery-agent-filter {
+  flex-wrap: wrap;
+  line-height: 1.45;
+}
+
+/* The hold is currently told apart by a yellow wash alone. A leading pause
+   glyph carries the same fact through greyscale, forced-colours mode and a
+   colour-blind operator's screen. It is a pseudo-element, so the component's
+   inline style cannot override it. */
+.discovery-fleet-hold[data-paused='true']::before {
+  content: '\23F8';
+  align-self: flex-start;
+  font-size: 14px;
+  line-height: 1.3;
+  color: var(--color-warning, #d79921);
+}
+
+.discovery-fleet-hold button,
+.discovery-agent-filter button {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* Agents that cannot run this scan, listed with their reason rather than
+   hidden — an agent missing from a dropdown is the one failure an operator
+   cannot debug. Reuses `.cb-hint` on each item, so this only owns the list. */
+.cb-scan-from-ineligible {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   getAgent,
+  getAgentDiscovery,
   getAgentEvents,
   getAgentProbes,
   getAgentTelemetry,
@@ -19,6 +20,8 @@ import { isLivePushFresh } from '../utils/agentPresenceFreshness';
 import { useToast } from '../components/common/Toast';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import AssignedProbesSection from '../components/agents/AssignedProbesSection';
+import DiscoveryScopeSection from '../components/agents/DiscoveryScopeSection';
+import { agentDisplayName } from '../lib/agentLabel';
 import RemoteProbeConfigEditor, {
   REMOTE_PROBE_MAX_CONCURRENT,
   REMOTE_PROBE_MIN_CONCURRENT,
@@ -170,6 +173,11 @@ export default function AgentDetailPage() {
   // capability needs a confirmation.
   const [probes, setProbes] = useState(null);
   const [disableProbeOpen, setDisableProbeOpen] = useState(false);
+  // Slice 4 §6. `null` until GET /agents/{id}/discovery resolves; the section
+  // says so rather than rendering an empty scope, which would read as "this
+  // agent discovers nothing" — the one thing it exists to distinguish.
+  const [discovery, setDiscovery] = useState(null);
+  const [disableDiscoveryOpen, setDisableDiscoveryOpen] = useState(false);
 
   const { statuses } = useAgentLive();
   const telemetryEntities = useMemo(() => [{ entity_type: 'agent', entity_id: Number(id) }], [id]);
@@ -215,6 +223,7 @@ export default function AgentDetailPage() {
 
   const hostDefaults = capabilityDefaults?.host_telemetry?.config ?? {};
   const probeDefaults = capabilityDefaults?.remote_probe?.config ?? {};
+  const discoveryDefaults = capabilityDefaults?.local_discovery?.config ?? {};
 
   useEffect(() => {
     load();
@@ -233,6 +242,18 @@ export default function AgentDetailPage() {
   useEffect(() => {
     loadProbes();
   }, [loadProbes]);
+
+  // Own request, own catch, exactly like loadProbes above: the discovery-scope
+  // section is additive and a failure here must not blank the rest of the page.
+  const loadDiscovery = useCallback(() => {
+    getAgentDiscovery(id)
+      .then(({ data }) => setDiscovery(data))
+      .catch(() => setDiscovery(null));
+  }, [id]);
+
+  useEffect(() => {
+    loadDiscovery();
+  }, [loadDiscovery]);
 
   const loadTelemetry = useCallback(() => {
     // The request time, not the response time: a readiness push that arrived
@@ -363,12 +384,26 @@ export default function AgentDetailPage() {
       setDisableProbeOpen(true);
       return;
     }
+    // Slice 4 D-14: turning `local_discovery` off retires every in-flight
+    // dispatch immediately, and retains every result and history row. An
+    // operator who expects the opposite — that history is lost — will not
+    // disable when they should, so the dialog says which it is.
+    if (capability === 'local_discovery' && !enabled) {
+      setDisableDiscoveryOpen(true);
+      return;
+    }
     await applyCapabilityToggle(capability, enabled);
   };
 
   const handleConfirmDisableProbe = async () => {
     setDisableProbeOpen(false);
     await applyCapabilityToggle('remote_probe', false);
+  };
+
+  const handleConfirmDisableDiscovery = async () => {
+    setDisableDiscoveryOpen(false);
+    await applyCapabilityToggle('local_discovery', false);
+    loadDiscovery();
   };
 
   const updateHostConfig = async (patch) => {
@@ -716,6 +751,23 @@ export default function AgentDetailPage() {
           ))}
       </AssignedProbesSection>
 
+      {/* Wiring only: the section owns its own mutations and its own
+          wide-scope confirmation, and renders the config editor itself. This
+          page is already far past the component budget. */}
+      <DiscoveryScopeSection
+        agentId={id}
+        agentName={agentDisplayName(agent, id)}
+        discovery={discovery}
+        granted={normalizeCapability(agent.capabilities?.local_discovery).enabled}
+        config={normalizeCapability(agent.capabilities?.local_discovery).config}
+        defaults={capabilityDefaults === null ? null : discoveryDefaults}
+        onDiscovery={setDiscovery}
+        onChanged={() => {
+          load();
+          loadDiscovery();
+        }}
+      />
+
       <section aria-label="Linked hardware">
         <h2>Linked hardware</h2>
         {presence?.hardware ? (
@@ -745,6 +797,18 @@ export default function AgentDetailPage() {
         message={`Revoke ${agent.hostname ?? 'this agent'}? It will stop reporting immediately.`}
         onConfirm={handleRevoke}
         onCancel={() => setRevokeOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={disableDiscoveryOpen}
+        message={
+          `Disable local discovery on ${agent.name ?? agent.hostname ?? 'this agent'}? ` +
+          'Any scan running from this agent is cancelled immediately, and no new one is ' +
+          'scheduled — but its subnets stay configured and its results and job history are ' +
+          'retained.'
+        }
+        onConfirm={handleConfirmDisableDiscovery}
+        onCancel={() => setDisableDiscoveryOpen(false)}
       />
 
       <ConfirmDialog

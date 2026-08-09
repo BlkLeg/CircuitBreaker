@@ -40,6 +40,25 @@ export const getAgentProbes = (id) => client.get(`/agents/${id}/probes`);
 export const listProbeEligibleAgents = (params = {}) =>
   client.get('/agents/probe-eligible', { params });
 
+// Slice 4 §6: the Discovery scope section on Agent Detail, and `GET
+// /agents/{id}/probes`' counterpart — one request answers "what is this vantage
+// point discovering, and if nothing, why". Returns AgentDiscoveryRead:
+// {granted, paused, globally_paused, eligible, reason, detail, scope_version,
+// scope[], limits, readiness[], active_jobs[], recent_jobs[], profiles[]}.
+//
+// `scope[]` carries each CIDR's `provenance` (automatic | override | excluded)
+// *and* `effective` — the evaluator's own verdict, which is not membership in
+// the allow list: exclusions, the prefix ceiling and the special-use blocklist
+// are subtracted from it, so rendering the allow list as reachability would
+// claim ground the evaluator refuses.
+export const getAgentDiscovery = (id) => client.get(`/agents/${id}/discovery`);
+// M14's per-agent hold. Not a capability disable: disabling `local_discovery`
+// retires every in-flight dispatch, while a pause withholds future scheduling
+// and cancels nothing. Both answer with the same AgentDiscoveryRead body the
+// section would have re-fetched.
+export const pauseAgentDiscovery = (id) => client.post(`/agents/${id}/discovery/pause`);
+export const resumeAgentDiscovery = (id) => client.post(`/agents/${id}/discovery/resume`);
+
 export const getAgentTelemetryHistory = (id, range = '1h') =>
   client.get(`/agents/${id}/telemetry/history`, { params: { range } });
 
