@@ -6,8 +6,8 @@ Run explicitly (from this directory):
     pytest test_agent_e2e.py -v -m e2e
 
 Topology: `docker-compose.yml`'s `cb-agent` service runs in its own network
-namespace on two Docker bridge networks, publishing/exposing no ports at all
-— `agent-net`, where it dials OUT to `circuitbreaker` (Docker DNS-resolved
+namespace on Docker bridge networks, publishing/exposing no ports at all —
+`agent-net`, where it dials OUT to `circuitbreaker` (Docker DNS-resolved
 service name), and `probe-net`, where the remote-probe target lives and
 which `circuitbreaker` is deliberately NOT attached to. Nothing has a route
 IN to the agent on either. That is what makes "outbound only, never listen
@@ -17,7 +17,18 @@ test_agent_full_lifecycle_enroll_through_revoke_and_reconnect's step
 11/isolation probe below) — and what makes "the backend cannot reach this
 target, so a passing check can only have come from the agent" provable too.
 
-Structure — eight test functions, each bringing up (and tearing down) its own
+Slice 4 (Task 31, D-12) pins every subnet to a literal /24 and adds three
+things to that picture: `probe-target-new`, a second host started mid-test on
+the subnet the agent already knows; `late-net`, whose fixture target and agent
+attachment both arrive MID-TEST so a whole directly connected subnet can appear
+on an already-running agent; and a second agent, `cb-agent-2`, on its own
+outbound network (`agent-net-2`), its own fixture subnet (`probe-net-2`) and
+its own state volume. The two agents share no network and no state, which is
+what makes per-agent provenance falsifiable rather than merely recorded. The
+pinned numbers all live in one constants block below; `_AGENT_TOPOLOGY`
+records which networks each agent service may be on.
+
+Structure — twelve test functions, each bringing up (and tearing down) its own
 full stack, so failures/timing in one scenario can't leak into another:
 
   * test_agent_full_lifecycle_enroll_through_revoke_and_reconnect
@@ -78,15 +89,66 @@ full stack, so failures/timing in one scenario can't leak into another:
       so the old vantage's result is inert; and an explicit return to server
       execution. Steps 7 and 8 (scope narrowing, fairness under concurrency)
       are unit/integration-covered elsewhere and are not repeated here.
+
+  * test_e2e_harness_topology_is_pinned_and_two_agents_stay_isolated
+      Slice 4 Task 31 (D-12): the harness's own preconditions, asserted
+      before Tasks 32-33 rest on them. Every subnet is the pinned one (read
+      back live from Docker, not trusted from the compose file); a subnet
+      can materialise on an already-enrolled agent and reach the server's
+      derived scope on the next hello with no CIDR typed anywhere;
+      `_agent_network_name` still resolves the route to the server across
+      both of the topology shapes that are now legal; the two agents have
+      distinct ids, device keys, attachments and routing tables, neither
+      seeing the other's fixture subnet; and the backend can reach none of
+      the three fixture subnets over ICMP or TCP — the negative every later
+      discovery assertion is worth exactly as much as.
+
+  * test_agent_zero_configuration_discovery_import_and_replay
+      Slice 4 Task 32 (§8 steps 1-7): the slice's central claim, end to end.
+      One install command and one ordinary approval — no CIDR typed anywhere
+      — put both directly connected subnets into the server's derived scope,
+      mint one system-managed profile per subnet (D-12), and start an initial
+      scan by themselves; the fixture's finding is pushed incrementally on
+      the Discovery page's own WebSocket before the job's terminal event,
+      lands in the ordinary review queue, imports as exactly one Hardware
+      row, and survives a real replay of the agent's own spooled findings
+      with no duplicate result and no duplicate Hardware row. The backend is
+      made to fail at reaching 10.77.0.10 over both ICMP and TCP before and
+      after, so the only possible source of that row is the agent.
+
+  * test_agent_discovery_capability_disable_cancels_and_late_findings_die
+      Slice 4 Task 33 (§8 step 8): the capability is turned off in the middle
+      of a running sweep while the agent is partitioned from the server, so
+      the `discovery.cancel` provably never arrives. The agent goes on
+      scanning and spooling findings for a dispatch the server has already
+      closed; when its link comes back it delivers every one of them, and not
+      one becomes a row. What that separates is the server ENFORCING the
+      cancellation from the agent merely OBEYING it — outcomes that leave an
+      identical `scan_results` table when the cancel does get through.
+
+  * test_agent_discovery_reconnects_per_agent_and_requeues_only_changes
+      Slice 4 Task 33 (§8 steps 9-11): both ends restart and the agent's
+      address moves inside its own subnet, and it comes back with no
+      re-enrollment, no second profile for the subnet whose address changed,
+      and its six-hourly cadence still registered; a second agent on its own
+      isolated subnet keeps its findings and its scope entirely its own, with
+      `scan_results.discovery_agent_id` read straight out of the database
+      because that provenance column is deliberately not on the wire; and the
+      recurring sweeps tell the three cases apart — a device the inventory
+      already knows, a device that genuinely just appeared, and a device whose
+      agent-reported hostname disagrees with the name an operator gave it,
+      which stays pending and never renames anything.
 """
 
 from __future__ import annotations
 
 import contextlib
 import hashlib
+import ipaddress
 import json
 import os
 import re
+import shlex
 import shutil
 import ssl
 import subprocess
@@ -126,6 +188,99 @@ _E2E_DATA_DIR = REPO_ROOT / "e2e-data"
 
 _ADMIN_EMAIL = "e2e@example.com"
 _ADMIN_PASSWORD = "E2eTest1234!"
+
+# ─────────────────────────────────────────────────────────────────────────
+# docker-compose.yml's pinned topology, in one place
+# ─────────────────────────────────────────────────────────────────────────
+#
+# Every network in the harness has a hand-pinned subnet (see the compose
+# file's own topology note for why each one exists). Restating the numbers
+# here is unavoidable — Docker owns them at runtime, this file owns the
+# assertions about them — so they live in ONE block rather than scattered
+# through the tests, and `_network_subnet()` re-reads the live network so a
+# drift between the two halves fails as a named assertion instead of as an
+# unexplained timeout somewhere downstream.
+#
+# The compose *service* names are constants for the same reason: with two
+# agent services and three fixture targets, a bare "cb-agent" string literal
+# inside a helper is a silent single-agent assumption.
+
+_AGENT_SERVICE = "cb-agent"
+_AGENT_2_SERVICE = "cb-agent-2"
+
+# cb-agent's route to the server. Pinned to a /24 by Slice 4 D-12: as an
+# unpinned bridge Docker gave it a /16, whose 65 534 addresses exceed the
+# local_discovery grant's max_addresses_per_job on their own, so the agent's
+# own directly connected subnet could never be dispatched as a discovery
+# target.
+_AGENT_NET = "agent-net"
+_AGENT_NET_CIDR = "10.88.0.0/24"
+
+# cb-agent's isolated fixture subnet; circuitbreaker is not on it.
+_PROBE_NET = "probe-net"
+_PROBE_NET_CIDR = "10.77.0.0/24"
+_PROBE_TARGET_SERVICE = "probe-target"
+_PROBE_TARGET_NAME = "probe-target"
+_PROBE_TARGET_IP = "10.77.0.10"
+
+# A second host on probe-net, started mid-test: a genuinely new device on a
+# subnet the agent already knows and has already scanned, as distinct from
+# late-net's whole-new-subnet case. Nothing brings it up at stack start.
+_PROBE_TARGET_NEW_SERVICE = "probe-target-new"
+_PROBE_TARGET_NEW_IP = "10.77.0.20"
+
+# The subnet that appears LATE: `late-target` is started, and cb-agent
+# attached to late-net, only after cb-agent is already enrolled, approved and
+# running. See `_attach_agent_to_late_net`.
+_LATE_NET = "late-net"
+_LATE_NET_CIDR = "10.66.0.0/24"
+_LATE_TARGET_SERVICE = "late-target"
+_LATE_TARGET_IP = "10.66.0.10"
+
+# The second agent's route to the server, and its own isolated fixture
+# subnet. Neither circuitbreaker nor cb-agent is on probe-net-2.
+_AGENT_2_NET = "agent-net-2"
+_AGENT_2_NET_CIDR = "10.89.0.0/24"
+_PROBE_NET_2 = "probe-net-2"
+_PROBE_NET_2_CIDR = "10.78.0.0/24"
+_PROBE_TARGET_2_SERVICE = "probe-target-2"
+_PROBE_TARGET_2_IP = "10.78.0.10"
+
+# Which Docker networks each agent service may be attached to, and which one
+# carries its route to the SERVER. Keyed by compose service name.
+#
+# `required` is what a caller may rely on being present; `allowed` bounds what
+# may be present at all. Both halves are load-bearing, and they catch opposite
+# failures — both of which would otherwise leave a *passing* test:
+#
+#   * falling below `required` means a route this suite's proofs depend on has
+#     silently gone away. cb-agent losing probe-net turns "the backend cannot
+#     reach the target, so only the agent can have" into "nobody can reach the
+#     target", and every check simply fails for the wrong reason.
+#   * rising above `allowed` — `default` above all, or the other agent's
+#     networks — means the isolation those same proofs rest on has silently
+#     been widened, and an agent-executed result becomes indistinguishable
+#     from a server-executed one.
+#
+# This was a single exact-set assertion (`== {"agent-net", "probe-net"}`) up
+# to Slice 4. An exact set is now wrong rather than merely strict: cb-agent
+# legitimately GAINS late-net partway through a test — that is the
+# zero-configuration trigger under test, not a topology bug — and cb-agent-2
+# has a different set entirely. Required-subset plus allowed-superset keeps
+# every failure the exact set used to catch while admitting the two shapes
+# that are now legitimate.
+_AGENT_TOPOLOGY = {
+    _AGENT_SERVICE: {
+        "server_net": _AGENT_NET,
+        "required": frozenset({_AGENT_NET, _PROBE_NET}),
+        "allowed": frozenset({_AGENT_NET, _PROBE_NET, _LATE_NET}),
+    },
+    _AGENT_2_SERVICE: {
+        "server_net": _AGENT_2_NET,
+        "required": frozenset({_AGENT_2_NET, _PROBE_NET_2}),
+        "allowed": frozenset({_AGENT_2_NET, _PROBE_NET_2}),
+    },
+}
 
 
 def _wait_until(predicate, *, timeout=30, interval=1.0):
@@ -177,6 +332,17 @@ def _new_client() -> httpx.Client:
 
 
 def _up_server(env: dict | None = None) -> None:
+    # Establish the clean baseline on the way IN, not only on the way out.
+    # Every test ends with `_down()` in a `finally`, but an interrupted run —
+    # Ctrl-C, a pytest timeout, a killed CI job — never reaches it, and what it
+    # leaves behind is not inert. A surviving `cb-agent-state` volume still
+    # holds an enrolled device key, so the next `cb-agent enroll` is answered
+    # "already active" and never prints a pairing code; a surviving
+    # `agent.toml/` directory (see `_write_agent_toml`) kills the agent at
+    # config load. Both surface minutes later as an unrelated-looking timeout
+    # in whichever test happened to run first. Each test is only independent of
+    # how the previous one *ended* if it starts by saying so.
+    _down(env)
     subprocess.run(
         [*COMPOSE, "up", "-d", "--build", "circuitbreaker"],
         check=True,
@@ -195,6 +361,17 @@ def _down(env: dict | None = None) -> None:
 
 def _write_agent_toml(server_pk: str, tls_pin: str, path: Path | None = None) -> Path:
     target = path or (E2E_DIR / "agent.toml")
+    # Docker creates a *directory* at a bind-mount source that does not exist,
+    # and docker-compose.yml mounts this exact path into both agents. Each
+    # test's `finally` unlinks the file, so any container started between that
+    # unlink and the next `_write_agent_toml` — an interrupted run, a stray
+    # `compose up` — leaves a root-owned `agent.toml/` here. The agent then
+    # exits with "load /etc/circuit-breaker/agent.toml: is a directory" and,
+    # because that output goes to `_enroll_agent`'s pipe, the test reports only
+    # a pairing-code timeout. Clear it before writing rather than letting the
+    # next `write_text` fail with an equally opaque IsADirectoryError.
+    if target.is_dir() and not target.is_symlink():
+        target.rmdir()
     target.write_text(
         f'server_url = "{AGENT_SERVER_URL}"\n'
         f'server_static_pk = "{server_pk}"\n'
@@ -237,14 +414,19 @@ def _fetch_install_material(client: httpx.Client, headers: dict) -> dict:
     }
 
 
-def _agent_status(env: dict | None = None) -> dict:
+def _agent_status(env: dict | None = None, *, service: str = _AGENT_SERVICE) -> dict:
     """Reads <state-dir>/status.json directly from the running cb-agent
     container (Task 20's status.json — see internal/status/status.go),
     rather than shelling out to `cb-agent status` (which prints human text,
     not JSON) — simpler and exactly as authoritative, since that file is the
-    one thing both `cb-agent status` and this test ultimately read."""
+    one thing both `cb-agent status` and this test ultimately read.
+
+    `service` selects which agent container is being asked. It exists because
+    the two agents have SEPARATE state volumes (docker-compose.yml): status.json
+    is per-agent state, so there is no such thing as "the" agent's status once a
+    second agent is running."""
     result = subprocess.run(
-        [*COMPOSE, "exec", "-T", "cb-agent", "cat", "/var/lib/cb-agent/status.json"],
+        [*COMPOSE, "exec", "-T", service, "cat", "/var/lib/cb-agent/status.json"],
         cwd=E2E_DIR,
         env=env,
         capture_output=True,
@@ -254,9 +436,9 @@ def _agent_status(env: dict | None = None) -> dict:
     return json.loads(result.stdout)
 
 
-def _agent_logs(env: dict | None = None) -> str:
+def _agent_logs(env: dict | None = None, *, service: str = _AGENT_SERVICE) -> str:
     return subprocess.run(
-        [*COMPOSE, "logs", "cb-agent"], capture_output=True, text=True, cwd=E2E_DIR, env=env
+        [*COMPOSE, "logs", service], capture_output=True, text=True, cwd=E2E_DIR, env=env
     ).stdout
 
 
@@ -337,37 +519,73 @@ class _AgentStreamListener:
             pass
 
 
-def _enroll_agent(client: httpx.Client, headers: dict, *, env: dict | None = None) -> tuple:
+def _enroll_agent(
+    client: httpx.Client,
+    headers: dict,
+    *,
+    env: dict | None = None,
+    service: str = _AGENT_SERVICE,
+) -> tuple:
     """Steps 2-4 combined into one reusable helper: build + run `cb-agent
     enroll` (a real Go agent, not a stub), watch /agents/stream for the
     resulting `enrolled` push event (step 3 — no REST polling involved in
     that assertion), then approve with default capability grants and an
     explicit host-link selection (step 4). Returns (agent_id, stream).
-    Caller is responsible for stream.close() and for `up -d cb-agent`
+    Caller is responsible for stream.close() and for `up -d <service>`
     afterward to run the daemon.
+
+    `service` picks which agent container enrolls. The second agent goes
+    through this identical path — same binary, same agent.toml, same default
+    grants, no argument distinguishing it — because "a second agent needs no
+    special handling" is the property Slice 4 §8 step 10 is really claiming;
+    a bespoke enrollment path for it would assume that claim rather than test
+    it.
     """
     token = client.headers.get("Authorization") or headers["Authorization"]
     stream = _AgentStreamListener(token.removeprefix("Bearer "))
 
-    subprocess.run([*COMPOSE, "build", "cb-agent"], check=True, cwd=E2E_DIR, env=env)
+    subprocess.run([*COMPOSE, "build", service], check=True, cwd=E2E_DIR, env=env)
     proc = subprocess.Popen(
-        [*COMPOSE, "run", "--rm", "cb-agent", "enroll"],
+        [*COMPOSE, "run", "--rm", service, "enroll"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         cwd=E2E_DIR,
         env=env,
     )
+    # Every line the agent printed, kept so a failure here can say WHY. Without
+    # it the only thing this helper can report is "no pairing code in 30s",
+    # which is the symptom of every possible enroll failure — a bad tls_pin, a
+    # config file Docker turned into a directory, an already-enrolled state
+    # volume that makes the server answer "active" instead of issuing a code —
+    # and distinguishes none of them. The output is on this pipe and nowhere
+    # else: `stderr=STDOUT` means it never reaches pytest's captured output.
+    transcript: list[str] = []
     pairing_code = None
     deadline = time.monotonic() + 30
-    for line in proc.stdout:
-        m = re.search(r"pairing code:\s*(\S+)", line)
-        if m:
-            pairing_code = m.group(1)
-            break
-        if time.monotonic() > deadline:
-            break
-    assert pairing_code, "agent did not print a pairing code within 30s"
+    # `for line in proc.stdout` blocks until a line arrives, so the deadline
+    # below is only reached if the agent is talking. A silent agent — one that
+    # died before its first write, or one waiting on something that will never
+    # come — would hang this loop forever. The watchdog turns that into the
+    # same diagnosable assertion failure as every other enroll fault.
+    watchdog = threading.Timer(35, proc.kill)
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        for line in proc.stdout:
+            transcript.append(line.rstrip())
+            m = re.search(r"pairing code:\s*(\S+)", line)
+            if m:
+                pairing_code = m.group(1)
+                break
+            if time.monotonic() > deadline:
+                break
+    finally:
+        watchdog.cancel()
+    assert pairing_code, (
+        f"`cb-agent enroll` ({service}) printed no pairing code within 30s. It said:\n"
+        + ("\n".join(transcript) if transcript else "(nothing at all)")
+    )
 
     lookup = client.post(
         "/api/v1/agents/pairing/lookup", json={"code": pairing_code}, headers=headers
@@ -437,54 +655,244 @@ def _enroll_agent(client: httpx.Client, headers: dict, *, env: dict | None = Non
     return agent_id, stream
 
 
-def _agent_network_name(env: dict | None = None) -> tuple[str, str]:
-    """Resolves the live container name + the (compose-project-prefixed) Docker
-    network name that carries cb-agent's route to the SERVER, for the network
-    disconnect/reconnect used by the rollback, partition and remote-probe tests.
-    Looked up dynamically rather than hardcoded so this doesn't silently break
-    if Compose's project/network naming ever changes.
+def _device_key(service: str, env: dict | None = None) -> str:
+    """The sha256 of one agent's `device.key`, which is its identity.
 
-    cb-agent sits on two networks (see docker-compose.yml's topology note):
-    agent-net, which reaches circuitbreaker, and probe-net, which reaches the
-    remote-probe target and which circuitbreaker is deliberately not on. Only
-    agent-net is returned, because every caller wants the route to the server
-    specifically — cutting probe-net as well would make "the vantage went away"
-    indistinguishable from "the target went away", which is exactly the
-    distinction the remote-probe test exists to prove.
-
-    The attached set is asserted rather than merely filtered: cb-agent silently
-    gaining `default` (or losing probe-net) would quietly invalidate both the
-    no-inbound-route proof and the backend-cannot-reach-the-target proof, and
-    the resulting test would still pass.
+    The one file that would be shared if two agent containers were not really
+    two agents, and the one that must survive a restart if an agent is not
+    silently re-enrolling. Both claims are made about this digest rather than
+    about an `agents` row, because the row is what the server *believes* and
+    this is what the agent actually presents.
     """
+    return subprocess.run(
+        [*COMPOSE, "exec", "-T", service, "sha256sum", "/var/lib/cb-agent/device.key"],
+        cwd=E2E_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()[0]
+
+
+def _agent_attachments(env: dict | None = None, *, service: str = _AGENT_SERVICE) -> set[str]:
+    """The unprefixed compose-network names an agent container is attached to
+    right now (`{"agent-net", "probe-net"}`), read from Docker rather than from
+    the compose file — `docker network connect` at runtime is a legitimate part
+    of this harness (see `_attach_agent_to_late_net`), so the file is not the
+    authority on this and only the live container is."""
     container = subprocess.run(
-        [*COMPOSE, "ps", "-q", "cb-agent"],
+        [*COMPOSE, "ps", "-q", service],
         cwd=E2E_DIR,
         env=env,
         capture_output=True,
         text=True,
         check=True,
     ).stdout.strip()
-    assert container, "cb-agent container is not running"
-    networks_json = subprocess.run(
-        ["docker", "inspect", container, "--format", "{{json .NetworkSettings.Networks}}"],
+    assert container, f"{service} container is not running"
+    return {name.rsplit("_", 1)[-1] for name in _container_networks(container)}
+
+
+def _agent_network_name(
+    env: dict | None = None, *, service: str = _AGENT_SERVICE
+) -> tuple[str, str]:
+    """Resolves the live container name + the (compose-project-prefixed) Docker
+    network name that carries an agent's route to the SERVER, for the network
+    disconnect/reconnect used by the rollback, partition and remote-probe tests.
+    Looked up dynamically rather than hardcoded so this doesn't silently break
+    if Compose's project/network naming ever changes.
+
+    An agent sits on at least two networks (see docker-compose.yml's topology
+    note): the one that reaches circuitbreaker, and one or more fixture subnets
+    that circuitbreaker is deliberately not on. Only the server-facing one is
+    returned, because every caller wants the route to the server specifically —
+    cutting a fixture network as well would make "the vantage went away"
+    indistinguishable from "the target went away", which is exactly the
+    distinction the remote-probe and discovery tests exist to prove.
+
+    The attached set is asserted rather than merely filtered, against
+    `_AGENT_TOPOLOGY[service]`: see that table's comment for what each half of
+    the assertion catches and why an exact-set assertion stopped being the
+    right shape in Slice 4.
+    """
+    topology = _AGENT_TOPOLOGY[service]
+    container = subprocess.run(
+        [*COMPOSE, "ps", "-q", service],
+        cwd=E2E_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert container, f"{service} container is not running"
+    networks = _container_networks(container)
+    suffixes = {name.rsplit("_", 1)[-1] for name in networks}
+    missing = topology["required"] - suffixes
+    assert not missing, (
+        f"{service} has lost its attachment to {sorted(missing)} — the routes this "
+        f"suite's isolation proofs depend on are gone, and the tests that use them "
+        f"would fail (or pass) for reasons that have nothing to do with what they "
+        f"assert. Attached: {sorted(networks)}"
+    )
+    unexpected = suffixes - topology["allowed"]
+    assert not unexpected, (
+        f"{service} is attached to unexpected network(s) {sorted(unexpected)} — the "
+        f"isolation every 'the backend/the other agent could not have done this' "
+        f"assertion rests on has been widened (see docker-compose.yml's topology "
+        f"comment and _AGENT_TOPOLOGY). Attached: {sorted(networks)}"
+    )
+    server_net = next(
+        name for name in networks if name.rsplit("_", 1)[-1] == topology["server_net"]
+    )
+    return container, server_net
+
+
+def _container_networks(container: str) -> dict:
+    return json.loads(
+        subprocess.run(
+            ["docker", "inspect", container, "--format", "{{json .NetworkSettings.Networks}}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    )
+
+
+def _compose_network(suffix: str) -> str:
+    """Resolves a compose network name (`agent-net`) to the live,
+    project-prefixed Docker network (`cb-agent-e2e_agent-net`). Same reason as
+    `_agent_network_name`'s lookup: the prefix is Compose's to choose, not
+    this file's to assume."""
+    names = subprocess.run(
+        ["docker", "network", "ls", "--format", "{{.Name}}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    matches = [name for name in names if name.rsplit("_", 1)[-1] == suffix]
+    assert len(matches) == 1, (
+        f"expected exactly one live Docker network named *_{suffix}, found {matches} — "
+        f"either the network has not been created yet (compose creates a network only "
+        f"when it brings up a service attached to it) or another compose project is "
+        f"running alongside this one, which this harness's shared project name does "
+        f"not survive"
+    )
+    return matches[0]
+
+
+def _network_subnet(suffix: str) -> str:
+    """The IPv4 subnet Docker actually gave a compose network.
+
+    Read live rather than trusted from the compose file: an `ipam.config`
+    entry that Docker silently declined (a pool collision, a stale network
+    left behind by a previous run) would otherwise be discovered as an
+    inexplicable discovery-scope mismatch several minutes later, instead of
+    as a one-line assertion here."""
+    network = _compose_network(suffix)
+    subnets = subprocess.run(
+        [
+            "docker",
+            "network",
+            "inspect",
+            network,
+            "--format",
+            "{{range .IPAM.Config}}{{.Subnet}} {{end}}",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    ipv4 = [s for s in subnets if ":" not in s]
+    assert len(ipv4) == 1, f"{network} has IPv4 subnets {ipv4}, expected exactly one"
+    return ipv4[0]
+
+
+def _container_ipv4(container: str, network: str) -> str:
+    return _container_networks(container)[network]["IPAddress"]
+
+
+def _agent_route_networks(env: dict | None = None, *, service: str = _AGENT_SERVICE) -> set[str]:
+    """The IPv4 networks directly routable from inside an agent's OWN network
+    namespace, as `a.b.c.d/len` strings, read from /proc/net/route.
+
+    Deliberately not `docker inspect`: that reports host-side metadata about
+    what Docker believes it attached. This reads the kernel routing table the
+    agent process itself sees — the very same state `hostinfo.Networks()`
+    enumerates on every `hello` and that `netscope.Derive` turns into
+    `direct_private` scope. When a discovery assertion says "the agent had a
+    route to this subnet and the backend did not", this is the half of that
+    sentence about the agent.
+
+    /proc/net/route rather than `ip route` because the agent image carries no
+    iproute2 (e2e/Dockerfile installs ca-certificates and nothing else) — and
+    keeping it that way is the point: the agent is not supposed to need a
+    scanner or a network toolchain on the remote host.
+
+    The default route (destination 0.0.0.0) is skipped: it is a gateway, not a
+    directly connected network, and netscope excludes it for the same reason.
+    """
+    raw = subprocess.run(
+        [*COMPOSE, "exec", "-T", service, "cat", "/proc/net/route"],
+        cwd=E2E_DIR,
+        env=env,
         capture_output=True,
         text=True,
         check=True,
     ).stdout
-    networks = json.loads(networks_json)
-    suffixes = {name.rsplit("_", 1)[-1] for name in networks}
-    assert suffixes == {"agent-net", "probe-net"}, (
-        f"expected cb-agent to be attached to exactly agent-net + probe-net "
-        f"(see docker-compose.yml's topology comment), got {sorted(networks)}"
+    networks = set()
+    for line in raw.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) < 8:
+            continue
+        # Both columns are hex in host byte order; `to_bytes(4, "little")`
+        # undoes that on any little-endian host, and popcount is byte-order
+        # independent so the mask needs no such care.
+        destination = int(fields[1], 16)
+        mask = int(fields[7], 16)
+        if destination == 0:
+            continue
+        address = ipaddress.IPv4Address(destination.to_bytes(4, "little"))
+        networks.add(f"{address}/{bin(mask).count('1')}")
+    return networks
+
+
+def _up_fixture_target(service: str, env: dict | None = None) -> None:
+    """Brings up one isolated fixture target (probe-target, probe-target-2 or
+    late-target). Built separately from `_up_server` because each sits on a
+    network the server is not, and because a test that does not use one should
+    not pay for it — which is also what makes `late-target` able to arrive
+    mid-test."""
+    subprocess.run(
+        [*COMPOSE, "up", "-d", "--build", service], check=True, cwd=E2E_DIR, env=env
     )
-    server_net = next(name for name in networks if name.rsplit("_", 1)[-1] == "agent-net")
-    return container, server_net
+
+
+def _attach_agent_to_late_net(env: dict | None = None, *, service: str = _AGENT_SERVICE) -> str:
+    """Gives a already-running, already-enrolled agent a directly connected
+    subnet it did not have when it started, and returns the network's live name.
+
+    This is the zero-configuration trigger in its sharpest form (plan §8 step
+    3): nothing is configured on the agent, no CIDR is typed anywhere, and the
+    server is told nothing — a new interface simply appears in the agent's
+    namespace, exactly as it would if someone plugged the host into another
+    VLAN.
+
+    What the caller must know: `hostinfo.Collect()` runs once per link
+    connection (internal/link/link.go), so the new subnet reaches the server on
+    the agent's NEXT `hello`, not immediately. A `docker compose restart` of the
+    agent (or any other reconnect — `_cut_agent_network`, a backend outage)
+    is what makes it observable server-side. `restart` specifically, never
+    `up --force-recreate`: this attachment lives on the container, so recreating
+    it would silently undo the very thing under test.
+    """
+    container, _ = _agent_network_name(env, service=service)
+    network = _compose_network(_LATE_NET)
+    subprocess.run(["docker", "network", "connect", network, container], check=True)
+    return network
 
 
 @contextlib.contextmanager
-def _cut_agent_network(env: dict | None = None):
-    """Severs cb-agent's only route to the server for the duration of the
+def _cut_agent_network(env: dict | None = None, *, service: str = _AGENT_SERVICE):
+    """Severs an agent's only route to the server for the duration of the
     block, and restores it on the way out (including on failure).
 
     Only agent-net is detached (see _agent_network_name): cb-agent keeps
@@ -518,7 +926,7 @@ def _cut_agent_network(env: dict | None = None):
     the network is still cut leaves a wedged container behind for `docker
     compose down` to clean up the hard way.
     """
-    container, network = _agent_network_name(env)
+    container, network = _agent_network_name(env, service=service)
     subprocess.run(["docker", "network", "disconnect", network, container], check=True)
     try:
         yield container, network
@@ -1819,16 +2227,16 @@ def test_agent_black_hole_partition_is_detected_and_spools():
 # Slice 3 §9 steps 1-6 and 9-11: remote-probe acceptance
 # ─────────────────────────────────────────────────────────────────────────
 
-# probe-net's pinned addresses (docker-compose.yml). probe-target answers all
-# four check types the slice supports.
-_PROBE_TARGET_IP = "10.77.0.10"
-_PROBE_TARGET_NAME = "probe-target"
+# probe-net's pinned addresses moved to the topology block at the top of this
+# file when Slice 4 added a second agent, a second fixture subnet and a late
+# one: _PROBE_NET_CIDR, _PROBE_TARGET_IP and _PROBE_TARGET_NAME are defined
+# there alongside their siblings. Only the port numbers, which are properties
+# of what probe-target *serves* rather than of the topology, stay here.
 _PROBE_TARGET_HTTP_PORT = 8080
 # Nothing listens here. A TCP check against it is a *target* failure — refused
 # in microseconds, no execution error — which is what makes it the right
 # stimulus for the retry/alert-parity monitor.
 _PROBE_TARGET_CLOSED_PORT = 9999
-_PROBE_NET_CIDR = "10.77.0.0/24"
 
 # The four monitors under test poll on this cadence. Fast enough that a
 # scheduler tick, a dispatch and a result are all observable inside a
@@ -1851,15 +2259,6 @@ _PROBE_UNAVAILABLE_BUDGET_S = 300
 # Reconnect after a partition of this length is dominated by internal/link's
 # 1s-doubling backoff, not by anything under test.
 _PROBE_RECONNECT_BUDGET_S = 300
-
-
-def _up_probe_target(env: dict | None = None) -> None:
-    """Brings up the isolated target. Built separately from `_up_server`
-    because it is on a network the server is not, and because a test that
-    does not use it should not pay for it."""
-    subprocess.run(
-        [*COMPOSE, "up", "-d", "--build", "probe-target"], check=True, cwd=E2E_DIR, env=env
-    )
 
 
 def _backend_sh(command: str, env: dict | None = None) -> subprocess.CompletedProcess:
@@ -1976,7 +2375,7 @@ def test_remote_probe_assignment_execution_and_unavailability():
 
         material = _fetch_install_material(client, headers)
         _write_agent_toml(material["server_pk"], material["tls_pin"])
-        _up_probe_target()
+        _up_fixture_target(_PROBE_TARGET_SERVICE)
 
         agent_id, stream = _enroll_agent(client, headers)
         try:
@@ -2454,6 +2853,2480 @@ def test_remote_probe_assignment_execution_and_unavailability():
             # user action rather than a global fallback.
             assert _monitor(client, icmp_id)["probe_mode"] == "agent"
             assert _monitor(client, icmp_id)["status"] == "up"
+        finally:
+            stream.close()
+    finally:
+        _down()
+        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Task 31: the harness itself (D-12)
+# ─────────────────────────────────────────────────────────────────────────
+
+# Long enough for hello -> registry -> readiness ingest to land, on the same
+# order as this file's other first-signal budgets. Nothing here waits on a
+# scheduler tick or a check, so it is well short of _PROBE_FIRST_RESULT_BUDGET_S.
+_TOPOLOGY_PROPAGATION_BUDGET_S = 120
+
+# The port nginx listens on INSIDE the mono container (repo-root
+# docker-compose.yml maps ${CB_PORT_HTTPS} to it). Used only as the positive
+# control for `nc` in the isolation loop below.
+_BACKEND_HTTPS_PORT = 8443
+
+
+@pytest.mark.e2e
+def test_e2e_harness_topology_is_pinned_and_two_agents_stay_isolated():
+    """Task 31 (D-12): the harness's own topology, asserted before Tasks 32-33
+    are allowed to rest on it.
+
+    This test pins the four properties every Slice 4 discovery assertion will
+    quietly assume, and it exists because assuming them is exactly how an E2E
+    test comes to prove nothing:
+
+    1. **The subnets are the pinned ones.** `agent-net` was an unpinned bridge
+       until D-12, so Docker handed it a /16 — 65 534 addresses, more than the
+       local_discovery grant's `max_addresses_per_job` (1024) on its own, which
+       means the agent's own directly connected subnet could never have been
+       dispatched as a discovery target at all. Every subnet is now hand-pinned
+       and read back LIVE from Docker here, not trusted from the compose file:
+       an `ipam.config` entry Docker declined (a pool collision, a stale network
+       from a previous run) would otherwise surface minutes later as an
+       inexplicable scope mismatch inside a discovery test.
+
+    2. **A host, and then a whole subnet, can appear after the agent is
+       already running.** `probe-target-new` starts on probe-net with the
+       topology otherwise untouched — the agent's routing table does not
+       change, only the set of hosts answering on a subnet it has already
+       scanned, which is plan §8 step 11's "genuinely new device". `late-net`
+       does not exist when cb-agent starts. `late-target` is brought up
+       mid-test and cb-agent is attached to it afterwards, so a directly
+       connected network materializes on an already-enrolled, already-approved,
+       already-connected agent — no CIDR typed, no agent-side file touched,
+       nothing told to the server. The assertion that matters is not that the
+       route appears in `docker inspect` (host-side metadata) but that it
+       appears in the agent's own kernel routing table AND then in the scope
+       the SERVER derives for it after one reconnect. That is the entire
+       zero-configuration trigger, reduced to its mechanism.
+
+    3. **`_agent_network_name` still identifies the route to the server once
+       the topology grows.** Its assertion used to be `suffixes ==
+       {"agent-net", "probe-net"}`, which step 2 above makes false and which a
+       second agent makes false twice over. It is now required-subset plus
+       allowed-superset (see `_AGENT_TOPOLOGY`), and this test exercises both
+       the legitimate growth it must now permit and, via cb-agent-2, a
+       completely different legal shape.
+
+    4. **Two agents are genuinely two agents.** Separate outbound networks,
+       separate fixture subnets, separate state volumes, separate device keys,
+       separate agent ids — and, the part that actually matters for provenance,
+       each one's kernel routing table contains its own fixture subnet and NOT
+       the other's. Without that, "agent 2 discovered 10.78.0.10" is a claim
+       about which row the backend happened to write, not about which host
+       could see what.
+
+    And throughout, the negative: the backend is made to try, and fail, to
+    reach all three fixture subnets over both ICMP and TCP. Slice 4's central
+    claim is that an agent discovers hosts the backend cannot reach; a
+    discovery result in the database is evidence of that only for as long as
+    this loop keeps failing. It is asserted here, in the harness test, so
+    Tasks 32-33 inherit a topology whose isolation has already been
+    demonstrated rather than assumed.
+    """
+    _up_server()
+    try:
+        client = _new_client()
+        _wait_until(lambda: client.get("/api/v1/bootstrap/status").status_code == 200, timeout=60)
+        token = _bootstrap_admin(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        client.headers.update(headers)
+
+        # ---- (1) the pinned subnets, read back from the live networks ----
+        # agent-net and agent-net-2 both exist as soon as circuitbreaker is up,
+        # because it is attached to both; the fixture networks are created as
+        # their targets are brought up below.
+        assert _network_subnet(_AGENT_NET) == _AGENT_NET_CIDR, (
+            f"agent-net is {_network_subnet(_AGENT_NET)}, not the pinned "
+            f"{_AGENT_NET_CIDR} (D-12) — Docker declined the ipam.config entry, and "
+            "the agent's own directly connected subnet is back to being too wide to "
+            "dispatch as a discovery target"
+        )
+        assert _network_subnet(_AGENT_2_NET) == _AGENT_2_NET_CIDR
+
+        material = _fetch_install_material(client, headers)
+        _write_agent_toml(material["server_pk"], material["tls_pin"])
+        _up_fixture_target(_PROBE_TARGET_SERVICE)
+        assert _network_subnet(_PROBE_NET) == _PROBE_NET_CIDR
+
+        agent_id, stream = _enroll_agent(client, headers)
+        try:
+            subprocess.run([*COMPOSE, "up", "-d", _AGENT_SERVICE], check=True, cwd=E2E_DIR)
+            _wait_until(
+                lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
+                timeout=30,
+            )
+            _wait_until(lambda: _agent_status()["link_state"] == "accepted", timeout=30)
+
+            # ---- (3a) the relaxed helper on the topology it started with ----
+            container, server_net = _agent_network_name()
+            assert server_net.rsplit("_", 1)[-1] == _AGENT_NET, server_net
+            assert _agent_attachments() == {_AGENT_NET, _PROBE_NET}
+
+            agent_ip = _container_ipv4(container, server_net)
+            assert ipaddress.ip_address(agent_ip) in ipaddress.ip_network(_AGENT_NET_CIDR), (
+                f"cb-agent's address on agent-net is {agent_ip}, outside the pinned "
+                f"{_AGENT_NET_CIDR}"
+            )
+            assert _agent_route_networks() == {_AGENT_NET_CIDR, _PROBE_NET_CIDR}, (
+                "cb-agent's own routing table — the state hostinfo.Networks() reports "
+                "in every hello — does not match the pinned topology"
+            )
+
+            # The server's derived view of the same thing, with no scope edit
+            # of any kind: both pinned subnets are directly connected private
+            # networks, so `direct_private` must contain both and nothing that
+            # was never plugged in.
+            def _scope(aid: int) -> list[str]:
+                return _probe_eligible_row(client, aid, host=_PROBE_TARGET_IP)["scope_networks"]
+
+            _wait_until(
+                lambda: _AGENT_NET_CIDR in _scope(agent_id),
+                timeout=_TOPOLOGY_PROPAGATION_BUDGET_S,
+            )
+            assert set(_scope(agent_id)) == {_AGENT_NET_CIDR, _PROBE_NET_CIDR}, _scope(agent_id)
+
+            # ---- (2a) a new host on a subnet the agent already has ----
+            # No topology change at all: probe-net is unchanged, the agent's
+            # routing table is unchanged, and only the set of hosts answering
+            # on 10.77.0.0/24 is different. That is the stimulus plan §8 step
+            # 11's "genuinely new device" needs, and it must stay unreachable
+            # from the backend exactly as its neighbour is.
+            routes_before_new_host = _agent_route_networks()
+            _up_fixture_target(_PROBE_TARGET_NEW_SERVICE)
+            assert _agent_route_networks() == routes_before_new_host, (
+                "starting a second host on probe-net changed the agent's routing "
+                "table — it is not on the subnet the agent already knows"
+            )
+            assert ipaddress.ip_address(_PROBE_TARGET_NEW_IP) in ipaddress.ip_network(
+                _PROBE_NET_CIDR
+            )
+
+            # ---- (2b) a subnet that arrives after the agent is running ----
+            _up_fixture_target(_LATE_TARGET_SERVICE)
+            assert _network_subnet(_LATE_NET) == _LATE_NET_CIDR
+            assert _LATE_NET not in _agent_attachments(), (
+                "starting late-target attached cb-agent to late-net by itself — the "
+                "'the agent did not have this subnet a moment ago' half of the trigger "
+                "is not being exercised"
+            )
+            assert _LATE_NET_CIDR not in _agent_route_networks()
+
+            _attach_agent_to_late_net()
+            assert _agent_attachments() == {_AGENT_NET, _PROBE_NET, _LATE_NET}
+            assert _agent_route_networks() == {
+                _AGENT_NET_CIDR,
+                _PROBE_NET_CIDR,
+                _LATE_NET_CIDR,
+            }, "the late subnet is not in the agent's own routing table"
+
+            # ---- (3b) ...and the helper still finds the route to the server ----
+            # This is the assertion the pre-Slice-4 exact-set version fails:
+            # a third, entirely legitimate attachment made `_agent_network_name`
+            # raise, which would have taken down _cut_agent_network and every
+            # test built on it.
+            assert _agent_network_name() == (container, server_net), (
+                "_agent_network_name no longer resolves the route to the server once "
+                "the agent legitimately gains a subnet"
+            )
+
+            # The server learns from the next hello and from nothing else:
+            # hostinfo.Collect() runs per connection. `restart`, not
+            # `up --force-recreate`, or the attachment under test is undone.
+            assert _LATE_NET_CIDR not in _scope(agent_id), (
+                "the server already has the late subnet in scope without a reconnect — "
+                "then this test is not observing hello-carried network facts and "
+                "something else is supplying them"
+            )
+            subprocess.run([*COMPOSE, "restart", _AGENT_SERVICE], check=True, cwd=E2E_DIR)
+            _wait_until(lambda: _agent_status()["link_state"] == "accepted", timeout=60)
+            _wait_until(
+                lambda: _LATE_NET_CIDR in _scope(agent_id),
+                timeout=_TOPOLOGY_PROPAGATION_BUDGET_S,
+            )
+            assert set(_scope(agent_id)) == {
+                _AGENT_NET_CIDR,
+                _PROBE_NET_CIDR,
+                _LATE_NET_CIDR,
+            }, _scope(agent_id)
+            assert _agent_attachments() == {_AGENT_NET, _PROBE_NET, _LATE_NET}, (
+                "the restart dropped the runtime attachment — the helper must use "
+                "`compose restart`, never a recreate"
+            )
+
+            # ---- (4) the second agent, enrolled through the same one path ----
+            _up_fixture_target(_PROBE_TARGET_2_SERVICE)
+            assert _network_subnet(_PROBE_NET_2) == _PROBE_NET_2_CIDR
+
+            agent2_id, stream2 = _enroll_agent(client, headers, service=_AGENT_2_SERVICE)
+            try:
+                subprocess.run(
+                    [*COMPOSE, "up", "-d", _AGENT_2_SERVICE], check=True, cwd=E2E_DIR
+                )
+                _wait_until(
+                    lambda: client.get(f"/api/v1/agents/{agent2_id}").json()["status"]
+                    == "active",
+                    timeout=30,
+                )
+                _wait_until(
+                    lambda: _agent_status(service=_AGENT_2_SERVICE)["link_state"] == "accepted",
+                    timeout=30,
+                )
+
+                assert agent2_id != agent_id
+                assert client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active", (
+                    "enrolling a second agent disturbed the first one"
+                )
+
+                # Separate state volumes, proven by the one file that would be
+                # shared if they were not: the device key is the agent's
+                # identity, so an identical digest here would mean the two
+                # containers are one agent presenting the same certificate
+                # twice, whatever the two agent ids suggest.
+                assert _device_key(_AGENT_SERVICE) != _device_key(_AGENT_2_SERVICE), (
+                    "both agent containers hold the same device.key — cb-agent-2 is "
+                    "sharing cb-agent's state volume and is not a second agent at all"
+                )
+
+                # A different legal attachment shape entirely, through the same
+                # relaxed helper.
+                container2, server_net2 = _agent_network_name(service=_AGENT_2_SERVICE)
+                assert container2 != container
+                assert server_net2.rsplit("_", 1)[-1] == _AGENT_2_NET, server_net2
+                assert _agent_attachments(service=_AGENT_2_SERVICE) == {
+                    _AGENT_2_NET,
+                    _PROBE_NET_2,
+                }
+
+                # The provenance-critical half: each agent's kernel sees its own
+                # fixture subnet and not the other's. Without this, a finding
+                # attributed to one agent could have been produced from either
+                # vantage and the attribution would be unfalsifiable.
+                assert _agent_route_networks(service=_AGENT_2_SERVICE) == {
+                    _AGENT_2_NET_CIDR,
+                    _PROBE_NET_2_CIDR,
+                }
+                assert _PROBE_NET_CIDR not in _agent_route_networks(service=_AGENT_2_SERVICE)
+                assert _LATE_NET_CIDR not in _agent_route_networks(service=_AGENT_2_SERVICE)
+                assert _PROBE_NET_2_CIDR not in _agent_route_networks()
+
+                # ...and the server derives exactly that, per agent, from the
+                # hello facts alone.
+                _wait_until(
+                    lambda: _PROBE_NET_2_CIDR in _scope(agent2_id),
+                    timeout=_TOPOLOGY_PROPAGATION_BUDGET_S,
+                )
+                assert set(_scope(agent2_id)) == {_AGENT_2_NET_CIDR, _PROBE_NET_2_CIDR}
+                assert _probe_eligible_row(client, agent2_id, host=_PROBE_TARGET_IP)[
+                    "in_scope"
+                ] is False, (
+                    "the server considers agent 2 in scope for agent 1's fixture subnet"
+                )
+                assert _probe_eligible_row(client, agent_id, host=_PROBE_TARGET_2_IP)[
+                    "in_scope"
+                ] is False, (
+                    "the server considers agent 1 in scope for agent 2's fixture subnet"
+                )
+
+                # ---- the negative, for all three fixture subnets ----
+                # Every Slice 4 assertion of the form "the agent found a host
+                # the backend cannot reach" is worth exactly as much as this
+                # loop. Run last so it covers the topology as it finally
+                # stands, including the subnet that arrived mid-test.
+                #
+                # Positive controls first, because a loop of `assert
+                # returncode != 0` is satisfied just as well by a missing
+                # binary, a dropped capability or a typo as by an absent
+                # route — and the resulting test would pass forever while
+                # proving nothing. The backend container drops ALL caps and
+                # adds back NET_RAW (repo-root docker-compose.yml), so ICMP
+                # is *supposed* to work from here; it is demonstrated against
+                # cb-agent's own agent-net address, a network the backend IS
+                # on. `nc` is demonstrated against the backend's own HTTPS
+                # listener, the one open TCP port it can reach at all.
+                reachable = _backend_sh(f"ping -c 2 -W 2 {agent_ip}")
+                assert reachable.returncode == 0, (
+                    "the backend cannot ICMP a host on a network it is attached to, so "
+                    "every 'the backend could not reach it' assertion below would hold "
+                    "even with no isolation at all: "
+                    f"{reachable.stdout!r} {reachable.stderr!r}"
+                )
+                listening = _backend_sh(f"nc -z -w 3 127.0.0.1 {_BACKEND_HTTPS_PORT}")
+                assert listening.returncode == 0, (
+                    "`nc` cannot connect to the backend's own open port, so the TCP half "
+                    "of the isolation loop below proves nothing: "
+                    f"{listening.stdout!r} {listening.stderr!r}"
+                )
+                for subnet, address in (
+                    (_PROBE_NET_CIDR, _PROBE_TARGET_IP),
+                    (_PROBE_NET_CIDR, _PROBE_TARGET_NEW_IP),
+                    (_LATE_NET_CIDR, _LATE_TARGET_IP),
+                    (_PROBE_NET_2_CIDR, _PROBE_TARGET_2_IP),
+                ):
+                    for description, command in (
+                        ("ICMP", f"ping -c 2 -W 2 {address}"),
+                        ("TCP", f"nc -z -w 3 {address} {_PROBE_TARGET_HTTP_PORT}"),
+                    ):
+                        probe = _backend_sh(command)
+                        assert probe.returncode != 0, (
+                            f"the backend reached {address} on {subnet} over {description} "
+                            "— that subnet is not isolated from circuitbreaker, and no "
+                            "discovery result found there could be attributed to an agent "
+                            f"rather than to the server: {probe.stdout!r} {probe.stderr!r}"
+                        )
+            finally:
+                stream2.close()
+        finally:
+            stream.close()
+    finally:
+        _down()
+        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Slice 4 Task 32: zero-configuration discovery, plan §8 steps 1-7
+# ─────────────────────────────────────────────────────────────────────────
+#
+# One install command, one ordinary approval, and no CIDR typed anywhere.
+# The budgets below are wall-clock ceilings, not expectations — every one of
+# them is `_wait_until`'s timeout, so a scenario that gets there sooner pays
+# nothing.
+
+# Approval -> the agent's first readiness frame -> `discovery_bootstrap`'s
+# deferred pass. The hello that carries `networks` arrives before any collector
+# readiness row exists, so the *first* pass is refused `readiness_unknown` and
+# it is the readiness frame behind it that does the work (see
+# discovery_bootstrap.run_bootstrap). Generous because that frame rides the
+# agent's own reconcile ticker.
+_DISCOVERY_BOOTSTRAP_BUDGET_S = 240
+
+# The automatic first scan: `initial_scan_delay_s` is 5 + (agent_id % 60)
+# seconds of deliberate jitter (D-7) before the dispatch is even published,
+# then two /24 sweeps at the default `max_concurrent_hosts` of 64 and a
+# 1500 ms per-host budget, which may or may not share a concurrency slot.
+_INITIAL_SCAN_BUDGET_S = 420
+
+# From "the backend answers again" to "the agent's spool is empty". Dominated
+# by internal/link's reconnect backoff (1s doubling), not by the drain itself,
+# which is paced at 4 frames per 100 ms.
+_SPOOL_DRAIN_BUDGET_S = 240
+
+# Plan §3: an agent profile carries exactly this scan type and nothing else.
+_AGENT_SCAN_TYPE = "agent_connect"
+
+# internal/spool's on-disk layout, read and (for the replay) rewound from the
+# test. `queue.jsonl` is every line appended since the last compaction;
+# `queue.head` records how many leading lines have been delivered *and
+# committed*.
+_SPOOL_QUEUE_PATH = "/var/lib/cb-agent/queue.jsonl"
+_SPOOL_HEAD_PATH = "/var/lib/cb-agent/queue.head"
+
+# The grant edit step 6 makes, and the only capability write in this test.
+# See the test's docstring, "Why the replay needs a slower sweep".
+_REPLAY_DISCOVERY_CONFIG = {
+    "max_concurrent_hosts": 1,
+    "host_timeout_ms": 3000,
+    "job_timeout_seconds": 1800,
+}
+
+
+def _session_cookie() -> str:
+    """A `cb_session` value for the WebSocket handshake.
+
+    `/api/v1/discovery/stream` authenticates from the handshake cookie alone
+    (api/ws_discovery.py's `token_from_websocket_scope`) — unlike
+    `/api/v1/agents/stream`, which reads a bearer token as its first message,
+    which is why `_AgentStreamListener` cannot be reused here. The suite's own
+    client deliberately drops its cookie jar after bootstrap (see
+    `_bootstrap_admin`) so that its REST traffic stays purely bearer
+    authenticated and never trips CSRFMiddleware, so this logs in once more on
+    a throwaway client purely to read the cookie back.
+    """
+    with _new_client() as cookie_client:
+        resp = cookie_client.post(
+            "/api/v1/auth/login",
+            json={"email": _ADMIN_EMAIL, "password": _ADMIN_PASSWORD},
+        )
+        resp.raise_for_status()
+        cookie = cookie_client.cookies.get("cb_session")
+    assert cookie, "login did not set a cb_session cookie"
+    return cookie
+
+
+class _DiscoveryStreamListener:
+    """Records `WS /api/v1/discovery/stream` in arrival order, from a
+    background thread.
+
+    This is the stream the Discovery page itself subscribes to
+    (`src/api/discovery.js`), and it is what makes "incremental progress" a
+    property this test can *observe* rather than infer. Polling a job's result
+    list cannot do that job honestly: an automatic /24 sweep at the default
+    concurrency finishes in seconds, so a poller that happened to miss the
+    window would report a job that went straight from queued to completed —
+    indistinguishable from a backend that buffered every finding and wrote them
+    all at the end, which is exactly the design the streaming ingest path
+    exists to rule out. Order between two events on one channel is the
+    assertion; wall-clock timing is not.
+
+    `events` is append-only and read under the same lock it is written under.
+    """
+
+    def __init__(self, cookie: str):
+        from websockets.sync.client import connect
+
+        self._ws = connect(
+            f"{WS_BASE_URL}/api/v1/discovery/stream",
+            ssl_context=_tls_context(),
+            open_timeout=15,
+            additional_headers={"Cookie": f"cb_session={cookie}"},
+        )
+        ack = json.loads(self._ws.recv(timeout=10))
+        assert ack.get("status") == "connected", f"discovery stream auth failed: {ack}"
+
+        self.events: list[dict] = []
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                raw = self._ws.recv(timeout=1)
+            except TimeoutError:
+                continue
+            except Exception:
+                return
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                continue
+            # `ping` is the server's own 30s keep-alive and says nothing about
+            # a scan; everything else on this channel is a discovery event.
+            if isinstance(msg, dict) and msg.get("type") not in (None, "ping", "pong"):
+                with self._lock:
+                    self.events.append(msg)
+
+    def snapshot(self) -> list[dict]:
+        with self._lock:
+            return list(self.events)
+
+    def close(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=5)
+        try:
+            self._ws.close()
+        except Exception:
+            pass
+
+
+def _discovery_profiles(client: httpx.Client, agent_id: int) -> list[dict]:
+    """Every discovery profile pointed at this agent, automatic or not.
+
+    Read from `GET /discovery/profiles` — the list the Discovery page renders —
+    rather than from an agent-scoped route, because plan §8 step 3's claim is
+    about what an operator finds in the *ordinary* profile list after doing
+    nothing but approving an agent.
+    """
+    resp = client.get("/api/v1/discovery/profiles")
+    resp.raise_for_status()
+    return [p for p in resp.json() if p["scan_agent_id"] == agent_id]
+
+
+def _discovery_view(client: httpx.Client, agent_id: int) -> dict:
+    """`GET /agents/{id}/discovery` — Agent Detail's whole "Discovery scope" section.
+
+    One request answers what a vantage point is discovering and, if nothing,
+    why: the derived scope with each entry's provenance, the grant's limits,
+    collector readiness, all three pause scopes, the active and recent jobs, and
+    the profiles pointed at this agent. Every Slice 4 test asks "what does the
+    SERVER believe about this agent" here and nowhere else, so two of them
+    disagreeing can never be an artefact of two different endpoints.
+    """
+    resp = client.get(f"/api/v1/agents/{agent_id}/discovery")
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _automatic_scope(client: httpx.Client, agent_id: int) -> set[str]:
+    """The CIDRs the server derived from this agent's own interface facts alone.
+
+    `provenance == "automatic"` drops an administrator's routed overrides and
+    `effective` drops anything policy then refused, so what is left is exactly
+    "the subnets this agent is plugged into that the server will scan" — the set
+    plan §8 step 3 requires to appear with no CIDR typed anywhere.
+    """
+    return {
+        entry["cidr"]
+        for entry in _discovery_view(client, agent_id)["scope"]
+        if entry["provenance"] == "automatic" and entry["effective"]
+    }
+
+
+def _scan_jobs(client: httpx.Client, *, profile_id: int | None = None) -> list[dict]:
+    resp = client.get("/api/v1/discovery/jobs")
+    resp.raise_for_status()
+    jobs = resp.json()
+    if profile_id is not None:
+        jobs = [j for j in jobs if j["profile_id"] == profile_id]
+    return jobs
+
+
+def _scan_job(client: httpx.Client, job_id: int) -> dict:
+    resp = client.get(f"/api/v1/discovery/jobs/{job_id}")
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _job_results(client: httpx.Client, job_id: int) -> list[dict]:
+    """One job's `ScanResult` rows, oldest first.
+
+    Re-sorted by id here because the route orders by `created_at desc` and
+    several agent findings can share a second, which would make "the same rows
+    came back" compare two arbitrary permutations of one list.
+    """
+    resp = client.get(f"/api/v1/discovery/jobs/{job_id}/results", params={"limit": 500})
+    resp.raise_for_status()
+    return sorted(resp.json(), key=lambda r: r["id"])
+
+
+def _review_queue(client: httpx.Client) -> list[dict]:
+    """The ordinary review queue, exactly as the UI asks for it.
+
+    `GET /discovery/results?status=pending` with no agent parameter, no job
+    parameter and no execution-location filter — `src/api/discovery.js`'s
+    `listPendingResults`. Plan §8 step 5 is satisfied only if an agent finding
+    is here, and finding it through an agent-specific route instead would prove
+    the opposite of what the step claims.
+    """
+    resp = client.get("/api/v1/discovery/results", params={"status": "pending"})
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _hardware_with_ip(client: httpx.Client, ip: str) -> list[dict]:
+    resp = client.get("/api/v1/hardware")
+    resp.raise_for_status()
+    return [h for h in resp.json() if h.get("ip_address") == ip]
+
+
+def _agent_events(client: httpx.Client, agent_id: int) -> list[dict]:
+    resp = client.get(f"/api/v1/agents/{agent_id}/events")
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _put_local_discovery(
+    client: httpx.Client, headers: dict, agent_id: int, config: dict
+) -> dict:
+    """PUT one `local_discovery` grant config. `set_capability_grants` merges
+    against the stored config, so a partial `config` keeps every setting it
+    omits — including the scope lists, which is what keeps this edit out of
+    D-16's scope-version path (see `put_capabilities`: "an unrelated setting
+    change (a smaller max_concurrent_hosts, say) retires nothing")."""
+    resp = client.put(
+        f"/api/v1/agents/{agent_id}/capabilities",
+        json={"capabilities": {"local_discovery": {"enabled": True, "config": config}}},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def _spool_frames(env: dict | None = None, *, service: str = _AGENT_SERVICE) -> list[dict]:
+    """Every decodable frame currently on disk in the agent's spool.
+
+    Read straight out of `queue.jsonl`, which is newline-delimited
+    `frame.Frame` JSON (internal/spool's package doc) — plaintext, because the
+    Noise session encrypts the wire and not the queue. Delivered frames stay in
+    this file as a consumed prefix until compaction (512 entries), which is
+    what makes the replay below possible at all.
+
+    A torn final line is skipped exactly as `spool.load()` skips it: an unclean
+    shutdown can leave one, and it is not a frame.
+    """
+    raw = subprocess.run(
+        [
+            *COMPOSE,
+            "exec",
+            "-T",
+            service,
+            "sh",
+            "-c",
+            f"cat {_SPOOL_QUEUE_PATH} 2>/dev/null || true",
+        ],
+        cwd=E2E_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    frames = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            frames.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return frames
+
+
+def _spooled_findings(frames: list[dict], job_id: int) -> list[dict]:
+    """The `discovery.finding` payloads in *frames* that belong to one job."""
+    findings = []
+    for frame in frames:
+        if frame.get("type") != "discovery.finding":
+            continue
+        payload = frame.get("payload") or {}
+        if payload.get("scan_job_id") == job_id:
+            findings.append(payload)
+    return findings
+
+
+def _spool_head(env: dict | None = None, *, service: str = _AGENT_SERVICE) -> int:
+    """How many leading `queue.jsonl` lines the agent has delivered AND
+    committed, from `queue.head`.
+
+    A missing marker means zero — that is `spool.readHeadMarker`'s own reading
+    of it, and it is the state a spool that has never drained is in.
+    """
+    raw = subprocess.run(
+        [
+            *COMPOSE,
+            "exec",
+            "-T",
+            service,
+            "sh",
+            "-c",
+            f"cat {_SPOOL_HEAD_PATH} 2>/dev/null || true",
+        ],
+        cwd=E2E_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    return int(raw) if raw else 0
+
+
+def _spool_fully_delivered(env: dict | None = None, *, service: str = _AGENT_SERVICE) -> bool:
+    """Every line on disk delivered *and* committed, and there is something
+    on disk to have delivered.
+
+    Read from the two spool files rather than from `status.json`'s
+    `spool_depth` or the server's heartbeat-reported one, because both of
+    those can read zero for an innocent reason — a spool that has never held
+    anything reports zero too — and this has to distinguish "the backlog
+    drained" from "there was never a backlog". `queue.head == len(queue.jsonl)`
+    with a non-empty file says exactly the first.
+    """
+    frames = _spool_frames(env, service=service)
+    return bool(frames) and _spool_head(env, service=service) == len(frames)
+
+
+def _rewind_spool_head(env: dict | None = None, *, service: str = _AGENT_SERVICE) -> None:
+    """Put the spool back into the one state that makes a delivered frame
+    replay: everything on disk, nothing committed.
+
+    This is not a synthetic state and it is not a second delivery path. It is
+    exactly what internal/link's at-least-once contract already produces —
+    `drainBurst` peeks, sends, and only *then* commits, so a process that dies
+    between those two steps comes back with delivered frames still uncommitted
+    and re-sends them (internal/spool's package doc: "A crash mid-burst
+    therefore re-sends rather than loses"). Reproducing that window by racing a
+    SIGKILL against a ~microsecond gap once per 100 ms tick is not something a
+    test can do reliably, so the resulting *on-disk state* is written directly
+    and the agent then does the entire replay itself: it reloads its own spool,
+    re-encodes its own frames, sends them over a real Noise session, and the
+    server ingests them through the ordinary `/link` path with nothing stubbed.
+    Nothing here fabricates a frame, edits one, or speaks to the server.
+
+    The marker is written before the process is killed, never after: a running
+    agent rewrites it on every `Commit`, and SIGKILL (rather than a graceful
+    `compose stop`) is what guarantees nothing overwrites the rewind on the way
+    out.
+    """
+    subprocess.run(
+        [*COMPOSE, "exec", "-T", service, "sh", "-c", f"printf '0\\n' > {_SPOOL_HEAD_PATH}"],
+        cwd=E2E_DIR,
+        env=env,
+        check=True,
+    )
+    # Read back before the kill, because every assertion the replay rests on
+    # assumes the process restarts with nothing committed — and a marker that
+    # silently failed to move would leave the spool already drained, the
+    # "everything is delivered" predicate true from the first poll, and the
+    # whole replay a no-op that still passed.
+    assert _spool_head(env, service=service) == 0, (
+        "the spool head marker did not rewind; the agent would restart with its "
+        "backlog already committed and nothing would be replayed"
+    )
+    subprocess.run([*COMPOSE, "kill", "-s", "SIGKILL", service], check=True, cwd=E2E_DIR, env=env)
+    # `restart: on-failure` (docker-compose.yml) brings a SIGKILLed container
+    # back on its own, exactly as the real systemd unit would; this is the
+    # explicit, idempotent version of that so the test never depends on the
+    # engine's timing.
+    subprocess.run([*COMPOSE, "up", "-d", service], check=True, cwd=E2E_DIR, env=env)
+
+
+def _assert_backend_cannot_reach(address: str, subnet: str) -> None:
+    """The negative every assertion in this test is worth exactly as much as.
+
+    Both transports, because a discovery finding names a host *and* its open
+    TCP ports: a backend that could not ping the fixture but could connect to
+    it would still be able to produce the same row.
+    """
+    for description, command in (
+        ("ICMP", f"ping -c 2 -W 2 {address}"),
+        ("TCP", f"nc -z -w 3 {address} {_PROBE_TARGET_HTTP_PORT}"),
+    ):
+        probe = _backend_sh(command)
+        assert probe.returncode != 0, (
+            f"the backend reached {address} on {subnet} over {description} — that subnet "
+            "is not isolated from circuitbreaker, and no discovery result found there can "
+            "be attributed to the agent rather than to the server: "
+            f"{probe.stdout!r} {probe.stderr!r}"
+        )
+
+
+# `agent_discovery`'s two audit vocabularies for a finding the server refused.
+# A *deduplicated* finding writes neither, which is what lets step 6 below tell
+# "the idempotency key absorbed the replay" apart from "the dispatch had closed
+# and every replayed frame was thrown away" — two outcomes that leave the
+# `scan_results` table looking identical.
+_FINDING_REJECTION_EVENTS = frozenset({"protocol_violation", "capability_violation"})
+
+
+def _finding_rejections(client: httpx.Client, agent_id: int) -> list[int]:
+    return sorted(
+        e["id"] for e in _agent_events(client, agent_id)
+        if e["event_type"] in _FINDING_REJECTION_EVENTS
+    )
+
+
+@pytest.mark.e2e
+def test_agent_zero_configuration_discovery_import_and_replay():
+    """Slice 4 §8 steps 1-7: the claim the whole slice exists to make.
+
+    One install command, one ordinary approval with the server's own default
+    grants, and **no CIDR typed anywhere** — then a host the backend cannot
+    reach at all appears in the ordinary review queue, is imported as one
+    Hardware row, and survives a replay of the agent's own findings without
+    duplicating either.
+
+    **The negative is the premise, and it is asserted first and again last.**
+    `probe-target` sits on `probe-net`; `circuitbreaker` is deliberately not
+    attached to it, and Docker's inter-bridge isolation drops forwarding between
+    two bridge networks. `_backend_sh` is made to try ICMP *and* TCP against
+    10.77.0.10 and to fail at both, behind positive controls that prove the two
+    commands can succeed at all from inside that container — a loop of `assert
+    returncode != 0` is satisfied just as well by a missing binary as by an
+    absent route. Every "the agent discovered this" assertion below means
+    nothing except while that loop keeps failing, so it runs before the agent is
+    even eligible and once more after the import, over the topology as it
+    finally stands.
+
+    **Nothing in this test types a CIDR, creates a profile, or configures the
+    agent.** The only writes it makes are: approve (with no `capabilities` body
+    — `_enroll_agent` asserts the server applied its own defaults), accept one
+    review-queue row, and — for step 6 alone, after every zero-configuration
+    claim has already been proven — one ordinary capability edit and one "Run
+    now" on a profile the *server* created. `agent.toml` carries a server URL,
+    a static key and a TLS pin, and no scope, port, subnet or scanner setting
+    exists anywhere in it.
+
+    What each step pins:
+
+    1. **The agent reports its directly connected subnets** (§8 step 3, first
+       half). Both pinned /24s reach the server's derived scope with
+       `provenance: automatic`, from the interface facts in `hello` alone.
+       Asserted as an *equality*: a scope that also contained something never
+       plugged in would mean the derivation is reading something other than the
+       agent's own kernel.
+
+    2. **The backend mints the system-managed profiles, D-12.** One enabled
+       `managed_by="system"` profile per reported subnet — not "exactly one"
+       overall, which cannot hold for a container on two networks (see D-12) —
+       exactly one of them targeting the fixture subnet, each carrying the
+       single `agent_connect` scan type and no `nmap_arguments`, and no
+       user-created profile alongside them.
+
+    3. **An initial scan starts by itself, and its findings stream.** The job is
+       `triggered_by="bootstrap"`, `source_type="agent"`, and nobody asked for
+       it. Progress is observed on `WS /api/v1/discovery/stream` — the stream
+       the Discovery page itself subscribes to — because the point of
+       incremental ingest is that an operator watches hosts *arrive*: the
+       assertion is that a `result_added` naming the fixture is pushed **before**
+       the terminal `job_update`, which a backend that buffered every finding
+       and wrote them all at the end could not produce. Polling could not tell
+       the two apart, since a /24 sweep at the default concurrency finishes in
+       seconds and a poller that missed the window would see the same
+       queued-then-completed job either way.
+
+    4. **The fixture lands in the ordinary review queue.** Found through `GET
+       /discovery/results?status=pending` with no agent parameter and no
+       execution-location filter — plan §8's "no separate UI path" is a claim
+       about *this* endpoint, so locating the row through an agent-scoped route
+       would prove the opposite. Its open ports are 53 and 8080, both of which
+       are in the grant's port list and neither of which anything but a connect
+       scan from inside probe-net could have observed.
+
+    5. **Importing it creates exactly one Hardware row**, through the same
+       `POST /discovery/results/{id}/merge` the review queue posts, and the row
+       leaves the queue.
+
+    6. **Replaying the findings is free** — no duplicate `ScanResult`, no
+       duplicate Hardware row. This is the claim `finding_id` exists for: it is
+       a digest of `dispatch_id|kind|address` (not a fresh `collect.SampleID()`)
+       precisely so that a batch re-sent after an outage collides with the rows
+       it already wrote, on `uq_scan_results_job_finding`.
+
+       *The replay is real.* The agent reloads its own spool, re-encodes its own
+       frames, sends them over a real Noise session, and the server ingests them
+       through the ordinary `/link` path — nothing is stubbed, no ingest
+       function is called twice in-process, and no frame is fabricated or
+       edited. What the test supplies is the *on-disk state* an unclean shutdown
+       mid-burst leaves behind, because that window cannot be hit reliably any
+       other way: `drainBurst` peeks, sends, and only then commits, so the gap
+       in which a delivered frame is still uncommitted is microseconds wide once
+       per 100 ms tick. `_rewind_spool_head` writes exactly that state — every
+       line still on disk, nothing committed — and the agent does the rest.
+
+       *Why the replay needs a slower sweep.* A replayed host finding is only
+       *deduplicated* while its dispatch is still open; once the terminal
+       summary has closed the job, the same frame is **refused** as
+       `dispatch_closed` instead, which also leaves no duplicate row and would
+       therefore let this step pass while proving nothing about the idempotency
+       key. So the second scan is run with `max_concurrent_hosts: 1`, which
+       stretches a 254-address sweep from seconds to minutes and makes the
+       window between the fixture's finding and the terminal summary wide enough
+       to drive a replay inside it deliberately rather than by winning a race.
+       That is an ordinary central "scan depth" control (plan §6), it is applied
+       only *after* every zero-configuration claim above has been proven, and it
+       is provably not a scope change — `_scope_version` digests the scope's
+       four dimensions and nothing else, so D-16's version check cannot be what
+       admits or refuses these findings. The agent is killed before the sweep
+       ends, so no summary is ever produced and the dispatch stays open on its
+       own 1800 s lease.
+
+       *How the test knows the replay actually happened.* "No new row" on its
+       own is equally consistent with nothing having been sent, so four things
+       are asserted together. The head marker is read back at zero *before* the
+       process is killed, so the restart provably begins with nothing
+       committed. The reconnecting agent's own `hello` reports a backlog to the
+       server, which is the backend saying it came back carrying frames. The
+       first N lines of `queue.jsonl` are then still byte-for-byte the batch
+       that was already delivered once, and the marker again covers all of them
+       — and `Commit` is only ever reached for frames `drainBurst` has written
+       to the wire, so those exact frames went out a second time. Finally the
+       job is still open, so a refusal was *possible*, and no
+       `protocol_violation`/`capability_violation` was recorded, so none
+       happened: what absorbed the redelivery was the idempotency key.
+
+       These are not four spellings of one check. Measured against a build with
+       the rewind removed, the `hello` backlog witness still passes — the
+       restart gap spools a fresh telemetry frame or two — and it is the
+       byte-for-byte comparison that fails, because a restart whose marker was
+       never rewound compacts the delivered prefix away on load.
+
+    7. **Plan §3's idempotency, incidentally but deliberately.** The agent
+       connects three times over this test (start, post-outage, post-replay) and
+       every `hello` re-runs the bootstrap pass. The profile set and the count
+       of `triggered_by="bootstrap"` jobs are asserted unchanged at the end:
+       "repeated hello/readiness frames must not create duplicate profiles or
+       scans" is exactly the kind of claim that only an end-to-end run with real
+       reconnections can falsify.
+
+    Steps 8-11 of §8 (capability disable mid-scan, restart/address change,
+    second agent, recurrence) are Task 33's; nothing here depends on them.
+    """
+    _up_server()
+    try:
+        client = _new_client()
+        _wait_until(lambda: client.get("/api/v1/bootstrap/status").status_code == 200, timeout=60)
+        token = _bootstrap_admin(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        client.headers.update(headers)
+
+        material = _fetch_install_material(client, headers)
+        _write_agent_toml(material["server_pk"], material["tls_pin"])
+        _up_fixture_target(_PROBE_TARGET_SERVICE)
+
+        # The pinned topology this test names literals from, read back live —
+        # a subnet Docker declined would otherwise surface minutes later as an
+        # inexplicable scope mismatch instead of as one line here.
+        assert _network_subnet(_AGENT_NET) == _AGENT_NET_CIDR
+        assert _network_subnet(_PROBE_NET) == _PROBE_NET_CIDR
+
+        # Subscribed before the agent exists, so the automatic first scan — which
+        # nobody triggers and which starts on its own jitter — cannot begin
+        # before there is somebody watching it.
+        events_stream = _DiscoveryStreamListener(_session_cookie())
+        try:
+            agent_id, stream = _enroll_agent(client, headers)
+            try:
+                subprocess.run([*COMPOSE, "up", "-d", _AGENT_SERVICE], check=True, cwd=E2E_DIR)
+                _wait_until(
+                    lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
+                    timeout=30,
+                )
+                _wait_until(lambda: _agent_status()["link_state"] == "accepted", timeout=30)
+
+                # ---- The negative, with its positive controls ---------------
+                container, server_net = _agent_network_name()
+                agent_ip = _container_ipv4(container, server_net)
+                reachable = _backend_sh(f"ping -c 2 -W 2 {agent_ip}")
+                assert reachable.returncode == 0, (
+                    "the backend cannot ICMP a host on a network it IS attached to, so the "
+                    "isolation assertions below would hold even with no isolation at all: "
+                    f"{reachable.stdout!r} {reachable.stderr!r}"
+                )
+                listening = _backend_sh(f"nc -z -w 3 127.0.0.1 {_BACKEND_HTTPS_PORT}")
+                assert listening.returncode == 0, (
+                    "`nc` cannot connect to the backend's own open port, so the TCP half of "
+                    "the isolation check proves nothing: "
+                    f"{listening.stdout!r} {listening.stderr!r}"
+                )
+                _assert_backend_cannot_reach(_PROBE_TARGET_IP, _PROBE_NET_CIDR)
+
+                # ---- 1. The agent reports its directly connected subnets ----
+                _wait_until(
+                    lambda: {_AGENT_NET_CIDR, _PROBE_NET_CIDR}
+                    <= _automatic_scope(client, agent_id),
+                    timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+                )
+                scope = _automatic_scope(client, agent_id)
+                assert scope == {_AGENT_NET_CIDR, _PROBE_NET_CIDR}, (
+                    "the agent's automatic scope is not exactly its two directly connected "
+                    f"pinned subnets: {sorted(scope)}"
+                )
+                view = _discovery_view(client, agent_id)
+                assert view["granted"] is True and view["eligible"] is True, view
+                assert view["paused"] is False and view["globally_paused"] is False, view
+                assert view["limits"]["scope_mode"] == "direct_private", view["limits"]
+
+                # ---- 2. The system-managed profiles (D-12) ------------------
+                _wait_until(
+                    lambda: len(_discovery_profiles(client, agent_id)) >= 2,
+                    timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+                )
+                profiles = _discovery_profiles(client, agent_id)
+                assert {p["cidr"] for p in profiles} == {_AGENT_NET_CIDR, _PROBE_NET_CIDR}, (
+                    "the bootstrap did not create exactly one profile per directly connected "
+                    f"subnet (D-12): {[(p['cidr'], p['managed_by']) for p in profiles]}"
+                )
+                assert all(p["managed_by"] == "system" for p in profiles), profiles
+                assert all(p["enabled"] for p in profiles), profiles
+                assert all(p["paused_at"] is None for p in profiles), profiles
+                by_cidr = {p["cidr"]: p for p in profiles}
+                probe_profile = by_cidr[_PROBE_NET_CIDR]
+                assert probe_profile["scan_types"] == [_AGENT_SCAN_TYPE], probe_profile
+                assert probe_profile["nmap_arguments"] is None, probe_profile
+                assert probe_profile["schedule_cron"], (
+                    "the automatic profile has no recurring cadence — plan §3 step 5 asks for "
+                    "a six-hourly schedule with per-agent jitter"
+                )
+
+                # ---- 3. The initial scan, and progress that streams ---------
+                initial_job = _wait_until_and_return(
+                    lambda: next(iter(_scan_jobs(client, profile_id=probe_profile["id"])), None),
+                    timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+                )
+                job_id = initial_job["id"]
+                assert initial_job["triggered_by"] == "bootstrap", initial_job
+                assert initial_job["scan_agent_id"] == agent_id, initial_job
+                assert initial_job["source_type"] == "agent", initial_job
+                assert initial_job["target_cidr"] == _PROBE_NET_CIDR, initial_job
+
+                _wait_until(
+                    lambda: _scan_job(client, job_id)["status"] == "completed",
+                    timeout=_INITIAL_SCAN_BUDGET_S,
+                )
+                completed = _scan_job(client, job_id)
+                assert completed["error_reason"] is None, completed
+                assert completed["hosts_found"] >= 1, completed
+
+                pushed = events_stream.snapshot()
+                streamed = [
+                    e
+                    for e in pushed
+                    if e.get("type") == "result_added" and e.get("job_id") == job_id
+                ]
+                terminal = [
+                    i
+                    for i, e in enumerate(pushed)
+                    if e.get("type") == "job_update"
+                    and (e.get("job") or {}).get("id") == job_id
+                    and (e.get("job") or {}).get("status") == "completed"
+                ]
+                assert streamed, (
+                    "no result_added was pushed for the automatic scan — findings are not "
+                    f"reaching the discovery stream at all. Saw: {[e.get('type') for e in pushed]}"
+                )
+                assert terminal, "no terminal job_update was pushed for the automatic scan"
+                first_result = pushed.index(streamed[0])
+                assert first_result < terminal[0], (
+                    "every finding was pushed at or after the job's terminal event — the "
+                    "operator never saw hosts arrive, which is the whole point of streaming "
+                    "the findings rather than writing them in one batch at the end"
+                )
+                assert _PROBE_TARGET_IP in [
+                    (e.get("result") or {}).get("ip_address") for e in streamed
+                ], (
+                    f"{_PROBE_TARGET_IP} was never pushed as an incremental result; only "
+                    f"{[(e.get('result') or {}).get('ip_address') for e in streamed]}"
+                )
+                assert pushed[terminal[0]].get("pending_count", 0) >= 1, (
+                    "the terminal event carried no pending review count, so the review badge "
+                    "an operator watches never moved"
+                )
+
+                # ---- 4. The ordinary review queue ---------------------------
+                queued = [r for r in _review_queue(client) if r["ip_address"] == _PROBE_TARGET_IP]
+                assert len(queued) == 1, (
+                    f"expected exactly one pending review row for {_PROBE_TARGET_IP}, got "
+                    f"{queued}"
+                )
+                review_row = queued[0]
+                assert review_row["scan_job_id"] == job_id, review_row
+                assert review_row["merge_status"] == "pending", review_row
+                assert review_row["state"] == "new", review_row
+                ports = {p["port"] for p in json.loads(review_row["open_ports_json"] or "[]")}
+                assert {53, _PROBE_TARGET_HTTP_PORT} <= ports, (
+                    f"the finding for {_PROBE_TARGET_IP} reports open ports {sorted(ports)}; the "
+                    "fixture answers TCP on 53 (dnsmasq) and 8080 (httpd) and both are in the "
+                    "grant's port list, so a connect scan from inside probe-net must have seen "
+                    "them"
+                )
+                assert review_row in _job_results(client, job_id), (
+                    "the review queue and the job's own result list disagree about the row"
+                )
+
+                # ---- 5. Import: exactly one Hardware row --------------------
+                assert _hardware_with_ip(client, _PROBE_TARGET_IP) == [], (
+                    "a Hardware row for the fixture existed before it was imported — the scan "
+                    "or the finalizer auto-merged it, which plan §5 forbids for an agent finding"
+                )
+                merged = client.post(
+                    f"/api/v1/discovery/results/{review_row['id']}/merge",
+                    json={"action": "accept", "entity_type": "hardware"},
+                )
+                assert merged.status_code == 200, merged.text
+                hardware = _hardware_with_ip(client, _PROBE_TARGET_IP)
+                assert len(hardware) == 1, (
+                    f"import created {len(hardware)} Hardware rows: {hardware}"
+                )
+                hardware_id = hardware[0]["id"]
+                assert merged.json().get("entity_id") == hardware_id, merged.json()
+                assert not [
+                    r for r in _review_queue(client) if r["id"] == review_row["id"]
+                ], "the accepted row is still in the pending review queue"
+                # Snapshotted *after* the import, not before: accepting a row
+                # rewrites its own `merge_status`/`reviewed_*`/`matched_entity_*`
+                # columns, and comparing against a pre-import copy would report
+                # that ordinary review write as damage the replay did.
+                imported_results = _job_results(client, job_id)
+
+                # ---- 6. A real replay of the agent's own findings -----------
+                # An ordinary scan-depth edit (plan §6) and an ordinary "Run
+                # now" on the profile the *server* created. See the docstring:
+                # this is not a scope change, so D-16's version check is not
+                # what decides anything below.
+                _put_local_discovery(client, headers, agent_id, _REPLAY_DISCOVERY_CONFIG)
+                run = client.post(f"/api/v1/discovery/profiles/{probe_profile['id']}/run")
+                assert run.status_code == 200, run.text
+                replay_job_id = run.json()["id"]
+                assert replay_job_id != job_id
+
+                # Wait for the sweep to be demonstrably under way — a finding
+                # already accepted live — before taking the server away, so the
+                # outage lands mid-scan rather than before the request was even
+                # delivered.
+                _wait_until(
+                    lambda: len(_job_results(client, replay_job_id)) >= 1,
+                    timeout=_INITIAL_SCAN_BUDGET_S,
+                    interval=0.3,
+                )
+                # The sweep runs one address at a time in ascending order, and
+                # 10.77.0.1 (the bridge gateway) and the agent's own address both
+                # answer well before 10.77.0.10 does, so the first accepted
+                # finding is never the fixture's. Asserted rather than assumed:
+                # if it ever were, the fixture's finding would go over the live
+                # link and never enter the spool, and the wait inside the outage
+                # below would spend its whole budget discovering that.
+                assert not any(
+                    r["ip_address"] == _PROBE_TARGET_IP
+                    for r in _job_results(client, replay_job_id)
+                ), (
+                    f"{_PROBE_TARGET_IP} was the first host this sweep found, so its finding "
+                    "went over the live link instead of through the spool — nothing earlier "
+                    "in 10.77.0.0/24 answered, and this step needs a spooled finding for the "
+                    "fixture specifically"
+                )
+
+                with _backend_outage(client):
+                    # The server is gone, so every finding from here fails its
+                    # live send and is durably enqueued instead (internal/link's
+                    # dataFrameSender.sendLive). The fixture's own finding is
+                    # the one this test needs on disk, so it waits for that
+                    # address specifically rather than for any finding.
+                    _wait_until(
+                        lambda: any(
+                            f["ip_address"] == _PROBE_TARGET_IP
+                            for f in _spooled_findings(_spool_frames(), replay_job_id)
+                        ),
+                        timeout=_INITIAL_SCAN_BUDGET_S,
+                        interval=2.0,
+                    )
+
+                _wait_until(
+                    lambda: _agent_status()["link_state"] == "accepted",
+                    timeout=_SPOOL_DRAIN_BUDGET_S,
+                )
+                _wait_until(_spool_fully_delivered, timeout=_SPOOL_DRAIN_BUDGET_S)
+
+                spooled = _spool_frames()
+                fixture_findings = [
+                    f
+                    for f in _spooled_findings(spooled, replay_job_id)
+                    if f["ip_address"] == _PROBE_TARGET_IP
+                ]
+                assert len(fixture_findings) == 1, fixture_findings
+                assert fixture_findings[0]["finding_id"], fixture_findings[0]
+                assert not any(
+                    f.get("terminal") for f in _spooled_findings(spooled, replay_job_id)
+                ), "the sweep already produced its terminal summary; see the docstring"
+                assert _spool_head() == len(spooled), (
+                    "the agent has not committed every line of its spool, so what follows "
+                    "would be a first delivery of the remainder rather than a replay"
+                )
+                # The server's own view of the same thing, which it only ever
+                # learns from the agent's 20s heartbeat (D-12) — so this lags
+                # the on-disk truth above by up to one interval and is waited
+                # for rather than asserted outright.
+                _wait_until(
+                    lambda: _agent_telemetry(client, agent_id)["spool"]["depth"] == 0,
+                    timeout=60,
+                )
+
+                before = _scan_job(client, replay_job_id)
+                assert before["status"] == "running", (
+                    "the second scan closed before the replay could be driven, so a replayed "
+                    "finding would be refused as `dispatch_closed` rather than deduplicated "
+                    f"and the idempotency key would go untested: {before}"
+                )
+                delivered = _job_results(client, replay_job_id)
+                replayed_addresses = sorted(
+                    {f["ip_address"] for f in _spooled_findings(spooled, replay_job_id)}
+                )
+                assert _PROBE_TARGET_IP in replayed_addresses, replayed_addresses
+                rows_per_address = {
+                    address: [r["id"] for r in delivered if r["ip_address"] == address]
+                    for address in replayed_addresses
+                }
+                assert all(len(ids) == 1 for ids in rows_per_address.values()), (
+                    "a spooled finding did not land as exactly one row on its first delivery, "
+                    f"so the replay below has nothing to be idempotent against: {rows_per_address}"
+                )
+                rejections_before = _finding_rejections(client, agent_id)
+
+                # The replay itself: everything still on disk, nothing
+                # committed — the state a crash between `send` and `Commit`
+                # leaves — then the agent re-sends all of it by itself.
+                _rewind_spool_head()
+                # The server's own witness that the restarted agent came back
+                # holding undelivered frames: `hello` carries the spool depth
+                # (D-12), so this is the *backend* reporting a backlog rather
+                # than the test reading the agent's disk. It says a backlog
+                # existed, not which frames were in it — the identity of the
+                # batch is what the on-disk comparison below establishes, and
+                # both halves are needed: measured against a build with the
+                # rewind removed, this wait still passes (the restart gap
+                # spools a fresh telemetry frame or two) and the comparison
+                # below is what fails.
+                _wait_until(
+                    lambda: _agent_telemetry(client, agent_id)["spool"]["depth"] > 0,
+                    timeout=_SPOOL_DRAIN_BUDGET_S,
+                    interval=0.5,
+                )
+                _wait_until(
+                    lambda: _agent_status()["link_state"] == "accepted",
+                    timeout=_SPOOL_DRAIN_BUDGET_S,
+                )
+                # The marker went back to zero and has now climbed to cover
+                # every line on disk again. Paired with the byte-for-byte frame
+                # comparison that follows, that is the replay: the identical N
+                # frames were uncommitted at restart and are committed now, and
+                # `Commit` is only ever reached for frames `drainBurst` has
+                # already written to the wire.
+                _wait_until(_spool_fully_delivered, timeout=_SPOOL_DRAIN_BUDGET_S)
+                replayed_on_disk = _spool_frames()
+                assert replayed_on_disk[: len(spooled)] == spooled, (
+                    "the spool no longer starts with the frames that were replayed — it was "
+                    "compacted or rewritten, and this is not the same batch"
+                )
+                assert _spool_head() == len(replayed_on_disk), (
+                    "the agent did not re-deliver and re-commit its whole spool"
+                )
+
+                after = _scan_job(client, replay_job_id)
+                assert after["status"] == "running", (
+                    "the dispatch closed during the replay — the replayed findings would have "
+                    f"been refused as late rather than deduplicated: {after}"
+                )
+                assert _finding_rejections(client, agent_id) == rejections_before, (
+                    "the server audited a rejection while the replay was draining, so the "
+                    "frames were refused rather than absorbed by uq_scan_results_job_finding "
+                    "— the idempotency claim this step exists for does not hold"
+                )
+                assert _job_results(client, replay_job_id) == delivered, (
+                    "replaying the agent's own findings changed the job's result rows"
+                )
+                assert {
+                    address: [
+                        r["id"]
+                        for r in _job_results(client, replay_job_id)
+                        if r["ip_address"] == address
+                    ]
+                    for address in replayed_addresses
+                } == rows_per_address, (
+                    "a replayed finding wrote a second row for an address it had already "
+                    "reported — uq_scan_results_job_finding did not absorb the redelivery, "
+                    "which is the one thing the replay-stable finding_id digest exists for"
+                )
+                for counter in ("hosts_found", "hosts_new", "hosts_updated", "hosts_conflict"):
+                    assert after[counter] == before[counter], (
+                        f"the replay incremented {counter}: {before[counter]} -> {after[counter]}"
+                    )
+                assert _job_results(client, job_id) == imported_results, (
+                    "the replay disturbed the first scan's results"
+                )
+                assert [h["id"] for h in _hardware_with_ip(client, _PROBE_TARGET_IP)] == [
+                    hardware_id
+                ], "the replay produced a second Hardware row for the fixture"
+
+                # ---- 7. Three reconnections, no duplicated automatic work ---
+                assert {p["id"] for p in _discovery_profiles(client, agent_id)} == {
+                    p["id"] for p in profiles
+                }, (
+                    "a reconnect created or replaced a system profile; plan §3 requires "
+                    "repeated hello/readiness frames to be a no-op"
+                )
+                bootstrap_jobs = [
+                    j
+                    for j in _scan_jobs(client, profile_id=probe_profile["id"])
+                    if j["triggered_by"] == "bootstrap"
+                ]
+                assert len(bootstrap_jobs) == 1, (
+                    "the agent reconnected three times in this test and a hello queued another "
+                    f"automatic scan: {[j['id'] for j in bootstrap_jobs]}"
+                )
+
+                # ---- and the negative, over the topology as it stands -------
+                _assert_backend_cannot_reach(_PROBE_TARGET_IP, _PROBE_NET_CIDR)
+            finally:
+                stream.close()
+        finally:
+            events_stream.close()
+    finally:
+        _down()
+        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Slice 4 Task 33: cancellation, restart, a second agent, recurrence
+# (plan §8 steps 8-11)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# Task 32 proves the slice's central claim on the happy path. These two tests
+# attack the four ways that claim could be true by accident:
+#
+#   * work that keeps producing accepted results after it was cancelled,
+#   * an agent that silently needs re-enrolling or re-configuring when either
+#     end restarts or its address moves,
+#   * findings attributed to whichever agent happened to report them last,
+#   * a recurring cadence that cannot tell a device it has already seen from a
+#     new one, or that lets an untrusted reporter rename inventory.
+#
+# As everywhere else in this file the budgets below are `_wait_until` ceilings,
+# not expectations: a scenario that gets there sooner pays nothing.
+
+# The scan-depth edit step 8 runs its doomed sweep under, and the reason it is
+# this extreme is arithmetic rather than taste. Two things have to be true at
+# once: the scan must still be running minutes after it starts (so "mid-scan"
+# is not a race), and the agent must still be FINDING hosts after internal/
+# link's 60s steady-state read deadline has taken the partitioned link down (so
+# its late findings reach the server through the spool rather than vanishing
+# into the black hole — see `_cut_agent_network`).
+#
+# `Liveness.probeHost` gives each address one shared wall-clock budget and
+# `session.Ping` waits the whole of it for a reply, so an address nobody
+# answers on costs a full `host_timeout_ms`. At the grant's 10 000 ms maximum
+# and one host at a time, a 10.77.0.0/24 sweep answers for 10.77.0.1 and the
+# agent's own address within a second and then spends ten seconds per dead
+# address: 10.77.0.10 is not reached for ~70s and 10.77.0.20 not for ~160s,
+# both comfortably past the deadline. `job_timeout_seconds` is the grant's
+# maximum for the same reason — the dispatch must not expire on its own before
+# the test has finished with it.
+_CANCEL_DISCOVERY_CONFIG = {
+    "max_concurrent_hosts": 1,
+    "host_timeout_ms": 10_000,
+    "job_timeout_seconds": 1800,
+}
+
+# From severing the link to a late finding sitting on the agent's disk: the 60s
+# read deadline, then the sweep's ten-seconds-per-dead-address march to the next
+# host that answers. Generous against the ~70s and ~160s computed above because
+# both depend on how many addresses precede the fixtures, which is a property of
+# Docker's IPAM rather than of anything under test.
+_LATE_FINDING_BUDGET_S = 300
+
+# Reconnect after a partition, and the restart of both ends. Dominated by
+# internal/link's 1s-doubling backoff and by the backend's own start-up, neither
+# of which is under test here.
+_RECONNECT_BUDGET_S = 300
+
+# One recurring sweep of an already-bootstrapped /24 at the grant's default
+# depth (64 concurrent, 1500 ms), from "run now" to a terminal job status.
+_RECURRING_SCAN_BUDGET_S = _INITIAL_SCAN_BUDGET_S
+
+# Where cb-agent is moved to on agent-net. The subnet is deliberately unchanged:
+# plan §8 step 9's profile-duplication risk is precisely an agent whose ADDRESS
+# moves while the network it is directly connected to does not, because D-7's
+# partial unique index is keyed on `(scan_agent_id, normalized_cidr)` and a
+# bootstrap that keyed on anything address-shaped would mint a second profile
+# for the same subnet here and nowhere else.
+_AGENT_NET_MOVED_IP = "10.88.0.77"
+
+# The name an operator gives the imported fixture, so that the hostname the
+# agent keeps reporting (Docker's embedded-DNS PTR record for the container)
+# stops agreeing with it. Plan §4 lists hostname among the agent's untrusted
+# observations, so this disagreement must be a review and never a rename.
+_OPERATOR_HARDWARE_NAME = "e2e-operator-named-fixture"
+
+# The embedded cluster inside the mono container. Fixed by entrypoint-mono.sh;
+# the password is the compose environment's own `CB_DB_PASSWORD`.
+_BACKEND_DB_ROLE = "breaker"
+_BACKEND_DB_NAME = "circuitbreaker"
+
+
+def _backend_sql(query: str) -> list[list[str]]:
+    """One read-only SQL query against the backend's own embedded Postgres.
+
+    Reserved for the columns the product deliberately keeps off the wire, and in
+    this file that means exactly one: `scan_results.discovery_agent_id`. It is
+    the provenance column plan §2 adds and the column plan §8 step 10 is
+    entirely about, and `ScanResultOut` omits it because nothing renders it — so
+    "no finding was attributed to the wrong agent" is not a question any REST
+    response can answer.
+
+    Asking the job's `scan_agent_id` instead would answer a *different*
+    question. The job's execution location and the row's reporter are written by
+    two different code paths — `discovery_service.create_scan_job` and
+    `agent_discovery._record_host_finding` — and a divergence between those two
+    is precisely the shape cross-attribution would take. Reading only the job
+    would make that divergence invisible, which is why both are read below and
+    compared.
+
+    Credentials come from the container's own environment rather than from this
+    file, and `ON_ERROR_STOP` plus the returncode assertion mean a wrong role,
+    a renamed column or a typo'd query fails here and says so, instead of
+    returning an empty result set that several assertions later read as "no
+    cross-attribution happened".
+    """
+    proc = _backend_sh(
+        'PGPASSWORD="$CB_DB_PASSWORD" psql -h 127.0.0.1 -p 5432 '
+        f"-U {_BACKEND_DB_ROLE} -d {_BACKEND_DB_NAME} "
+        f"-v ON_ERROR_STOP=1 -At -F'|' -c {shlex.quote(query)}"
+    )
+    assert proc.returncode == 0, (
+        f"reading the backend's own database failed for {query!r}: "
+        f"{proc.stdout!r} {proc.stderr!r}"
+    )
+    return [line.split("|") for line in proc.stdout.splitlines() if line]
+
+
+def _result_provenance() -> list[dict]:
+    """Every `scan_result`, with its own reporter *and* its job's executor.
+
+    Both, never one: see `_backend_sql`. `discovery_agent_id` is NULL for a
+    server-executed result and is rendered as the empty string by `psql -At`,
+    which is why it is normalised to `None` here rather than left as `""` — a
+    falsy string would make "this row names no agent" and "this row names agent
+    0" compare equal in exactly the assertion that must tell them apart.
+    """
+    rows = _backend_sql(
+        "select r.id, r.ip_address, coalesce(r.discovery_agent_id::text, ''), "
+        "r.scan_job_id, coalesce(j.scan_agent_id::text, '') "
+        "from scan_results r join scan_jobs j on j.id = r.scan_job_id order by r.id"
+    )
+    return [
+        {
+            "id": int(row[0]),
+            "ip_address": row[1],
+            "discovery_agent_id": int(row[2]) if row[2] else None,
+            "scan_job_id": int(row[3]),
+            "job_scan_agent_id": int(row[4]) if row[4] else None,
+        }
+        for row in rows
+    ]
+
+
+def _job_dispatch_state(job_id: int) -> tuple[str, str]:
+    """One job's `(status, dispatch_status)`, the second of which is not on the wire.
+
+    `dispatch_status` is what makes a late finding refusable at all — Task 21's
+    `finalize_agent_job` and Task 22's `_close_jobs` both move it to a closed
+    value in the same statement that closes the job, and `agent_discovery`'s
+    ingest reads it — but `ScanJobOut` carries only `status`. A test that
+    asserted the job was `cancelled` and stopped there would not have checked
+    the column the refusal is actually made of.
+    """
+    rows = _backend_sql(
+        "select status, coalesce(dispatch_status, '') from scan_jobs "
+        f"where id = {int(job_id)}"
+    )
+    assert len(rows) == 1, f"scan job {job_id} is not in the database: {rows}"
+    return rows[0][0], rows[0][1]
+
+
+def _set_local_discovery_enabled(
+    client: httpx.Client, headers: dict, agent_id: int, enabled: bool
+) -> dict:
+    """Turn `local_discovery` on or off, exactly as the Agent Detail toggle does.
+
+    A bare boolean rather than an `{enabled, config}` object on purpose: that is
+    what `CapabilityValue` accepts from the UI switch, and `set_capability_grants`
+    keeps the stored config either way — so re-enabling later restores the same
+    grant rather than resetting the scan depth an operator chose.
+    """
+    resp = client.put(
+        f"/api/v1/agents/{agent_id}/capabilities",
+        json={"capabilities": {"local_discovery": enabled}},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["capabilities"]["local_discovery"]["enabled"] is enabled, body["capabilities"]
+    return body
+
+
+def _agent_scan_jobs(client: httpx.Client, agent_id: int) -> list[dict]:
+    """Every scan job whose execution location is this agent."""
+    return [job for job in _scan_jobs(client) if job["scan_agent_id"] == agent_id]
+
+
+# `agent_discovery._OPEN_JOB_STATUSES`: the two statuses a dispatch can still
+# be cancelled, expired or answered from.
+_OPEN_JOB_STATES = frozenset({"queued", "running"})
+
+
+def _unfinished_agent_jobs(client: httpx.Client, agent_id: int) -> list[dict]:
+    """This agent's jobs that are still queued or running.
+
+    Used to reach quiescence before a test changes the grant underneath a scan:
+    the bootstrap queues one initial scan per subnet (D-12), so an edit made
+    while those are in flight would be cancelling or re-depthing work the test
+    has said nothing about.
+    """
+    return [job for job in _agent_scan_jobs(client, agent_id) if job["status"] in _OPEN_JOB_STATES]
+
+
+def _capability_violations(client: httpx.Client, agent_id: int, frame_type: str) -> list[int]:
+    """The ids of this agent's `capability_violation` events for one frame type.
+
+    `agent_link.dispatch_frame` writes exactly one of these per frame it drops
+    for a withdrawn grant, with the frame's type in `detail`. Ids rather than a
+    count so a "did any arrive while X was happening" comparison is a set
+    difference and cannot be satisfied by an unrelated event of the same type
+    arriving at the same moment.
+    """
+    return sorted(
+        event["id"]
+        for event in _agent_events(client, agent_id)
+        if event["event_type"] == "capability_violation"
+        and (event.get("detail") or {}).get("frame_type") == frame_type
+    )
+
+
+def _run_profile_now(client: httpx.Client, profile_id: int) -> dict:
+    """"Run now" on a profile, waiting out the scan endpoint's own rate limit.
+
+    `POST /discovery/profiles/{id}/run` is `@limiter.limit(get_limit("scan"))`,
+    which is one per minute on the default profile. That is a property of the
+    product an operator also lives with; a test that ran two recurring sweeps in
+    quick succession and read the resulting 429 as a failure would be reporting
+    the rate limiter as a discovery defect.
+
+    This is the same job-creation path the six-hourly cron takes —
+    `discovery_scheduler._run_profile_job_async` and this endpoint both call
+    `create_scan_job` with the profile's CIDR, scan types and `scan_agent_id`,
+    and differ only in `triggered_by`. Waiting out a real six-hour cadence is
+    not something an E2E test can do, so what the recurrence assertions exercise
+    is that path, on the profile the server itself created.
+    """
+    deadline = time.monotonic() + 180
+    while True:
+        resp = client.post(f"/api/v1/discovery/profiles/{profile_id}/run")
+        if resp.status_code != 429:
+            break
+        assert time.monotonic() < deadline, (
+            f"profile {profile_id} stayed rate-limited for 180s: {resp.text}"
+        )
+        time.sleep(10)
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def _change_agent_address(
+    new_ip: str, *, service: str = _AGENT_SERVICE, env: dict | None = None
+) -> tuple[str, str]:
+    """Move an agent to a different address on the SAME directly connected subnet.
+
+    Returns `(old_ip, new_ip)`. This is plan §8 step 9's "change the agent's
+    address" in the form that can actually break something: the subnet the agent
+    reports in every `hello` is unchanged, so the server's derived scope and the
+    key of D-7's partial unique index are unchanged too, and the only thing that
+    moved is the host part. An implementation that keyed a system profile, a
+    dispatch lease or an identity on anything address-shaped produces a second
+    profile for 10.88.0.0/24 here and nowhere else in this suite.
+
+    `docker network disconnect` + `connect --ip` rather than a recreate: the
+    container has to survive, because its state volume carries the enrollment
+    whose survival is half of what the step is claiming.
+    """
+    container, network = _agent_network_name(env, service=service)
+    old_ip = _container_ipv4(container, network)
+    assert old_ip != new_ip, (
+        f"{service} is already at {new_ip}; this helper would change nothing and the "
+        "address-change half of plan §8 step 9 would go untested"
+    )
+    subprocess.run(["docker", "network", "disconnect", network, container], check=True)
+    subprocess.run(["docker", "network", "connect", "--ip", new_ip, network, container], check=True)
+    moved = _container_ipv4(container, network)
+    assert moved == new_ip, f"{service} is at {moved} on {network}, not the requested {new_ip}"
+    return old_ip, new_ip
+
+
+def _hardware_row(client: httpx.Client, hardware_id: int) -> dict:
+    resp = client.get(f"/api/v1/hardware/{hardware_id}")
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _rename_hardware(client: httpx.Client, hardware_id: int, name: str) -> dict:
+    """The ordinary inventory rename — `PATCH /hardware/{id}` with a new name.
+
+    An operator naming a device they just imported is the most ordinary write in
+    the product, and it is what makes the agent's own reported hostname start
+    disagreeing with the inventory. Nothing else about the row is touched, so
+    the MAC and IP the matcher keys on are exactly what they were.
+    """
+    resp = client.patch(f"/api/v1/hardware/{hardware_id}", json={"name": name})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["name"] == name, body
+    return body
+
+
+def _discovery_status(client: httpx.Client) -> dict:
+    resp = client.get("/api/v1/discovery/status")
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _system_profile_for(client: httpx.Client, agent_id: int, cidr: str) -> dict:
+    """The one enabled system-managed profile for `(agent, cidr)`, asserting it is one.
+
+    D-12's assertion in reusable form: the bootstrap mints one automatic profile
+    per directly connected subnet, and "one" is the part that matters — a second
+    row for the same subnet is what a duplicated upsert looks like, and it would
+    otherwise show up only as two scans of the same /24 several minutes later.
+    """
+    matches = [
+        profile
+        for profile in _discovery_profiles(client, agent_id)
+        if profile["cidr"] == cidr and profile["managed_by"] == "system"
+    ]
+    assert len(matches) == 1, (
+        f"agent {agent_id} has {len(matches)} system-managed profiles for {cidr}, expected "
+        f"exactly one (D-7's partial unique index keys them on this pair): {matches}"
+    )
+    return matches[0]
+
+
+@pytest.mark.e2e
+def test_agent_discovery_capability_disable_cancels_and_late_findings_die():
+    """Slice 4 §8 step 8: the server enforces the cancellation; the agent's
+    cooperation is not part of the mechanism.
+
+    Disabling `local_discovery` mid-scan has to do two things — cancel the work,
+    and refuse anything that arrives for it afterwards — and the second is the
+    one that is hard to test honestly. `discovery.cancel` is best-effort by
+    design (plan §4), so on the ordinary path the agent receives it, stops, and
+    sends nothing more; the database then looks exactly the way it would if the
+    backend were enforcing nothing at all. **A passing test on that path proves
+    only that the agent is well behaved.**
+
+    So this test takes the cancel away. The sweep is put under
+    `_CANCEL_DISCOVERY_CONFIG` so it is still running minutes later, the agent's
+    route to the server is severed with `_cut_agent_network` (a black hole — no
+    FIN, no RST, nothing the agent can learn from a write), and the capability is
+    turned off *while it is deaf*. The `discovery.cancel` the backend publishes
+    is written into the void. The agent's own `status.json` is read inside the
+    partition to prove it: it still holds `local_discovery: true`, so nothing
+    that follows can be the agent obeying an instruction.
+
+    It then goes on doing exactly what it was last told to do. Ten seconds per
+    unanswered address (see `_CANCEL_DISCOVERY_CONFIG`) means it does not reach
+    10.77.0.10 until well after internal/link's 60s read deadline has taken the
+    link down, so those findings are no longer written into the void — they are
+    durably spooled, and this test waits for one to appear on disk. That is the
+    evidence the ordinary path cannot produce: **findings for a dispatch the
+    server closed, produced by an agent that never learned it was closed, and
+    physically present.**
+
+    Restoring the route then delivers them over a real Noise session through the
+    ordinary `/link` path, and the four things asserted afterwards are what
+    server-side enforcement means:
+
+    * the job is `cancelled` with `error_reason="capability_disabled"`, and its
+      `dispatch_status` — the column the refusal is actually made of, and one
+      `ScanJobOut` does not carry — is closed with it;
+    * the job's result rows are byte-identical to what they were at the moment
+      of the cut, so not one late finding became a row;
+    * every address the agent reported late is absent from that job entirely;
+    * a `capability_violation` was audited for each late frame, so the frames
+      were *refused* rather than silently lost — which is the distinction
+      between the backend enforcing the grant and the frames never having
+      arrived, two outcomes with an identical `scan_results` table.
+
+    Only then does the agent learn: reconnecting delivers `capabilities.set`,
+    and `status.json` flips to `local_discovery: false`. The order is the point —
+    the rejection happened first and did not depend on it.
+
+    And underneath all of it, the premise this file's every discovery claim
+    rests on: the backend is made to fail at reaching both fixtures over ICMP
+    and TCP, behind positive controls, before the agent is eligible and again at
+    the end.
+    """
+    _up_server()
+    try:
+        client = _new_client()
+        _wait_until(lambda: client.get("/api/v1/bootstrap/status").status_code == 200, timeout=60)
+        token = _bootstrap_admin(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        client.headers.update(headers)
+
+        material = _fetch_install_material(client, headers)
+        _write_agent_toml(material["server_pk"], material["tls_pin"])
+        # Both fixtures up front, and both before the agent exists: the sweep
+        # under test needs more than one address that answers *after* the link
+        # goes down, and 10.77.0.20 sits nine dead addresses past 10.77.0.10, so
+        # it is the one with real margin against the 60s read deadline.
+        _up_fixture_target(_PROBE_TARGET_SERVICE)
+        _up_fixture_target(_PROBE_TARGET_NEW_SERVICE)
+        assert _network_subnet(_AGENT_NET) == _AGENT_NET_CIDR
+        assert _network_subnet(_PROBE_NET) == _PROBE_NET_CIDR
+
+        agent_id, stream = _enroll_agent(client, headers)
+        try:
+            subprocess.run([*COMPOSE, "up", "-d", _AGENT_SERVICE], check=True, cwd=E2E_DIR)
+            _wait_until(
+                lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
+                timeout=30,
+            )
+            _wait_until(lambda: _agent_status()["link_state"] == "accepted", timeout=30)
+
+            # ---- the negative, with its positive controls -------------------
+            container, server_net = _agent_network_name()
+            agent_ip = _container_ipv4(container, server_net)
+            reachable = _backend_sh(f"ping -c 2 -W 2 {agent_ip}")
+            assert reachable.returncode == 0, (
+                "the backend cannot ICMP a host on a network it IS attached to, so the "
+                "isolation assertions below would hold even with no isolation at all: "
+                f"{reachable.stdout!r} {reachable.stderr!r}"
+            )
+            listening = _backend_sh(f"nc -z -w 3 127.0.0.1 {_BACKEND_HTTPS_PORT}")
+            assert listening.returncode == 0, (
+                "`nc` cannot connect to the backend's own open port, so the TCP half of "
+                f"the isolation check proves nothing: {listening.stdout!r} {listening.stderr!r}"
+            )
+            for address in (_PROBE_TARGET_IP, _PROBE_TARGET_NEW_IP):
+                _assert_backend_cannot_reach(address, _PROBE_NET_CIDR)
+
+            # ---- zero-configuration bootstrap, as Task 32 establishes it ----
+            _wait_until(
+                lambda: {_AGENT_NET_CIDR, _PROBE_NET_CIDR} <= _automatic_scope(client, agent_id),
+                timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+            )
+            _wait_until(
+                lambda: len(_discovery_profiles(client, agent_id)) >= 2,
+                timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+            )
+            probe_profile = _system_profile_for(client, agent_id, _PROBE_NET_CIDR)
+
+            # Quiescence before the grant edit: the bootstrap queues one initial
+            # scan per subnet, and re-depthing or cancelling those would be
+            # doing it to work this test has said nothing about.
+            _wait_until(
+                lambda: _agent_scan_jobs(client, agent_id)
+                and not _unfinished_agent_jobs(client, agent_id),
+                timeout=_INITIAL_SCAN_BUDGET_S,
+            )
+
+            # ---- a sweep slow enough to still be running in five minutes ----
+            _put_local_discovery(client, headers, agent_id, _CANCEL_DISCOVERY_CONFIG)
+            job_id = _run_profile_now(client, probe_profile["id"])["id"]
+            _wait_until(
+                lambda: _scan_job(client, job_id)["status"] == "running"
+                and len(_job_results(client, job_id)) >= 1,
+                timeout=_INITIAL_SCAN_BUDGET_S,
+                interval=0.5,
+            )
+            assert _agent_status()["grants"]["local_discovery"] is True, (
+                "the agent does not believe it holds local_discovery before the grant is "
+                "even withdrawn, so the status.json witness below would say nothing"
+            )
+            violations_before = _capability_violations(client, agent_id, "discovery.finding")
+
+            with _cut_agent_network():
+                # The agent is deaf from here. Everything the backend does next
+                # it does alone.
+                _set_local_discovery_enabled(client, headers, agent_id, False)
+
+                cancelled = _scan_job(client, job_id)
+                assert cancelled["status"] == "cancelled", (
+                    "PROPERTY 1 (cancellation): disabling local_discovery left the running "
+                    f"dispatch open — D-14 requires it closed in the same transaction: {cancelled}"
+                )
+                assert cancelled["error_reason"] == "capability_disabled", (
+                    "PROPERTY 1 (cancellation): the job was closed for the wrong reason, so an "
+                    f"operator reading the history cannot tell why it stopped: {cancelled}"
+                )
+                status, dispatch_status = _job_dispatch_state(job_id)
+                assert (status, dispatch_status) == ("cancelled", "cancelled"), (
+                    "PROPERTY 1 (cancellation): the job's `dispatch_status` did not close with "
+                    "it, and that column is what `agent_discovery` reads to refuse a late "
+                    f"finding: {(status, dispatch_status)}"
+                )
+
+                # The cancel could not have been delivered — and this is what
+                # says so, rather than an inference from the topology.
+                assert _agent_status()["grants"]["local_discovery"] is True, (
+                    "the agent already knows its grant was withdrawn while its only route to "
+                    "the server is severed, so this test is not proving server-side "
+                    "enforcement — it is watching a cooperative agent stop"
+                )
+
+                # Nothing else can reach the server now, so this is the last
+                # word on what the job accepted while it was authorised.
+                results_at_cut = _job_results(client, job_id)
+                addresses_at_cut = {row["ip_address"] for row in results_at_cut}
+
+                # ...and the agent, knowing nothing, keeps going. Ten seconds
+                # per dead address is what puts the next responsive host past
+                # the 60s read deadline, so what lands here is durably spooled
+                # rather than written into the black hole.
+                def _late_host_findings() -> list[dict]:
+                    return [
+                        finding
+                        for finding in _spooled_findings(_spool_frames(), job_id)
+                        if finding.get("kind") == "host"
+                        and finding.get("ip_address") not in addresses_at_cut
+                    ]
+
+                _wait_until(
+                    lambda: _late_host_findings(),
+                    timeout=_LATE_FINDING_BUDGET_S,
+                    interval=2.0,
+                )
+                late_findings = _late_host_findings()
+                late_addresses = sorted({f["ip_address"] for f in late_findings})
+                assert _agent_status()["grants"]["local_discovery"] is True, (
+                    "the agent learned about the withdrawal part-way through the partition, so "
+                    "the findings it spooled are not unambiguously post-cancellation work"
+                )
+
+            # ---- the link comes back and the agent delivers all of it -------
+            _wait_until(
+                lambda: _agent_status()["link_state"] == "accepted", timeout=_RECONNECT_BUDGET_S
+            )
+            _wait_until(_spool_fully_delivered, timeout=_SPOOL_DRAIN_BUDGET_S)
+
+            status, dispatch_status = _job_dispatch_state(job_id)
+            assert (status, dispatch_status) == ("cancelled", "cancelled"), (
+                "PROPERTY 1 (cancellation): delivering the spooled findings reopened the job — "
+                f"a closed dispatch must stay closed: {(status, dispatch_status)}"
+            )
+
+            # The refusals first, and waited for rather than read once: the
+            # agent commits a spooled frame as soon as it has written it to the
+            # wire, so the disk can be drained a moment before the server has
+            # finished refusing what came off it. Reading the result rows before
+            # that would be asking whether a frame the backend has not looked at
+            # yet was accepted.
+            def _new_violations() -> list[int]:
+                return sorted(
+                    set(_capability_violations(client, agent_id, "discovery.finding"))
+                    - set(violations_before)
+                )
+
+            _wait_until(
+                lambda: len(_new_violations()) >= len(late_findings), timeout=_RECONNECT_BUDGET_S
+            )
+            assert len(_new_violations()) >= len(late_findings), (
+                "PROPERTY 3 (server-side enforcement): the backend audited "
+                f"{len(_new_violations())} refusals for the {len(late_findings)} late "
+                "discovery.finding frames the agent delivered. Without one refusal per frame, "
+                "'no new rows' is equally consistent with the frames never having arrived — "
+                "and the two leave an identical scan_results table"
+            )
+
+            delivered = _job_results(client, job_id)
+            assert delivered == results_at_cut, (
+                "PROPERTY 2 (late findings rejected): the cancelled job's result rows changed "
+                "when the agent delivered its backlog. Every one of those frames was produced "
+                f"after the dispatch was closed. Before: {[r['id'] for r in results_at_cut]}; "
+                f"after: {[r['id'] for r in delivered]}"
+            )
+            assert not [row for row in delivered if row["ip_address"] in late_addresses], (
+                "PROPERTY 2 (late findings rejected): an address the agent reported only AFTER "
+                f"the cancellation ({late_addresses}) has a result row on the cancelled job — "
+                "the backend accepted work from a dispatch it had already closed"
+            )
+
+            # Only now, and only because it reconnected, does the agent find out.
+            _wait_until(
+                lambda: _agent_status()["grants"]["local_discovery"] is False,
+                timeout=_RECONNECT_BUDGET_S,
+            )
+            assert _discovery_view(client, agent_id)["granted"] is False, (
+                "PROPERTY 4 (the grant is really off): the server still reports "
+                "local_discovery as granted after the capability was disabled"
+            )
+
+            # ---- and the negative, over the topology as it finally stands ---
+            for address in (_PROBE_TARGET_IP, _PROBE_TARGET_NEW_IP):
+                _assert_backend_cannot_reach(address, _PROBE_NET_CIDR)
+        finally:
+            stream.close()
+    finally:
+        _down()
+        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+
+
+def _agents(client: httpx.Client) -> list[dict]:
+    resp = client.get("/api/v1/agents")
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _all_profiles(client: httpx.Client) -> list[dict]:
+    """Every discovery profile in the installation, agent-owned or not."""
+    resp = client.get("/api/v1/discovery/profiles")
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _enrolled_event_ids(client: httpx.Client, agent_id: int) -> list[int]:
+    return sorted(
+        event["id"]
+        for event in _agent_events(client, agent_id)
+        if event["event_type"] == "enrolled"
+    )
+
+
+def _in_any(address: str, cidrs) -> bool:
+    parsed = ipaddress.ip_address(address)
+    return any(parsed in ipaddress.ip_network(cidr) for cidr in cidrs)
+
+
+@pytest.mark.e2e
+def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
+    """Slice 4 §8 steps 9-11, in one stack lifetime.
+
+    Three claims that only a real restart, a real second host and a real second
+    agent can falsify, and each one has an obvious way of being true for the
+    wrong reason:
+
+    **Step 9 — both ends restart, and the agent's address moves.** "It
+    reconnected" is easy; "it reconnected without re-enrolling and without
+    duplicating anything" is the claim. The address change is what makes the
+    duplication half real rather than decorative: `cb-agent` is moved to
+    10.88.0.77 on the same `agent-net`, so the subnet it reports in every
+    `hello` — and therefore the `normalized_cidr` half of D-7's partial unique
+    index — is *unchanged* while its host address is not. A bootstrap that
+    keyed a system profile on anything address-shaped mints a second profile
+    for 10.88.0.0/24 exactly here. That the address really moved is asserted
+    from the backend's own network namespace (it can ping the new address and
+    cannot ping the old one), and that it moved *within* the subnet is asserted
+    from the agent's own kernel routing table. No re-enrollment is four
+    independent things: one `agents` row, the same id, the same `enrolled_at`
+    and `device_pk`, the same on-disk `device.key` digest, and no second
+    `enrolled` event. And "resumes recurring discovery" is the derived
+    six-hourly cron still on the profile *and* still registered with
+    APScheduler after the backend process that registered it was replaced —
+    `_register_discovery_profile_crons` runs at start-up and a hold or a cron
+    that only lived in the old process's scheduler state would be gone.
+
+    **Step 11 — the recurring sweep tells three cases apart.** Run through
+    `_run_profile_now`, which is the same `create_scan_job` path
+    `discovery_scheduler._run_profile_job_async` takes when the cron fires
+    (they differ only in `triggered_by`); a six-hour cadence is not something
+    an E2E test can wait out, so the *path* is what is exercised, on the
+    profile the server itself created.
+
+      * a device the inventory already knows (10.77.0.10, imported after the
+        first scan) comes back `matched`, pointing at the same Hardware row,
+        and produces no second one;
+      * a device that genuinely just appeared (10.77.0.20, started between the
+        two sweeps) comes back `new` and lands in the ordinary review queue;
+      * a device whose agent-reported hostname disagrees with the name an
+        operator gave it comes back `conflict`, stays `pending`, names both
+        halves of the disagreement in `conflicts_json` — and **the stored name
+        is not touched**. Plan §4 lists hostname among the agent's untrusted
+        observations, and the disagreement is manufactured the way it happens
+        in real life: an operator renames the device in the inventory while the
+        agent keeps reporting the PTR record it reads off the subnet.
+
+      The half of step 11 that this deliberately does **not** assert is the
+      `last_seen` auto-update. `_auto_merge_known_devices` — the function
+      Task 25 hardened for exactly this case — is reachable only from
+      `_scan_finalize`, and an agent job is closed by `finalize_agent_job`,
+      which states in its own docstring that it never calls it at any setting
+      (`tests/services/test_agent_discovery_ingest.py::
+      test_finalization_never_auto_merges_however_the_setting_is_left` pins
+      that). So on the agent path an unchanged known device is re-queued and
+      its `last_seen` is not refreshed. Both are asserted below **as the
+      current contract**, with messages that say so: if either ever changes,
+      this test fails and points at the decision that changed rather than
+      silently blessing it.
+
+    **Step 10 — a second agent stays a second agent.** `cb-agent-2` has its own
+    outbound network, its own fixture subnet, its own state volume and its own
+    device key, and neither agent's kernel has a route to the other's fixture
+    subnet — so "agent 2 found 10.78.0.10" is a statement about vantage points
+    and not about which row the backend happened to write. Provenance is then
+    checked on `scan_results.discovery_agent_id`, read straight out of the
+    database because that column is deliberately not on the wire (see
+    `_backend_sql`): every result row is compared against **both** its own
+    reporter and its job's executor, and against the subnets that reporter can
+    actually reach. A row naming an agent with no route to its address is
+    cross-attribution however consistent the rest of the table looks.
+
+    Throughout, the negative: the backend is made to fail at reaching all three
+    fixtures over ICMP and TCP, behind positive controls, before anything is
+    discovered and again at the end.
+    """
+    _up_server()
+    try:
+        client = _new_client()
+        _wait_until(lambda: client.get("/api/v1/bootstrap/status").status_code == 200, timeout=60)
+        token = _bootstrap_admin(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        client.headers.update(headers)
+
+        material = _fetch_install_material(client, headers)
+        _write_agent_toml(material["server_pk"], material["tls_pin"])
+        # Only probe-target at stack start. probe-target-new is what makes
+        # "genuinely new device" mean something, and it can only mean it if the
+        # first sweep provably never saw it.
+        _up_fixture_target(_PROBE_TARGET_SERVICE)
+        assert _network_subnet(_AGENT_NET) == _AGENT_NET_CIDR
+        assert _network_subnet(_PROBE_NET) == _PROBE_NET_CIDR
+
+        agent_id, stream = _enroll_agent(client, headers)
+        try:
+            subprocess.run([*COMPOSE, "up", "-d", _AGENT_SERVICE], check=True, cwd=E2E_DIR)
+            _wait_until(
+                lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
+                timeout=30,
+            )
+            _wait_until(lambda: _agent_status()["link_state"] == "accepted", timeout=30)
+
+            # ---- the negative, with its positive controls -------------------
+            container, server_net = _agent_network_name()
+            agent_ip = _container_ipv4(container, server_net)
+            reachable = _backend_sh(f"ping -c 2 -W 2 {agent_ip}")
+            assert reachable.returncode == 0, (
+                "the backend cannot ICMP a host on a network it IS attached to, so the "
+                "isolation assertions below would hold even with no isolation at all: "
+                f"{reachable.stdout!r} {reachable.stderr!r}"
+            )
+            listening = _backend_sh(f"nc -z -w 3 127.0.0.1 {_BACKEND_HTTPS_PORT}")
+            assert listening.returncode == 0, (
+                "`nc` cannot connect to the backend's own open port, so the TCP half of "
+                f"the isolation check proves nothing: {listening.stdout!r} {listening.stderr!r}"
+            )
+            _assert_backend_cannot_reach(_PROBE_TARGET_IP, _PROBE_NET_CIDR)
+
+            # ---- the baseline every later claim is measured against ---------
+            _wait_until(
+                lambda: {_AGENT_NET_CIDR, _PROBE_NET_CIDR} <= _automatic_scope(client, agent_id),
+                timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+            )
+            _wait_until(
+                lambda: len(_discovery_profiles(client, agent_id)) >= 2,
+                timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+            )
+            probe_profile = _system_profile_for(client, agent_id, _PROBE_NET_CIDR)
+            _system_profile_for(client, agent_id, _AGENT_NET_CIDR)
+            expected_cron = f"{agent_id % 60} */6 * * *"
+            assert probe_profile["schedule_cron"] == expected_cron, (
+                "the automatic profile does not carry D-7's derived six-hourly cadence, so "
+                f"there is no recurrence for the restart to resume: {probe_profile}"
+            )
+
+            initial_job = _wait_until_and_return(
+                lambda: next(iter(_scan_jobs(client, profile_id=probe_profile["id"])), None),
+                timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+            )
+            initial_job_id = initial_job["id"]
+            _wait_until(
+                lambda: _scan_job(client, initial_job_id)["status"] == "completed",
+                timeout=_INITIAL_SCAN_BUDGET_S,
+            )
+
+            pending = [r for r in _review_queue(client) if r["ip_address"] == _PROBE_TARGET_IP]
+            assert len(pending) == 1, (
+                f"expected exactly one pending review row for {_PROBE_TARGET_IP}: {pending}"
+            )
+            fixture_row = pending[0]
+            observed_hostname = fixture_row["hostname"]
+            assert observed_hostname, (
+                "the agent reported no hostname for the fixture, so the untrusted-hostname "
+                "half of plan §8 step 11 has nothing to disagree about. probe-net's resolver "
+                "is Docker's embedded DNS, which answers PTR for containers on a user-defined "
+                "network; if it has stopped doing so this test needs a fixture that supplies "
+                f"a name some other way. Row: {fixture_row}"
+            )
+            assert not _hardware_with_ip(client, _PROBE_TARGET_IP), (
+                "a Hardware row for the fixture existed before anybody imported it"
+            )
+            merged = client.post(
+                f"/api/v1/discovery/results/{fixture_row['id']}/merge",
+                json={"action": "accept", "entity_type": "hardware"},
+            )
+            assert merged.status_code == 200, merged.text
+            hardware = _hardware_with_ip(client, _PROBE_TARGET_IP)
+            assert len(hardware) == 1, f"import created {len(hardware)} Hardware rows: {hardware}"
+            hardware_id = hardware[0]["id"]
+            assert hardware[0]["name"] == observed_hostname, (
+                "the imported row is not named after the hostname the agent reported, so the "
+                f"rename below would not create a disagreement: {hardware[0]}"
+            )
+
+            # Quiescence: the bootstrap queued one scan per subnet and the
+            # restart below must not land on top of one still running.
+            _wait_until(
+                lambda: not _unfinished_agent_jobs(client, agent_id),
+                timeout=_INITIAL_SCAN_BUDGET_S,
+            )
+
+            # ---- STEP 9: both ends restart and the address moves ------------
+            agents_before = _agents(client)
+            agent_before = client.get(f"/api/v1/agents/{agent_id}").json()
+            device_key_before = _device_key(_AGENT_SERVICE)
+            enrolled_before = _enrolled_event_ids(client, agent_id)
+            profiles_before = _discovery_profiles(client, agent_id)
+            all_profiles_before = _all_profiles(client)
+
+            subprocess.run([*COMPOSE, "restart", "circuitbreaker"], check=True, cwd=E2E_DIR)
+            _wait_until(
+                lambda: client.get("/api/v1/bootstrap/status").status_code == 200, timeout=240
+            )
+            old_ip, new_ip = _change_agent_address(_AGENT_NET_MOVED_IP)
+            # Read *here*, immediately before the restart, and from the agent's
+            # own status file rather than from the server. `compose restart`
+            # keeps the state volume, so the container comes back to the
+            # status.json it left behind — a bare `link_state == "accepted"`
+            # would be satisfied by the stale value already in that file, and
+            # the assertions below would be describing the connection this test
+            # has just broken rather than the one it is waiting for.
+            #
+            # (`AgentRead.connected_since` looks like the obvious server-side
+            # witness and is not one: presence lives in Redis, and the ORM
+            # column that field is validated from is never written, so it reads
+            # NULL for a connected agent.)
+            status_before = _agent_status()["updated_at"]
+            # `restart`, never `up --force-recreate`: the state volume carries
+            # the enrollment whose survival is half of what this step claims,
+            # and a recreate would also undo the address change under test.
+            subprocess.run([*COMPOSE, "restart", _AGENT_SERVICE], check=True, cwd=E2E_DIR)
+
+            # A *fresh* `accepted` is the hello landing, and that is what makes
+            # the no-duplication assertions below about a bootstrap pass that
+            # actually ran: `ws_agents` applies the hello's facts —
+            # `agent_registry.record_network_facts`, which is what defers
+            # `discovery_bootstrap.schedule_bootstrap` — before it writes the
+            # `hello.ack` the agent needs to reach this state at all.
+            def _reconnected() -> bool:
+                status = _agent_status()
+                return (
+                    status["link_state"] == "accepted" and status["updated_at"] != status_before
+                )
+
+            _wait_until(_reconnected, timeout=_RECONNECT_BUDGET_S)
+            _wait_until(
+                lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
+                timeout=_RECONNECT_BUDGET_S,
+            )
+
+            moved = _backend_sh(f"ping -c 2 -W 2 {new_ip}")
+            assert moved.returncode == 0, (
+                "PROPERTY 9 (address change): the backend cannot reach the agent at its new "
+                f"address {new_ip}, so the move did not take: {moved.stdout!r} {moved.stderr!r}"
+            )
+            vacated = _backend_sh(f"ping -c 2 -W 2 {old_ip}")
+            assert vacated.returncode != 0, (
+                f"PROPERTY 9 (address change): {old_ip} still answers, so the agent did not "
+                f"actually leave its old address: {vacated.stdout!r} {vacated.stderr!r}"
+            )
+            assert _agent_route_networks() == {_AGENT_NET_CIDR, _PROBE_NET_CIDR}, (
+                "PROPERTY 9 (address change): the agent's own routing table changed, so this "
+                "is a subnet change rather than the address change the profile-duplication "
+                f"risk is about: {sorted(_agent_route_networks())}"
+            )
+
+            agent_after = client.get(f"/api/v1/agents/{agent_id}").json()
+            assert len(_agents(client)) == len(agents_before) == 1, (
+                "PROPERTY 9 (no re-enrollment): the fleet gained an agent across the restart — "
+                f"{[a['id'] for a in _agents(client)]}"
+            )
+            assert agent_after["device_pk"] == agent_before["device_pk"], (
+                "PROPERTY 9 (no re-enrollment): the agent presented a different device key "
+                "after the restart, so it enrolled again rather than resuming"
+            )
+            assert agent_after["enrolled_at"] == agent_before["enrolled_at"], (
+                "PROPERTY 9 (no re-enrollment): `enrolled_at` moved, so the server treated "
+                f"this as a fresh enrollment: {agent_before['enrolled_at']} -> "
+                f"{agent_after['enrolled_at']}"
+            )
+            assert _device_key(_AGENT_SERVICE) == device_key_before, (
+                "PROPERTY 9 (no re-enrollment): the agent's on-disk device.key changed, so it "
+                "lost its state volume and generated a new identity"
+            )
+            assert _enrolled_event_ids(client, agent_id) == enrolled_before, (
+                "PROPERTY 9 (no re-enrollment): a second `enrolled` event was recorded for "
+                "this agent"
+            )
+
+            assert _automatic_scope(client, agent_id) == {_AGENT_NET_CIDR, _PROBE_NET_CIDR}, (
+                "PROPERTY 9 (scope survives): the server's derived scope changed when only the "
+                f"agent's host address did: {sorted(_automatic_scope(client, agent_id))}"
+            )
+            profiles_after = _discovery_profiles(client, agent_id)
+            assert {p["id"] for p in profiles_after} == {p["id"] for p in profiles_before}, (
+                "PROPERTY 9 (no profile duplication): the bootstrap pass that ran on the "
+                "reconnect created or replaced a system profile. An address change must be a "
+                f"no-op: {[(p['id'], p['cidr']) for p in profiles_after]}"
+            )
+            # Re-asserts "exactly one" for the subnet whose ADDRESS moved, which
+            # is the row a duplicated upsert would have doubled.
+            _system_profile_for(client, agent_id, _AGENT_NET_CIDR)
+            probe_profile = _system_profile_for(client, agent_id, _PROBE_NET_CIDR)
+            assert len(_all_profiles(client)) == len(all_profiles_before), (
+                "PROPERTY 9 (no profile duplication): the installation gained a discovery "
+                "profile across the restart and address change"
+            )
+            assert probe_profile["schedule_cron"] == expected_cron, (
+                "PROPERTY 9 (recurrence resumes): the derived six-hourly cadence did not "
+                f"survive the restart: {probe_profile}"
+            )
+            assert probe_profile["enabled"] and probe_profile["paused_at"] is None, probe_profile
+            next_scheduled = _discovery_status(client)["next_scheduled"]
+            assert next_scheduled is not None, (
+                "PROPERTY 9 (recurrence resumes): no discovery profile is registered with "
+                "APScheduler after the backend restarted, so the six-hourly cadence exists "
+                "only as a column and will never fire again"
+            )
+            assert _parse_ts(next_scheduled) > datetime.now(timezone.utc), (
+                f"the next scheduled discovery run is in the past: {next_scheduled}"
+            )
+            bootstrap_jobs = [
+                job
+                for job in _scan_jobs(client, profile_id=probe_profile["id"])
+                if job["triggered_by"] == "bootstrap"
+            ]
+            assert len(bootstrap_jobs) == 1, (
+                "PROPERTY 9 (no duplicated automatic work): the reconnect queued another "
+                f"automatic first scan: {[j['id'] for j in bootstrap_jobs]}"
+            )
+
+            # ---- STEP 11a: known device vs genuinely new device -------------
+            _up_fixture_target(_PROBE_TARGET_NEW_SERVICE)
+            # Doubles as a settle: two rounds of pings and a connect attempt is
+            # long enough for the fixture's netns to be answering by the time
+            # the sweep below reaches it.
+            _assert_backend_cannot_reach(_PROBE_TARGET_NEW_IP, _PROBE_NET_CIDR)
+            assert not [
+                row
+                for row in _job_results(client, initial_job_id)
+                if row["ip_address"] == _PROBE_TARGET_NEW_IP
+            ], (
+                f"the first sweep already reported {_PROBE_TARGET_NEW_IP}, so it is not the "
+                "genuinely-new device this step needs"
+            )
+
+            recurring_id = _run_profile_now(client, probe_profile["id"])["id"]
+            assert recurring_id != initial_job_id
+            _wait_until(
+                lambda: _scan_job(client, recurring_id)["status"] == "completed",
+                timeout=_RECURRING_SCAN_BUDGET_S,
+            )
+            recurring = _scan_job(client, recurring_id)
+            assert recurring["scan_agent_id"] == agent_id, recurring
+            rows = {row["ip_address"]: row for row in _job_results(client, recurring_id)}
+            assert _PROBE_TARGET_IP in rows and _PROBE_TARGET_NEW_IP in rows, (
+                "PROPERTY 11 (recurrence): the recurring sweep did not report both fixtures — "
+                f"saw {sorted(rows)}"
+            )
+
+            known = rows[_PROBE_TARGET_IP]
+            assert known["state"] == "matched", (
+                "PROPERTY 11 (known device): a device already in the inventory came back as "
+                f"{known['state']!r} rather than `matched`, so a recurring cadence cannot tell "
+                f"it from a new one: {known}"
+            )
+            assert (known["matched_entity_type"], known["matched_entity_id"]) == (
+                "hardware",
+                hardware_id,
+            ), (
+                "PROPERTY 11 (known device): the recurring finding matched a different "
+                f"Hardware row than the one it was imported as: {known}"
+            )
+            assert known["hostname"] == observed_hostname, known
+
+            fresh = rows[_PROBE_TARGET_NEW_IP]
+            assert fresh["state"] == "new" and fresh["matched_entity_id"] is None, (
+                "PROPERTY 11 (new device): a host the inventory has never seen came back as "
+                f"{fresh['state']!r}: {fresh}"
+            )
+            assert fresh["merge_status"] == "pending", fresh
+            assert any(row["id"] == fresh["id"] for row in _review_queue(client)), (
+                "PROPERTY 11 (new device): the genuinely new device is not in the ordinary "
+                "review queue, which is the one place an operator is asked to look"
+            )
+            assert recurring["hosts_new"] >= 1 and recurring["hosts_updated"] >= 1, (
+                "PROPERTY 11 (recurrence): the job counters do not separate new hosts from "
+                f"ones the inventory already knew: {recurring}"
+            )
+            assert recurring["hosts_conflict"] == 0, (
+                "PROPERTY 11 (recurrence): the sweep flagged a conflict although nothing about "
+                f"any known device changed: {recurring}"
+            )
+            assert [h["id"] for h in _hardware_with_ip(client, _PROBE_TARGET_IP)] == [
+                hardware_id
+            ], "PROPERTY 11 (known device): the recurring sweep created a second Hardware row"
+            assert not _hardware_with_ip(client, _PROBE_TARGET_NEW_IP), (
+                "PROPERTY 11 (new device): the recurring sweep imported the new device by "
+                "itself — plan §5 requires an agent-authored row to reach the inventory only "
+                "when a user accepts it"
+            )
+            # The current contract, stated as such. Plan §8 step 11 also asks
+            # for an unchanged known device to be auto-updated out of the queue
+            # with a refreshed `last_seen`; `_auto_merge_known_devices` is
+            # reachable only from `_scan_finalize`, and an agent job is closed
+            # by `finalize_agent_job`, which never calls it. If this assertion
+            # ever fails, that decision has changed and this test should assert
+            # the refresh instead of pinning its absence.
+            assert known["merge_status"] == "pending", (
+                "an agent-executed recurring scan auto-updated a known unchanged device out "
+                "of the review queue. That is what plan §8 step 11 asks for, and it is NOT "
+                "what `finalize_agent_job` does today (it documents never calling "
+                "`_auto_merge_known_devices` at any setting). Something has changed on "
+                f"purpose: update this test rather than reverting it. Row: {known}"
+            )
+
+            # ---- STEP 11b: an untrusted hostname never renames inventory ----
+            _rename_hardware(client, hardware_id, _OPERATOR_HARDWARE_NAME)
+            renamed = _hardware_row(client, hardware_id)
+            last_seen_before = renamed["last_seen"]
+
+            conflict_id = _run_profile_now(client, probe_profile["id"])["id"]
+            _wait_until(
+                lambda: _scan_job(client, conflict_id)["status"] == "completed",
+                timeout=_RECURRING_SCAN_BUDGET_S,
+            )
+            conflict_job = _scan_job(client, conflict_id)
+            conflict_rows = {row["ip_address"]: row for row in _job_results(client, conflict_id)}
+            conflicted = conflict_rows[_PROBE_TARGET_IP]
+            assert conflicted["state"] == "conflict", (
+                "PROPERTY 11 (untrusted hostname): the agent reported a hostname that "
+                f"disagrees with the inventory and the result came back {conflicted['state']!r} "
+                f"rather than `conflict`: {conflicted}"
+            )
+            assert conflicted["merge_status"] == "pending", (
+                "PROPERTY 11 (untrusted hostname): the disagreement was resolved without an "
+                f"operator; plan §4 requires it to be a review: {conflicted}"
+            )
+            fields = {
+                entry["field"]: entry
+                for entry in json.loads(conflicted["conflicts_json"] or "[]")
+            }
+            assert "hostname" in fields, (
+                "PROPERTY 11 (untrusted hostname): the conflict does not name the hostname, so "
+                f"an operator cannot see what the two sources disagree about: {fields}"
+            )
+            assert fields["hostname"]["stored"] == _OPERATOR_HARDWARE_NAME, fields["hostname"]
+            assert fields["hostname"]["discovered"] == observed_hostname, fields["hostname"]
+            assert conflict_job["hosts_conflict"] >= 1, conflict_job
+            after_rename = _hardware_row(client, hardware_id)
+            assert after_rename["name"] == _OPERATOR_HARDWARE_NAME, (
+                "PROPERTY 11 (untrusted hostname): the agent's reported hostname overwrote the "
+                "name an operator gave the device. Plan §4 lists hostname among the agent's "
+                f"untrusted observations: {after_rename}"
+            )
+            assert any(row["id"] == conflicted["id"] for row in _review_queue(client)), (
+                "PROPERTY 11 (untrusted hostname): the conflicting row is not in the review "
+                "queue, so nobody is ever told the two sources disagree"
+            )
+            # The other half of the contract pinned above: no auto-update means
+            # no `last_seen` refresh either, on the conflicting row or on any
+            # other agent-reported one.
+            assert after_rename["last_seen"] == last_seen_before, (
+                "an agent-executed scan refreshed Hardware.last_seen. Plan §8 step 11 asks "
+                "for exactly that, and `finalize_agent_job` does not do it today — see the "
+                f"note on `merge_status` above: {last_seen_before} -> {after_rename['last_seen']}"
+            )
+
+            # ---- STEP 10: a second agent, and provenance that stays put -----
+            _up_fixture_target(_PROBE_TARGET_2_SERVICE)
+            assert _network_subnet(_AGENT_2_NET) == _AGENT_2_NET_CIDR
+            assert _network_subnet(_PROBE_NET_2) == _PROBE_NET_2_CIDR
+            _assert_backend_cannot_reach(_PROBE_TARGET_2_IP, _PROBE_NET_2_CIDR)
+
+            agent2_id, stream2 = _enroll_agent(client, headers, service=_AGENT_2_SERVICE)
+            try:
+                subprocess.run(
+                    [*COMPOSE, "up", "-d", _AGENT_2_SERVICE], check=True, cwd=E2E_DIR
+                )
+                _wait_until(
+                    lambda: client.get(f"/api/v1/agents/{agent2_id}").json()["status"] == "active",
+                    timeout=30,
+                )
+                _wait_until(
+                    lambda: _agent_status(service=_AGENT_2_SERVICE)["link_state"] == "accepted",
+                    timeout=30,
+                )
+                assert agent2_id != agent_id
+                assert _device_key(_AGENT_SERVICE) != _device_key(_AGENT_2_SERVICE), (
+                    "PROPERTY 10 (two agents): both containers hold the same device.key, so "
+                    "this is one agent wearing two hats and every attribution claim below is "
+                    "vacuous"
+                )
+                # The provenance-critical half: each kernel sees its own fixture
+                # subnet and not the other's.
+                assert _agent_route_networks(service=_AGENT_2_SERVICE) == {
+                    _AGENT_2_NET_CIDR,
+                    _PROBE_NET_2_CIDR,
+                }
+                assert _PROBE_NET_2_CIDR not in _agent_route_networks()
+                assert _PROBE_NET_CIDR not in _agent_route_networks(service=_AGENT_2_SERVICE)
+
+                _wait_until(
+                    lambda: {_AGENT_2_NET_CIDR, _PROBE_NET_2_CIDR}
+                    <= _automatic_scope(client, agent2_id),
+                    timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+                )
+                assert _automatic_scope(client, agent2_id) == {
+                    _AGENT_2_NET_CIDR,
+                    _PROBE_NET_2_CIDR,
+                }, (
+                    "PROPERTY 10 (no scope leakage): agent 2's derived scope is not exactly its "
+                    f"own two subnets: {sorted(_automatic_scope(client, agent2_id))}"
+                )
+                assert _automatic_scope(client, agent_id) == {
+                    _AGENT_NET_CIDR,
+                    _PROBE_NET_CIDR,
+                }, (
+                    "PROPERTY 10 (no scope leakage): enrolling a second agent changed the "
+                    f"first one's scope: {sorted(_automatic_scope(client, agent_id))}"
+                )
+
+                _wait_until(
+                    lambda: len(_discovery_profiles(client, agent2_id)) >= 2,
+                    timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+                )
+                probe2_profile = _system_profile_for(client, agent2_id, _PROBE_NET_2_CIDR)
+                _system_profile_for(client, agent2_id, _AGENT_2_NET_CIDR)
+                assert {p["id"] for p in _discovery_profiles(client, agent_id)} == {
+                    p["id"] for p in profiles_after
+                }, (
+                    "PROPERTY 10 (two agents): the second agent's bootstrap disturbed the "
+                    "first agent's profiles"
+                )
+
+                job2 = _wait_until_and_return(
+                    lambda: next(iter(_scan_jobs(client, profile_id=probe2_profile["id"])), None),
+                    timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+                )
+                _wait_until(
+                    lambda: _scan_job(client, job2["id"])["status"] == "completed",
+                    timeout=_INITIAL_SCAN_BUDGET_S,
+                )
+                assert any(
+                    row["ip_address"] == _PROBE_TARGET_2_IP
+                    for row in _job_results(client, job2["id"])
+                ), (
+                    "PROPERTY 10 (two agents): agent 2 did not find its own fixture, so there "
+                    "is nothing whose attribution can be checked"
+                )
+
+                # ---- the provenance column itself -----------------------
+                reach = {
+                    agent_id: (_AGENT_NET_CIDR, _PROBE_NET_CIDR),
+                    agent2_id: (_AGENT_2_NET_CIDR, _PROBE_NET_2_CIDR),
+                }
+                provenance = _result_provenance()
+                agent_rows = [r for r in provenance if r["job_scan_agent_id"] is not None]
+                assert agent_rows, "no agent-executed results at all; nothing to attribute"
+                for row in agent_rows:
+                    assert row["discovery_agent_id"] == row["job_scan_agent_id"], (
+                        "PROPERTY 10 (no cross-attribution): a result's own reporter "
+                        f"({row['discovery_agent_id']}) is not the agent its job was "
+                        f"dispatched to ({row['job_scan_agent_id']}). Those two columns are "
+                        f"written by different code paths and must never disagree: {row}"
+                    )
+                    assert _in_any(row["ip_address"], reach[row["discovery_agent_id"]]), (
+                        "PROPERTY 10 (no cross-attribution): result "
+                        f"{row['id']} names {row['ip_address']} as reported by agent "
+                        f"{row['discovery_agent_id']}, which has no route to that address "
+                        f"(its subnets are {list(reach[row['discovery_agent_id']])})"
+                    )
+                for address in (_PROBE_TARGET_IP, _PROBE_TARGET_NEW_IP, _PROBE_TARGET_2_IP):
+                    reporters = {
+                        row["discovery_agent_id"]
+                        for row in provenance
+                        if row["ip_address"] == address
+                    }
+                    expected = {agent2_id} if address == _PROBE_TARGET_2_IP else {agent_id}
+                    assert reporters == expected, (
+                        f"PROPERTY 10 (no cross-attribution): {address} is attributed to "
+                        f"{sorted(reporters)}, expected {sorted(expected)}"
+                    )
+
+                # ---- and the negative, over the topology as it stands ----
+                for subnet, address in (
+                    (_PROBE_NET_CIDR, _PROBE_TARGET_IP),
+                    (_PROBE_NET_CIDR, _PROBE_TARGET_NEW_IP),
+                    (_PROBE_NET_2_CIDR, _PROBE_TARGET_2_IP),
+                ):
+                    _assert_backend_cannot_reach(address, subnet)
+            finally:
+                stream2.close()
         finally:
             stream.close()
     finally:

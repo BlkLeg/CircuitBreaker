@@ -1,27 +1,40 @@
 name: cb-agent-e2e
 
-# Network topology (Task 31; probe-net added by Slice 3 Task 22): cb-agent
-# gets its OWN network namespace on dedicated Docker bridge networks, not
-# `network_mode: service:circuitbreaker` (the old, pre-Task-31 setup, which
-# had the agent share the server's network namespace entirely — no real
-# network boundary at all, and a direct conflict with the "no inbound route"
-# requirement below).
+# Network topology (Task 31; probe-net added by Slice 3 Task 22; the second
+# agent, the second fixture subnet and the late subnet added by Slice 4
+# Task 31): cb-agent gets its OWN network namespace on dedicated Docker
+# bridge networks, not `network_mode: service:circuitbreaker` (the old,
+# pre-Task-31 setup, which had the agent share the server's network
+# namespace entirely — no real network boundary at all, and a direct
+# conflict with the "no inbound route" requirement below).
 #
-# Three networks, and which service is on which is the whole point:
+# Six networks, and which service is on which is the whole point:
 #
-#   default    circuitbreaker only — its ports: mapping is what lets the
-#              host-side test client reach localhost:8443.
-#   agent-net  circuitbreaker + cb-agent. The agent dials OUT to
-#              circuitbreaker here (Docker's embedded DNS resolves the
-#              "circuitbreaker" service name); nothing ever dials in.
-#   probe-net  cb-agent + probe-target, and *deliberately not*
-#              circuitbreaker.
+#   default      circuitbreaker only — its ports: mapping is what lets the
+#                host-side test client reach localhost:8443.
+#   agent-net    circuitbreaker + cb-agent. The agent dials OUT to
+#                circuitbreaker here (Docker's embedded DNS resolves the
+#                "circuitbreaker" service name); nothing ever dials in.
+#   probe-net    cb-agent + probe-target, and *deliberately not*
+#                circuitbreaker. probe-target-new joins it MID-TEST: a new
+#                host on a subnet the agent already knows.
+#   late-net     late-target only at rest. cb-agent is attached to it
+#                MID-TEST, so a directly connected subnet can appear on an
+#                already-enrolled, already-running agent. Also deliberately
+#                not circuitbreaker.
+#   agent-net-2  circuitbreaker + cb-agent-2 — the second agent's outbound
+#                route to the same server.
+#   probe-net-2  cb-agent-2 + probe-target-2, and deliberately neither
+#                circuitbreaker nor cb-agent: the second agent's fixture
+#                subnet has to be unreachable from the FIRST agent too, or
+#                "these findings came from agent 2" would be unprovable.
 #
-# cb-agent publishes/exposes no ports at all: nothing outside this compose
-# project, and nothing else on agent-net or probe-net either, has any route
-# INTO the agent's container. This is the realistic "no extra setup,
-# outbound-only HTTPS/WSS, never listen on a remote-subnet port" shape the
-# whole feature guarantees (see test_agent_e2e.py's
+# Neither cb-agent nor cb-agent-2 publishes or exposes any port at all:
+# nothing outside this compose project, and nothing else on any of these
+# networks either, has any route INTO an agent container. This is the
+# realistic "no extra setup, outbound-only HTTPS/WSS, never listen on a
+# remote-subnet port" shape the whole feature guarantees (see
+# test_agent_e2e.py's
 # test_agent_full_lifecycle_enroll_through_revoke_and_reconnect step
 # 11/isolation probe for the connectivity-probe proof).
 #
@@ -35,22 +48,91 @@ name: cb-agent-e2e
 # test_remote_probe_assignment_execution_and_unavailability asserts exactly
 # that before it asserts anything else, because every later assertion in
 # that test is worthless if the backend could have run the checks itself.
+# Slice 4's discovery gate rests on the same property and re-proves it the
+# same way, for late-net and probe-net-2 as well.
 #
-# The subnet is pinned rather than auto-allocated so the monitors under test
-# can name a literal address: Docker's default pools are 172.17-172.31/16
-# and 192.168.0.0/16, so 10.77.0.0/24 cannot collide with an auto-assigned
-# network, and being RFC1918 it lands inside the agent's automatically
-# derived `direct_private` scope with no operator scope edit — which is what
-# §9 step 11 requires.
+# Every subnet here is pinned rather than auto-allocated so the monitors and
+# discovery assertions under test can name a literal address or CIDR:
+# Docker's default pools are 172.17-172.31/16 and 192.168.0.0/16, so no
+# 10.x/24 below can collide with an auto-assigned network, and being RFC1918
+# they all land inside an agent's automatically derived `direct_private`
+# scope with no operator scope edit — which is what Slice 3 §9 step 11 and
+# Slice 4 §8 step 3 both require.
 networks:
   default: {}
+  # Pinned to a /24 by Slice 4 D-12, having previously been an unpinned
+  # bridge. Docker's default pool hands an unpinned bridge a /16 — 65 534
+  # addresses, which on its own exceeds the local_discovery grant's
+  # max_addresses_per_job (1024), so the agent's own directly connected
+  # subnet could never be dispatched as a discovery target and the
+  # zero-configuration claim would be untestable here. A /24 makes the
+  # topology honest and gives the discovery assertions a subnet they can
+  # name instead of whatever Docker's pool handed out that day.
   agent-net:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 10.88.0.0/24
   probe-net:
     driver: bridge
     ipam:
       config:
         - subnet: 10.77.0.0/24
+  # A subnet that does not exist as far as cb-agent is concerned when it
+  # starts. `late-target` is brought up mid-test and cb-agent is
+  # `docker network connect`ed to this network afterwards, so the agent's
+  # set of directly connected networks GROWS while it is already enrolled,
+  # approved and running. hostinfo.Collect() runs once per link connection
+  # (internal/link/link.go), so the new subnet reaches the server on the
+  # agent's next `hello` — no CIDR is ever typed anywhere, the subnet simply
+  # appears, which is precisely the zero-configuration trigger Slice 4 §8
+  # step 3 is about.
+  late-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.66.0.0/24
+  # The second agent's outbound route to the same server. Separate from
+  # agent-net so the two agents share no L2 segment: if they sat on one
+  # network each would see the other's fixture subnet as directly
+  # connected, and "agent 2 found this, agent 1 did not" would stop being
+  # a statement about vantage points.
+  agent-net-2:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.89.0.0/24
+  # The second agent's own isolated fixture subnet: reachable from
+  # cb-agent-2, and from nothing else in this project.
+  probe-net-2:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.78.0.0/24
+
+# The fixture-target image, shared by probe-target, probe-target-new,
+# probe-target-2 and late-target. One alpine container answers every check
+# type the slices support — ICMP (the kernel), TCP + HTTP (busybox httpd on 8080) and DNS
+# (dnsmasq on 53) — and, for Slice 4, presents exactly the kind of open-port
+# surface the unprivileged connect-scan collector is expected to find.
+#
+# Defined once as a YAML anchor rather than three times so all three fixtures
+# are provably the same image (Docker builds it once and the other two are
+# pure cache hits) and so a change to what a fixture answers cannot silently
+# apply to only one subnet. Built inline rather than from a file of its own
+# so the entire topology this suite depends on stays readable in one place,
+# and from alpine because the image is already present for the rest of this
+# repo's tooling.
+x-fixture-target-build: &fixture-target-build
+  context: .
+  dockerfile_inline: |
+    FROM alpine:3.20
+    RUN apk add --no-cache dnsmasq busybox-extras \
+        && mkdir -p /www/cgi-bin \
+        && printf 'cb-agent e2e remote-probe target\n' > /www/index.html \
+        && printf '#!/bin/sh\nsleep 120\nprintf "Content-type: text/plain\\n\\nslow\\n"\n' \
+             > /www/cgi-bin/slow \
+        && chmod 0755 /www/cgi-bin/slow
 
 services:
   circuitbreaker:
@@ -110,9 +192,14 @@ services:
     # on probe-net, so 127.0.0.11 answers for `probe-target` there.
     extra_hosts:
       - "probe-target:10.77.0.10"
+    # agent-net-2 as well as agent-net: the second agent dials the same
+    # server, and Docker's embedded DNS only answers for `circuitbreaker` on
+    # a network circuitbreaker is actually attached to. It is emphatically
+    # NOT on probe-net, late-net or probe-net-2 — see the topology note.
     networks:
       - default
       - agent-net
+      - agent-net-2
 
   cb-agent:
     build:
@@ -163,26 +250,13 @@ services:
       - probe-net
 
   # The remote-probe target (§9 step 1): reachable from cb-agent, unreachable
-  # from circuitbreaker. One container answers all four check types the slice
-  # supports — ICMP (the kernel), TCP + HTTP (busybox httpd on 8080) and DNS
-  # (dnsmasq on 53, authoritative for the one name the DNS monitor looks up).
-  #
-  # Built inline rather than from a file of its own so the entire topology this
-  # test depends on stays readable in one place, and from alpine because the
-  # image is already present for the rest of this repo's tooling. `--no-resolv`
-  # + `--no-hosts` make dnsmasq answer from `--address=` alone, so the check
+  # from circuitbreaker. Answers all four check types the slice supports — see
+  # the shared *fixture-target-build anchor above, which is also what makes
+  # this the same image as probe-target-2 and late-target. `--no-resolv` +
+  # `--no-hosts` make dnsmasq answer from `--address=` alone, so the check
   # result cannot depend on the host's own resolver configuration.
   probe-target:
-    build:
-      context: .
-      dockerfile_inline: |
-        FROM alpine:3.20
-        RUN apk add --no-cache dnsmasq busybox-extras \
-            && mkdir -p /www/cgi-bin \
-            && printf 'cb-agent e2e remote-probe target\n' > /www/index.html \
-            && printf '#!/bin/sh\nsleep 120\nprintf "Content-type: text/plain\\n\\nslow\\n"\n' \
-                 > /www/cgi-bin/slow \
-            && chmod 0755 /www/cgi-bin/slow
+    build: *fixture-target-build
     command:
       - /bin/sh
       - -c
@@ -201,5 +275,133 @@ services:
       probe-net:
         ipv4_address: 10.77.0.10
 
+  # The subnet that shows up LATE (Slice 4 §8 step 3's zero-configuration
+  # trigger). Identical image and behaviour to probe-target; the only thing
+  # that matters about it is WHEN it exists.
+  #
+  # `docker compose up -d late-target` is issued from inside a test, after
+  # cb-agent has already enrolled, been approved and reported its networks —
+  # and cb-agent is then `docker network connect`ed to late-net. So the agent
+  # acquires a directly connected subnet it did not have at `hello` time, with
+  # no CIDR typed and no agent-side configuration touched, and the server
+  # learns about it from the agent's next `hello` alone. Bringing it up at
+  # stack start instead would make the subnet indistinguishable from
+  # probe-net, and the "appeared later" property — the only reason this
+  # container exists — would go untested.
+  #
+  # circuitbreaker is not on late-net, so the backend-cannot-reach-it proof
+  # that guards probe-net guards this address too.
+  late-target:
+    build: *fixture-target-build
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        httpd -p 8080 -h /www
+        exec dnsmasq -k --no-resolv --no-hosts --log-facility=- \
+          --address=/late-target/10.66.0.10
+    networks:
+      late-net:
+        ipv4_address: 10.66.0.10
+
+  # A second host on the subnet the agent ALREADY knows, and the other half of
+  # plan §8 step 11 from late-target's. late-target answers "a whole new subnet
+  # showed up"; this answers "a new device showed up on a subnet that has
+  # already been scanned once" — which is the case the recurring scan has to
+  # distinguish from the unchanged hosts whose Hardware `last_seen` it merely
+  # refreshes.
+  #
+  # Never started by `_up_server` or by any existing test: like late-target, the
+  # only interesting thing about it is WHEN it exists, so a test brings it up
+  # between one scan and the next. Same image, same open ports, same isolation
+  # from circuitbreaker as probe-target — the one difference the discovery
+  # collector can see is its address.
+  probe-target-new:
+    build: *fixture-target-build
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        httpd -p 8080 -h /www
+        exec dnsmasq -k --no-resolv --no-hosts --log-facility=- \
+          --address=/probe-target-new/10.77.0.20
+    networks:
+      probe-net:
+        ipv4_address: 10.77.0.20
+
+  # The SECOND agent (Slice 4 §8 step 10: "add a second isolated agent/subnet
+  # and verify its findings and provenance remain distinct").
+  #
+  # A separate compose service rather than a `--scale`d replica of cb-agent
+  # because the whole point is that it is isolated: its own outbound network,
+  # its own fixture subnet, and — see the volume note below — its own state.
+  # It enrolls through exactly the same Slice 1 path as the first agent
+  # (`compose run --rm cb-agent-2 enroll`), reads exactly the same agent.toml,
+  # and receives exactly the same default capability grants. Nothing about
+  # this container is configured to make it "the second agent"; the only
+  # difference the server can observe is which networks it reports and which
+  # device key it presents.
+  cb-agent-2:
+    build:
+      context: ..
+      dockerfile: e2e/Dockerfile
+    depends_on:
+      - circuitbreaker
+    # Same rationale as cb-agent's: mirrors the real systemd unit's
+    # Restart=on-failure, so a daemon whose startup enroll dials into a cut
+    # network gets the retries production would give it.
+    restart: on-failure
+    volumes:
+      # Its OWN named volume, and this is load-bearing rather than tidy.
+      # /var/lib/cb-agent holds device.key, the enrolled identity and
+      # status.json. Sharing cb-agent-state would make these two containers
+      # one agent wearing two hats: the second would present the first's
+      # certificate, the server would see a single agent_id reconnecting, and
+      # every "these findings came from a different agent" assertion in
+      # Task 33 would be vacuous.
+      - cb-agent-2-state:/var/lib/cb-agent
+      # The SAME agent.toml, deliberately. server_url, server_static_pk and
+      # tls_pin are installation-wide facts, not per-agent ones — a second
+      # agent requiring a hand-edited config would contradict the slice's
+      # zero-configuration claim before discovery even started.
+      - ./agent.toml:/etc/circuit-breaker/agent.toml:ro
+    environment:
+      - CB_AGENT_TEST_REKEY_INTERVAL_SECONDS=${CB_AGENT_TEST_REKEY_INTERVAL_SECONDS:-}
+      - CB_AGENT_TEST_PRE_REEXEC_DELAY_MS=${CB_AGENT_TEST_PRE_REEXEC_DELAY_MS:-}
+    # Unprivileged datagram ICMP, as for cb-agent: the discovery collector's
+    # ICMP path opens "udp4" and never a raw socket, and readiness reports
+    # `probe.icmp: unavailable` if the kernel refuses. Namespaced sysctl; it
+    # changes nothing on the host.
+    sysctls:
+      net.ipv4.ping_group_range: "0 2147483647"
+    # agent-net-2 (its route to the server) and probe-net-2 (its own fixture
+    # subnet). Not agent-net, not probe-net, not late-net, no `default`, and
+    # no published or exposed ports. `_agent_network_name(service="cb-agent-2")`
+    # in test_agent_e2e.py pins this set.
+    networks:
+      - agent-net-2
+      - probe-net-2
+
+  # The second agent's fixture target. Same image as probe-target, on a subnet
+  # only cb-agent-2 is attached to — so a finding for 10.78.0.10 can only have
+  # come from cb-agent-2, exactly as a finding for 10.77.0.10 can only have
+  # come from cb-agent.
+  probe-target-2:
+    build: *fixture-target-build
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        httpd -p 8080 -h /www
+        exec dnsmasq -k --no-resolv --no-hosts --log-facility=- \
+          --address=/probe-target-2/10.78.0.10
+    networks:
+      probe-net-2:
+        ipv4_address: 10.78.0.10
+
 volumes:
   cb-agent-state:
+  cb-agent-2-state:

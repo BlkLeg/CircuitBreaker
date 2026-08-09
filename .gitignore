@@ -48,6 +48,10 @@ frontend/.env.*.local
 # compose up` at all (the base compose file's ${VAR:?...} guards) — not a
 # real secret.
 !apps/agent/e2e/.env
+# Written per-run by the e2e harness's `_write_agent_toml` (it carries that
+# run's server_static_pk and tls_pin, which are generated fresh by the mono
+# container) and unlinked again in each test's `finally`. Never a source file.
+apps/agent/e2e/agent.toml
 .envrc
 .github/workflows/.env
 .github/workflows/.env.*
