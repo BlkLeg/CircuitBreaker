@@ -59,9 +59,10 @@ var (
 // while they wait.
 const DispatchQueueCapacity = 16
 
-// findingBufferSize is the hand-off between the goroutines that produce findings (the link
-// goroutine for a synchronous refusal, the dispatcher and its enrichment workers for a running
-// scan) and the single pump that forwards them to the outbound data-frame channel.
+// findingBufferSize is the hand-off between the scan goroutines that produce findings — the
+// dispatcher and its enrichment workers — and the single pump that forwards them to the outbound
+// data-frame channel. A terminal summary produced *outside* a scan does not travel through it: see
+// terminalBacklog for why that one frame can neither be dropped here nor waited on.
 const findingBufferSize = 128
 
 // RuntimeOptions configures a Runtime. Every collector has a working default; Validate does not,
@@ -97,7 +98,10 @@ type RuntimeOptions struct {
 type Runtime struct {
 	out      chan<- frame.Frame
 	findings chan frame.Frame
-	queue    chan *dispatch
+	// terminals holds the summaries produced off the scan goroutines, which may not be dropped
+	// under back-pressure and may not be waited on where they are produced.
+	terminals *terminalBacklog
+	queue     chan *dispatch
 
 	liveness  *Liveness
 	resolver  *ReverseDNS
@@ -168,6 +172,7 @@ func NewRuntime(out chan<- frame.Frame, opts RuntimeOptions) *Runtime {
 	r := &Runtime{
 		out:       out,
 		findings:  make(chan frame.Frame, findingBufferSize),
+		terminals: newTerminalBacklog(),
 		queue:     make(chan *dispatch, DispatchQueueCapacity),
 		liveness:  opts.Liveness,
 		resolver:  opts.ReverseDNS,
@@ -352,7 +357,7 @@ func (r *Runtime) cancelDispatch(entry *dispatch, reason string) {
 	// started, so a running one falls through to its own scan rather than being closed out twice.
 	if entry.claimTerminal() {
 		r.forget(entry.req.DispatchID)
-		r.emit(r.summaryFrame(entry.req, scanResult{
+		r.emitTerminal(r.summaryFrame(entry.req, scanResult{
 			outcome: frame.DiscoveryOutcomeCancelled,
 			notes:   []string{cancelledMsg(reason)},
 		}))
@@ -388,7 +393,7 @@ func (r *Runtime) refuse(entry *dispatch, sentinel error, code, msg string) erro
 	// A Disable racing this request may already have closed the dispatch out as cancelled, and a
 	// second terminal frame would finalize the job twice — once on a refusal it never suffered.
 	if entry.claimTerminal() {
-		r.emit(r.summaryFrame(entry.req, scanResult{
+		r.emitTerminal(r.summaryFrame(entry.req, scanResult{
 			outcome:   frame.DiscoveryOutcomeRejected,
 			errorCode: code,
 			notes:     []string{msg},
@@ -426,21 +431,68 @@ func (r *Runtime) dispatchLoop(ctx context.Context) {
 	}
 }
 
-// pump forwards findings to the outbound data-frame channel. It is the only writer to out, and it
-// is a separate goroutine precisely so a slow or disconnected consumer cannot reach back into
-// link's inbound goroutine through Request.
+// pump forwards findings and parked terminal summaries to the outbound data-frame channel. It is
+// the only writer to out, and it is a separate goroutine precisely so a slow or disconnected
+// consumer cannot reach back into link's inbound goroutine through Request or Cancel.
+//
+// The two sources are separate arms rather than one queue because only one of them is allowed to
+// drop a frame when it fills. Splitting them costs no ordering: a dispatch closed through the
+// backlog never ran, so that summary is the only frame it ever produces — claimTerminal succeeds
+// only while a dispatch is still queued — and a running dispatch's summary rides the same findings
+// buffer as its own host findings, behind them.
 func (r *Runtime) pump(ctx context.Context) {
+	// Said out loud on the way out: a summary still parked when the pump stops is a scan job the
+	// server has to expire, and silence would read as a frame lost in transit instead.
+	defer r.reportUnsentTerminals()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-r.terminals.wake:
+			if !r.drainTerminals(ctx) {
+				return
+			}
 		case f := <-r.findings:
-			select {
-			case r.out <- f:
-			case <-ctx.Done():
+			if !r.forward(ctx, f) {
 				return
 			}
 		}
+	}
+}
+
+// drainTerminals empties the backlog oldest-first, reporting false when the runtime stopped
+// mid-send. It drains to empty rather than one frame per wake-up because the wake signal is
+// coalesced: a producer whose token found the channel already full is relying on this pass to pick
+// its frame up.
+func (r *Runtime) drainTerminals(ctx context.Context) bool {
+	for {
+		f, ok := r.terminals.next()
+		if !ok {
+			return true
+		}
+		if !r.forward(ctx, f) {
+			r.terminals.requeue(f)
+			return false
+		}
+	}
+}
+
+// forward is the pump's one send to out. Waiting here is the entire point of the pump: it is the
+// runtime's own goroutine and the wait is bounded by the runtime context, so no producer — least of
+// all link's inbound goroutine — ever waits on the consumer itself.
+func (r *Runtime) forward(ctx context.Context, f frame.Frame) bool {
+	select {
+	case r.out <- f:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (r *Runtime) reportUnsentTerminals() {
+	if depth := r.terminals.depth(); depth > 0 {
+		log.Printf("discover: the finding pump stopped with %d terminal summaries still queued; "+
+			"the scan jobs behind them close on the server's dispatch deadline instead", depth)
 	}
 }
 
@@ -803,20 +855,94 @@ func (r *Runtime) findingFrame(dispatchID string, payload frame.DiscoveryFinding
 	return frame.Frame{Type: frame.TypeDiscoveryFinding, TS: payload.ObservedAt, Payload: data}
 }
 
-// emit hands one frame to the pump without ever blocking, and reports whether it got there. It is
-// what the link goroutine uses: a refusal must not wait on whoever is reading the data-frame
-// channel, because that goroutine also drives the heartbeat.
-func (r *Runtime) emit(f frame.Frame) bool {
-	if f.Type == "" {
-		return false
+// terminalBacklog parks the terminal summaries produced outside a scan until the pump can send
+// them.
+//
+// A dispatch's terminal summary is the frame that closes the scan job, so losing one is the
+// hanging-job failure this collector exists to prevent: the server would wait out the whole
+// dispatch deadline and then close the job with the wrong reason. Unlike a host finding, it may not
+// be dropped just because the finding buffer is full.
+//
+// It equally may not be *waited* on where it is produced. refuse and cancelDispatch run on link's
+// inbound goroutine — Request and Cancel are bound under an enqueue-only contract, see
+// link.Options.OnDiscoveryRequest — and that goroutine also drives the heartbeat, the rekey and the
+// drain tickers. Worse, link's runOnce reads inbound frames and Options.DataFrames from the *same*
+// select, so for as long as a request handler runs nobody is draining the channel the summary has
+// to leave by: a blocking send there would not be slow, it would be a deadlock until the read
+// deadline fired.
+//
+// So the producer only appends and the pump does the waiting, bounded by the runtime context. The
+// backlog is a slice rather than a second buffered channel because a fixed bound would drop in
+// exactly the burst it exists for — refusals arriving back-to-back on that one goroutine, none of
+// them forwardable until the last of them returns. What it holds is one small frame per dispatch
+// that never started work, produced only by that goroutine and by Disable/Stop, so there is nothing
+// here for an unbounded queue to run away with.
+type terminalBacklog struct {
+	mu      sync.Mutex
+	pending []frame.Frame
+	// wake carries at most one token, because the pump drains the backlog to empty per wake-up: a
+	// token that cannot be added is always one whose work the token already in flight will do.
+	// Signalling *after* the append is what makes that safe — a drain pass that found the backlog
+	// empty has already consumed its token, so the next append's own token gets through.
+	wake chan struct{}
+}
+
+func newTerminalBacklog() *terminalBacklog {
+	return &terminalBacklog{wake: make(chan struct{}, 1)}
+}
+
+// add parks one frame and wakes the pump. It never blocks and never drops.
+func (b *terminalBacklog) add(f frame.Frame) {
+	b.mu.Lock()
+	b.pending = append(b.pending, f)
+	b.mu.Unlock()
+	b.signal()
+}
+
+// next takes the oldest parked frame, reporting false when there is none.
+func (b *terminalBacklog) next() (frame.Frame, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.pending) == 0 {
+		return frame.Frame{}, false
 	}
+	f := b.pending[0]
+	b.pending = b.pending[1:]
+	return f, true
+}
+
+// requeue puts a frame the pump could not send back at the head, so the shutdown report counts it
+// and a Start following that Stop sends it in order rather than behind whatever arrives next.
+func (b *terminalBacklog) requeue(f frame.Frame) {
+	b.mu.Lock()
+	b.pending = append([]frame.Frame{f}, b.pending...)
+	b.mu.Unlock()
+	b.signal()
+}
+
+func (b *terminalBacklog) depth() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.pending)
+}
+
+func (b *terminalBacklog) signal() {
 	select {
-	case r.findings <- f:
-		return true
+	case b.wake <- struct{}{}:
 	default:
-		log.Printf("discover: dropped a %s frame — the finding buffer is full", f.Type)
-		return false
 	}
+}
+
+// emitTerminal hands a dispatch's one terminal summary to the pump from outside its scan — a
+// refusal, or a cancellation that arrived before the dispatcher reached it. It is the counterpart
+// to deliver, which the scan goroutines use for their findings and for their own summary: this one
+// can neither wait for room nor drop the frame, so it parks it. See terminalBacklog.
+func (r *Runtime) emitTerminal(f frame.Frame) {
+	if f.Type == "" {
+		// findingFrame already logged the encoding failure; there is no frame to park.
+		return
+	}
+	r.terminals.add(f)
 }
 
 // deliver hands one frame to the pump from a scan goroutine, waiting for room. Waiting rather than

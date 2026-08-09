@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"sort"
 	"strings"
@@ -961,4 +962,278 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// --- Back-pressure: a terminal summary is the one frame that may never be dropped -------------
+
+// fillerDispatchID stands for a dispatch whose host findings are already queued ahead of the
+// summaries these tests are about. It is never requested, so nothing else in the runtime knows it.
+const fillerDispatchID = "f111e222d333c444b555a66677788899"
+
+// nonBlockingBudget is how long a handler bound under link's enqueue-only contract is allowed to
+// take. It is generous on purpose: the assertion is "does not wait on a consumer", and a consumer
+// in these tests is stalled for the whole test, so anything that waits on one waits forever. A
+// tighter bound would only make the test flaky on a loaded machine without pinning anything more.
+const nonBlockingBudget = 2 * time.Second
+
+// stalledHarness is a harness whose outbound channel nobody reads.
+//
+// An unbuffered `out` with no reader is what the link looks like between connections — and,
+// because link's runOnce reads inbound frames and Options.DataFrames from the *same* select, it is
+// also what the link looks like for the entire time a discovery.request handler is running. That
+// coupling is why back-pressure is not a rare condition here: the goroutine that would have to
+// drain `out` is the goroutine calling Request.
+func stalledHarness(t *testing.T) *harness {
+	t.Helper()
+	h := newHarness(t)
+	h.out = make(chan frame.Frame)
+	return h
+}
+
+// saturateFindings fills the finding buffer and reports how many frames it parked there.
+//
+// It writes to the buffer directly instead of running a 128-host sweep into it: the condition
+// under test is "the buffer is full", and reaching it through a real sweep would make the sweep's
+// concurrency the test's subject. Once the pump is blocked on the unread `out` the buffer cannot
+// drain again, so "full" stays true for the rest of the test.
+func saturateFindings(t *testing.T, h *harness) int {
+	t.Helper()
+	filler := h.rt.findingFrame(fillerDispatchID, frame.DiscoveryFindingPayload{
+		DispatchID: fillerDispatchID,
+		ScanJobID:  481,
+		FindingID:  findingID(fillerDispatchID, frame.DiscoveryKindHost, "10.20.0.9"),
+		Kind:       frame.DiscoveryKindHost,
+		ObservedAt: time.Now().UTC(),
+		IPAddress:  "10.20.0.9",
+	})
+	for parked := 0; parked <= findingBufferSize*2; parked++ {
+		select {
+		case h.rt.findings <- filler:
+		default:
+			if parked < findingBufferSize {
+				t.Fatalf("parked only %d frames before the buffer refused more, want at least %d",
+					parked, findingBufferSize)
+			}
+			return parked
+		}
+	}
+	t.Fatal("the finding buffer never filled; something is draining it")
+	return 0
+}
+
+// summaryFor drains `out` until the terminal summary for dispatchID arrives, skipping the frames
+// saturateFindings parked and every other dispatch's traffic.
+//
+// It fails if a *non*-terminal frame for dispatchID shows up first, which is the ordering half of
+// the contract: the backend finalizes a job on the first terminal frame it sees, so a host finding
+// that overtook the summary would be rejected as late.
+func summaryFor(t *testing.T, out <-chan frame.Frame, dispatchID string, timeout time.Duration) frame.DiscoveryFindingPayload {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case f := <-out:
+			if f.Type != frame.TypeDiscoveryFinding {
+				t.Fatalf("frame type = %q, want %q", f.Type, frame.TypeDiscoveryFinding)
+			}
+			var payload frame.DiscoveryFindingPayload
+			if err := json.Unmarshal(f.Payload, &payload); err != nil {
+				t.Fatalf("decode discovery.finding payload: %v", err)
+			}
+			if payload.DispatchID != dispatchID {
+				continue
+			}
+			if payload.Kind != frame.DiscoveryKindSummary || !payload.Terminal {
+				t.Fatalf("dispatch %s sent a non-terminal %s finding before its summary",
+					dispatchID, payload.Kind)
+			}
+			return payload
+		case <-deadline:
+			t.Fatalf("no terminal summary for dispatch %s within %s — a summary dropped under "+
+				"back-pressure leaves the scan job hanging until its dispatch deadline expires",
+				dispatchID, timeout)
+		}
+	}
+}
+
+// withinBudget runs fn on another goroutine and fails if it has not returned within budget.
+//
+// What it pins is worth naming: Request and Cancel are bound under link's enqueue-only contract and
+// run on the inbound goroutine that also drives the heartbeat, the rekey and the drain tickers, so
+// one that waits on a consumer stalls all three; Stop is the daemon's exit path, so one that waits
+// on a consumer hangs the process instead of one scan job.
+//
+// fn must not touch t: it outlives the assertion when the budget blows. That is the point — the
+// failure mode being pinned is a call that never returns, and a t.Fatal from a goroutine still
+// parked inside the subject would report the wrong thing.
+func withinBudget(t *testing.T, what string, budget time.Duration, fn func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	select {
+	case <-done:
+	case <-time.After(budget):
+		t.Fatalf("%s did not return within %s: it is waiting on a consumer that nobody is reading",
+			what, budget)
+	}
+}
+
+// TestDiscoveryRuntime_RefusalSummarySurvivesASaturatedConsumer pins the frame this collector may
+// never drop. A refusal's terminal summary is what closes the scan job; lose it and the backend
+// waits out the whole dispatch deadline and then closes the job with the wrong reason — precisely
+// the hanging job the slice exists to prevent.
+func TestDiscoveryRuntime_RefusalSummarySurvivesASaturatedConsumer(t *testing.T) {
+	h := stalledHarness(t)
+	h.validate = func(frame.DiscoveryRequestPayload, netscope.Scope) Rejection {
+		return Rejection{Code: ErrorCodeScopeVersionMismatch, Msg: "the scope moved under this request"}
+	}
+	h.refuseNeighbors = true
+	h.start(t)
+	saturateFindings(t, h)
+
+	if err := h.rt.Request(request(t, testDispatchID)); !errors.Is(err, ErrRejected) {
+		t.Fatalf("Request error = %v, want it to wrap %v", err, ErrRejected)
+	}
+
+	summary := summaryFor(t, h.out, testDispatchID, 5*time.Second)
+	if summary.Outcome != frame.DiscoveryOutcomeRejected {
+		t.Errorf("outcome = %q, want %q", summary.Outcome, frame.DiscoveryOutcomeRejected)
+	}
+	if summary.ErrorCode != ErrorCodeScopeVersionMismatch {
+		t.Errorf("error_code = %q, want %q", summary.ErrorCode, ErrorCodeScopeVersionMismatch)
+	}
+}
+
+// TestDiscoveryRuntime_CancelledQueuedDispatchSummarySurvivesASaturatedConsumer covers the other
+// path that closes a dispatch from off the scan goroutines: a cancellation that arrives while the
+// dispatch is still queued. Nothing will ever run it, so this summary is the only frame that
+// dispatch will ever produce, and dropping it hangs the job exactly as a dropped refusal does.
+//
+// It also times Cancel, because Cancel is bound under the same enqueue-only contract as Request.
+func TestDiscoveryRuntime_CancelledQueuedDispatchSummarySurvivesASaturatedConsumer(t *testing.T) {
+	const queuedDispatchID = "0d1c2b3a49586776859493a2b1c0d0e0"
+	dialing := make(chan struct{}, 1)
+
+	h := stalledHarness(t)
+	h.sweepNet.dialReply = func(ctx context.Context, _ string) error {
+		select {
+		case dialing <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	h.start(t)
+
+	// The dispatcher is serial, so a dispatch that is busy dialing a /24 is what keeps the second
+	// request in the queue rather than running it.
+	if err := h.rt.Request(request(t, testDispatchID, func(p *frame.DiscoveryRequestPayload) {
+		p.Targets = []string{"10.20.0.0/24"}
+	})); err != nil {
+		t.Fatalf("Request error = %v", err)
+	}
+	select {
+	case <-dialing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first dispatch never started work")
+	}
+	if err := h.rt.Request(request(t, queuedDispatchID)); err != nil {
+		t.Fatalf("queued Request error = %v", err)
+	}
+	saturateFindings(t, h)
+
+	withinBudget(t, "Cancel", nonBlockingBudget, func() {
+		_ = h.rt.Cancel(cancellation(t, queuedDispatchID, "profile_disabled"))
+	})
+
+	summary := summaryFor(t, h.out, queuedDispatchID, 5*time.Second)
+	if summary.Outcome != frame.DiscoveryOutcomeCancelled {
+		t.Errorf("outcome = %q, want %q", summary.Outcome, frame.DiscoveryOutcomeCancelled)
+	}
+	if !strings.Contains(summary.Msg, "profile_disabled") {
+		t.Errorf("msg = %q, want it to name the cancellation reason", summary.Msg)
+	}
+}
+
+// TestDiscoveryRuntime_RequestNeverBlocksOnASaturatedConsumerAndLosesNoSummary is the invariant
+// most easily broken while fixing the drop: the obvious repair is to make the refusal *wait* for
+// room, and that wait would land on link's inbound goroutine.
+//
+// The burst is deliberately longer than DispatchQueueCapacity. A fixed-size second buffer would
+// pass the one-refusal test above and start dropping here, which is the realistic shape of the
+// failure: refusals arrive back-to-back on the one goroutine that link would otherwise be draining
+// `out` with, so none of them can be forwarded until the last of them returns.
+func TestDiscoveryRuntime_RequestNeverBlocksOnASaturatedConsumerAndLosesNoSummary(t *testing.T) {
+	const burst = DispatchQueueCapacity * 2
+
+	h := stalledHarness(t)
+	h.granted = false // every request is refused with ErrorCodeCapabilityDisabled, and none of them works
+	h.refuseNeighbors = true
+	h.start(t)
+	saturateFindings(t, h)
+
+	ids := make([]string, burst)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("%032x", i+1)
+	}
+	errs := make([]error, burst)
+	withinBudget(t, fmt.Sprintf("a burst of %d Request calls", burst), nonBlockingBudget, func() {
+		for i, id := range ids {
+			errs[i] = h.rt.Request(request(t, id))
+		}
+	})
+	for i, err := range errs {
+		if !errors.Is(err, ErrNotEnabled) {
+			t.Fatalf("Request %d error = %v, want it to wrap %v", i, err, ErrNotEnabled)
+		}
+	}
+
+	for _, id := range ids {
+		summary := summaryFor(t, h.out, id, 5*time.Second)
+		if summary.Outcome != frame.DiscoveryOutcomeRejected {
+			t.Fatalf("dispatch %s outcome = %q, want %q", id, summary.Outcome, frame.DiscoveryOutcomeRejected)
+		}
+	}
+}
+
+// TestDiscoveryRuntime_StopDoesNotWaitForUnsentSummaries pins the shutdown half. Moving the wait
+// off link's goroutine puts it somewhere, and if that somewhere is joined by Stop then a saturated
+// consumer at shutdown hangs the daemon's exit instead of hanging one scan job.
+func TestDiscoveryRuntime_StopDoesNotWaitForUnsentSummaries(t *testing.T) {
+	dialing := make(chan struct{}, 1)
+
+	h := stalledHarness(t)
+	h.granted = false
+	h.sweepNet.dialReply = func(ctx context.Context, _ string) error {
+		select {
+		case dialing <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	h.start(t)
+	saturateFindings(t, h)
+
+	// Two summaries with nowhere to go, from both off-scan paths: a refusal here and, in Stop
+	// itself, the cancellation of everything still open.
+	if err := h.rt.Request(request(t, testDispatchID)); !errors.Is(err, ErrNotEnabled) {
+		t.Fatalf("Request error = %v, want it to wrap %v", err, ErrNotEnabled)
+	}
+	h.rt.Configure(h.scope, h.validate)
+	if err := h.rt.Request(request(t, "0123456789abcdef0123456789abcdef", func(p *frame.DiscoveryRequestPayload) {
+		p.Targets = []string{"10.20.0.0/24"}
+	})); err != nil {
+		t.Fatalf("granted Request error = %v", err)
+	}
+	select {
+	case <-dialing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the granted dispatch never started work")
+	}
+
+	withinBudget(t, "Stop", nonBlockingBudget, h.rt.Stop)
 }
