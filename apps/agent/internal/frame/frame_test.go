@@ -156,14 +156,34 @@ func TestKeyRotatePayload_EncodeDecode(t *testing.T) {
 // path).
 func TestIsDataFrame_ControlAndHeartbeatTypesReturnFalse(t *testing.T) {
 	controlTypes := []string{
-		TypeHello, TypeHeartbeat, TypeUninstall,
-		TypeHelloAck, TypeCapabilitiesSet, TypeProbeAssign, TypeProbeCancel, TypeDiscoveryRequest,
+		TypeHello, TypeHeartbeat, TypeCapabilityReadiness, TypeUninstall,
+		TypeHelloAck, TypeCapabilitiesSet, TypeProbeAssign, TypeProbeCancel,
+		TypeDiscoveryRequest, TypeDiscoveryCancel,
 		TypeKeyRotate, TypeUpdate, TypeDisconnect, TypePing,
 		TypeTransportRekey,
 	}
 	for _, typ := range controlTypes {
 		if IsDataFrame(typ) {
 			t.Errorf("IsDataFrame(%q) = true, want false (control/heartbeat frame)", typ)
+		}
+	}
+
+	// The list above is hand-written on purpose — it is the independent
+	// statement of which types must never be spooled, and deriving it from
+	// controlFrameTypes would make the loop assert `!m[t]` against `m` and
+	// prove nothing. What it cannot do on its own is notice an omission: a
+	// slice that adds a control frame and forgets this literal leaves the new
+	// type's spool-ineligibility completely unasserted, and the suite stays
+	// green. That is how TypeDiscoveryCancel (Slice 4) and
+	// TypeCapabilityReadiness (Slice 2) both came to be missing here. So the
+	// literal stays the expectation and this makes forgetting it fail loudly.
+	named := make(map[string]bool, len(controlTypes))
+	for _, typ := range controlTypes {
+		named[typ] = true
+	}
+	for typ := range controlFrameTypes {
+		if !named[typ] {
+			t.Errorf("control frame type %q is in controlFrameTypes but unasserted here — add it to controlTypes", typ)
 		}
 	}
 }
