@@ -239,7 +239,9 @@ async def ingest_readiness(db: Session, agent: Agent, payload: dict[str, Any]) -
     `agent_registry.record_network_facts` inside this same transaction — after
     the validation pre-pass, so a report rejected for a bad `state` refreshes no
     scope either. See the comment at the forward for why the gate is the key's
-    presence rather than its truthiness.
+    presence rather than its truthiness, and the comment at the publish for why
+    the `discovery.cancel` frames a moved scope produces go out only after the
+    commit below returns.
     """
     try:
         report = CapabilityReadinessPayload.model_validate(payload)
@@ -284,9 +286,24 @@ async def ingest_readiness(db: Session, agent: Agent, payload: dict[str, Any]) -
     # It does not feed `changed`, which stays the readiness-row question the
     # publish below fans out — that message carries readiness rows only, and
     # scope consumers already have `agent_networks.generation`.
+    scope_cancellation = None
     if "networks" in report.model_fields_set:
-        record_network_facts(db, agent, report.networks)
+        scope_cancellation = record_network_facts(db, agent, report.networks)
     db.commit()
+    if scope_cancellation:
+        # D-16, and the ordering `agent_discovery`'s cancellation section makes
+        # a rule for every trigger: the doomed dispatches were closed above,
+        # inside the transaction, and the agent is told to abandon them only
+        # once that transaction is durable. Published from here rather than
+        # from `record_network_facts` because a `discovery.cancel` sent before
+        # the commit that closes its job is one the commit failing un-does —
+        # the agent stops sweeping while the server still shows the job live.
+        # `publish_discovery_cancels` never raises, so an agent that vanished
+        # cannot take down the /link read loop this runs on. Imported here
+        # because `agent_discovery` imports this module at its own module scope.
+        from app.services.agent_discovery import publish_discovery_cancels
+
+        await publish_discovery_cancels(scope_cancellation)
     if changed:
         redis = await get_redis()
         if redis is not None:

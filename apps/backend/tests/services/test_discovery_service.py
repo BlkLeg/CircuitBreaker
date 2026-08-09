@@ -305,3 +305,308 @@ def test_scan_import_keeps_a_supplied_network_id(db_session, factories) -> None:
     }
     assert (rows["10.45.0.9"].network_id, rows["10.45.0.9"].vlan_id) == (supplied.id, 99)
     assert (rows["10.45.0.10"].network_id, rows["10.45.0.10"].vlan_id) == (None, None)
+
+
+# ── The queued backlog: parking, the ceiling, and the loop it must run on ─────
+#
+# Slice 4 Phase C remediation. Three defects live on one path — the drain that
+# `_scan_finalize` and `finalize_agent_job` run when a job gives its concurrency
+# slot back:
+#
+# * B1. The drain handed *every* queued job to the dispatcher, including one
+#   parked in `waiting_for_agent` (D-5), and `_release_to_waiting` re-stamps
+#   `dispatch_deadline_at` — so an unrelated scan finishing anywhere pushed a
+#   parked job's deadline forward and it never reached its `agent_unavailable`
+#   expiry.
+# * B2. The direct dispatch path consulted no concurrency ceiling, so a job
+#   created by cron or the API went `running` while ignoring
+#   `max_concurrent_scans` — a limit it then consumed a slot against.
+# * B3. `_scan_finalize` is sync and runs only in an executor thread, where
+#   `asyncio.create_task` raises: the drain blew up exactly when a slot had just
+#   been freed and a queued job existed.
+
+
+def _backlog_agent(db_session, factories):  # type: ignore[no-untyped-def]
+    """An active agent with `local_discovery` granted.
+
+    Enough for `discovery_eligibility` to get as far as the online check, which
+    is the only denial these tests care about: everything it inspects before
+    presence (status, grant) has to pass or the job would be *failed* rather
+    than parked.
+    """
+    import secrets
+
+    from app.db.models import Tenant
+
+    tenant = Tenant(name=f"discovery-backlog-{secrets.token_hex(4)}")
+    db_session.add(tenant)
+    db_session.flush()
+    agent = factories.agent(status="active", tenant_id=tenant.id)
+    factories.agent_capability_grant(agent, capability="local_discovery", enabled=True, config={})
+    db_session.flush()
+    return agent
+
+
+def _backlog_job(db_session, **kwargs):  # type: ignore[no-untyped-def]
+    from app.core.time import utcnow_iso
+    from app.db.models import ScanJob
+
+    defaults = {
+        "target_cidr": "10.62.0.0/24",
+        "status": "queued",
+        "scan_types_json": '["nmap"]',
+        "source_type": "manual",
+        "progress_phase": "queued",
+        "created_at": utcnow_iso(),
+    }
+    defaults.update(kwargs)
+    job = ScanJob(**defaults)
+    db_session.add(job)
+    db_session.flush()
+    return job
+
+
+def _parked_backlog_job(db_session, agent, *, deadline_at, **kwargs):  # type: ignore[no-untyped-def]
+    """A job in exactly the state `agent_discovery._release_to_waiting` leaves it."""
+    from app.services import agent_discovery
+
+    return _backlog_job(
+        db_session,
+        scan_agent_id=agent.id,
+        tenant_id=agent.tenant_id,
+        source_type="agent",
+        scan_types_json='["agent_connect"]',
+        status="queued",
+        dispatch_status=agent_discovery.DISPATCH_STATUS_QUEUED,
+        dispatch_id=None,
+        started_at=None,
+        progress_phase=agent_discovery.PHASE_WAITING_FOR_AGENT,
+        dispatch_deadline_at=deadline_at,
+        **kwargs,
+    )
+
+
+def _raise_the_ceiling(db_session, value: int = 10) -> None:
+    """Other suites commit scan jobs of their own; a ceiling of 2 would let them
+    decide whether this test's job is reached at all."""
+    from app.services.settings_service import get_or_create_settings
+
+    settings = get_or_create_settings(db_session)
+    settings.max_concurrent_scans = value
+    db_session.flush()
+
+
+async def _eventually(predicate, limit_s: float = 5.0, what: str = "condition") -> None:  # type: ignore[no-untyped-def]
+    """Poll until the loop has run whatever the subject scheduled onto it."""
+    import asyncio
+    import time
+
+    deadline = time.monotonic() + limit_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"{what} never became true within {limit_s}s")
+
+
+def test_the_queued_drain_leaves_a_job_parked_for_its_agent_to_its_deadline_owner(
+    db_session, factories, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """B1. D-5 parks a job whose agent is away with a deadline that
+    `agent_discovery_reconcile` expires as `agent_unavailable`. Handing that row
+    back to the dispatcher re-parks it with a *fresh* deadline, so a drain that
+    included it would reset the clock every time any other scan finished.
+    `_drain_queued_jobs` already refuses to do this; so must the server path."""
+    from datetime import timedelta
+
+    from app.core.time import utcnow
+    from app.services import discovery_scheduler, discovery_service
+
+    _raise_the_ceiling(db_session)
+    agent = _backlog_agent(db_session, factories)
+    parked = _parked_backlog_job(
+        db_session,
+        agent,
+        deadline_at=utcnow() + timedelta(seconds=300),
+        created_at="2020-01-01T00:00:00+00:00",
+    )
+    plain = _backlog_job(db_session, created_at="2020-01-02T00:00:00+00:00")
+
+    handed: list[int] = []
+    monkeypatch.setattr(
+        discovery_service, "schedule_discovery_scan_job", lambda job_id: handed.append(job_id)
+    )
+
+    discovery_scheduler._schedule_queued_scan_jobs(db_session)
+
+    assert plain.id in handed, "an ordinary queued job is still drained"
+    assert parked.id not in handed
+
+
+async def test_a_parked_job_keeps_its_original_deadline_when_an_unrelated_job_finishes(
+    db_session, factories, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """B1, end to end and through the real dispatcher. The treadmill: any job
+    completing anywhere drained the backlog, the parked job went back to
+    `dispatch_discovery_job`, its agent was still away, and
+    `_release_to_waiting` stamped `now + DISPATCH_DEADLINE_S` over the deadline
+    that was about to expire it."""
+    from datetime import timedelta
+    from unittest.mock import AsyncMock, patch
+
+    from app.core.time import utcnow
+    from app.services import agent_discovery, agent_registry, discovery_service
+
+    _raise_the_ceiling(db_session)
+    agent = _backlog_agent(db_session, factories)
+    deadline = utcnow() + timedelta(seconds=300)
+    parked = _parked_backlog_job(db_session, agent, deadline_at=deadline)
+    finishing = _backlog_job(db_session, status="running")
+
+    monkeypatch.setattr(agent_registry, "is_agent_online", AsyncMock(return_value=False))
+    monkeypatch.setattr(agent_registry, "get_agent_connection_owner", AsyncMock(return_value=None))
+
+    # The real router on the test's own session: `_execute_scan_job_in_session`
+    # opens a session of its own, which cannot see rows living in this test's
+    # SAVEPOINT. Everything downstream of it — the claim, the eligibility check,
+    # the parking — is the production code.
+    async def _route(job_id: int) -> None:
+        await discovery_service.execute_scan_job(db_session, job_id)
+
+    monkeypatch.setattr(discovery_service, "_execute_scan_job_in_session", _route)
+
+    with (
+        patch.object(discovery_service, "SessionLocal", return_value=db_session),
+        patch.object(db_session, "close"),
+    ):
+        discovery_service._scan_finalize(finishing.id, {}, "completed", False)
+
+    # Long enough for a task the drain created to have run: nothing on that path
+    # awaits real I/O once presence is mocked.
+    import asyncio
+
+    await asyncio.sleep(0.2)
+
+    db_session.refresh(parked)
+    assert parked.status == "queued"
+    assert parked.progress_phase == agent_discovery.PHASE_WAITING_FOR_AGENT
+    assert parked.dispatch_deadline_at is not None
+    drift = abs((agent_discovery._aware(parked.dispatch_deadline_at) - deadline).total_seconds())
+    assert drift < 1, f"the parked deadline moved by {drift}s"
+
+
+async def test_an_agent_job_over_the_concurrency_ceiling_is_not_dispatched(
+    db_session, factories, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """B2. `_claim` sets `status='running'`, so a dispatched agent job consumes a
+    `max_concurrent_scans` slot from everyone else's point of view. A direct
+    dispatch that never asked for one is a job exempt from a limit it spends."""
+    from app.services import agent_discovery, discovery_service
+    from app.services.settings_service import get_or_create_settings
+
+    settings = get_or_create_settings(db_session)
+    settings.max_concurrent_scans = 1
+    db_session.flush()
+
+    _backlog_job(db_session, status="running")  # the only slot, held by a server scan
+    agent = _backlog_agent(db_session, factories)
+    job = _backlog_job(
+        db_session,
+        scan_agent_id=agent.id,
+        tenant_id=agent.tenant_id,
+        source_type="agent",
+        scan_types_json='["agent_connect"]',
+    )
+
+    dispatched: list[int] = []
+
+    async def _spy(db, job_id: int) -> bool:  # type: ignore[no-untyped-def]
+        dispatched.append(job_id)
+        return True
+
+    monkeypatch.setattr(agent_discovery, "dispatch_discovery_job", _spy)
+
+    await discovery_service.execute_scan_job(db_session, job.id)
+
+    assert dispatched == []
+    db_session.refresh(job)
+    # Parked the way a server job with no slot is parked (`_scan_setup`), not the
+    # way D-5 parks one whose agent is away: the agent here is fine, and a row in
+    # `waiting_for_agent` is one the reconciler expires as `agent_unavailable`.
+    assert job.status == "queued"
+    assert job.progress_phase != agent_discovery.PHASE_WAITING_FOR_AGENT
+    assert job.dispatch_id is None
+    assert job.dispatch_deadline_at is None
+
+
+async def test_an_agent_job_with_a_free_slot_still_reaches_the_dispatcher(
+    db_session, factories, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """The other half of B2's ceiling: it may not become a gate that refuses
+    every agent job."""
+    from app.services import agent_discovery, discovery_service
+
+    _raise_the_ceiling(db_session)
+    agent = _backlog_agent(db_session, factories)
+    job = _backlog_job(
+        db_session,
+        scan_agent_id=agent.id,
+        tenant_id=agent.tenant_id,
+        source_type="agent",
+        scan_types_json='["agent_connect"]',
+    )
+
+    dispatched: list[int] = []
+
+    async def _spy(db, job_id: int) -> bool:  # type: ignore[no-untyped-def]
+        dispatched.append(job_id)
+        return True
+
+    monkeypatch.setattr(agent_discovery, "dispatch_discovery_job", _spy)
+
+    await discovery_service.execute_scan_job(db_session, job.id)
+
+    assert dispatched == [job.id]
+
+
+async def test_finalizing_in_an_executor_thread_still_drains_the_backlog(
+    db_session, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """B3. `_scan_finalize` is synchronous and every caller runs it through
+    `loop.run_in_executor`, where `asyncio.create_task` raises
+    `RuntimeError: no running event loop`. The raise landed after the terminal
+    status committed and before the pending count returned, so the job went
+    terminal with no `job_update` event and the backlog never drained — exactly
+    when a slot had just been freed and a queued job was waiting for it."""
+    import asyncio
+    from unittest.mock import patch
+
+    from app.services import discovery_scheduler, discovery_service
+
+    loop = asyncio.get_running_loop()
+    # What `main.py`'s lifespan does at startup, undone by monkeypatch here.
+    monkeypatch.setattr(discovery_scheduler, "_main_loop", loop)
+
+    _raise_the_ceiling(db_session)
+    finishing = _backlog_job(db_session, status="running")
+    queued = _backlog_job(db_session, created_at="2020-01-03T00:00:00+00:00")
+
+    started: list[int] = []
+
+    async def _route(job_id: int) -> None:
+        started.append(job_id)
+
+    monkeypatch.setattr(discovery_service, "_execute_scan_job_in_session", _route)
+
+    with (
+        patch.object(discovery_service, "SessionLocal", return_value=db_session),
+        patch.object(db_session, "close"),
+    ):
+        pending = await loop.run_in_executor(
+            None, discovery_service._scan_finalize, finishing.id, {}, "completed", False
+        )
+
+    assert isinstance(pending, int), "the pending count must still be returned to the caller"
+    await _eventually(
+        lambda: queued.id in started, what=f"queued job {queued.id} reaching the scan executor"
+    )

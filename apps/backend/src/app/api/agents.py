@@ -52,6 +52,7 @@ from app.schemas.monitor import (
 )
 from app.services import (
     agent_capabilities,
+    agent_discovery,
     agent_enrollment,
     agent_registry,
     agent_update,
@@ -798,12 +799,23 @@ async def post_revoke(
     cancellation = monitor_service.cancel_agent_probe_runs(
         db, agent_id, reason=monitor_service.CANCEL_AGENT_REVOKED
     )
+    # Slice 4 D-14, and the same argument one slice later: a revoked agent's
+    # discovery dispatches are closed here, in this transaction, because from the
+    # moment the status flips `dispatch_frame`'s grant gate drops the agent's own
+    # terminal summary and nothing else would ever close them. D-4 has no
+    # `agent_revoked`; `agent_unavailable` is what a job whose executor no longer
+    # exists failed for, and it is what `discovery_eligibility`'s `agent_inactive`
+    # already maps onto at dispatch time.
+    discovery_cancellation = agent_discovery.cancel_agent_dispatches(
+        db, agent_id, reason=agent_discovery.ERROR_AGENT_UNAVAILABLE
+    )
     db.commit()
     await agent_registry.broadcast_presence(agent_id, "revoked")
     # Before the disconnect below, not after: an agent that is about to lose its
     # socket should still get the chance to stop work it will never be able to
     # report on.
     await monitor_service.publish_probe_cancels(cancellation)
+    await agent_discovery.publish_discovery_cancels(discovery_cancellation)
     # Immediate cross-worker disconnect (Task 9's delivery path, Task 10's
     # trigger): if the agent is connected right now, whichever worker holds
     # its /link socket picks this up via
@@ -829,6 +841,13 @@ async def put_capabilities(
     if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
     was_granted = agent_registry.grants_dict(db, agent_id).get(probe_eligibility.CAPABILITY, False)
+    # D-16's second scope trigger. Read *before* the write, because the version
+    # is derived from the grant's `scope_mode`/`excluded_cidrs`/`additional_cidrs`
+    # as well as from what the agent reported, and after the write there is
+    # nothing left to compare against.
+    was_discovering = agent_registry.grants_dict(db, agent_id).get(
+        agent_discovery.CAPABILITY, False
+    )
     agent_registry.set_capability_grants(db, agent_id, payload.capabilities, actor_user_id=user.id)
     # §8's capability-disable row, and it has to happen *here* rather than being
     # left to the result path: from the moment the grant is off,
@@ -843,8 +862,28 @@ async def put_capabilities(
         cancellation = monitor_service.cancel_agent_probe_runs(
             db, agent_id, reason=monitor_service.CANCEL_CAPABILITY_DISABLED
         )
+    # Slice 4 D-14/D-16, and for the same reason the probe half above sits here:
+    # once `local_discovery` is off, `dispatch_frame`'s gate drops the agent's own
+    # terminal summary as a `capability_violation`, so a dispatch nobody closed
+    # stays open until Task 23's pass expires it. A grant that is still on but
+    # whose scope moved is the other half of the same edit —
+    # `cancel_scope_changed_dispatches` re-derives the version and retires only
+    # the dispatches whose snapshot no longer matches, so an unrelated setting
+    # change (a smaller `max_concurrent_hosts`, say) retires nothing.
+    still_discovering = agent_registry.grants_dict(db, agent_id).get(
+        agent_discovery.CAPABILITY, False
+    )
+    if was_discovering and not still_discovering:
+        discovery_cancellation = agent_discovery.cancel_agent_dispatches(
+            db, agent_id, reason=agent_discovery.ERROR_CAPABILITY_DISABLED
+        )
+    elif still_discovering:
+        discovery_cancellation = agent_discovery.cancel_scope_changed_dispatches(db, agent_id)
+    else:
+        discovery_cancellation = agent_discovery.DiscoveryCancellation()
     db.commit()
     await monitor_service.publish_probe_cancels(cancellation)
+    await agent_discovery.publish_discovery_cancels(discovery_cancellation)
     # Immediate cross-worker push (Task 9) on top of the DB write above: if the
     # agent is connected right now, whichever worker holds its /link socket
     # picks this up via agent_registry.claim_agent_control_frames and applies

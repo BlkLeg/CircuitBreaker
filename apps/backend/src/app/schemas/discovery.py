@@ -72,15 +72,18 @@ class DiscoveryProfileUpdate(BaseModel):
     def validate_schedule_cron(cls, v: str | None) -> str | None:
         return _validate_cron_expression(v)
 
-    @model_validator(mode="after")
-    def validate_scan_type_vocabulary(self) -> "DiscoveryProfileUpdate":
-        # `None` means "leave the stored value alone", and the stored value may
-        # predate the vocabulary — validating it here would make an unrelated
-        # rename fail on a legacy row.
-        if self.scan_types is None:
-            return self
-        self.scan_types = validate_scan_types(self.scan_types, scan_agent_id=self.scan_agent_id)
-        return self
+    # No `validate_scan_type_vocabulary` here, deliberately (§3, D-6). Which scan
+    # types are legal depends on the execution location, and a PATCH names either
+    # half of that pair on its own: an unset `scan_agent_id` on this model means
+    # "leave the stored agent alone", not "the server". Judging the payload
+    # against itself therefore got both directions wrong — it let
+    # `{"scan_types": ["nmap"]}` land on an agent-executed profile (a server-only
+    # type dispatched to an agent, which §3 forbids) and refused
+    # `{"scan_types": ["agent_connect"]}` on a profile that already had an agent.
+    # The check belongs where the stored row is in hand:
+    # `discovery_profiles_service.update_profile` runs `validate_scan_types` over
+    # the merged state and normalizes the list it stores. `DiscoveryProfileCreate`
+    # keeps its validator because a create carries the whole profile.
 
 
 class DiscoveryProfileOut(BaseModel):

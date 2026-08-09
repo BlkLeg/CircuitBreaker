@@ -17,7 +17,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Mapping
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -32,6 +32,12 @@ from app.services.agent_capabilities import (
     default_config_for,
     normalize_grant,
 )
+
+if TYPE_CHECKING:
+    # `agent_discovery` imports this module at its own module scope, so the
+    # runtime import of the scope-cancellation trigger below is function-local.
+    # Only the annotation is needed up here.
+    from app.services.agent_discovery import DiscoveryCancellation
 
 _logger = logging.getLogger(__name__)
 
@@ -215,7 +221,9 @@ def resolve_agent_for_handshake(db: Session, device_pk_hex: str) -> Agent | None
     return None
 
 
-def update_hello_metadata(db: Session, agent: Agent, payload: HelloPayload) -> None:
+def update_hello_metadata(
+    db: Session, agent: Agent, payload: HelloPayload
+) -> DiscoveryCancellation:
     """Refresh the `Agent` row's device-reported fields from an accepted `hello`.
 
     Enrollment (`ws_agents.enroll_stream`) only ever sets os/os_version/arch/
@@ -236,6 +244,16 @@ def update_hello_metadata(db: Session, agent: Agent, payload: HelloPayload) -> N
     unrepresentable, since an omitted key and an explicit `[]` both parse to
     the same default. Caller is responsible for the commit/flush.
 
+    Returns the `DiscoveryCancellation` a reported scope change produced —
+    empty whenever the hello carried no `networks`, or carried the same ones as
+    before. It is inert: the doomed dispatches are already closed in the
+    caller's transaction, and the caller must publish it
+    (`agent_discovery.publish_discovery_cancels`) only **after** its own commit
+    succeeds. See `record_network_facts` for why the trigger lives behind that
+    call rather than at each of its call sites, and `agent_discovery`'s
+    cancellation section for why no trigger may publish from inside a
+    transaction.
+
     Task 24: this is also the *only* place `version_changed` is ever
     recorded — deliberately not at update-request time (see
     `api/agents.py:post_update`, which records `update_queued` instead). A
@@ -248,6 +266,11 @@ def update_hello_metadata(db: Session, agent: Agent, payload: HelloPayload) -> N
     agent hasn't updated yet, or updated to something unexpected) leaves
     `pending_update_version` untouched — it isn't this update's resolution.
     """
+    # Imported here rather than at module scope for the reason the TYPE_CHECKING
+    # block above gives: `agent_discovery` imports this module.
+    from app.services.agent_discovery import DiscoveryCancellation
+
+    cancellation = DiscoveryCancellation()
     fields_set = payload.model_fields_set
     if "os" in fields_set:
         agent.os = payload.os
@@ -266,12 +289,13 @@ def update_hello_metadata(db: Session, agent: Agent, payload: HelloPayload) -> N
     if "primary_macs" in fields_set:
         agent.primary_macs = payload.primary_macs
     if "networks" in fields_set:
-        record_network_facts(db, agent, payload.networks)
+        cancellation = record_network_facts(db, agent, payload.networks)
     if "spool_depth" in fields_set:
         # The at-connect backlog snapshot (D-12). `hello` has no
         # `spool_bytes` field, so the size is genuinely unknown here — None,
         # not 0 — and the heartbeat that follows within 20s fills it in.
         record_spool_stats(agent, payload.spool_depth, None)
+    return cancellation
 
 
 def record_spool_stats(agent: Agent, depth: int, size_bytes: int | None = None) -> bool:
@@ -328,9 +352,30 @@ def _normalized_network_facts(networks: list[NetworkFacts]) -> list[dict[str, An
     )
 
 
-def record_network_facts(db: Session, agent: Agent, networks: list[NetworkFacts]) -> bool:
-    """Store the agent's directly connected networks, returning whether the
-    report actually changed (D-1).
+def record_network_facts(
+    db: Session, agent: Agent, networks: list[NetworkFacts]
+) -> DiscoveryCancellation:
+    """Store the agent's directly connected networks (D-1), closing the discovery
+    dispatches the new report no longer authorizes (Slice 4 D-14/D-16) and
+    returning them for the caller to publish once it has committed.
+
+    The cancellation is *built* here rather than at the two call sites — the
+    `hello` path in `update_hello_metadata` and the mid-session
+    `capability.readiness` refresh in `agent_telemetry.ingest_readiness` —
+    because a scope that moved is a scope that moved whichever frame reported it,
+    and a trigger wired to one caller is a trigger the other silently lacks. It
+    fires only on a real change, which is the same no-op guarantee the write
+    itself gives: the steady state is an agent re-reporting the interfaces it
+    already reported, and that returns an empty (falsy) cancellation.
+
+    It is *published* by neither: both callers own transactions carrying writes
+    beyond this one, and `agent_discovery`'s cancellation section requires that
+    a trigger close its rows inside the caller's transaction and hand back an
+    inert `DiscoveryCancellation` the caller publishes only after its commit
+    returns. Publishing from in here — as this function used to — tells the
+    agent to abandon a dispatch that a failed commit then reinstates: the agent
+    stops, the job is still open in the database, and nothing closes it until
+    the reconciler expires it under the wrong reason.
 
     `agent_networks` holds one current row per agent, and `generation`
     advances only on a real change: it is the scope version the scheduler, the
@@ -359,6 +404,22 @@ def record_network_facts(db: Session, agent: Agent, networks: list[NetworkFacts]
     predates the field. Either way the rule above belongs to the backend, not
     to one client's encoding. Caller owns the commit.
     """
+    # Imported here because `agent_discovery` imports this module at its own
+    # module scope.
+    from app.services.agent_discovery import (
+        DiscoveryCancellation,
+        cancel_scope_changed_dispatches,
+    )
+
+    if not _store_network_facts(db, agent, networks):
+        return DiscoveryCancellation()
+    return cancel_scope_changed_dispatches(db, agent.id)
+
+
+def _store_network_facts(db: Session, agent: Agent, networks: list[NetworkFacts]) -> bool:
+    """The write half of `record_network_facts`, returning whether it changed
+    anything. Split out so the change signal has exactly one definition and the
+    cancellation above cannot be wired to only some of its return paths."""
     facts = _normalized_network_facts(networks)
     row = (
         db.execute(select(AgentNetwork).where(AgentNetwork.agent_id == agent.id)).scalars().first()

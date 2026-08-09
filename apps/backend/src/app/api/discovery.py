@@ -1,8 +1,9 @@
 import asyncio
 import logging
+from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_audit
@@ -34,17 +35,42 @@ from app.schemas.discovery import (
     ScanResultOut,
 )
 from app.schemas.proxmox import ProxmoxDiscoverRunOut
-from app.services import discovery_profiles_service, discovery_service
+from app.services import agent_discovery, discovery_profiles_service, discovery_service
 from app.services.bulk_suggest import get_vendor_catalog, suggest_bulk_actions
 from app.services.discovery_safe import is_docker_socket_available
-from app.services.discovery_service import _has_raw_socket_privilege
+from app.services.discovery_service import (
+    AgentExecutionLocationError,
+    _has_raw_socket_privilege,
+)
 from app.services.proxmox_service import get_proxmox_discover_run, list_proxmox_discover_runs
 from app.services.settings_service import get_or_create_settings
+
+if TYPE_CHECKING:
+    from sqlalchemy.engine import CursorResult
 
 _logger = logging.getLogger(__name__)
 
 _DEFAULT_DOCKER_SOCKET = "/var/run/docker.sock"
 router = APIRouter(tags=["discovery"], dependencies=[require_scope("read", "*")])
+
+
+def _execution_location_http_error(exc: AgentExecutionLocationError) -> HTTPException:
+    """The one 422 an agent-targeted request is refused with (Task 19).
+
+    Byte-for-byte the body `discovery_profiles_service._validate_execution_location`
+    already returns on profile save, so a frontend switches on a single closed
+    `reason` vocabulary wherever the answer is given — save, "Run now", or the
+    ad-hoc form — instead of learning that the same rule spells itself two ways.
+    `reason` is what a UI renders, `detail` is the specific that produced it, and
+    `message` is the one sentence for a human.
+
+    422 rather than 400 for the reason the profile arm documents: the request is
+    well formed and the scan it describes is unprocessable at this location.
+    """
+    return HTTPException(
+        status_code=422,
+        detail={"reason": exc.reason, "detail": exc.detail, "message": str(exc)},
+    )
 
 
 def _get_actor(db: Session, user_id: int) -> str:
@@ -197,12 +223,18 @@ def create_profile(
 
 
 @router.patch("/profiles/{profile_id}", response_model=DiscoveryProfileOut)
-def update_profile(
+async def update_profile(
     profile_id: int,
     payload: DiscoveryProfileUpdate,
     user: User = require_role("admin"),
     db: Session = Depends(get_db),
 ):
+    """`async def` for D-14's sake, not for concurrency: disabling a profile
+    cancels its in-flight agent dispatches, and the service publishes those
+    `discovery.cancel` frames through `agent_discovery.schedule_discovery_cancels`
+    — which needs a running event loop to schedule onto. A `def` route runs in
+    the threadpool, where there is none, so the frame would never leave the
+    process. Same shape as `run_profile_scan` and `cancel_job` below."""
     actor = _get_actor(db, user.id)
     try:
         return discovery_profiles_service.update_profile(db, profile_id, payload, actor)
@@ -243,14 +275,40 @@ async def run_profile_scan(
         except Exception:
             _logger.warning("Malformed VLAN JSON in profile %s: %s", profile.id, profile.vlan_ids)
 
-    job = discovery_service.create_scan_job(
-        db,
-        target_cidr=profile.cidr,
-        vlan_ids=vlan_ids,
-        scan_types=json.loads(profile.scan_types),
-        profile_id=profile.id,
-        triggered_by=_get_actor(db, user_id),
-    )
+    try:
+        job = discovery_service.create_scan_job(
+            db,
+            target_cidr=profile.cidr,
+            vlan_ids=vlan_ids,
+            scan_types=json.loads(profile.scan_types),
+            profile_id=profile.id,
+            triggered_by=_get_actor(db, user_id),
+            # Manual "Run now" is the other half of the cron path in
+            # `discovery_scheduler._run_profile_job_async`, and it copies the
+            # execution location the same way and for the same reason: D-6 makes
+            # `["agent_connect"]` the only legal scan-type list on an agent
+            # profile, so a run that dropped the agent would be refused by
+            # `validate_scan_types` outright, and one that somehow got past it
+            # would scan from the server's vantage point — which plan §3 forbids
+            # because it silently changes what the scan can see. Copied onto the
+            # job rather than read back off the profile later, so repointing a
+            # profile cannot rewrite the attribution of scans that already ran.
+            scan_agent_id=profile.scan_agent_id,
+        )
+    except AgentExecutionLocationError as exc:
+        # A profile saved while its agent was eligible can be run long after the
+        # agent was revoked, its grant withdrawn or its scope moved, so the run
+        # endpoint owns a refusal of its own — and it has to be the save's 422,
+        # not the 500 an unhandled ValueError becomes.
+        _logger.info("Profile %s refused at its agent: %s", profile_id, exc)
+        raise _execution_location_http_error(exc) from exc
+    except ValueError as exc:
+        # Everything else `create_scan_job` refuses with — nmap disabled, an
+        # empty target set, a CIDR outside the ACL — is an operator-fixable
+        # configuration answer, and 400 is what the profile write endpoints
+        # already give it.
+        _logger.warning("Profile scan %s rejected: %s", profile_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     db.expunge(job)  # Detach from session before any further commits expire attributes
 
@@ -296,6 +354,14 @@ async def run_adhoc_scan(
                 nmap_arguments=payload.nmap_arguments,  # B12: thread through
                 label=payload.label,
                 triggered_by=_get_actor(db, user_id),
+                # Task 19: the ad-hoc form is the second place an operator names
+                # an execution location, and `AdHocScanRequest` has carried
+                # `scan_agent_id` since the schema landed. Dropping it here left
+                # an eligible agent unreachable by hand: D-6 forbids server scan
+                # types on an agent and forbids an empty list, so the only list
+                # the request can carry is `["agent_connect"]`, which
+                # `validate_scan_types` refuses outright without an agent.
+                scan_agent_id=payload.scan_agent_id,
             )
             job_ids.append(job.id)
         if not target_list:
@@ -308,8 +374,17 @@ async def run_adhoc_scan(
                 nmap_arguments=payload.nmap_arguments,
                 label=payload.label,
                 triggered_by=_get_actor(db, user_id),
+                scan_agent_id=payload.scan_agent_id,
             )
             job_ids.append(job.id)
+    except AgentExecutionLocationError as exc:
+        # Ordered ahead of the generic arm below because it is a `ValueError`
+        # subclass, and it is the one refusal whose message an operator can act
+        # on: Task 19 requires the machine-readable `reason`, and the opaque
+        # "Invalid scan request parameters." would leave the UI nothing to
+        # render. Same body as profile save — one reason vocabulary, not two.
+        _logger.info("Ad-hoc scan refused at its agent: %s", exc)
+        raise _execution_location_http_error(exc) from exc
     except ValueError as exc:
         _logger.warning("Ad-hoc scan request rejected: %s", exc)
         msg = str(exc)
@@ -373,6 +448,72 @@ def get_job(job_id: int, db: Session = Depends(get_db)):
     return job
 
 
+def _close_server_scan_job(db: Session, job: ScanJob) -> bool:
+    """Take a server-executed job to `cancelled`, or report it was already
+    terminal. Caller owns the transaction.
+
+    The server arm's half of the compare-and-set `agent_discovery.
+    cancel_job_dispatch` performs for an agent job, and it writes exactly the two
+    columns `discovery_service._scan_finalize` writes when it closes one of
+    these: a server scan never held a dispatch, so `dispatch_status` and
+    `progress_phase` stay NULL rather than being handed an agent job's
+    vocabulary.
+
+    Conditional for the same reason the agent arm is: `cancel_job` reads the row
+    to decide whether it is cancellable and writes it afterwards, and
+    `_scan_finalize` can close it on the scan's own thread in between. Making the
+    write conditional does not change how a server scan is cancelled — that stays
+    cooperative, with `run_scan_job` noticing the status — it only stops this
+    endpoint overwriting a scan that finished first.
+    """
+    from app.core.time import utcnow_iso
+
+    return bool(
+        cast(
+            "CursorResult[Any]",
+            db.execute(
+                update(ScanJob)
+                .where(
+                    ScanJob.id == job.id,
+                    ScanJob.status.in_(sorted(agent_discovery._OPEN_JOB_STATUSES)),
+                )
+                # The agent arm's constant, deliberately: the two arms of one
+                # endpoint must not drift onto different strings.
+                .values(status=agent_discovery.CANCELLED_JOB_STATUS, completed_at=utcnow_iso())
+                .execution_options(synchronize_session=False)
+            ),
+        ).rowcount
+    )
+
+
+def _close_cancelled_job(db: Session, job: ScanJob) -> agent_discovery.JobCancelOutcome:
+    """The endpoint's one terminal write, whichever executor owns the job.
+
+    Both arms are compare-and-sets predicated on the job still being open, so
+    this endpoint can never overwrite a status some other writer got to first —
+    `discovery_service.finalize_agent_job` accepting the agent's terminal summary
+    on the `/link` connection, `agent_discovery._transition_terminal` closing the
+    job for a scope or grant change, or `_scan_finalize` ending a server scan.
+    Those three and this are now the complete set of terminal writers for a scan
+    job, and all four share one predicate: `status IN ('queued','running')`.
+
+    Kept as a single function rather than branching inline so that "did anyone
+    else close this row first?" has exactly one answer for the caller to act on.
+    """
+    if job.scan_agent_id is not None:
+        # D-14: an agent job also holds a dispatch lease, and closing the job
+        # without closing the lease leaves the agent sweeping a subnet whose
+        # findings the ingest path will refuse. The lease is retired inside this
+        # transaction and the `discovery.cancel` published only after it commits,
+        # so an agent is never told to abandon work a rollback would reinstate.
+        # No `reason` is passed: an operator cancelling a job is not one of D-4's
+        # error outcomes, and the status alone says what happened.
+        return agent_discovery.cancel_job_dispatch(db, job)
+    return agent_discovery.JobCancelOutcome(
+        _close_server_scan_job(db, job), agent_discovery.DiscoveryCancellation()
+    )
+
+
 @router.delete("/jobs/{job_id}", status_code=200)
 async def cancel_job(
     job_id: int,
@@ -381,15 +522,21 @@ async def cancel_job(
     db: Session = Depends(get_db),
 ):
     """B9: Cancel a running or queued scan job."""
-    from app.core.time import utcnow_iso
-
     job = db.query(ScanJob).filter(ScanJob.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    if job.status not in ("queued", "running"):
+    if job.status not in agent_discovery._OPEN_JOB_STATUSES:
         raise HTTPException(status_code=409, detail=f"Job is already {job.status}")
-    job.status = "cancelled"
-    job.completed_at = utcnow_iso()
+    closed, cancellation = _close_cancelled_job(db, job)
+    if not closed:
+        # The row went terminal between the check above and the write: the agent
+        # summarized, or the scan finished. Nothing was written, so there is
+        # nothing to roll back — but `job` was read before the winner committed,
+        # so it is reloaded to name the outcome that actually stands. A job that
+        # reached a terminal status genuinely *is* "already {status}", which is
+        # what the pre-check would have said had it looked a moment later.
+        db.refresh(job)
+        raise HTTPException(status_code=409, detail=f"Job is already {job.status}")
     db.commit()
     log_audit(
         db,
@@ -400,6 +547,10 @@ async def cancel_job(
         status="ok",
         severity="warn",
     )
+    # Never raises, whatever state the agent's link is in (see
+    # `publish_discovery_cancels`): an agent that vanished must not turn an
+    # operator's cancel into a 500, and the job is already closed either way.
+    await agent_discovery.publish_discovery_cancels(cancellation)
     asyncio.create_task(
         discovery_service._emit_ws_event(
             "job_update", {"job": ScanJobOut.model_validate(job).model_dump()}

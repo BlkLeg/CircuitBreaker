@@ -47,7 +47,13 @@ from app.schemas.agent_frame import (
     HelloPayload,
     TransportRekeyPayload,
 )
-from app.services import agent_enrollment, agent_link, agent_registry, agent_update
+from app.services import (
+    agent_discovery,
+    agent_enrollment,
+    agent_link,
+    agent_registry,
+    agent_update,
+)
 from app.services.settings_service import get_or_create_settings
 from app.services.user_service import is_session_revoked
 
@@ -564,6 +570,12 @@ async def link_stream(websocket: WebSocket) -> None:
         # agent_registry.broadcast_server_key_rotate's live push.
         rotation_state = agent_crypto.load_server_key_rotation_state(db)
         capability_schema = 1
+        # Slice 4 D-16: a hello whose `networks` moved the agent's scope closes
+        # the dispatches that scope no longer authorizes. `update_hello_metadata`
+        # hands the closed rows back inert and this block publishes them below,
+        # after `db.commit()` — every other write in this block could otherwise
+        # roll the closure back after the agent had already been told to stop.
+        hello_cancellation = agent_discovery.DiscoveryCancellation()
         try:
             hello_payload = HelloPayload.model_validate(hello.get("payload", {}))
         except ValidationError as exc:
@@ -575,11 +587,17 @@ async def link_stream(websocket: WebSocket) -> None:
             _logger.warning("agent %s: malformed hello payload: %s", agent_id, exc)
         else:
             capability_schema = hello_payload.capability_schema
-            agent_registry.update_hello_metadata(db, agent, hello_payload)
+            hello_cancellation = agent_registry.update_hello_metadata(db, agent, hello_payload)
         grants = agent_registry.structured_grants_dict(db, agent_id)
         agent_registry.record_event(db, agent_id, "connected")
         db.execute(_REMOTE_PROBE_RECONNECT_SQL, {"agent_id": agent_id})
         db.commit()
+
+    # The commit above is what makes the closures durable, so this is the
+    # earliest point the agent may be told about them. Never raises (see
+    # `publish_discovery_cancels`), and a no-op when the hello moved no scope,
+    # which is every reconnect that reports the interfaces it reported before.
+    await agent_discovery.publish_discovery_cancels(hello_cancellation)
 
     worker = socket.gethostname()
     await agent_registry.mark_presence_connected(agent_id, worker=worker)

@@ -1696,8 +1696,9 @@ class ScanJob(Base):
     # only ever one row and a unique index over it enforces nothing — the race
     # is two workers both reading `dispatch_status IS NULL` and both writing
     # `dispatched`, which only a conditional UPDATE can stop. The backstop is
-    # therefore `SELECT ... FOR UPDATE` plus a compare-and-set on
-    # `dispatch_status` with a rowcount check, and `uq_scan_jobs_dispatch_id`,
+    # therefore a compare-and-set — a single conditional UPDATE predicated on the
+    # lease state it expects to find, with a rowcount check — and
+    # `uq_scan_jobs_dispatch_id`,
     # which does carry real weight: it makes a replayed or duplicated
     # `dispatch_id` an integrity error rather than two jobs sharing a token.
 

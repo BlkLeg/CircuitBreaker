@@ -18,8 +18,10 @@ from datetime import timedelta
 
 import pytest
 
+from app.core import agent_scope
 from app.core.time import utcnow
 from app.db.models import Tenant
+from app.services import agent_registry
 from app.services import discovery_eligibility as elig
 
 
@@ -562,3 +564,36 @@ def test_scope_lookup_reads_the_local_discovery_grants_own_config(db_session, fa
 
     assert scope.networks == ("10.0.0.0/24",)
     assert scope.excluded_networks == ("10.0.0.0/25",)
+
+
+# ── The limits this module deliberately leaves to its callers ─────────────────
+
+
+async def test_an_in_scope_target_can_still_exceed_the_grants_address_ceiling(
+    db_session, factories, presence
+):
+    """Eligibility says nothing about how *large* a job is, and the gap is real.
+
+    `MIN_SCOPE_PREFIX_V4 = 16` admits a /16 — 65 536 addresses — while
+    `max_addresses_per_job` is capped at 4 096 and defaults to 1 024. So a target
+    can be squarely inside the effective scope and still be a job no agent may
+    run, which is why the module docstring hands `max_addresses_per_job` and
+    `tcp_ports` to the callers that hold the request and why they enforce them
+    with `agent_scope.address_count`. If this ever starts denying, the creation-time
+    validator's ceiling check has become unreachable and its tests vacuous.
+    """
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="local_discovery", enabled=True)
+    # One `agent_networks` row per agent, so the /16 report replaces `_agent`'s /24.
+    factories.agent_network(
+        agent, facts=[{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/16"]}]
+    )
+    factories.agent_capability_readiness(agent, collector="discovery.tcp", state="ready")
+    presence(agent)
+
+    decision = await elig.evaluate_eligibility(db_session, agent.id, targets=["10.0.0.0/16"])
+
+    assert decision.ok, decision
+    assert agent_scope.address_count(["10.0.0.0/16"]) == 65_536
+    granted = agent_registry.structured_grants_dict(db_session, agent.id)["local_discovery"]
+    assert granted["config"]["max_addresses_per_job"] < 65_536

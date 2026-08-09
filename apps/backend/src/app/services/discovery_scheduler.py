@@ -27,6 +27,18 @@ def set_main_loop(loop: asyncio.AbstractEventLoop) -> None:
     _main_loop = loop
 
 
+def main_loop() -> asyncio.AbstractEventLoop | None:
+    """The loop `set_main_loop` registered, or None before the lifespan ran.
+
+    An accessor rather than a re-exported global: `_main_loop` is None at import
+    time, so a caller that did `from ... import _main_loop` would capture the
+    None and never see the loop. `discovery_service.schedule_discovery_scan_job`
+    needs the live value because it can be reached from a `run_in_executor`
+    worker thread, which has no running loop of its own.
+    """
+    return _main_loop
+
+
 def _running_scan_count(db: Session) -> int:
     return db.query(ScanJob).filter(ScanJob.status == "running").count()
 
@@ -36,6 +48,26 @@ def _max_concurrent_scans(settings: object) -> int:
 
 
 def _schedule_queued_scan_jobs(db: Session) -> None:
+    """Hand as much of the queued backlog to the scan executor as the ceiling allows.
+
+    A job parked in `waiting_for_agent` is deliberately excluded (D-5). That row
+    is owned by `agent_discovery_reconcile`, which retries it when its agent is
+    back and expires it as `agent_unavailable` when the agent never returns;
+    handing it back to `dispatch_discovery_job` while the agent is still away
+    has `agent_discovery._release_to_waiting` stamp a fresh
+    `dispatch_deadline_at = now + DISPATCH_DEADLINE_S` over the deadline that
+    was about to expire it. This drain runs whenever *any* job anywhere
+    finishes, so without the guard an unrelated scan completing resets a parked
+    job's clock and D-5's expiry can never arrive.
+    `agent_discovery_reconcile._drain_queued_jobs` documents and guards the same
+    treadmill; the two paths now agree. (Making `_release_to_waiting` preserve
+    an existing deadline instead of re-stamping it would fix it from the other
+    end and would be a reasonable second belt — but the guard is what the
+    reconciler already does, so it is the one behaviour to copy.)
+    """
+    # Imported here, not at module scope: `agent_discovery` imports
+    # `discovery_service`, which imports this module.
+    from app.services.agent_discovery import PHASE_WAITING_FOR_AGENT
     from app.services.discovery_service import schedule_discovery_scan_job
 
     settings = get_or_create_settings(db)
@@ -45,7 +77,12 @@ def _schedule_queued_scan_jobs(db: Session) -> None:
 
     queued_jobs = (
         db.query(ScanJob)
-        .filter(ScanJob.status == "queued")
+        .filter(
+            ScanJob.status == "queued",
+            # `IS DISTINCT FROM` rather than `!=`: a NULL phase is an ordinary
+            # queued job, and `!=` would drop it from the backlog entirely.
+            ScanJob.progress_phase.is_distinct_from(PHASE_WAITING_FOR_AGENT),
+        )
         .order_by(ScanJob.created_at.asc(), ScanJob.id.asc())
         .limit(available_slots)
         .all()
@@ -56,8 +93,17 @@ def _schedule_queued_scan_jobs(db: Session) -> None:
 
 
 async def _run_profile_job_async(profile_id: int) -> None:
-    """Internal async helper to create and run a profile job."""
-    from app.services.discovery_service import run_scan_job  # lazy import
+    """Internal async helper to create and run a profile job.
+
+    The job inherits the profile's execution location and is then routed by
+    `discovery_service.execute_scan_job`, which is the one branch between the
+    server scanner and an agent. Both halves matter: a job created without
+    `scan_agent_id` could not be routed anywhere even by a correct router, and a
+    cron that called `run_scan_job` directly would run an agent-targeted profile
+    from the server's vantage point — which plan §3 forbids, because it silently
+    changes what the scan can see.
+    """
+    from app.services.discovery_service import execute_scan_job  # lazy import
 
     db = SessionLocal()
     try:
@@ -93,8 +139,12 @@ async def _run_profile_job_async(profile_id: int) -> None:
             scan_types=scan_types,
             profile_id=profile.id,
             triggered_by="scheduler",
+            # Copied onto the job rather than read back off the profile later:
+            # a profile repointed at another agent must not rewrite the
+            # attribution of scans that already ran.
+            scan_agent_id=profile.scan_agent_id,
         )
-        await run_scan_job(job.id)
+        await execute_scan_job(db, job.id)
     finally:
         db.close()
 

@@ -344,6 +344,7 @@ async def test_finding_for_an_excluded_address_is_rejected(db_session, factories
         # only ever moved them together could not tell the two apart.
         {"dispatch_status": "dispatched", "status": "cancelled"},
         {"dispatch_status": "cancelled", "status": "running"},
+        {"dispatch_status": "expired", "status": "running"},
     ],
 )
 async def test_finding_after_the_dispatch_closed_is_rejected(
@@ -624,9 +625,11 @@ async def test_finding_beyond_the_ceiling_is_refused_and_closes_the_job(
         )
 
     assert excinfo.value.event_type == agent_discovery.EVENT_CAPABILITY_VIOLATION
-    # No row, no event: the N+1th finding buys the agent nothing at all.
+    # No row and no `result_added`: the N+1th finding buys the agent nothing at
+    # all. The two events it does produce are the job's own terminal pair, which
+    # the next test pins.
     assert len(_results(db_session, job)) == accepted
-    assert len(emitted) == ceiling
+    assert [e for e, _ in emitted[ceiling:]] == ["job_update", "job_progress"]
 
     db_session.expire_all()
     stored = db_session.get(ScanJob, job.id)
@@ -639,48 +642,569 @@ async def test_finding_beyond_the_ceiling_is_refused_and_closes_the_job(
     assert agent_discovery.REASON_FINDING_CEILING in violations[0].detail["reason"]
 
 
+def test_the_finding_ceiling_is_bounded_by_the_jobs_own_targets() -> None:
+    """The grant caps *any* job; the job's own targets cap *this* one.
+
+    `max_addresses_per_job` is a per-job allowance an administrator sets once,
+    so on its own it lets a dispatch for a /29 admit ~4100 findings for a single
+    repeated address with distinct `finding_id`s — every one of them fanning out
+    through `_emit_ws_event` to every connected client. `target_cidr` is already
+    the authority for `_in_job_targets`, so it is the authority for how many
+    findings those targets can honestly produce.
+    """
+    generous = {"max_addresses_per_job": 4096}
+
+    six_usable = SimpleNamespace(target_cidr="10.60.0.0/29")
+    assert agent_discovery._dispatch_finding_ceiling(six_usable, generous) == (
+        8 + agent_discovery.SUMMARY_FINDING_ALLOWANCE
+    )
+    # Two prefixes are two prefixes; the bound is the union, not the larger one.
+    two_prefixes = SimpleNamespace(target_cidr="10.60.0.0/30, 10.60.1.0/30")
+    assert agent_discovery._dispatch_finding_ceiling(two_prefixes, generous) == (
+        8 + agent_discovery.SUMMARY_FINDING_ALLOWANCE
+    )
+    # The grant still wins when it is the tighter of the two.
+    assert agent_discovery._dispatch_finding_ceiling(
+        SimpleNamespace(target_cidr="10.60.0.0/16"), {"max_addresses_per_job": 32}
+    ) == (32 + agent_discovery.SUMMARY_FINDING_ALLOWANCE)
+    # A job whose targets parse to nothing gets the bare summary allowance,
+    # which is right: `_in_job_targets` accepts no address for it either.
+    assert agent_discovery._dispatch_finding_ceiling(SimpleNamespace(target_cidr=""), {}) == (
+        agent_discovery.SUMMARY_FINDING_ALLOWANCE
+    )
+
+
+async def test_a_small_target_refuses_findings_the_grant_alone_would_admit(
+    db_session, factories, emitted
+):
+    """The bound above, enforced on the real path.
+
+    The grant here allows 4096 addresses and the job asks for a /30, so every
+    finding past the fourth-plus-allowance is refused even though the agent is
+    nowhere near its own budget.
+    """
+    agent = _agent(db_session, factories, config={"max_addresses_per_job": 4096})
+    job = _job(db_session, agent, target_cidr="10.60.0.0/30")
+    ceiling = 4 + agent_discovery.SUMMARY_FINDING_ALLOWANCE
+    assert ceiling < agent_discovery.max_findings_per_dispatch({"max_addresses_per_job": 4096})
+
+    # One short of the bound, so exactly one more finding may be accepted.
+    job.finding_count = ceiling - 1
+    db_session.flush()
+
+    assert (
+        await agent_discovery.ingest_discovery_finding(
+            db_session, agent, _payload(job, ip_address="10.60.0.1")
+        )
+        == agent_discovery.DISPOSITION_ACCEPTED
+    )
+
+    with pytest.raises(agent_discovery.InvalidDiscoveryFinding) as excinfo:
+        await agent_discovery.ingest_discovery_finding(
+            db_session, agent, _payload(job, ip_address="10.60.0.2")
+        )
+
+    assert agent_discovery.REASON_FINDING_CEILING in str(excinfo.value)
+    # The number in the reason is the *effective* ceiling, not the grant's.
+    assert str(ceiling) in str(excinfo.value)
+
+
+async def test_an_over_ceiling_close_tells_the_watching_client_the_job_failed(
+    db_session, factories, emitted
+):
+    """Every other terminal writer emits; this one used to write the row and go
+    quiet, so a client watching the job saw it stop at whatever percentage it
+    had reached and never learned it failed. The frame that closed it is refused
+    rather than acknowledged, so nothing else on this path speaks to the browser.
+    """
+    agent = _agent(db_session, factories, config={"max_addresses_per_job": 4096})
+    job = _job(db_session, agent, target_cidr="10.60.0.0/30")
+    job.finding_count = 4 + agent_discovery.SUMMARY_FINDING_ALLOWANCE
+    db_session.flush()
+
+    with pytest.raises(agent_discovery.InvalidDiscoveryFinding):
+        await agent_discovery.ingest_discovery_finding(
+            db_session, agent, _payload(job, ip_address="10.60.0.1")
+        )
+
+    assert [event for event, _ in emitted] == ["job_update", "job_progress"]
+    update = dict(emitted[0][1])["job"]
+    assert update["id"] == job.id
+    assert update["status"] == "failed"
+    assert update["error_reason"] == agent_discovery.ERROR_AGENT_EXECUTION_ERROR
+    assert update["progress_percent"] == 100
+    assert emitted[1][1]["job_id"] == job.id
+    assert emitted[1][1]["percent"] == 100
+
+    # After the commit, never before: a client refetching on the event finds the
+    # row already terminal.
+    db_session.expire_all()
+    assert db_session.get(ScanJob, job.id).status == "failed"
+
+
+async def test_an_over_ceiling_close_never_overwrites_an_outcome_already_written(
+    db_session, factories, emitted
+):
+    """The breach closes the job through the same compare-and-set the
+    cancellation triggers use.
+
+    A ceiling breach and the agent's own terminal summary can land on two
+    connections at once — that is what a spool replayed after a reconnect looks
+    like — and the summary is finalized by `finalize_agent_job`, which is a
+    compare-and-set. A blind write here would overwrite whatever it decided and
+    emit a second, contradicting terminal pair for the same job.
+
+    The violation is still recorded: the agent really did send a finding past
+    its budget, and that is the fact `capability_violation` states.
+    """
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent, status="completed", dispatch_status="completed")
+
+    await agent_discovery._close_over_ceiling(db_session, agent, job, 12)
+
+    db_session.expire_all()
+    stored = db_session.get(ScanJob, job.id)
+    assert stored.status == "completed"
+    assert stored.error_reason is None
+    assert emitted == []
+    violations = [e for e in _events(db_session, agent) if e.event_type == "capability_violation"]
+    assert len(violations) == 1
+
+
+async def test_the_accepted_path_reads_the_grant_and_the_scope_once_each(
+    db_session, factories, emitted, monkeypatch
+):
+    """Plan §4 and this module's own docstring: the accepted path is "a handful
+    of indexed lookups, one insert and one commit", and it runs on the `/link`
+    read loop that advances `last_heartbeat_at` against a 60 s deadline.
+
+    It used to resolve the agent's grant twice and derive its whole effective
+    scope from `agent_networks` on top — three round trips for every finding, on
+    the one frame type a single sweep produces thousands of. Counted rather than
+    timed, because a timing assertion pins nothing.
+    """
+    from app.services import agent_registry
+
+    grants = agent_registry.structured_grants_dict
+    derive = agent_discovery.derive_discovery_scope
+    grant_reads: list[int] = []
+    scope_derivations: list[object] = []
+
+    def counting_grants(db, agent_id):  # type: ignore[no-untyped-def]
+        grant_reads.append(agent_id)
+        return grants(db, agent_id)
+
+    def counting_derive(db, agent_id, config=None):  # type: ignore[no-untyped-def]
+        scope_derivations.append(config)
+        return derive(db, agent_id, config)
+
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent)
+    monkeypatch.setattr(agent_registry, "structured_grants_dict", counting_grants)
+    monkeypatch.setattr(agent_discovery, "derive_discovery_scope", counting_derive)
+
+    disposition = await agent_discovery.ingest_discovery_finding(db_session, agent, _payload(job))
+
+    assert disposition == agent_discovery.DISPOSITION_ACCEPTED
+    assert grant_reads == [agent.id]
+    # Derived once, and from the config already in hand — a `None` here would
+    # mean the scope path went back to the grant table for itself.
+    assert len(scope_derivations) == 1
+    assert isinstance(scope_derivations[0], dict)
+
+
 # ── Summary findings ──────────────────────────────────────────────────────────
 
 
-async def test_summary_finding_is_validated_here_and_finalized_by_task_21(
-    db_session, factories, emitted
-):
+def _summary(job, **kwargs):  # type: ignore[no-untyped-def]
+    """The one terminal frame that closes a dispatch, as the Go runtime builds it."""
+    payload = _payload(
+        job,
+        kind="summary",
+        terminal=True,
+        ip_address=None,
+        mac_address=None,
+        hostname=None,
+        open_ports=[],
+        evidence=[],
+        outcome="completed",
+        hosts_found=0,
+        addresses_scanned=254,
+    )
+    payload.update(kwargs)
+    return payload
+
+
+def _events_of(calls, event_type):  # type: ignore[no-untyped-def]
+    return [payload for name, payload in calls if name == event_type]
+
+
+def _audit_rows(db_session, job, action):  # type: ignore[no-untyped-def]
+    from app.db.models import Log
+
+    return (
+        db_session.query(Log)
+        .filter(Log.action == action, Log.entity_type == "scan_job", Log.entity_id == job.id)
+        .all()
+    )
+
+
+async def test_a_terminal_summary_writes_no_result_row(db_session, factories, emitted):
     """A summary carries no address, so it takes the same triple/lease checks
-    and none of the address checks. It writes no `ScanResult` and emits no
-    `result_added`; terminal finalization is Task 21's."""
+    and none of the address checks — and it is the frame that *closes* the job
+    rather than one that adds to it, so it writes no `ScanResult` and fans out
+    no `result_added`."""
     agent = _agent(db_session, factories)
     job = _job(db_session, agent)
 
     disposition = await agent_discovery.ingest_discovery_finding(
-        db_session,
-        agent,
-        _payload(
-            job,
-            kind="summary",
-            terminal=True,
-            ip_address=None,
-            mac_address=None,
-            hostname=None,
-            open_ports=[],
-            outcome="completed",
-            hosts_found=3,
-            addresses_scanned=254,
-        ),
+        db_session, agent, _summary(job, hosts_found=3)
     )
 
     assert disposition == agent_discovery.DISPOSITION_SUMMARY
     assert _results(db_session, job) == []
+    assert _events_of(emitted, "result_added") == []
+
+
+async def test_a_terminal_summary_finalizes_the_job(db_session, factories, emitted):
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent)
+
+    await agent_discovery.ingest_discovery_finding(db_session, agent, _summary(job))
+
+    db_session.refresh(job)
+    assert job.status == "completed"
+    assert job.completed_at is not None
+    assert job.dispatch_status == agent_discovery.DISPATCH_STATUS_COMPLETED
+    assert job.error_reason is None
+
+
+async def test_a_summary_never_clobbers_the_incremental_counters(db_session, factories, emitted):
+    """D-10. `_scan_finalize` writes `hosts_*` absolutely from a finished
+    batch's stats dict; the agent path has no batch and increments them per
+    accepted finding, so a shared finalizer would overwrite every count with a
+    dict this path never assembles. The summary's own `hosts_found` is the
+    agent's tally and is deliberately not authoritative."""
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent)
+    for address in ("10.60.0.11", "10.60.0.12"):
+        await agent_discovery.ingest_discovery_finding(
+            db_session, agent, _payload(job, ip_address=address)
+        )
+
+    await agent_discovery.ingest_discovery_finding(db_session, agent, _summary(job, hosts_found=99))
+
+    db_session.refresh(job)
+    assert (job.hosts_found, job.hosts_new, job.finding_count) == (2, 2, 2)
+
+
+async def test_a_summary_emits_the_job_events_after_the_row_is_terminal(
+    db_session, factories, monkeypatch
+):
+    """The events go out after the write, never before: a client that refetches
+    the job on `job_update` must find it already closed, and the badge count on
+    it already true. The spy reads the row back with real SQL rather than off
+    the identity map, so an emit moved ahead of the UPDATE reads `running`."""
+    from sqlalchemy import select as sa_select
+
+    seen: list[tuple[str, str]] = []
+
+    async def spy(event_type: str, payload: dict) -> None:
+        emitted_job_id = payload.get("job_id") or payload["job"]["id"]
+        status = db_session.execute(
+            sa_select(ScanJob.status).where(ScanJob.id == emitted_job_id)
+        ).scalar_one()
+        seen.append((event_type, status))
+
+    monkeypatch.setattr(discovery_service, "_emit_ws_event", AsyncMock(side_effect=spy))
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent)
+
+    await agent_discovery.ingest_discovery_finding(db_session, agent, _summary(job))
+
+    assert ("job_update", "completed") in seen
+    assert ("job_progress", "completed") in seen
+
+
+async def test_a_summary_emits_job_update_with_the_review_badge_count(
+    db_session, factories, emitted
+):
+    """`pending_count` on `job_update` is what the review badge syncs from —
+    the same field `_scan_finalize` returns for the server path's completion
+    event."""
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent)
+    await agent_discovery.ingest_discovery_finding(db_session, agent, _payload(job))
+
+    await agent_discovery.ingest_discovery_finding(db_session, agent, _summary(job))
+
+    (update_event,) = _events_of(emitted, "job_update")
+    assert update_event["job"]["id"] == job.id
+    assert update_event["job"]["status"] == "completed"
+    assert update_event["pending_count"] >= 1
+    assert len(_events_of(emitted, "job_progress")) == 1
+
+
+async def test_a_completed_summary_writes_the_ordinary_scan_completed_audit_row(
+    db_session, factories, emitted
+):
+    """The ordinary row, with the ordinary action: an operator reading the audit
+    trail must not have to know which executor ran the scan to find it."""
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent)
+
+    await agent_discovery.ingest_discovery_finding(db_session, agent, _summary(job))
+
+    (row,) = _audit_rows(db_session, job, "scan_completed")
+    assert row.category == "discovery"
+    assert _audit_rows(db_session, job, "scan_failed") == []
+
+
+async def test_a_failed_summary_writes_the_ordinary_scan_failed_audit_row(
+    db_session, factories, emitted
+):
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent)
+
+    await agent_discovery.ingest_discovery_finding(
+        db_session, agent, _summary(job, outcome="execution_error", error_code="queue_full")
+    )
+
+    (row,) = _audit_rows(db_session, job, "scan_failed")
+    assert row.severity == "error"
+    assert _audit_rows(db_session, job, "scan_completed") == []
+
+
+@pytest.mark.parametrize(
+    ("outcome", "status", "error_reason"),
+    [
+        ("completed", "completed", None),
+        ("cancelled", "cancelled", None),
+        ("rejected", "failed", agent_discovery.ERROR_AGENT_REJECTED),
+        ("execution_error", "failed", agent_discovery.ERROR_AGENT_EXECUTION_ERROR),
+        # An outcome from a newer agent is not permission to close as completed.
+        ("something_new", "failed", agent_discovery.ERROR_AGENT_EXECUTION_ERROR),
+    ],
+)
+async def test_the_summary_outcome_maps_to_the_d4_error_reasons(
+    db_session, factories, emitted, outcome, status, error_reason
+):
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent)
+
+    await agent_discovery.ingest_discovery_finding(
+        db_session, agent, _summary(job, outcome=outcome)
+    )
+
+    db_session.refresh(job)
+    assert job.status == status
+    assert job.error_reason == error_reason
+    assert error_reason is None or error_reason in agent_discovery.JOB_ERROR_REASONS
+
+
+def test_the_terminal_vocabulary_has_no_partial_status() -> None:
+    """D-4, as a test rather than a reviewer's memory. `status` is a bare string
+    read by the history filter, the history query and the review badge; a sixth
+    value is a cross-cutting change with no product requirement behind it, so an
+    interrupted scan is `failed` with its findings kept instead."""
+    assert set(discovery_service.TERMINAL_JOB_STATUSES) == {"completed", "failed", "cancelled"}
+    assert "partial" not in set(agent_discovery.STATUS_FOR_OUTCOME.values())
+
+
+async def test_a_deadline_exceeded_summary_keeps_its_findings_and_says_they_are_partial(
+    db_session, factories, emitted
+):
+    """The agent reports `execution_error` + `deadline_exceeded` when its own
+    deadline ran out mid-sweep, and its counts are *real* — the hosts observed
+    before the deadline were still observed. D-4 gives that no status of its
+    own, so the job closes as `failed`; the findings stay, the counters stay,
+    and `error_text` says the coverage is partial rather than leaving the row
+    reading as a scan that found two hosts and then simply failed."""
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent)
+    for address in ("10.60.0.21", "10.60.0.22"):
+        await agent_discovery.ingest_discovery_finding(
+            db_session, agent, _payload(job, ip_address=address)
+        )
+
+    await agent_discovery.ingest_discovery_finding(
+        db_session,
+        agent,
+        _summary(
+            job,
+            outcome="execution_error",
+            error_code=agent_discovery.ERROR_CODE_DEADLINE_EXCEEDED,
+            hosts_found=2,
+            addresses_scanned=61,
+        ),
+    )
+
+    db_session.refresh(job)
+    assert job.status == "failed"
+    assert job.error_reason == agent_discovery.ERROR_AGENT_EXECUTION_ERROR
+    assert agent_discovery.ERROR_CODE_DEADLINE_EXCEEDED in job.error_text
+    assert agent_discovery.PARTIAL_RESULTS_NOTE in job.error_text
+    assert "2" in job.error_text
+    # The evidence survives the failure and stays reviewable.
+    assert len(_results(db_session, job)) == 2
+    assert (job.hosts_found, job.finding_count) == (2, 2)
+    assert {r.merge_status for r in _results(db_session, job)} == {"pending"}
+
+
+async def test_a_summary_error_code_never_reaches_a_log_line_unsanitized(
+    db_session, factories, emitted
+):
+    """`error_code` is agent-authored, and `error_text` is rendered in the UI
+    and read back out of the row. Plan §7's rule applies to it exactly as it
+    applies to a rejection reason."""
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent)
+
+    await agent_discovery.ingest_discovery_finding(
+        db_session,
+        agent,
+        _summary(job, outcome="execution_error", error_code="boom\r\nERROR forged"),
+    )
+
+    db_session.refresh(job)
+    assert "\n" not in job.error_text and "\r" not in job.error_text
+
+
+async def test_a_host_finding_after_a_terminal_summary_is_rejected(db_session, factories, emitted):
+    """The sequencing the ingest suite could not assert until finalization had
+    an owner: the summary closes the dispatch, so anything after it is refused
+    on arrival — independently of whether any `discovery.cancel` was delivered,
+    because cancellation is best-effort and this is not."""
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent)
+
+    await agent_discovery.ingest_discovery_finding(db_session, agent, _summary(job))
+
+    with pytest.raises(agent_discovery.InvalidDiscoveryFinding) as excinfo:
+        await agent_discovery.ingest_discovery_finding(
+            db_session, agent, _payload(job, ip_address="10.60.0.44")
+        )
+
+    assert agent_discovery.REASON_DISPATCH_CLOSED in str(excinfo.value)
+    assert _results(db_session, job) == []
+
+
+async def test_finalization_never_auto_merges_however_the_setting_is_left(
+    db_session, factories, emitted, monkeypatch
+):
+    """Plan §5: an agent-authored row reaches `discovery_import_service` only
+    when a *user* accepts it. `discovery_merge._auto_merge_result` creates a
+    `Hardware` row with no review at all, and `discovery_auto_merge` describes
+    the server's own scan of a network the server can see — not an untrusted
+    remote executor's report about one it cannot."""
+    from app.services.settings_service import get_or_create_settings
+
+    settings = get_or_create_settings(db_session)
+    settings.discovery_auto_merge = True
+    db_session.flush()
+
+    merged: list[object] = []
+    for module in (discovery_merge, discovery_service):
+        monkeypatch.setattr(
+            module, "_auto_merge_result", lambda *args, **kwargs: merged.append(args)
+        )
+    monkeypatch.setattr(
+        discovery_service,
+        "_auto_merge_known_devices",
+        lambda *args, **kwargs: merged.append(args),
+    )
+
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent)
+    await agent_discovery.ingest_discovery_finding(db_session, agent, _payload(job))
+
+    await agent_discovery.ingest_discovery_finding(db_session, agent, _summary(job))
+
+    assert merged == []
+    assert {r.merge_status for r in _results(db_session, job)} == {"pending"}
+
+
+async def test_summary_for_a_dispatch_closed_some_other_way_is_still_refused(
+    db_session, factories, emitted
+):
+    """Only *cancellation* is the expected close. A summary for a dispatch the
+    reconciler expired, or a replay of one this server already accepted, is
+    refused exactly as before — those are the frames that say the two ends
+    disagree about whether the job is over."""
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent, dispatch_status="expired", status="failed")
+
+    with pytest.raises(agent_discovery.InvalidDiscoveryFinding) as excinfo:
+        await agent_discovery.ingest_discovery_finding(
+            db_session, agent, _payload(job, kind="summary", terminal=True, outcome="completed")
+        )
+
+    assert agent_discovery.REASON_DISPATCH_CLOSED in str(excinfo.value)
+    assert excinfo.value.audited is False
+
+
+# ── A cancellation is not a violation ─────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "cancelled",
+    [
+        {"dispatch_status": "cancelled", "status": "cancelled"},
+        # The two columns move independently — `DELETE /discovery/jobs/{id}`
+        # cancels the job, `_close_jobs` cancels the lease — so a guard reading
+        # only one of them would still audit the agent for the other.
+        {"dispatch_status": "dispatched", "status": "cancelled"},
+        {"dispatch_status": "cancelled", "status": "running"},
+    ],
+)
+async def test_a_cancelled_dispatchs_terminal_summary_is_an_expected_no_op(
+    db_session, factories, emitted, cancelled
+):
+    """The agent answering the server's own `discovery.cancel`.
+
+    `runtime.execute` overrides whatever the interrupted sweep produced with a
+    terminal summary carrying `outcome="cancelled"`, so this frame arrives on
+    *every* administrator cancellation that reaches a running agent. Recording a
+    `protocol_violation` for it audited a well-behaved agent for doing exactly
+    what it was told — and consumed the one-per-minute window that genuine
+    violations share, suppressing the next real one.
+    """
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent, **cancelled)
+
+    disposition = await agent_discovery.ingest_discovery_finding(
+        db_session, agent, _payload(job, kind="summary", terminal=True, outcome="cancelled")
+    )
+
+    assert disposition == agent_discovery.DISPOSITION_CANCELLED
+    # A no-op is a no-op: no row, no event, and the job keeps the outcome the
+    # cancellation gave it rather than being re-finalized by the summary.
+    assert _results(db_session, job) == []
+    assert _events(db_session, agent) == []
     assert emitted == []
 
 
-async def test_summary_for_a_closed_dispatch_is_still_refused(db_session, factories, emitted):
+async def test_a_host_finding_spooled_before_a_cancel_is_refused_but_never_audited(
+    db_session, factories, emitted
+):
+    """The other half of a cancellation the agent honoured.
+
+    A sweep emits host findings as it goes, so the ones already on the wire when
+    the `discovery.cancel` landed keep arriving afterwards. They are still
+    refused — the server called the work off and will write none of them — but
+    `audited` is what stops `agent_link` recording a violation for each one and
+    burning the rate-limit window on frames nobody is at fault for.
+    """
     agent = _agent(db_session, factories)
     job = _job(db_session, agent, dispatch_status="cancelled", status="cancelled")
 
-    with pytest.raises(agent_discovery.InvalidDiscoveryFinding):
-        await agent_discovery.ingest_discovery_finding(
-            db_session, agent, _payload(job, kind="summary", terminal=True, outcome="cancelled")
-        )
+    with pytest.raises(agent_discovery.InvalidDiscoveryFinding) as excinfo:
+        await agent_discovery.ingest_discovery_finding(db_session, agent, _payload(job))
+
+    assert agent_discovery.REASON_DISPATCH_CLOSED in str(excinfo.value)
+    assert excinfo.value.audited is True
+    assert _results(db_session, job) == []
+    assert emitted == []
 
 
 async def test_host_finding_without_an_address_is_rejected(db_session, factories, emitted):
@@ -1016,13 +1540,136 @@ def test_two_concurrent_ingests_at_the_ceiling_admit_exactly_one(setup_db, emitt
             assert stored.status == "failed"
             rows = check.query(ScanResult).filter(ScanResult.scan_job_id == job_id).all()
             assert len(rows) == 1
-        assert len(emitted) == 1
+        # One `result_added` for the winner, and the loser's terminal pair for
+        # the job its breach closed.
+        assert [e for e, _ in emitted] == ["result_added", "job_update", "job_progress"]
     finally:
         with SessionLocal() as cleanup:
             # `agent_events`, the grant and the network facts cascade with the
             # agent; the job and its results are deleted first so the order does
             # not depend on which FK carries ON DELETE CASCADE today.
             cleanup.execute(delete(ScanResult).where(ScanResult.scan_job_id == job_id))
+            cleanup.execute(delete(ScanJob).where(ScanJob.id == job_id))
+            cleanup.execute(delete(Agent).where(Agent.id == agent_id))
+            cleanup.execute(delete(Tenant).where(Tenant.id == tenant_id))
+            cleanup.commit()
+
+
+def test_two_concurrent_terminal_summaries_finalize_exactly_once(
+    setup_db, emitted, monkeypatch
+) -> None:
+    """A spool replayed on a second link after a reconnect is exactly two
+    terminal summaries arriving on two connections at once.
+
+    Driven sequentially the assertion passes against a plain read-modify-write:
+    the second call reads a job it has already closed and refuses it on the
+    dispatch-closed guard. Only two real connections put both callers past that
+    guard at the same time, and then the `WHERE status IN ('queued','running')`
+    on the finalizing UPDATE is the entire mechanism — without it the job is
+    closed twice, `scan_completed` is audited twice, and the review badge is
+    published twice with two different counts.
+
+    The barrier is installed *inside* the ingest path, immediately after the
+    dispatch-open guard both callers have to clear, rather than around the call.
+    Barriering the call is not enough: the first thread routinely finishes
+    before the second issues its first SELECT, and the second is then refused by
+    the guard while the compare-and-set goes unexercised.
+    """
+    from app.db.models import Log
+    from app.db.session import SessionLocal
+    from tests.factories import Factories
+
+    with SessionLocal() as setup:
+        tenant = Tenant(name=f"discovery-summary-{secrets.token_hex(4)}")
+        setup.add(tenant)
+        setup.flush()
+        factories = Factories(setup)
+        agent = factories.agent(status="active", tenant_id=tenant.id)
+        factories.agent_capability_grant(
+            agent, capability="local_discovery", enabled=True, config={}
+        )
+        factories.agent_network(agent, facts=_FACTS)
+        setup.flush()
+        job = ScanJob(
+            scan_agent_id=agent.id,
+            dispatch_id=secrets.token_hex(16),
+            dispatch_status="dispatched",
+            dispatch_deadline_at=utcnow() + timedelta(seconds=300),
+            scope_version=agent_discovery.derive_discovery_scope(setup, agent.id).version,
+            target_cidr="10.60.0.0/24",
+            status="running",
+            scan_types_json='["agent_connect"]',
+            source_type="agent",
+            tenant_id=tenant.id,
+            created_at=utcnow_iso(),
+        )
+        setup.add(job)
+        setup.commit()
+        agent_id, job_id, tenant_id = agent.id, job.id, tenant.id
+        dispatched = SimpleNamespace(id=job.id, dispatch_id=job.dispatch_id)
+
+    barrier = threading.Barrier(2)
+    assert_open = agent_discovery._assert_dispatch_open
+
+    def barriered_assert_open(agent, job, received_at, *, is_summary):  # type: ignore[no-untyped-def]
+        disposition = assert_open(agent, job, received_at, is_summary=is_summary)
+        barrier.wait(timeout=10)
+        return disposition
+
+    monkeypatch.setattr(agent_discovery, "_assert_dispatch_open", barriered_assert_open)
+
+    def _summarize(_n: int) -> str:
+        with SessionLocal() as session:
+            # One `finding_id`, because the replay of one frame is one frame.
+            payload = _payload(
+                dispatched,
+                finding_id="a" * 32,
+                kind="summary",
+                terminal=True,
+                ip_address=None,
+                mac_address=None,
+                hostname=None,
+                open_ports=[],
+                evidence=[],
+                outcome="completed",
+                hosts_found=0,
+                addresses_scanned=254,
+            )
+            agent_row = session.get(Agent, agent_id)
+            try:
+                return asyncio.run(
+                    agent_discovery.ingest_discovery_finding(session, agent_row, payload)
+                )
+            except agent_discovery.InvalidDiscoveryFinding as exc:
+                return str(exc)
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(_summarize, [0, 1]))
+
+        with SessionLocal() as check:
+            stored = check.get(ScanJob, job_id)
+            assert stored.status == "completed"
+            audits = (
+                check.query(Log)
+                .filter(
+                    Log.action == "scan_completed",
+                    Log.entity_type == "scan_job",
+                    Log.entity_id == job_id,
+                )
+                .all()
+            )
+            assert len(audits) == 1, outcomes
+        # One finalization means one badge publish, whatever the second caller
+        # was told: a second `job_update` would race the first with a stale
+        # pending count.
+        assert len([p for name, p in emitted if name == "job_update"]) == 1, emitted
+    finally:
+        with SessionLocal() as cleanup:
+            cleanup.execute(delete(ScanResult).where(ScanResult.scan_job_id == job_id))
+            cleanup.execute(
+                delete(Log).where(Log.entity_type == "scan_job", Log.entity_id == job_id)
+            )
             cleanup.execute(delete(ScanJob).where(ScanJob.id == job_id))
             cleanup.execute(delete(Agent).where(Agent.id == agent_id))
             cleanup.execute(delete(Tenant).where(Tenant.id == tenant_id))

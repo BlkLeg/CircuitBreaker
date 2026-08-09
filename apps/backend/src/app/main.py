@@ -951,6 +951,31 @@ async def lifespan(app: FastAPI):
         misfire_grace_time=300,
     )
 
+    # Slice 4 D-5 — agent discovery job reconciliation. A *different* concern
+    # from the readiness reconciler above, which shares nothing with it but a
+    # word: this one expires dispatch leases whose agent went silent, retries
+    # jobs parked in `waiting_for_agent` when their agent reconnects, and drains
+    # the `queued` backlog that `_schedule_queued_scan_jobs` otherwise strands.
+    # Registered here rather than in `core.scheduler.reload_discovery_jobs`,
+    # which is re-invoked on every profile write and first removes every job it
+    # registered — a job added there is silently unregistered the next time an
+    # administrator saves a profile. It holds its own advisory lock.
+    from app.services.agent_discovery_reconcile import (
+        RECONCILE_INTERVAL_S as AGENT_DISCOVERY_RECONCILE_INTERVAL_S,
+    )
+    from app.services.agent_discovery_reconcile import (
+        run_agent_discovery_reconciliation,
+    )
+
+    scheduler.add_job(
+        run_agent_discovery_reconciliation,
+        trigger=IntervalTrigger(seconds=AGENT_DISCOVERY_RECONCILE_INTERVAL_S),
+        id="agent_discovery_reconcile",
+        replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=300,
+    )
+
     # IP Pool refresh every hour
     scheduler.add_job(
         discovery_service.refresh_ip_pool,

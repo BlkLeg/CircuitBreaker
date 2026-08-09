@@ -2,18 +2,23 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time as _time_module
+from collections.abc import Collection, Coroutine, Iterator, Sequence
 from datetime import UTC, datetime
+from typing import Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.orm import Session
 
+from app.core import agent_scope
 from app.core.discovery_scan_types import validate_scan_types
 from app.core.log_sanitize import safe_log_fragment
 from app.core.nmap_args import validate_nmap_arguments
 from app.core.time import utcnow_iso
 from app.core.ws_manager import ws_manager
 from app.db.models import (
+    DiscoveryProfile,
     Hardware,
     KbHostname,
     KbOui,
@@ -23,6 +28,11 @@ from app.db.models import (
 )
 from app.db.session import SessionLocal, get_session_context
 from app.schemas.discovery import ScanResultOut
+from app.services import discovery_eligibility
+from app.services.agent_capabilities import (
+    _LOCAL_DISCOVERY_BOUNDS,
+    _LOCAL_DISCOVERY_DEFAULT_CONFIG,
+)
 from app.services.discovery_dhcp import run_dhcp_lease_discovery
 from app.services.discovery_fingerprint import (
     _coalesce_host_info,
@@ -77,6 +87,7 @@ from app.services.discovery_scheduler import (
     _max_concurrent_scans,
     _running_scan_count,
     _schedule_queued_scan_jobs,
+    main_loop,
     purge_old_scan_results,  # noqa: F401
     refresh_ip_pool,  # noqa: F401
     run_scan_job_by_profile,  # noqa: F401
@@ -276,6 +287,295 @@ async def _log_scan_event(
     await _emit_ws_event("scan_log_entry", log_payload)
 
 
+# ── Agent execution location (Slice 4 plan §3, §7) ────────────────────────────
+
+# `scan_jobs.source_type` for a job an agent executes. It joins the existing
+# manual|prober|scheduled|listener_triggered vocabulary (`db/models.py`) rather
+# than replacing any of it: `triggered_by` still says *who* asked for the scan,
+# and this says *where* it ran.
+SOURCE_TYPE_AGENT = "agent"
+
+# The two limits `discovery_eligibility` deliberately leaves to whoever holds the
+# request. Both names are the Go collector's own — `internal/collect/discover`'s
+# `ErrorCodeAddressLimit` and `ErrorCodePortNotGranted` — because the agent
+# refuses the same request under the same code immediately before it runs, and an
+# operator comparing a 422 with a job's `error_reason` must not have to translate
+# between two spellings of one rule. Every other refusal reason comes from
+# `discovery_eligibility`'s closed vocabulary rather than a second copy of it.
+REASON_ADDRESS_LIMIT = "address_limit_exceeded"
+REASON_PORT_NOT_GRANTED = "port_not_granted"
+
+# The address ceiling to apply when the grant names none, and the hard cap on the
+# one it does name. Read from `agent_capabilities` rather than restated so the
+# validator, the agent's normalizer and the administrator-facing bounds cannot
+# drift. Falling back to the *default* rather than the cap is the Go validator's
+# own direction (`NewValidator`: "a grant that decoded to zeros must mean the
+# documented bound, never no bound at all").
+_DEFAULT_ADDRESS_CEILING = int(_LOCAL_DISCOVERY_DEFAULT_CONFIG["max_addresses_per_job"])
+_MAX_ADDRESS_CEILING = _LOCAL_DISCOVERY_BOUNDS["max_addresses_per_job"][1]
+
+# The only place a discovery request can name a TCP port set today: the `-p` spec
+# inside `nmap_arguments`, which both the profile schema and the ad-hoc scan
+# request carry. Plan §3 requires the port set to be "within configured and hard
+# limits" at creation time, and an operator who typed a port their agent may
+# never open has to find out here rather than have it silently dropped in favour
+# of the grant's own list at dispatch. The character class matches
+# `core.nmap_args._PORT_SPEC`, which is what already validated the token.
+_PORT_SPEC_RE = re.compile(r"-p\s*([0-9,\-]+)")
+
+
+class AgentExecutionLocationError(ValueError):
+    """An agent-targeted profile or job the named agent may not run as written.
+
+    A `ValueError` because that is the failure `create_scan_job` already reports
+    with and what `api/discovery.py`'s ad-hoc arm already answers 422 to — though
+    that arm replaces the message with a generic one today, so `reason` reaches a
+    caller only through `discovery_profiles_service`, which raises the structured
+    422 itself.
+
+    `reason` is the machine-readable half — the frontend renders it and the
+    dispatch audit trail records it — and `detail` is the specific that produced
+    it (the agent status, the collector and its state, the scope decision and its
+    prefix, the offending port, the count against the ceiling), which cannot be
+    re-derived from the request afterwards.
+    """
+
+    def __init__(self, agent_id: int, reason: str, detail: str | None = None) -> None:
+        self.agent_id = agent_id
+        self.reason = reason
+        self.detail = detail
+        suffix = f" ({detail})" if detail else ""
+        super().__init__(f"agent {agent_id} may not run this discovery request: {reason}{suffix}")
+
+
+def first_ungranted_tcp_port(nmap_arguments: str | None, granted: Collection[int]) -> int | None:
+    """The first TCP port *nmap_arguments* asks for that the grant does not allow.
+
+    Ranges are walked rather than expanded into a set: `-p 1-65535` names 65 535
+    ports while a grant may list at most `agent_capabilities._MAX_TCP_PORTS` of
+    them, so the walk cannot run longer than the granted set plus one before it
+    finds its answer. An unparseable fragment is skipped — `core.nmap_args` is
+    what refuses those, and refusing them twice here would report a syntax
+    mistake as a capability violation.
+
+    An empty *granted* collection grants no port at all, which is the Go
+    validator's rule verbatim: a port outside the grant is a capability
+    violation, not a missing default.
+    """
+    for port in _iter_requested_tcp_ports(nmap_arguments):
+        if port not in granted:
+            return port
+    return None
+
+
+def _iter_requested_tcp_ports(nmap_arguments: str | None) -> Iterator[int]:
+    """Every port the `-p` spec names, in the order it names them.
+
+    A generator rather than a set so `first_ungranted_tcp_port` can answer
+    `-p 1-65535` without materializing 65 535 integers, which is the whole
+    reason the walk exists in this shape.
+    """
+    match = _PORT_SPEC_RE.search(nmap_arguments or "")
+    if match is None:
+        return
+    for part in match.group(1).split(","):
+        low, _, high = part.partition("-")
+        try:
+            first = int(low)
+            last = int(high) if high else first
+        except ValueError:
+            # An unparseable fragment is skipped — `core.nmap_args` is what
+            # refuses those, and refusing them twice here would report a syntax
+            # mistake as a capability violation.
+            continue
+        yield from range(first, last + 1)
+
+
+def requested_tcp_ports(nmap_arguments: str | None, granted: Collection[int]) -> frozenset[int]:
+    """The ports *nmap_arguments* names that the grant also allows.
+
+    Intersected with *granted* rather than returned raw, so the answer is
+    bounded by the grant's own `_MAX_TCP_PORTS` however wide the spec is. The
+    dispatcher calls this only after `first_ungranted_tcp_port` has returned
+    `None`, at which point the intersection is the request verbatim; the
+    predicate is what keeps that true if the order is ever changed.
+
+    An empty answer means the request named no ports of its own, which the
+    dispatcher reads as "send the grant's list".
+    """
+    return frozenset(port for port in _iter_requested_tcp_ports(nmap_arguments) if port in granted)
+
+
+def _granted_local_discovery_config(db: Session, agent_id: int) -> dict[str, Any]:
+    """The agent's `local_discovery` grant config, registry defaults merged in.
+
+    Imported lazily because `services/agent_discovery.py` imports this module:
+    the ingest path and this one share one reader of the grant so they cannot
+    disagree about an agent's ceilings, and that module is where the reader lives
+    because it documents why the grant must be read through
+    `structured_grants_dict` — an already-approved agent keeps `config = {}` in
+    the database and resolves the registry defaults at render time.
+    """
+    from app.services.agent_discovery import discovery_grant_config
+
+    return discovery_grant_config(db, agent_id)
+
+
+def granted_address_ceiling(config: dict[str, Any]) -> int:
+    """How many addresses one job may cover under *config*.
+
+    A missing, non-integer or non-positive value means the documented default
+    rather than "no limit"; `True` is an `int` and would otherwise configure a
+    one-address scan.
+    """
+    raw = config.get("max_addresses_per_job")
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        return _DEFAULT_ADDRESS_CEILING
+    return min(raw, _MAX_ADDRESS_CEILING)
+
+
+def granted_tcp_ports(config: dict[str, Any]) -> frozenset[int]:
+    """The ports *config* allows. A malformed list grants nothing (fail closed)."""
+    ports = config.get("tcp_ports")
+    if not isinstance(ports, (list, tuple)):
+        return frozenset()
+    return frozenset(p for p in ports if isinstance(p, int) and not isinstance(p, bool))
+
+
+def _eligibility_now(
+    pending: Coroutine[Any, Any, discovery_eligibility.Eligibility],
+) -> discovery_eligibility.Eligibility:
+    """Resolve an eligibility coroutine that cannot suspend, from sync code.
+
+    `evaluate_eligibility` is `async` for exactly one reason: its `require_online`
+    branch awaits agent presence in Redis. Creation-time validation passes
+    `require_online=False` (D-5 — an offline agent parks its job as
+    `waiting_for_agent`, so reachability is a scheduling condition and not a
+    configuration error), so the coroutine runs to its return without ever
+    suspending and one step yields the answer.
+
+    Neither of the two callers can use `asyncio.run`: `POST /discovery/profiles`
+    is a sync endpoint on a worker thread with no loop, while `create_scan_job`
+    is reached from coroutines that are already on one. A thread hop would be the
+    other option and would hand this transaction's connection to a second thread.
+
+    If a future edit adds a suspension point ahead of the checks, this raises
+    instead of quietly skipping validation.
+    """
+    try:
+        pending.send(None)
+    except StopIteration as done:
+        return cast(discovery_eligibility.Eligibility, done.value)
+    finally:
+        pending.close()
+    raise RuntimeError(
+        "discovery eligibility suspended during creation-time validation; "
+        "it must be resolved on an event loop"
+    )
+
+
+def validate_agent_execution_location(
+    db: Session,
+    *,
+    scan_agent_id: int | None,
+    targets: Sequence[str],
+    nmap_arguments: str | None = None,
+    tenant_id: int | None = None,
+) -> None:
+    """Refuse an agent-targeted profile or job the agent may not run (plan §3).
+
+    `scan_agent_id is None` is the existing server discovery engine — every
+    profile and job that predates Slice 4 — and is returned on untouched.
+
+    This is the *configuration* checkpoint plan §7 names first, asked at both of
+    the moments plan §3 requires it: profile save and job creation.
+    It runs in addition to the dispatch-time re-check and never instead of it: an
+    agent's scope is derived from what it reports about its own interfaces, so it
+    can change between a profile save and the job that profile eventually
+    produces, which is the whole reason the grant carries a version.
+
+    Order matters, and it is the Go validator's order:
+
+    1. The agent and the targets, through `discovery_eligibility` — the one
+       module that answers this at all four checkpoints, so a UI that learned
+       `agent_inactive` here reads the same string off the dispatch audit row.
+    2. The requested ports against the grant.
+    3. The address count **last**, because `agent_scope.address_count` skips an
+       unparseable prefix rather than refusing it: counting before scope has
+       judged every target would let a malformed one slip under the ceiling.
+    """
+    if scan_agent_id is None:
+        return
+
+    decision = _eligibility_now(
+        discovery_eligibility.evaluate_eligibility(
+            db,
+            scan_agent_id,
+            targets=tuple(targets),
+            # No discovery row carries a tenant yet — `ScanJob.tenant_id` is
+            # stamped from the agent when the job is routed (D-17) — and
+            # `evaluate_eligibility` reads `None` as a tenant-less request, which
+            # is legal on a tenant-scoped agent because the target is still
+            # bounded by that agent's own networks.
+            tenant_id=tenant_id,
+            require_online=False,
+        )
+    )
+    if not decision.ok:
+        raise AgentExecutionLocationError(scan_agent_id, decision.reason or "", decision.detail)
+
+    config = _granted_local_discovery_config(db, scan_agent_id)
+    ungranted_port = first_ungranted_tcp_port(nmap_arguments, granted_tcp_ports(config))
+    if ungranted_port is not None:
+        raise AgentExecutionLocationError(
+            scan_agent_id, REASON_PORT_NOT_GRANTED, str(ungranted_port)
+        )
+
+    ceiling = granted_address_ceiling(config)
+    count = agent_scope.address_count(targets)
+    if count > ceiling:
+        raise AgentExecutionLocationError(scan_agent_id, REASON_ADDRESS_LIMIT, f"{count}>{ceiling}")
+
+
+def job_nmap_arguments(db: Session, job: ScanJob) -> str | None:
+    """The port-bearing argument string this job was created with, or `None`.
+
+    `_scan_setup` derives the same two values in the same order — the ad-hoc
+    override encoded into the label wins over the profile's — and then falls
+    back to the server's global `discovery_nmap_args`. This one deliberately
+    stops short of that fallback: the global default describes the server
+    scanner's own invocation and says nothing about what the operator asked an
+    agent to open, so inheriting it would silently widen an agent request or
+    refuse it against ports nobody named.
+    """
+    if job.label and job.label.startswith(_NMAP_OVERRIDE_PREFIX):
+        return job.label[len(_NMAP_OVERRIDE_PREFIX) :]
+    if job.profile_id:
+        profile = db.get(DiscoveryProfile, job.profile_id)
+        if profile is not None and profile.nmap_arguments:
+            return cast(str, profile.nmap_arguments)
+    return None
+
+
+def _agent_tenant_id(db: Session, scan_agent_id: int | None) -> int | None:
+    """The tenant an agent-executed job inherits (D-17).
+
+    `None` for a server job, which is every job that predates Slice 4 and stays
+    tenant-less exactly as it is today. Imported lazily for the reason
+    `_granted_local_discovery_config` documents: `services/agent_discovery.py`
+    imports this module.
+    """
+    if scan_agent_id is None:
+        return None
+    from app.services import agent_registry
+
+    agent = agent_registry.get_agent(db, scan_agent_id)
+    # `validate_agent_execution_location` has already refused a missing agent, so
+    # this cannot be None in practice; it is written as a lookup rather than an
+    # assertion because a job with the wrong tenant is worse than no job.
+    return agent.tenant_id if agent is not None else None
+
+
 def create_scan_job(
     db: Session,
     target_cidr: str | None = None,
@@ -285,6 +585,7 @@ def create_scan_job(
     label: str | None = None,
     nmap_arguments: str | None = None,
     triggered_by: str = "api",
+    scan_agent_id: int | None = None,
 ) -> ScanJob:
     from app.core.config import settings as env_settings
     from app.core.network_acl import validate_scan_target
@@ -293,11 +594,10 @@ def create_scan_job(
 
     cidrs: list[str] = []
     network_ids: list[int] = []
-    # Raises before anything is written. The execution location here is always
-    # the server: routing a job to an agent is not this function's job yet, so
-    # an agent-only scan type has no executor and must be refused rather than
-    # quietly run in-process.
-    effective_scan_types = validate_scan_types(scan_types, scan_agent_id=None)
+    # Raises before anything is written: a scan type with no executor at the
+    # requested location — a server-only type sent to an agent, or `agent_connect`
+    # with no agent — is refused rather than quietly run in-process.
+    effective_scan_types = validate_scan_types(scan_types, scan_agent_id=scan_agent_id)
     if _requires_nmap(effective_scan_types) and not getattr(app_cfg, "nmap_enabled", False):
         raise ValueError(
             "Nmap-based scans are disabled. Enable 'Nmap Active Scanning' in Discovery Settings."
@@ -332,6 +632,17 @@ def create_scan_job(
     final_cidrs = sorted(set(cidrs))
     target_cidr_str = ",".join(final_cidrs) if final_cidrs else None
 
+    # Plan §3's job-creation checkpoint, against the resolved targets rather than
+    # the request's: a VLAN id becomes CIDRs above, and the indirection must not
+    # be a way past the agent's scope. A server job (`scan_agent_id is None`)
+    # returns from here untouched.
+    validate_agent_execution_location(
+        db,
+        scan_agent_id=scan_agent_id,
+        targets=final_cidrs,
+        nmap_arguments=nmap_arguments,
+    )
+
     # B12: encode ad-hoc nmap override into the label field (validated for injection)
     stored_label = label
     if nmap_arguments:
@@ -339,6 +650,17 @@ def create_scan_job(
         stored_label = f"{_NMAP_OVERRIDE_PREFIX}{safe_nmap}"
 
     job = ScanJob(
+        # The execution location, persisted alongside the change that routes on
+        # it (`execute_scan_job`). Plan §3 is explicit that there is no fallback
+        # from agent to server, because that would silently change the discovery
+        # vantage point, so the column and the branch that reads it have to land
+        # together or a row carrying an agent is run by the server scanner.
+        scan_agent_id=scan_agent_id,
+        source_type=SOURCE_TYPE_AGENT if scan_agent_id is not None else "manual",
+        # D-17: derived from the agent, never accepted from the request. Ingest
+        # asserts the finding's job tenant equals the reporting agent's, so a
+        # NULL here would make that assertion vacuous rather than safe.
+        tenant_id=_agent_tenant_id(db, scan_agent_id),
         profile_id=profile_id,
         label=stored_label,
         target_cidr=target_cidr_str,
@@ -1830,19 +2152,277 @@ async def run_scan_job(job_id: int) -> None:
         _last_progress_snap.pop(job_id, None)
 
 
+# D-4. The terminal vocabulary an agent-executed job may close with. There is
+# deliberately no `partial`: `status` is a bare string read by the history
+# filter, the history query and the review badge, and an interrupted scan is
+# `failed` with its accepted findings kept and reviewable.
+TERMINAL_JOB_STATUSES = ("completed", "failed", "cancelled")
+
+# The `dispatch_status` and `progress_phase` that go with each of them. Kept as
+# maps rather than as branches so a new terminal status cannot be added on one
+# axis and forgotten on the other.
+_DISPATCH_STATUS_FOR_JOB_STATUS = {
+    "completed": "completed",
+    "failed": "execution_error",
+    "cancelled": "cancelled",
+}
+_PROGRESS_PHASE_FOR_JOB_STATUS = {
+    "completed": "done",
+    "failed": "failed",
+    "cancelled": "cancelled",
+}
+
+
+async def finalize_agent_job(
+    db: Session,
+    job: ScanJob,
+    status: str,
+    *,
+    error_reason: str | None = None,
+    error_text: str | None = None,
+) -> bool:
+    """Close one agent-executed job. Returns whether *this* call closed it.
+
+    `_scan_finalize`'s counterpart, and deliberately not `_scan_finalize`
+    itself. That one writes `hosts_found`/`hosts_new`/`hosts_updated`/
+    `hosts_conflict` *absolutely*, from the stats dict a finished batch
+    produces; the agent path has no batch, it increments those counters per
+    accepted finding as they arrive (D-10), and sharing the absolute write would
+    clobber every one of them with a dict this path never assembles.
+
+    Three properties make this safe to call from the `/link` read loop:
+
+    * **It is a compare-and-set.** Two terminal summaries racing on separate
+      connections — the exact shape of a spool replayed after a reconnect —
+      both pass any pre-check; only the `WHERE status IN ('queued','running')`
+      admits one of them, so there is exactly one finalization, one audit row
+      and one `job_update`.
+    * **It closes the dispatch with the job.** `dispatch_status` moves to a
+      closed value in the same statement, which is what makes a finding arriving
+      after the summary refusable by `agent_discovery` regardless of whether any
+      `discovery.cancel` was ever delivered.
+    * **It never merges.** `_auto_merge_known_devices` is not called here at any
+      setting, because `discovery_merge._auto_merge_result` *creates* a
+      `Hardware` row with no review and plan §5 says an agent-authored row
+      reaches `discovery_import_service` only when a user accepts it. The
+      `discovery_auto_merge` setting describes the server's own scan; an
+      untrusted remote executor is not that.
+    """
+    if status not in TERMINAL_JOB_STATUSES:
+        raise ValueError(f"{status!r} is not a terminal scan job status")
+
+    admitted = cast(
+        "CursorResult[Any]",
+        db.execute(
+            update(ScanJob)
+            .where(ScanJob.id == job.id, ScanJob.status.in_(("queued", "running")))
+            .values(
+                status=status,
+                completed_at=utcnow_iso(),
+                dispatch_status=_DISPATCH_STATUS_FOR_JOB_STATUS[status],
+                error_reason=error_reason,
+                error_text=error_text,
+                progress_phase=_PROGRESS_PHASE_FOR_JOB_STATUS[status],
+                progress_message=error_text or "",
+            )
+            .execution_options(synchronize_session=False)
+        ),
+    ).rowcount
+    if not admitted:
+        logger.debug("Agent job %s was already finalized; this summary is inert", job.id)
+        return False
+
+    db.commit()
+    db.refresh(job)
+
+    # The ordinary discovery audit rows, with the ordinary actor: an operator
+    # reading the trail should not have to know which executor ran the scan to
+    # find the entry. `write_log` owns its own commit and never raises.
+    if status == "completed":
+        write_log(
+            db,
+            action="scan_completed",
+            entity_type="scan_job",
+            entity_id=job.id,
+            category="discovery",
+            actor=job.triggered_by,
+            details=json.dumps(
+                {
+                    "hosts_found": job.hosts_found or 0,
+                    "hosts_new": job.hosts_new or 0,
+                    "hosts_conflict": job.hosts_conflict or 0,
+                    "cidr": job.target_cidr,
+                    "scan_agent_id": job.scan_agent_id,
+                }
+            ),
+        )
+    elif status == "failed":
+        write_log(
+            db,
+            action="scan_failed",
+            entity_type="scan_job",
+            entity_id=job.id,
+            category="discovery",
+            severity="error",
+            actor=job.triggered_by,
+            details=json.dumps(
+                {
+                    "error": error_text or error_reason or "",
+                    "cidr": job.target_cidr,
+                    "scan_agent_id": job.scan_agent_id,
+                }
+            ),
+        )
+
+    pending_count = db.query(ScanResult).filter(ScanResult.merge_status == "pending").count()
+
+    # The job just gave its concurrency slot back, so the backlog is drained the
+    # same way a server scan drains it.
+    #
+    # The guard stays, but it no longer stands in for the loop-affinity defect
+    # it was written for: `schedule_discovery_scan_job` now resolves a loop from
+    # any thread, and this call site is on the /link read loop and always had
+    # one. What it still protects is the drain's own two database reads — the
+    # settings row and the queued-job query — on a session this coroutine shares
+    # with the read loop. The terminal status is already committed and the
+    # pending count already taken by the time we get here, so a failure at this
+    # point must not cost the client its `job_update` event or hand the agent a
+    # protocol violation for a summary the backend accepted. Logged loudly
+    # enough to be found: a drain that keeps failing means the backlog is only
+    # moving on `agent_discovery_reconcile`'s interval.
+    try:
+        _schedule_queued_scan_jobs(db)
+    except Exception:
+        logger.exception("Agent job %s: draining the queued backlog failed", job.id)
+
+    # After the commit, never before: a client that refetches the job on this
+    # event must find it already terminal, and the badge count already true.
+    await _emit_ws_event(
+        "job_update",
+        {
+            "job": {
+                "id": job.id,
+                "status": status,
+                "error_reason": error_reason,
+                "progress_percent": 100,
+            },
+            "pending_count": pending_count,
+        },
+    )
+    await _emit_ws_event(
+        "job_progress",
+        {
+            "job_id": job.id,
+            "phase": _PROGRESS_PHASE_FOR_JOB_STATUS[status],
+            "message": error_text or "",
+            "percent": 100,
+        },
+    )
+    return True
+
+
+def job_scan_agent_id(db: Session, job_id: int) -> int | None:
+    """The agent this job runs on, or `None` for the server scanner.
+
+    One predicate, read by both routing call sites — `execute_scan_job` and
+    `discovery_scheduler._run_profile_job_async`. Two copies of "is this an
+    agent job" is exactly how one path comes to send an agent-targeted job to
+    the server scanner, which plan §3 forbids because it changes the vantage
+    point the operator asked for without telling anyone.
+    """
+    return db.execute(
+        select(ScanJob.scan_agent_id).where(ScanJob.id == job_id)
+    ).scalar_one_or_none()
+
+
+async def execute_scan_job(db: Session, job_id: int) -> None:
+    """The one branch between the server scanner and an agent (plan §3).
+
+    There is deliberately no fallback in either direction: an agent-targeted job
+    that cannot be dispatched closes with a reason, and is never quietly re-run
+    from the server's vantage point.
+
+    The one thing that does *not* close the job is the concurrency ceiling: a
+    scan the operator asked for that has to wait its turn is not a scan that
+    failed, so it is left in the backlog for a drain to pick up, exactly as a
+    server job with no free slot is (`_scan_setup`).
+
+    `agent_discovery` is imported here rather than at module scope because that
+    module imports this one.
+    """
+    if job_scan_agent_id(db, job_id) is None:
+        await run_scan_job(job_id)
+        return
+
+    if not _agent_dispatch_slot_available(db):
+        # Left exactly as it is — `queued`, no lease, no deadline — which is what
+        # `_scan_setup` does to a server job that cannot get a slot, and is why
+        # both drains (`discovery_scheduler._schedule_queued_scan_jobs` and
+        # `agent_discovery_reconcile._drain_queued_jobs`) will pick it up again.
+        logger.info("Scan job %d: no slot available for agent dispatch, leaving it queued", job_id)
+        return
+
+    from app.services import agent_discovery
+
+    await agent_discovery.dispatch_discovery_job(db, job_id)
+
+
+def _agent_dispatch_slot_available(db: Session) -> bool:
+    """Whether `max_concurrent_scans` has room for one more running scan.
+
+    `agent_discovery._claim` moves the job to `status='running'`, which is what
+    `_running_scan_count` counts — a dispatched agent job spends a slot from
+    every other scan's point of view, so it has to ask for one first. Without
+    this, a job created by cron or by the API reached the dispatcher directly
+    and was exempt from a ceiling it then consumed; only the two drains asked.
+
+    The ceiling is read through the scheduler's own helpers, never re-derived:
+    a second opinion about how many scans may run at once is how one execution
+    location comes to ignore a limit the operator set for all of them.
+
+    Not a claim, so it races with the drains by construction; that is the same
+    advisory check `_scan_setup` makes for a server job, and the authoritative
+    mutual exclusion stays where it is — `_claim`'s conditional UPDATE.
+    """
+    return _running_scan_count(db) < _max_concurrent_scans(get_or_create_settings(db))
+
+
+async def _execute_scan_job_in_session(job_id: int) -> None:
+    """`execute_scan_job` for the background-task entry point, which owns no session."""
+    with get_session_context() as db:
+        await execute_scan_job(db, job_id)
+
+
 def schedule_discovery_scan_job(job_id: int) -> None:
-    """Start :func:`run_scan_job` as a task and log any uncaught outcome.
+    """Start the job's executor on the event loop — from any thread — and log
+    any uncaught outcome.
+
+    Callable from a thread on purpose. Its main caller,
+    `discovery_scheduler._schedule_queued_scan_jobs`, is reached from
+    `_scan_finalize`, which is synchronous and runs *only* inside
+    `loop.run_in_executor`. `asyncio.create_task` needs a running loop **in the
+    calling thread** and an executor worker has none, so this used to raise
+    `RuntimeError: no running event loop` precisely when a job had just freed a
+    slot and a queued job was waiting for it — after the terminal status
+    committed and before the pending count returned, so the job went terminal
+    with no `job_update` event reaching the UI and the backlog never drained.
+    `monitor_service._publish_soon` is the model for resolving the loop; unlike
+    that one this must not degrade to "published nothing", because the backlog
+    has no other owner on this path.
 
     asyncio tasks that raise without a done-callback only emit a generic
     "exception was never retrieved" message, which is easy to miss when
     diagnosing mid-scan UI drop-offs.
     """
-    task = asyncio.create_task(run_scan_job(job_id))
+    coro = _execute_scan_job_in_session(job_id)
 
-    def _log_outcome(t: asyncio.Task) -> None:
-        if t.cancelled():
+    def _log_outcome(finished: Any) -> None:
+        # Accepts both an `asyncio.Task` and the `concurrent.futures.Future`
+        # `run_coroutine_threadsafe` hands back; the three methods used here
+        # mean the same thing on both.
+        if finished.cancelled():
             return
-        exc = t.exception()
+        exc = finished.exception()
         if exc is not None:
             logger.exception(
                 "Discovery job %s background task failed — UI may show offline if the "
@@ -1851,7 +2431,33 @@ def schedule_discovery_scan_job(job_id: int) -> None:
                 exc_info=exc,
             )
 
-    task.add_done_callback(_log_outcome)
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+
+    if running is not None:
+        running.create_task(coro).add_done_callback(_log_outcome)
+        return
+
+    # A worker thread. The loop `main.py`'s lifespan registered is the one the
+    # ws_manager broadcasts and the agent link both live on, which is why
+    # `discovery_scheduler` already captures it for the APScheduler jobs.
+    target = main_loop()
+    if target is None or not target.is_running():
+        # Nothing can be scheduled anywhere. Say so loudly rather than raising
+        # into a finalizer that has already committed a terminal status, and
+        # close the coroutine so it is not reported as never awaited.
+        coro.close()
+        logger.error(
+            "Discovery job %s could not be scheduled: no running event loop in this thread "
+            "and no main loop registered (set_main_loop). The queued backlog will not drain "
+            "until the next reconciliation pass.",
+            job_id,
+        )
+        return
+
+    asyncio.run_coroutine_threadsafe(coro, target).add_done_callback(_log_outcome)
 
 
 def enqueue_lldp_job(

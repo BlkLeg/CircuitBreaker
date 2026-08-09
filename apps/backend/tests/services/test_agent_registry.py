@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import datetime
 from unittest.mock import AsyncMock
@@ -591,3 +592,105 @@ def test_update_hello_metadata_leaves_spool_columns_null_when_omitted(db_session
     assert agent.spool_depth is None
     assert agent.spool_bytes is None
     assert agent.spool_reported_at is None
+
+
+# ── The scope cancellation `hello.networks` produces (Slice 4 D-16) ───────────
+
+
+async def test_update_hello_metadata_returns_its_cancellation_without_publishing_it(
+    db_session, factories, monkeypatch
+):
+    """A hello that moves the scope closes the doomed dispatches and hands the
+    caller an inert cancellation — it publishes nothing itself.
+
+    This is the rule `agent_discovery`'s cancellation section states for every
+    trigger: the rows are closed inside the caller's transaction and the frame
+    goes out only once that transaction has committed. `/link`'s hello block
+    (`api/ws_agents.py`) commits several other writes alongside this one, so a
+    cancel published from in here is a cancel any of those can roll back.
+    """
+    import secrets
+    from datetime import timedelta
+
+    from app.core.time import utcnow, utcnow_iso
+    from app.db.models import ScanJob
+    from app.schemas.agent_frame import HelloPayload
+    from app.services import agent_discovery
+    from app.services.discovery_eligibility import derive_discovery_scope
+
+    frames: list[tuple[int, dict]] = []
+
+    async def _spy(agent_id: int, frame: dict) -> bool:
+        frames.append((agent_id, frame))
+        return True
+
+    monkeypatch.setattr(svc, "publish_agent_control_frame", _spy)
+
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="local_discovery", enabled=True)
+    factories.agent_network(
+        agent, facts=[{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.20.30.5/24"]}]
+    )
+    db_session.expire_all()
+    job = ScanJob(
+        scan_agent_id=agent.id,
+        target_cidr="10.20.30.0/24",
+        scan_types_json='["agent_connect"]',
+        source_type="agent",
+        status="running",
+        dispatch_id=secrets.token_hex(16),
+        dispatch_status="dispatched",
+        dispatch_deadline_at=utcnow() + timedelta(minutes=5),
+        scope_version=derive_discovery_scope(db_session, agent.id).version,
+        tenant_id=agent.tenant_id,
+        created_at=utcnow_iso(),
+    )
+    db_session.add(job)
+    db_session.flush()
+
+    cancellation = svc.update_hello_metadata(
+        db_session,
+        agent,
+        HelloPayload.model_validate(
+            {
+                "networks": [
+                    {"name": "eth0", "flags": ["up", "broadcast"], "addrs": ["10.88.0.4/24"]}
+                ]
+            }
+        ),
+    )
+
+    # Two ticks: one to start anything a trigger scheduled with `create_task`,
+    # one for whatever it yields on. "Nothing published" must not pass merely
+    # because nothing has been scheduled yet.
+    for _ in range(2):
+        await asyncio.sleep(0)
+
+    assert frames == []
+    assert [(c.job_id, c.dispatch_id, c.reason) for c in cancellation.cancels] == [
+        (job.id, job.dispatch_id, agent_discovery.ERROR_SCOPE_CHANGED)
+    ]
+    # Closed in the caller's transaction, before the caller commits.
+    assert job.status == agent_discovery.CANCELLED_JOB_STATUS
+
+
+def test_update_hello_metadata_always_returns_a_publishable_cancellation(db_session, factories):
+    """The steady state — a hello that says nothing about networks moves no
+    scope — still hands back a real, empty `DiscoveryCancellation`, never None.
+
+    `api/ws_agents.py` publishes the return value unconditionally after its
+    commit rather than testing it first, so "nothing to cancel" has to be
+    representable as a falsy cancellation; a None here would turn every ordinary
+    reconnect into a TypeError in the `/link` hello block.
+    """
+    from app.schemas.agent_frame import HelloPayload
+    from app.services.agent_discovery import DiscoveryCancellation
+
+    agent = factories.agent(status="active")
+
+    cancellation = svc.update_hello_metadata(
+        db_session, agent, HelloPayload.model_validate({"os": "linux"})
+    )
+
+    assert isinstance(cancellation, DiscoveryCancellation)
+    assert not cancellation

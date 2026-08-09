@@ -71,7 +71,9 @@ What does **not** exist, and is therefore this slice's work rather than an assum
    `probe.Runtime` emits exactly one result per unit of work (`runtime.go:582-604`) — the
    many-findings-plus-terminal-summary contract is a genuine structural divergence, not a copy.
 
-**33 ordered, test-first tasks**, one focused commit each, each ending with the affected Go,
+**33 ordered, test-first tasks** (plus **Task 23b**, a pre-existing server-path bug pulled into scope
+during Phase C review rather than worked around), one focused commit each, each ending with the
+affected Go,
 backend, or frontend suites green.
 
 ---
@@ -408,6 +410,27 @@ finding", and there is nothing to derive it onto: `ScanResult` has no tenant col
 at all, so every job is NULL today — a test asserting only that a payload-supplied tenant was
 ignored would pass against a NULL and prove nothing.
 
+### D-18. There is no `uq_scan_jobs_active_dispatch`. The compare-and-set is the whole mechanism.
+
+**Decision:** Task 4's index list and Task 20's last clause are **struck**. The dispatch lease is
+guarded by a compare-and-set alone — one conditional `UPDATE` predicated on the lease state it
+expects to find, with a rowcount check — plus `uq_scan_jobs_dispatch_id`, which makes a replayed or
+duplicated token an integrity error rather than two jobs sharing one. Task 20's two-session test
+therefore pins the CAS and `uq_scan_jobs_dispatch_id`, not a partial unique index.
+
+**Rationale:** `uq_monitor_probe_runs_active` works for monitors because a probe lease is its **own
+row**, so two workers racing insert two rows and the index rejects the second. A discovery lease
+lives **on the job row itself**: there is only ever one row, and a unique index over a column of it
+enforces nothing. The actual race is two workers both reading `dispatch_status IS NULL` and both
+writing `dispatched`, which only a conditional `UPDATE` can stop. This was settled while Task 4 was
+implemented and is documented at the decision site in `db/models.py` (`ScanJob.__table_args__`) and
+in migration `0100`; the task text was simply not updated to match. Recorded here so the next reader
+does not "restore" an index that would buy nothing and imply a guarantee the schema does not make.
+
+**Related correction:** `models.py` claimed the backstop was "`SELECT ... FOR UPDATE` plus a
+compare-and-set". The dispatcher issues a plain `SELECT` and relies on the conditional `UPDATE`'s own
+row lock, which is sufficient; the comment has been corrected rather than the code.
+
 ---
 
 ## Task list
@@ -463,9 +486,9 @@ Indexes:
 - `(scan_agent_id, status, created_at)` on `scan_jobs`; **also** the missing index on `profile_id`.
 - Partial unique `uq_scan_results_job_finding` on `(scan_job_id, finding_id)`
   `WHERE finding_id IS NOT NULL`.
-- Partial unique `uq_scan_jobs_active_dispatch` on `(scan_agent_id, id)`
-  `WHERE dispatch_status IN ('queued','dispatched')` — the DB backstop behind Task 20's
-  compare-and-set, mirroring `uq_monitor_probe_runs_active` (`models.py:374`).
+- ~~Partial unique `uq_scan_jobs_active_dispatch`~~ — **struck, see D-18.** A lease living on the job
+  row cannot be guarded by a unique index; the compare-and-set plus `uq_scan_jobs_dispatch_id` is the
+  mechanism.
 - Partial unique `uq_discovery_profiles_system_agent_cidr` on `(scan_agent_id, normalized_cidr)`
   `WHERE managed_by = 'system'`.
 Documented `source_type` vocabularies at `models.py:1668` and `:1726` both gain `agent`;
@@ -681,8 +704,9 @@ deadline, and `job.scope_version = derive_scope(...).version`, and publishes exa
 rejected by Go); an offline agent releases the claim to `queued` + `waiting_for_agent` + deadline
 per D-5 and publishes nothing; targets and ports are re-validated against the live scope at
 dispatch time **in addition to** Task 19's creation-time validation, never instead of it; two real
-sessions against Postgres cannot double-dispatch — the second attempt fails on
-`uq_scan_jobs_active_dispatch`, not merely on the CAS.
+sessions against Postgres cannot double-dispatch — the second attempt loses the compare-and-set, and
+a duplicated token is refused by `uq_scan_jobs_dispatch_id` (**D-18**: there is no
+`uq_scan_jobs_active_dispatch` and there should not be).
 Without this task nothing routes an agent-targeted job away from the server executor:
 `create_scan_job` (`discovery_service.py:278-287,336-346`) takes no `scan_agent_id` and never sets
 `source_type`, and `_run_profile_job_async` calls `run_scan_job` directly (`:97`).
@@ -723,6 +747,27 @@ Register with `IntervalTrigger` in `main.py`'s lifespan alongside `discovery_rec
 and strips every job it registered (`core/scheduler.py:66-68`). Derive its grace from
 `agent_discovery`'s own constant, as `probe_reconcile` derives its from the ingest module's.
 Green: `pytest tests/services/test_agent_discovery_reconcile.py --no-cov`.
+
+**Task 23b — Drain the queued backlog from the thread that can actually schedule it.**
+A pre-existing server-path bug, found while reviewing Task 23 and pulled into scope rather than
+worked around. `_scan_finalize` (`discovery_service.py:1079`) is synchronous and runs **only** inside
+`loop.run_in_executor` (`:1281,:1351,:2112,:2136`), yet at `:1138` it calls
+`_schedule_queued_scan_jobs(db)` unguarded, which reaches `schedule_discovery_scan_job`'s
+`asyncio.create_task` — and `create_task` needs a running loop **in the calling thread**, which an
+executor worker does not have. It raises `RuntimeError("no running event loop")` in exactly the case
+the drain exists for: a queued job present and a slot just freed. The raise lands *after* the terminal
+status commits and *before* the pending-count return, so the job is terminal in the database while
+the caller's `job_update` event never fires and the backlog never drains — a strong candidate for the
+"mid-scan UI drop-off" `schedule_discovery_scan_job`'s own docstring says it exists to diagnose.
+Test first: finalize from a **real** executor thread with a queued job present, asserting both that no
+exception escapes and that the queued job is genuinely scheduled; the test must fail against today's
+code. Fix by moving the drain onto the loop — either out of `_scan_finalize` into its async callers,
+or by making `schedule_discovery_scan_job` thread-safe via `asyncio.run_coroutine_threadsafe` against
+the captured main loop, as `monitor_service._publish_soon` already does. **Swallowing the
+`RuntimeError` is not a fix**; the backlog must actually drain. **Same commit:** revisit the defensive
+`try/except` Phase C added around the drain inside `finalize_agent_job` — with the real fix in place,
+either justify what it still protects or remove it.
+Green: `pytest tests/services/test_discovery_service.py tests/services/test_agent_discovery_reconcile.py --no-cov`.
 
 ### Phase D — Zero-configuration bootstrap (Tasks 24–25)
 

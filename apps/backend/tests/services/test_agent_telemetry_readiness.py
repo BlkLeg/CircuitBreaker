@@ -257,3 +257,147 @@ async def test_an_explicit_empty_networks_list_replaces_the_last_report(db_sessi
     row = _network_row(db_session, agent.id)
     assert row is not None
     assert (row.generation, row.facts) == (2, [])
+
+
+# ── The cancellation the refreshed scope produces (D-16) ──────────────────────
+# A readiness report that moves the scope retires the dispatches the new scope
+# no longer authorizes. `agent_discovery`'s cancellation section states the rule
+# every trigger obeys: the rows are closed inside the caller's transaction, and
+# **nothing is published until that transaction commits**. `ingest_readiness` is
+# the trigger's synchronous half, so the two tests below pin both directions —
+# an agent must never be told to abandon a dispatch a rollback then reinstates,
+# and it must be told once the rollback can no longer happen.
+
+# The agent's own subnet, and the interface that puts it there. The corpus
+# report at `_WITH_NETWORKS` moves the agent to 10.88/10.77, so a job aimed at
+# this subnet loses both its target and the scope version it was dispatched
+# under.
+_OWN_SUBNET = "10.20.30.0/24"
+_OWN_INTERFACE = {"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.20.30.5/24"]}
+
+
+def _agent_with_a_live_dispatch(db_session, factories):
+    """An agent holding one dispatched discovery job, in the state
+    `agent_discovery._claim` leaves it in.
+
+    Mirrors `tests/test_discovery.py`'s `_dispatched_job` rather than importing
+    it — that helper belongs to the API suite, and a cross-suite import would
+    make this file fail for edits made over there.
+    """
+    import secrets
+    from datetime import timedelta
+
+    from app.core.time import utcnow, utcnow_iso
+    from app.db.models import ScanJob
+    from app.services.discovery_eligibility import derive_discovery_scope
+
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="local_discovery", enabled=True)
+    factories.agent_network(agent, facts=[_OWN_INTERFACE])
+    db_session.expire_all()
+    job = ScanJob(
+        scan_agent_id=agent.id,
+        target_cidr=_OWN_SUBNET,
+        scan_types_json='["agent_connect"]',
+        source_type="agent",
+        status="running",
+        dispatch_id=secrets.token_hex(16),
+        dispatch_status="dispatched",
+        dispatch_deadline_at=utcnow() + timedelta(minutes=5),
+        scope_version=derive_discovery_scope(db_session, agent.id).version,
+        tenant_id=agent.tenant_id,
+        created_at=utcnow_iso(),
+    )
+    db_session.add(job)
+    db_session.flush()
+    return agent, job
+
+
+@pytest.fixture
+def cancel_frames(monkeypatch):
+    """Every control frame a cancellation would put on the wire. Patched on
+    `agent_registry`, which is the attribute `publish_discovery_cancels`
+    resolves through."""
+    from app.services import agent_registry
+
+    frames: list[tuple[int, dict]] = []
+
+    async def _spy(agent_id: int, frame: dict) -> bool:
+        frames.append((agent_id, frame))
+        return True
+
+    monkeypatch.setattr(agent_registry, "publish_agent_control_frame", _spy)
+    return frames
+
+
+def _cancels(frames):
+    from app.schemas.agent_frame import TYPE_DISCOVERY_CANCEL
+
+    return [frame["payload"] for _, frame in frames if frame["type"] == TYPE_DISCOVERY_CANCEL]
+
+
+async def _drain_the_loop() -> None:
+    """Give anything a trigger scheduled with `create_task` its chance to run,
+    so "nothing was published" cannot pass merely because nothing has been
+    scheduled *yet*. Two ticks: one to start the task, one for anything it
+    yields on."""
+    import asyncio
+
+    for _ in range(2):
+        await asyncio.sleep(0)
+
+
+async def test_a_readiness_commit_that_fails_publishes_no_discovery_cancel(
+    db_session, factories, cancel_frames
+):
+    """Nothing is published from inside the transaction (D-16).
+
+    A cancel published before the commit that closes its job is a cancel the
+    rollback un-does: the agent abandons the sweep, the server still shows the
+    job running, and it sits there until Task 23's pass expires it under the
+    wrong reason. The failure injected here is the one that actually happens —
+    a serialization failure or a concurrent writer's constraint violation
+    surfacing at `ingest_readiness`' own `db.commit()`, after the scope has
+    already been staged.
+    """
+    agent, _job = _agent_with_a_live_dispatch(db_session, factories)
+
+    def _explode() -> None:
+        raise RuntimeError("commit failed")
+
+    db_session.commit = _explode  # type: ignore[method-assign]
+    try:
+        with pytest.raises(RuntimeError, match="commit failed"):
+            await agent_telemetry.ingest_readiness(
+                db_session, agent, _corpus_payload(_WITH_NETWORKS)
+            )
+    finally:
+        del db_session.commit
+
+    await _drain_the_loop()
+
+    assert _cancels(cancel_frames) == []
+
+
+async def test_a_committed_readiness_scope_change_publishes_its_discovery_cancel(
+    db_session, factories, cancel_frames
+):
+    """The other half: the trigger still fires for this caller.
+
+    `record_network_facts` owns the trigger for both of its callers precisely so
+    neither can silently lack it, and moving the publish out to the caller must
+    not turn `capability.readiness` into the frame that closes jobs without ever
+    telling the agent.
+    """
+    from app.services import agent_discovery
+
+    agent, job = _agent_with_a_live_dispatch(db_session, factories)
+
+    await agent_telemetry.ingest_readiness(db_session, agent, _corpus_payload(_WITH_NETWORKS))
+
+    assert _cancels(cancel_frames) == [
+        {"dispatch_id": job.dispatch_id, "reason": agent_discovery.ERROR_SCOPE_CHANGED}
+    ]
+    db_session.refresh(job)
+    assert job.status == agent_discovery.CANCELLED_JOB_STATUS
+    assert job.error_reason == agent_discovery.ERROR_SCOPE_CHANGED
