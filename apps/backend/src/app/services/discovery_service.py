@@ -442,6 +442,170 @@ def granted_tcp_ports(config: dict[str, Any]) -> frozenset[int]:
     return frozenset(p for p in ports if isinstance(p, int) and not isinstance(p, bool))
 
 
+# ── Central pause controls (Slice 4 plan §3/§6, Task 25) ─────────────────────
+#
+# "The central UI can pause automatic discovery globally, per agent, or per
+# subnet." Three switches, three storage locations, and — the part that decides
+# the shape of the code below — no precedence between them: each one holds on its
+# own and none of them releases either of the others. A single boolean derived by
+# short-circuiting them together would read the same and behave the same until
+# somebody resumed the wrong one.
+#
+# Pausing is not disabling. `DiscoveryProfile.enabled = 0` means the subnet is
+# gone (plan §3 step 6) and is what a *disappearance* writes; a pause leaves the
+# row, its cron expression, its jobs and its results exactly where they are and
+# only withholds the APScheduler registration.
+
+# The fleet-wide scope's storage is the mapped column
+# `AppSettings.agent_discovery_paused`, named directly by its one reader
+# (`global_agent_discovery_paused`) and its one writer (`POST
+# /discovery/pause`). A `GLOBAL_DISCOVERY_PAUSE_SETTING = "agent_discovery_paused"`
+# constant used to sit here; it is gone because nothing in `src/` ever read it,
+# its stated justification (that both call sites named the scope through it) was
+# false of both, and a constant-driven `setattr` type-checks against nothing —
+# which is how the scope stayed unstorable behind six green tests until Fix A2.
+# The per-agent key below is a different kind of name: it is a JSON key inside a
+# grant blob, so no attribute lookup can ever check it for us.
+
+#: The `local_discovery` grant key Task 3 added for the per-agent scope.
+AGENT_DISCOVERY_PAUSE_KEY = "auto_discovery_paused"
+
+
+def global_agent_discovery_paused(db: Session) -> bool:
+    """Whether the fleet-wide hold is on.
+
+    Scoped to **agent-executed** profiles by its callers, not to discovery as a
+    whole: `app_settings.discovery_enabled` is already the product's master
+    discovery switch, and a second flag that also silenced the server's own crons
+    would mean an operator holding an agent fleet stopped scanning the networks
+    the server can see itself.
+    """
+    settings = get_or_create_settings(db)
+    # A direct attribute read, not `getattr(..., False)`: with the column in
+    # place the fallback could only ever mask a mapping that had gone missing,
+    # and it would mask it as "not paused" — the answer that quietly resumes a
+    # fleet an operator believes is held.
+    return bool(settings.agent_discovery_paused)
+
+
+def paused_agent_ids(db: Session, agent_ids: Collection[int]) -> frozenset[int]:
+    """Which of *agent_ids* carry `local_discovery.auto_discovery_paused`.
+
+    Through `bulk_structured_grants_dict` so a fleet costs one query rather than
+    one per profile, and so the registry defaults are merged the same way the
+    single-agent reader merges them — an agent approved before Task 3 keeps
+    `config = {}` in the database and resolves `auto_discovery_paused = False`
+    at read time.
+    """
+    if not agent_ids:
+        return frozenset()
+    from app.services.agent_registry import bulk_structured_grants_dict
+
+    grants = bulk_structured_grants_dict(db, sorted(set(agent_ids)))
+    held = set()
+    for agent_id, capabilities in grants.items():
+        config = (capabilities.get(discovery_eligibility.CAPABILITY) or {}).get("config") or {}
+        # `is True` and not truthiness: the normalizer stores a real boolean
+        # (Task 3), and a stray string would otherwise pause an agent's
+        # discovery indefinitely whichever word it held.
+        if config.get(AGENT_DISCOVERY_PAUSE_KEY) is True:
+            held.add(agent_id)
+    return frozenset(held)
+
+
+def agent_scheduling_paused(db: Session, agent_id: int) -> bool:
+    """The two scopes that hold a whole agent, for a caller that has just one.
+
+    The per-subnet scope is deliberately absent: a caller with one agent id has
+    no profile to ask about yet. `discovery_bootstrap` is the caller — plan §3
+    step 4's initial scan is scheduling like any other, so a paused agent gets
+    its profile (nothing is deleted, and the subnet keeps its identity and its
+    history) and no scan.
+    """
+    return global_agent_discovery_paused(db) or agent_id in paused_agent_ids(db, (agent_id,))
+
+
+def _held_by_any_scope(
+    profile: DiscoveryProfile, *, fleet_paused: bool, held_agents: Collection[int]
+) -> bool:
+    """The one definition of "this profile is held", given the two fleet answers.
+
+    Both readers below call this rather than repeating the shape: one asks about
+    every profile at once for the two registration sites, the other asks about a
+    single profile when its cron fires, and a hold that reached one and not the
+    other is precisely the class of defect this whole seam has produced twice.
+
+    No precedence between the scopes, in either direction — each holds on its own
+    and none of them releases either of the others.
+    """
+    if profile.paused_at is not None:
+        return True
+    if profile.scan_agent_id is None:
+        # The fleet-wide and per-agent scopes are holds on *agent-executed*
+        # discovery; the server's own crons answer to `discovery_enabled`.
+        return False
+    return fleet_paused or profile.scan_agent_id in held_agents
+
+
+def profiles_due_for_scheduling(db: Session) -> list[DiscoveryProfile]:
+    """The profiles a cron may be registered for.
+
+    The single place that decides, asked by both registration sites —
+    `core.scheduler.reload_discovery_jobs` on every write that can change a
+    schedule, and `app.main._register_discovery_profile_crons` at process start.
+
+    Lives here rather than in `core/scheduler.py` because which profiles are due
+    is a discovery-domain question — the scheduler module's job is to turn the
+    answer into `CronTrigger`s. A profile withheld here keeps everything it has
+    except its next fire time, which is what `DiscoveryStatusOut.next_scheduled`
+    then stops reporting.
+    """
+    profiles = (
+        db.query(DiscoveryProfile)
+        .filter(
+            DiscoveryProfile.enabled == 1,
+            DiscoveryProfile.schedule_cron.isnot(None),
+            DiscoveryProfile.schedule_cron != "",
+        )
+        .all()
+    )
+    agent_ids = {p.scan_agent_id for p in profiles if p.scan_agent_id is not None}
+    # Both fleet-wide reads are skipped entirely when no profile names an agent,
+    # so an installation with no agents pays nothing for this gate.
+    fleet_paused = bool(agent_ids) and global_agent_discovery_paused(db)
+    held_agents = paused_agent_ids(db, agent_ids)
+    return [
+        profile
+        for profile in profiles
+        if not _held_by_any_scope(profile, fleet_paused=fleet_paused, held_agents=held_agents)
+    ]
+
+
+def profile_scheduling_held(db: Session, profile: DiscoveryProfile) -> bool:
+    """Whether *profile* may not scan **right now**, across all three scopes.
+
+    The fire-time half of the gate, and the reason the pause is a property of the
+    database rather than of one process's scheduler state. APScheduler is
+    process-local and production runs `uvicorn --workers 2`, so a pause applied
+    through an API request rebuilds only the schedule of the worker that served
+    it; the other worker's registered cron keeps its fire times, and nothing ever
+    rebuilds that worker's schedule on its own. Registration-time gating alone is
+    therefore a hold on one worker, not on the fleet.
+
+    Costs at most two small queries, on a path whose next step is a network scan.
+    """
+    agent_id = profile.scan_agent_id
+    if profile.paused_at is not None or agent_id is None:
+        # Neither fleet-wide read can change the answer for a profile already
+        # held on its own row or with no agent to hold, so neither is paid for.
+        return _held_by_any_scope(profile, fleet_paused=False, held_agents=())
+    return _held_by_any_scope(
+        profile,
+        fleet_paused=global_agent_discovery_paused(db),
+        held_agents=paused_agent_ids(db, (agent_id,)),
+    )
+
+
 def _eligibility_now(
     pending: Coroutine[Any, Any, discovery_eligibility.Eligibility],
 ) -> discovery_eligibility.Eligibility:
@@ -1018,6 +1182,28 @@ def _auto_merge_known_devices(db: Session, job_id: int) -> None:
     """
     Auto-update Hardware rows for already-known devices.
     Only new/changed devices stay pending.
+
+    This is what makes a *recurring* cadence bearable (Slice 4 plan §3 step 5,
+    Task 25): a profile that rescans the same subnet every six hours has to
+    refresh `last_seen` on the devices the inventory already knows, or every
+    pass adds the same rows to the review queue again.
+
+    The one thing it will not do is let an **agent** rename a device. Plan §4
+    lists `hostname` among the agent's untrusted observations, beside banner and
+    evidence, so an agent-sourced row whose hostname disagrees with the
+    inventory is treated exactly as an `ip_changed`/`mac_changed` already is —
+    left `pending` for an operator, with `Hardware` untouched.
+
+    **The guard is provenance-scoped, and deliberately not global.** It reads
+    `ScanResult.discovery_agent_id` — the row's own reporter (Task 4) — rather
+    than the setting or the job, so the server's own scan of a network the
+    server can see keeps renaming hardware exactly as it has since the feature
+    shipped. Plan §4's rule is written about the `discovery.finding` frame; a
+    hostname the server resolved itself is inside its own trust boundary, and
+    widening the rule to every result would move every DHCP rename on every
+    existing installation into the review queue for no stated requirement.
+    `tests/services/test_discovery_service.py` pins both halves so the choice is
+    legible.
     """
     pending = (
         db.execute(
@@ -1043,10 +1229,18 @@ def _auto_merge_known_devices(db: Session, job_id: int) -> None:
             continue  # genuinely new — leave pending
         ip_changed = result.ip_address and hw.ip_address != result.ip_address
         mac_changed = result.mac_address and hw.mac_address != result.mac_address
-        if ip_changed or mac_changed:
+        hostname_changed = result.hostname and hw.hostname != result.hostname
+        # Plan §4: the reporting agent's hostname is an observation, not a fact
+        # about the device, so a disagreement is a review and not a rename. Held
+        # to the same shape as the two above rather than to a quieter "refresh
+        # `last_seen` but skip the name": an operator who is shown nothing has no
+        # way to learn that the two sources disagree. It is also what leaves the
+        # write below reachable only for a server-observed row, so there is one
+        # place that decides this and not two.
+        if ip_changed or mac_changed or (hostname_changed and result.discovery_agent_id):
             continue  # significant change — leave pending for user review
         hw.last_seen = datetime.now(UTC).isoformat()
-        if result.hostname and hw.hostname != result.hostname:
+        if hostname_changed:
             hw.hostname = result.hostname
         result.merge_status = "auto_updated"
     db.commit()

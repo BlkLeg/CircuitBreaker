@@ -610,3 +610,238 @@ async def test_finalizing_in_an_executor_thread_still_drains_the_backlog(
     await _eventually(
         lambda: queued.id in started, what=f"queued job {queued.id} reaching the scan executor"
     )
+
+
+# ── Task 25: the recurring pass, and whose hostname may rename a device ───────
+#
+# `_auto_merge_known_devices` is what makes a *recurring* cadence bearable: a
+# profile that rescans the same subnet every six hours must refresh `last_seen`
+# on the devices it already knows rather than pile the same rows into the review
+# queue forever. Plan §4 lists `hostname` among the agent's *untrusted
+# observations*, next to banner and evidence, so a name an agent reports may not
+# be written onto a `Hardware` row.
+#
+# **Scope chosen: agent-sourced results only.** Plan §4's untrusted-observation
+# rule is written about the `discovery.finding` frame — a report from a process
+# on a host outside the server's trust boundary — and Task 25's own wording is
+# "agent-supplied `hostname`" twice. The server's own scan of a network the
+# server can see has always renamed hardware, and there is no requirement in
+# this slice to change that; doing so would silently move every DHCP rename on
+# every existing installation into the review queue. The guard therefore reads
+# `ScanResult.discovery_agent_id`, the row's own provenance (Task 4), not the
+# job's and not the setting's. The pair
+# `test_an_agent_findings_hostname_never_renames_the_hardware_row` /
+# `test_a_server_scans_hostname_change_still_renames_the_hardware_row` is what
+# records that choice: under the other reading — non-propagation for everyone —
+# the second of them fails.
+
+
+def _merge_result(db_session, job, **kwargs):  # type: ignore[no-untyped-def]
+    """One `pending` scan result on `job`, in the shape `_scan_import` writes."""
+    from app.core.time import utcnow_iso
+    from app.db.models import ScanResult
+
+    defaults = {
+        "scan_job_id": job.id,
+        "state": "matched",
+        "merge_status": "pending",
+        "source_type": "nmap",
+        "created_at": utcnow_iso(),
+    }
+    defaults.update(kwargs)
+    result = ScanResult(**defaults)
+    db_session.add(result)
+    db_session.flush()
+    return result
+
+
+_STALE_LAST_SEEN = "2020-01-01T00:00:00+00:00"
+
+
+def test_a_recurring_scan_refreshes_last_seen_for_an_unchanged_known_device(
+    db_session, factories
+) -> None:  # type: ignore[no-untyped-def]
+    """The reason a six-hourly cadence does not drown the review queue."""
+    from app.services import discovery_service
+
+    hw = factories.hardware(
+        ip_address="10.70.0.10",
+        mac_address="aa:bb:cc:00:00:10",
+        hostname="nas",
+        last_seen=_STALE_LAST_SEEN,
+    )
+    job = _backlog_job(db_session, status="completed")
+    result = _merge_result(
+        db_session,
+        job,
+        ip_address="10.70.0.10",
+        mac_address="aa:bb:cc:00:00:10",
+        hostname="nas",
+    )
+
+    discovery_service._auto_merge_known_devices(db_session, job.id)
+
+    assert result.merge_status == "auto_updated"
+    assert hw.last_seen != _STALE_LAST_SEEN
+
+
+def test_only_genuinely_new_or_conflicting_devices_stay_pending(db_session, factories) -> None:  # type: ignore[no-untyped-def]
+    """The other half: an unknown device, a moved address and a swapped NIC are
+    the three things an operator has to look at, and nothing else is."""
+    from app.services import discovery_service
+
+    factories.hardware(ip_address="10.71.0.10", mac_address="aa:bb:cc:00:01:10", hostname="known")
+    factories.hardware(ip_address="10.71.0.11", mac_address="aa:bb:cc:00:01:11", hostname="moved")
+    factories.hardware(ip_address="10.71.0.12", mac_address="aa:bb:cc:00:01:12", hostname="renic")
+    job = _backlog_job(db_session, status="completed")
+    unchanged = _merge_result(
+        db_session, job, ip_address="10.71.0.10", mac_address="aa:bb:cc:00:01:10"
+    )
+    unknown = _merge_result(
+        db_session, job, ip_address="10.71.0.99", mac_address="aa:bb:cc:00:01:99", state="new"
+    )
+    ip_changed = _merge_result(
+        db_session, job, ip_address="10.71.0.200", mac_address="aa:bb:cc:00:01:11"
+    )
+    mac_changed = _merge_result(
+        db_session, job, ip_address="10.71.0.12", mac_address="aa:bb:cc:00:0f:ff"
+    )
+
+    discovery_service._auto_merge_known_devices(db_session, job.id)
+
+    assert unchanged.merge_status == "auto_updated"
+    assert [unknown.merge_status, ip_changed.merge_status, mac_changed.merge_status] == [
+        "pending",
+        "pending",
+        "pending",
+    ]
+
+
+def test_an_agent_findings_hostname_never_renames_the_hardware_row(db_session, factories) -> None:  # type: ignore[no-untyped-def]
+    """Plan §4: the agent's hostname is an untrusted observation. A difference
+    is treated exactly as `ip_changed`/`mac_changed` already is — the row stays
+    `pending` for an operator, `last_seen` is not touched, and the name the
+    administrator can see in the inventory is left alone."""
+    from app.services import discovery_service
+
+    agent = _backlog_agent(db_session, factories)
+    hw = factories.hardware(
+        ip_address="10.72.0.10",
+        mac_address="aa:bb:cc:00:02:10",
+        hostname="inventory-name",
+        last_seen=_STALE_LAST_SEEN,
+    )
+    job = _backlog_job(db_session, status="completed", scan_agent_id=agent.id, source_type="agent")
+    result = _merge_result(
+        db_session,
+        job,
+        ip_address="10.72.0.10",
+        mac_address="aa:bb:cc:00:02:10",
+        hostname="attacker-chosen",
+        source_type="agent",
+        discovery_agent_id=agent.id,
+    )
+
+    discovery_service._auto_merge_known_devices(db_session, job.id)
+
+    assert hw.hostname == "inventory-name"
+    assert hw.last_seen == _STALE_LAST_SEEN
+    assert result.merge_status == "pending"
+
+
+def test_a_server_scans_hostname_change_still_renames_the_hardware_row(
+    db_session, factories
+) -> None:  # type: ignore[no-untyped-def]
+    """The twin that records the scope of the decision above. The server path is
+    byte-identical to what it was before Task 25: a hostname difference on a
+    result the *server* observed still renames the row and still auto-updates.
+    Had the non-propagation been read as applying to every result, this test
+    would fail — which is the point of writing it."""
+    from app.services import discovery_service
+
+    hw = factories.hardware(
+        ip_address="10.73.0.10",
+        mac_address="aa:bb:cc:00:03:10",
+        hostname="old-name",
+        last_seen=_STALE_LAST_SEEN,
+    )
+    job = _backlog_job(db_session, status="completed")
+    result = _merge_result(
+        db_session,
+        job,
+        ip_address="10.73.0.10",
+        mac_address="aa:bb:cc:00:03:10",
+        hostname="new-name",
+        discovery_agent_id=None,
+    )
+
+    discovery_service._auto_merge_known_devices(db_session, job.id)
+
+    assert hw.hostname == "new-name"
+    assert hw.last_seen != _STALE_LAST_SEEN
+    assert result.merge_status == "auto_updated"
+
+
+def test_an_agent_finding_that_agrees_about_the_hostname_still_refreshes_last_seen(
+    db_session, factories
+) -> None:  # type: ignore[no-untyped-def]
+    """The guard is about *propagation*, not about refusing agent rows. An agent
+    that reports a device the inventory already agrees about is exactly the
+    recurring-cadence case `last_seen` exists for."""
+    from app.services import discovery_service
+
+    agent = _backlog_agent(db_session, factories)
+    hw = factories.hardware(
+        ip_address="10.74.0.10",
+        mac_address="aa:bb:cc:00:04:10",
+        hostname="nas",
+        last_seen=_STALE_LAST_SEEN,
+    )
+    job = _backlog_job(db_session, status="completed", scan_agent_id=agent.id, source_type="agent")
+    result = _merge_result(
+        db_session,
+        job,
+        ip_address="10.74.0.10",
+        mac_address="aa:bb:cc:00:04:10",
+        hostname="nas",
+        source_type="agent",
+        discovery_agent_id=agent.id,
+    )
+
+    discovery_service._auto_merge_known_devices(db_session, job.id)
+
+    assert result.merge_status == "auto_updated"
+    assert hw.last_seen != _STALE_LAST_SEEN
+    assert hw.hostname == "nas"
+
+
+def test_an_agent_finding_may_not_name_a_device_the_inventory_left_unnamed(
+    db_session, factories
+) -> None:  # type: ignore[no-untyped-def]
+    """`hw.hostname is None` is the case that reads as "supplementing missing
+    information" and is therefore the most tempting exception to make. It is
+    still a rename decided by an untrusted reporter, so it is still a review."""
+    from app.services import discovery_service
+
+    agent = _backlog_agent(db_session, factories)
+    hw = factories.hardware(
+        ip_address="10.75.0.10",
+        mac_address="aa:bb:cc:00:05:10",
+        hostname=None,
+        last_seen=_STALE_LAST_SEEN,
+    )
+    job = _backlog_job(db_session, status="completed", scan_agent_id=agent.id, source_type="agent")
+    result = _merge_result(
+        db_session,
+        job,
+        ip_address="10.75.0.10",
+        mac_address="aa:bb:cc:00:05:10",
+        hostname="agent-says",
+        source_type="agent",
+        discovery_agent_id=agent.id,
+    )
+
+    discovery_service._auto_merge_known_devices(db_session, job.id)
+
+    assert hw.hostname is None
+    assert result.merge_status == "pending"

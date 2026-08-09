@@ -9,6 +9,13 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 _scheduler = AsyncIOScheduler()
 
+#: Catch-up window for a discovery-profile cron whose fire time was missed.
+#: Named and exported because `app.main` registers the same jobs at startup:
+#: a profile that changed its catch-up behaviour the moment an unrelated
+#: profile write triggered the first reload of a process would be
+#: untraceable from the outside.
+DISCOVERY_PROFILE_MISFIRE_GRACE_S = 300
+
 
 def set_scheduler_instance(scheduler: AsyncIOScheduler) -> None:
     """Bind scheduler helpers to the app's active scheduler instance."""
@@ -56,9 +63,17 @@ def reload_discovery_jobs(db: Session) -> None:
     Remove any stale APScheduler jobs whose profile no longer exists
     or is disabled. Register CronTrigger jobs for active profiles.
     Job IDs follow the pattern: "discovery_profile_{profile_id}"
+
+    Which profiles are due is `discovery_service.profiles_due_for_scheduling`'s
+    answer, not a query written here: Slice 4 plan §3 lets an operator pause
+    automatic discovery globally, per agent or per subnet, and a pause has to be
+    a decision of the discovery domain rather than of the module that turns the
+    answer into `CronTrigger`s. Because this function removes every discovery job
+    it owns before re-registering, withholding a profile here is the whole
+    mechanism: nothing is deleted, and the profile resumes on the next reload.
     """
-    from app.db.models import DiscoveryProfile
     from app.services.discovery_scheduler import purge_old_scan_results, run_scan_job_by_profile
+    from app.services.discovery_service import profiles_due_for_scheduling
 
     # Remove all existing discovery jobs
     scheduler = get_scheduler()
@@ -67,15 +82,7 @@ def reload_discovery_jobs(db: Session) -> None:
         if job.id.startswith("discovery_profile_") or job.id == "discovery_purge":
             job.remove()
 
-    profiles = (
-        db.query(DiscoveryProfile)
-        .filter(
-            DiscoveryProfile.enabled == 1,
-            DiscoveryProfile.schedule_cron.isnot(None),
-            DiscoveryProfile.schedule_cron != "",
-        )
-        .all()
-    )
+    profiles = profiles_due_for_scheduling(db)
 
     for profile in profiles:
         try:
@@ -86,7 +93,7 @@ def reload_discovery_jobs(db: Session) -> None:
                 id=f"discovery_profile_{profile.id}",
                 args=[profile.id],
                 replace_existing=True,
-                misfire_grace_time=300,
+                misfire_grace_time=DISCOVERY_PROFILE_MISFIRE_GRACE_S,
             )
             logger.info(
                 f"Scheduled discovery profile {profile.id}"

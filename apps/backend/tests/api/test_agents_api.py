@@ -1474,12 +1474,14 @@ def _discovery_cancels(frames):
     return [f["payload"] for _, f in frames if f["type"] == TYPE_DISCOVERY_CANCEL]
 
 
-def _discovery_agent(factories, **grant):
+def _discovery_agent(factories, *, interfaces=None, **grant):
     agent = factories.agent(status="active")
     factories.agent_capability_grant(
         agent, capability="local_discovery", enabled=True, config=grant.get("config", {})
     )
-    factories.agent_network(agent, facts=_DISCOVERY_INTERFACES)
+    # One `agent_networks` row per agent (`uq_agent_networks_agent_id`), so the
+    # reported interfaces are chosen here rather than layered on afterwards.
+    factories.agent_network(agent, facts=interfaces or _DISCOVERY_INTERFACES)
     factories.agent_capability_readiness(agent, collector="discovery.tcp", state="ready")
     return agent
 
@@ -1739,3 +1741,527 @@ async def test_revoke_succeeds_when_the_cancel_cannot_be_delivered(
     await _assert_a_late_finding_is_refused(
         db_session, agent, job, reason=agent_discovery.REASON_AGENT_INACTIVE
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /agents/{id}/discovery — the Agent Detail scope section (§6 / Task 26)
+# ---------------------------------------------------------------------------
+#
+# `GET /agents/{id}/probes`' twin, and deliberately shaped like it: it is what
+# `AgentDetailPage` already loads for `AssignedProbesSection`, and Task 27's
+# `DiscoveryScopeSection` is cloned from that component. Plan §6 names what it
+# has to carry — "effective CIDRs and their automatic/override provenance, port
+# set, limits, readiness, active job, and recent job history".
+#
+# Two of those need care:
+#
+# * **Provenance** is not decoration. An automatic subnet came off the agent's
+#   own interfaces and disappears when the interface does; an override is a CIDR
+#   an administrator typed and nothing but another edit removes. The section lets
+#   an operator exclude the first and add the second, so a UI that could not tell
+#   them apart would offer the wrong control.
+# * **Effective** is not the allow list. `EffectiveScope.networks` is what is
+#   permitted *before* exclusions and the static special-use blocklist are
+#   subtracted, and rendering it as reachability would claim access the evaluator
+#   refuses.
+
+DISCOVERY_SUBNET_B = "10.30.41.0/24"
+_TWO_SUBNET_INTERFACES = [
+    {"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.30.40.5/24"]},
+    {"name": "eth1", "flags": ["broadcast", "up"], "addrs": ["10.30.41.5/24"]},
+]
+
+
+def _discovery_url(agent) -> str:
+    return f"/api/v1/agents/{agent.id}/discovery"
+
+
+def _scope_by_cidr(body) -> dict:
+    return {entry["cidr"]: entry for entry in body["scope"]}
+
+
+@pytest.mark.asyncio
+async def test_agent_discovery_renders_scope_with_provenance_and_the_effective_verdict(
+    client, factories, viewer_headers
+):
+    agent = _discovery_agent(
+        factories,
+        interfaces=_TWO_SUBNET_INTERFACES,
+        config={
+            "excluded_cidrs": [DISCOVERY_SUBNET_B],
+            "additional_cidrs": ["10.31.0.0/24"],
+        },
+    )
+
+    resp = await client.get(_discovery_url(agent), headers=viewer_headers)
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["agent_id"] == agent.id
+    scope = _scope_by_cidr(body)
+
+    # Directly connected and unexcluded: automatic, and actually reachable.
+    assert scope[_DISCOVERY_SUBNET]["provenance"] == "automatic"
+    assert scope[_DISCOVERY_SUBNET]["effective"] is True
+
+    # Directly connected but centrally excluded — this is the difference between
+    # the allow list and what the evaluator permits, and the whole reason
+    # `effective` is a separate field from membership in `scope`.
+    assert scope[DISCOVERY_SUBNET_B]["provenance"] == "automatic"
+    assert scope[DISCOVERY_SUBNET_B]["effective"] is False
+    assert scope[DISCOVERY_SUBNET_B]["reason"] == "excluded_cidr"
+
+    # An administrator's routed override: in the allow list, not directly
+    # connected, and visibly a different kind of thing.
+    assert scope["10.31.0.0/24"]["provenance"] == "override"
+    assert scope["10.31.0.0/24"]["effective"] is True
+
+    assert body["scope_version"]
+
+
+@pytest.mark.asyncio
+async def test_agent_discovery_reports_the_port_set_and_the_grant_limits(
+    client, factories, viewer_headers
+):
+    """Plan §6 asks the section to show the port set and the limits, because
+    those are what refuse an otherwise-fine agent (`port_not_granted`,
+    `address_limit_exceeded`) — an operator reading a refusal needs the numbers
+    it was measured against on the same page."""
+    agent = _discovery_agent(factories, config={"max_addresses_per_job": 512})
+
+    body = (await client.get(_discovery_url(agent), headers=viewer_headers)).json()
+
+    limits = body["limits"]
+    assert limits["max_addresses_per_job"] == 512
+    assert limits["max_concurrent_hosts"] == LOCAL_DISCOVERY_DEFAULT_CONFIG["max_concurrent_hosts"]
+    assert limits["host_timeout_ms"] == LOCAL_DISCOVERY_DEFAULT_CONFIG["host_timeout_ms"]
+    assert limits["job_timeout_seconds"] == LOCAL_DISCOVERY_DEFAULT_CONFIG["job_timeout_seconds"]
+    assert limits["scope_mode"] == LOCAL_DISCOVERY_DEFAULT_CONFIG["scope_mode"]
+    assert limits["tcp_ports"] == LOCAL_DISCOVERY_DEFAULT_CONFIG["tcp_ports"]
+
+
+@pytest.mark.asyncio
+async def test_agent_discovery_reports_every_collector_including_the_ones_with_no_row(
+    client, factories, viewer_headers
+):
+    """D-8 names four discovery collectors. A collector that has never reported
+    is rendered with a null state rather than omitted: "not installed" and
+    "installed and broken" are different operator problems, and an absent row is
+    the one that makes a job refuse with `readiness_unknown`."""
+    from app.services import discovery_eligibility
+
+    agent = _discovery_agent(factories)  # brings discovery.tcp = ready
+    factories.agent_capability_readiness(
+        agent, collector="discovery.icmp", state="degraded", reason="no datagram socket"
+    )
+
+    body = (await client.get(_discovery_url(agent), headers=viewer_headers)).json()
+
+    rows = {row["collector"]: row for row in body["readiness"]}
+    assert set(rows) == set(discovery_eligibility.READINESS_COLLECTORS)
+    assert rows["discovery.tcp"]["state"] == "ready"
+    # The one collector a job is actually gated on, flagged as such: the other
+    # three are legitimately unavailable on an unprivileged host that can still
+    # run the whole scan.
+    assert rows["discovery.tcp"]["required"] is True
+    assert rows["discovery.icmp"]["state"] == "degraded"
+    assert rows["discovery.icmp"]["reason"] == "no datagram socket"
+    assert rows["discovery.icmp"]["required"] is False
+    assert rows["discovery.neighbor"]["state"] is None
+    assert rows["discovery.dns"]["state"] is None
+
+
+@pytest.mark.asyncio
+async def test_agent_discovery_reports_the_live_job_its_history_and_its_profiles(
+    client, factories, viewer_headers, db_session
+):
+    from app.core.time import utcnow_iso
+    from app.db.models import DiscoveryProfile
+
+    agent = _discovery_agent(factories)
+    other = _discovery_agent(factories)
+    now = utcnow_iso()
+    profile = DiscoveryProfile(
+        name="held",
+        cidr=_DISCOVERY_SUBNET,
+        normalized_cidr=_DISCOVERY_SUBNET,
+        scan_types='["agent_connect"]',
+        scan_agent_id=agent.id,
+        managed_by="system",
+        schedule_cron="7 */6 * * *",
+        enabled=1,
+        created_at=now,
+        updated_at=now,
+    )
+    db_session.add(profile)
+    db_session.flush()
+    live = _live_dispatch(db_session, agent, profile_id=profile.id)
+    finished = _live_dispatch(
+        db_session, agent, status="completed", dispatch_status="completed", hosts_found=3
+    )
+    elsewhere = _live_dispatch(db_session, other)
+
+    body = (await client.get(_discovery_url(agent), headers=viewer_headers)).json()
+
+    assert [job["id"] for job in body["active_jobs"]] == [live.id]
+    assert body["active_jobs"][0]["scan_agent_id"] == agent.id
+    history = [job["id"] for job in body["recent_jobs"]]
+    assert finished.id in history
+    # Another agent's work is another agent's page.
+    assert elsewhere.id not in history
+    assert elsewhere.id not in [job["id"] for job in body["active_jobs"]]
+    assert [p["id"] for p in body["profiles"]] == [profile.id]
+    assert body["profiles"][0]["schedule_cron"] == "7 */6 * * *"
+    assert body["profiles"][0]["managed_by"] == "system"
+
+
+@pytest.mark.asyncio
+async def test_agent_discovery_reports_why_nothing_is_being_discovered(
+    client, factories, viewer_headers
+):
+    """The section's whole job when it is empty. `reason` is the same closed
+    vocabulary the scan endpoints refuse with, so the page and the error the
+    operator just saw agree."""
+    granted = _discovery_agent(factories)
+    body = (await client.get(_discovery_url(granted), headers=viewer_headers)).json()
+    assert body["granted"] is True
+    assert body["eligible"] is True
+    assert body["reason"] is None
+
+    ungranted = factories.agent(status="active")
+    factories.agent_network(ungranted, facts=_DISCOVERY_INTERFACES)
+    body = (await client.get(_discovery_url(ungranted), headers=viewer_headers)).json()
+    assert body["granted"] is False
+    assert body["eligible"] is False
+    assert body["reason"] == "capability_disabled"
+
+
+@pytest.mark.asyncio
+async def test_agent_discovery_returns_404_for_an_unknown_agent(client, viewer_headers):
+    resp = await client.get("/api/v1/agents/999999/discovery", headers=viewer_headers)
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Per-agent pause / resume, and deletion against a live assignment (Task 26)
+# ---------------------------------------------------------------------------
+
+
+def _scheduled_profile_ids():
+    from app.core.scheduler import get_scheduler
+
+    return {
+        int(job.id.removeprefix("discovery_profile_"))
+        for job in get_scheduler().get_jobs()
+        if job.id.startswith("discovery_profile_")
+    }
+
+
+def _agent_profile(db_session, agent, **kwargs):
+    from app.core.time import utcnow_iso
+    from app.db.models import DiscoveryProfile
+
+    now = utcnow_iso()
+    defaults = {
+        "name": f"auto-{agent.id}",
+        "cidr": _DISCOVERY_SUBNET,
+        "normalized_cidr": _DISCOVERY_SUBNET,
+        "scan_types": '["agent_connect"]',
+        "scan_agent_id": agent.id,
+        "managed_by": "system",
+        "schedule_cron": "5 */6 * * *",
+        "enabled": 1,
+        "created_at": now,
+        "updated_at": now,
+    }
+    defaults.update(kwargs)
+    profile = DiscoveryProfile(**defaults)
+    db_session.add(profile)
+    db_session.flush()
+    return profile
+
+
+@pytest.mark.asyncio
+async def test_pausing_an_agents_discovery_stops_its_crons_and_cancels_nothing(
+    client, factories, auth_headers, db_session, discovery_frames
+):
+    """M14's per-agent hold. It is *not* a capability disable: D-14 retires
+    every in-flight dispatch when the grant goes off, and a pause that did the
+    same would make "hold this agent for an hour" destroy work in progress."""
+    from app.core.scheduler import reload_discovery_jobs
+
+    agent = _discovery_agent(factories)
+    profile = _agent_profile(db_session, agent)
+    job = _live_dispatch(db_session, agent, profile_id=profile.id)
+    reload_discovery_jobs(db_session)
+    assert profile.id in _scheduled_profile_ids()
+
+    resp = await client.post(f"/api/v1/agents/{agent.id}/discovery/pause", headers=auth_headers)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["paused"] is True
+    assert resp.json()["granted"] is True
+    assert profile.id not in _scheduled_profile_ids()
+    db_session.refresh(job)
+    assert job.status == "running"
+    assert _discovery_cancels(discovery_frames) == []
+
+
+@pytest.mark.asyncio
+async def test_resuming_an_agents_discovery_puts_its_crons_back(
+    client, factories, auth_headers, db_session
+):
+    agent = _discovery_agent(factories)
+    profile = _agent_profile(db_session, agent)
+
+    await client.post(f"/api/v1/agents/{agent.id}/discovery/pause", headers=auth_headers)
+    assert profile.id not in _scheduled_profile_ids()
+
+    resp = await client.post(f"/api/v1/agents/{agent.id}/discovery/resume", headers=auth_headers)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["paused"] is False
+    assert profile.id in _scheduled_profile_ids()
+
+
+@pytest.mark.asyncio
+async def test_pausing_an_agents_discovery_leaves_the_rest_of_the_grant_alone(
+    client, factories, auth_headers, db_session
+):
+    """The hold rides the grant config, so writing it is a grant write — and a
+    grant write that reset `tcp_ports` or `excluded_cidrs` to the registry
+    defaults would silently widen or narrow what the agent may scan."""
+    agent = _discovery_agent(
+        factories, config={"tcp_ports": [22, 443], "excluded_cidrs": ["10.30.40.128/25"]}
+    )
+
+    await client.post(f"/api/v1/agents/{agent.id}/discovery/pause", headers=auth_headers)
+
+    from app.services import agent_registry
+
+    grant = agent_registry.structured_grants_dict(db_session, agent.id)["local_discovery"]
+    assert grant["enabled"] is True
+    assert grant["config"]["auto_discovery_paused"] is True
+    assert grant["config"]["tcp_ports"] == [22, 443]
+    assert grant["config"]["excluded_cidrs"] == ["10.30.40.128/25"]
+
+
+@pytest.mark.asyncio
+async def test_pausing_an_agents_discovery_requires_admin(client, factories, viewer_headers):
+    agent = _discovery_agent(factories)
+    resp = await client.post(f"/api/v1/agents/{agent.id}/discovery/pause", headers=viewer_headers)
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_pausing_discovery_for_an_unknown_agent_is_a_404(client, auth_headers):
+    resp = await client.post("/api/v1/agents/999999/discovery/pause", headers=auth_headers)
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# The same hold, written through the generic capabilities route (Phase D)
+# ---------------------------------------------------------------------------
+#
+# `auto_discovery_paused` is an ordinary client-settable key of the
+# `local_discovery` grant, so `PUT /agents/{id}/capabilities` is a second, fully
+# supported writer of the flag the dedicated pause route writes. Both writers
+# have to leave the fleet in the same state; a hold that is accepted but not
+# applied until some unrelated profile write happens to rebuild the schedule is
+# a hold the operator was told they had and did not.
+
+
+@pytest.mark.asyncio
+async def test_pausing_through_the_capabilities_route_stops_the_crons_immediately(
+    client, factories, auth_headers, db_session
+):
+    """Whichever route writes the flag has to be the thing that rebuilds the
+    schedule. `profiles_due_for_scheduling` is asked once per
+    `reload_discovery_jobs`, so a write that did not rebuild would leave the
+    already-registered cron with its fire times and the operator with a hold they
+    were told they had. `discovery_service.profile_scheduling_held` re-reads the
+    same three scopes when a cron fires and would keep the scan from running, but
+    it is the second line and not the first: the schedule an operator reads off
+    `next_scheduled` has to stop showing runs that will not happen."""
+    from app.core.scheduler import reload_discovery_jobs
+
+    agent = _discovery_agent(factories)
+    profile = _agent_profile(db_session, agent)
+    reload_discovery_jobs(db_session)
+    assert profile.id in _scheduled_profile_ids()
+
+    resp = await client.put(
+        f"/api/v1/agents/{agent.id}/capabilities",
+        json={
+            "capabilities": {
+                "local_discovery": {"enabled": True, "config": {"auto_discovery_paused": True}}
+            }
+        },
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 200, resp.text
+    grant = resp.json()["capabilities"]["local_discovery"]
+    assert grant["config"]["auto_discovery_paused"] is True
+    assert profile.id not in _scheduled_profile_ids()
+
+
+@pytest.mark.asyncio
+async def test_resuming_through_the_capabilities_route_puts_the_crons_back(
+    client, factories, auth_headers, db_session
+):
+    """The clearing edge of the same write. A resume that needed a second,
+    unrelated write to take effect would leave an operator staring at an agent
+    they had just un-paused and no next scheduled run."""
+    agent = _discovery_agent(factories, config={"auto_discovery_paused": True})
+    profile = _agent_profile(db_session, agent)
+
+    from app.core.scheduler import reload_discovery_jobs
+
+    reload_discovery_jobs(db_session)
+    assert profile.id not in _scheduled_profile_ids()
+
+    resp = await client.put(
+        f"/api/v1/agents/{agent.id}/capabilities",
+        json={
+            "capabilities": {
+                "local_discovery": {"enabled": True, "config": {"auto_discovery_paused": False}}
+            }
+        },
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert profile.id in _scheduled_profile_ids()
+
+
+@pytest.mark.asyncio
+async def test_a_capabilities_write_that_leaves_the_hold_alone_does_not_rebuild_the_schedule(
+    client, factories, auth_headers, db_session, monkeypatch
+):
+    """The rebuild is conditional on the flag actually moving. Every capability
+    edit in the product would otherwise tear down and re-register every discovery
+    cron in the installation, which is a fleet-wide cost for a per-agent write
+    that changed nothing the schedule is derived from."""
+    from app.api import agents as agents_api
+
+    agent = _discovery_agent(factories)
+    _agent_profile(db_session, agent)
+    reloads: list[bool] = []
+    monkeypatch.setattr(agents_api, "reload_discovery_jobs", lambda db: reloads.append(True))
+
+    resp = await client.put(
+        f"/api/v1/agents/{agent.id}/capabilities",
+        json={"capabilities": {"host_telemetry": True}},
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert reloads == []
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_agent_a_discovery_profile_names_returns_409(
+    client, factories, auth_headers, db_session
+):
+    """D-1: `discovery_profiles.scan_agent_id` is `ON DELETE RESTRICT`, so
+    without a pre-check the delete surfaces as an unhandled `IntegrityError` and
+    a 500 — and the operator learns nothing about which profiles are in the way.
+    Repointing or deleting them is a decision they make explicitly."""
+    from app.db.models import Agent
+
+    agent = _discovery_agent(factories)
+    _agent_profile(db_session, agent, name="lab subnet")
+    _agent_profile(
+        db_session,
+        agent,
+        name="dmz subnet",
+        cidr=DISCOVERY_SUBNET_B,
+        normalized_cidr=DISCOVERY_SUBNET_B,
+    )
+
+    resp = await client.delete(f"/api/v1/agents/{agent.id}", headers=auth_headers)
+
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert "2" in detail
+    assert "lab subnet" in detail and "dmz subnet" in detail
+    assert db_session.get(Agent, agent.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_agent_with_only_finished_discovery_history_succeeds(
+    client, factories, auth_headers, db_session
+):
+    """The other half of D-1's split. Jobs and results are CASCADE because they
+    are finished history; only the *live assignment* a profile makes is
+    RESTRICT. A pre-check that counted jobs would make an agent that ever ran a
+    scan permanently undeletable."""
+    from app.db.models import Agent
+
+    agent = _discovery_agent(factories)
+    _live_dispatch(db_session, agent, status="completed", dispatch_status="completed")
+
+    resp = await client.delete(f"/api/v1/agents/{agent.id}", headers=auth_headers)
+
+    assert resp.status_code == 204, resp.text
+    db_session.expunge_all()
+    assert db_session.query(Agent).filter(Agent.id == agent.id).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_agent_succeeds_once_no_profile_names_it(
+    client, factories, auth_headers, db_session
+):
+    from app.db.models import Agent
+
+    agent = _discovery_agent(factories)
+    profile = _agent_profile(db_session, agent)
+
+    blocked = await client.delete(f"/api/v1/agents/{agent.id}", headers=auth_headers)
+    assert blocked.status_code == 409
+
+    profile.scan_agent_id = None
+    db_session.flush()
+
+    resp = await client.delete(f"/api/v1/agents/{agent.id}", headers=auth_headers)
+    assert resp.status_code == 204, resp.text
+    db_session.expunge_all()
+    assert db_session.query(Agent).filter(Agent.id == agent.id).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_agent_discovery_reports_the_fleet_wide_hold_separately(
+    client, factories, viewer_headers, db_session
+):
+    """M14's three pause scopes have no precedence between them: each holds on
+    its own and none releases either of the others (Task 25). So the section
+    reports them as two independent fields — an operator who resumed the agent
+    and saw nothing start needs to be told the fleet is still held, not shown one
+    derived boolean that flipped back on its own.
+
+    The fleet-wide hold is written here as the mapped column
+    `app_settings.agent_discovery_paused`, real since migration
+    `0101_discovery_retention_and_global_pause` (Fix A2). It used to be written by
+    name through a constant and `setattr`, under a docstring claiming the column
+    was not in the schema yet — a form that succeeds against *any* attribute name
+    and so could not fail when the storage did not exist, which is exactly how the
+    global scope stayed unstorable behind green tests. Naming the attribute
+    directly is what makes a dropped or renamed column break this test.
+    """
+    from app.services.settings_service import get_or_create_settings
+
+    agent = _discovery_agent(factories)
+    settings = get_or_create_settings(db_session)
+
+    before = (await client.get(_discovery_url(agent), headers=viewer_headers)).json()
+    assert before["globally_paused"] is False
+    assert before["paused"] is False
+
+    settings.agent_discovery_paused = True
+    db_session.flush()
+
+    body = (await client.get(_discovery_url(agent), headers=viewer_headers)).json()
+    assert body["globally_paused"] is True
+    # The per-agent scope is untouched by the fleet-wide one.
+    assert body["paused"] is False

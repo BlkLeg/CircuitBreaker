@@ -117,9 +117,20 @@ class Hardware(Base):
     environment_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("environments.id"), nullable=True
     )
-    # v0.1.4-cortex: discovery lineage
+    # v0.1.4-cortex: discovery lineage.
+    #
+    # SET NULL, not the NO ACTION this shipped with (Slice 4 Fix A1, migration
+    # `0101_discovery_retention_and_global_pause`). This is a *provenance*
+    # pointer: it records which scan result a device was approved from, and
+    # every reader already treats it as optional. Under NO ACTION it silently
+    # pinned discovery history forever —
+    # `discovery_scheduler._purge_old_scan_results_impl` could not delete any
+    # expiring result that had been merged into inventory, its `except`
+    # swallowed the ForeignKeyViolation, and the whole day's retention rolled
+    # back. Losing the pointer when the result ages out is what retention means;
+    # the device itself is inventory and is never touched.
     source_scan_result_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("scan_results.id"), nullable=True
+        Integer, ForeignKey("scan_results.id", ondelete="SET NULL"), nullable=True
     )
     # v0.1.4: auto-discovery
     mac_address: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -1345,6 +1356,16 @@ class AppSettings(Base):
     # Set only by the explicit toggle; the reconciler converges actual state
     # to this value, never the other way around.
     lan_discovery_desired: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Slice 4 plan §3/§6 (Task 26 / M14): the fleet-wide hold on *agent-executed*
+    # discovery, read by `discovery_service.global_agent_discovery_paused` and
+    # written by `POST /api/v1/discovery/pause`. Deliberately narrower
+    # than `discovery_enabled`, which is the product's master discovery switch:
+    # a second flag that also silenced the server's own crons would mean holding
+    # an agent fleet stopped scanning the networks the server can see itself.
+    # A pause withholds scheduling only — it deletes no profile, job or result.
+    agent_discovery_paused: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
     # Domain (FQDN) configured via the OOBE Domain step or a later Settings edit.
     # None = no domain configured, instance is IP-only with a self-signed cert.
     fqdn: Mapped[str | None] = mapped_column(String, nullable=True, default=None)

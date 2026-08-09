@@ -5,9 +5,10 @@ import json
 import logging
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.db.models import ScanJob, ScanResult
+from app.db.models import ScanJob, ScanLog, ScanResult
 from app.db.session import SessionLocal
 from app.services.settings_service import get_or_create_settings
 
@@ -102,16 +103,36 @@ async def _run_profile_job_async(profile_id: int) -> None:
     cron that called `run_scan_job` directly would run an agent-targeted profile
     from the server's vantage point — which plan §3 forbids, because it silently
     changes what the scan can see.
+
+    `enabled` and the three pause scopes are both re-read here, at fire time, and
+    for the same reason: APScheduler is process-local and production runs
+    `uvicorn --workers 2`, so a change applied through an API request rebuilds the
+    schedule of the one worker that served it while the other worker's registered
+    cron keeps firing. Registration-time gating alone makes the hold a property of
+    one process's scheduler state instead of the database — which is what let a
+    process restart discard all three holds (see
+    `app.main._register_discovery_profile_crons`), and what let the per-agent hold
+    be written and not applied before that.
     """
     from app.services.discovery_service import execute_scan_job  # lazy import
 
     db = SessionLocal()
     try:
         from app.db.models import DiscoveryProfile
-        from app.services.discovery_service import create_scan_job
+        from app.services.discovery_service import create_scan_job, profile_scheduling_held
 
         profile = db.query(DiscoveryProfile).filter(DiscoveryProfile.id == profile_id).first()
         if not profile or not profile.enabled:
+            return
+
+        # Through the same function the registration sites ask, so there is one
+        # definition of "may this profile scan right now" rather than two that
+        # agree until somebody edits one of them.
+        if profile_scheduling_held(db, profile):
+            logger.info("Discovery: profile %s is paused; skipping this scheduled run", profile_id)
+            # Returned *before* `last_run` is stamped: that field is what §6
+            # renders as "last scanned", and a hold that touched it would report
+            # a scan the operator forbade as one that happened.
             return
 
         from app.core.time import utcnow_iso
@@ -167,7 +188,50 @@ def run_scan_job_by_profile(profile_id: int) -> None:
 
 
 def _purge_old_scan_results_impl() -> None:
-    """Daily cron job body: purge old scan results and jobs (called under advisory lock)."""
+    """Daily cron job body: purge old scan results and jobs (called under advisory lock).
+
+    What is guaranteed: an expiring `scan_job` is deleted together with **every
+    `scan_result` and `scan_log` that references it**, whatever the child's own
+    age, and a `hardware` row approved from one of those results keeps existing
+    with `source_scan_result_id` set to NULL. Nothing else is deleted — not the
+    `discovery_profile` the job came from, not the `agent` that ran it, and not
+    the device the result became.
+
+    Reaching that took two fixes, because there are three inbound foreign keys
+    and all three were NO ACTION. `scan_results.scan_job_id` and
+    `scan_logs.scan_job_id` are plain foreign keys with no `ON DELETE`, so
+    PostgreSQL refuses to delete a job that still owns either — and filtering the
+    children by their *own* `created_at`, as this did, leaves exactly the rows
+    that make that refusal certain:
+
+    * a **spooled agent finding** is written when it finally arrives, so a
+      dispatch created outside the window routinely owns a result created inside
+      it (plan §4's outbound spool is the whole point of the replay key);
+    * a `scan_log` was never purged by anything at all, so *every* job that ever
+      logged a line was undeletable.
+
+    The third is `hardware.source_scan_result_id` (Fix A1), an *inbound* edge
+    from outside discovery entirely that the Task 26 audit missed: every approval
+    path writes it, so once any expiring result had been merged into inventory
+    the DELETE below could not run at all. Migration
+    `0101_discovery_retention_and_global_pause` makes it `ON DELETE SET NULL` —
+    the pointer is provenance, and losing it when the result ages out is what
+    retention means. This function deliberately does **not** exempt merged
+    results instead: those are the rows most worth ageing out.
+
+    The `IntegrityError` was swallowed by the handler below, which is why this
+    looked like a working purge: retention simply stopped happening, fleet-wide,
+    and the only evidence was one ERROR line a day.
+
+    Results are still purged by their own age as well, for a job that is itself
+    still inside the window — that is the existing behaviour and the only thing
+    that bounds the review queue of a long-lived profile.
+
+    Nothing here reaches the `agents` row (D-1). `scan_jobs.scan_agent_id` and
+    `scan_results.discovery_agent_id` cascade *from* the agent, never towards it:
+    only an explicit, 409-guarded operator delete removes a vantage point, and
+    revocation retains provenance.
+    """
     db = SessionLocal()
     try:
         settings = get_or_create_settings(db)
@@ -180,9 +244,24 @@ def _purge_old_scan_results_impl() -> None:
         cutoff_date = datetime.now(UTC) - timedelta(days=retention_days)
         cutoff_iso = cutoff_date.isoformat() + "Z"
 
+        # Resolved as a subquery rather than a materialized id list: the fleet's
+        # daily expiry can be large, and the three statements below must all name
+        # the same set — evaluating it before any of them delete keeps that true.
+        expiring_jobs = select(ScanJob.id).where(ScanJob.created_at < cutoff_iso)
+
         result_count = (
             db.query(ScanResult)
-            .filter(ScanResult.created_at < cutoff_iso)
+            .filter(
+                or_(
+                    ScanResult.scan_job_id.in_(expiring_jobs),
+                    ScanResult.created_at < cutoff_iso,
+                )
+            )
+            .delete(synchronize_session=False)
+        )
+        log_count = (
+            db.query(ScanLog)
+            .filter(ScanLog.scan_job_id.in_(expiring_jobs))
             .delete(synchronize_session=False)
         )
         job_count = (
@@ -192,9 +271,18 @@ def _purge_old_scan_results_impl() -> None:
         )
         db.commit()
 
-        logger.info(f"Purged {result_count} old scan results and {job_count} old scan jobs.")
-    except Exception as e:
-        logger.error(f"Purger error: {e}")
+        logger.info(
+            "Purged %d old scan results, %d scan logs and %d old scan jobs.",
+            result_count,
+            log_count,
+            job_count,
+        )
+    except Exception:
+        # Still swallowed — a failed purge must not take the scheduler down — but
+        # with the traceback, because the bug above was invisible for exactly as
+        # long as this line printed only the message.
+        logger.exception("Discovery retention purge failed")
+        db.rollback()
     finally:
         db.close()
 

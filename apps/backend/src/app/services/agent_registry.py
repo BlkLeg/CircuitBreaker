@@ -368,6 +368,27 @@ def record_network_facts(
     itself gives: the steady state is an agent re-reporting the interfaces it
     already reported, and that returns an empty (falsy) cancellation.
 
+    The zero-configuration discovery bootstrap (Slice 4 Task 24) hangs off this
+    same funnel, for the same reason: a subnet that appeared is a subnet that
+    appeared whichever frame reported it. Two things about it differ from the
+    cancellation above and both are deliberate:
+
+    * It fires on the report's **presence**, not on a change. The first hello
+      after approval carries `networks` while no discovery readiness row exists
+      yet, so that pass is refused as `readiness_unknown`; the
+      `capability.readiness` frame that makes the agent eligible usually reports
+      the *same* interfaces, so a change gate would never fire again and the
+      agent would sit with no automatic profiles until its networks happened to
+      move. The pass is a difference against stored state and writes nothing
+      when there is nothing to do, so the repeat is cheap.
+    * It is **deferred**, not built here. Everything it does commits — profiles
+      and jobs go through `discovery_profiles_service` and
+      `discovery_service.create_scan_job` — so it cannot run inside the caller's
+      transaction at all; `schedule_bootstrap` only hands it to the event loop.
+      Neither report path awaits between this call and its own `db.commit()`, so
+      the deferred pass cannot start until that commit has returned, and a
+      rolled-back report leaves it re-deriving from unchanged facts.
+
     It is *published* by neither: both callers own transactions carrying writes
     beyond this one, and `agent_discovery`'s cancellation section requires that
     a trigger close its rows inside the caller's transaction and hand back an
@@ -405,13 +426,19 @@ def record_network_facts(
     to one client's encoding. Caller owns the commit.
     """
     # Imported here because `agent_discovery` imports this module at its own
-    # module scope.
+    # module scope; `discovery_bootstrap` for the same reason, one module
+    # further out.
+    from app.services import discovery_bootstrap
     from app.services.agent_discovery import (
         DiscoveryCancellation,
         cancel_scope_changed_dispatches,
     )
 
-    if not _store_network_facts(db, agent, networks):
+    changed = _store_network_facts(db, agent, networks)
+    # Task 24, and outside the `changed` gate on purpose — see the docstring.
+    # Schedules only; it must not touch this transaction.
+    discovery_bootstrap.schedule_bootstrap(agent.id)
+    if not changed:
         return DiscoveryCancellation()
     return cancel_scope_changed_dispatches(db, agent.id)
 

@@ -10,6 +10,8 @@ Architecture notes:
 """
 
 import os
+import shutil
+import tempfile
 from unittest.mock import AsyncMock
 
 import pytest
@@ -19,6 +21,9 @@ from sqlalchemy import delete, select
 
 # ── Testcontainers: start Postgres BEFORE any app import ──────────────────────
 _PG_CONTAINER = None
+# Per-run upload root, created in pytest_configure and removed in
+# pytest_unconfigure so the suite never writes into the working tree.
+_UPLOADS_TMPDIR: str | None = None
 
 
 def pytest_configure(config):
@@ -44,6 +49,20 @@ def pytest_configure(config):
     # shape and fail/cancel. Tests don't need it either way.
     os.environ["CB_AUTO_MIGRATE"] = "false"
 
+    # Upload root must live outside the working tree. Settings.uploads_dir
+    # defaults to the RELATIVE path "data/uploads", which resolves against the
+    # backend CWD, so every profile-photo test used to deposit real PNGs into
+    # apps/backend/data/uploads/profiles/. That residue makes `git status`
+    # useless as a review signal and has already prompted an agent to start
+    # deleting tracked files to "clean up". Redirect to a per-run temp dir here,
+    # before any app module is imported: uploads_dir is read at import time into
+    # module-level constants (auth_service._PROFILES_DIR, main._uploads_dir,
+    # api/assets._UPLOADS_DIR, ...), so a fixture-time monkeypatch would be too
+    # late to catch them.
+    global _UPLOADS_TMPDIR
+    _UPLOADS_TMPDIR = tempfile.mkdtemp(prefix="cb-test-uploads-")
+    os.environ["UPLOADS_DIR"] = _UPLOADS_TMPDIR
+
     import psycopg2
 
     conn = psycopg2.connect(
@@ -56,12 +75,16 @@ def pytest_configure(config):
 
 
 def pytest_unconfigure(config):
-    global _PG_CONTAINER
+    global _PG_CONTAINER, _UPLOADS_TMPDIR
     if _PG_CONTAINER:
         try:
             _PG_CONTAINER.stop()
         except Exception:
             pass
+    if _UPLOADS_TMPDIR:
+        # Only ever removes the directory this process created via mkdtemp.
+        shutil.rmtree(_UPLOADS_TMPDIR, ignore_errors=True)
+        _UPLOADS_TMPDIR = None
 
 
 # ── DB schema ─────────────────────────────────────────────────────────────────

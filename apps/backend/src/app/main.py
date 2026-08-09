@@ -7,6 +7,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta  # noqa: F401 — used by models imported transitively
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -134,6 +135,10 @@ _DOCS_SEED_FILENAME = "DocsPage.md"
 _ALEMBIC_INI_FILENAME = "alembic.ini"
 _FAVICON_FILENAME = "favicon.ico"
 _REQUIRED_SCHEMA_TABLES = frozenset({"app_settings"})
+
+if TYPE_CHECKING:  # imported for annotations only — both are startup-path costs
+    from apscheduler.schedulers.base import BaseScheduler
+    from sqlalchemy.orm import Session
 _logger = logging.getLogger(__name__)
 SERVER_START_TIME = time.time()
 
@@ -443,6 +448,52 @@ def _record_poll_health(poll_outcomes: dict[int, Exception | None]) -> None:
                 _hdb.commit()
         except Exception:
             _logger.exception("Failed to record poll health for config %s", config_id)
+
+
+def _register_discovery_profile_crons(scheduler: "BaseScheduler", db: "Session") -> None:
+    """Give every discovery profile that is due one a cron, at process start.
+
+    Which profiles those are is `discovery_service.profiles_due_for_scheduling`'s
+    answer and nothing else's. That function is where Slice 4 plan §3/§6's three
+    pause scopes are read — the fleet-wide `app_settings.agent_discovery_paused`,
+    the per-agent `local_discovery.auto_discovery_paused` grant key, and the
+    per-subnet `discovery_profiles.paused_at` — so **there is exactly one place
+    in the product that decides whether a profile gets a cron**, and both
+    registration sites (this one and `core.scheduler.reload_discovery_jobs`) ask
+    it rather than deciding for themselves.
+
+    This carried a verbatim copy of the predicate that function replaced
+    (`enabled == 1 AND schedule_cron IS NOT NULL AND schedule_cron != ''`), which
+    knew about none of the three holds. Every runtime writer of a hold rebuilds
+    the live scheduler through `reload_discovery_jobs`, so the hold worked — and
+    was then discarded by the next process start, the event *most likely* to
+    follow an operator changing configuration. A pause has to be a property of
+    the database, not of one process's scheduler state.
+
+    `DISCOVERY_PROFILE_MISFIRE_GRACE_S` is shared with `reload_discovery_jobs`
+    deliberately: the first profile write after startup re-registers every one of
+    these jobs, and a cron that silently changed its catch-up behaviour the
+    moment an unrelated profile was saved would be untraceable from the outside.
+    """
+    from apscheduler.triggers.cron import CronTrigger
+
+    from app.core.scheduler import DISCOVERY_PROFILE_MISFIRE_GRACE_S
+    from app.services import discovery_service
+
+    for profile in discovery_service.profiles_due_for_scheduling(db):
+        try:
+            trigger = CronTrigger.from_crontab(profile.schedule_cron)
+            scheduler.add_job(
+                discovery_service.run_scan_job_by_profile,
+                trigger=trigger,
+                args=[profile.id],
+                id=f"discovery_profile_{profile.id}",
+                replace_existing=True,
+                misfire_grace_time=DISCOVERY_PROFILE_MISFIRE_GRACE_S,
+            )
+            _logger.info("Scheduled discovery profile %d (%s)", profile.id, profile.name)
+        except Exception as exc:
+            _logger.warning("Could not schedule profile %d: %s", profile.id, exc)
 
 
 @asynccontextmanager
@@ -985,34 +1036,9 @@ async def lifespan(app: FastAPI):
         max_instances=1,
     )
 
-    # Load enabled discovery profiles and schedule them
+    # Load the discovery profiles that are due a cron and schedule them.
     with get_session_context() as sched_db:
-        from app.db.models import DiscoveryProfile
-
-        profiles = (
-            sched_db.query(DiscoveryProfile)
-            .filter(
-                DiscoveryProfile.enabled == 1,  # Integer column (0/1), not Boolean
-                DiscoveryProfile.schedule_cron.isnot(None),
-                DiscoveryProfile.schedule_cron != "",
-            )
-            .all()
-        )
-        for profile in profiles:
-            try:
-                if not profile.schedule_cron:
-                    continue
-                trigger = CronTrigger.from_crontab(profile.schedule_cron)
-                scheduler.add_job(
-                    discovery_service.run_scan_job_by_profile,
-                    trigger=trigger,
-                    args=[profile.id],
-                    id=f"discovery_profile_{profile.id}",
-                    replace_existing=True,
-                )
-                _logger.info("Scheduled discovery profile %d (%s)", profile.id, profile.name)
-            except Exception as exc:
-                _logger.warning("Could not schedule profile %d: %s", profile.id, exc)
+        _register_discovery_profile_crons(scheduler, sched_db)
 
     # Uptime monitoring is handled by the item-based polling engine
     # (workers: monitor_scheduler + monitor_poll). The legacy run_all_monitors_job

@@ -286,6 +286,13 @@ async def ingest_readiness(db: Session, agent: Agent, payload: dict[str, Any]) -
     # It does not feed `changed`, which stays the readiness-row question the
     # publish below fans out — that message carries readiness rows only, and
     # scope consumers already have `agent_networks.generation`.
+    #
+    # The zero-configuration bootstrap (Task 24) needs no separate call here:
+    # `record_network_facts` is the funnel both report paths pass through, so it
+    # fires the trigger itself and this path gets it for free. See that
+    # function's docstring for why it fires on the report's *presence* — this
+    # frame is the one that usually carries the readiness the bootstrap waits
+    # for, while reporting the same interfaces the hello already did.
     scope_cancellation = None
     if "networks" in report.model_fields_set:
         scope_cancellation = record_network_facts(db, agent, report.networks)

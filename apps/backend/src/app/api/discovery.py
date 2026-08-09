@@ -3,15 +3,29 @@ import logging
 from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import select, update
+from pydantic import BaseModel
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
+from app.core import agent_scope
 from app.core.audit import log_audit
 from app.core.rate_limit import get_limit, limiter
 from app.core.rbac import require_role, require_scope
-from app.core.scheduler import get_scheduler
+from app.core.scheduler import get_scheduler, reload_discovery_jobs
 from app.core.security import require_write_auth
-from app.db.models import Hardware, ListenerEvent, ScanJob, ScanLog, ScanResult, Topology, User
+from app.core.time import utcnow, utcnow_iso
+from app.db.models import (
+    Agent,
+    AgentCapabilityReadiness,
+    DiscoveryProfile,
+    Hardware,
+    ListenerEvent,
+    ScanJob,
+    ScanLog,
+    ScanResult,
+    Topology,
+    User,
+)
 from app.db.session import get_db
 from app.schemas.discovery import (
     AdHocScanRequest,
@@ -22,6 +36,7 @@ from app.schemas.discovery import (
     DiscoveryProfileOut,
     DiscoveryProfileUpdate,
     DiscoveryStatusOut,
+    EligibleDiscoveryAgent,
     EnhancedBulkMergeRequest,
     ImportAsNetworkRequest,
     LLDPApplyRequest,
@@ -35,13 +50,20 @@ from app.schemas.discovery import (
     ScanResultOut,
 )
 from app.schemas.proxmox import ProxmoxDiscoverRunOut
-from app.services import agent_discovery, discovery_profiles_service, discovery_service
+from app.services import (
+    agent_discovery,
+    agent_registry,
+    discovery_eligibility,
+    discovery_profiles_service,
+    discovery_service,
+)
 from app.services.bulk_suggest import get_vendor_catalog, suggest_bulk_actions
 from app.services.discovery_safe import is_docker_socket_available
 from app.services.discovery_service import (
     AgentExecutionLocationError,
     _has_raw_socket_privilege,
 )
+from app.services.log_service import write_log
 from app.services.proxmox_service import get_proxmox_discover_run, list_proxmox_discover_runs
 from app.services.settings_service import get_or_create_settings
 
@@ -200,6 +222,153 @@ async def get_discovery_status(db: Session = Depends(get_db)):
     return _compute_discovery_status(db)
 
 
+# --- The "Scan from" selector (plan §6, Task 26) ---
+
+# The one collector `discovery_eligibility` actually gates on. Read from that
+# module rather than spelled out, so a build that starts requiring a second one
+# cannot leave this listing reporting the readiness of a collector that no longer
+# decides anything.
+_GATING_READINESS_COLLECTOR = discovery_eligibility.REQUIRED_READINESS_COLLECTORS[0]
+
+
+def _max_concurrent_hosts(config: dict[str, Any]) -> int:
+    """The grant's per-job host concurrency, or 0 when there is no grant at all.
+
+    `api/agents.py::_max_concurrent`'s convention, for the same reason it has
+    one: `structured_grants_dict` merges the registry default into every real
+    grant, so a missing value here means the agent has no `local_discovery` row
+    rather than an unconfigured one — and 0 is what the selector renders for
+    "nothing granted".
+    """
+    value = config.get("max_concurrent_hosts")
+    return int(value) if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _agent_job_counts(db: Session, agent_ids: list[int]) -> dict[int, int]:
+    """Jobs each agent currently owes an answer for.
+
+    `queued` is counted alongside `running` because D-5 parks an unreachable
+    agent's job as `queued`/`waiting_for_agent`: it is work outstanding against
+    that vantage point, and an operator picking an agent needs to see it.
+    """
+    if not agent_ids:
+        return {}
+    rows = db.execute(
+        select(ScanJob.scan_agent_id, func.count())
+        .where(ScanJob.scan_agent_id.in_(agent_ids), ScanJob.status.in_(("queued", "running")))
+        .group_by(ScanJob.scan_agent_id)
+    ).all()
+    return {agent_id: count for agent_id, count in rows}
+
+
+def _agent_profile_counts(db: Session, agent_ids: list[int]) -> dict[int, int]:
+    if not agent_ids:
+        return {}
+    rows = db.execute(
+        select(DiscoveryProfile.scan_agent_id, func.count())
+        .where(DiscoveryProfile.scan_agent_id.in_(agent_ids), DiscoveryProfile.enabled == 1)
+        .group_by(DiscoveryProfile.scan_agent_id)
+    ).all()
+    return {agent_id: count for agent_id, count in rows}
+
+
+def _execution_location_verdict(
+    db: Session, agent_id: int, targets: tuple[str, ...]
+) -> tuple[bool, str | None, str | None]:
+    """Would a scan of *targets* from this agent be accepted right now?
+
+    Answered by calling the creation-time validator itself rather than by
+    re-asking `discovery_eligibility`: the ceiling on addresses and the granted
+    port set are enforced by `validate_agent_execution_location` and deliberately
+    *not* by the eligibility module (its docstring says so), so a listing built
+    on the latter would advertise an agent that the very next request refuses.
+    """
+    try:
+        discovery_service.validate_agent_execution_location(
+            db, scan_agent_id=agent_id, targets=targets
+        )
+    except AgentExecutionLocationError as exc:
+        return False, exc.reason, exc.detail
+    return True, None, None
+
+
+@router.get("/eligible-agents", response_model=list[EligibleDiscoveryAgent])
+async def get_eligible_discovery_agents(
+    db: Session = Depends(get_db),
+    cidr: str | None = Query(
+        None, description="Judge each agent's scope against this target subnet."
+    ),
+    _user: User = require_role("viewer"),
+) -> Any:
+    """Plan §6: every candidate vantage, and for each one why it cannot be chosen.
+
+    Rendered for the whole **active** fleet whether or not each agent is
+    eligible, exactly as `GET /agents/probe-eligible` does — §7's selector shows
+    why an agent is unusable instead of hiding it, and an agent missing from a
+    dropdown is the one failure an operator cannot debug. Pending, rejected and
+    revoked agents are not candidates at all (§7: they can never scan), so they
+    are not listed; the fleet page is where an unapproved agent is dealt with.
+
+    `cidr` is optional, unlike the destination `GET /agents/probe-eligible`
+    requires: a discovery target is a prefix the operator is still typing, and
+    the agent-level half of the answer (grant, readiness, limits, its own
+    subnets) is worth rendering before there is a target at all.
+    """
+    targets = (cidr,) if cidr else ()
+    agents = list(db.execute(select(Agent).where(Agent.status == "active")).scalars())
+    agent_ids = [agent.id for agent in agents]
+    grants = agent_registry.bulk_structured_grants_dict(db, agent_ids)
+    active_jobs = _agent_job_counts(db, agent_ids)
+    assigned = _agent_profile_counts(db, agent_ids)
+    readiness: dict[int, str] = {}
+    if agent_ids:
+        readiness = {
+            row.agent_id: row.state
+            for row in db.execute(
+                select(AgentCapabilityReadiness).where(
+                    AgentCapabilityReadiness.agent_id.in_(agent_ids),
+                    AgentCapabilityReadiness.collector == _GATING_READINESS_COLLECTOR,
+                )
+            ).scalars()
+        }
+    paused_agents = discovery_service.paused_agent_ids(db, agent_ids)
+
+    rows = []
+    for agent in agents:
+        grant = grants[agent.id].get(discovery_eligibility.CAPABILITY)
+        config = (grant or {}).get("config") or {}
+        scope = discovery_eligibility.derive_discovery_scope(db, agent.id, config)
+        eligible, reason, detail = _execution_location_verdict(db, agent.id, targets)
+        rows.append(
+            EligibleDiscoveryAgent(
+                agent_id=agent.id,
+                name=agent.name,
+                online=await agent_registry.is_agent_online(agent.id),
+                granted=bool((grant or {}).get("enabled")),
+                paused=agent.id in paused_agents,
+                readiness=readiness.get(agent.id),
+                readiness_collector=_GATING_READINESS_COLLECTOR,
+                scope_version=scope.version,
+                scope_networks=list(scope.networks),
+                direct_networks=list(scope.direct_networks),
+                excluded_networks=list(scope.excluded_networks),
+                max_addresses_per_job=discovery_service.granted_address_ceiling(config),
+                max_concurrent_hosts=_max_concurrent_hosts(config),
+                tcp_ports=sorted(discovery_service.granted_tcp_ports(config)),
+                active_jobs=active_jobs.get(agent.id, 0),
+                assigned_profiles=assigned.get(agent.id, 0),
+                # Answered independently of `eligible`, which short-circuits on
+                # the first failing precondition: an ungranted agent would
+                # otherwise report a scope verdict that was never computed.
+                in_scope=(agent_scope.network_in_scope(scope, cidr).allowed if cidr else None),
+                eligible=eligible,
+                reason=reason,
+                detail=detail,
+            )
+        )
+    return rows
+
+
 # --- Profiles ---
 
 
@@ -249,6 +418,147 @@ def delete_profile(
     actor = _get_actor(db, user.id)
     discovery_profiles_service.delete_profile(db, profile_id, actor)
     return None
+
+
+def _set_profile_pause(
+    db: Session, profile_id: int, actor: str, *, paused: bool
+) -> DiscoveryProfile:
+    """M14's per-subnet hold, written directly onto the row.
+
+    Not routed through `discovery_profiles_service.update_profile`, deliberately.
+    That function is the closed field list for the *configuration* of a profile —
+    it re-validates the execution location, re-normalizes the CIDR, re-derives
+    the scan types and, on the `enabled` transition, cancels everything the
+    profile has in flight (D-14). A pause changes none of those: it is a
+    scheduling decision that deletes nothing, cancels nothing and must not be
+    expressible through a request schema, or an API client could park an
+    arbitrary timestamp on the column.
+
+    `reload_discovery_jobs` is what applies it to the live schedule — that
+    function removes every discovery job it owns and re-registers from
+    `discovery_service.profiles_due_for_scheduling`, which is where the three
+    pause scopes are read (Task 25). Without the reload the column would be
+    correct while `next_scheduled` kept advertising runs that
+    `discovery_service.profile_scheduling_held` would then refuse at fire time —
+    a hold the operator could not see they had.
+
+    Pausing an already-held profile leaves the original timestamp: `paused_at` is
+    "held since", and re-stamping it would erase how long the hold has been on.
+    """
+    profile = discovery_profiles_service.get_profile(db, profile_id)
+    if paused:
+        if profile.paused_at is None:
+            profile.paused_at = utcnow()
+    else:
+        profile.paused_at = None
+    profile.updated_at = utcnow_iso()
+    db.commit()
+    db.refresh(profile)
+    # `write_log`, not `log_audit`: this is the same activity feed
+    # `discovery_profiles_service` writes every other profile change to, and a
+    # hold that did not appear next to the edit that caused it would be the one
+    # profile change an operator could not account for.
+    write_log(
+        db=db,
+        action="pause_discovery_profile" if paused else "resume_discovery_profile",
+        category="discovery",
+        entity_type="discovery_profile",
+        entity_id=profile.id,
+        entity_name=profile.name,
+        actor_name=actor,
+        severity="info",
+    )
+    reload_discovery_jobs(db)
+    return profile
+
+
+@router.post("/profiles/{profile_id}/pause", response_model=DiscoveryProfileOut)
+def pause_profile(
+    profile_id: int, user: User = require_role("admin"), db: Session = Depends(get_db)
+):
+    """Hold one subnet's automatic discovery (plan §6). Deletes nothing."""
+    return _set_profile_pause(db, profile_id, _get_actor(db, user.id), paused=True)
+
+
+@router.post("/profiles/{profile_id}/resume", response_model=DiscoveryProfileOut)
+def resume_profile(
+    profile_id: int, user: User = require_role("admin"), db: Session = Depends(get_db)
+):
+    return _set_profile_pause(db, profile_id, _get_actor(db, user.id), paused=False)
+
+
+class GlobalDiscoveryPauseOut(BaseModel):
+    """The fleet-wide hold's state (Fix A2 / Task 26's M14).
+
+    One field, because the global scope *is* one boolean — unlike the per-subnet
+    scope, whose state is the profile row, and the per-agent scope, whose state
+    is the grant. The other two routes answer with the object they changed, and
+    this one does the same.
+    """
+
+    paused: bool
+
+
+def _set_global_pause(db: Session, actor: str, *, paused: bool) -> GlobalDiscoveryPauseOut:
+    """Hold or release automatic discovery for the whole agent fleet.
+
+    Scoped to **agent-executed** profiles, exactly as
+    `discovery_service.global_agent_discovery_paused` documents:
+    `app_settings.discovery_enabled` is already the product's master discovery
+    switch, and a second flag that also stopped the server's own crons would
+    mean an operator holding an agent fleet silently stopped scanning the
+    networks the server can see itself.
+
+    No precedence over the other two scopes, in either direction (Task 25):
+    resuming globally does not resume a paused subnet or a paused agent, and
+    pausing globally does not mark them. Each hold is released by the route that
+    set it, or an operator would resume the wrong one and see nothing change.
+
+    `reload_discovery_jobs` is what applies it to the live schedule, as in both
+    sibling routes: it drops every discovery job it owns and re-registers from
+    `discovery_service.profiles_due_for_scheduling`, which is where the three
+    pause scopes are read. Without it the column would be correct while
+    `next_scheduled` kept advertising runs that
+    `discovery_service.profile_scheduling_held` would then refuse at fire time.
+    """
+    settings = get_or_create_settings(db)
+    # The mapped column by name, never a constant plus `setattr`: a
+    # constant-driven write type-checks against nothing, and this route and
+    # `global_agent_discovery_paused` must not be able to drift onto two
+    # different attributes without something failing loudly. (That is why the
+    # `GLOBAL_DISCOVERY_PAUSE_SETTING` constant no longer exists.)
+    settings.agent_discovery_paused = paused
+    db.commit()
+    # `write_log`, not `log_audit`: the same activity feed the per-subnet hold
+    # writes to, so the widest hold in the product is not the one change an
+    # operator cannot account for next to the others.
+    write_log(
+        db=db,
+        action="pause_agent_discovery" if paused else "resume_agent_discovery",
+        category="discovery",
+        entity_type="app_settings",
+        entity_id=settings.id,
+        entity_name="agent discovery",
+        actor_name=actor,
+        severity="info",
+    )
+    reload_discovery_jobs(db)
+    return GlobalDiscoveryPauseOut(paused=paused)
+
+
+@router.post("/pause", response_model=GlobalDiscoveryPauseOut)
+def pause_agent_discovery_globally(
+    user: User = require_role("admin"), db: Session = Depends(get_db)
+):
+    """Hold every agent's automatic discovery (plan §6). Deletes nothing."""
+    return _set_global_pause(db, _get_actor(db, user.id), paused=True)
+
+
+@router.post("/resume", response_model=GlobalDiscoveryPauseOut)
+def resume_agent_discovery_globally(
+    user: User = require_role("admin"), db: Session = Depends(get_db)
+):
+    return _set_global_pause(db, _get_actor(db, user.id), paused=False)
 
 
 @router.post("/profiles/{profile_id}/run", response_model=ScanJobOut)

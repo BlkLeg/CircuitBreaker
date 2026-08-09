@@ -1,5 +1,6 @@
 import ipaddress
 import json
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -90,6 +91,18 @@ class DiscoveryProfileOut(BaseModel):
     id: int
     name: str
     cidr: str | None
+    # Where this profile executes (Task 26). `None` is the server discovery
+    # engine — every profile that predates Slice 4 — and an id is the agent the
+    # "Scan from" selector has to read back to show what is already chosen.
+    scan_agent_id: int | None = None
+    # `"system"` for a profile `discovery_bootstrap` owns and may re-upsert,
+    # `None` for one an operator wrote. Plan §6 asks the scope section to render
+    # automatic and user-created subnets with *visibly different provenance*,
+    # and this is the only field that tells them apart.
+    managed_by: str | None = None
+    # Per-subnet pause (plan §6, M14). Distinct from `enabled = false`, which
+    # means the subnet is gone; a timestamp here means an operator held it.
+    paused_at: datetime | None = None
     vlan_ids: list[int] = []
     scan_types: list[str]
     nmap_arguments: str | None
@@ -140,6 +153,18 @@ class DiscoveryProfileOut(BaseModel):
 class ScanJobOut(BaseModel):
     id: int
     profile_id: int | None
+    # The execution location, copied onto the job at creation so historical
+    # attribution cannot change when the profile is later repointed (Task 26).
+    # Plan §6: the job card and the history row show where a scan ran, and link
+    # the agent name to its detail page.
+    scan_agent_id: int | None = None
+    # `manual|prober|scheduled|listener_triggered|agent`. Carried alongside
+    # `scan_agent_id` rather than folded into it: the agent id says *which*
+    # vantage point, while this says what kind of run it was, and the four
+    # server-side values are the ones the history filter already distinguishes.
+    # A UI reading only `scan_agent_id != null` would render a scheduled server
+    # sweep and a manual one identically.
+    source_type: str = "manual"
     label: str | None
     target_cidr: str | None
     vlan_ids: list[int] = []
@@ -169,6 +194,166 @@ class ScanJobOut(BaseModel):
             except Exception:
                 return []
         return v or []
+
+
+class DiscoveryScopeEntry(BaseModel):
+    """One CIDR in an agent's effective scope, with where it came from and
+    whether the evaluator will actually permit it.
+
+    `provenance` is what plan §6 means by "visibly different provenance", and the
+    distinction is operational rather than cosmetic:
+
+    * `automatic` — derived from the agent's own reported interfaces. It appears
+      and disappears with the interface, and the control an operator gets over it
+      is to *exclude* it.
+    * `override` — an `additional_cidrs` entry an administrator typed. Routed,
+      not directly connected; nothing but another edit removes it.
+    * `excluded` — an `excluded_cidrs` entry. Listed in its own right because an
+      exclusion narrower than any allow-list network (a /25 inside a reported
+      /24) would otherwise be invisible while still refusing the enclosing /24.
+
+    `effective` is `agent_scope.network_in_scope`'s verdict, not membership in
+    the allow list. `EffectiveScope.networks` is what is permitted *before*
+    exclusions and the static special-use blocklist are subtracted, so rendering
+    it as reachability would claim access the evaluator refuses — which is
+    exactly the difference plan §6 asks the section to show. `reason` is the
+    evaluator's own (`excluded_cidr`, `prefix_too_wide`, `special_use`, …).
+    """
+
+    cidr: str
+    provenance: str
+    effective: bool
+    reason: str
+
+
+class DiscoveryLimits(BaseModel):
+    """The `local_discovery` grant's bounds, as the detail page renders them.
+
+    These are the numbers `port_not_granted` and `address_limit_exceeded` are
+    measured against, so an operator reading either refusal finds what refused
+    it on the same page.
+    """
+
+    scope_mode: str
+    max_addresses_per_job: int
+    max_concurrent_hosts: int
+    host_timeout_ms: int
+    job_timeout_seconds: int
+    tcp_ports: list[int] = Field(default_factory=list)
+
+
+class DiscoveryReadinessRow(BaseModel):
+    """One D-8 collector's reported state.
+
+    Rendered for every collector in the closed set, including those that have
+    never reported — `state = None` is "no row", which is what makes a job refuse
+    with `readiness_unknown`, and it is a different operator problem from a
+    collector that reported `unavailable`.
+
+    `stale` is `updated_at` older than `discovery_eligibility.READINESS_MAX_AGE_S`.
+    Readiness rows have no TTL, so an old `ready` is evidence of nothing and the
+    eligibility query already ignores it; without this flag the page would show a
+    green collector next to a job refused for `readiness_unknown`.
+    """
+
+    collector: str
+    state: str | None = None
+    reason: str | None = None
+    remediation: str | None = None
+    updated_at: datetime | None = None
+    stale: bool = False
+    # Whether a job is gated on this one. Only the connect sweep is
+    # (`discovery_eligibility.REQUIRED_READINESS_COLLECTORS`); the neighbor cache,
+    # the ICMP sweep and reverse DNS make it faster or richer and are legitimately
+    # unavailable on an unprivileged host that can still run the whole scan.
+    required: bool = False
+
+
+class AgentDiscoveryRead(BaseModel):
+    """Everything §6's "Discovery scope" section on Agent Detail renders.
+
+    `AgentProbesRead`'s counterpart, and loaded by the same page the same way, so
+    Task 27's component can be cloned from `AssignedProbesSection`. It answers
+    one question — *what is this vantage point discovering, and if nothing, why*
+    — which is why the eligibility verdict, the three pause scopes and the
+    readiness rows sit alongside the scope itself rather than being three more
+    round trips.
+    """
+
+    agent_id: int
+    online: bool
+    granted: bool
+    # The per-agent hold (`local_discovery.auto_discovery_paused`) and the
+    # fleet-wide one. Kept as separate fields with no precedence between them,
+    # exactly as `discovery_service`'s pause readers are: each holds on its own
+    # and neither releases the other, so a single derived boolean would let an
+    # operator resume the wrong one and see nothing change.
+    paused: bool = False
+    globally_paused: bool = False
+    # `discovery_eligibility`'s closed vocabulary — the same string the scan
+    # endpoints refuse with and the dispatch audit row carries.
+    eligible: bool
+    reason: str | None = None
+    detail: str | None = None
+    scope_version: str
+    scope: list[DiscoveryScopeEntry] = Field(default_factory=list)
+    limits: DiscoveryLimits
+    readiness: list[DiscoveryReadinessRow] = Field(default_factory=list)
+    # A list, not one job: nothing in the dispatch model limits an agent to a
+    # single open discovery job, and rendering only the first would hide work
+    # that is genuinely running.
+    active_jobs: list["ScanJobOut"] = Field(default_factory=list)
+    recent_jobs: list["ScanJobOut"] = Field(default_factory=list)
+    # The subnets this agent is responsible for, automatic and user-created
+    # alike, so the cadence and per-subnet pause controls have something to bind
+    # to without a second request.
+    profiles: list["DiscoveryProfileOut"] = Field(default_factory=list)
+
+
+class EligibleDiscoveryAgent(BaseModel):
+    """One candidate vantage for a discovery scan, as plan §6's "Scan from"
+    selector renders it — including the ones it may not choose.
+
+    `EligibleProbeAgent`'s twin, field for field where the question is the same,
+    because the two selectors sit next to each other in the product and an
+    operator should not have to learn that "granted" means one thing here and
+    another there. What differs is what discovery is bounded by: prefixes rather
+    than one destination, so the scope lists carry `direct_networks` as well
+    (the agent additionally requires a target to be directly connected unless an
+    override covers it), and the grant's per-job ceilings are surfaced because
+    they are what refuses an otherwise-fine agent.
+
+    `reason` and `detail` are `discovery_service.AgentExecutionLocationError`'s —
+    the *same* pair `POST /discovery/scan` refuses with, produced by the same
+    call — so the selector can never advertise an agent the next request rejects.
+    """
+
+    agent_id: int
+    name: str | None = None
+    online: bool
+    granted: bool
+    # The per-agent hold (M14). Not an ineligibility: a paused agent still
+    # accepts a scan an operator starts by hand; what is paused is the automatic
+    # cadence. The selector renders it so "nothing is happening" has an answer.
+    paused: bool = False
+    readiness: str | None = None
+    readiness_collector: str | None = None
+    scope_version: str
+    scope_networks: list[str] = Field(default_factory=list)
+    direct_networks: list[str] = Field(default_factory=list)
+    excluded_networks: list[str] = Field(default_factory=list)
+    max_addresses_per_job: int
+    max_concurrent_hosts: int
+    tcp_ports: list[int] = Field(default_factory=list)
+    active_jobs: int = 0
+    assigned_profiles: int = 0
+    # `None` when the caller named no CIDR: "not asked" is a different answer
+    # from "no", and a selector that rendered them the same would show every
+    # agent as out of scope until the operator finished typing.
+    in_scope: bool | None = None
+    eligible: bool
+    reason: str | None = None
+    detail: str | None = None
 
 
 class ScanResultOut(BaseModel):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import Annotated, Any
 
@@ -13,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.core import agent_crypto, agent_scope
 from app.core.rate_limit import get_limit, limiter
 from app.core.rbac import require_role
+from app.core.scheduler import reload_discovery_jobs
 from app.core.time import utcnow
 from app.db.bucket import epoch_bucket
 from app.db.models import (
@@ -21,9 +23,11 @@ from app.db.models import (
     AgentEvent,
     AgentHostSample,
     AgentHostSampleHourly,
+    DiscoveryProfile,
     Hardware,
     MonitorItem,
     MonitorProbeRun,
+    ScanJob,
     User,
 )
 from app.db.session import get_db
@@ -45,6 +49,14 @@ from app.schemas.agents import (
     ServerKeyRotationStatus,
     UpdateRequest,
 )
+from app.schemas.discovery import (
+    AgentDiscoveryRead,
+    DiscoveryLimits,
+    DiscoveryProfileOut,
+    DiscoveryReadinessRow,
+    DiscoveryScopeEntry,
+    ScanJobOut,
+)
 from app.schemas.monitor import (
     AgentProbeAssignment,
     AgentProbesRead,
@@ -56,6 +68,8 @@ from app.services import (
     agent_enrollment,
     agent_registry,
     agent_update,
+    discovery_eligibility,
+    discovery_service,
     monitor_service,
 )
 from app.services.monitoring import probe_eligibility
@@ -487,6 +501,306 @@ def get_agent_probes(
     )
 
 
+# ── §6's "Discovery scope" section (Task 26) ─────────────────────────────────
+
+#: How much job history the section shows. A bounded page, not the whole record:
+#: `DiscoveryHistoryPage` is where an operator goes for that, and this list
+#: exists so the last few runs are visible without leaving the agent.
+_RECENT_DISCOVERY_JOBS = 20
+
+#: The statuses that mean an agent still owes an answer. `queued` counts because
+#: D-5 parks an unreachable agent's job there with `waiting_for_agent` — it is
+#: outstanding work against this vantage point, not a finished one.
+_OPEN_JOB_STATUSES = ("queued", "running")
+
+_PROVENANCE_AUTOMATIC = "automatic"
+_PROVENANCE_OVERRIDE = "override"
+_PROVENANCE_EXCLUDED = "excluded"
+
+
+def _discovery_scope_entries(scope: agent_scope.EffectiveScope) -> list[DiscoveryScopeEntry]:
+    """Plan §6's scope table: every CIDR once, with its origin and its verdict.
+
+    Order is automatic, then override, then exclusion, because that is the order
+    an operator reasons about them in — what the agent found, what an
+    administrator added, what an administrator took away.
+
+    An excluded CIDR that is *also* directly connected is rendered once, as
+    `automatic`, and its exclusion shows up as `effective = False` with reason
+    `excluded_cidr`. Listing it twice would suggest two independent settings; the
+    control the section offers for it is the same one either way.
+    """
+    entries: list[DiscoveryScopeEntry] = []
+    seen: set[str] = set()
+
+    def _add(cidr: str, provenance: str) -> None:
+        if cidr in seen:
+            return
+        seen.add(cidr)
+        decision = agent_scope.network_in_scope(scope, cidr)
+        entries.append(
+            DiscoveryScopeEntry(
+                cidr=cidr,
+                provenance=provenance,
+                effective=decision.allowed,
+                reason=decision.reason,
+            )
+        )
+
+    direct = set(scope.direct_networks)
+    for cidr in scope.direct_networks:
+        _add(cidr, _PROVENANCE_AUTOMATIC)
+    for cidr in scope.networks:
+        if cidr not in direct:
+            _add(cidr, _PROVENANCE_OVERRIDE)
+    for cidr in scope.excluded_networks:
+        _add(cidr, _PROVENANCE_EXCLUDED)
+    return entries
+
+
+def _grant_int(config: Mapping[str, Any], key: str) -> int:
+    """One integer grant setting, or 0 for anything that is not one.
+
+    Tolerant on purpose, matching `discovery_service.granted_address_ceiling` and
+    `granted_tcp_ports`: `_structured_grant` merges the registry default over the
+    *stored* value without re-normalizing it, so this renders whatever is on the
+    row. A malformed legacy value must show as 0 on a detail page, never turn the
+    page into a 500. `True` is an `int` and is excluded for the reason the
+    capability normalizer excludes it.
+    """
+    value = config.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _discovery_limits(config: dict[str, Any]) -> DiscoveryLimits:
+    """The grant's bounds, with the registry defaults merged in.
+
+    Merged here rather than trusted from the caller because an agent that holds
+    no `local_discovery` row at all resolves an empty config, and the section
+    should still show what the defaults would give it once granted.
+    """
+    defaults = agent_capabilities.default_config_for(discovery_eligibility.CAPABILITY)
+    merged = defaults | config
+    return DiscoveryLimits(
+        scope_mode=str(merged.get("scope_mode") or ""),
+        max_addresses_per_job=discovery_service.granted_address_ceiling(merged),
+        max_concurrent_hosts=_grant_int(merged, "max_concurrent_hosts"),
+        host_timeout_ms=_grant_int(merged, "host_timeout_ms"),
+        job_timeout_seconds=_grant_int(merged, "job_timeout_seconds"),
+        tcp_ports=sorted(discovery_service.granted_tcp_ports(merged)),
+    )
+
+
+def _discovery_readiness_rows(db: Session, agent_id: int) -> list[DiscoveryReadinessRow]:
+    """Every D-8 collector, whether or not it has ever reported.
+
+    A missing row is rendered with `state = None` rather than omitted: it is what
+    makes a job refuse with `readiness_unknown`, and an operator who cannot see
+    the collector at all has no way to connect the two.
+    """
+    stored = {
+        row.collector: row
+        for row in db.execute(
+            select(AgentCapabilityReadiness).where(
+                AgentCapabilityReadiness.agent_id == agent_id,
+                AgentCapabilityReadiness.collector.in_(discovery_eligibility.READINESS_COLLECTORS),
+            )
+        ).scalars()
+    }
+    cutoff = utcnow() - timedelta(seconds=discovery_eligibility.READINESS_MAX_AGE_S)
+    rows = []
+    for collector in discovery_eligibility.READINESS_COLLECTORS:
+        row = stored.get(collector)
+        rows.append(
+            DiscoveryReadinessRow(
+                collector=collector,
+                state=row.state if row is not None else None,
+                reason=row.reason if row is not None else None,
+                remediation=row.remediation if row is not None else None,
+                updated_at=row.updated_at if row is not None else None,
+                stale=bool(row is not None and (row.updated_at is None or row.updated_at < cutoff)),
+                required=collector in discovery_eligibility.REQUIRED_READINESS_COLLECTORS,
+            )
+        )
+    return rows
+
+
+async def _agent_discovery_read(db: Session, agent_id: int) -> AgentDiscoveryRead:
+    """§6's Discovery scope section: what this vantage point is discovering.
+
+    `GET /{agent_id}/probes`' counterpart, loaded by the same page in the same
+    way. It answers one question — what is being discovered from here, and if
+    nothing, why — so the eligibility verdict, both pause scopes and the
+    collector readiness rows are returned alongside the scope rather than left to
+    three more round trips that could each disagree with the others.
+
+    The verdict is asked with no targets and `require_online=False`: this is a
+    question about the *agent*, and D-5 makes reachability a scheduling condition
+    (an offline agent's job parks as `waiting_for_agent`) rather than a
+    configuration error. `online` is reported separately so the page can say so.
+    """
+    grant = agent_registry.structured_grants_dict(db, agent_id).get(
+        discovery_eligibility.CAPABILITY
+    )
+    config = (grant or {}).get("config") or {}
+    scope = discovery_eligibility.derive_discovery_scope(db, agent_id, config)
+    decision = await discovery_eligibility.evaluate_eligibility(db, agent_id, require_online=False)
+
+    jobs = list(
+        db.execute(
+            select(ScanJob)
+            .where(ScanJob.scan_agent_id == agent_id)
+            .order_by(ScanJob.created_at.desc(), ScanJob.id.desc())
+            .limit(_RECENT_DISCOVERY_JOBS)
+        ).scalars()
+    )
+    open_jobs = list(
+        db.execute(
+            select(ScanJob)
+            .where(ScanJob.scan_agent_id == agent_id, ScanJob.status.in_(_OPEN_JOB_STATUSES))
+            .order_by(ScanJob.created_at.desc(), ScanJob.id.desc())
+        ).scalars()
+    )
+    profiles = list(
+        db.execute(
+            select(DiscoveryProfile)
+            .where(DiscoveryProfile.scan_agent_id == agent_id)
+            .order_by(DiscoveryProfile.name, DiscoveryProfile.id)
+        ).scalars()
+    )
+
+    return AgentDiscoveryRead(
+        agent_id=agent_id,
+        online=await agent_registry.is_agent_online(agent_id),
+        granted=bool((grant or {}).get("enabled")),
+        paused=bool(config.get(discovery_service.AGENT_DISCOVERY_PAUSE_KEY) is True),
+        globally_paused=discovery_service.global_agent_discovery_paused(db),
+        eligible=decision.ok,
+        reason=decision.reason,
+        detail=decision.detail,
+        scope_version=scope.version,
+        scope=_discovery_scope_entries(scope),
+        limits=_discovery_limits(config),
+        readiness=_discovery_readiness_rows(db, agent_id),
+        active_jobs=[ScanJobOut.model_validate(job) for job in open_jobs],
+        # The whole recent page, open jobs included: "recent" is the history list
+        # and hiding the running one from it would make the newest row jump into
+        # place when it finished.
+        recent_jobs=[ScanJobOut.model_validate(job) for job in jobs],
+        profiles=[DiscoveryProfileOut.model_validate(profile) for profile in profiles],
+    )
+
+
+@router.get("/{agent_id}/discovery", response_model=AgentDiscoveryRead)
+async def get_agent_discovery(
+    agent_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("viewer")],
+) -> Any:
+    """The section itself. The body is shared with the pause/resume routes below
+    so a hold answers with exactly the state the page would have re-fetched."""
+    if agent_registry.get_agent(db, agent_id) is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return await _agent_discovery_read(db, agent_id)
+
+
+def _discovery_pause_flag(db: Session, agent_id: int) -> bool:
+    """The agent's `auto_discovery_paused` hold as the scheduler reads it.
+
+    `is True` and not truthiness, matching `discovery_service.paused_agent_ids`:
+    the normalizer stores a real boolean (Task 3), and agreeing with the reader
+    that actually withholds the crons is what makes a "did this change?"
+    comparison here mean the same thing as "does the schedule change?".
+
+    An agent with no `local_discovery` grant row at all resolves `False` — it has
+    no automatic discovery to hold.
+    """
+    grant = agent_registry.structured_grants_dict(db, agent_id).get(
+        discovery_eligibility.CAPABILITY
+    )
+    config = (grant or {}).get("config") or {}
+    return config.get(discovery_service.AGENT_DISCOVERY_PAUSE_KEY) is True
+
+
+async def _set_agent_discovery_pause(
+    db: Session, agent_id: int, *, paused: bool, actor_user_id: int
+) -> AgentDiscoveryRead:
+    """M14's per-agent hold, written where Task 3 put it: the grant config.
+
+    A grant write rather than a column of its own because that is already the
+    per-agent settings store the UI edits, the registry normalizes and
+    `capabilities.set` carries — and because `discovery_service.paused_agent_ids`,
+    which is what actually withholds the crons, reads it there.
+
+    Three things this is deliberately **not**:
+
+    * It is not a capability disable. D-14 retires every in-flight dispatch the
+      moment `local_discovery` goes off; a pause cancels nothing, which is why
+      `put_capabilities`' cancellation arms are not reached from here.
+    * It does not touch `enabled`, which is read off the stored grant and written
+      back unchanged. An agent with no `local_discovery` row at all resolves
+      `False` and stays ungranted — pausing something that is not running is a
+      no-op the response reports honestly as `granted: false`.
+    * It does not rewrite the rest of the config: `set_capability_grants` merges a
+      partial config over the stored one, so `tcp_ports` and the scope lists
+      survive. Handing it a full config assembled here would silently reset every
+      setting the request did not mention.
+
+    `reload_discovery_jobs` is what applies it — that function rebuilds the whole
+    discovery schedule from `profiles_due_for_scheduling`, which is where all
+    three pause scopes are read (Task 25).
+    """
+    grants = agent_registry.structured_grants_dict(db, agent_id)
+    enabled = bool((grants.get(discovery_eligibility.CAPABILITY) or {}).get("enabled"))
+    agent_registry.set_capability_grants(
+        db,
+        agent_id,
+        {
+            discovery_eligibility.CAPABILITY: {
+                "enabled": enabled,
+                "config": {discovery_service.AGENT_DISCOVERY_PAUSE_KEY: paused},
+            }
+        },
+        actor_user_id=actor_user_id,
+    )
+    db.commit()
+    reload_discovery_jobs(db)
+    # The agent has no use for the flag (it is a server-side scheduling control),
+    # but its view of its own grant must stay byte-identical to the server's, so
+    # the same push `put_capabilities` makes is made here. Never raises.
+    await agent_registry.publish_agent_control_frame(
+        agent_id,
+        {
+            "type": TYPE_CAPABILITIES_SET,
+            "payload": agent_registry.structured_grants_dict(db, agent_id),
+        },
+    )
+    return await _agent_discovery_read(db, agent_id)
+
+
+@router.post("/{agent_id}/discovery/pause", response_model=AgentDiscoveryRead)
+async def pause_agent_discovery(
+    agent_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, require_role("admin")],
+) -> Any:
+    """Hold this agent's automatic discovery (plan §6). Deletes and cancels nothing."""
+    if agent_registry.get_agent(db, agent_id) is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return await _set_agent_discovery_pause(db, agent_id, paused=True, actor_user_id=user.id)
+
+
+@router.post("/{agent_id}/discovery/resume", response_model=AgentDiscoveryRead)
+async def resume_agent_discovery(
+    agent_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, require_role("admin")],
+) -> Any:
+    if agent_registry.get_agent(db, agent_id) is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return await _set_agent_discovery_pause(db, agent_id, paused=False, actor_user_id=user.id)
+
+
 @router.get("/{agent_id}/telemetry")
 def get_agent_telemetry(
     agent_id: int,
@@ -848,6 +1162,20 @@ async def put_capabilities(
     was_discovering = agent_registry.grants_dict(db, agent_id).get(
         agent_discovery.CAPABILITY, False
     )
+    # Phase D. `auto_discovery_paused` is an ordinary client-settable key of the
+    # `local_discovery` grant (Task 3), so this route is a *second* writer of the
+    # same hold `POST /{id}/discovery/pause` writes — and a hold has to be
+    # effective when it is written, whichever route wrote it. The flag is read
+    # once per `reload_discovery_jobs`, by
+    # `discovery_service.profiles_due_for_scheduling`. A write that did not
+    # rebuild the schedule would be accepted, reported back as paused, and leave
+    # `next_scheduled` advertising runs that
+    # `discovery_service.profile_scheduling_held` would refuse at fire time — the
+    # second line of the gate, not a substitute for this one. Read before the
+    # write, like
+    # `was_discovering` above: `set_capability_grants` merges the new config over
+    # the stored one, so afterwards there is nothing left to compare against.
+    was_discovery_paused = _discovery_pause_flag(db, agent_id)
     agent_registry.set_capability_grants(db, agent_id, payload.capabilities, actor_user_id=user.id)
     # §8's capability-disable row, and it has to happen *here* rather than being
     # left to the result path: from the moment the grant is off,
@@ -882,6 +1210,14 @@ async def put_capabilities(
     else:
         discovery_cancellation = agent_discovery.DiscoveryCancellation()
     db.commit()
+    # Same order as the dedicated pause route: commit, then rebuild, so the
+    # rebuild derives the schedule from durable state. Conditional on the flag
+    # having actually moved, because `reload_discovery_jobs` tears down and
+    # re-registers *every* discovery cron in the installation — a fleet-wide cost
+    # that a capability edit changing nothing the schedule is derived from (a
+    # narrower `tcp_ports`, say) should not pay.
+    if _discovery_pause_flag(db, agent_id) != was_discovery_paused:
+        reload_discovery_jobs(db)
     await monitor_service.publish_probe_cancels(cancellation)
     await agent_discovery.publish_discovery_cancels(discovery_cancellation)
     # Immediate cross-worker push (Task 9) on top of the DB write above: if the
@@ -903,6 +1239,12 @@ async def put_capabilities(
         },
     )
     return _to_read(db, agent)
+
+
+#: How many dependent profile names a 409 spells out before summarizing the rest.
+#: A bounded message: a fleet-wide profile set could otherwise put hundreds of
+#: names into an error toast.
+_DELETE_CONFLICT_NAME_LIMIT = 10
 
 
 @router.delete("/{agent_id}", status_code=204)
@@ -927,6 +1269,38 @@ def delete_agent(
         raise HTTPException(
             status_code=409,
             detail=f"{assigned} monitor(s) are still assigned to this agent",
+        )
+    # D-1's other live assignment. `discovery_profiles.scan_agent_id` is the one
+    # Slice 4 FK declared RESTRICT — a profile names where its scans *will* run,
+    # so deleting the vantage point out from under it would leave a profile that
+    # can never execute. `scan_jobs.scan_agent_id` and
+    # `scan_results.discovery_agent_id` are CASCADE and deliberately not counted
+    # here: they are finished history, and an agent that ever ran a scan would
+    # otherwise be permanently undeletable (the retention purge is disabled
+    # outright when `discovery_retention_days <= 0`).
+    #
+    # The names, not just the count: repointing a profile at another agent is an
+    # explicit decision, and an operator cannot make it from a number.
+    profile_names = list(
+        db.execute(
+            select(DiscoveryProfile.name)
+            .where(DiscoveryProfile.scan_agent_id == agent_id)
+            .order_by(DiscoveryProfile.name, DiscoveryProfile.id)
+            .limit(_DELETE_CONFLICT_NAME_LIMIT)
+        ).scalars()
+    )
+    profile_count = db.execute(
+        select(func.count())
+        .select_from(DiscoveryProfile)
+        .where(DiscoveryProfile.scan_agent_id == agent_id)
+    ).scalar_one()
+    if profile_count:
+        listed = ", ".join(profile_names)
+        if profile_count > len(profile_names):
+            listed += f" and {profile_count - len(profile_names)} more"
+        raise HTTPException(
+            status_code=409,
+            detail=(f"{profile_count} discovery profile(s) still scan from this agent: {listed}"),
         )
     db.delete(agent)
     db.commit()
