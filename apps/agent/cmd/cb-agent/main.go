@@ -152,8 +152,8 @@ func rollbackExpiredUpdate(stateDir, currentLink string, now time.Time, reExec f
 // reExec is a parameter rather than a direct syscall.Exec call so tests can
 // observe a rollback decision without actually replacing the test binary's
 // process image; runDaemon passes a closure that does call syscall.Exec.
-func watchForRollback(stateDir, currentLink, pendingVersion string, reExec func() error) {
-	time.Sleep(rollbackWindow)
+func watchForRollback(stateDir, currentLink, pendingVersion string, window time.Duration, reExec func() error) {
+	time.Sleep(window)
 
 	v, prevVersionDir, swapped, stillPresent, err := update.ReadMarker(stateDir)
 	if err != nil {
@@ -173,7 +173,7 @@ func watchForRollback(stateDir, currentLink, pendingVersion string, reExec func(
 		return
 	}
 
-	log.Printf("cb-agent: update to %s did not confirm within %s — rolling back", pendingVersion, rollbackWindow)
+	log.Printf("cb-agent: update to %s did not confirm within %s — rolling back", pendingVersion, window)
 	if err := update.Rollback(currentLink, prevVersionDir); err != nil {
 		// Rollback failed (empty prevVersionDir, a symlink error, ...): the
 		// marker must still be cleared here. Leaving it in place
@@ -277,7 +277,11 @@ func runDaemon() {
 	// exercises directly.
 	if pendingVersion, _, _, present, _ := update.ReadMarker(config.StateDir()); present {
 		log.Printf("cb-agent: resuming after update to %s — watching for a successful link", pendingVersion)
-		go watchForRollback(config.StateDir(), currentLink, pendingVersion, func() error {
+		// Capture the configured window before starting the goroutine. Tests
+		// shorten the package seam and restore it during cleanup; a goroutine
+		// must never keep reading that mutable seam after construction.
+		window := rollbackWindow
+		go watchForRollback(config.StateDir(), currentLink, pendingVersion, window, func() error {
 			return syscall.Exec(installedBinaryPath, os.Args, os.Environ())
 		})
 	}
@@ -661,6 +665,11 @@ func probeInterfaceFacts(networks []frame.NetworkFacts) []netscope.InterfaceFact
 // ctx is the daemon's lifetime context; the collector goroutine and both
 // runtimes' workers are children of it, so canceling ctx stops all three.
 func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion string, ctx context.Context) (*daemonRuntime, error) {
+	// These package variables are test seams. Capture them synchronously so
+	// the daemon goroutines never race a test restoring the production values.
+	reportInterval := readinessReportInterval
+	tickInterval := reconcileTickInterval
+
 	// (1) Audit the dedicated-user file-permission model
 	// (specs/2026-07-26-cb-agent-design.md §4.1) before this daemon writes
 	// any state: identity (device.key), cached grant (grants.json), and
@@ -778,7 +787,7 @@ func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion st
 		readinessMu.Lock()
 		defer readinessMu.Unlock()
 		readinessForcePending = readinessForcePending || force
-		if len(readinessPayload) == 0 || (!readinessForcePending && time.Since(readinessSentAt) < readinessReportInterval) {
+		if len(readinessPayload) == 0 || (!readinessForcePending && time.Since(readinessSentAt) < reportInterval) {
 			return
 		}
 		select {
@@ -989,7 +998,7 @@ func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion st
 	// is the single funnel, and controlFrames is drained by the one
 	// websocket writer in internal/link's runOnce select loop.
 	go func() {
-		ticker := time.NewTicker(reconcileTickInterval)
+		ticker := time.NewTicker(tickInterval)
 		defer ticker.Stop()
 		for {
 			select {

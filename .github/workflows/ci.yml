@@ -82,11 +82,14 @@ jobs:
 
   backend-tests:
     name: Backend tests
-    runs-on: ubuntu-22.04
+    # Ubuntu 24.04 ships PostgreSQL 16 client tools, matching the PostgreSQL
+    # 16.2 testcontainer used by tests/conftest.py. Ubuntu 22.04's pg_dump 14
+    # cannot dump that server and breaks the real snapshot tests.
+    runs-on: ubuntu-24.04
     # Docker is required, not optional: tests/conftest.py boots a TimescaleDB
     # testcontainer and sets CB_DB_URL from it BEFORE any app module is
-    # imported, so there is no sqlite-only mode to fall back to. ubuntu-22.04
-    # runners ship with Docker already running.
+    # imported, so there is no sqlite-only mode to fall back to. GitHub-hosted
+    # Ubuntu runners ship with Docker already running.
     #
     # Added 2026-08-09 (F-9). Until then no workflow ran backend pytest at all
     # — the whole 2146-test suite was enforced locally only, so nothing found
@@ -103,6 +106,12 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+
+      - name: Install PostgreSQL 16 client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16
+          pg_dump --version
 
       - name: Install Python deps
         run: |

@@ -621,7 +621,7 @@ func TestWatchForRollback_NoConfirmationTriggersRollback(t *testing.T) {
 		return nil
 	}
 
-	watchForRollback(dir, currentLink, "0.6.0", reExec)
+	watchForRollback(dir, currentLink, "0.6.0", rollbackWindow, reExec)
 
 	target, err := os.Readlink(currentLink)
 	wantTarget := filepath.Join(oldVersionDir, "cb-agent")
@@ -687,7 +687,7 @@ func TestWatchForRollback_ConfirmedWithinWindowRetainsNewBinary(t *testing.T) {
 		return nil
 	}
 
-	watchForRollback(dir, currentLink, "0.7.0", reExec)
+	watchForRollback(dir, currentLink, "0.7.0", rollbackWindow, reExec)
 	<-confirmed
 
 	target, err := os.Readlink(currentLink)
@@ -768,7 +768,7 @@ func TestWatchForRollback_CrashBeforeSwapDoesNotRollBackToStaleBackup(t *testing
 		return nil
 	}
 
-	watchForRollback(dir, currentLink, "2.0.0", reExec)
+	watchForRollback(dir, currentLink, "2.0.0", rollbackWindow, reExec)
 
 	target, err := os.Readlink(currentLink)
 	wantTarget := filepath.Join(v1Dir, "cb-agent")
@@ -832,7 +832,7 @@ func TestWatchForRollback_FailedRollbackStillClearsMarker(t *testing.T) {
 		return nil
 	}
 
-	watchForRollback(dir, currentLink, "0.8.0", reExec)
+	watchForRollback(dir, currentLink, "0.8.0", rollbackWindow, reExec)
 
 	if _, _, _, present, _ := update.ReadMarker(dir); present {
 		t.Error("marker still present after a failed Rollback, want cleared to avoid a permanently stuck retry loop")
