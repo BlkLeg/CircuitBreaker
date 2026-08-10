@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"circuitbreaker.dev/cb-agent/internal/config"
 )
@@ -119,7 +120,7 @@ func TestMarker_MarkSwappedTransitionsPhase(t *testing.T) {
 	}
 
 	prevVersionDir := filepath.Join(dir, "versions", "0.8.0")
-	if err := MarkSwapped(dir, "0.9.0", prevVersionDir); err != nil {
+	if err := MarkSwapped(dir, "0.9.0", prevVersionDir, time.Now().Add(2*time.Minute)); err != nil {
 		t.Fatalf("MarkSwapped() error = %v", err)
 	}
 	version, gotPrev, swapped, present, err := ReadMarker(dir)

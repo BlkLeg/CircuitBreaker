@@ -48,8 +48,15 @@ export function stripReadOnlyProbeFields(form) {
  * config fields (field sets mirror the backend config models). Renders inside
  * the app's standard modal shell.
  */
-export default function MonitorForm({ initial = null, onSubmit, onCancel }) {
-  const [form, setForm] = useState({ ...DEFAULTS, ...(initial || {}) });
+export default function MonitorForm({ initial = null, prefill = null, onSubmit, onCancel }) {
+  // `initial` is overloaded: it seeds the form AND switches the whole
+  // component into edit mode (the title, the disabled check-type select, the
+  // submit label). `prefill` seeds a CREATE — it is what Slice 3 §7's "Create
+  // monitor from this agent" action passes so the discovered device and the
+  // discovering agent arrive already chosen, while type, interval and alert
+  // policy stay the operator's. Order matters: `initial` still wins, so an
+  // edit is never contaminated by a stale deep link.
+  const [form, setForm] = useState({ ...DEFAULTS, ...(prefill || {}), ...(initial || {}) });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const backdropRef = useRef(null);

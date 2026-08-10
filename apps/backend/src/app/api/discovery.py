@@ -1275,12 +1275,21 @@ def get_job_logs(
 
 
 @router.get("/results", response_model=list[ScanResultOut])
-def list_results(status: str = "pending", job_id: int | None = None, db: Session = Depends(get_db)):
+def list_results(
+    status: str = "pending",
+    job_id: int | None = None,
+    agent_id: int | None = None,
+    db: Session = Depends(get_db),
+):
     q = select(ScanResult)
     if status != "all":
         q = q.where(ScanResult.merge_status == status)
     if job_id:
         q = q.where(ScanResult.scan_job_id == job_id)
+    if agent_id:
+        # Strictly this agent's own findings: a server-executed scan has a NULL
+        # discovery_agent_id and must not be attributed to anyone.
+        q = q.where(ScanResult.discovery_agent_id == agent_id)
 
     results = db.scalars(q.order_by(ScanResult.created_at.desc())).all()
     return results

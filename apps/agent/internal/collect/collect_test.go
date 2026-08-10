@@ -299,6 +299,33 @@ func TestRunner_StopCancelsInFlightCollect(t *testing.T) {
 	wantNoFrame(t, out, 200*time.Millisecond)
 }
 
+// TestRunner_StopAbandonsAFrameBlockedOnAFullChannel covers run()'s last
+// uncovered statement: the ctx.Done arm of the *send* select. Every other test
+// hands the runner a buffered channel, so the send always completes and that
+// arm is never taken — but in production `out` is the link's frame channel and
+// a stalled link backs it up, which is exactly when a Stop must still return
+// rather than park forever holding a collection.
+//
+// The unbuffered channel with no reader is what forces the block. Readiness is
+// reported immediately before the send, so receiving it proves the goroutine
+// has reached the send and is parked there; wantNoFrame afterwards is the
+// discriminator — its receive is a reader, so a runner still parked on the send
+// would hand it the frame. Silence means the send was abandoned.
+func TestRunner_StopAbandonsAFrameBlockedOnAFullChannel(t *testing.T) {
+	collector := newFakeCollector()
+	out := make(chan frame.Frame) // unbuffered and unread: the send blocks
+	reported := make(chan []frame.Readiness, 4)
+	runner := NewRunner(collector, out)
+	runner.OnReadiness = func(r []frame.Readiness) { reported <- r }
+	t.Cleanup(runner.Stop)
+	runner.Reset(context.Background(), time.Hour)
+
+	recvReadiness(t, reported, 2*time.Second)
+	runner.Stop()
+
+	wantNoFrame(t, out, 500*time.Millisecond)
+}
+
 func TestRunner_NilOnReadinessDoesNotPanic(t *testing.T) {
 	collector := newFakeCollector()
 	out := make(chan frame.Frame, 4)

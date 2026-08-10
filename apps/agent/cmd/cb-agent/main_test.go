@@ -476,6 +476,108 @@ func TestCheckOwnership_PerFileClass(t *testing.T) {
 
 // --- Task 25: durable update swap and rollback --------------------------
 
+// stageSwappedUpdate builds the on-disk state a swapped-but-unconfirmed
+// update leaves behind, with the marker's rollback deadline set to deadline.
+func stageSwappedUpdate(t *testing.T, deadline time.Time) (dir, currentLink, oldVersionDir string) {
+	t.Helper()
+	dir = t.TempDir()
+	oldVersionDir = filepath.Join(dir, "versions", "1.0.0")
+	newVersionDir := filepath.Join(dir, "versions", "2.0.0")
+	for _, d := range []string{oldVersionDir, newVersionDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(newVersionDir, "cb-agent"), []byte("new binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	currentLink = update.CurrentLinkPath(dir)
+	if err := os.Symlink(filepath.Join(newVersionDir, "cb-agent"), currentLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := update.MarkSwapped(dir, "2.0.0", oldVersionDir, deadline); err != nil {
+		t.Fatalf("MarkSwapped() error = %v", err)
+	}
+	return dir, currentLink, oldVersionDir
+}
+
+// TestRollbackExpiredUpdate_RollsBackAndReExecsWithoutEverReachingTheServer is
+// the regression test for F-8. runDaemon calls this before enroll.Run, so the
+// path exercised here is the one an agent takes when the update it just
+// installed is the reason it can no longer reach the server: enrollment would
+// fail, os.Exit(1) would follow, and watchForRollback — spawned only after a
+// successful enrollment — would never run at all. Nothing in this test
+// contacts a server, which is exactly the point.
+func TestRollbackExpiredUpdate_RollsBackAndReExecsWithoutEverReachingTheServer(t *testing.T) {
+	dir, currentLink, oldVersionDir := stageSwappedUpdate(t, time.Now().Add(-time.Second))
+
+	reExecCalls := 0
+	rollbackExpiredUpdate(dir, currentLink, time.Now(), func() error {
+		reExecCalls++
+		return nil
+	})
+
+	target, err := os.Readlink(currentLink)
+	wantTarget := filepath.Join(oldVersionDir, "cb-agent")
+	if err != nil || target != wantTarget {
+		t.Errorf("current symlink = (%q, %v), want rolled back to %q", target, err, wantTarget)
+	}
+	if reExecCalls != 1 {
+		t.Errorf("reExec called %d times, want exactly 1 — the rolled-back binary has to actually be executed", reExecCalls)
+	}
+	if _, _, _, present, _ := update.ReadMarker(dir); present {
+		t.Error("marker still present after rollback, want cleared")
+	}
+	version, present, err := update.ReadRollbackReport(dir)
+	if err != nil || !present || version != "2.0.0" {
+		t.Errorf("ReadRollbackReport() = (%q, %v, %v), want (\"2.0.0\", true, nil)", version, present, err)
+	}
+}
+
+// TestRollbackExpiredUpdate_InsideTheWindowIsAPlainNoOp pins the cost of the
+// check on every ordinary start: a routine restart inside the window (the
+// re-exec the update itself performs, a host reboot) must neither roll back
+// nor re-exec, or a healthy update could never confirm.
+func TestRollbackExpiredUpdate_InsideTheWindowIsAPlainNoOp(t *testing.T) {
+	dir, currentLink, _ := stageSwappedUpdate(t, time.Now().Add(time.Hour))
+	before, err := os.Readlink(currentLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reExecCalls := 0
+	rollbackExpiredUpdate(dir, currentLink, time.Now(), func() error {
+		reExecCalls++
+		return nil
+	})
+
+	if target, _ := os.Readlink(currentLink); target != before {
+		t.Errorf("current symlink = %q, want %q unchanged", target, before)
+	}
+	if reExecCalls != 0 {
+		t.Errorf("reExec called %d times, want 0", reExecCalls)
+	}
+	if _, _, _, present, _ := update.ReadMarker(dir); !present {
+		t.Error("marker cleared inside the window, want it left for the confirmation to clear")
+	}
+}
+
+// TestRollbackExpiredUpdate_NoMarkerNeitherRollsBackNorReExecs is the
+// overwhelmingly common start: no update is pending at all.
+func TestRollbackExpiredUpdate_NoMarkerNeitherRollsBackNorReExecs(t *testing.T) {
+	dir := t.TempDir()
+
+	reExecCalls := 0
+	rollbackExpiredUpdate(dir, update.CurrentLinkPath(dir), time.Now(), func() error {
+		reExecCalls++
+		return nil
+	})
+
+	if reExecCalls != 0 {
+		t.Errorf("reExec called %d times on a clean state dir, want 0", reExecCalls)
+	}
+}
+
 // TestWatchForRollback_NoConfirmationTriggersRollback covers "a restart
 // without hello.ack within 2 minutes triggers rollback to the previous
 // binary". rollbackWindow is shrunk to a few tens of milliseconds (mirrors
@@ -509,7 +611,7 @@ func TestWatchForRollback_NoConfirmationTriggersRollback(t *testing.T) {
 	// TestWatchForRollback_CrashBeforeSwapDoesNotRollBackToStaleBackup for
 	// the phasePendingSwap (Swap never ran) case this must be told apart
 	// from.
-	if err := update.MarkSwapped(dir, "0.6.0", oldVersionDir); err != nil {
+	if err := update.MarkSwapped(dir, "0.6.0", oldVersionDir, time.Now().Add(rollbackWindow)); err != nil {
 		t.Fatalf("MarkSwapped() error = %v", err)
 	}
 
@@ -564,7 +666,7 @@ func TestWatchForRollback_ConfirmedWithinWindowRetainsNewBinary(t *testing.T) {
 	if err := os.Symlink(filepath.Join(newVersionDir, "cb-agent"), currentLink); err != nil {
 		t.Fatal(err)
 	}
-	if err := update.MarkSwapped(dir, "0.7.0", oldVersionDir); err != nil {
+	if err := update.MarkSwapped(dir, "0.7.0", oldVersionDir, time.Now().Add(rollbackWindow)); err != nil {
 		t.Fatalf("MarkSwapped() error = %v", err)
 	}
 
@@ -720,7 +822,7 @@ func TestWatchForRollback_FailedRollbackStillClearsMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Deliberately no prevVersionDir recorded — Rollback must fail.
-	if err := update.MarkSwapped(dir, "0.8.0", ""); err != nil {
+	if err := update.MarkSwapped(dir, "0.8.0", "", time.Now().Add(rollbackWindow)); err != nil {
 		t.Fatalf("MarkSwapped() error = %v", err)
 	}
 

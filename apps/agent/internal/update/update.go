@@ -502,7 +502,7 @@ func Rollback(currentLink, prevVersionDir string) error {
 // version recorded yet (Swap hasn't run, so there's nothing to record) —
 // see MarkSwapped, which callers must invoke once Swap actually succeeds.
 func WriteMarker(stateDir, targetVersion string) error {
-	return writeMarkerPhase(stateDir, phasePendingSwap, targetVersion, "")
+	return writeMarkerPhase(stateDir, phasePendingSwap, targetVersion, "", time.Time{})
 }
 
 // MarkSwapped durably transitions an already-written marker from
@@ -517,15 +517,25 @@ func WriteMarker(stateDir, targetVersion string) error {
 // restart before confirmation will treat it as abandoned) but is not a
 // correctness violation — callers should log the failure and proceed
 // rather than failing the update outright.
-func MarkSwapped(stateDir, targetVersion, prevVersionDir string) error {
-	return writeMarkerPhase(stateDir, phasePendingConfirm, targetVersion, prevVersionDir)
+func MarkSwapped(stateDir, targetVersion, prevVersionDir string, deadline time.Time) error {
+	return writeMarkerPhase(stateDir, phasePendingConfirm, targetVersion, prevVersionDir, deadline)
 }
 
-// writeMarkerPhase encodes phase, targetVersion, and prevVersionDir into the
-// marker file as "<phase>\n<targetVersion>\n<prevVersionDir>" and writes it
-// via atomicWriteFile. prevVersionDir is "" for phasePendingSwap.
-func writeMarkerPhase(stateDir string, phase markerPhase, targetVersion, prevVersionDir string) error {
-	data := []byte(string(phase) + "\n" + targetVersion + "\n" + prevVersionDir)
+// writeMarkerPhase encodes phase, targetVersion, prevVersionDir and deadline
+// into the marker file as
+// "<phase>\n<targetVersion>\n<prevVersionDir>\n<deadline>" and writes it via
+// atomicWriteFile. prevVersionDir is "" for phasePendingSwap, and deadline is
+// the zero time for every phase except phasePendingConfirm — there is nothing
+// to roll back until Swap has run, so an unswapped marker has no window to
+// expire. A zero deadline encodes as an empty fourth field, which is also
+// exactly what a marker written by an older agent build looks like; see
+// RollbackIfExpired for why that is deliberately inert rather than expired.
+func writeMarkerPhase(stateDir string, phase markerPhase, targetVersion, prevVersionDir string, deadline time.Time) error {
+	encodedDeadline := ""
+	if !deadline.IsZero() {
+		encodedDeadline = deadline.UTC().Format(time.RFC3339Nano)
+	}
+	data := []byte(string(phase) + "\n" + targetVersion + "\n" + prevVersionDir + "\n" + encodedDeadline)
 	if err := atomicWriteFile(filepath.Join(stateDir, markerFilename), data, 0o600); err != nil {
 		return fmt.Errorf("update: write marker: %w", err)
 	}
@@ -541,19 +551,104 @@ func writeMarkerPhase(stateDir string, phase markerPhase, targetVersion, prevVer
 // callers must treat swapped == false as "nothing to roll back". present is
 // false with a nil error when no marker exists at all.
 func ReadMarker(stateDir string) (version, prevVersionDir string, swapped, present bool, err error) {
+	m, present, err := readMarker(stateDir)
+	if err != nil || !present {
+		return "", "", false, false, err
+	}
+	return m.version, m.prevVersionDir, m.phase == phasePendingConfirm, true, nil
+}
+
+// marker is the parsed form of the on-disk marker file. ReadMarker remains the
+// public accessor for the four fields every pre-existing caller needs; this
+// exists so RollbackIfExpired can also see the deadline without a second read
+// of the same file (and without growing ReadMarker a sixth return value).
+type marker struct {
+	phase          markerPhase
+	version        string
+	prevVersionDir string
+	// deadline is the instant after which an unconfirmed update is to be
+	// rolled back. Zero means "not recorded" — either the marker has not
+	// reached phasePendingConfirm, or it was written by an agent build that
+	// predates deadline stamping.
+	deadline time.Time
+}
+
+func readMarker(stateDir string) (m marker, present bool, err error) {
 	data, err := os.ReadFile(filepath.Join(stateDir, markerFilename))
 	if os.IsNotExist(err) {
-		return "", "", false, false, nil
+		return marker{}, false, nil
 	}
 	if err != nil {
-		return "", "", false, false, fmt.Errorf("update: read marker: %w", err)
+		return marker{}, false, fmt.Errorf("update: read marker: %w", err)
 	}
 	phase, rest, ok := strings.Cut(string(data), "\n")
 	if !ok {
-		return "", "", false, false, fmt.Errorf("update: malformed marker: missing phase separator")
+		return marker{}, false, fmt.Errorf("update: malformed marker: missing phase separator")
 	}
-	version, prevVersionDir, _ = strings.Cut(rest, "\n")
-	return version, prevVersionDir, markerPhase(phase) == phasePendingConfirm, true, nil
+	m.phase = markerPhase(phase)
+	m.version, rest, _ = strings.Cut(rest, "\n")
+	// A marker written before the deadline field existed has no third
+	// separator at all, so prevVersionDir is simply the remainder.
+	m.prevVersionDir, rest, _ = strings.Cut(rest, "\n")
+	if rest != "" {
+		// A deadline that cannot be parsed is treated exactly like an absent
+		// one: inert. The alternative — failing the whole read — would take
+		// the daemon's startup down over a field that only ever makes the
+		// rollback safety net *more* available.
+		if deadline, parseErr := time.Parse(time.RFC3339Nano, rest); parseErr == nil {
+			m.deadline = deadline
+		}
+	}
+	return m, true, nil
+}
+
+// RollbackIfExpired restores the previous binary when the marker on disk names
+// an update that was durably swapped in but never confirmed before its
+// deadline, and reports the version it rolled back away from ("" when it did
+// nothing).
+//
+// This exists because the in-process rollback window (cmd/cb-agent's
+// watchForRollback) cannot cover the failure it matters most for. That
+// goroutine is spawned only after runDaemon's unconditional enroll.Run
+// succeeds, and an enrollment failure is fatal — so an update that leaves the
+// agent unable to reach the server at all kills the process long before the
+// window elapses, and does so again on every restart. Evaluating a durable
+// deadline from disk, before any network call, is what makes a crash-looping
+// agent converge on a rollback instead of looping forever on a broken build.
+//
+// The two watchForRollback rules that still apply here apply for the same
+// reasons: an unswapped marker has nothing to roll back (current was never
+// re-pointed, and its recorded prevVersionDir, if any, belongs to some earlier
+// already-confirmed update), and a failed Rollback still clears the marker so
+// the same doomed attempt is not re-armed on every subsequent start.
+//
+// A marker with no deadline is deliberately inert rather than expired: it was
+// written by an older agent build, its update may well be healthy and
+// in-flight, and watchForRollback remains its judge.
+func RollbackIfExpired(stateDir, currentLink string, now time.Time) (rolledBackFrom string, err error) {
+	m, present, err := readMarker(stateDir)
+	if err != nil || !present {
+		return "", err
+	}
+	if m.phase != phasePendingConfirm || m.deadline.IsZero() || now.Before(m.deadline) {
+		return "", nil
+	}
+	if err := Rollback(currentLink, m.prevVersionDir); err != nil {
+		if clearErr := ClearMarker(stateDir); clearErr != nil {
+			return "", errors.Join(err, clearErr)
+		}
+		return "", err
+	}
+	// This process has no live /link connection to report over — that is
+	// exactly why it is rolling back — so the rollback is persisted for the
+	// re-exec'd process to send once it reconnects.
+	if err := WriteRollbackReport(stateDir, m.version); err != nil {
+		return "", err
+	}
+	if err := ClearMarker(stateDir); err != nil {
+		return "", err
+	}
+	return m.version, nil
 }
 
 func ClearMarker(stateDir string) error {

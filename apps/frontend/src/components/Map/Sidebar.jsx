@@ -238,7 +238,13 @@ function SidebarTelemetryBlock({ node }) {
 
   if (!data) return null;
 
-  const cpuPct = data.cpu_pct != null ? Math.round(data.cpu_pct * 100) : null;
+  // `cpu_pct` is 0-100 from every producer: the Proxmox pollers convert PVE's
+  // 0-1 fraction at ingest (services/proxmox_telemetry.py,
+  // proxmox_discovery.py, discovery_proxmox_merge.py) and
+  // services/agent_telemetry.py rejects an agent summary outside 0..100. This
+  // used to scale by 100 a second time (F-1), rendering a 12.5% host as 1250%.
+  // components/map/TelemetrySidebar.jsx reads the same response the same way.
+  const cpuPct = data.cpu_pct != null ? Math.round(data.cpu_pct) : null;
   const memUsed =
     data.mem_used_gb ?? (data.mem_used != null ? +(data.mem_used / 1073741824).toFixed(1) : null);
   const memTotal =

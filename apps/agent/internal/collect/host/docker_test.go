@@ -282,6 +282,16 @@ func TestDocker_MoreThanOneHundredContainersTruncatesAndDegrades(t *testing.T) {
 }
 
 func TestDocker_StatsFailureLeavesContainerWithoutStatsAndDoesNotDegrade(t *testing.T) {
+	// A body that would otherwise decode into a complete stats map, so the
+	// 500 case below cannot be absorbed by the decode guard the way a
+	// non-JSON body is — deleting dockerStatsSummary's status check makes
+	// that case, and only that case, fail.
+	const wellFormed = `{
+		"cpu_stats": {"cpu_usage": {"total_usage": 200000000}, "system_cpu_usage": 2000000000, "online_cpus": 4},
+		"precpu_stats": {"cpu_usage": {"total_usage": 100000000}, "system_cpu_usage": 1000000000},
+		"memory_stats": {"usage": 536870912, "limit": 1073741824},
+		"networks": {"eth0": {"rx_bytes": 1000, "tx_bytes": 2000}}
+	}`
 	cases := []struct {
 		name   string
 		status int
@@ -289,6 +299,7 @@ func TestDocker_StatsFailureLeavesContainerWithoutStatsAndDoesNotDegrade(t *test
 	}{
 		{"stats endpoint errors", http.StatusInternalServerError, "nope"},
 		{"stats body is malformed", http.StatusOK, "{not json"},
+		{"stats endpoint errors with a well-formed body", http.StatusInternalServerError, wellFormed},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {

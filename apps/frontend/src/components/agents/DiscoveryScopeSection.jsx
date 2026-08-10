@@ -2,7 +2,12 @@ import React, { useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
 import { Link } from 'react-router-dom';
 import { pauseAgentDiscovery, resumeAgentDiscovery, setAgentCapabilities } from '../../api/agents';
-import { pauseProfile, resumeProfile, updateProfile } from '../../api/discovery';
+import {
+  getAgentDiscoveredDevices,
+  pauseProfile,
+  resumeProfile,
+  updateProfile,
+} from '../../api/discovery';
 import { useToast } from '../common/Toast';
 import ConfirmDialog from '../common/ConfirmDialog';
 import LocalDiscoveryConfigEditor, {
@@ -81,6 +86,31 @@ const formatTimestamp = (value) => (value ? new Date(value).toLocaleString() : '
  * the same kind of claim. Showing any of them under "Automatically included"
  * would tell an operator the agent is sweeping ground it will in fact refuse. */
 const isIncludable = (cidr) => ineligibleReason(cidr) === null;
+
+// Slice 3 §7: "Offer 'Create monitor from this agent' actions for devices found
+// in Slice 4. These preselect the agent vantage and target while leaving
+// monitor type, interval, and alert policy under user control."
+//
+// Only an ACCEPTED finding can be monitored: `target_type`/`target_id` have to
+// name a real inventory row, and until the review queue merges the finding
+// there is no Hardware record to point at. `host` mirrors the backend's own
+// resolution order for a hardware target (monitor_service._resolve_hardware:
+// ip_address, then hostname), so the form opens on the same address the server
+// would have chosen.
+const monitorLinkFor = (device, agentId) => {
+  if (device?.matched_entity_type !== 'hardware' || device?.matched_entity_id == null) return null;
+  const host = device.ip_address || device.hostname;
+  if (!host) return null;
+  const query = new URLSearchParams({
+    new: '1',
+    host,
+    target_type: 'hardware',
+    target_id: String(device.matched_entity_id),
+    probe_agent_id: String(agentId),
+  });
+  if (device.hostname) query.set('name', device.hostname);
+  return `/monitors?${query.toString()}`;
+};
 
 /** Why a reported CIDR cannot be shown as included, or `null` when it can. */
 function ineligibleReason(cidr) {
@@ -163,6 +193,30 @@ export default function DiscoveryScopeSection({
   // untouched — so without this the text box would keep showing the string the
   // server (or the operator) refused.
   const [editorRevision, setEditorRevision] = useState(0);
+  // The devices this agent's own scans found. Fetched here rather than lifted
+  // into AgentDetailPage because this section already owns the whole Slice 4
+  // agent surface, and the page is well past its component budget.
+  const [devices, setDevices] = useState([]);
+
+  useEffect(() => {
+    if (!agentId) return undefined;
+    let cancelled = false;
+    getAgentDiscoveredDevices(agentId, { limit: 50 })
+      .then((res) => {
+        if (cancelled) return;
+        const items = Array.isArray(res.data) ? res.data : (res.data?.results ?? []);
+        setDevices(items);
+      })
+      // A failed fetch leaves the list empty and the section silent: this is a
+      // convenience shortcut, not a source of truth, and the review queue and
+      // discovery history both still show the same findings.
+      .catch(() => {
+        if (!cancelled) setDevices([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
 
   const merged = { ...defaults, ...config };
   const scope = discovery?.scope ?? [];
@@ -564,6 +618,51 @@ export default function DiscoveryScopeSection({
                 lives. */}
             <Link to={`/discovery?agent=${agentId}`}>{agentName}</Link> has more discovery history.
           </p>
+
+          <h3>Devices found by this agent</h3>
+          <p className="agent-discovery__hint">
+            Creating a monitor from a device here opens the monitor form with the device and this
+            agent already chosen as the vantage. Check type, interval and alert policy stay yours. A
+            device has to be accepted into inventory from the review queue before it can be
+            monitored — a monitor points at an inventory record, not at a pending finding.
+          </p>
+          {devices.length === 0 ? (
+            <p>This agent has not reported any discovered devices yet.</p>
+          ) : (
+            <div className="table-scroll">
+              <table className="data-table" aria-label="Devices found by this agent">
+                <thead>
+                  <tr>
+                    <th>Address</th>
+                    <th>Name</th>
+                    <th>Review</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {devices.map((device) => {
+                    const monitorLink = monitorLinkFor(device, agentId);
+                    return (
+                      <tr key={device.id}>
+                        <td>{device.ip_address}</td>
+                        <td>{device.hostname ?? '—'}</td>
+                        <td>{titleCase(humanize(device.merge_status)) ?? '—'}</td>
+                        <td>
+                          {monitorLink ? (
+                            <Link className="btn btn-sm" to={monitorLink}>
+                              Create monitor
+                            </Link>
+                          ) : (
+                            <span className="agent-discovery__hint">Accept it first</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
 
           <h3>Discovery subnets</h3>
           {/* A hold is neither a delete nor a stop, and the row offers the

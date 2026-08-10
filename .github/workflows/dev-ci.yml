@@ -53,6 +53,39 @@ jobs:
         run: cd apps/frontend && npm run lint
 
   # ── Tests ─────────────────────────────────────────────────────────────────────
+  backend-tests:
+    name: Backend tests
+    runs-on: ubuntu-22.04
+    # Docker is required, not optional: tests/conftest.py boots a TimescaleDB
+    # testcontainer and sets CB_DB_URL from it BEFORE any app module is
+    # imported, so there is no sqlite-only mode to fall back to. ubuntu-22.04
+    # runners ship with Docker already running.
+    #
+    # Added 2026-08-09 (F-9). Until then no workflow ran backend pytest at all
+    # — the whole 2146-test suite was enforced locally only, so nothing found
+    # during user testing could be kept fixed. The blocker was the coverage
+    # gate in apps/backend/pyproject.toml, which demanded 60% against a real
+    # 55.42%; it is now ratcheted to the measured number, so this job's exit
+    # code means what it says.
+    #
+    # The 35+ minute docker e2e suite (apps/agent/e2e) is deliberately NOT run
+    # here and remains a local/manual gate.
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Python deps
+        run: |
+          python3.12 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e "apps/backend/[dev]"
+
+      - name: Backend tests
+        run: cd apps/backend && PYTHONPATH=src ../../.venv/bin/pytest
+
   test:
     name: Test
     runs-on: ubuntu-22.04

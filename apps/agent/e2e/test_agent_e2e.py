@@ -927,11 +927,58 @@ def _cut_agent_network(env: dict | None = None, *, service: str = _AGENT_SERVICE
     compose down` to clean up the hard way.
     """
     container, network = _agent_network_name(env, service=service)
+    # Captured BEFORE the detach so it can be restored after: `docker network
+    # connect` without `--ip` takes whatever the pool hands out, which silently
+    # renumbers the container. A partition is not a renumbering — a real host
+    # keeps its address across a WAN outage — and a test that moved the agent
+    # deliberately (`_change_agent_address`) would otherwise have that move
+    # undone by the next cut, with the failure surfacing much later as an
+    # unrelated "the backend cannot reach the agent" positive control.
+    address = _container_ipv4(container, network)
     subprocess.run(["docker", "network", "disconnect", network, container], check=True)
     try:
         yield container, network
     finally:
-        subprocess.run(["docker", "network", "connect", network, container], check=True)
+        _reattach_network(container, network, address)
+
+
+def _reattach_network(container: str, network: str, address: str | None = None) -> None:
+    """Re-attaches `network` to `container`, tolerating a container that is
+    crash-looping rather than merely idle.
+
+    This is the F-8 failure, and it is NOT the one previously recorded: the
+    entry `docker network disconnect` succeeds. It is the reconnect, 150s
+    later, that dies with "network sandbox for container ... not found".
+
+    An agent severed from the server crash-loops for the whole cut, because
+    runDaemon's enroll.Run is a network call whose failure is fatal
+    (cmd/cb-agent/main.go) and the compose file sets `restart: on-failure` to
+    mirror the real systemd unit. Docker's restart backoff is exponential, not
+    the unit's fixed RestartSec=5s, so by the end of a 150s cut the container
+    is spending minutes at a time in `restarting` — a state in which
+    `.State.Running` is true but `.NetworkSettings.SandboxKey` is EMPTY, and
+    there is therefore no sandbox to attach an endpoint to.
+
+    Waiting for a running window does not work: those windows are measured in
+    hundreds of milliseconds and the gaps grow past any sane timeout. Instead
+    take the container out of the restart loop entirely — `docker stop` leaves
+    it `exited`, where `network connect` takes Docker's config-only path,
+    returns 0, and records the attachment for the next start. `docker start`
+    then brings it up already on the network, which also resets the backoff.
+
+    The partition itself is unaffected: by the time this runs the agent has
+    already spent the full cut unable to reach the server, which is the whole
+    point of the block.
+    """
+    connect = ["docker", "network", "connect"]
+    if address:
+        connect += ["--ip", address]
+    connect += [network, container]
+    if subprocess.run(connect).returncode == 0:
+        return
+    subprocess.run(["docker", "stop", container], check=True, capture_output=True)
+    subprocess.run(connect, check=True)
+    subprocess.run(["docker", "start", container], check=True, capture_output=True)
 
 
 @contextlib.contextmanager
@@ -964,8 +1011,32 @@ def _backend_outage(client: httpx.Client, env: dict | None = None):
     the vault key and the agent's approval all have to survive.
     """
     subprocess.run([*COMPOSE, "stop", "circuitbreaker"], check=True, cwd=E2E_DIR, env=env)
+
+    # The instant yielded is the first moment this process could not reach the
+    # API at all — NOT the moment `docker compose stop` returned, and not a
+    # timestamp the caller took beforehand (F-6.3). Between a caller-side stamp
+    # and the server actually going away sit SIGTERM, supervisord's shutdown of
+    # uvicorn and Postgres, and the kill grace; samples collected and delivered
+    # LIVE in that span would otherwise fall inside a window the caller treats
+    # as "these buckets can only have come out of the spool". At a 30s history
+    # grain a slow stop can satisfy that floor entirely from pre-outage
+    # buckets, which degrades the "collected_at preserved rather than rewritten
+    # to reconnect time" proof into a tautology.
+    #
+    # Only a transport failure counts — a 5xx would mean the server is still
+    # there. That is the same socket the agent's /link connection terminates
+    # on, so this is a fact about the server rather than about docker's CLI.
+    def _api_unreachable() -> bool:
+        try:
+            client.get("/api/v1/bootstrap/status", timeout=2.0)
+        except httpx.HTTPError:
+            return True
+        return False
+
+    _wait_until(_api_unreachable, timeout=60, interval=0.25)
+    confirmed_down_at = datetime.now(timezone.utc)
     try:
-        yield
+        yield confirmed_down_at
     finally:
         subprocess.run([*COMPOSE, "start", "circuitbreaker"], check=True, cwd=E2E_DIR, env=env)
         _wait_until(
@@ -1572,15 +1643,38 @@ def test_agent_update_success_and_forced_rollback():
                 # interval, so this test just pays the real cost once.
                 time.sleep(150)
 
+            # Wait on the ROLLBACK EVENT first, not on status.json's version.
+            # status.json is written by startDaemonState, which runs after
+            # runDaemon's fatal enroll.Run — so the partitioned 9.9.9 binary
+            # never got to write one, and the file still holds the string the
+            # *previous* (0.3.5) process left there. Asserting on it before
+            # the agent has reconnected is therefore a tautology: it passes
+            # whether or not the rollback ever happened, which is precisely
+            # how this test could time out at the next line with nothing to
+            # show for it. The audit event is the first thing here that can
+            # only exist if the rollback really ran: the rolling-back process
+            # has no live link, so it persists a rollback report
+            # (update.WriteRollbackReport) that the re-exec'd binary sends as
+            # update.status(rolled_back) once it reconnects — see
+            # services/agent_link.py's "rolled_back" mapping.
+            #
+            # The budget is generous because the agent has to get there the
+            # slow way: it crash-loops for the whole cut (enroll.Run cannot
+            # succeed with agent-net detached), rolls back on the first start
+            # after its durable deadline, and only then reconnects.
+            def _rolled_back():
+                events = client.get(f"/api/v1/agents/{agent_id}/events", headers=headers).json()
+                return any(e["event_type"] == "update_rolled_back" for e in events)
+
+            _wait_until(_rolled_back, timeout=180, interval=2.0)
+
+            # Only now is this meaningful: the agent has reconnected, so
+            # status.json is this process's own, and this process is the
+            # rolled-back binary.
             _wait_until(lambda: _agent_status().get("version") == baked_version, timeout=60)
-            _wait_until(
-                lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
-                timeout=30,
+            assert client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active", (
+                "enrollment must survive a rollback — the agent is the same identity it was"
             )
-            events2 = client.get(f"/api/v1/agents/{agent_id}/events", headers=headers).json()
-            assert any(
-                e["event_type"] == "update_rolled_back" for e in events2
-            ), f"expected an update_rolled_back audit event, got {events2}"
         finally:
             stream.close()
     finally:
@@ -1720,6 +1814,57 @@ _MAX_SAMPLES_PER_BUCKET = 4
 # gated 1:4 interleave.
 _CATCHUP_BUDGET_S = 30
 
+# internal/link/backoff.go: backoffBase = 1s, doubling per attempt to a 5m cap,
+# with up to 25% jitter added on top of each base duration.
+_BACKOFF_BASE_S = 1.0
+_BACKOFF_JITTER = 1.25
+# Slack for the reconnect ATTEMPT itself once backoff releases it: TCP dial,
+# TLS, and the Noise IK handshake whose single read is bounded by internal/link's
+# handshakeTimeout (10s), retried once per server-key candidate.
+_RECONNECT_ATTEMPT_SLACK_S = 30.0
+
+
+def _reconnect_budget_s(outage_len_s: float) -> float:
+    """How long the agent may legitimately stay away AFTER the server answers
+    again — derived from internal/link/backoff.go rather than guessed.
+
+    The pre-outage connection had been up for minutes, so it is `stable` by
+    link.go's stabilityWindow and the backoff state resets to attempt 0 when it
+    drops. Delays are then 1, 2, 4, 8, ... seconds. Because each delay is no
+    larger than the sum of every delay before it, the one still in flight when
+    the server returns is at most the whole elapsed outage — so the remaining
+    wait is bounded by the outage length itself, plus jitter and one attempt.
+
+    This is deliberately NOT folded into _CATCHUP_BUDGET_S. Reconnect backoff
+    is not the property under test, and it can legitimately dwarf catch-up: one
+    combined budget lets a regressed drain hide behind a slow dial, which is
+    exactly what F-6.2 records.
+    """
+    return _BACKOFF_JITTER * (outage_len_s + _BACKOFF_BASE_S) + _RECONNECT_ATTEMPT_SLACK_S
+
+
+def _last_connect_at(client: httpx.Client, agent_id: int, *, after: datetime):
+    """When the SERVER last recorded this agent's link coming up, or None if
+    that has not happened since `after`.
+
+    This, and not a local time.monotonic() reading, is the instant a catch-up
+    budget must be measured from (F-6.2). `agent_events` rows come back
+    newest-first and a `connected` row is written once per accepted /link
+    connection, in the same committed transaction as hello's spool-depth
+    snapshot and strictly before the hello.ack that gates the drain. So it is
+    at or before the moment the first spooled frame could have been sent, and
+    any error in it makes the measured catch-up longer, never shorter.
+
+    Agent.connected_since is deliberately not used: the column is never
+    assigned anywhere in the backend and is always NULL.
+    """
+    for event in _agent_events(client, agent_id):
+        if event["event_type"] != "connected":
+            continue
+        created = _parse_ts(event["created_at"])
+        return created if created >= after else None
+    return None
+
 _HOST_TELEMETRY_FAST_CONFIG = {
     "interval_s": _TELEMETRY_INTERVAL_S,
     "include_filesystems": True,
@@ -1841,8 +1986,11 @@ def test_agent_host_telemetry_first_sample_catchup_and_disable():
 
                 samples_before_outage = _history_sample_total()
 
-                outage_start = datetime.now(timezone.utc)
-                with _backend_outage(client):
+                # outage_start comes from the manager, not from here: it is
+                # the moment the API was CONFIRMED unreachable, so the sleep
+                # below happens entirely inside a real outage and every bucket
+                # this window selects was necessarily spooled (F-6.3).
+                with _backend_outage(client) as outage_start:
                     # The daemon keeps collecting throughout: internal/link's
                     # Run routes data frames to the spool whenever the link
                     # is not live, so every sample produced in here is
@@ -1860,13 +2008,19 @@ def test_agent_host_telemetry_first_sample_catchup_and_disable():
                 # the very next heartbeat (20s) overwrites it with the
                 # by-then-drained 0. Polling fast from here is what makes the
                 # non-zero window observable at all.
+                # Two properties, two clocks — the separation IS the
+                # assertion (F-6.2). The old single 240s magic-number poll
+                # bounded neither: it let a regressed drain hide behind a slow
+                # reconnect, which is the very property D-5 exists to pin.
+                #
+                # (a) RECONNECT, bounded by internal/link's own backoff
+                # progression and measured from the moment the server was
+                # answering again.
                 observed_depth = 0
-                # Generous because reconnect backoff, not catch-up, dominates
-                # this wait: see _CATCHUP_BUDGET_S's comment. A ~2 minute
-                # outage leaves internal/link/backoff.go partway up its
-                # 1s-doubling progression, so the first post-outage dial can
-                # be up to a minute after the server is answering again.
-                depth_deadline = time.monotonic() + 240
+                reconnect_budget_s = _reconnect_budget_s(
+                    (outage_end - outage_start).total_seconds()
+                )
+                depth_deadline = time.monotonic() + reconnect_budget_s
                 while time.monotonic() < depth_deadline:
                     spool = _agent_telemetry(client, agent_id)["spool"]
                     if spool["depth"]:
@@ -1874,12 +2028,22 @@ def test_agent_host_telemetry_first_sample_catchup_and_disable():
                         break
                     time.sleep(0.5)
                 assert observed_depth > 0, (
-                    "never observed a non-zero spool depth after a "
-                    f"{_OUTAGE_SECONDS}s outage — either the outage samples "
-                    "were dropped instead of spooled, or hello.spool_depth "
-                    "is not being recorded"
+                    "never observed a non-zero spool depth within "
+                    f"{reconnect_budget_s:.0f}s of the server answering again "
+                    f"after a {_OUTAGE_SECONDS}s outage — either the outage "
+                    "samples were dropped instead of spooled, hello.spool_depth "
+                    "is not being recorded, or reconnect backoff regressed"
                 )
-                link_restored = time.monotonic()
+
+                # (b) CATCH-UP, measured from the server's OWN record of the
+                # link coming up rather than from whenever this process
+                # happened to notice a non-zero depth. Polling latency and any
+                # remaining backoff land outside the budget, where they belong.
+                link_restored_at = _last_connect_at(client, agent_id, after=outage_start)
+                assert link_restored_at is not None, (
+                    "the server recorded no `connected` event after the outage, so there is "
+                    "no instant to measure a catch-up budget from"
+                )
 
                 bucket_width = timedelta(seconds=_HISTORY_BUCKET_S)
 
@@ -1918,9 +2082,19 @@ def test_agent_host_telemetry_first_sample_catchup_and_disable():
                         and _history_sample_total() >= samples_before_outage + _MISSED_INTERVALS
                     )
 
-                _wait_until(_caught_up, timeout=_CATCHUP_BUDGET_S, interval=1.0)
-                catchup_elapsed = time.monotonic() - link_restored
-                assert catchup_elapsed <= _CATCHUP_BUDGET_S, catchup_elapsed
+                # The deadline is the server's connect instant plus the
+                # budget, so time already spent reconnecting is not spent here.
+                catchup_deadline = link_restored_at + timedelta(seconds=_CATCHUP_BUDGET_S)
+                _wait_until(
+                    _caught_up,
+                    timeout=max(1.0, (catchup_deadline - datetime.now(timezone.utc)).total_seconds()),
+                    interval=1.0,
+                )
+                catchup_elapsed = (datetime.now(timezone.utc) - link_restored_at).total_seconds()
+                assert catchup_elapsed <= _CATCHUP_BUDGET_S, (
+                    f"the backlog took {catchup_elapsed:.1f}s to land, measured from the "
+                    f"server's own `connected` event — budget is {_CATCHUP_BUDGET_S}s"
+                )
 
                 # The indicator has to clear on its own, from the heartbeat
                 # (D-12) — hello alone could never lower it. Two heartbeat
@@ -1945,6 +2119,27 @@ def test_agent_host_telemetry_first_sample_catchup_and_disable():
                         f"at a {_TELEMETRY_INTERVAL_S}s cadence in a {_HISTORY_BUCKET_S}s bucket "
                         "— the spool's at-least-once redelivery was not deduped"
                     )
+
+                # (c) Per-SAMPLE, not inferred from bucket aggregates (F-6.1).
+                # The plan's requirement is that every sample_id appears once,
+                # and no history endpoint can express that — see
+                # _agent_host_samples. This also catches the one case the
+                # unique constraint cannot: a redelivery whose collected_at was
+                # rewritten satisfies (agent_id, sample_id, collected_at) and
+                # lands as a second row under the same sample_id.
+                outage_samples = _agent_host_samples(agent_id, outage_start, outage_end)
+                assert outage_samples, (
+                    "no raw agent_host_samples rows inside the confirmed outage window — the "
+                    "backlog was either lost or restamped to reconnect time"
+                )
+                sample_ids = [sample_id for sample_id, _ in outage_samples]
+                duplicates = sorted({sid for sid in sample_ids if sample_ids.count(sid) > 1})
+                assert not duplicates, (
+                    f"{len(duplicates)} sample_id(s) were persisted more than once inside the "
+                    "outage window — the spool's at-least-once redelivery (peek/send/commit, "
+                    f"internal/link/outbound.go) was not deduped: {duplicates}"
+                )
+
                 time.sleep(3)
                 second_read = _outage_points()
                 assert second_read == first_read, (
@@ -4255,6 +4450,36 @@ def _backend_sql(query: str) -> list[list[str]]:
         f"{proc.stdout!r} {proc.stderr!r}"
     )
     return [line.split("|") for line in proc.stdout.splitlines() if line]
+
+
+def _agent_host_samples(agent_id: int, start: datetime, end: datetime) -> list[tuple[str, float]]:
+    """Every RAW agent host sample in a window, one tuple per sample.
+
+    A direct DB read because no endpoint can answer this (F-6.1).
+    `GET /agents/{id}/telemetry` serializes exactly one row — the newest — and
+    `/telemetry/history` never materializes raw samples at all; it aggregates
+    entirely in SQL over an epoch-aligned grid. `sample_id` is simply not on
+    the wire for anything but `latest`, so bucket aggregates can only ever
+    INFER uniqueness from counts. This asserts it.
+
+    Checking `sample_id` alone is the point. The dedupe under test is
+    `uq_agent_host_sample (agent_id, sample_id, collected_at)` — a redelivery
+    that arrived with a REWRITTEN `collected_at` satisfies that constraint and
+    is inserted as a second row under the same `sample_id`. That is exactly the
+    failure the bucket check cannot see, and exactly the failure "collected_at
+    is preserved rather than restamped to reconnect time" is about.
+
+    `collected_at` comes back as epoch seconds rather than a rendered
+    timestamp: psql -At prints a form whose offset and fractional digits vary,
+    and this only ever needs ordering and window membership.
+    """
+    rows = _backend_sql(
+        "SELECT sample_id, EXTRACT(EPOCH FROM collected_at) FROM agent_host_samples "
+        f"WHERE agent_id = {int(agent_id)} "
+        f"AND collected_at >= '{start.isoformat()}' AND collected_at <= '{end.isoformat()}' "
+        "ORDER BY collected_at"
+    )
+    return [(row[0], float(row[1])) for row in rows]
 
 
 def _result_provenance() -> list[dict]:

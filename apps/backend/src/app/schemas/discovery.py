@@ -388,6 +388,12 @@ class ScanResultOut(BaseModel):
     conflicts_json: str | None
     matched_entity_type: str | None
     matched_entity_id: int | None
+    # Which agent's local-discovery scan produced this finding; None for a
+    # server-executed scan. The column has existed since Slice 4 but was not
+    # serialized, so no caller could attribute a finding to an agent — which
+    # Slice 3 §7's "Create monitor from this agent" action needs in order to
+    # list the devices one agent found.
+    discovery_agent_id: int | None = None
     merge_status: str
     reviewed_by: str | None
     reviewed_at: str | None

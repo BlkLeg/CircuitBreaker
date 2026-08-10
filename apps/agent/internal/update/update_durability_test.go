@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // TestSwap_NewVersionAlwaysInstalledAt0755 covers the "fixed 0755, no mode
@@ -183,7 +184,7 @@ func TestUpdateThenCrashBeforeRestart_MarkerAndBackupRecoverable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Swap() error = %v", err)
 	}
-	if err := MarkSwapped(dir, "0.4.0", prevVersionDir); err != nil {
+	if err := MarkSwapped(dir, "0.4.0", prevVersionDir, time.Now().Add(2*time.Minute)); err != nil {
 		t.Fatalf("MarkSwapped() error = %v", err)
 	}
 	// Simulated crash: no re-exec, no hello.ack, nothing else runs.

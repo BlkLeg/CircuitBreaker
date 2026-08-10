@@ -251,6 +251,9 @@ vi.mock('../api/discovery', () => ({
   updateProfile: vi.fn(apiDefaults.updateProfile),
   pauseProfile: vi.fn(apiDefaults.pauseProfile),
   resumeProfile: vi.fn(apiDefaults.resumeProfile),
+  // The section's "Devices found by this agent" list (Slice 3 §7's "Create
+  // monitor from this agent"). Empty here: these tests are about scope.
+  getAgentDiscoveredDevices: vi.fn(() => Promise.resolve({ data: [] })),
 }));
 
 vi.mock('../api/monitor', () => ({

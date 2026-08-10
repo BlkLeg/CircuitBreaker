@@ -62,6 +62,11 @@ export default function MonitorsPage() {
   const [detailsById, setDetailsById] = useState({});
   const [busyId, setBusyId] = useState(null);
   const [editing, setEditing] = useState(null); // null | 'new' | monitor
+  // The deep link's seed, captured when the form opens. A ref rather than
+  // state because the query params it came from are cleared immediately (so a
+  // close does not re-open the form), and because it must never survive into
+  // the next hand-opened create.
+  const prefillOnOpen = useRef(null);
   const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
   const [now, setNow] = useState(() => Date.now());
 
@@ -69,6 +74,59 @@ export default function MonitorsPage() {
   const typeFilter = params.get('type');
   const q = params.get('q') || '';
   const sort = SORT_VALUES.includes(params.get('sort')) ? params.get('sort') : 'worst';
+
+  // Slice 3 §7's "Create monitor from this agent" deep link
+  // (/monitors?new=1&host=...&probe_agent_id=...). It preselects the target
+  // and the vantage and nothing else — type, interval and alert policy stay
+  // the operator's, which is what separates this from the review queue's
+  // best-effort quick-create.
+  //
+  // probe_agent_id and target_id MUST be numbers: RunFromSelect compares its
+  // value with `===` against `agent.agent_id`, so a bare query string would
+  // leave the <select> looking right while the eligibility warnings silently
+  // stopped matching.
+  const prefillFromLink = useMemo(() => {
+    if (params.get('new') == null) return null;
+    const num = (key) => {
+      const raw = params.get(key);
+      if (raw == null || raw.trim() === '') return null;
+      const parsed = Number(raw);
+      return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+    };
+    const host = params.get('host');
+    const targetType = params.get('target_type');
+    const targetId = num('target_id');
+    const seed = {};
+    if (params.get('name')) seed.name = params.get('name');
+    if (host) seed.host = host;
+    if (targetType && targetId != null) {
+      seed.target_type = targetType;
+      seed.target_id = targetId;
+    }
+    const probeAgentId = num('probe_agent_id');
+    if (probeAgentId != null) seed.probe_agent_id = probeAgentId;
+    return Object.keys(seed).length > 0 ? seed : {};
+  }, [params]);
+
+  // Opening the form is a one-shot effect of arriving on the link, not a
+  // render-time derivation: the operator must still be able to close the form
+  // without the URL immediately re-opening it.
+  useEffect(() => {
+    if (prefillFromLink == null) return;
+    prefillOnOpen.current = prefillFromLink;
+    setEditing('new');
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        for (const key of ['new', 'host', 'target_type', 'target_id', 'probe_agent_id', 'name']) {
+          next.delete(key);
+        }
+        return next;
+      },
+      { replace: true }
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const setParam = useCallback(
     (key, value) => {
@@ -280,6 +338,7 @@ export default function MonitorsPage() {
   const handleSubmit = async (form) => {
     if (editing === 'new') await createMonitor(form);
     else await updateMonitor(editing.id, form);
+    prefillOnOpen.current = null;
     setEditing(null);
     toast.success('Monitor saved.');
     await refreshRef.current();
@@ -305,7 +364,13 @@ export default function MonitorsPage() {
           <h2>Monitors</h2>
           {lastCheck && <span className="mon-uptime">last check {formatAgo(lastCheck, now)}</span>}
         </div>
-        <button className="btn btn-primary" onClick={() => setEditing('new')}>
+        <button
+          className="btn btn-primary"
+          onClick={() => {
+            prefillOnOpen.current = null;
+            setEditing('new');
+          }}
+        >
           + Add monitor
         </button>
       </div>
@@ -326,7 +391,10 @@ export default function MonitorsPage() {
           <button
             className="btn btn-primary"
             style={{ marginTop: 12 }}
-            onClick={() => setEditing('new')}
+            onClick={() => {
+              prefillOnOpen.current = null;
+              setEditing('new');
+            }}
           >
             + Add monitor
           </button>
@@ -388,8 +456,12 @@ export default function MonitorsPage() {
       {editing && (
         <MonitorForm
           initial={editing === 'new' ? null : editing}
+          prefill={editing === 'new' ? prefillOnOpen.current : null}
           onSubmit={handleSubmit}
-          onCancel={() => setEditing(null)}
+          onCancel={() => {
+            prefillOnOpen.current = null;
+            setEditing(null);
+          }}
         />
       )}
 

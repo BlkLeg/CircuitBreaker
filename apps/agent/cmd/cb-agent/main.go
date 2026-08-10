@@ -97,6 +97,36 @@ func resolveReExecDelay() time.Duration {
 // {stateDir}/current, the middle symlink this one points through.
 const installedBinaryPath = "/usr/local/bin/cb-agent"
 
+// rollbackExpiredUpdate is runDaemon's startup half of the rollback safety
+// net: it restores the previous binary when the marker on disk names an update
+// that was swapped in but never confirmed before its deadline, then re-execs
+// into it.
+//
+// It is the durable counterpart to watchForRollback. That one covers the live
+// case — the agent is up, enrolled and talking, but a post-update hello.ack
+// never lands — and cannot cover the case where the update itself is what
+// severed the connection, because it is spawned after a fatal enroll.Run and
+// its window is an in-process sleep that a restart resets. This one is
+// evaluated from disk before any network call, so a crash-looping agent
+// converges on a rollback rather than looping on a broken build forever.
+//
+// reExec is a parameter for the same reason watchForRollback takes one: so a
+// test can observe the decision without replacing its own process image.
+func rollbackExpiredUpdate(stateDir, currentLink string, now time.Time, reExec func() error) {
+	rolledBackFrom, err := update.RollbackIfExpired(stateDir, currentLink, now)
+	if err != nil {
+		log.Printf("cb-agent: %v", err)
+		return
+	}
+	if rolledBackFrom == "" {
+		return
+	}
+	log.Printf("cb-agent: update to %s never confirmed before its rollback deadline — rolled back, re-executing", rolledBackFrom)
+	if err := reExec(); err != nil {
+		log.Printf("cb-agent: re-exec after rollback failed: %v", err)
+	}
+}
+
 // watchForRollback waits up to rollbackWindow for the update marker naming
 // pendingVersion to be cleared — which onConnected (wired in runDaemon)
 // does exactly once, the moment a post-update connection reaches an
@@ -207,6 +237,17 @@ func runDaemon() {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Before enrolling, not after: enrollment is a network call and its
+	// failure below is fatal, so an update that leaves this agent unable to
+	// reach the server would otherwise kill the process on every restart
+	// without the rollback window below ever being allowed to elapse. That
+	// was F-8 — the rollback safety net was unavailable in exactly the case
+	// it exists for. This check reads the marker's durable deadline off disk
+	// and needs no server at all.
+	rollbackExpiredUpdate(config.StateDir(), update.CurrentLinkPath(config.StateDir()), time.Now(), func() error {
+		return syscall.Exec(installedBinaryPath, os.Args, os.Environ())
+	})
 
 	if err := enroll.Run(cfg, key, AgentVersion); err != nil {
 		fmt.Fprintf(os.Stderr, "cb-agent: enrollment: %v\n", err)
@@ -350,7 +391,10 @@ func runDaemon() {
 		// treated as a failed update: it only costs this particular update
 		// its rollback safety net (see MarkSwapped's doc comment), not
 		// correctness.
-		if err := update.MarkSwapped(config.StateDir(), instr.Version, prevVersionDir); err != nil {
+		// The deadline is stamped here, not at process start, so it measures
+		// from the swap itself and survives the crash-loop an update that
+		// breaks connectivity produces — see update.RollbackIfExpired.
+		if err := update.MarkSwapped(config.StateDir(), instr.Version, prevVersionDir, time.Now().Add(rollbackWindow)); err != nil {
 			log.Printf("cb-agent: %v — update to %s already installed but will not be protected by the rollback window", err, instr.Version)
 		}
 		// Reported now, immediately before re-exec: a successful re-exec

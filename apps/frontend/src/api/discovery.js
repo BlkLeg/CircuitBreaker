@@ -41,6 +41,14 @@ export const getVendorCatalog = () => client.get('/discovery/vendor-catalog');
 export const getPendingResults = (params) =>
   client.get('/discovery/results', { params: { status: 'pending', ...params } });
 
+// Every device a given agent's local-discovery scans have turned up, at any
+// merge status — the accepted ones are what Slice 3 §7's "Create monitor from
+// this agent" action builds a monitor from, and those are no longer `pending`.
+export const getAgentDiscoveredDevices = (agentId, params) =>
+  client.get('/discovery/results', {
+    params: { status: 'all', agent_id: agentId, ...params },
+  });
+
 // Docker discovery
 export const getDockerStatus = () => client.get('/discovery/docker/status');
 export const syncDocker = () => client.post('/discovery/docker/sync');
