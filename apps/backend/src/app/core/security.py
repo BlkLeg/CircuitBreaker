@@ -245,37 +245,19 @@ def decode_token(token: str, secret: str) -> int | None:
         return None
 
 
-def decode_access_token(token: str, secret: str | None = None) -> dict[str, Any]:
+def decode_access_token(token: str, secret: str) -> dict[str, Any]:
     """Decode a JWT and return its claim payload.
 
-    When ``secret`` is supplied, full verification is performed (HS256 signature,
-    expiry, and audience).  This is the preferred and secure code path.
-
-    When ``secret`` is ``None``, signature verification is skipped as a last-resort
-    fallback (e.g. app not yet bootstrapped and jwt_secret unavailable).  In that
-    case the returned dict is restricted to only the ``tenant_id`` claim so that
-    no security-sensitive claims leak through the unverified path.
-    Do NOT use this function as an authentication gate under any circumstances.
+    Full verification is always performed (HS256 signature, expiry, and audience).
+    Callers must not decode claims when the signing secret is unavailable.
     """
     try:
-        if secret:
-            return jwt.decode(
-                token,
-                secret,
-                algorithms=["HS256"],
-                audience=[SESSION_AUDIENCE],
-            )
-        # Unverified fallback: secret unavailable (e.g. pre-bootstrap). Caller must
-        # NEVER use the result for auth/authz decisions.
-        raw = jwt.decode(  # nosemgrep: python.jwt.security.unverified-jwt-decode.unverified-jwt-decode  # noqa: E501
+        return jwt.decode(
             token,
-            options={
-                "verify_signature": False
-            },  # nosemgrep: python.jwt.security.unverified-jwt-decode.unverified-jwt-decode  # noqa: E501
+            secret,
             algorithms=["HS256"],
+            audience=[SESSION_AUDIENCE],
         )
-        # Expose only tenant_id — all other claims are suppressed on unverified path.
-        return {"tenant_id": raw.get("tenant_id")} if raw else {}
     except jwt.PyJWTError:
         return {}
 

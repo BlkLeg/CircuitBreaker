@@ -52,8 +52,10 @@ if ! .venv/bin/bandit --version > /dev/null 2>&1; then
 fi
 # Gate: -lll = HIGH severity only, --skip B101 (assert in tests is fine)
 if $GATE_MODE; then
-    .venv/bin/bandit -r apps/backend/src/ -lll --skip B101 -f txt >> "$REPORT_FILE" 2>&1
-    [ $? -ne 0 ] && GATE_FAILURES=$((GATE_FAILURES + 1)) && echo "  ⚠ GATE FAILURE: Bandit HIGH findings" >> "$REPORT_FILE"
+    if ! .venv/bin/bandit -r apps/backend/src/ -lll --skip B101 -f txt >> "$REPORT_FILE" 2>&1; then
+        GATE_FAILURES=$((GATE_FAILURES + 1))
+        echo "  ⚠ GATE FAILURE: Bandit HIGH findings" >> "$REPORT_FILE"
+    fi
 else
     .venv/bin/bandit -r apps/backend/src/ -ll --skip B101 -f txt >> "$REPORT_FILE" 2>&1 || true
 fi
@@ -67,9 +69,11 @@ if ! .venv/bin/semgrep --version > /dev/null 2>&1; then
     .venv/bin/pip install semgrep --quiet
 fi
 if $GATE_MODE; then
-    .venv/bin/semgrep scan --config=p/default --error --severity ERROR \
-        apps/backend/src/ apps/frontend/src/ docker/ >> "$REPORT_FILE" 2>&1
-    [ $? -ne 0 ] && GATE_FAILURES=$((GATE_FAILURES + 1)) && echo "  ⚠ GATE FAILURE: Semgrep ERROR findings" >> "$REPORT_FILE"
+    if ! .venv/bin/semgrep scan --config=p/default --error --severity ERROR \
+        apps/backend/src/ apps/frontend/src/ docker/ >> "$REPORT_FILE" 2>&1; then
+        GATE_FAILURES=$((GATE_FAILURES + 1))
+        echo "  ⚠ GATE FAILURE: Semgrep ERROR findings" >> "$REPORT_FILE"
+    fi
 else
     .venv/bin/semgrep scan --config=p/default apps/backend/src/ apps/frontend/src/ docker/ >> "$REPORT_FILE" 2>&1 || true
 fi
@@ -85,8 +89,10 @@ GITLEAKS_RAN=false
 if command -v gitleaks > /dev/null 2>&1; then
     GITLEAKS_RAN=true
     if $GATE_MODE; then
-        gitleaks detect --no-git --source . $GITLEAKS_CONFIG --report-path /dev/stdout 2>&1 >> "$REPORT_FILE"
-        [ $? -ne 0 ] && GATE_FAILURES=$((GATE_FAILURES + 1)) && echo "  ⚠ GATE FAILURE: Gitleaks found secrets" >> "$REPORT_FILE"
+        if ! gitleaks detect --no-git --source . $GITLEAKS_CONFIG --report-path /dev/stdout >> "$REPORT_FILE" 2>&1; then
+            GATE_FAILURES=$((GATE_FAILURES + 1))
+            echo "  ⚠ GATE FAILURE: Gitleaks found secrets" >> "$REPORT_FILE"
+        fi
     else
         gitleaks detect --no-git --source . $GITLEAKS_CONFIG --report-path /dev/stdout 2>&1 >> "$REPORT_FILE" || true
     fi
@@ -95,8 +101,10 @@ elif command -v docker > /dev/null 2>&1; then
     GITLEAKS_DOCKER_ARGS="detect --source=/repo -v"
     [ -f .gitleaks.toml ] && GITLEAKS_DOCKER_ARGS="detect --source=/repo --config=/repo/.gitleaks.toml -v"
     if $GATE_MODE; then
-        docker run --rm -v "$(pwd):/repo" ghcr.io/gitleaks/gitleaks:latest $GITLEAKS_DOCKER_ARGS 2>&1 >> "$REPORT_FILE"
-        [ $? -ne 0 ] && GATE_FAILURES=$((GATE_FAILURES + 1)) && echo "  ⚠ GATE FAILURE: Gitleaks found secrets" >> "$REPORT_FILE"
+        if ! docker run --rm -v "$(pwd):/repo" ghcr.io/gitleaks/gitleaks:latest $GITLEAKS_DOCKER_ARGS >> "$REPORT_FILE" 2>&1; then
+            GATE_FAILURES=$((GATE_FAILURES + 1))
+            echo "  ⚠ GATE FAILURE: Gitleaks found secrets" >> "$REPORT_FILE"
+        fi
     else
         docker run --rm -v "$(pwd):/repo" ghcr.io/gitleaks/gitleaks:latest $GITLEAKS_DOCKER_ARGS 2>&1 >> "$REPORT_FILE" || true
     fi
@@ -152,17 +160,21 @@ TRIVY_IGNORE=""
 if command -v trivy > /dev/null 2>&1; then
     TRIVY_RAN=true
     if $GATE_MODE; then
-        trivy fs --exit-code 1 --severity HIGH,CRITICAL $TRIVY_IGNORE . >> "$REPORT_FILE" 2>&1
-        [ $? -ne 0 ] && GATE_FAILURES=$((GATE_FAILURES + 1)) && echo "  ⚠ GATE FAILURE: Trivy HIGH/CRIT findings" >> "$REPORT_FILE"
+        if ! trivy fs --exit-code 1 --severity HIGH,CRITICAL $TRIVY_IGNORE . >> "$REPORT_FILE" 2>&1; then
+            GATE_FAILURES=$((GATE_FAILURES + 1))
+            echo "  ⚠ GATE FAILURE: Trivy HIGH/CRIT findings" >> "$REPORT_FILE"
+        fi
     else
         trivy fs --severity HIGH,CRITICAL,MEDIUM $TRIVY_IGNORE . >> "$REPORT_FILE" 2>&1 || true
     fi
 elif command -v docker > /dev/null 2>&1; then
     TRIVY_RAN=true
     if $GATE_MODE; then
-        docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy fs \
-            --exit-code 1 --severity HIGH,CRITICAL --ignorefile /workspace/.trivyignore . >> "$REPORT_FILE" 2>&1
-        [ $? -ne 0 ] && GATE_FAILURES=$((GATE_FAILURES + 1)) && echo "  ⚠ GATE FAILURE: Trivy HIGH/CRIT findings" >> "$REPORT_FILE"
+        if ! docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy fs \
+            --exit-code 1 --severity HIGH,CRITICAL --ignorefile /workspace/.trivyignore . >> "$REPORT_FILE" 2>&1; then
+            GATE_FAILURES=$((GATE_FAILURES + 1))
+            echo "  ⚠ GATE FAILURE: Trivy HIGH/CRIT findings" >> "$REPORT_FILE"
+        fi
     else
         docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy fs \
             --ignorefile /workspace/.trivyignore . >> "$REPORT_FILE" 2>&1 || true
@@ -179,16 +191,20 @@ echo "\`\`\`" >> "$REPORT_FILE"
 echo "Running Trivy config..."
 if command -v trivy > /dev/null 2>&1; then
     if $GATE_MODE; then
-        trivy config --exit-code 1 --severity HIGH,CRITICAL $TRIVY_IGNORE . >> "$REPORT_FILE" 2>&1
-        [ $? -ne 0 ] && GATE_FAILURES=$((GATE_FAILURES + 1)) && echo "  ⚠ GATE FAILURE: Trivy config HIGH/CRIT" >> "$REPORT_FILE"
+        if ! trivy config --exit-code 1 --severity HIGH,CRITICAL $TRIVY_IGNORE . >> "$REPORT_FILE" 2>&1; then
+            GATE_FAILURES=$((GATE_FAILURES + 1))
+            echo "  ⚠ GATE FAILURE: Trivy config HIGH/CRIT" >> "$REPORT_FILE"
+        fi
     else
         trivy config $TRIVY_IGNORE . >> "$REPORT_FILE" 2>&1 || true
     fi
 elif command -v docker > /dev/null 2>&1; then
     if $GATE_MODE; then
-        docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy config \
-            --exit-code 1 --severity HIGH,CRITICAL --ignorefile /workspace/.trivyignore /workspace >> "$REPORT_FILE" 2>&1
-        [ $? -ne 0 ] && GATE_FAILURES=$((GATE_FAILURES + 1)) && echo "  ⚠ GATE FAILURE: Trivy config HIGH/CRIT" >> "$REPORT_FILE"
+        if ! docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy config \
+            --exit-code 1 --severity HIGH,CRITICAL --ignorefile /workspace/.trivyignore /workspace >> "$REPORT_FILE" 2>&1; then
+            GATE_FAILURES=$((GATE_FAILURES + 1))
+            echo "  ⚠ GATE FAILURE: Trivy config HIGH/CRIT" >> "$REPORT_FILE"
+        fi
     else
         docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy config \
             --ignorefile /workspace/.trivyignore /workspace >> "$REPORT_FILE" 2>&1 || true
