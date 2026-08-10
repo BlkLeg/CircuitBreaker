@@ -1,31 +1,26 @@
 module circuitbreaker.dev/cb-agent
 
-go 1.22
+go 1.25.0
 
 require (
 	github.com/BurntSushi/toml v1.4.0
 	github.com/flynn/noise v1.1.0
 	github.com/gorilla/websocket v1.5.3
-	// v1.1.63 is the last release declaring go 1.19; CI pins setup-go to 1.22 (D-11),
-	// so a newer miekg/dns (v1.1.66+ declares go 1.23.0) compiles locally and breaks CI.
+	// v1.1.63 remains sufficient for the agent's DNS record queries.
 	// SOA and CAA are the reason for the dependency at all: net.Resolver cannot query them.
 	github.com/miekg/dns v1.1.63
-	golang.org/x/crypto v0.31.0
+	golang.org/x/crypto v0.52.0
 )
 
-// v0.30.0 is the last release declaring go 1.18; CI pins setup-go to 1.22 (D-11),
-// so a newer x/sys (v0.31.0+ declares go 1.23.0) compiles locally and breaks CI. v0.28.0 is what
-// the graph already resolved to as an indirect dependency, and D-11 keeps it there: promoting it
-// to direct is not a reason to move it.
+// The x/sys version follows the security-supported x/crypto and x/net graph.
 // unix is the reason for the dependency: reading the kernel neighbor cache over RTM_GETNEIGH
 // needs the netlink constants and raw socket calls, and the stdlib syscall package is frozen.
-require golang.org/x/sys v0.28.0
+require golang.org/x/sys v0.45.0
 
-// v0.33.0 is the last release declaring go 1.18; CI pins setup-go to 1.22 (D-11),
-// so a newer x/net (v0.36.0+ declares go 1.23.0) compiles locally and breaks CI.
+// x/net is kept current because it handles attacker-controlled network input.
 // icmp + ipv4/ipv6 are the reason for the dependency: the stdlib cannot build ICMP echo
 // messages, and the agent probes over unprivileged datagram ICMP with no CAP_NET_RAW.
-require golang.org/x/net v0.33.0
+require golang.org/x/net v0.55.0
 
 require (
 	golang.org/x/mod v0.18.0 // indirect
