@@ -1,8 +1,8 @@
 {
   "name": "circuitbreaker",
-  "version": "1.0.0",
-  "description": "![Circuit Breaker Logo](screenshots/cb_night-full.png)",
-  "main": "index.js",
+  "version": "0.3.5",
+  "private": true,
+  "description": "Self-hosted infrastructure discovery, monitoring, and interactive topology visualization for homelabs and private networks.",
   "directories": {
     "doc": "docs",
     "test": "tests"
@@ -11,9 +11,29 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "prepare": "husky"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "homelab",
+    "infrastructure",
+    "network-discovery",
+    "network-monitoring",
+    "network-topology",
+    "observability",
+    "proxmox",
+    "self-hosted"
+  ],
+  "author": {
+    "name": "Shawnji",
+    "url": "https://github.com/BlkLeg"
+  },
+  "license": "MIT",
+  "homepage": "https://circuitbreaker.shawnji.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BlkLeg/CircuitBreaker.git"
+  },
+  "bugs": {
+    "url": "https://github.com/BlkLeg/CircuitBreaker/issues"
+  },
   "devDependencies": {
     "husky": "^9.1.7",
     "lint-staged": "^16.3.2"
