@@ -36,6 +36,7 @@ type Runner struct {
 	OnReadiness func([]frame.Readiness)
 	mu          sync.Mutex
 	cancel      context.CancelFunc
+	workers     sync.WaitGroup
 }
 
 func NewRunner(collector Collector, out chan<- frame.Frame) *Runner {
@@ -47,8 +48,12 @@ func (r *Runner) Reset(parent context.Context, interval time.Duration) {
 	ctx, cancel := context.WithCancel(parent)
 	r.mu.Lock()
 	r.cancel = cancel
+	r.workers.Add(1)
 	r.mu.Unlock()
-	go r.run(ctx, interval)
+	go func() {
+		defer r.workers.Done()
+		r.run(ctx, interval)
+	}()
 }
 
 func (r *Runner) Stop() {
@@ -58,6 +63,7 @@ func (r *Runner) Stop() {
 		r.cancel = nil
 	}
 	r.mu.Unlock()
+	r.workers.Wait()
 }
 
 func (r *Runner) run(ctx context.Context, interval time.Duration) {

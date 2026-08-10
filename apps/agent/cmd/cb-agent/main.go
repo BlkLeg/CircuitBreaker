@@ -262,6 +262,7 @@ func runDaemon() {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 		os.Exit(1)
 	}
+	defer rt.Close()
 	statusWriter := rt.statusWriter
 	queueReadiness := rt.queueReadiness
 
@@ -562,6 +563,18 @@ type daemonRuntime struct {
 	// rows that report what could not be honored (D-6), and that is startup
 	// state, not link plumbing.
 	onCapabilitiesSet func(payload json.RawMessage) error
+	stop              func()
+}
+
+// Close synchronously stops every background component created by
+// startDaemonState before closing its spool. Tests rely on the synchronous
+// boundary so no collector can write into a state directory after cleanup
+// begins; production uses the same boundary during daemon shutdown.
+func (rt *daemonRuntime) Close() error {
+	if rt.stop != nil {
+		rt.stop()
+	}
+	return rt.sp.Close()
 }
 
 // newHostCollector constructs the host-telemetry collector applyHostConfig
@@ -1033,6 +1046,16 @@ func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion st
 		applyProbeConfig:     applyProbeConfig,
 		applyDiscoveryConfig: applyDiscoveryConfig,
 		onCapabilitiesSet:    onCapabilitiesSet,
+		stop: func() {
+			collectorMu.Lock()
+			if hostRunner != nil {
+				hostRunner.Stop()
+				hostRunner = nil
+			}
+			collectorMu.Unlock()
+			probeRuntime.Stop()
+			discoverRuntime.Stop()
+		},
 	}, nil
 }
 

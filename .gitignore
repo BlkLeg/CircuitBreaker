@@ -97,6 +97,7 @@ htmlcov/
 
 # Generated security scan reports (keep STANDING reports untracked naturally)
 SECURITY_REPORTS/security_scan_report*.md
+/security_scan_report.md
 
 # PyInstaller specs (legacy)
 *.spec

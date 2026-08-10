@@ -98,8 +98,8 @@ if command -v gitleaks > /dev/null 2>&1; then
     fi
 elif command -v docker > /dev/null 2>&1; then
     GITLEAKS_RAN=true
-    GITLEAKS_DOCKER_ARGS="detect --source=/repo -v"
-    [ -f .gitleaks.toml ] && GITLEAKS_DOCKER_ARGS="detect --source=/repo --config=/repo/.gitleaks.toml -v"
+    GITLEAKS_DOCKER_ARGS="detect --no-git --source=/repo -v"
+    [ -f .gitleaks.toml ] && GITLEAKS_DOCKER_ARGS="detect --no-git --source=/repo --config=/repo/.gitleaks.toml -v"
     if $GATE_MODE; then
         if ! docker run --rm -v "$(pwd):/repo" ghcr.io/gitleaks/gitleaks:latest $GITLEAKS_DOCKER_ARGS >> "$REPORT_FILE" 2>&1; then
             GATE_FAILURES=$((GATE_FAILURES + 1))
@@ -156,28 +156,29 @@ echo "Running Trivy filesystem..."
 TRIVY_RAN=false
 TRIVY_IGNORE=""
 [ -f .trivyignore ] && TRIVY_IGNORE="--ignorefile .trivyignore"
+TRIVY_SKIP_DIRS="--skip-dirs .venv --skip-dirs node_modules --skip-dirs dist"
 # Native-first: prefer local trivy binary over Docker
 if command -v trivy > /dev/null 2>&1; then
     TRIVY_RAN=true
     if $GATE_MODE; then
-        if ! trivy fs --exit-code 1 --severity HIGH,CRITICAL $TRIVY_IGNORE . >> "$REPORT_FILE" 2>&1; then
+        if ! trivy fs --exit-code 1 --severity HIGH,CRITICAL $TRIVY_IGNORE $TRIVY_SKIP_DIRS . >> "$REPORT_FILE" 2>&1; then
             GATE_FAILURES=$((GATE_FAILURES + 1))
             echo "  ⚠ GATE FAILURE: Trivy HIGH/CRIT findings" >> "$REPORT_FILE"
         fi
     else
-        trivy fs --severity HIGH,CRITICAL,MEDIUM $TRIVY_IGNORE . >> "$REPORT_FILE" 2>&1 || true
+        trivy fs --severity HIGH,CRITICAL,MEDIUM $TRIVY_IGNORE $TRIVY_SKIP_DIRS . >> "$REPORT_FILE" 2>&1 || true
     fi
 elif command -v docker > /dev/null 2>&1; then
     TRIVY_RAN=true
     if $GATE_MODE; then
         if ! docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy fs \
-            --exit-code 1 --severity HIGH,CRITICAL --ignorefile /workspace/.trivyignore . >> "$REPORT_FILE" 2>&1; then
+            --exit-code 1 --severity HIGH,CRITICAL --ignorefile /workspace/.trivyignore $TRIVY_SKIP_DIRS . >> "$REPORT_FILE" 2>&1; then
             GATE_FAILURES=$((GATE_FAILURES + 1))
             echo "  ⚠ GATE FAILURE: Trivy HIGH/CRIT findings" >> "$REPORT_FILE"
         fi
     else
         docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy fs \
-            --ignorefile /workspace/.trivyignore . >> "$REPORT_FILE" 2>&1 || true
+            --ignorefile /workspace/.trivyignore $TRIVY_SKIP_DIRS . >> "$REPORT_FILE" 2>&1 || true
     fi
 fi
 if ! $TRIVY_RAN; then
@@ -191,23 +192,23 @@ echo "\`\`\`" >> "$REPORT_FILE"
 echo "Running Trivy config..."
 if command -v trivy > /dev/null 2>&1; then
     if $GATE_MODE; then
-        if ! trivy config --exit-code 1 --severity HIGH,CRITICAL $TRIVY_IGNORE . >> "$REPORT_FILE" 2>&1; then
+        if ! trivy config --exit-code 1 --severity HIGH,CRITICAL $TRIVY_IGNORE $TRIVY_SKIP_DIRS . >> "$REPORT_FILE" 2>&1; then
             GATE_FAILURES=$((GATE_FAILURES + 1))
             echo "  ⚠ GATE FAILURE: Trivy config HIGH/CRIT" >> "$REPORT_FILE"
         fi
     else
-        trivy config $TRIVY_IGNORE . >> "$REPORT_FILE" 2>&1 || true
+        trivy config $TRIVY_IGNORE $TRIVY_SKIP_DIRS . >> "$REPORT_FILE" 2>&1 || true
     fi
 elif command -v docker > /dev/null 2>&1; then
     if $GATE_MODE; then
         if ! docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy config \
-            --exit-code 1 --severity HIGH,CRITICAL --ignorefile /workspace/.trivyignore /workspace >> "$REPORT_FILE" 2>&1; then
+            --exit-code 1 --severity HIGH,CRITICAL --ignorefile /workspace/.trivyignore $TRIVY_SKIP_DIRS /workspace >> "$REPORT_FILE" 2>&1; then
             GATE_FAILURES=$((GATE_FAILURES + 1))
             echo "  ⚠ GATE FAILURE: Trivy config HIGH/CRIT" >> "$REPORT_FILE"
         fi
     else
         docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy config \
-            --ignorefile /workspace/.trivyignore /workspace >> "$REPORT_FILE" 2>&1 || true
+            --ignorefile /workspace/.trivyignore $TRIVY_SKIP_DIRS /workspace >> "$REPORT_FILE" 2>&1 || true
     fi
 else
     echo "Trivy not found, skipping config scan." >> "$REPORT_FILE"

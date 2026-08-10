@@ -50,7 +50,7 @@ RUN pip install --no-cache-dir --no-deps .
 
 
 ########## Stage 3: Build agent binaries ##########
-FROM golang:1.22-bookworm AS agent-builder
+FROM golang:1.25-bookworm AS agent-builder
 
 WORKDIR /src
 
@@ -197,4 +197,3 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
 # tini as PID1 (reaps zombies, forwards signals). Entrypoint starts as root to fix
 # volume ownership, then supervisord drops to breaker for application processes.
 ENTRYPOINT ["/usr/bin/tini", "--", "/bin/bash", "/docker/entrypoint-mono.sh"]
-

@@ -1351,12 +1351,14 @@ func TestStartDaemonState_NoRaceBetweenCollectorReadinessAndStatusWriter(t *test
 		[]frame.Readiness{{Collector: "host.core", State: "ready"}})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	t.Cleanup(func() {
+		cancel()
+		_ = rt.Close()
+	})
 
 	awaitReadiness(t, dir, "host.core")
 }
@@ -1825,12 +1827,14 @@ func TestStartDaemonState_CachedGrantFaultIsReportedAtStartup(t *testing.T) {
 		`{"remote_probe":{"enabled":true},"host_telemetry":{"enabled":true,"config":{"interval_s":0}}}`, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	t.Cleanup(func() {
+		cancel()
+		_ = rt.Close()
+	})
 	if !rt.capGate.Allowed("remote_probe") {
 		t.Error("Allowed(remote_probe) = false after a restart, want true — one bad cached grant dropped the rest")
 	}
