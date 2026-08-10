@@ -1,6 +1,6 @@
 # Circuit Breaker
 
-![Circuit Breaker](screenshots/cb_night-full.webp)
+![Circuit Breaker](docs/assets/screenshots/cb_night-full.webp)
 
 **Circuit Breaker** is a self-hosted homelab visualization platform that maps your infrastructure—hardware, services, networks, and clusters—with interactive topology, live telemetry, and auto-discovery.
 
@@ -13,7 +13,7 @@
 
 ## Screenshots
 
-![Topology Map](screenshots/01-concentric-rings.webp)
+![Topology Map](docs/assets/screenshots/01-concentric-rings.webp)
 
 📸 [Full Screenshot Gallery](docs/screenshots.md)
 
