@@ -35,7 +35,14 @@
 - Monitor WebSocket reconnect now rejects a revoked session before streaming resumes.
 - Session and CSRF cookies now treat `X-Forwarded-Proto: https` as TLS termination for the
   `Secure` flag, matching the existing HSTS proxy detection path.
+- `/api/v1/auth/login` now checks active lockout before issuing force-password-change or MFA
+  challenge tokens, so a locked user cannot bypass lockout by presenting the correct password.
 - Security tests now pin:
+  - force-password-change and MFA challenge tokens are not accepted as full session tokens;
+  - MFA backup-code login consumes each backup code exactly once;
+  - OAuth callback state is single-use and expired states are consumed;
+  - OIDC authorization persists nonce plus PKCE verifier material before redirect;
+  - proxy-aware client identity honors `X-Forwarded-For` only from configured trusted proxy CIDRs;
   - secure/strict cookie flags behind a TLS-terminating proxy;
   - CSP, frame, nosniff, and HSTS headers behind a TLS-terminating proxy;
   - CSRF rejection for cookie-authenticated mutations with missing or mismatched CSRF headers;
@@ -61,9 +68,18 @@
   `docs/installation/first-run.md` and `docs/installation/configuration.md`.
 - SSE anonymous access is rejected, viewer access connects, and revoked sessions cannot reconnect.
 - Monitor WebSocket session-cookie access connects, and revoked sessions cannot reconnect.
-- Existing auth/security tests continue to cover password policy, force-change, MFA, lockout,
-  logout/revocation, CSRF/CORS/CSP, secure cookies, and session expiry behavior at the current
-  backend test boundary.
+- Locked force-change and MFA users receive no challenge token until lockout expires.
+- Force-change and MFA challenge tokens are rejected by normal protected APIs because they carry a
+  non-session audience.
+- Backup-code MFA login succeeds once, consumes the code, and rejects replay.
+- OAuth callback states are popped on first use; expired states are also consumed so they cannot be
+  replayed later.
+- OIDC authorization stores a nonce and PKCE verifier and sends the nonce in the provider redirect.
+- Trusted proxy identity uses the first valid `X-Forwarded-For` value only when the socket peer is
+  configured as trusted; untrusted peers cannot spoof identity with forwarding headers.
+- Existing auth/security tests cover password policy, force-change, MFA enrollment, backup-code
+  storage, lockout, logout/revocation, CSRF/CORS/CSP, secure cookies, and session expiry behavior at
+  the current backend test boundary.
 
 ## Verification commands
 
@@ -106,10 +122,40 @@ pytest -q --no-cov apps/backend/tests/test_bootstrap_security.py \
 
 Result: **PASS**.
 
+Current SEC-10 adversarial verification:
+
+```bash
+pytest -q --no-cov apps/backend/tests/test_sec10_auth_controls.py
+```
+
+Result: **PASS**, 10 tests.
+
+Current SEC-10 combined backend verification:
+
+```bash
+pytest -q --no-cov apps/backend/tests/test_sec10_auth_controls.py \
+  apps/backend/tests/test_auth.py apps/backend/tests/test_auth_e2e.py \
+  apps/backend/tests/test_security.py apps/backend/tests/test_settings.py \
+  apps/backend/tests/api/test_events_stream_auth.py \
+  apps/backend/tests/api/test_monitor_stream_auth.py
+```
+
+Result: **PASS**.
+
+Current frontend OOBE/OAuth verification:
+
+```bash
+cd apps/frontend
+npm run test -- src/__tests__/oobe-wizard.test.jsx src/__tests__/oauth-providers-manager.test.jsx
+```
+
+Result: **PASS**, 2 files / 9 tests.
+
 Current lint and release-control verification:
 
 ```bash
 ruff check apps/backend/src/app/services/auth_service.py apps/backend/tests/test_bootstrap_security.py
+ruff check apps/backend/src/app/api/auth.py apps/backend/tests/test_sec10_auth_controls.py
 python3 scripts/validate_v1_release_control.py
 ```
 
