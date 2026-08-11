@@ -20,7 +20,8 @@ Supported event types:
   discovery      — discovery scan progress / completion events
   keepalive      — empty comment (": keepalive") every 15 s
 
-Auth: optional — authenticated via get_optional_user.
+Auth: viewer or higher. Revoked/expired sessions are rejected before the
+stream is opened.
 """
 
 import asyncio
@@ -30,12 +31,12 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from starlette.responses import StreamingResponse
 
 from app.core import subjects
 from app.core.nats_client import nats_client
-from app.core.security import get_optional_user
+from app.core.rbac import require_role
 from app.db.models import Log
 from app.db.session import SessionLocal
 
@@ -165,7 +166,7 @@ def _db_poll_generator() -> AsyncIterator[str]:
 
 
 @router.get("/stream")
-async def events_stream(_user: Any = Depends(get_optional_user)) -> StreamingResponse:
+async def events_stream(_user: Any = require_role("viewer")) -> StreamingResponse:
     """Stream real-time notification and alert events via SSE.
 
     Automatically selects NATS-backed delivery when available, falling back

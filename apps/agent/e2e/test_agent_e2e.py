@@ -299,9 +299,16 @@ def _wait_until(predicate, *, timeout=30, interval=1.0):
 def _bootstrap_admin(client: httpx.Client) -> str:
     status = client.get("/api/v1/bootstrap/status")
     if status.status_code == 200 and status.json().get("needs_bootstrap"):
+        setup_token = os.environ.get("CB_SETUP_TOKEN", "").strip()
+        if not setup_token:
+            data_dir = Path(os.environ.get("CB_DATA_DIR", "/data"))
+            setup_token = (data_dir / "bootstrap-setup-token").read_text(
+                encoding="utf-8"
+            ).strip()
         resp = client.post(
             "/api/v1/bootstrap/initialize",
             json={
+                "setup_token": setup_token,
                 "email": _ADMIN_EMAIL,
                 "password": _ADMIN_PASSWORD,
                 "theme_preset": "one-dark",

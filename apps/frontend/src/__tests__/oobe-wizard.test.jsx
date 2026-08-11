@@ -162,6 +162,7 @@ describe('OOBEWizardPage', () => {
     await getStartedAndSkipDomain();
 
     expect(screen.getByText('Create Account')).toBeInTheDocument();
+    expect(screen.getByLabelText('Setup token')).toBeInTheDocument();
     expect(screen.getByLabelText('Email')).toBeInTheDocument();
     expect(screen.getByLabelText('Password')).toBeInTheDocument();
     expect(screen.getByLabelText('Confirm Password')).toBeInTheDocument();
@@ -184,6 +185,11 @@ describe('OOBEWizardPage', () => {
 
     const nextBtn = screen.getByText('Next');
     await act(async () => {
+      fireEvent.change(screen.getByLabelText('Setup token'), {
+        target: { value: 'sec4-setup-token-at-least-16-chars' },
+      });
+    });
+    await act(async () => {
       fireEvent.click(nextBtn);
     });
 
@@ -196,6 +202,9 @@ describe('OOBEWizardPage', () => {
     await getStartedAndSkipDomain();
 
     await act(async () => {
+      fireEvent.change(screen.getByLabelText('Setup token'), {
+        target: { value: 'sec4-setup-token-at-least-16-chars' },
+      });
       fireEvent.change(screen.getByLabelText('Email'), {
         target: { value: 'admin@example.com' },
       });

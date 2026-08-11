@@ -101,6 +101,8 @@ class BootstrapStatusResponse(BaseModel):
     needs_bootstrap: bool
     user_count: int
     client_hash_salt: str = "circuitbreaker-salt-v1"
+    setup_token_required: bool = True
+    setup_token_expires_at: str | None = None
 
 
 # Onboarding (OOBE) step state — public API, no auth required
@@ -125,6 +127,7 @@ class OnboardingStepUpdateRequest(BaseModel):
 
 
 class BootstrapInitializeRequest(BaseModel):
+    setup_token: str
     email: str
     password: str | None = None
     password_hash: str | None = None
@@ -187,6 +190,7 @@ class BootstrapInitializeResponse(BaseModel):
 
 
 class BootstrapInitializeOAuthRequest(BaseModel):
+    setup_token: str
     oauth_token: str
     display_name: str | None = None
     theme_preset: str

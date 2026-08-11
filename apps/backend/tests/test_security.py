@@ -322,6 +322,61 @@ class TestM04CORS:
         )
 
 
+class TestSEC4ProxyCookieAndBrowserControls:
+    @pytest.mark.asyncio
+    async def test_https_proxy_login_sets_secure_strict_cookies(self, client, factories):
+        user = factories.user(role="admin")
+
+        resp = await client.post(
+            "/api/v1/auth/login",
+            headers={"X-Forwarded-Proto": "https"},
+            json={"email": user.email, "password": "TestPassword123!"},
+        )
+
+        assert resp.status_code == 200
+        set_cookie = resp.headers.get_list("set-cookie")
+        session_cookie = next(value for value in set_cookie if value.startswith("cb_session="))
+        csrf_cookie = next(value for value in set_cookie if value.startswith("cb_csrf="))
+        assert "HttpOnly" in session_cookie
+        assert "Secure" in session_cookie
+        assert "SameSite=strict" in session_cookie
+        assert "HttpOnly" not in csrf_cookie
+        assert "Secure" in csrf_cookie
+        assert "SameSite=strict" in csrf_cookie
+
+    @pytest.mark.asyncio
+    async def test_security_headers_and_hsts_are_set_behind_https_proxy(self, client):
+        resp = await client.get("/api/v1/health", headers={"X-Forwarded-Proto": "https"})
+
+        assert resp.status_code == 200
+        assert "default-src 'self'" in resp.headers["content-security-policy"]
+        assert resp.headers["x-frame-options"] == "DENY"
+        assert resp.headers["x-content-type-options"] == "nosniff"
+        assert "max-age=63072000" in resp.headers["strict-transport-security"]
+
+    @pytest.mark.asyncio
+    async def test_csrf_rejects_cookie_authenticated_mutation_without_matching_header(
+        self, client, factories
+    ):
+        user = factories.user(role="admin")
+        login = await client.post(
+            "/api/v1/auth/login",
+            json={"email": user.email, "password": "TestPassword123!"},
+        )
+        assert login.status_code == 200
+
+        missing = await client.post("/api/v1/auth/logout")
+        assert missing.status_code == 403
+        assert missing.json()["detail"] == "CSRF token missing"
+
+        mismatch = await client.post(
+            "/api/v1/auth/logout",
+            headers={"X-CSRF-Token": "not-the-cookie-value"},
+        )
+        assert mismatch.status_code == 403
+        assert mismatch.json()["detail"] == "CSRF token invalid"
+
+
 # ---------------------------------------------------------------------------
 # M-17 — CIDR size enforcement on discovery scan
 # ---------------------------------------------------------------------------

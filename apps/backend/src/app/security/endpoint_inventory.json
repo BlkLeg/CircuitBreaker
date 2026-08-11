@@ -3795,6 +3795,7 @@
       "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.events.events_stream",
+        "app.core.rbac.require_role.<locals>._dep",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
         "app.db.session.get_db"
@@ -3807,7 +3808,7 @@
       ],
       "name": "events_stream",
       "path": "/api/v1/events/stream",
-      "rbac_policy": "authenticated-session",
+      "rbac_policy": "declared-role-or-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },

@@ -13,7 +13,7 @@ CSRF_COOKIE_NAME = "cb_csrf"  # Readable by JS — used for double-submit CSRF d
 
 def _cookie_params(request: Request, session_timeout_hours: int | None) -> dict[str, Any]:
     max_age = (session_timeout_hours or 24) * 3600
-    secure = request.url.scheme == "https" if request.url else True
+    secure = _is_secure_request(request)
     return dict(
         max_age=max_age,
         httponly=True,
@@ -49,7 +49,7 @@ def auth_response_with_cookie(
     response = JSONResponse(content=body)
     set_auth_cookie_on_response(request, response, token, session_timeout_hours)
     max_age = (session_timeout_hours or 24) * 3600
-    secure = request.url.scheme == "https" if request.url else True
+    secure = _is_secure_request(request)
     response.set_cookie(
         key=CSRF_COOKIE_NAME,
         value=csrf_token,
@@ -60,6 +60,12 @@ def auth_response_with_cookie(
         path="/",
     )
     return response
+
+
+def _is_secure_request(request: Request) -> bool:
+    if request.url and request.url.scheme == "https":
+        return True
+    return request.headers.get("x-forwarded-proto", "").strip().lower() == "https"
 
 
 def clear_auth_cookie_response(status_code: int = 204) -> Response:

@@ -57,6 +57,7 @@ def initialize_bootstrap(
     result = auth_service.bootstrap_initialize(
         db=db,
         cfg=cfg,
+        setup_token=payload.setup_token,
         email=payload.email,
         password_or_hash=password_or_hash,
         theme_preset=payload.theme_preset,

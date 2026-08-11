@@ -64,6 +64,7 @@ function OOBEWizardPage({ onCompleted }) {
   const [domainError, setDomainError] = useState('');
   const [, setOnboardingLoaded] = useState(false);
   const [email, setEmail] = useState('');
+  const [setupToken, setSetupToken] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -244,6 +245,7 @@ function OOBEWizardPage({ onCompleted }) {
       if (saved.selectedFontSize) setSelectedFontSize(saved.selectedFontSize);
       if (saved.weatherLocation) setWeatherLocation(saved.weatherLocation);
       if (saved.externalAppUrl) setExternalAppUrl(saved.externalAppUrl);
+      if (saved.setupToken) setSetupToken(saved.setupToken);
     } catch (err) {
       console.warn('OOBE state restore failed (defaults used):', err);
     }
@@ -374,6 +376,7 @@ function OOBEWizardPage({ onCompleted }) {
     ? `https://www.gravatar.com/avatar/${gravatarHash(email)}?s=384&d=mp`
     : 'https://www.gravatar.com/avatar/?s=384&d=mp';
 
+  const setupTokenValid = setupToken.trim().length >= 16;
   const accountValid = emailValid && rulesPassed && passwordsMatch;
   const smtpFromEmailValid = !smtpEnabled || EMAIL_RE.test(smtpFromEmail);
 
@@ -402,6 +405,10 @@ function OOBEWizardPage({ onCompleted }) {
   };
 
   const goNext = () => {
+    if (step === 3 && !setupTokenValid) {
+      setError('Enter the setup token from your server before continuing.');
+      return;
+    }
     if (step === 3 && !oauthBootstrapToken && !accountValid) {
       setError('Please fix account validation errors before continuing.');
       return;
@@ -538,6 +545,7 @@ function OOBEWizardPage({ onCompleted }) {
         selectedFontSize,
         weatherLocation,
         externalAppUrl,
+        setupToken,
       })
     );
 
@@ -551,6 +559,11 @@ function OOBEWizardPage({ onCompleted }) {
 
   const submitBootstrap = async () => {
     const localAccountRequired = !oauthBootstrapToken;
+    if (!setupTokenValid) {
+      setStep(3);
+      setError('Enter the setup token from your server before finishing setup.');
+      return;
+    }
     if (localAccountRequired && !accountValid) {
       setStep(3);
       setError('Account details are invalid.');
@@ -585,12 +598,14 @@ function OOBEWizardPage({ onCompleted }) {
       let response;
       if (oauthBootstrapToken) {
         response = await authApi.bootstrapInitializeOAuth({
+          setup_token: setupToken.trim(),
           oauth_token: oauthBootstrapToken,
           display_name: displayName || undefined,
           ...sharedSettings,
         });
       } else {
         response = await authApi.bootstrapInitialize({
+          setup_token: setupToken.trim(),
           email,
           password,
           display_name: displayName || undefined,
@@ -1094,6 +1109,31 @@ function OOBEWizardPage({ onCompleted }) {
                 <p className="login-card-subtitle">
                   Create the first admin account for this installation.
                 </p>
+
+                <div className="login-field">
+                  <label className="login-label" htmlFor="oobe-setup-token">
+                    Setup token
+                  </label>
+                  <input
+                    id="oobe-setup-token"
+                    type="password"
+                    className="login-input"
+                    value={setupToken}
+                    onChange={(e) => setSetupToken(e.target.value)}
+                    autoComplete="one-time-code"
+                    required
+                  />
+                  <p
+                    style={{
+                      fontSize: '0.75rem',
+                      color: 'var(--color-text-muted)',
+                      marginTop: '0.25rem',
+                    }}
+                  >
+                    Find this one-time token in your server data directory or set it with
+                    CB_SETUP_TOKEN.
+                  </p>
+                </div>
 
                 {/* ── OAuth confirmation banner (shown after returning from OAuth) ── */}
                 {oauthBootstrapToken && (

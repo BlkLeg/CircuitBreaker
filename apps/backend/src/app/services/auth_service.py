@@ -1,11 +1,14 @@
 """Auth business logic: register, login, profile management."""
 
 import hashlib
+import hmac
 import json
 import logging
 import os
 import re
 import secrets as _secrets
+import stat
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +37,12 @@ from app.services import helper_client
 _logger = logging.getLogger(__name__)
 
 _MSG_BOOTSTRAP_DONE = "Bootstrap already completed. Please refresh and log in."
+_MSG_BOOTSTRAP_TOKEN_REQUIRED = "A valid setup token is required to complete bootstrap."
 _MSG_OAUTH_TOKEN_INVALID = "OAuth token is invalid or expired"
+_BOOTSTRAP_TOKEN_ENV = "CB_SETUP_TOKEN"
+_BOOTSTRAP_TOKEN_TTL_ENV = "CB_SETUP_TOKEN_TTL_HOURS"
+_BOOTSTRAP_TOKEN_FILE = "bootstrap-setup-token"
+_DEFAULT_BOOTSTRAP_TOKEN_TTL_HOURS = 24
 
 # Pre-computed bcrypt hash used when the looked-up user does not exist, ensuring that
 # verify_password() always runs and login response time is constant regardless of whether
@@ -62,6 +70,145 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # arbitrarily large user-supplied strings (ReDoS mitigation).
 _MAX_EMAIL_LEN = 254  # RFC 5321 maximum
 _MAX_PASSWORD_LEN = 1024
+_MIN_BOOTSTRAP_TOKEN_LEN = 16
+
+
+def _bootstrap_data_dir() -> Path:
+    return Path(os.environ.get("CB_DATA_DIR") or (Path.cwd() / "data")).expanduser()
+
+
+def _bootstrap_token_file_path() -> Path:
+    return _bootstrap_data_dir() / _BOOTSTRAP_TOKEN_FILE
+
+
+def _bootstrap_token_ttl_hours() -> int:
+    raw = (os.environ.get(_BOOTSTRAP_TOKEN_TTL_ENV) or "").strip()
+    if not raw:
+        return _DEFAULT_BOOTSTRAP_TOKEN_TTL_HOURS
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return _DEFAULT_BOOTSTRAP_TOKEN_TTL_HOURS
+    return max(1, min(parsed, 168))
+
+
+def _hash_bootstrap_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _bootstrap_token_expired(cfg: AppSettings) -> bool:
+    expires_at = cfg.bootstrap_token_expires_at
+    if expires_at is None:
+        return False
+    if getattr(expires_at, "tzinfo", None) is None:
+        from datetime import UTC
+
+        expires_at = expires_at.replace(tzinfo=UTC)
+    return expires_at <= utcnow()
+
+
+def _write_bootstrap_token_file(token: str) -> None:
+    token_path = _bootstrap_token_file_path()
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(
+        token_path,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        stat.S_IRUSR | stat.S_IWUSR,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(token)
+            handle.write("\n")
+    finally:
+        try:
+            token_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+
+
+def ensure_bootstrap_token(db: Session, cfg: AppSettings) -> AppSettings:
+    """Ensure pre-auth bootstrap has a one-time setup token.
+
+    Public APIs never return the plaintext token. Operators can provide
+    ``CB_SETUP_TOKEN`` explicitly, or the app writes a generated token to a
+    0600 file under ``CB_DATA_DIR`` for local/private retrieval.
+    """
+    if bool(cfg.auth_enabled):
+        return cfg
+
+    env_token = (os.environ.get(_BOOTSTRAP_TOKEN_ENV) or "").strip()
+    should_replace = (
+        not cfg.bootstrap_token_hash
+        or bool(cfg.bootstrap_token_used_at)
+        or _bootstrap_token_expired(cfg)
+        or bool(env_token)
+    )
+    if not should_replace:
+        return cfg
+
+    if env_token:
+        if len(env_token) < _MIN_BOOTSTRAP_TOKEN_LEN:
+            minimum = _MIN_BOOTSTRAP_TOKEN_LEN
+            detail = f"{_BOOTSTRAP_TOKEN_ENV} must be at least {minimum} characters"
+            raise HTTPException(
+                status_code=503,
+                detail=detail,
+            )
+        token = env_token
+    else:
+        token = _secrets.token_urlsafe(32)
+        try:
+            _write_bootstrap_token_file(token)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Unable to write the bootstrap setup token file",
+            ) from exc
+
+    cfg.bootstrap_token_hash = _hash_bootstrap_token(token)
+    cfg.bootstrap_token_expires_at = utcnow() + timedelta(hours=_bootstrap_token_ttl_hours())
+    cfg.bootstrap_token_used_at = None
+    db.commit()
+    db.refresh(cfg)
+    return cfg
+
+
+def _lock_bootstrap_settings(db: Session, cfg: AppSettings) -> AppSettings:
+    locked = (
+        db.query(AppSettings)
+        .filter(AppSettings.id == cfg.id)
+        .populate_existing()
+        .with_for_update()
+        .one_or_none()
+    )
+    if locked is None:
+        raise HTTPException(status_code=503, detail="Bootstrap settings unavailable")
+    return locked
+
+
+def _verify_bootstrap_token(db: Session, cfg: AppSettings, setup_token: str) -> AppSettings:
+    locked = _lock_bootstrap_settings(db, cfg)
+    if bool(locked.auth_enabled):
+        db.rollback()
+        raise HTTPException(status_code=409, detail=_MSG_BOOTSTRAP_DONE)
+
+    ensure_bootstrap_token(db, locked)
+    locked = _lock_bootstrap_settings(db, locked)
+    supplied = (setup_token or "").strip()
+    stored = locked.bootstrap_token_hash or ""
+    if not supplied or not stored or _bootstrap_token_expired(locked):
+        db.rollback()
+        raise HTTPException(status_code=403, detail=_MSG_BOOTSTRAP_TOKEN_REQUIRED)
+    if not hmac.compare_digest(_hash_bootstrap_token(supplied), stored):
+        db.rollback()
+        raise HTTPException(status_code=403, detail=_MSG_BOOTSTRAP_TOKEN_REQUIRED)
+    return locked
+
+
+def _consume_bootstrap_token(cfg: AppSettings) -> None:
+    cfg.bootstrap_token_used_at = utcnow()
+    cfg.bootstrap_token_hash = None
+    cfg.bootstrap_token_expires_at = None
 
 
 def _scopes_for_role(role: str) -> str:
@@ -381,6 +528,8 @@ def bootstrap_status(db: Session) -> BootstrapStatusResponse:
     try:
         user_count = db.query(User).count()
         cfg = db.query(AppSettings).first()
+        if cfg is not None:
+            cfg = ensure_bootstrap_token(db, cfg)
         # Bootstrap is complete only after auth is explicitly enabled in OOBE.
         # jwt_secret may be generated earlier (e.g. OAuth callback), so it is
         # not a reliable completion marker.
@@ -389,6 +538,10 @@ def bootstrap_status(db: Session) -> BootstrapStatusResponse:
             needs_bootstrap=needs_bootstrap,
             user_count=user_count,
             client_hash_salt=get_client_salt(db),
+            setup_token_required=needs_bootstrap,
+            setup_token_expires_at=cfg.bootstrap_token_expires_at.isoformat()
+            if cfg is not None and cfg.bootstrap_token_expires_at
+            else None,
         )
     except Exception as e:
         import logging
@@ -446,6 +599,7 @@ def _generate_and_persist_vault_key(db: Session) -> str | None:
 def bootstrap_initialize(
     db: Session,
     cfg: AppSettings,
+    setup_token: str,
     email: str,
     password_or_hash: str,
     theme_preset: str,
@@ -487,10 +641,7 @@ def bootstrap_initialize(
         smtp_tls=smtp_tls,
     )
 
-    # Bootstrap completion is tracked via auth_enabled, not jwt_secret.
-    if bool(cfg.auth_enabled):
-        db.rollback()
-        raise HTTPException(status_code=409, detail=_MSG_BOOTSTRAP_DONE)
+    cfg = _verify_bootstrap_token(db, cfg, setup_token)
 
     # Clean up any stale users that exist from a pre-OOBE development database
     # (users created before the bootstrap flow was introduced, without auth configured).
@@ -519,6 +670,7 @@ def bootstrap_initialize(
     _actor_display = user.display_name or user.email
 
     cfg.auth_enabled = True
+    _consume_bootstrap_token(cfg)
     cfg.theme_preset = theme_preset
     if theme in {"dark", "light", "auto"}:
         cfg.theme = theme
@@ -636,12 +788,12 @@ def bootstrap_initialize_oauth(
     """Complete bootstrap when the first admin signed up via OAuth instead of local credentials."""
     from app.core.security import decode_token, gravatar_hash
 
-    # Guard: only valid while auth hasn't been fully enabled yet.
-    # The user-count check is intentionally omitted — retrying OAuth with the same
-    # account creates the same user (upsert), and retrying with a different account
-    # may leave orphaned rows; what matters is that setup isn't finished yet.
-    if cfg.auth_enabled:
-        raise HTTPException(status_code=409, detail=_MSG_BOOTSTRAP_DONE)
+    # Guard and serialize on the settings row. The user-count check is
+    # intentionally omitted — retrying OAuth with the same account creates the
+    # same user (upsert), and retrying with a different account may leave
+    # orphaned rows; what matters is that setup is unfinished and the setup
+    # token is valid.
+    cfg = _verify_bootstrap_token(db, cfg, payload.setup_token)
 
     if not cfg.jwt_secret:
         raise HTTPException(status_code=400, detail=_MSG_OAUTH_TOKEN_INVALID)
@@ -679,6 +831,7 @@ def bootstrap_initialize_oauth(
 
     # Apply OOBE settings
     cfg.auth_enabled = True
+    _consume_bootstrap_token(cfg)
     cfg.theme_preset = payload.theme_preset
     if payload.theme in {"dark", "light", "auto"}:
         cfg.theme = payload.theme
