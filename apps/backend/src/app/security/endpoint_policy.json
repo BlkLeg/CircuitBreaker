@@ -1,0 +1,334 @@
+{
+  "version": 1,
+  "notes": "SEC-3 route policy. Routes listed here are the only runtime routes allowed to lack FastAPI-level auth dependencies. Auth-flow entries may still authenticate internally; moving those checks into dependencies should shrink this file over time.",
+  "routes": [
+    {
+      "transport": "http",
+      "methods": ["POST"],
+      "path": "/api/v1/auth/jwt/login",
+      "policy": "auth-flow",
+      "public_reason": "Password login entry point.",
+      "disclosure": "credential exchange result only"
+    },
+    {
+      "transport": "http",
+      "methods": ["POST"],
+      "path": "/api/v1/auth/jwt/logout",
+      "policy": "auth-flow",
+      "public_reason": "Logout compatibility endpoint; invalid or absent credentials do not disclose protected data.",
+      "disclosure": "logout result only"
+    },
+    {
+      "transport": "http",
+      "methods": ["POST"],
+      "path": "/api/v1/auth/accept-invite",
+      "policy": "auth-flow",
+      "public_reason": "Invite acceptance must run before the invited user has an active session.",
+      "disclosure": "invite acceptance result"
+    },
+    {
+      "transport": "http",
+      "methods": ["POST"],
+      "path": "/api/v1/auth/register",
+      "policy": "bootstrap-or-auth-flow",
+      "public_reason": "Registration/OOBE compatibility path.",
+      "disclosure": "registration result"
+    },
+    {
+      "transport": "http",
+      "methods": ["POST"],
+      "path": "/api/v1/auth/forgot-password",
+      "policy": "auth-flow",
+      "public_reason": "Password reset request starts before authentication.",
+      "disclosure": "generic reset response"
+    },
+    {
+      "transport": "http",
+      "methods": ["POST"],
+      "path": "/api/v1/auth/reset-password",
+      "policy": "auth-flow",
+      "public_reason": "Password reset consumes a reset token instead of a session.",
+      "disclosure": "reset result"
+    },
+    {
+      "transport": "http",
+      "methods": ["POST"],
+      "path": "/api/v1/auth/demo",
+      "policy": "auth-flow",
+      "public_reason": "Demo session creation is an explicit pre-auth flow.",
+      "disclosure": "demo session result"
+    },
+    {
+      "transport": "http",
+      "methods": ["POST"],
+      "path": "/api/v1/auth/login",
+      "policy": "auth-flow",
+      "public_reason": "Local login entry point.",
+      "disclosure": "credential exchange result only"
+    },
+    {
+      "transport": "http",
+      "methods": ["POST"],
+      "path": "/api/v1/auth/force-change-password",
+      "policy": "auth-flow",
+      "public_reason": "Forced password-change flow uses a constrained credential state.",
+      "disclosure": "password-change result"
+    },
+    {
+      "transport": "http",
+      "methods": ["POST"],
+      "path": "/api/v1/auth/vault-reset",
+      "policy": "auth-flow",
+      "public_reason": "Vault reset password flow consumes a reset credential rather than a normal session.",
+      "disclosure": "reset result"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET"],
+      "path": "/api/v1/auth/me",
+      "policy": "auth-internal",
+      "public_reason": "Compatibility endpoint currently performs session handling inside the endpoint.",
+      "disclosure": "current-user result or unauthenticated response"
+    },
+    {
+      "transport": "http",
+      "methods": ["POST"],
+      "path": "/api/v1/auth/logout",
+      "policy": "auth-internal",
+      "public_reason": "Compatibility endpoint currently performs logout/session handling inside the endpoint.",
+      "disclosure": "logout result"
+    },
+    {
+      "transport": "http",
+      "methods": ["DELETE"],
+      "path": "/api/v1/auth/me",
+      "policy": "auth-internal",
+      "public_reason": "Compatibility endpoint currently performs account-deletion authorization inside the endpoint.",
+      "disclosure": "delete result or unauthenticated response"
+    },
+    {
+      "transport": "http",
+      "methods": ["PUT"],
+      "path": "/api/v1/auth/me/avatar",
+      "policy": "auth-internal",
+      "public_reason": "Compatibility endpoint currently performs avatar authorization inside the endpoint.",
+      "disclosure": "avatar update result or unauthenticated response"
+    },
+    {
+      "transport": "http",
+      "methods": ["POST"],
+      "path": "/api/v1/auth/mfa/setup",
+      "policy": "auth-internal",
+      "public_reason": "MFA setup currently performs session validation inside the endpoint.",
+      "disclosure": "MFA setup result or unauthenticated response"
+    },
+    {
+      "transport": "http",
+      "methods": ["POST"],
+      "path": "/api/v1/auth/mfa/activate",
+      "policy": "auth-internal",
+      "public_reason": "MFA activation currently performs session validation inside the endpoint.",
+      "disclosure": "MFA activation result or unauthenticated response"
+    },
+    {
+      "transport": "http",
+      "methods": ["POST"],
+      "path": "/api/v1/auth/mfa/verify",
+      "policy": "auth-flow",
+      "public_reason": "MFA verification is part of the login challenge flow.",
+      "disclosure": "MFA verification result"
+    },
+    {
+      "transport": "http",
+      "methods": ["POST"],
+      "path": "/api/v1/auth/mfa/disable",
+      "policy": "auth-internal",
+      "public_reason": "MFA disable currently performs session validation inside the endpoint.",
+      "disclosure": "MFA disable result or unauthenticated response"
+    },
+    {
+      "transport": "http",
+      "methods": ["POST"],
+      "path": "/api/v1/auth/mfa/backup-codes/regenerate",
+      "policy": "auth-internal",
+      "public_reason": "Backup-code regeneration currently performs session validation inside the endpoint.",
+      "disclosure": "backup-code result or unauthenticated response"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET"],
+      "path": "/api/v1/bootstrap/status",
+      "policy": "bootstrap",
+      "public_reason": "OOBE status must be available before the first admin exists.",
+      "disclosure": "bootstrap readiness/status only"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET"],
+      "path": "/api/v1/bootstrap/onboarding",
+      "policy": "bootstrap",
+      "public_reason": "OOBE resume state is pre-auth until bootstrap hardening is completed.",
+      "disclosure": "onboarding step only"
+    },
+    {
+      "transport": "http",
+      "methods": ["PATCH"],
+      "path": "/api/v1/bootstrap/onboarding",
+      "policy": "bootstrap",
+      "public_reason": "OOBE step mutation is pre-auth until bootstrap hardening is completed.",
+      "disclosure": "onboarding step only"
+    },
+    {
+      "transport": "http",
+      "methods": ["POST"],
+      "path": "/api/v1/bootstrap/initialize",
+      "policy": "bootstrap",
+      "public_reason": "First-admin initialization must run before authentication exists.",
+      "disclosure": "bootstrap initialization result"
+    },
+    {
+      "transport": "http",
+      "methods": ["POST"],
+      "path": "/api/v1/bootstrap/initialize-oauth",
+      "policy": "bootstrap",
+      "public_reason": "OAuth first-admin initialization must run before authentication exists.",
+      "disclosure": "bootstrap initialization result"
+    },
+    {
+      "transport": "http",
+      "methods": ["POST"],
+      "path": "/api/v1/bootstrap/domain",
+      "policy": "bootstrap",
+      "public_reason": "Bootstrap domain configuration is part of OOBE before normal sessions exist.",
+      "disclosure": "domain configuration result"
+    },
+    {
+      "transport": "websocket",
+      "methods": ["WEBSOCKET"],
+      "path": "/api/v1/agents/enroll",
+      "policy": "agent-protocol",
+      "public_reason": "Agent enrollment authenticates inside the Noise protocol handshake.",
+      "disclosure": "agent enrollment protocol frames"
+    },
+    {
+      "transport": "websocket",
+      "methods": ["WEBSOCKET"],
+      "path": "/api/v1/agents/link",
+      "policy": "agent-protocol",
+      "public_reason": "Agent link authenticates inside the Noise protocol handshake.",
+      "disclosure": "agent link protocol frames"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET"],
+      "path": "/api/v1/agents/binary/{version}/{os_name}/{arch}",
+      "policy": "agent-download",
+      "public_reason": "Agent install scripts need to download a versioned binary during enrollment.",
+      "disclosure": "versioned agent binary"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET"],
+      "path": "/api/v1/branding/manifest.json",
+      "policy": "public-ui-asset",
+      "public_reason": "Browser manifest is a public UI asset.",
+      "disclosure": "branding manifest only"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET"],
+      "path": "/api/v1/auth/exchange",
+      "policy": "auth-flow",
+      "public_reason": "OAuth/auth-code exchange consumes a one-time auth code before a session cookie exists.",
+      "disclosure": "exchange result"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET"],
+      "path": "/api/v1/auth/oauth/providers",
+      "policy": "auth-flow",
+      "public_reason": "Login screen needs configured OAuth provider metadata.",
+      "disclosure": "provider labels and authorize URLs"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET"],
+      "path": "/api/v1/auth/oauth/github",
+      "policy": "auth-flow",
+      "public_reason": "OAuth authorization redirect entry point.",
+      "disclosure": "redirect response"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET"],
+      "path": "/api/v1/auth/oauth/github/callback",
+      "policy": "auth-flow",
+      "public_reason": "OAuth callback entry point.",
+      "disclosure": "callback exchange result"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET"],
+      "path": "/api/v1/auth/oauth/google",
+      "policy": "auth-flow",
+      "public_reason": "OAuth authorization redirect entry point.",
+      "disclosure": "redirect response"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET"],
+      "path": "/api/v1/auth/oauth/google/callback",
+      "policy": "auth-flow",
+      "public_reason": "OAuth callback entry point.",
+      "disclosure": "callback exchange result"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET"],
+      "path": "/api/v1/auth/oauth/oidc/{provider_slug}",
+      "policy": "auth-flow",
+      "public_reason": "OIDC authorization redirect entry point.",
+      "disclosure": "redirect response"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET"],
+      "path": "/api/v1/auth/oauth/oidc/{provider_slug}/callback",
+      "policy": "auth-flow",
+      "public_reason": "OIDC callback entry point.",
+      "disclosure": "callback exchange result"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET", "HEAD"],
+      "path": "/api/v1/health",
+      "policy": "health",
+      "public_reason": "Load balancers and local diagnostics need unauthenticated health.",
+      "disclosure": "bounded health state"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET"],
+      "path": "/favicon.ico",
+      "policy": "public-ui-asset",
+      "public_reason": "Browser favicon asset.",
+      "disclosure": "favicon bytes"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET"],
+      "path": "/install-agent.sh",
+      "policy": "agent-download",
+      "public_reason": "Agent bootstrap script download used during enrollment.",
+      "disclosure": "install script"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET"],
+      "path": "/{full_path:path}",
+      "policy": "public-ui-asset",
+      "public_reason": "SPA fallback serves the browser application; data APIs remain under /api/v1.",
+      "disclosure": "frontend application shell"
+    }
+  ]
+}

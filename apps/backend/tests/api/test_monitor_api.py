@@ -16,6 +16,166 @@ async def _create(client, auth_headers, **overrides):
     return await client.post("/api/v1/monitors", headers=auth_headers, json=payload)
 
 
+async def _headers_for_user(client, user) -> dict[str, str]:
+    resp = await client.post(
+        "/api/v1/auth/login",
+        json={"email": user.email, "password": "TestPassword123!"},
+    )
+    assert resp.status_code == 200
+    token = resp.json()["token"]
+    csrf = resp.cookies.get("cb_csrf", "test-csrf-token")
+    return {"Authorization": f"Bearer {token}", "X-CSRF-Token": csrf}
+
+
+@pytest.mark.asyncio
+async def test_monitor_read_routes_require_auth(client, auth_headers):
+    mid = (await _create(client, auth_headers)).json()["id"]
+    client.cookies.clear()
+
+    for path in (
+        "/api/v1/monitors",
+        "/api/v1/monitors/overview",
+        "/api/v1/monitors/target-summary?target_type=hardware",
+        f"/api/v1/monitors/{mid}",
+        f"/api/v1/monitors/{mid}/events",
+        f"/api/v1/monitors/{mid}/history",
+        f"/api/v1/monitors/{mid}/probe-runs",
+        f"/api/v1/monitors/{mid}/uptime",
+    ):
+        resp = await client.get(path)
+        assert resp.status_code == 401, path
+
+
+@pytest.mark.asyncio
+async def test_monitor_read_routes_allow_viewer(client, factories):
+    admin_headers = await _headers_for_user(client, factories.user(role="admin"))
+    mid = (await _create(client, admin_headers)).json()["id"]
+    viewer_headers = await _headers_for_user(client, factories.user(role="viewer"))
+
+    for path in (
+        "/api/v1/monitors",
+        "/api/v1/monitors/overview",
+        "/api/v1/monitors/target-summary?target_type=hardware",
+        f"/api/v1/monitors/{mid}",
+        f"/api/v1/monitors/{mid}/events",
+        f"/api/v1/monitors/{mid}/history",
+        f"/api/v1/monitors/{mid}/probe-runs",
+        f"/api/v1/monitors/{mid}/uptime",
+    ):
+        resp = await client.get(path, headers=viewer_headers)
+        assert resp.status_code == 200, path
+
+
+@pytest.mark.asyncio
+async def test_monitor_writes_require_editor_level_role(client, factories):
+    viewer_headers = await _headers_for_user(client, factories.user(role="viewer"))
+
+    viewer_resp = await _create(client, viewer_headers)
+    assert viewer_resp.status_code == 403
+
+    editor_headers = await _headers_for_user(client, factories.user(role="editor"))
+    editor_resp = await _create(client, editor_headers)
+    assert editor_resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_monitor_reads_allow_demo_session(client, auth_headers, factories):
+    await _create(client, auth_headers)
+    demo = factories.user(role="demo", demo_expires=datetime.now(UTC) + timedelta(hours=1))
+    demo_headers = await _headers_for_user(client, demo)
+
+    resp = await client.get("/api/v1/monitors", headers=demo_headers)
+
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_monitor_reads_reject_expired_demo_session(client, auth_headers, factories):
+    await _create(client, auth_headers)
+    demo = factories.user(role="demo", demo_expires=datetime.now(UTC) - timedelta(minutes=1))
+    expired_headers = await _headers_for_user(client, demo)
+
+    resp = await client.get("/api/v1/monitors", headers=expired_headers)
+
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_monitor_reads_reject_expired_jwt(client, auth_headers, db_session, factories):
+    await _create(client, auth_headers)
+
+    import jwt as pyjwt
+
+    from app.core.security import SESSION_AUDIENCE
+    from app.services.settings_service import get_or_create_settings
+
+    user = factories.user(role="viewer")
+    cfg = get_or_create_settings(db_session)
+    token = pyjwt.encode(
+        {
+            "user_id": user.id,
+            "exp": datetime.now(UTC) - timedelta(minutes=1),
+            "aud": SESSION_AUDIENCE,
+        },
+        cfg.jwt_secret,
+        algorithm="HS256",
+    )
+
+    resp = await client.get("/api/v1/monitors", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_monitor_reads_reject_revoked_session(client, factories):
+    admin_headers = await _headers_for_user(client, factories.user(role="admin"))
+    await _create(client, admin_headers)
+
+    viewer_headers = await _headers_for_user(client, factories.user(role="viewer"))
+    logout = await client.post("/api/v1/auth/logout", headers=viewer_headers)
+    assert logout.status_code == 204
+
+    resp = await client.get("/api/v1/monitors", headers=viewer_headers)
+
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_monitor_reads_allow_service_api_token(client, auth_headers, db_session, factories):
+    await _create(client, auth_headers)
+
+    from app.core.security import create_salted_api_token_hash
+    from app.db.models import APIToken
+
+    owner = factories.user(role="admin")
+    raw_token = "sec3-monitor-read-token"
+    db_session.add(
+        APIToken(
+            token_hash=create_salted_api_token_hash(raw_token),
+            label="SEC-3 monitor read",
+            created_by=owner.id,
+            scopes=["read:*"],
+        )
+    )
+    db_session.flush()
+
+    resp = await client.get("/api/v1/monitors", headers={"Authorization": f"Bearer {raw_token}"})
+
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_monitor_reads_reject_agent_like_bearer_token(client, auth_headers):
+    await _create(client, auth_headers)
+
+    resp = await client.get(
+        "/api/v1/monitors",
+        headers={"Authorization": "Bearer agent-noise-protocol-identity"},
+    )
+
+    assert resp.status_code == 401
+
+
 @pytest.mark.asyncio
 async def test_create_and_get(client, auth_headers):
     resp = await _create(client, auth_headers)
