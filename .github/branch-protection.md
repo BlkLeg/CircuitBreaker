@@ -9,6 +9,7 @@ Apply the following settings via GitHub Settings > Branch protection rules:
 ### Pull Request Requirements
 - **Require a pull request before merging**: ✓ Enabled
   - Minimum 1 approving review required
+  - Require review from Code Owners: ✓ Enabled
   - Dismiss stale pull request approvals when new commits are pushed: ✓ Enabled
 
 ### Status Checks
@@ -26,6 +27,12 @@ Apply the following settings via GitHub Settings > Branch protection rules:
 ### Optional Recommendations
 - Enable auto-delete of head branches after merge
 - Require conversation resolution before merging (if using PR comments)
+
+### SEC-07 Public Route Review Gate
+- `.github/CODEOWNERS` maps the checked-in public endpoint allowlist and route-inventory gate to
+  `security-owner`.
+- With Code Owner review required, any pull request that adds or changes a reviewed public endpoint
+  policy entry requires explicit security-owner approval before merge.
 
 ---
 

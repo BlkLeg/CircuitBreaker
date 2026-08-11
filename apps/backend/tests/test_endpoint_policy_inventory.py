@@ -9,11 +9,15 @@ from __future__ import annotations
 
 import json
 from importlib.resources import files
+from pathlib import Path
 from typing import Any
 
 from fastapi.routing import APIRoute, APIWebSocketRoute
 
 from app.main import app
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_ENDPOINT_POLICY_REPO_PATH = "apps/backend/src/app/security/endpoint_policy.json"
 
 _AUTH_DEPENDENCIES = frozenset(
     {
@@ -97,6 +101,14 @@ def test_public_endpoint_policy_entries_are_well_formed():
     seen: set[tuple[str, tuple[str, ...], str]] = set()
 
     assert policy["version"] == 1
+    review = policy["security_review"]
+    assert review["requirement"] == "SEC-07"
+    assert review["owner"] == "security-owner"
+    assert review["reviewer"] == "security-owner"
+    assert review["codeowners_path"] == ".github/CODEOWNERS"
+    assert review["codeowners_owner"] == "@blkleg"
+    assert "security-owner review" in review["required_review"]
+
     for entry in policy["routes"]:
         key = (
             entry["transport"],
@@ -111,6 +123,27 @@ def test_public_endpoint_policy_entries_are_well_formed():
         assert entry["disclosure"]
         if entry["transport"] == "websocket":
             assert entry["methods"] == ["WEBSOCKET"]
+
+
+def test_public_endpoint_allowlist_requires_codeowner_review():
+    codeowners_path = _REPO_ROOT / ".github" / "CODEOWNERS"
+    codeowners = codeowners_path.read_text(encoding="utf-8").splitlines()
+    branch_protection = (_REPO_ROOT / ".github" / "branch-protection.md").read_text(
+        encoding="utf-8"
+    )
+
+    matching_lines = [
+        line
+        for line in codeowners
+        if line.strip()
+        and not line.lstrip().startswith("#")
+        and line.split()[0] == _ENDPOINT_POLICY_REPO_PATH
+    ]
+    assert matching_lines == [f"{_ENDPOINT_POLICY_REPO_PATH} @blkleg"], (
+        "SEC-07 public endpoint policy must require security-owner CODEOWNERS review"
+    )
+    assert "Require review from Code Owners: \u2713 Enabled" in branch_protection
+    assert "SEC-07 Public Route Review Gate" in branch_protection
 
 
 def test_runtime_routes_reconcile_with_public_endpoint_policy():

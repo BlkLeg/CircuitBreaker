@@ -1,6 +1,14 @@
 {
   "version": 1,
   "notes": "SEC-3 route policy. Routes listed here are the only runtime routes allowed to lack FastAPI-level auth dependencies. Auth-flow entries may still authenticate internally; moving those checks into dependencies should shrink this file over time.",
+  "security_review": {
+    "requirement": "SEC-07",
+    "owner": "security-owner",
+    "reviewer": "security-owner",
+    "codeowners_path": ".github/CODEOWNERS",
+    "codeowners_owner": "@blkleg",
+    "required_review": "Any change that adds, removes, or changes a route in this allowlist requires a CODEOWNERS-enforced security-owner review before merge."
+  },
   "routes": [
     {
       "transport": "http",

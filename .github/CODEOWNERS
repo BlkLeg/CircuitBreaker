@@ -1,0 +1,13 @@
+# 1.0.0 production-readiness ownership.
+#
+# SEC-07 requires security-owner review for any public endpoint allowlist change.
+# Branch protection must enable "Require review from Code Owners" so these paths
+# cannot merge without the mapped owner approving the PR. The current
+# security-owner role maps to @blkleg until RC-3 assigns a narrower team/person.
+
+apps/backend/src/app/security/endpoint_policy.json @blkleg
+apps/backend/src/app/security/endpoint_inventory.json @blkleg
+apps/backend/scripts/generate_endpoint_inventory.py @blkleg
+apps/backend/tests/test_endpoint_policy_inventory.py @blkleg
+specs/1.0.0/evidence/sec-3-endpoint-policy-monitor-auth.md @blkleg
+specs/1.0.0/slices/sec-3-endpoint-policy-monitor-auth.md @blkleg
