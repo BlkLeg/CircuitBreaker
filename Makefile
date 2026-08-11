@@ -26,6 +26,7 @@ NATS_DEV_NAME       ?= cb-nats-dev
 NATS_DEV_PORT       ?= 4222
 NATS_AUTH_TOKEN_DEV ?= dev-token-local-only
 CB_NATS_URL_DEV     ?= nats://localhost:$(NATS_DEV_PORT)
+CB_ALLOW_DEGRADED_DEPENDENCIES_DEV ?= true
 
 DOCKER_REGISTRY   ?= ghcr.io/blkleg/circuitbreaker
 
@@ -73,6 +74,7 @@ backend:  ## Native backend (ZERO DOCKER DRIFT)
 		CB_REDIS_URL="redis://localhost:6379/0" \
 		NATS_URL="nats://localhost:4222" \
 		NATS_AUTH_TOKEN="dev-token-local-only" \
+		CB_ALLOW_DEGRADED_DEPENDENCIES="$(CB_ALLOW_DEGRADED_DEPENDENCIES_DEV)" \
 		CB_AUTO_MIGRATE=false \
 		PYTHONPATH=src $(CURDIR)/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 8 $(CB_UVICORN_ARGS)
 
@@ -95,6 +97,7 @@ monitor-workers:  ## Native monitor scheduler + poll worker
 			CB_REDIS_URL="$(CB_REDIS_URL_DEV)" \
 			NATS_URL="$(CB_NATS_URL_DEV)" \
 			NATS_AUTH_TOKEN="$(NATS_AUTH_TOKEN_DEV)" \
+			CB_ALLOW_DEGRADED_DEPENDENCIES="$(CB_ALLOW_DEGRADED_DEPENDENCIES_DEV)" \
 			PYTHONPATH=src $(CURDIR)/.venv/bin/python -m app.workers.main --type=$$kind & \
 		done; \
 		wait
