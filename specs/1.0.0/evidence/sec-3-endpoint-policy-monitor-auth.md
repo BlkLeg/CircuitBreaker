@@ -4,7 +4,7 @@
 **Generated:** 2026-08-11
 **Requirements:** SEC-06, SEC-07, SEC-08
 **Depends on:** SEC-2B
-**Source state:** working tree based on `56e4bdd8`
+**Source state:** working tree based on `79f9a0b8`
 
 ## Implemented controls
 
@@ -28,14 +28,22 @@
   auth/RBAC policy, tenant policy, or disclosure class drift from the runtime route table.
 - The policy test also fails if the SEC-07 review metadata or CODEOWNERS mapping for
   `endpoint_policy.json` is removed or changed unexpectedly.
-- Monitor read routes now declare explicit `require_role("viewer")` dependencies in
-  `apps/backend/src/app/api/monitor.py`.
+- Monitor read routes now require `require_scope("read", "*")`, so scoped API/service tokens must
+  carry read authority instead of inheriting the token owner's role.
+- API token scope state is propagated through `get_optional_user`/RBAC for both stored bearer
+  tokens and service-account JWTs.
+- Legacy tenant-tagged monitor targets are non-enumerable across mismatched tenant readers:
+  list/overview/target-summary omit inaccessible rows and monitor-id nested reads return 404.
 - Monitor API tests now cover:
   - anonymous users cannot read monitor list/detail/history/events/probe-runs/uptime/overview;
-  - viewers can read monitor surfaces;
-  - demo sessions can read monitor surfaces until expiry;
-  - expired demo sessions, expired JWTs, revoked sessions, and agent-like bearer tokens are denied;
-  - service API tokens can read through the normal authenticated path;
+  - viewers, editors, admins, and unexpired demo sessions can read every named monitor surface;
+  - expired demo sessions, expired JWTs, revoked sessions, and agent-like bearer tokens are denied
+    across every named monitor surface;
+  - stored API tokens and service-account JWTs without `read:*` are denied across every named
+    monitor surface;
+  - `read:*` service API tokens can read every named monitor surface;
+  - wrong-tenant upgraded targets are hidden from list/overview/target-summary and return 404 for
+    detail/history/events/probe-runs/uptime;
   - viewers cannot create monitors;
   - editors can create monitors.
 - Monitor WebSocket tests cover unauthenticated handshake rejection and authenticated session-cookie
@@ -78,6 +86,27 @@ ruff check scripts/generate_endpoint_inventory.py tests/test_endpoint_policy_inv
 ```
 
 Result: **PASS**, 4 endpoint-policy tests plus Ruff.
+
+## Local SEC-08 verification
+
+```bash
+cd apps/backend
+pytest -q --no-cov tests/api/test_monitor_api.py tests/api/test_monitor_stream_auth.py \
+  tests/test_endpoint_policy_inventory.py
+ruff check src/app/core/security.py src/app/core/rbac.py src/app/api/monitor.py \
+  src/app/services/monitor_service.py tests/api/test_monitor_api.py \
+  tests/api/test_monitor_stream_auth.py tests/test_endpoint_policy_inventory.py \
+  scripts/generate_endpoint_inventory.py
+PYTHONPATH=src ../../.venv/bin/mypy src/app
+cd ../..
+python3 scripts/validate_v1_release_control.py
+```
+
+Result: **PASS**, 56 pytest cases plus Ruff, mypy, and release-control validation.
+
+Masqueraded-admin identity remains not applicable in the current runtime: the model still has
+historical masquerade fields, but there is no active route, transport claim, or request marker that
+can create a masqueraded session. SEC-08 coverage should be extended if that feature is re-enabled.
 
 ## Release-candidate evidence still pending
 

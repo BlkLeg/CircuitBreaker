@@ -27,42 +27,55 @@ async def _headers_for_user(client, user) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}", "X-CSRF-Token": csrf}
 
 
+def _monitor_read_paths(monitor_id: int) -> tuple[str, ...]:
+    return (
+        "/api/v1/monitors",
+        "/api/v1/monitors/overview",
+        "/api/v1/monitors/target-summary?target_type=hardware",
+        f"/api/v1/monitors/{monitor_id}",
+        f"/api/v1/monitors/{monitor_id}/events",
+        f"/api/v1/monitors/{monitor_id}/history",
+        f"/api/v1/monitors/{monitor_id}/probe-runs",
+        f"/api/v1/monitors/{monitor_id}/uptime",
+    )
+
+
+def _api_token_headers(db_session, factories, raw_token: str, scopes: list[str]) -> dict[str, str]:
+    from app.core.security import create_salted_api_token_hash
+    from app.db.models import APIToken
+
+    owner = factories.user(role="admin")
+    db_session.add(
+        APIToken(
+            token_hash=create_salted_api_token_hash(raw_token),
+            label=f"SEC-08 token {' '.join(scopes) or 'empty'}",
+            created_by=owner.id,
+            scopes=scopes,
+        )
+    )
+    db_session.flush()
+    return {"Authorization": f"Bearer {raw_token}"}
+
+
 @pytest.mark.asyncio
 async def test_monitor_read_routes_require_auth(client, auth_headers):
     mid = (await _create(client, auth_headers)).json()["id"]
     client.cookies.clear()
 
-    for path in (
-        "/api/v1/monitors",
-        "/api/v1/monitors/overview",
-        "/api/v1/monitors/target-summary?target_type=hardware",
-        f"/api/v1/monitors/{mid}",
-        f"/api/v1/monitors/{mid}/events",
-        f"/api/v1/monitors/{mid}/history",
-        f"/api/v1/monitors/{mid}/probe-runs",
-        f"/api/v1/monitors/{mid}/uptime",
-    ):
+    for path in _monitor_read_paths(mid):
         resp = await client.get(path)
         assert resp.status_code == 401, path
 
 
 @pytest.mark.asyncio
-async def test_monitor_read_routes_allow_viewer(client, factories):
+@pytest.mark.parametrize("role", ["viewer", "editor", "admin"])
+async def test_monitor_read_routes_allow_authenticated_roles(client, factories, role):
     admin_headers = await _headers_for_user(client, factories.user(role="admin"))
     mid = (await _create(client, admin_headers)).json()["id"]
-    viewer_headers = await _headers_for_user(client, factories.user(role="viewer"))
+    headers = await _headers_for_user(client, factories.user(role=role))
 
-    for path in (
-        "/api/v1/monitors",
-        "/api/v1/monitors/overview",
-        "/api/v1/monitors/target-summary?target_type=hardware",
-        f"/api/v1/monitors/{mid}",
-        f"/api/v1/monitors/{mid}/events",
-        f"/api/v1/monitors/{mid}/history",
-        f"/api/v1/monitors/{mid}/probe-runs",
-        f"/api/v1/monitors/{mid}/uptime",
-    ):
-        resp = await client.get(path, headers=viewer_headers)
+    for path in _monitor_read_paths(mid):
+        resp = await client.get(path, headers=headers)
         assert resp.status_code == 200, path
 
 
@@ -80,29 +93,29 @@ async def test_monitor_writes_require_editor_level_role(client, factories):
 
 @pytest.mark.asyncio
 async def test_monitor_reads_allow_demo_session(client, auth_headers, factories):
-    await _create(client, auth_headers)
+    mid = (await _create(client, auth_headers)).json()["id"]
     demo = factories.user(role="demo", demo_expires=datetime.now(UTC) + timedelta(hours=1))
     demo_headers = await _headers_for_user(client, demo)
 
-    resp = await client.get("/api/v1/monitors", headers=demo_headers)
-
-    assert resp.status_code == 200
+    for path in _monitor_read_paths(mid):
+        resp = await client.get(path, headers=demo_headers)
+        assert resp.status_code == 200, path
 
 
 @pytest.mark.asyncio
 async def test_monitor_reads_reject_expired_demo_session(client, auth_headers, factories):
-    await _create(client, auth_headers)
+    mid = (await _create(client, auth_headers)).json()["id"]
     demo = factories.user(role="demo", demo_expires=datetime.now(UTC) - timedelta(minutes=1))
     expired_headers = await _headers_for_user(client, demo)
 
-    resp = await client.get("/api/v1/monitors", headers=expired_headers)
-
-    assert resp.status_code == 401
+    for path in _monitor_read_paths(mid):
+        resp = await client.get(path, headers=expired_headers)
+        assert resp.status_code == 401, path
 
 
 @pytest.mark.asyncio
 async def test_monitor_reads_reject_expired_jwt(client, auth_headers, db_session, factories):
-    await _create(client, auth_headers)
+    mid = (await _create(client, auth_headers)).json()["id"]
 
     import jwt as pyjwt
 
@@ -121,59 +134,139 @@ async def test_monitor_reads_reject_expired_jwt(client, auth_headers, db_session
         algorithm="HS256",
     )
 
-    resp = await client.get("/api/v1/monitors", headers={"Authorization": f"Bearer {token}"})
-
-    assert resp.status_code == 401
+    for path in _monitor_read_paths(mid):
+        resp = await client.get(path, headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 401, path
 
 
 @pytest.mark.asyncio
 async def test_monitor_reads_reject_revoked_session(client, factories):
     admin_headers = await _headers_for_user(client, factories.user(role="admin"))
-    await _create(client, admin_headers)
+    mid = (await _create(client, admin_headers)).json()["id"]
 
     viewer_headers = await _headers_for_user(client, factories.user(role="viewer"))
     logout = await client.post("/api/v1/auth/logout", headers=viewer_headers)
     assert logout.status_code == 204
 
-    resp = await client.get("/api/v1/monitors", headers=viewer_headers)
-
-    assert resp.status_code == 401
+    for path in _monitor_read_paths(mid):
+        resp = await client.get(path, headers=viewer_headers)
+        assert resp.status_code == 401, path
 
 
 @pytest.mark.asyncio
 async def test_monitor_reads_allow_service_api_token(client, auth_headers, db_session, factories):
-    await _create(client, auth_headers)
-
-    from app.core.security import create_salted_api_token_hash
-    from app.db.models import APIToken
-
-    owner = factories.user(role="admin")
+    mid = (await _create(client, auth_headers)).json()["id"]
     raw_token = "sec3-monitor-read-token"
-    db_session.add(
-        APIToken(
-            token_hash=create_salted_api_token_hash(raw_token),
-            label="SEC-3 monitor read",
-            created_by=owner.id,
-            scopes=["read:*"],
-        )
+    token_headers = _api_token_headers(db_session, factories, raw_token, ["read:*"])
+
+    for path in _monitor_read_paths(mid):
+        resp = await client.get(path, headers=token_headers)
+        assert resp.status_code == 200, path
+
+
+@pytest.mark.asyncio
+async def test_monitor_reads_reject_service_api_token_without_read_scope(
+    client, auth_headers, db_session, factories
+):
+    mid = (await _create(client, auth_headers)).json()["id"]
+    token_headers = _api_token_headers(
+        db_session, factories, "sec8-monitor-write-only-token", ["write:*"]
     )
-    db_session.flush()
 
-    resp = await client.get("/api/v1/monitors", headers={"Authorization": f"Bearer {raw_token}"})
+    for path in _monitor_read_paths(mid):
+        resp = await client.get(path, headers=token_headers)
+        assert resp.status_code == 403, path
 
-    assert resp.status_code == 200
+
+@pytest.mark.asyncio
+async def test_monitor_reads_reject_service_account_jwt_without_read_scope(
+    client, auth_headers, db_session
+):
+    mid = (await _create(client, auth_headers)).json()["id"]
+
+    from app.core.security import create_token
+    from app.services.settings_service import get_or_create_settings
+
+    cfg = get_or_create_settings(db_session)
+    token = create_token(
+        0,
+        cfg.jwt_secret,
+        1,
+        scopes=["write:*"],
+        extra_claims={"label": "SEC-08 write-only service account"},
+    )
+
+    for path in _monitor_read_paths(mid):
+        resp = await client.get(path, headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 403, path
 
 
 @pytest.mark.asyncio
 async def test_monitor_reads_reject_agent_like_bearer_token(client, auth_headers):
-    await _create(client, auth_headers)
+    mid = (await _create(client, auth_headers)).json()["id"]
 
-    resp = await client.get(
-        "/api/v1/monitors",
-        headers={"Authorization": "Bearer agent-noise-protocol-identity"},
+    for path in _monitor_read_paths(mid):
+        resp = await client.get(
+            path,
+            headers={"Authorization": "Bearer agent-noise-protocol-identity"},
+        )
+        assert resp.status_code == 401, path
+
+
+@pytest.mark.asyncio
+async def test_monitor_reads_hide_wrong_tenant_target(client, auth_headers, factories, db_session):
+    """SEC-08: upgraded tenant-tagged targets remain non-enumerable across tenants."""
+    from app.db.models import Tenant
+
+    tenant_a, tenant_b = Tenant(name="monitor-read-a"), Tenant(name="monitor-read-b")
+    db_session.add_all([tenant_a, tenant_b])
+    db_session.flush()
+    hardware = factories.hardware(tenant_id=tenant_a.id, ip_address="192.0.2.88")
+    created = await _create(
+        client,
+        auth_headers,
+        name="tenant-scoped-monitor",
+        target_type="hardware",
+        target_id=hardware.id,
+        host="192.0.2.88",
+        check_type="icmp",
+        config={},
+    )
+    mid = created.json()["id"]
+    same_tenant_headers = await _headers_for_user(
+        client, factories.user(role="viewer", tenant_id=tenant_a.id)
+    )
+    wrong_tenant_headers = await _headers_for_user(
+        client, factories.user(role="viewer", tenant_id=tenant_b.id)
     )
 
-    assert resp.status_code == 401
+    for path in _monitor_read_paths(mid):
+        assert (await client.get(path, headers=same_tenant_headers)).status_code == 200, path
+
+    listing = await client.get("/api/v1/monitors", headers=wrong_tenant_headers)
+    assert listing.status_code == 200
+    assert mid not in {row["id"] for row in listing.json()}
+
+    overview = await client.get("/api/v1/monitors/overview", headers=wrong_tenant_headers)
+    assert overview.status_code == 200
+    assert mid not in {row["id"] for row in overview.json()}
+
+    summary = await client.get(
+        "/api/v1/monitors/target-summary?target_type=hardware",
+        headers=wrong_tenant_headers,
+    )
+    assert summary.status_code == 200
+    assert mid not in {row["monitor_id"] for row in summary.json()}
+
+    for path in (
+        f"/api/v1/monitors/{mid}",
+        f"/api/v1/monitors/{mid}/events",
+        f"/api/v1/monitors/{mid}/history",
+        f"/api/v1/monitors/{mid}/probe-runs",
+        f"/api/v1/monitors/{mid}/uptime",
+    ):
+        resp = await client.get(path, headers=wrong_tenant_headers)
+        assert resp.status_code == 404, path
 
 
 @pytest.mark.asyncio

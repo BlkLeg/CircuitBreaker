@@ -6183,7 +6183,7 @@
       "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.monitor.list_monitors",
-        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
         "app.db.session.get_db"
@@ -6225,7 +6225,7 @@
       "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.monitor.monitors_overview",
-        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
         "app.db.session.get_db"
@@ -6246,7 +6246,7 @@
       "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.monitor.target_summary",
-        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
         "app.db.session.get_db"
@@ -6372,7 +6372,7 @@
       "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.monitor.get_monitor",
-        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
         "app.db.session.get_db"
@@ -6435,7 +6435,7 @@
       "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.monitor.get_events",
-        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
         "app.db.session.get_db"
@@ -6456,7 +6456,7 @@
       "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.monitor.get_history",
-        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
         "app.db.session.get_db"
@@ -6498,7 +6498,7 @@
       "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.monitor.get_probe_runs",
-        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
         "app.db.session.get_db"
@@ -6540,7 +6540,7 @@
       "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.monitor.get_uptime",
-        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
         "app.db.session.get_db"

@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Callable, Coroutine, Sequence
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, NamedTuple
@@ -285,6 +285,32 @@ def _target_tenant_id(db: Session, target_type: str | None, target_id: int | Non
 
     probe = MonitorItem(target_type=target_type, target_id=target_id)
     return probe_eligibility._monitor_tenant_id(db, probe)
+
+
+def reader_can_access_monitor(db: Session, reader: object, monitor: Mapping[str, Any]) -> bool:
+    """Return whether ``reader`` may see a monitor row under the v1 tenant rule.
+
+    v1 is single-tenant per deployment, but upgraded data can still carry legacy
+    tenant ids. To avoid identifier enumeration in that transitional state, a
+    read is hidden only when both the reader and target have tenant ids and they
+    differ. Tenantless rows remain visible for single-tenant compatibility.
+    """
+
+    reader_tenant_id = getattr(reader, "tenant_id", None)
+    if reader_tenant_id is None:
+        return True
+    target_tenant_id = _target_tenant_id(
+        db,
+        monitor.get("target_type"),
+        monitor.get("target_id"),
+    )
+    return target_tenant_id is None or target_tenant_id == reader_tenant_id
+
+
+def filter_readable_monitors(
+    db: Session, reader: object, monitors: Sequence[Mapping[str, Any]]
+) -> list[Mapping[str, Any]]:
+    return [monitor for monitor in monitors if reader_can_access_monitor(db, reader, monitor)]
 
 
 # ── Serialization (the single monitor dict every route returns) ───────────────

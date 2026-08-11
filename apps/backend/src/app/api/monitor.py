@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from app.core.rbac import require_role
+from app.core.rbac import require_scope
 from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.monitor import (
@@ -35,24 +35,25 @@ def list_monitors(
     target_type: str | None = Query(default=None),
     target_id: int | None = Query(default=None),
     enabled: bool | None = Query(default=None),
-    _user: Any = require_role("viewer"),
+    user: Any = require_scope("read", "*"),
     db: Session = Depends(get_db),
 ) -> Any:
-    return monitor_service.list_monitors(
+    monitors = monitor_service.list_monitors(
         db, target_type=target_type, target_id=target_id, enabled=enabled
     )
+    return monitor_service.filter_readable_monitors(db, user, monitors)
 
 
 @router.get("/overview", response_model=list[MonitorOverview])
 def monitors_overview(
-    _user: Any = require_role("viewer"),
+    user: Any = require_scope("read", "*"),
     db: Session = Depends(get_db),
 ) -> Any:
     """Every monitor plus its compact latency series and recent checks — one request.
 
     Declared before "/{monitor_id}" so "overview" isn't parsed as a monitor id.
     """
-    return monitor_service.list_overview(db)
+    return monitor_service.filter_readable_monitors(db, user, monitor_service.list_overview(db))
 
 
 # ── Target-scoped actions (inventory list pages, detail drawers, map) ─────────
@@ -63,11 +64,15 @@ def monitors_overview(
 def target_summary(
     target_type: TargetType = Query(...),
     target_ids: list[int] | None = Query(default=None),
-    _user: Any = require_role("viewer"),
+    user: Any = require_scope("read", "*"),
     db: Session = Depends(get_db),
 ) -> Any:
     """Per-target monitor rollup for an inventory page."""
-    return monitor_service.list_target_summaries(db, target_type, target_ids)
+    return monitor_service.filter_readable_monitors(
+        db,
+        user,
+        monitor_service.list_target_summaries(db, target_type, target_ids),
+    )
 
 
 @router.post("/target/{target_type}/{target_id}", response_model=MonitorRead)
@@ -152,11 +157,11 @@ def create_monitor(
 @router.get("/{monitor_id}", response_model=MonitorRead)
 def get_monitor(
     monitor_id: int,
-    _user: Any = require_role("viewer"),
+    user: Any = require_scope("read", "*"),
     db: Session = Depends(get_db),
 ) -> Any:
     monitor = monitor_service.get_monitor(db, monitor_id)
-    if not monitor:
+    if not monitor or not monitor_service.reader_can_access_monitor(db, user, monitor):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     return monitor
 
@@ -239,10 +244,11 @@ async def run_immediate_check(
 def get_events(
     monitor_id: int,
     limit: int = Query(default=50, ge=1, le=500),
-    _user: Any = require_role("viewer"),
+    user: Any = require_scope("read", "*"),
     db: Session = Depends(get_db),
 ) -> Any:
-    if not monitor_service.get_monitor(db, monitor_id):
+    monitor = monitor_service.get_monitor(db, monitor_id)
+    if not monitor or not monitor_service.reader_can_access_monitor(db, user, monitor):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     return monitor_service.get_events(db, monitor_id, limit=limit)
 
@@ -252,10 +258,11 @@ def get_history(
     monitor_id: int,
     metric: str = Query(default="latency_ms"),
     hours: int = Query(default=24, ge=1, le=720),
-    _user: Any = require_role("viewer"),
+    user: Any = require_scope("read", "*"),
     db: Session = Depends(get_db),
 ) -> Any:
-    if not monitor_service.get_monitor(db, monitor_id):
+    monitor = monitor_service.get_monitor(db, monitor_id)
+    if not monitor or not monitor_service.reader_can_access_monitor(db, user, monitor):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     return monitor_service.get_history(db, monitor_id, metric=metric, hours=hours)
 
@@ -264,7 +271,7 @@ def get_history(
 def get_probe_runs(
     monitor_id: int,
     limit: int = Query(default=20, ge=1, le=200),
-    _user: Any = require_role("viewer"),
+    user: Any = require_scope("read", "*"),
     db: Session = Depends(get_db),
 ) -> Any:
     """§7's bounded execution history, newest first.
@@ -273,7 +280,8 @@ def get_probe_runs(
     did, and folding execution errors into the target's transition log is
     exactly what §7 says not to do.
     """
-    if not monitor_service.get_monitor(db, monitor_id):
+    monitor = monitor_service.get_monitor(db, monitor_id)
+    if not monitor or not monitor_service.reader_can_access_monitor(db, user, monitor):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     return monitor_service.get_probe_runs(db, monitor_id, limit=limit)
 
@@ -281,9 +289,10 @@ def get_probe_runs(
 @router.get("/{monitor_id}/uptime", response_model=MonitorUptimeRead)
 def get_uptime(
     monitor_id: int,
-    _user: Any = require_role("viewer"),
+    user: Any = require_scope("read", "*"),
     db: Session = Depends(get_db),
 ) -> Any:
-    if not monitor_service.get_monitor(db, monitor_id):
+    monitor = monitor_service.get_monitor(db, monitor_id)
+    if not monitor or not monitor_service.reader_can_access_monitor(db, user, monitor):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     return monitor_service.get_uptime(db, monitor_id)

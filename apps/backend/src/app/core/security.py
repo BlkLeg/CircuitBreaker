@@ -31,7 +31,7 @@ _logger = logging.getLogger(__name__)
 # Session validation cache: token_hash -> (user_id, expiry_ts).
 # TTL 10s so revocation is effective quickly.
 _SESSION_CACHE_TTL_S = 10
-_session_cache: dict[str, tuple[int, float]] = {}
+_session_cache: dict[str, tuple[int, float, tuple[str, ...] | None]] = {}
 _session_cache_lock = threading.Lock()
 _session_cache_max_size = 2000
 
@@ -79,20 +79,38 @@ def verify_salted_api_token_hash(raw_token: str, stored: str) -> bool:
     return hmac.compare_digest(computed, stored_hmac)
 
 
-def _session_cache_get(token_hash: str) -> int | None:
+def _normalise_token_scopes(raw_scopes: object) -> tuple[str, ...] | None:
+    if raw_scopes is None:
+        return None
+    if not isinstance(raw_scopes, list):
+        return ()
+    return tuple(str(scope).strip() for scope in raw_scopes if str(scope).strip())
+
+
+def _set_request_token_scopes(request: HTTPConnection, scopes: tuple[str, ...] | None) -> None:
+    if scopes is None:
+        if hasattr(request.state, "token_scopes"):
+            delattr(request.state, "token_scopes")
+        return
+    request.state.token_scopes = scopes
+
+
+def _session_cache_get(token_hash: str) -> tuple[int, tuple[str, ...] | None] | None:
     now = time.monotonic()
     with _session_cache_lock:
         entry = _session_cache.get(token_hash)
         if entry is None:
             return None
-        user_id, expiry = entry
+        user_id, expiry, scopes = entry
         if expiry <= now:
             _session_cache.pop(token_hash, None)
             return None
-        return user_id
+        return user_id, scopes
 
 
-def _session_cache_set(token_hash: str, user_id: int) -> None:
+def _session_cache_set(
+    token_hash: str, user_id: int, scopes: tuple[str, ...] | None = None
+) -> None:
     now = time.monotonic()
     expiry = now + _SESSION_CACHE_TTL_S
     with _session_cache_lock:
@@ -102,7 +120,7 @@ def _session_cache_set(token_hash: str, user_id: int) -> None:
             ]
             for k, _ in to_drop:
                 _session_cache.pop(k, None)
-        _session_cache[token_hash] = (user_id, expiry)
+        _session_cache[token_hash] = (user_id, expiry, scopes)
 
 
 def invalidate_session_cache(token: str | None = None) -> None:
@@ -312,6 +330,7 @@ def resolve_optional_user_id_sync(db: Session, request: HTTPConnection) -> int |
     Same logic as :func:`get_optional_user` for use from sync middleware.
     Returns 0 when LegacyTokenMiddleware granted legacy admin or auth is disabled.
     """
+    _set_request_token_scopes(request, None)
     if _is_legacy_admin(request):
         return 0
 
@@ -331,8 +350,10 @@ def resolve_optional_user_id_sync(db: Session, request: HTTPConnection) -> int |
         return None
 
     token_hash = _hash_token_for_cache(raw_token)
-    cached_uid = _session_cache_get(token_hash)
-    if cached_uid is not None:
+    cached = _session_cache_get(token_hash)
+    if cached is not None:
+        cached_uid, cached_scopes = cached
+        _set_request_token_scopes(request, cached_scopes)
         return cached_uid
 
     from app.services.user_service import is_session_revoked
@@ -356,7 +377,11 @@ def resolve_optional_user_id_sync(db: Session, request: HTTPConnection) -> int |
         if uid_raw is not None:
             uid_int = int(uid_raw)
             if _is_user_accessible(db, uid_int):
-                _session_cache_set(token_hash, uid_int)
+                token_scopes = (
+                    _normalise_token_scopes(payload.get("scopes")) if uid_int == 0 else None
+                )
+                _session_cache_set(token_hash, uid_int, token_scopes)
+                _set_request_token_scopes(request, token_scopes)
                 return uid_int
             return None
     except (jwt.PyJWTError, ValueError, TypeError):
@@ -376,7 +401,9 @@ def resolve_optional_user_id_sync(db: Session, request: HTTPConnection) -> int |
             return None
         uid = api_token_row.created_by
         if _is_user_accessible(db, uid):
-            _session_cache_set(token_hash, uid)
+            token_scopes = _normalise_token_scopes(api_token_row.scopes)
+            _session_cache_set(token_hash, uid, token_scopes)
+            _set_request_token_scopes(request, token_scopes)
             return uid
         return None
 

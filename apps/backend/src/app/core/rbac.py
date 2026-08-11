@@ -8,6 +8,7 @@ from typing import cast
 
 from fastapi import Depends, HTTPException, params
 from sqlalchemy.orm import Session
+from starlette.requests import HTTPConnection
 
 from app.core.security import get_optional_user
 from app.core.time import utcnow
@@ -104,6 +105,13 @@ def has_scope(user_scopes: set[str], action: str, resource: str) -> bool:
     return False
 
 
+def _request_token_scopes(request: HTTPConnection) -> set[str] | None:
+    raw = getattr(request.state, "token_scopes", None)
+    if raw is None:
+        return None
+    return {str(scope).strip() for scope in raw if str(scope).strip()}
+
+
 def _is_demo_expired(user: User) -> bool:
     demo_expires = getattr(user, "demo_expires", None)
     if not demo_expires:
@@ -160,12 +168,18 @@ def require_scope(action: str, resource: str) -> params.Depends:
     """FastAPI dependency for scope-based authorization."""
 
     async def _dep(
+        request: HTTPConnection,
         user_id: int | None = Depends(get_optional_user),
         db: Session = Depends(get_db),
     ) -> User:
         if user_id is None:
             raise HTTPException(status_code=401, detail="Authentication required")
+        token_scopes = _request_token_scopes(request)
         if user_id == 0:
+            if token_scopes is not None:
+                if has_scope(token_scopes, action, resource):
+                    return _service_user()
+                raise HTTPException(status_code=403, detail="Insufficient permissions")
             return _service_user()
 
         user = db.get(User, user_id)
@@ -179,6 +193,10 @@ def require_scope(action: str, resource: str) -> params.Depends:
         role = _effective_role(user)
         if role == "demo" and _is_demo_expired(user):
             raise HTTPException(status_code=401, detail="Demo session expired")
+        if token_scopes is not None:
+            if has_scope(token_scopes, action, resource):
+                return user
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
         if user.is_superuser:
             return user
 
