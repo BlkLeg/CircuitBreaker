@@ -3,7 +3,7 @@
 # Docs: https://github.com/BlkLeg/CircuitBreaker
 #
 # One image: Postgres + NATS + Redis + backend + workers + nginx (mono).
-# Required env: CB_DB_PASSWORD, CB_VAULT_KEY, CB_JWT_SECRET, NATS_AUTH_TOKEN
+# Required env: CB_DB_PASSWORD, CB_VAULT_KEY, CB_JWT_SECRET, NATS_AUTH_TOKEN, CB_EGRESS_PROXY_URL
 # Optional: CB_DATA_DIR, CB_PORT_HTTP, CB_PORT_HTTPS, CB_TAG, CB_IMAGE (override for local dev)
 #
 # Docker socket: optional override for discovery —
@@ -67,6 +67,10 @@ services:
       - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:?Set NATS_AUTH_TOKEN for internal bus auth}
       - CB_REDIS_URL=${CB_REDIS_URL:-}
       - CB_REDIS_URL_SET_BY_USER=${CB_REDIS_URL:+1}
+      - CB_RATE_LIMIT_STORAGE_URL=${CB_RATE_LIMIT_STORAGE_URL:-}
+      - CB_TRUSTED_PROXY_CIDRS=${CB_TRUSTED_PROXY_CIDRS:-127.0.0.1/32,::1/128}
+      - CB_EGRESS_PROXY_URL=${CB_EGRESS_PROXY_URL:-}
+      - CB_ALLOW_DEGRADED_DEPENDENCIES=${CB_ALLOW_DEGRADED_DEPENDENCIES:-false}
       - CB_AIRGAP=${CB_AIRGAP:-false}
       - CB_DOCKER_HOST=${CB_DOCKER_HOST:-}
     healthcheck:

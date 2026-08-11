@@ -41,6 +41,8 @@ def pytest_configure(config):
     os.environ["CB_JWT_SECRET"] = "ci-test-jwt-secret-minimum-32-chars-xxxx"
     os.environ["CB_VAULT_KEY"] = "hUQwP5Pb5SDdz_8mBBe0aPn7B6K1lItbytzXv7eaGLk="
     os.environ["NATS_AUTH_TOKEN"] = "ci-test-nats-token"
+    os.environ["CB_ALLOW_DEGRADED_DEPENDENCIES"] = "true"
+    os.environ["CB_RATE_LIMIT_STORAGE_URL"] = "memory://"
     # The `setup_db` fixture builds schema directly via SQLAlchemy metadata
     # (models.Base.metadata.create_all), not via Alembic. main.py's startup
     # lifespan auto-migrate phase (only exercised once a real ASGI lifespan

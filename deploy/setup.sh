@@ -37,6 +37,12 @@ CB_DB_POOL_URL=postgresql://breaker:${CB_DB_PASSWORD}@127.0.0.1:6432/circuitbrea
 CB_REDIS_URL=redis://:${CB_REDIS_PASSWORD}@127.0.0.1:6379/0
 CB_NATS_URL=nats://127.0.0.1:4222
 
+# ===== SEC-5 outbound/dependency safety =====
+CB_EGRESS_PROXY_URL=${CB_EGRESS_PROXY_URL}
+CB_RATE_LIMIT_STORAGE_URL=${CB_RATE_LIMIT_STORAGE_URL}
+CB_TRUSTED_PROXY_CIDRS=${CB_TRUSTED_PROXY_CIDRS}
+CB_ALLOW_DEGRADED_DEPENDENCIES=${CB_ALLOW_DEGRADED_DEPENDENCIES}
+
 # ===== Paths =====
 CB_DATA_DIR=${CB_DATA_DIR}
 CB_UPLOADS_DIR=${CB_DATA_DIR}/uploads
@@ -199,9 +205,25 @@ stage1_bootstrap() {
       echo "CB_NATS_URL=nats://127.0.0.1:4222" >> /etc/circuitbreaker/.env
       appended="true"
     fi
+    if ! grep -q '^CB_EGRESS_PROXY_URL=' /etc/circuitbreaker/.env; then
+      echo "CB_EGRESS_PROXY_URL=${CB_EGRESS_PROXY_URL:-}" >> /etc/circuitbreaker/.env
+      appended="true"
+    fi
+    if ! grep -q '^CB_RATE_LIMIT_STORAGE_URL=' /etc/circuitbreaker/.env; then
+      echo "CB_RATE_LIMIT_STORAGE_URL=${CB_RATE_LIMIT_STORAGE_URL:-}" >> /etc/circuitbreaker/.env
+      appended="true"
+    fi
+    if ! grep -q '^CB_TRUSTED_PROXY_CIDRS=' /etc/circuitbreaker/.env; then
+      echo "CB_TRUSTED_PROXY_CIDRS=${CB_TRUSTED_PROXY_CIDRS:-127.0.0.1/32,::1/128}" >> /etc/circuitbreaker/.env
+      appended="true"
+    fi
+    if ! grep -q '^CB_ALLOW_DEGRADED_DEPENDENCIES=' /etc/circuitbreaker/.env; then
+      echo "CB_ALLOW_DEGRADED_DEPENDENCIES=${CB_ALLOW_DEGRADED_DEPENDENCIES:-false}" >> /etc/circuitbreaker/.env
+      appended="true"
+    fi
 
     if [[ "$appended" == "true" ]]; then
-      cb_ok "Added missing secrets to existing .env"
+      cb_ok "Added missing settings to existing .env"
     fi
     # Re-source to ensure everything is in the environment
     set +u
@@ -216,6 +238,10 @@ stage1_bootstrap() {
     export CB_DB_PASSWORD=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
     export CB_REDIS_PASSWORD=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
     export CB_NATS_TOKEN=$(openssl rand -base64 48 | tr -d '/+=' )
+    export CB_EGRESS_PROXY_URL="${CB_EGRESS_PROXY_URL:-}"
+    export CB_RATE_LIMIT_STORAGE_URL="${CB_RATE_LIMIT_STORAGE_URL:-}"
+    export CB_TRUSTED_PROXY_CIDRS="${CB_TRUSTED_PROXY_CIDRS:-127.0.0.1/32,::1/128}"
+    export CB_ALLOW_DEGRADED_DEPENDENCIES="${CB_ALLOW_DEGRADED_DEPENDENCIES:-false}"
     
     export CB_DETECTED_IP=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[^ ]+' || echo "localhost")
 
@@ -1633,4 +1659,3 @@ run_upgrade() {
 
   stage10_final_output
 }
-

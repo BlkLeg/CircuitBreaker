@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.rbac import require_role
+from app.core.url_validation import WEBHOOK_POLICY, validate_outbound_url
 from app.db.session import engine, get_db
 from app.services.db_backup import (
     BACKUP_DIR,  # noqa: F401 — module-level name required for monkeypatching in tests
@@ -239,7 +240,12 @@ def update_backup_settings(
     if update.backup_s3_bucket is not None:
         settings.backup_s3_bucket = update.backup_s3_bucket or None
     if update.backup_s3_endpoint_url is not None:
-        settings.backup_s3_endpoint_url = update.backup_s3_endpoint_url or None
+        endpoint_url = (
+            update.backup_s3_endpoint_url.strip() if update.backup_s3_endpoint_url else ""
+        )
+        settings.backup_s3_endpoint_url = (
+            validate_outbound_url(endpoint_url, WEBHOOK_POLICY).url if endpoint_url else None
+        )
     if update.backup_s3_access_key_id is not None:
         settings.backup_s3_access_key_id = update.backup_s3_access_key_id or None
     if update.backup_s3_secret_key is not None:

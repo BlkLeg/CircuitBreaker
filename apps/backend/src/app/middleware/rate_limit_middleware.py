@@ -13,7 +13,7 @@ compatibility shim unless a future ADR reintroduces true multi-tenancy.
 Skip conditions:
 - Path is in _SKIP_PATHS (health/metrics endpoints)
 - current_tenant_id ContextVar is None (the normal v1 single-tenant path)
-- Redis unavailable — fails open to preserve availability
+- Redis unavailable while tenant limiting is active — fails closed
 """
 
 from __future__ import annotations
@@ -84,8 +84,11 @@ class TenantRateLimitMiddleware(BaseHTTPMiddleware):
 
         redis = await get_redis()
         if redis is None:
-            _logger.debug("Rate limit skipped — Redis unavailable")
-            return await call_next(request)
+            _logger.warning("Tenant rate limit rejected — Redis unavailable")
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Rate limiting is temporarily unavailable."},
+            )
 
         key = f"rl:tenant:{tenant_id}"
         now_ms = int(time.time() * 1000)
@@ -97,8 +100,11 @@ class TenantRateLimitMiddleware(BaseHTTPMiddleware):
             result = await script(keys=[key], args=[now_ms, window_ms, _RATE_LIMIT_RPM])
             exceeded, value = int(result[0]), int(result[1])
         except Exception as exc:  # noqa: BLE001
-            _logger.debug("Rate limit check failed (%s) — allowing request", exc)
-            return await call_next(request)
+            _logger.warning("Tenant rate limit check failed — rejecting request: %s", exc)
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Rate limiting is temporarily unavailable."},
+            )
 
         if exceeded:
             retry_after = max(value, 1)

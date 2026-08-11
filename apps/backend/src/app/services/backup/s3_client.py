@@ -18,7 +18,14 @@ from typing import Any
 
 import boto3
 import boto3.exceptions
+from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
+
+from app.core.url_validation import (
+    WEBHOOK_POLICY,
+    configured_egress_proxy_url,
+    validate_outbound_url,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -64,7 +71,13 @@ class S3Client:
             "region_name": settings.region,
         }
         if settings.endpoint_url:
-            kwargs["endpoint_url"] = settings.endpoint_url
+            kwargs["endpoint_url"] = validate_outbound_url(
+                settings.endpoint_url,
+                WEBHOOK_POLICY,
+            ).url
+        proxy_url = configured_egress_proxy_url()
+        if proxy_url:
+            kwargs["config"] = Config(proxies={"http": proxy_url, "https": proxy_url})
         self._s3 = boto3.client(**kwargs)
 
     def _upload_file_sync(self, path: Path, key: str) -> None:

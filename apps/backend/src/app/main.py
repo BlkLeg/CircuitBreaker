@@ -91,6 +91,7 @@ from app.core.log_redaction import install_global_log_redaction
 from app.core.rate_limit import limiter
 from app.core.security import _log_api_token_deprecation, require_auth
 from app.core.sql_hardening import build_audit_partition_sql
+from app.core.startup_validation import validate_core_dependencies, validate_startup_secrets
 from app.core.time import utcnow
 from app.db import models  # noqa: F401 — import to register all model metadata with Base
 from app.db.async_session import AsyncSessionLocal
@@ -624,12 +625,28 @@ async def lifespan(app: FastAPI):
             from app.services.credential_vault import get_vault as _get_vault
 
             _vault_key = _vault_svc.load_vault_key(_vault_db)
+            from app.services.settings_service import (
+                get_or_create_settings as _settings_for_secrets,
+            )
+
+            _startup_cfg = _settings_for_secrets(_vault_db)
+            _secret_errors = validate_startup_secrets(
+                jwt_secret=_startup_cfg.jwt_secret,
+                vault_key=_vault_key,
+            )
+            if _secret_errors:
+                raise RuntimeError("; ".join(_secret_errors))
             if _vault_key:
                 _get_vault().reinitialize(_vault_key)
                 import os as _os
 
                 _os.environ["CB_VAULT_KEY"] = _vault_key
                 _logger.info("Vault initialized from: %s", _vault_svc.get_key_source())
+            elif _vault_svc._count_encrypted_secrets(_vault_db) > 0:
+                raise RuntimeError(
+                    "Vault encryption key is missing but encrypted secrets exist; set CB_VAULT_KEY "
+                    "or restore the persisted vault key before startup"
+                )
             else:
                 _logger.warning(
                     "CB_VAULT_KEY not found in environment, %s, or database. "
@@ -665,11 +682,16 @@ async def lifespan(app: FastAPI):
     # ── Redis (telemetry cache + pub/sub) ────────────────────────────────
     from app.core.redis import close_redis, init_redis
 
-    await init_redis(settings.redis_url)
+    _redis = await init_redis(settings.redis_url)
 
     # ── NATS message bus ───────────────────────────────────────────────────
     await nats_client.connect()
     _logger.info("NATS initialised (connected=%s)", nats_client.is_connected)
+    try:
+        await validate_core_dependencies(_redis, nats_client.is_connected)
+    except RuntimeError as _dep_exc:
+        _logger.critical("STARTUP FAILED: %s", _dep_exc)
+        raise SystemExit(1) from _dep_exc
 
     # ── NATS → WebSocket bridge ────────────────────────────────────────────
     # Subscribe to topology subjects and fan out to topology WS clients.

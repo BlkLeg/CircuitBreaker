@@ -92,13 +92,13 @@ transports and trusted-proxy behavior matches configuration.
 **Requirements:** SEC-11, SEC-12, SEC-13, SEC-14
 **Depends on:** Can run after SEC-1
 
-- [ ] Resolve the Click advisory and add/confirm production dependency scans.
-- [ ] Centralize outbound destination validation and pin validated addresses or enforce egress proxy
+- [x] Resolve the Click advisory and add/confirm production dependency scans.
+- [x] Centralize outbound destination validation and pin validated addresses or enforce egress proxy
   policy for webhooks and every integration.
-- [ ] Move rate limits to shared storage and implement trusted-proxy client identity.
-- [ ] Inventory mandatory secrets/dependencies and define fail-closed versus explicitly degraded
+- [x] Move rate limits to shared storage and implement trusted-proxy client identity.
+- [x] Inventory mandatory secrets/dependencies and define fail-closed versus explicitly degraded
   behavior for Redis, NATS, vault, signing, encryption, and sessions.
-- [ ] Add DNS rebinding, redirect, address-encoding, multi-instance rate-limit, spoofed header, and
+- [x] Add DNS rebinding, redirect, address-encoding, multi-instance rate-limit, spoofed header, and
   empty/missing secret tests.
 
 **Verification:** Security integration suite and dependency scans pass in mono and split topologies.

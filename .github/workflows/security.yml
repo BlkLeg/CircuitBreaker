@@ -172,7 +172,7 @@ jobs:
           .venv/bin/pip install --upgrade pip pip-audit
           .venv/bin/pip install -e "apps/backend/[dev]"
       - name: Run pip-audit
-        run: .venv/bin/pip-audit --format=json --output pip-audit-results.json || true
+        run: .venv/bin/pip-audit -r apps/backend/requirements.txt --format=json --output pip-audit-results.json
       - name: Upload pip-audit results
         uses: actions/upload-artifact@v5
         if: always()

@@ -56,6 +56,18 @@ class Settings(BaseSettings):
         "redis://localhost:6379/0",
         validation_alias=AliasChoices("CB_REDIS_URL", "REDIS_URL"),
     )
+    rate_limit_storage_url: str = Field(
+        "",
+        validation_alias=AliasChoices("CB_RATE_LIMIT_STORAGE_URL", "RATE_LIMIT_STORAGE_URL"),
+    )
+    trusted_proxy_cidrs: list[str] = Field(
+        default_factory=lambda: ["127.0.0.1/32", "::1/128"],
+        validation_alias=AliasChoices("CB_TRUSTED_PROXY_CIDRS", "TRUSTED_PROXY_CIDRS"),
+    )
+    egress_proxy_url: str = Field(
+        "",
+        validation_alias=AliasChoices("CB_EGRESS_PROXY_URL", "EGRESS_PROXY_URL"),
+    )
     airgap: bool = False
     docker_host: str = ""
     api_prefix: str = "/api/v1"
@@ -74,6 +86,21 @@ class Settings(BaseSettings):
             except json.JSONDecodeError:
                 return [o.strip() for o in v.split(",") if o.strip()]
         return []
+
+    @field_validator("trusted_proxy_cidrs", mode="before")
+    @classmethod
+    def parse_trusted_proxy_cidrs(cls, v: object) -> list[str]:
+        if isinstance(v, list):
+            return [str(item).strip() for item in v if str(item).strip()]
+        if isinstance(v, str) and v.strip():
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return [str(item).strip() for item in parsed if str(item).strip()]
+            except json.JSONDecodeError:
+                pass
+            return [part.strip() for part in v.split(",") if part.strip()]
+        return ["127.0.0.1/32", "::1/128"]
 
     # Relative to the backend working directory. Override with STATIC_DIR env var
     # in single-container Docker deployments (e.g. STATIC_DIR=/app/frontend/dist).

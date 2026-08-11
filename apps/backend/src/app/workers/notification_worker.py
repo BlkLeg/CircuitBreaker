@@ -9,10 +9,9 @@ from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
 
-import httpx
-
 from app.core.nats_client import nats_client
 from app.core.redis import get_redis
+from app.core.url_validation import outbound_async_client, safe_async_request
 from app.core.worker_audit import log_worker_audit
 from app.db.models import NotificationRoute
 from app.db.session import SessionLocal
@@ -58,8 +57,8 @@ async def notify_slack(
             {"color": color, "fields": [{"title": "Severity", "value": severity, "short": True}]}
         ],
     }
-    async with httpx.AsyncClient() as client:
-        await client.post(webhook_url, json=payload)
+    async with outbound_async_client() as client:
+        await safe_async_request(client, "POST", webhook_url, json=payload)
 
 
 async def notify_email(
@@ -112,8 +111,8 @@ async def notify_discord(
             }
         ]
     }
-    async with httpx.AsyncClient() as client:
-        await client.post(webhook_url, json=payload, timeout=10.0)
+    async with outbound_async_client() as client:
+        await safe_async_request(client, "POST", webhook_url, json=payload, timeout=10.0)
 
 
 async def notify_teams(
@@ -137,8 +136,8 @@ async def notify_teams(
             }
         ],
     }
-    async with httpx.AsyncClient() as client:
-        await client.post(webhook_url, json=payload, timeout=10.0)
+    async with outbound_async_client() as client:
+        await safe_async_request(client, "POST", webhook_url, json=payload, timeout=10.0)
 
 
 async def _is_duplicate(subject: str, severity: str, title: str) -> bool:

@@ -9,6 +9,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.url_validation import LAN_INTEGRATION_POLICY, validate_outbound_url
 from app.db.models import HardwareLiveMetric, IntegrationMonitor
 from app.integrations.base import ConfigField, IntegrationPlugin, MonitorStatus
 
@@ -92,6 +93,7 @@ class UptimeKumaPlugin(IntegrationPlugin):
         if sync_rich is None:
             raise RuntimeError("uptime_kuma_socket not available")
 
+        validate_outbound_url(config.base_url, LAN_INTEGRATION_POLICY)
         rich_monitors = sync_rich(config.base_url, api_token)
         results: list[MonitorStatus] = []
 
@@ -180,7 +182,8 @@ class UptimeKumaPlugin(IntegrationPlugin):
         """Read-only public Status Page API (no auth, UK 1.x + 2.x compatible)."""
         url = self._status_page_url(config)
         try:
-            resp = httpx.get(url, timeout=10)
+            validated = validate_outbound_url(url, LAN_INTEGRATION_POLICY)
+            resp = httpx.get(validated.url, timeout=10, follow_redirects=False)
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:
@@ -212,7 +215,8 @@ class UptimeKumaPlugin(IntegrationPlugin):
         """Validate connectivity (public API — no credentials required)."""
         url = self._status_page_url(config)
         try:
-            resp = httpx.get(url, timeout=5)
+            validated = validate_outbound_url(url, LAN_INTEGRATION_POLICY)
+            resp = httpx.get(validated.url, timeout=5, follow_redirects=False)
             resp.raise_for_status()
             return True, "Connection successful"
         except Exception as exc:

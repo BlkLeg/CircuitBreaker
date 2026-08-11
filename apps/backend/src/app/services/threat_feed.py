@@ -12,7 +12,6 @@ import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
-from urllib.parse import urlparse
 
 import httpx
 import redis
@@ -25,7 +24,12 @@ from app.core.constants import (
     FEED_SOURCE_PUBLIC_BLOCKLISTS,
 )
 from app.core.redis import get_redis
-from app.core.url_validation import reject_ssrf_url
+from app.core.url_validation import (
+    THREAT_FEED_POLICY,
+    outbound_async_client,
+    validate_outbound_url,
+    validate_redirect_target,
+)
 from app.services.threat_feed_parse import parse_blocklist
 
 logger = logging.getLogger(__name__)
@@ -98,10 +102,7 @@ class FeedProvider(Protocol):
 
 def validate_feed_url(url: str) -> None:
     """Feed URLs must be HTTPS and pass the SSRF guard (no private/loopback)."""
-    scheme = (urlparse(url).scheme or "").lower()
-    if scheme != "https":
-        raise ValueError(f"Feed URL must use HTTPS, got scheme '{scheme}'")
-    reject_ssrf_url(url)
+    validate_outbound_url(url, THREAT_FEED_POLICY)
 
 
 class PublicBlocklistProvider:
@@ -113,7 +114,10 @@ class PublicBlocklistProvider:
     async def fetch(self) -> ThreatFeed:
         feed = ThreatFeed(fetched_at=datetime.now(UTC).isoformat())
         fetched_any = False
-        async with httpx.AsyncClient(timeout=FEED_FETCH_TIMEOUT_S, follow_redirects=True) as client:
+        async with outbound_async_client(
+            timeout=FEED_FETCH_TIMEOUT_S,
+            follow_redirects=False,
+        ) as client:
             for category in _FEED_CATEGORIES:
                 for url in self.urls.get(category, []):
                     domains = await self._fetch_one(client, url)
@@ -137,16 +141,27 @@ class PublicBlocklistProvider:
 
     @staticmethod
     async def _download_capped(client: httpx.AsyncClient, url: str) -> str:
-        chunks: list[bytes] = []
-        total_bytes = 0
-        async with client.stream("GET", url) as response:
-            response.raise_for_status()
-            async for chunk in response.aiter_bytes():
-                total_bytes += len(chunk)
-                if total_bytes > FEED_MAX_RESPONSE_BYTES:
-                    raise ValueError(f"response exceeds {FEED_MAX_RESPONSE_BYTES} byte cap")
-                chunks.append(chunk)
-        return b"".join(chunks).decode("utf-8", errors="ignore")
+        current_url = url
+        for _ in range(6):
+            validated = validate_outbound_url(current_url, THREAT_FEED_POLICY)
+            chunks: list[bytes] = []
+            total_bytes = 0
+            async with client.stream("GET", validated.url, follow_redirects=False) as response:
+                if response.status_code in {301, 302, 303, 307, 308}:
+                    current_url = validate_redirect_target(
+                        validated.url,
+                        response.headers.get("location", ""),
+                        THREAT_FEED_POLICY,
+                    ).url
+                    continue
+                response.raise_for_status()
+                async for chunk in response.aiter_bytes():
+                    total_bytes += len(chunk)
+                    if total_bytes > FEED_MAX_RESPONSE_BYTES:
+                        raise ValueError(f"response exceeds {FEED_MAX_RESPONSE_BYTES} byte cap")
+                    chunks.append(chunk)
+            return b"".join(chunks).decode("utf-8", errors="ignore")
+        raise ValueError("too many feed redirects")
 
 
 def _is_fresh(feed: ThreatFeed, refresh_hours: int) -> bool:

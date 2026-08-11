@@ -1,12 +1,12 @@
 import json
 from typing import Any
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.core.rbac import require_role
+from app.core.url_validation import outbound_async_client, safe_async_request
 from app.db.models import NotificationRoute, NotificationSink
 from app.db.session import get_db
 
@@ -147,8 +147,8 @@ def _ok_from_resp(resp: Any) -> dict[str, Any]:
 async def _test_webhook_sink(webhook_url: str | None, body: dict[str, Any]) -> dict[str, Any]:
     if not webhook_url:
         return {"ok": False, "error": _WEBHOOK_URL_NOT_CONFIGURED}
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(webhook_url, json=body, timeout=10.0)
+    async with outbound_async_client() as client:
+        resp = await safe_async_request(client, "POST", webhook_url, json=body, timeout=10.0)
     return _ok_from_resp(resp)
 
 
