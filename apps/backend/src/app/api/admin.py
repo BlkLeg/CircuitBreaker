@@ -361,7 +361,7 @@ def import_backup(
     payload: ImportPayload,
     request: Request,
     db: Annotated[Session, Depends(get_db)],
-    user: Annotated[models.User, require_role("admin")] = None,
+    user: Annotated[models.User, require_role("admin")],
 ) -> dict[str, Any]:
     """Restore a backup snapshot.
 
@@ -457,7 +457,7 @@ def _wipe_entities_keep_docs(db: Session) -> None:
 def clear_lab(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
-    user: Annotated[models.User, require_role("admin")] = None,
+    user: Annotated[models.User, require_role("admin")],
 ) -> dict[str, Any]:
     """Wipe all lab entities (hardware, compute, services, storage, networks, misc,
     clusters, external nodes, tags, and their relationships) while preserving all

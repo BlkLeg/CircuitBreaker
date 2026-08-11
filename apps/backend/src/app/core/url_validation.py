@@ -11,6 +11,7 @@ import ipaddress
 import socket
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import unquote, urljoin, urlparse
 
 import httpx
@@ -188,7 +189,7 @@ async def safe_async_request(
     *,
     policy: OutboundPolicy = WEBHOOK_POLICY,
     max_redirects: int = 0,
-    **kwargs: object,
+    **kwargs: Any,
 ) -> httpx.Response:
     """Validate each outbound request and redirect hop before sending it."""
 
@@ -224,7 +225,7 @@ def configured_egress_proxy_url() -> str | None:
     return validate_outbound_url(proxy_url, EGRESS_PROXY_POLICY).url
 
 
-def outbound_async_client(**kwargs: object) -> httpx.AsyncClient:
+def outbound_async_client(**kwargs: Any) -> httpx.AsyncClient:
     """Create an AsyncClient routed through the configured egress proxy."""
 
     proxy_url = configured_egress_proxy_url()

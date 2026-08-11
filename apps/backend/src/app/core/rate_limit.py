@@ -12,6 +12,7 @@ from urllib.parse import quote, urlparse, urlunparse
 
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from starlette.requests import Request
 
 from app.core.config import settings
 from app.core.redis import _resolve_redis_password
@@ -89,13 +90,13 @@ def _trusted_proxy_networks() -> tuple[_IPNetwork, ...]:
     return _trusted_proxy_cache[0]
 
 
-def _client_host(request: object) -> str:
+def _client_host(request: Request) -> str:
     client = getattr(request, "client", None)
     host = getattr(client, "host", None)
     return str(host or "")
 
 
-def _request_from_trusted_proxy(request: object) -> bool:
+def _request_from_trusted_proxy(request: Request) -> bool:
     host = _client_host(request)
     if not host:
         return False
@@ -113,7 +114,7 @@ def _first_forwarded_for(headers: object) -> str:
     return raw.split(",", 1)[0].strip()
 
 
-def trusted_client_identity(request: object) -> str:
+def trusted_client_identity(request: Request) -> str:
     """Return the rate-limit key, honoring forwarded identity only from trusted proxies."""
 
     if _request_from_trusted_proxy(request):

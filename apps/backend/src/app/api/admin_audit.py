@@ -1,6 +1,6 @@
 """Admin endpoint for audit log chain verification."""
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -35,7 +35,7 @@ def audit_log_verify_chain(
 @router.post("/audit-log/repair-chain")
 def audit_log_repair_chain(
     payload: AuditChainRepairRequest,
-    user: User = require_role("admin"),
+    user: Annotated[User, require_role("admin")],
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Explicitly repair audit log hash-chain links and append a repair event."""
