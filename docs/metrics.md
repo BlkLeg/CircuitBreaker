@@ -3,6 +3,10 @@
 Circuit Breaker exposes an inventory metrics endpoint in the [Prometheus text exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/).
 You can scrape it directly from Prometheus, Grafana Alloy, the OpenTelemetry Collector, or any compatible agent.
 
+For v1.0 release candidates, this metrics schema is beta unless a later contract promotes it. Do not
+treat metric names, labels, or cardinality as a stable public API before the
+[1.0 compatibility policy](release/1.0.0-compatibility-policy.md) says otherwise.
+
 ## Endpoint
 
 ```

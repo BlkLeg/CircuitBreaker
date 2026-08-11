@@ -2,6 +2,11 @@
 
 Circuit Breaker runs database migrations automatically on startup — no manual migration steps are required.
 
+For v1.0 release candidates, upgrade and rollback support is controlled by the
+[1.0 compatibility policy](../release/1.0.0-compatibility-policy.md). Direct 1.0 upgrade support
+starts at `0.3.5` unless the release ledger records additional ACC-12 evidence. Always export and
+verify a backup before upgrading.
+
 ---
 
 ## Check Your Current Version
@@ -112,6 +117,9 @@ docker compose up -d
 ```
 
 Review the [release notes](../updates/v0.2.0-overview.md) before rolling back to check for irreversible schema changes.
+
+After 1.0 migrations run, binary downgrade is not supported. Restore the complete pre-upgrade backup
+instead of starting an older binary against a newer schema.
 
 ---
 

@@ -2,6 +2,10 @@
 
 Circuit Breaker runs entirely on your LAN by default. This guide covers how to securely expose it to the internet — or to yourself when away from home — using a **Cloudflare Tunnel**.
 
+> **v1.0 release-candidate boundary:** Cloudflare Tunnel operation is beta until the security
+> acceptance gates pass. Do not treat this guide as approval for directly exposing a 1.0 release
+> candidate to the public internet.
+
 ---
 
 ## Why a Tunnel?
@@ -43,7 +47,7 @@ Still in the tunnel configuration:
    - **Subdomain**: `cb` (or whatever you prefer)
    - **Domain**: your domain (e.g. `yourdomain.com`)
    - **Service**: `http://caddy:80`  *(not HTTPS — Caddy is on the same Docker network)*
-   
+
    Or if you prefer to route directly to Caddy's HTTPS port:
    - **Service**: `https://caddy:443`
    - Enable **No TLS Verify** (Caddy uses a local self-signed cert internally)

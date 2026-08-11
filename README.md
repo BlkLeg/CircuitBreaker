@@ -5,7 +5,9 @@
 **Circuit Breaker** is a self-hosted homelab visualization platform that maps your infrastructure—hardware, services, networks, and clusters—with interactive topology, live telemetry, and auto-discovery.
 
 > **⚠️ Beta Security Notice**
-> Not fully audited. Run on trusted LAN only. Do not expose publicly until v1.0.
+> Not fully audited. Run on trusted LAN only. Do not expose publicly until the v1.0 security gates
+> pass. The draft v1.0 support boundary is tracked in
+> [docs/release/1.0.0-support-contract.md](docs/release/1.0.0-support-contract.md).
 
 📖 **[User Guide](https://circuitbreaker.shawnji.com)** | 🗣️ **[Discord](https://discord.gg/SBdBRfmD)** | 🐦 **[X/Twitter](https://x.com/TryHostingCB)**
 
@@ -98,6 +100,7 @@ Docker mode now performs a compose-only deployment: installs Docker only if miss
 - [Overview](docs/overview.md)
 - [Getting Started](docs/getting-started.md)
 - [Installation](docs/installation/index.md)
+- [v1.0 Support Contract](docs/release/1.0.0-support-contract.md)
 - [Backup & Restore](docs/backup-restore.md)
 - [Roadmap](docs/roadmap.md)
 

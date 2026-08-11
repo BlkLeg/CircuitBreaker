@@ -2,6 +2,11 @@
 
 Use backup and restore to protect your inventory data and recover quickly when needed.
 
+For v1.0 release candidates, recovery targets are defined in the
+[1.0 service objectives](release/1.0.0-service-objectives.md). Candidate targets are 24-hour RPO for
+scheduled backups and 4-hour RTO for documented restore to a clean supported host, pending ACC-14 and
+ACC-15 evidence.
+
 ---
 
 ## What Backup Includes

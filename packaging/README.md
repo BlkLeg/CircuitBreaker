@@ -58,15 +58,19 @@ version without updating the Timescale package line in the Dockerfile.
 
 If you see `GLIBC_ABI_GNU2_TLS not found` when running the binary on a VM, rebuild with `make build-native-docker` and rsync the new package.
 
-## Supported platform tiers
+## Packaging platform inventory
 
-| Platform | Native package | Installer story | Notes |
-|---|---|---|---|
-| Linux `amd64` | Yes | `install.sh --mode binary` | Primary native target |
-| Linux `arm64` | Yes | `install.sh --mode binary` | Good fit for Pi 4/5 and small ARM hosts |
-| Linux `arm/v7` | No | Docker only | Native packaging intentionally not shipped |
-| macOS `arm64` | Yes | Manual archive install today | Native archive is produced; packaged installer is not yet shipped |
-| Windows `amd64` | Yes | Manual archive install today | Native `.exe` is produced; packaged installer/service wrapper is not yet shipped |
+This table describes packaging output and installer coverage. It is not, by itself, the 1.0.0
+support matrix. The release support boundary lives in
+[`docs/release/1.0.0-support-contract.md`](../docs/release/1.0.0-support-contract.md).
+
+| Platform        | Native package           | Installer story              | 1.0.0 support status               | Notes                                                     |
+| --------------- | ------------------------ | ---------------------------- | ---------------------------------- | --------------------------------------------------------- |
+| Linux `amd64`   | Yes                      | `install.sh --mode binary`   | Supported candidate                | Primary native target after ACC evidence passes           |
+| Linux `arm64`   | Yes                      | `install.sh --mode binary`   | Supported candidate                | ARM64 acceptance must include agent and AVIF checks       |
+| Linux `arm/v7`  | No                       | Docker only                  | Unsupported for 1.0.0              | Native packaging intentionally not shipped                |
+| macOS `arm64`   | Build-script target only | Manual archive install today | Unsupported for 1.0.0 server/agent | Native archive is not a supported installer/service story |
+| Windows `amd64` | Build-script target only | Manual archive install today | Unsupported for 1.0.0 server/agent | Native `.exe` is not a supported installer/service story  |
 
 ## Linux native runtime contract
 

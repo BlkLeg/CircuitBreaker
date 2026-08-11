@@ -23,6 +23,10 @@ Recommended baseline:
 
 Use this profile when more users or broader network access are involved.
 
+For v1.0 release candidates, directly internet-exposed operation is not a supported deployment
+boundary unless the release owner records an approved exception. Prefer trusted LAN/VPN access while
+SEC-3 and SEC-5 acceptance work is open.
+
 ### Core hardening checklist
 
 - Require authentication for write actions.

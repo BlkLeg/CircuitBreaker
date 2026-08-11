@@ -2,6 +2,10 @@
 
 Circuit Breaker is a self-hosted homelab topology mapper. It installs natively on Linux via systemd — no Docker required. Docker Compose is available as an alternative for users who prefer container-based deployments.
 
+For v1.0 release candidates, supported platforms and deployment modes are controlled by the
+[v1.0 support contract](../release/1.0.0-support-contract.md). If this page describes a broader
+workflow, treat it as beta or development guidance until the matching acceptance evidence is recorded.
+
 ---
 
 ## System Requirements

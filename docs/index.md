@@ -8,6 +8,8 @@ You can track your hardware, compute, services, storage, and networks, then see 
 
 Use [Getting Started](getting-started.md) for first setup, then browse feature guides from the left navigation.
 
+For release-candidate planning, see the draft [v1.0 support contract](release/1.0.0-support-contract.md).
+
 ## Why Circuit Breaker?
 
 - **See the full picture:** Understand where each service runs and what it depends on.
