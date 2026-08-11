@@ -21,6 +21,8 @@
   `setup_token`.
 - Successful bootstrap consumes the token by clearing the stored hash/expiry and recording
   `bootstrap_token_used_at`.
+- `/api/v1/bootstrap/status` now fails closed instead of hiding explicit setup-token provisioning
+  errors such as a too-short `CB_SETUP_TOKEN`.
 - First-admin creation now serializes on the `app_settings` row with `SELECT FOR UPDATE`, and the
   locked row is force-refreshed so concurrent SQLAlchemy sessions cannot reuse stale
   pre-bootstrap state.
@@ -45,9 +47,18 @@
 - Wrong setup token is rejected and creates no user.
 - Correct setup token creates exactly one admin and consumes the token.
 - Replay after successful bootstrap receives the already-completed bootstrap response.
+- Failed wrong-token attempts preserve the existing setup token and a later correct-token retry can
+  still create the first admin.
+- Expired generated tokens are rejected, replaced with a fresh private token file, and cannot create
+  a user.
 - `/bootstrap/status` generates a private token file when no operator-provided token exists.
+- Operator-provided `CB_SETUP_TOKEN` values are hashed into storage, are not written to the generated
+  token file, and are not disclosed in the public status response.
+- Invalid operator-provided setup tokens fail closed with `503` and do not create users.
 - Two simultaneous PostgreSQL-backed bootstrap attempts with the same valid setup token produce
   exactly one admin; the loser receives `409 Bootstrap already completed`.
+- The setup-token workflow, expiry, single-use, replay, and recovery semantics are documented in
+  `docs/installation/first-run.md` and `docs/installation/configuration.md`.
 - SSE anonymous access is rejected, viewer access connects, and revoked sessions cannot reconnect.
 - Monitor WebSocket session-cookie access connects, and revoked sessions cannot reconnect.
 - Existing auth/security tests continue to cover password policy, force-change, MFA, lockout,
@@ -58,6 +69,7 @@
 
 ```bash
 cd apps/backend
+pytest -q --no-cov tests/test_bootstrap_security.py
 pytest -q --no-cov tests/test_bootstrap_security.py tests/test_bootstrap_domain.py \
   tests/test_auth.py tests/test_auth_e2e.py tests/test_security.py tests/test_settings.py \
   tests/api/test_events_stream_auth.py tests/api/test_monitor_stream_auth.py \
@@ -74,6 +86,34 @@ npm run lint -- --quiet
 npm run test -- src/__tests__/oobe-wizard.test.jsx
 npx prettier --check src/pages/OOBEWizardPage.jsx src/__tests__/oobe-wizard.test.jsx
 ```
+
+Current SEC-09 local verification:
+
+```bash
+pytest -q --no-cov apps/backend/tests/test_bootstrap_security.py
+```
+
+Result: **PASS**, 8 tests.
+
+Current bootstrap/auth regression verification:
+
+```bash
+pytest -q --no-cov apps/backend/tests/test_bootstrap_security.py \
+  apps/backend/tests/test_bootstrap_domain.py apps/backend/tests/test_auth.py \
+  apps/backend/tests/test_auth_e2e.py apps/backend/tests/test_security.py \
+  apps/backend/tests/test_settings.py
+```
+
+Result: **PASS**.
+
+Current lint and release-control verification:
+
+```bash
+ruff check apps/backend/src/app/services/auth_service.py apps/backend/tests/test_bootstrap_security.py
+python3 scripts/validate_v1_release_control.py
+```
+
+Result: **PASS**.
 
 ## Release-candidate evidence still pending
 

@@ -11,6 +11,8 @@ Circuit Breaker is configured via environment variables. All variables can be pa
 | Variable | Default | Description |
 |---|---|---|
 | `DATABASE_URL` | `sqlite:////data/app.db` | SQLAlchemy database connection string. Override with a PostgreSQL URL when using the `--profile pg` compose profile. |
+| `CB_SETUP_TOKEN` | _(generated)_ | One-time token required to create the first admin account. If unset, the backend writes a generated token to `CB_DATA_DIR/bootstrap-setup-token` with `0600` permissions. |
+| `CB_SETUP_TOKEN_TTL_HOURS` | `24` | First-admin setup-token lifetime in hours. Values are clamped from `1` to `168`. |
 | `CB_VAULT_KEY` | _(auto-generated)_ | Fernet encryption key for the credential vault. Auto-generated and persisted to `/data/.env` during OOBE if not set. See [Vault Key](#vault-key). |
 | `CB_API_TOKEN` | _(none)_ | Optional static bearer token for programmatic API access. Set to protect write endpoints independently of user auth. |
 | `UPLOADS_DIR` | `/data/uploads` | Path for runtime uploads (icons, branding assets). Must be inside the mounted data volume. |
@@ -37,6 +39,26 @@ Circuit Breaker is configured via environment variables. All variables can be pa
 Strict production startup treats empty values as missing. Set `CB_ALLOW_DEGRADED_DEPENDENCIES=true`
 only for local tests or an approved break-glass window; it permits insecure degraded behavior and
 should not be left enabled.
+
+### First-Admin Setup Token
+
+Fresh installs require a setup token before the first admin can be created. For production, set
+`CB_SETUP_TOKEN` to a high-entropy value before first start and enter that value in the first-run
+wizard. The token must be at least 16 characters.
+
+If `CB_SETUP_TOKEN` is not set, Circuit Breaker generates a token during the first bootstrap status
+check and writes it to:
+
+```text
+CB_DATA_DIR/bootstrap-setup-token
+```
+
+The file is written with owner-only permissions (`0600`). The public `/api/v1/bootstrap/status`
+response only reports that a token is required and when it expires; it never includes the token.
+
+The default token lifetime is 24 hours. Set `CB_SETUP_TOKEN_TTL_HOURS` before setup to choose a value
+from 1 to 168 hours. Failed attempts do not consume the token. A successful bootstrap consumes it and
+replay attempts receive `409 Bootstrap already completed`.
 
 ### TLS / HTTPS (Compose installs with Caddy)
 

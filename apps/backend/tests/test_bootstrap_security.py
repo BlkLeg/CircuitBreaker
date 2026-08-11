@@ -34,7 +34,8 @@ def _prepare_bootstrap_state(db_session, setup_token: str = _SETUP_TOKEN) -> App
     cfg.bootstrap_token_hash = auth_service._hash_bootstrap_token(setup_token)
     cfg.bootstrap_token_expires_at = utcnow() + timedelta(hours=1)
     cfg.bootstrap_token_used_at = None
-    db_session.flush()
+    db_session.commit()
+    db_session.refresh(cfg)
     return cfg
 
 
@@ -51,7 +52,8 @@ async def test_bootstrap_initialize_requires_setup_token(client, db_session):
 
 @pytest.mark.asyncio
 async def test_bootstrap_initialize_rejects_wrong_setup_token(client, db_session):
-    _prepare_bootstrap_state(db_session)
+    cfg = _prepare_bootstrap_state(db_session)
+    original_hash = cfg.bootstrap_token_hash
 
     resp = await client.post(
         "/api/v1/bootstrap/initialize",
@@ -60,6 +62,38 @@ async def test_bootstrap_initialize_rejects_wrong_setup_token(client, db_session
 
     assert resp.status_code == 403
     assert db_session.query(User).count() == 0
+    db_session.refresh(cfg)
+    assert cfg.bootstrap_token_hash == original_hash
+    assert cfg.bootstrap_token_used_at is None
+
+    retry = await client.post("/api/v1/bootstrap/initialize", json=_bootstrap_payload())
+    assert retry.status_code == 200
+    assert db_session.query(User).count() == 1
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_initialize_rejects_expired_token_and_rotates_recovery_token(
+    client, db_session, monkeypatch, tmp_path
+):
+    cfg = _prepare_bootstrap_state(db_session)
+    cfg.bootstrap_token_expires_at = utcnow() - timedelta(minutes=1)
+    db_session.flush()
+    monkeypatch.delenv("CB_SETUP_TOKEN", raising=False)
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path))
+
+    resp = await client.post("/api/v1/bootstrap/initialize", json=_bootstrap_payload())
+
+    assert resp.status_code == 403
+    assert db_session.query(User).count() == 0
+    token_file = tmp_path / "bootstrap-setup-token"
+    assert token_file.exists()
+    replacement_token = token_file.read_text(encoding="utf-8").strip()
+    assert replacement_token
+    assert replacement_token != _SETUP_TOKEN
+    db_session.refresh(cfg)
+    assert cfg.bootstrap_token_hash == auth_service._hash_bootstrap_token(replacement_token)
+    assert cfg.bootstrap_token_expires_at > utcnow()
+    assert cfg.bootstrap_token_used_at is None
 
 
 @pytest.mark.asyncio
@@ -108,6 +142,53 @@ async def test_bootstrap_status_generates_private_setup_token_file(
     assert cfg.bootstrap_token_hash == auth_service._hash_bootstrap_token(
         token_file.read_text(encoding="utf-8").strip()
     )
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_status_uses_operator_token_without_disclosing_it(
+    client, db_session, monkeypatch, tmp_path
+):
+    cfg = _prepare_bootstrap_state(db_session)
+    cfg.bootstrap_token_hash = None
+    cfg.bootstrap_token_expires_at = None
+    cfg.bootstrap_token_used_at = None
+    operator_token = "operator-provided-bootstrap-token"
+    monkeypatch.setenv("CB_SETUP_TOKEN", operator_token)
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path))
+
+    resp = await client.get("/api/v1/bootstrap/status")
+
+    assert resp.status_code == 200
+    assert operator_token not in resp.text
+    assert not (tmp_path / "bootstrap-setup-token").exists()
+    db_session.refresh(cfg)
+    assert cfg.bootstrap_token_hash == auth_service._hash_bootstrap_token(operator_token)
+    assert cfg.bootstrap_token_expires_at is not None
+    assert cfg.bootstrap_token_used_at is None
+
+    init = await client.post(
+        "/api/v1/bootstrap/initialize",
+        json=_bootstrap_payload(setup_token=operator_token),
+    )
+    assert init.status_code == 200
+    assert db_session.query(User).count() == 1
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_status_fails_closed_for_invalid_operator_token(
+    client, db_session, monkeypatch
+):
+    cfg = _prepare_bootstrap_state(db_session)
+    cfg.bootstrap_token_hash = None
+    cfg.bootstrap_token_expires_at = None
+    cfg.bootstrap_token_used_at = None
+    monkeypatch.setenv("CB_SETUP_TOKEN", "too-short")
+
+    resp = await client.get("/api/v1/bootstrap/status")
+
+    assert resp.status_code == 503
+    assert "CB_SETUP_TOKEN must be at least" in resp.json()["detail"]
+    assert db_session.query(User).count() == 0
 
 
 def test_concurrent_bootstrap_requests_create_exactly_one_first_admin(setup_db):

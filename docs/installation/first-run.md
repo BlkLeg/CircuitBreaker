@@ -20,9 +20,23 @@ An introduction screen. Click **Get Started** to begin.
 
 Create the first admin account for this installation. You can use a **local email and password** or sign up with an **OAuth provider** (GitHub, Google, or OIDC/SSO).
 
+#### Setup Token
+
+Before creating the first admin, enter the one-time setup token from the server. This prevents another browser on the network from racing you to create the first admin account.
+
+Circuit Breaker accepts the token from one of two places:
+
+- `CB_SETUP_TOKEN` — set this environment variable before first start for unattended or production installs.
+- `CB_DATA_DIR/bootstrap-setup-token` — if `CB_SETUP_TOKEN` is not set, the backend generates a token and writes it to this file with `0600` permissions.
+
+The token is never returned by the public status API or shown in the browser. It expires after 24 hours by default. To change the lifetime before setup, set `CB_SETUP_TOKEN_TTL_HOURS` to a value from `1` to `168`.
+
+If the generated token expires or is lost before setup completes, restart the backend or reload the setup status page to generate a fresh private token file. After bootstrap succeeds, the token is consumed and cannot be replayed.
+
 #### Local Account
 
 Fill in:
+- **Setup token** — from `CB_SETUP_TOKEN` or the generated `bootstrap-setup-token` file
 - **Email** — used as your login identifier
 - **Display Name** (optional) — shown in the UI header
 - **Password** — must be at least 8 characters with uppercase, lowercase, a digit, and a special character

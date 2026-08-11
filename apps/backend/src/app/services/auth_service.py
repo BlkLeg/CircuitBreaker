@@ -543,6 +543,8 @@ def bootstrap_status(db: Session) -> BootstrapStatusResponse:
             if cfg is not None and cfg.bootstrap_token_expires_at
             else None,
         )
+    except HTTPException:
+        raise
     except Exception as e:
         import logging
 
