@@ -5,7 +5,6 @@ import {
   Cpu,
   GripHorizontal,
   HardDrive,
-  LayoutGrid,
   Layers,
   ScrollText,
   Server,
@@ -75,13 +74,6 @@ export const NAV_ITEMS = [
         requireAdmin: true,
       },
       {
-        path: '/tenants',
-        icon: LayoutGrid,
-        label: 'Tenants',
-        labelKey: 'header.tenants',
-        requireAdmin: true,
-      },
-      {
         path: '/logs',
         icon: ScrollText,
         label: 'Logs',
@@ -122,7 +114,6 @@ export const NAV_MAP = {
   '/certificates': { icon: Shield, label: 'Certificates', labelKey: 'header.certificates' },
   '/notifications': { icon: Bell, label: 'Notifications', labelKey: 'header.notifications' },
   '/admin/users': { icon: Users, label: 'Users', labelKey: 'header.users' },
-  '/tenants': { icon: LayoutGrid, label: 'Tenants', labelKey: 'header.tenants' },
 };
 
 /**
@@ -143,7 +134,6 @@ export const DEFAULT_ORDER = [
   '/privacy',
   '/certificates',
   '/notifications',
-  '/tenants',
 
   '/docs',
   '/logs',

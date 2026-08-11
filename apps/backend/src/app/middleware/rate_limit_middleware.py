@@ -1,4 +1,4 @@
-"""Per-tenant Redis sliding-window rate limiter.
+"""Legacy tenant-scoped Redis sliding-window rate limiter.
 
 Key:    rl:tenant:{tenant_id}   (Redis sorted set, member scored by timestamp ms)
 Window: 60 seconds (rolling)
@@ -7,9 +7,12 @@ Limit:  CB_RATE_LIMIT_RPM env var (default 600 req/min)
 Uses an atomic Lua script (registered via register_script / EVALSHA) to avoid
 TOCTOU races. Returns HTTP 429 with a Retry-After header when limit is exceeded.
 
+Circuit Breaker 1.0 does not enable tenant selection, so this middleware is a
+compatibility shim unless a future ADR reintroduces true multi-tenancy.
+
 Skip conditions:
 - Path is in _SKIP_PATHS (health/metrics endpoints)
-- current_tenant_id ContextVar is None (unauthenticated request)
+- current_tenant_id ContextVar is None (the normal v1 single-tenant path)
 - Redis unavailable — fails open to preserve availability
 """
 
@@ -65,7 +68,7 @@ end
 
 
 class TenantRateLimitMiddleware(BaseHTTPMiddleware):
-    """Enforce a per-tenant rolling request limit backed by Redis."""
+    """Compatibility wrapper for the removed tenant-scoped limiter."""
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         if request.url.path in _SKIP_PATHS:

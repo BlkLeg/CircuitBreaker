@@ -53,6 +53,8 @@ Circuit Breaker is actively evolving. This page shows what is already available 
 
 - Better sharing and access controls for teams.
 - Safer integration paths for external tools.
+- True multi-tenancy for MSP, consultant, community lab, hosted, or strict multi-team deployments.
+  For v1, use separate Circuit Breaker deployments for separate trust boundaries.
 
 ### Import and Interoperability
 

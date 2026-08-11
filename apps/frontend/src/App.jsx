@@ -67,7 +67,6 @@ const AgentsPage = React.lazy(() => import('./pages/AgentsPage'));
 const AgentDetailPage = React.lazy(() => import('./pages/AgentDetailPage'));
 const PrivacyPage = React.lazy(() => import('./pages/PrivacyPage'));
 const NotificationsPage = React.lazy(() => import('./pages/NotificationsPage'));
-const TenantsPage = React.lazy(() => import('./pages/TenantsPage'));
 
 function AppInner() {
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -154,7 +153,7 @@ function AppInner() {
                   <Route path="/monitors/:id" element={<MonitorDetailPage />} />
                   <Route path="/privacy" element={<PrivacyPage />} />
                   <Route path="/notifications" element={<NotificationsPage />} />
-                  <Route path="/tenants" element={<TenantsPage />} />
+                  <Route path="/tenants" element={<Navigate to="/map" replace />} />
                   <Route path="/external-nodes" element={<ExternalNodesPage />} />
                   <Route path="/misc" element={<MiscPage />} />
                   <Route path="/docs" element={<DocsPage />} />

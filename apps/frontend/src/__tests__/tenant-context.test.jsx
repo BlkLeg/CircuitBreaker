@@ -1,46 +1,40 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, act } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { TenantProvider, useTenant } from '../context/TenantContext';
-import { tenantsApi } from '../api/client';
-
-// Mock tenantsApi
-vi.mock('../api/client', () => ({
-  tenantsApi: {
-    list: vi.fn(),
-  },
-}));
-
-vi.mock('../context/AuthContext.jsx', () => ({
-  useAuth: () => ({ isAuthenticated: true }),
-}));
 
 const TestComponent = () => {
-  const { activeTenantId, tenants, switchTenant } = useTenant();
+  const { activeTenantId, tenants, switchTenant, loading } = useTenant();
   return (
     <div>
-      <div data-testid="active-id">{activeTenantId}</div>
+      <div data-testid="active-id">{activeTenantId ?? 'none'}</div>
       <div data-testid="tenant-count">{tenants.length}</div>
+      <div data-testid="loading">{loading ? 'yes' : 'no'}</div>
       <button onClick={() => switchTenant('2')}>Switch</button>
     </div>
   );
 };
 
-describe('TenantContext', () => {
-  const mockTenants = [
-    { id: 1, name: 'Default' },
-    { id: 2, name: 'Other' },
-  ];
-
+describe('TenantContext single-tenant compatibility', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
-    // Mock window.location.reload
-    vi.stubGlobal('location', { reload: vi.fn() });
   });
 
-  it('fetches tenants and sets default', async () => {
-    tenantsApi.list.mockResolvedValue({ data: mockTenants });
+  it('exposes no active tenant and does not fetch tenant data', () => {
+    render(
+      <TenantProvider>
+        <TestComponent />
+      </TenantProvider>
+    );
+
+    expect(screen.getByTestId('active-id')).toHaveTextContent('none');
+    expect(screen.getByTestId('tenant-count')).toHaveTextContent('0');
+    expect(screen.getByTestId('loading')).toHaveTextContent('no');
+  });
+
+  it('clears stale active tenant storage on mount', async () => {
+    localStorage.setItem('cb_active_tenant_id', '2');
 
     render(
       <TenantProvider>
@@ -48,13 +42,13 @@ describe('TenantContext', () => {
       </TenantProvider>
     );
 
-    await waitFor(() => expect(screen.getByTestId('tenant-count').textContent).toBe('2'));
-    expect(screen.getByTestId('active-id').textContent).toBe('1');
-    expect(localStorage.getItem('cb_active_tenant_id')).toBe('1');
+    await waitFor(() => expect(localStorage.getItem('cb_active_tenant_id')).toBeNull());
+    expect(screen.getByTestId('active-id')).toHaveTextContent('none');
   });
 
-  it('switches tenant and reloads', async () => {
-    tenantsApi.list.mockResolvedValue({ data: mockTenants });
+  it('does not activate a tenant or reload when switchTenant is called', () => {
+    const reload = vi.fn();
+    vi.stubGlobal('location', { reload });
 
     render(
       <TenantProvider>
@@ -62,12 +56,10 @@ describe('TenantContext', () => {
       </TenantProvider>
     );
 
-    await waitFor(() => screen.getByText('Switch'));
-    act(() => {
-      screen.getByText('Switch').click();
-    });
+    fireEvent.click(screen.getByText('Switch'));
 
-    expect(localStorage.getItem('cb_active_tenant_id')).toBe('2');
-    expect(window.location.reload).toHaveBeenCalled();
+    expect(localStorage.getItem('cb_active_tenant_id')).toBeNull();
+    expect(screen.getByTestId('active-id')).toHaveTextContent('none');
+    expect(reload).not.toHaveBeenCalled();
   });
 });

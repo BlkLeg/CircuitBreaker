@@ -2,6 +2,10 @@
 
 Circuit Breaker supports local auth, OAuth/OIDC sign-in, MFA, user invites, and recovery flows.
 
+Circuit Breaker 1.0 is single-tenant per deployment. Multiple users and RBAC are supported inside
+one trusted deployment, but tenant isolation is not a security boundary. Run separate deployments for
+separate households, customers, organizations, or other trust domains.
+
 ---
 
 ## First Admin Bootstrap

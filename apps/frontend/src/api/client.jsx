@@ -69,7 +69,8 @@ function getCookie(name) {
 
 const CSRF_METHODS = ['post', 'put', 'patch', 'delete'];
 
-// Inject X-CSRF-Token and X-Tenant-ID headers.
+// Inject X-CSRF-Token headers. Tenant selectors are intentionally not sent:
+// Circuit Breaker 1.0 is single-tenant per deployment.
 client.interceptors.request.use((config) => {
   if (
     config.data &&
@@ -87,12 +88,6 @@ client.interceptors.request.use((config) => {
   if (CSRF_METHODS.includes(config.method?.toLowerCase())) {
     const csrf = getCookie('cb_csrf');
     if (csrf) config.headers['X-CSRF-Token'] = csrf;
-  }
-
-  // Multi-tenancy support
-  const activeTenantId = localStorage.getItem('cb_active_tenant_id');
-  if (activeTenantId) {
-    config.headers['X-Tenant-ID'] = activeTenantId;
   }
 
   return config;
@@ -577,17 +572,6 @@ export const certificatesApi = {
   update: (id, data) => client.put(`/certificates/${id}`, data),
   delete: (id) => client.delete(`/certificates/${id}`),
   renew: (id) => client.post(`/certificates/${id}/renew`),
-};
-
-export const tenantsApi = {
-  list: (params) => client.get('/tenants', { params }),
-  get: (id) => client.get(`/tenants/${id}`),
-  create: (data) => client.post('/tenants', data),
-  update: (id, data) => client.patch(`/tenants/${id}`, data),
-  delete: (id) => client.delete(`/tenants/${id}`),
-  getMembers: (id) => client.get(`/tenants/${id}/members`),
-  addMember: (id, data) => client.post(`/tenants/${id}/members`, data),
-  removeMember: (id, userId) => client.delete(`/tenants/${id}/members/${userId}`),
 };
 
 export const notificationsApi = {
