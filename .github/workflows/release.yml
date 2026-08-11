@@ -5,6 +5,7 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    # checkov:skip=CKV_GHA_7: Manual release promotion requires the release captain to supply the approved version.
     inputs:
       version:
         description: "Version to release (e.g. 0.1.3, without the v prefix)"

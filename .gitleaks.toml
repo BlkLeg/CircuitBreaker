@@ -24,6 +24,11 @@ description = "Generated scan report can quote redacted findings and must not re
 paths = ['security_scan_report\.md$']
 
 [[allowlists]]
+id = "runtime-data"
+description = "Local runtime data directories are gitignored and are not source or release artifacts"
+paths = ['apps/backend/data/.*', 'data/.*', 'docker/data/.*', 'docker/circuitbreaker-data/.*']
+
+[[allowlists]]
 id = "documented-and-test-fixtures"
 description = "Explicitly fake credentials used in security documentation and isolated test fixtures"
 paths = [

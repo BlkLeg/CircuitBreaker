@@ -21,7 +21,7 @@ from app.core.config import settings as _settings
 from app.core.rbac import ROLE_DEFAULT_SCOPES
 from app.core.security import create_token, gravatar_hash, hash_password, verify_password
 from app.core.time import utcnow, utcnow_iso
-from app.db.models import AppSettings, Log, Onboarding, User
+from app.db.models import AppSettings, Onboarding, User
 from app.schemas.auth import (
     AuthResponse,
     BootstrapDomainResponse,
@@ -692,30 +692,26 @@ def bootstrap_initialize(
 
         if timezone == "UTC" or timezone in available_timezones():
             cfg.timezone = timezone
-            _ts_tz = utcnow()
-            tz_log = Log(
-                timestamp=_ts_tz,
-                created_at_utc=_ts_tz.isoformat(),
-                level="info",
-                category="settings",
+            from app.services.log_service import write_log
+
+            write_log(
+                db=db,
                 action="update_timezone",
-                actor=_actor_display,
                 actor_name=_actor_display,
                 actor_id=user.id,
                 actor_gravatar_hash=user.gravatar_hash,
                 details=f'Timezone set to "{timezone}" during initial setup',
                 status_code=200,
+                actor=_actor_display,
+                severity="info",
+                category="settings",
             )
-            db.add(tz_log)
 
-    _ts = utcnow()
-    audit_log = Log(
-        timestamp=_ts,
-        created_at_utc=_ts.isoformat(),
-        level="info",
-        category="bootstrap",
+    from app.services.log_service import write_log
+
+    write_log(
+        db=db,
         action="bootstrap_create_user",
-        actor=_actor_display,
         actor_name=_actor_display,
         actor_id=user.id,
         actor_gravatar_hash=gravatar_hash(email_norm),
@@ -731,8 +727,10 @@ def bootstrap_initialize(
             }
         ),
         status_code=200,
+        actor=_actor_display,
+        severity="info",
+        category="bootstrap",
     )
-    db.add(audit_log)
 
     try:
         db.commit()
@@ -848,30 +846,26 @@ def bootstrap_initialize_oauth(
 
         if payload.timezone == "UTC" or payload.timezone in available_timezones():
             cfg.timezone = payload.timezone
-            _ts_tz = utcnow()
-            tz_log = Log(
-                timestamp=_ts_tz,
-                created_at_utc=_ts_tz.isoformat(),
-                level="info",
-                category="settings",
+            from app.services.log_service import write_log
+
+            write_log(
+                db=db,
                 action="update_timezone",
-                actor=_actor_display,
                 actor_name=_actor_display,
                 actor_id=user.id,
                 actor_gravatar_hash=user.gravatar_hash,
                 details=f'Timezone set to "{payload.timezone}" during initial setup',
                 status_code=200,
+                actor=_actor_display,
+                severity="info",
+                category="settings",
             )
-            db.add(tz_log)
 
-    _ts = utcnow()
-    audit_log = Log(
-        timestamp=_ts,
-        created_at_utc=_ts.isoformat(),
-        level="info",
-        category="bootstrap",
+    from app.services.log_service import write_log
+
+    write_log(
+        db=db,
         action="bootstrap_create_user",
-        actor=_actor_display,
         actor_name=_actor_display,
         actor_id=user.id,
         actor_gravatar_hash=user.gravatar_hash,
@@ -888,8 +882,10 @@ def bootstrap_initialize_oauth(
             }
         ),
         status_code=200,
+        actor=_actor_display,
+        severity="info",
+        category="bootstrap",
     )
-    db.add(audit_log)
     db.commit()
     db.refresh(user)
 

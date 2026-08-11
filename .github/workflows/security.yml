@@ -12,6 +12,13 @@ permissions:
   contents: read
 
 jobs:
+  suppression-metadata:
+    name: Security Suppression Metadata
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate suppression metadata
+        run: python3 scripts/validate_security_suppressions.py
 
   trivy-fs:
     name: Trivy Filesystem Scan
@@ -149,7 +156,7 @@ jobs:
       - name: Run Checkov on GitHub Actions workflows
         # Scans workflow YAML files for misconfigurations; docker/ removed as
         # native systemd is the primary install method (no Dockerfile to scan).
-        run: checkov -d .github/workflows/ --output sarif --output-file-path checkov-results.sarif --quiet || true
+        run: checkov -d .github/workflows/ --output sarif --output-file-path checkov-results.sarif --quiet
       - name: Upload Checkov results
         uses: github/codeql-action/upload-sarif@v4
         if: always()
@@ -194,7 +201,7 @@ jobs:
         run: cd apps/frontend && npm ci
       - name: Run npm audit
         working-directory: apps/frontend
-        run: npm audit --audit-level=high --json > ../../npm-audit-results.json || true
+        run: npm audit --audit-level=high --json > ../../npm-audit-results.json
       - name: Upload npm audit results
         uses: actions/upload-artifact@v5
         if: always()
@@ -202,3 +209,19 @@ jobs:
           name: npm-audit-results
           path: npm-audit-results.json
           retention-days: 30
+
+  go-vuln:
+    name: Go Vulnerability Scan
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: apps/agent/go.mod
+          cache-dependency-path: apps/agent/go.sum
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: Run govulncheck
+        working-directory: apps/agent
+        run: govulncheck ./...

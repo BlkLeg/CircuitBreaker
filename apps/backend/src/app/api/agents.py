@@ -1104,6 +1104,8 @@ async def post_revoke(
 ) -> Any:
     if agent_registry.get_agent(db, agent_id) is None:
         raise HTTPException(status_code=404, detail="Agent not found")
+    if not payload.reason or len(payload.reason.strip()) < 3:
+        raise HTTPException(status_code=422, detail="A revoke reason is required")
     agent = agent_registry.revoke_agent(db, agent_id, actor_user_id=user.id, reason=payload.reason)
     # §8: a revoked agent's runs are cancelled and its assignments are kept as
     # unavailable. The agent-initiated path (agent_link._handle_uninstall) does
@@ -1122,6 +1124,24 @@ async def post_revoke(
     # already maps onto at dispatch time.
     discovery_cancellation = agent_discovery.cancel_agent_dispatches(
         db, agent_id, reason=agent_discovery.ERROR_AGENT_UNAVAILABLE
+    )
+    from app.services.log_service import write_log
+
+    write_log(
+        db=db,
+        action="agent_revoke_authorized",
+        entity_type="agent",
+        entity_id=agent_id,
+        entity_name=agent.name or agent.hostname or agent.fingerprint,
+        actor_id=user.id,
+        actor_name=user.display_name or user.email,
+        severity="warn",
+        category="audit",
+        diff={
+            "reason": payload.reason,
+            "probe_runs_cancelled": len(cancellation.cancels),
+            "discovery_dispatches_cancelled": len(discovery_cancellation.cancels),
+        },
     )
     db.commit()
     await agent_registry.broadcast_presence(agent_id, "revoked")
@@ -1251,7 +1271,7 @@ _DELETE_CONFLICT_NAME_LIMIT = 10
 def delete_agent(
     agent_id: int,
     db: Annotated[Session, Depends(get_db)],
-    _user: Annotated[User, require_role("admin")],
+    user: Annotated[User, require_role("admin")],
 ) -> None:
     agent = agent_registry.get_agent(db, agent_id)
     if agent is None:
@@ -1302,6 +1322,20 @@ def delete_agent(
             status_code=409,
             detail=(f"{profile_count} discovery profile(s) still scan from this agent: {listed}"),
         )
+    from app.services.log_service import write_log
+
+    write_log(
+        db=db,
+        action="agent_delete_authorized",
+        entity_type="agent",
+        entity_id=agent_id,
+        entity_name=agent.name or agent.hostname or agent.fingerprint,
+        actor_id=user.id,
+        actor_name=user.display_name or user.email,
+        severity="warn",
+        category="audit",
+        diff={"status": agent.status},
+    )
     db.delete(agent)
     db.commit()
 

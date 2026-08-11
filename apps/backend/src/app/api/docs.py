@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.security import require_write_auth
-from app.core.upload_validation import verify_image_magic_bytes
+from app.core.upload_validation import is_active_content_type, verify_image_magic_bytes
 from app.db.session import get_db
 from app.schemas.docs import Doc, DocCreate, DocEntityLink, DocUpdate, EntityDocAttach
 from app.services import docs_service
@@ -210,6 +210,8 @@ async def upload_doc_image(
         raise HTTPException(status_code=404, detail=f"Doc {doc_id} not found") from exc
 
     # Validate content type
+    if is_active_content_type(file.content_type, file.filename):
+        raise HTTPException(status_code=400, detail="SVG and active markup uploads are not allowed")
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="File must be an image")
 

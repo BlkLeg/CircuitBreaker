@@ -72,6 +72,28 @@ async def test_exe_bytes_disguised_as_jpg_rejected(client, auth_headers):
 
 
 @pytest.mark.asyncio
+async def test_svg_avatar_rejected_as_active_content(client, auth_headers):
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+    resp = await client.put(
+        _UPLOAD_URL,
+        files={"profile_photo": ("avatar.svg", io.BytesIO(svg), "image/svg+xml")},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_branding_login_logo_rejects_svg(client, auth_headers):
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+    resp = await client.post(
+        "/api/v1/branding/upload-login-logo",
+        files={"file": ("logo.svg", io.BytesIO(svg), "image/svg+xml")},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_file_too_large_rejected(client, auth_headers):
     """Files exceeding 5 MB must be rejected with 413."""
     large_data = b"\x89PNG\r\n\x1a\n" + b"\x00" * (5 * 1024 * 1024 + 1)

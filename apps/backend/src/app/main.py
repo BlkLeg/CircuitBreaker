@@ -2033,6 +2033,11 @@ async def _static_cache_middleware(request: Request, call_next):
     path = request.scope.get("path", "")
     if path.startswith(("/uploads/", "/user-icons/", "/branding/")) and response.status_code == 200:
         response.headers.setdefault("Cache-Control", "public, max-age=86400")
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers.setdefault("Content-Security-Policy", "default-src 'none'; img-src 'self'")
+        if path.lower().endswith((".svg", ".svgz", ".html", ".htm", ".xhtml", ".xml")):
+            response.headers["Content-Type"] = "application/octet-stream"
+            response.headers["Content-Disposition"] = "attachment"
     return response
 
 

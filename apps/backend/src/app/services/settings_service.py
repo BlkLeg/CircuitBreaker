@@ -14,8 +14,8 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.time import utcnow, utcnow_iso
-from app.db.models import AppSettings, Log
+from app.core.time import utcnow
+from app.db.models import AppSettings
 from app.schemas.settings import AppSettingsUpdate
 
 _DEFAULTS = dict(
@@ -254,19 +254,19 @@ def _write_timezone_log(db: Session, timezone: str, *, user_id: int | None = Non
             actor_id = user.id
             actor_gravatar = user.gravatar_hash
 
-    now_iso = utcnow_iso()
-    log_entry = Log(
-        level="info",
-        category="settings",
+    from app.services.log_service import write_log
+
+    write_log(
+        db=db,
         action="update_timezone",
-        actor=actor_name,
         actor_name=actor_name,
         actor_id=actor_id,
         actor_gravatar_hash=actor_gravatar,
         details=f'Timezone updated to "{timezone}"',
-        created_at_utc=now_iso,
+        actor=actor_name,
+        severity="info",
+        category="settings",
     )
-    db.add(log_entry)
 
 
 def reset_settings(db: Session) -> AppSettings:

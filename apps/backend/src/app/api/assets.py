@@ -9,13 +9,14 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.rbac import require_role
 from app.core.security import require_write_auth
+from app.core.upload_validation import is_active_content_type, verify_image_magic_bytes
 from app.db.session import get_db
 from app.services.settings_service import get_or_create_settings
 
 router = APIRouter(tags=["assets"])
 
 _ICON_TYPE = "image/x-icon"
-_ALLOWED_TYPES = {"image/png", "image/jpeg", "image/svg+xml", _ICON_TYPE}
+_ALLOWED_TYPES = {"image/png", "image/jpeg", _ICON_TYPE}
 _MAX_ICON_BYTES = 2 * 1024 * 1024
 
 _UPLOADS_DIR = Path(settings.uploads_dir)
@@ -34,8 +35,6 @@ def _suffix_for(content_type: str, filename: str) -> str:
         return ".png"
     if content_type == "image/jpeg":
         return ".jpg"
-    if content_type == "image/svg+xml":
-        return ".svg"
     if content_type == _ICON_TYPE:
         return ".ico"
     return ".bin"
@@ -49,12 +48,16 @@ async def upload_user_icon(
     user_id: Annotated[int | None, Depends(require_write_auth)],
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, Any]:
+    if is_active_content_type(file.content_type, file.filename):
+        raise HTTPException(status_code=400, detail="Active image formats are not allowed")
     if file.content_type not in _ALLOWED_TYPES - {_ICON_TYPE}:
         raise HTTPException(status_code=400, detail="Invalid image format")
 
     content = await file.read()
     if len(content) > _MAX_ICON_BYTES:
         raise HTTPException(status_code=400, detail="File too large")
+    if not verify_image_magic_bytes(content, file.content_type):
+        raise HTTPException(status_code=400, detail="Image content does not match file type")
 
     file_hash = hashlib.sha256(content).hexdigest()
     hash_prefix = file_hash[:16]
@@ -116,12 +119,16 @@ async def upload_favicon(
     _: Annotated[int | None, require_role("admin")],
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, str]:
+    if is_active_content_type(file.content_type, file.filename):
+        raise HTTPException(status_code=400, detail="Active image formats are not allowed")
     if file.content_type not in _ALLOWED_TYPES:
         raise HTTPException(status_code=400, detail="Invalid image format")
 
     content = await file.read()
     if len(content) > _MAX_ICON_BYTES:
         raise HTTPException(status_code=400, detail="File too large")
+    if not verify_image_magic_bytes(content, file.content_type):
+        raise HTTPException(status_code=400, detail="Image content does not match file type")
 
     filepath = _BRANDING_DIR / "favicon.ico"
     filepath.write_bytes(content)

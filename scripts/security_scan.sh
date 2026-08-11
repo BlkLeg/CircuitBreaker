@@ -3,6 +3,10 @@ set -e
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+export HOME="${SECURITY_SCAN_HOME:-/tmp/cb-security-scan-home}"
+export XDG_CACHE_HOME="${SECURITY_SCAN_CACHE:-/tmp/cb-security-scan-cache}"
+export NPM_CONFIG_CACHE="${NPM_CONFIG_CACHE:-/tmp/cb-security-npm-cache}"
+mkdir -p "$HOME" "$XDG_CACHE_HOME" "$NPM_CONFIG_CACHE"
 
 # ---------------------------------------------------------------------------
 # Gate mode: --gate exits non-zero when HIGH/CRIT findings are detected.
@@ -19,6 +23,16 @@ $GATE_MODE && echo "_Gate mode active — HIGH/CRIT findings will cause non-zero
 echo ""
 echo "Running security scans... This may take a few minutes."
 $GATE_MODE && echo "(gate mode: will fail on HIGH/CRIT)"
+
+# ── 0. Suppression metadata ─────────────────────────────────────────────────
+echo "## 0. Suppression metadata" >> "$REPORT_FILE"
+echo "\`\`\`" >> "$REPORT_FILE"
+echo "Validating scanner suppression metadata..."
+if ! python3 scripts/validate_security_suppressions.py >> "$REPORT_FILE" 2>&1; then
+    GATE_FAILURES=$((GATE_FAILURES + 1))
+    echo "  ⚠ GATE FAILURE: scanner suppression metadata invalid" >> "$REPORT_FILE"
+fi
+echo "\`\`\`" >> "$REPORT_FILE"
 
 # Ensure .venv exists for Python tools
 if [ ! -d .venv ]; then
@@ -41,6 +55,10 @@ run_gated() {
     else
         "$@" || true
     fi
+}
+
+docker_available() {
+    command -v docker > /dev/null 2>&1 && docker ps > /dev/null 2>&1
 }
 
 # ── 1. Bandit (Python SAST) ─────────────────────────────────────────────────
@@ -96,7 +114,7 @@ if command -v gitleaks > /dev/null 2>&1; then
     else
         gitleaks detect --no-git --source . $GITLEAKS_CONFIG --report-path /dev/stdout 2>&1 >> "$REPORT_FILE" || true
     fi
-elif command -v docker > /dev/null 2>&1; then
+elif docker_available; then
     GITLEAKS_RAN=true
     GITLEAKS_DOCKER_ARGS="detect --no-git --source=/repo -v"
     [ -f .gitleaks.toml ] && GITLEAKS_DOCKER_ARGS="detect --no-git --source=/repo --config=/repo/.gitleaks.toml -v"
@@ -130,7 +148,7 @@ for f in Dockerfile.mono Dockerfile; do
     [ -f "$f" ] || continue
     if command -v hadolint > /dev/null 2>&1; then
         hadolint "$f" >> "$REPORT_FILE" 2>&1 || true
-    elif command -v docker > /dev/null 2>&1; then
+    elif docker_available; then
         docker run --rm -v "$(pwd):/repo" -w /repo hadolint/hadolint hadolint "$f" >> "$REPORT_FILE" 2>&1 || true
     fi
 done
@@ -146,7 +164,14 @@ echo "Running Checkov..."
 if ! .venv/bin/checkov --version > /dev/null 2>&1; then
     .venv/bin/pip install checkov --quiet
 fi
-.venv/bin/checkov -d docker/ -d . --skip-path apps/ --skip-path node_modules/ --quiet >> "$REPORT_FILE" 2>&1 || true
+if $GATE_MODE; then
+    if ! .venv/bin/checkov -d docker/ -d .github/workflows/ --quiet >> "$REPORT_FILE" 2>&1; then
+        GATE_FAILURES=$((GATE_FAILURES + 1))
+        echo "  ⚠ GATE FAILURE: Checkov findings" >> "$REPORT_FILE"
+    fi
+else
+    .venv/bin/checkov -d docker/ -d .github/workflows/ --quiet >> "$REPORT_FILE" 2>&1 || true
+fi
 echo "\`\`\`" >> "$REPORT_FILE"
 
 # ── 7. Trivy (Filesystem) ───────────────────────────────────────────────────
@@ -168,7 +193,7 @@ if command -v trivy > /dev/null 2>&1; then
     else
         trivy fs --severity HIGH,CRITICAL,MEDIUM $TRIVY_IGNORE $TRIVY_SKIP_DIRS . >> "$REPORT_FILE" 2>&1 || true
     fi
-elif command -v docker > /dev/null 2>&1; then
+elif docker_available; then
     TRIVY_RAN=true
     if $GATE_MODE; then
         if ! docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy fs \
@@ -199,7 +224,7 @@ if command -v trivy > /dev/null 2>&1; then
     else
         trivy config $TRIVY_IGNORE $TRIVY_SKIP_DIRS . >> "$REPORT_FILE" 2>&1 || true
     fi
-elif command -v docker > /dev/null 2>&1; then
+elif docker_available; then
     if $GATE_MODE; then
         if ! docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy config \
             --exit-code 1 --severity HIGH,CRITICAL --ignorefile /workspace/.trivyignore $TRIVY_SKIP_DIRS /workspace >> "$REPORT_FILE" 2>&1; then
@@ -219,7 +244,42 @@ echo "\`\`\`" >> "$REPORT_FILE"
 echo "## 9. npm audit (Frontend)" >> "$REPORT_FILE"
 echo "\`\`\`" >> "$REPORT_FILE"
 echo "Running npm audit..."
-(cd apps/frontend && npm audit --audit-level=high) >> "$REPO_ROOT/$REPORT_FILE" 2>&1 || true
+if $GATE_MODE; then
+    if ! (cd apps/frontend && npm audit --audit-level=high) >> "$REPO_ROOT/$REPORT_FILE" 2>&1; then
+        GATE_FAILURES=$((GATE_FAILURES + 1))
+        echo "  ⚠ GATE FAILURE: npm audit HIGH findings" >> "$REPORT_FILE"
+    fi
+else
+    (cd apps/frontend && npm audit --audit-level=high) >> "$REPO_ROOT/$REPORT_FILE" 2>&1 || true
+fi
+echo "\`\`\`" >> "$REPORT_FILE"
+
+# ── 10. Go vulnerability scan (Agent) ────────────────────────────────────────
+echo "## 10. Go vulnerability scan (Agent)" >> "$REPORT_FILE"
+echo "\`\`\`" >> "$REPORT_FILE"
+echo "Running govulncheck..."
+export GOBIN="${GOBIN:-/tmp/cb-security-go-bin}"
+export PATH="$GOBIN:$PATH"
+mkdir -p "$GOBIN"
+if ! command -v govulncheck > /dev/null 2>&1 && $GATE_MODE && command -v go > /dev/null 2>&1; then
+    go install golang.org/x/vuln/cmd/govulncheck@latest >> "$REPORT_FILE" 2>&1 || true
+fi
+if command -v govulncheck > /dev/null 2>&1; then
+    if $GATE_MODE; then
+        if ! (cd apps/agent && govulncheck ./...) >> "$REPO_ROOT/$REPORT_FILE" 2>&1; then
+            GATE_FAILURES=$((GATE_FAILURES + 1))
+            echo "  ⚠ GATE FAILURE: govulncheck findings" >> "$REPORT_FILE"
+        fi
+    else
+        (cd apps/agent && govulncheck ./...) >> "$REPO_ROOT/$REPORT_FILE" 2>&1 || true
+    fi
+else
+    echo "govulncheck not found (install: go install golang.org/x/vuln/cmd/govulncheck@latest), skipping." >> "$REPORT_FILE"
+    if $GATE_MODE; then
+        GATE_FAILURES=$((GATE_FAILURES + 1))
+        echo "  ⚠ GATE FAILURE: govulncheck unavailable" >> "$REPORT_FILE"
+    fi
+fi
 echo "\`\`\`" >> "$REPORT_FILE"
 
 # ── Summary ──────────────────────────────────────────────────────────────────

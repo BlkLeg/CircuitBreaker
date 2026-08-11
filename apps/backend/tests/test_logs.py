@@ -161,3 +161,55 @@ async def test_list_logs_filters_by_entity_name(client, auth_headers):
     body = resp.json()
     assert body["total_count"] >= 1
     assert all(e["entity_name"] == "test_entity_name_filter_target" for e in body["logs"])
+
+
+def test_audit_chain_repair_requires_authorization_and_records_repair(db_session):
+    from app.core.audit_chain import REPAIR_AUTHORIZATION, repair_audit_chain, verify_audit_chain
+    from app.db.models import Log
+    from app.services.log_service import write_log
+
+    write_log(db_session, action="sec6_repair_one", category="audit")
+    write_log(db_session, action="sec6_repair_two", category="audit")
+
+    row = db_session.query(Log).filter(Log.action == "sec6_repair_two").one()
+    row.previous_hash = "tampered"
+    db_session.commit()
+
+    assert verify_audit_chain(db_session)["valid"] is False
+    with pytest.raises(ValueError):
+        repair_audit_chain(
+            db_session,
+            authorization="wrong",
+            actor_id=None,
+            reason="test repair authorization failure",
+        )
+
+    report = repair_audit_chain(
+        db_session,
+        authorization=REPAIR_AUTHORIZATION,
+        actor_id=None,
+        reason="test repair of deliberately tampered hash chain",
+    )
+    assert report["repaired"] is True
+    assert report["changed"]
+    assert report["after"]["valid"] is True
+    assert db_session.query(Log).filter(Log.action == "audit_chain_repair").count() == 1
+
+
+def test_concurrent_audit_writers_do_not_fork_chain(setup_db):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.core.audit_chain import verify_audit_chain
+    from app.db.session import SessionLocal
+    from app.services.log_service import write_log
+
+    def _write(index: int) -> None:
+        with SessionLocal() as session:
+            write_log(session, action=f"sec6_concurrent_{index}", category="audit")
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        list(pool.map(_write, range(12)))
+
+    with SessionLocal() as session:
+        result = verify_audit_chain(session)
+        assert result["valid"] is True, result

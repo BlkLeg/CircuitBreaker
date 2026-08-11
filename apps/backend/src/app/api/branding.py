@@ -14,7 +14,11 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.rbac import require_role
 from app.core.time import utcnow
-from app.core.upload_validation import SUFFIX_TO_MIME, verify_image_magic_bytes
+from app.core.upload_validation import (
+    SUFFIX_TO_MIME,
+    is_active_content_type,
+    verify_image_magic_bytes,
+)
 from app.db.session import get_db
 from app.schemas.settings import BrandingConfig
 from app.services.settings_service import get_or_create_settings
@@ -28,7 +32,7 @@ _MAX_FAVICON_BYTES = 512 * 1024  # 512 KB
 _MAX_LOGO_BYTES = 2 * 1024 * 1024  # 2 MB
 _MAX_BG_BYTES = 5 * 1024 * 1024  # 5 MB
 _FAVICON_ALLOWED = {".ico", ".png"}
-_LOGO_ALLOWED = {".png", ".jpg", ".jpeg", ".svg"}
+_LOGO_ALLOWED = {".png", ".jpg", ".jpeg"}
 _BG_ALLOWED = {".jpg", ".jpeg", ".png"}
 _MIME_PNG = "image/png"
 
@@ -102,22 +106,21 @@ async def upload_login_logo(
     db: Annotated[Session, Depends(get_db)],
     _: Annotated[None, require_role("admin")] = None,
 ) -> BrandingConfig:
-    """Upload a custom login logo (.png/.jpg/.svg, max 2 MB)."""
+    """Upload a custom login logo (.png/.jpg, max 2 MB)."""
     suffix = Path(file.filename or "").suffix.lower()
+    if is_active_content_type(file.content_type, file.filename):
+        raise HTTPException(status_code=400, detail="SVG and active markup uploads are not allowed")
     if suffix not in _LOGO_ALLOWED:
         raise HTTPException(
-            status_code=400, detail=f"Login logo must be .png, .jpg, or .svg, got {suffix!r}"
+            status_code=400, detail=f"Login logo must be .png or .jpg, got {suffix!r}"
         )
 
     data = await file.read()
     if len(data) > _MAX_LOGO_BYTES:
         raise HTTPException(status_code=400, detail="Login logo must be ≤ 2 MB")
-    if suffix != ".svg":
-        mime = SUFFIX_TO_MIME.get(suffix, "image/png")
-        if not verify_image_magic_bytes(data, mime, allow_svg=True):
-            raise HTTPException(
-                status_code=400, detail="Login logo content does not match file type."
-            )
+    mime = SUFFIX_TO_MIME.get(suffix, "image/png")
+    if not verify_image_magic_bytes(data, mime):
+        raise HTTPException(status_code=400, detail="Login logo content does not match file type.")
 
     _BRANDING_DIR.mkdir(parents=True, exist_ok=True)
     dest = _BRANDING_DIR / f"login-logo{suffix}"
@@ -205,7 +208,7 @@ _ASSET_MAP = {
     "favicon": ("favicon_path", ["favicon.ico"]),
     "login-logo": (
         "login_logo_path",
-        ["login-logo.png", "login-logo.jpg", "login-logo.jpeg", "login-logo.svg"],
+        ["login-logo.png", "login-logo.jpg", "login-logo.jpeg"],
     ),
     "login-bg": ("login_bg_path", ["login-bg.jpg"]),
 }

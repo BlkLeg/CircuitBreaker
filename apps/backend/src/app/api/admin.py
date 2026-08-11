@@ -4,10 +4,14 @@ import logging
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.destructive_actions import (
+    audit_destructive_outcome,
+    require_destructive_confirmation,
+)
 from app.core.rbac import require_role
 from app.core.time import utcnow_iso
 from app.db import models
@@ -355,8 +359,9 @@ def _restore_entities(db: Session, data: dict) -> None:
 @router.post("/import", status_code=201, responses={422: {"description": "Import failed"}})
 def import_backup(
     payload: ImportPayload,
+    request: Request,
     db: Annotated[Session, Depends(get_db)],
-    _: Annotated[None, require_role("admin")] = None,
+    user: Annotated[models.User, require_role("admin")] = None,
 ) -> dict[str, Any]:
     """Restore a backup snapshot.
 
@@ -367,11 +372,40 @@ def import_backup(
     data = payload.data
     try:
         if payload.wipe_before_import:
+            require_destructive_confirmation(
+                request,
+                db,
+                actor_id=user.id,
+                action="restore_with_wipe",
+                target="admin_import",
+                confirmation="RESTORE_WITH_WIPE",
+                backup_required=True,
+            )
             _wipe_entities(db)
         _restore_entities(db, data)
         db.commit()
+        if payload.wipe_before_import:
+            audit_destructive_outcome(
+                db,
+                actor_id=user.id,
+                action="restore_with_wipe",
+                target="admin_import",
+                outcome="completed",
+            )
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as exc:
         db.rollback()
+        if payload.wipe_before_import:
+            audit_destructive_outcome(
+                db,
+                actor_id=user.id,
+                action="restore_with_wipe",
+                target="admin_import",
+                outcome="failed",
+                details={"error": str(exc)},
+            )
         _logger.exception("Import failed: %s", exc)
         raise HTTPException(status_code=422, detail=f"Import failed: {exc}") from exc
 
@@ -421,17 +455,46 @@ def _wipe_entities_keep_docs(db: Session) -> None:
     "/clear-lab", status_code=200, responses={500: {"description": "Clear lab operation failed"}}
 )
 def clear_lab(
-    db: Annotated[Session, Depends(get_db)], _: Annotated[None, require_role("admin")] = None
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[models.User, require_role("admin")] = None,
 ) -> dict[str, Any]:
     """Wipe all lab entities (hardware, compute, services, storage, networks, misc,
     clusters, external nodes, tags, and their relationships) while preserving all
     documents and their content.
     """
     try:
+        require_destructive_confirmation(
+            request,
+            db,
+            actor_id=user.id,
+            action="clear_lab",
+            target="lab_entities",
+            confirmation="CLEAR_LAB",
+            backup_required=True,
+        )
         _wipe_entities_keep_docs(db)
         db.commit()
+        audit_destructive_outcome(
+            db,
+            actor_id=user.id,
+            action="clear_lab",
+            target="lab_entities",
+            outcome="completed",
+        )
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as exc:
         db.rollback()
+        audit_destructive_outcome(
+            db,
+            actor_id=user.id,
+            action="clear_lab",
+            target="lab_entities",
+            outcome="failed",
+            details={"error": str(exc)},
+        )
         _logger.exception("Clear lab failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Clear lab failed: {exc}") from exc
     return {"cleared": True}

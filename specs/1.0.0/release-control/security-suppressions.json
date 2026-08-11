@@ -1,0 +1,127 @@
+{
+  "schema": 1,
+  "generated_for": "1.0.0-rc-candidate",
+  "suppressions": [
+    {
+      "id": "TRIVY-001",
+      "tool": "trivy",
+      "selector": ".venv/",
+      "owner": "security-owner",
+      "reviewer": "release-owner",
+      "reason": "Third-party virtualenv bytecode can duplicate dependency documentation false positives; production artifacts are scanned from dependency manifests and built images.",
+      "compensating_control": "pip-audit, Trivy filesystem scan outside virtualenvs, and release SBOM scans cover production dependency input.",
+      "expiry": "2026-08-17",
+      "requirements": ["SEC-18", "RC-08"]
+    },
+    {
+      "id": "TRIVY-002",
+      "tool": "trivy",
+      "selector": "apps/backend/.venv/",
+      "owner": "security-owner",
+      "reviewer": "release-owner",
+      "reason": "Developer virtualenv is not part of release artifacts and can carry third-party scanner false positives.",
+      "compensating_control": "Production requirements, lockfiles, SBOMs, and built artifacts remain scanned by the release gate.",
+      "expiry": "2026-08-17",
+      "requirements": ["SEC-18", "RC-08"]
+    },
+    {
+      "id": "TRIVY-003",
+      "tool": "trivy",
+      "selector": "docker/data/tls/",
+      "owner": "security-owner",
+      "reviewer": "release-owner",
+      "reason": "Runtime-generated development TLS material is gitignored and not part of source or packaged RC artifacts.",
+      "compensating_control": "Secret exposure guard and Gitleaks scan tracked files and release artifacts.",
+      "expiry": "2026-08-17",
+      "requirements": ["SEC-18", "RC-08"]
+    },
+    {
+      "id": "TRIVY-004",
+      "tool": "trivy",
+      "selector": "docker/circuitbreaker-data/tls/",
+      "owner": "security-owner",
+      "reviewer": "release-owner",
+      "reason": "Runtime-generated development TLS material is gitignored and not part of source or packaged RC artifacts.",
+      "compensating_control": "Secret exposure guard and Gitleaks scan tracked files and release artifacts.",
+      "expiry": "2026-08-17",
+      "requirements": ["SEC-18", "RC-08"]
+    },
+    {
+      "id": "TRIVY-005",
+      "tool": "trivy",
+      "selector": ".claude/worktrees/",
+      "owner": "security-owner",
+      "reviewer": "release-owner",
+      "reason": "Agent worktree copies duplicate canonical source paths and are not included in release artifacts.",
+      "compensating_control": "Canonical source paths are scanned directly in SAST, dependency, secret, and filesystem scans.",
+      "expiry": "2026-08-17",
+      "requirements": ["SEC-18", "RC-08"]
+    },
+    {
+      "id": "TRIVY-006",
+      "tool": "trivy",
+      "selector": "AVD-DS-0002",
+      "owner": "security-owner",
+      "reviewer": "release-owner",
+      "reason": "Dockerfile.mono starts as root only to initialize embedded services before application processes drop privileges.",
+      "compensating_control": "Native systemd install is primary for 1.0; container hardening is also covered by Trivy config and Checkov.",
+      "expiry": "2026-08-17",
+      "requirements": ["SEC-18", "RC-08"]
+    },
+    {
+      "id": "GITLEAKS-001",
+      "tool": "gitleaks",
+      "selector": "SECURITY_PATCHES/scanner_false_positives_2026-03-12.md:generic-api-key",
+      "owner": "security-owner",
+      "reviewer": "release-owner",
+      "reason": "Documented scanner false-positive examples are not live credentials.",
+      "compensating_control": "Secret exposure guard and Gitleaks still scan tracked source and history outside this exact finding.",
+      "expiry": "2026-08-17",
+      "requirements": ["SEC-18", "RC-08"]
+    },
+    {
+      "id": "GITLEAKS-002",
+      "tool": "gitleaks",
+      "selector": "KNOWN_BUGS.md:curl-auth-header",
+      "owner": "security-owner",
+      "reviewer": "release-owner",
+      "reason": "Placeholder documentation string is not a real credential.",
+      "compensating_control": "Secret exposure guard validates tracked files before release.",
+      "expiry": "2026-08-17",
+      "requirements": ["SEC-18", "RC-08"]
+    },
+    {
+      "id": "GITLEAKS-003",
+      "tool": "gitleaks",
+      "selector": "apps/backend/migrations/versions/0020_merge_heads.py:generic-api-key",
+      "owner": "security-owner",
+      "reviewer": "release-owner",
+      "reason": "Alembic revision ID is a schema identifier, not an API secret.",
+      "compensating_control": "Gitleaks remains enabled for migration files outside this exact finding.",
+      "expiry": "2026-08-17",
+      "requirements": ["SEC-18", "RC-08"]
+    },
+    {
+      "id": "GITLEAKS-004",
+      "tool": "gitleaks",
+      "selector": "docker/circuitbreaker-data/backend_api_err.log:generic-api-key",
+      "owner": "security-owner",
+      "reviewer": "release-owner",
+      "reason": "Historical development log finding is retained only as an ignore entry for history scanning; the file is no longer tracked.",
+      "compensating_control": "Release source and artifact scans fail on committed runtime logs or real secrets.",
+      "expiry": "2026-08-17",
+      "requirements": ["SEC-18", "RC-08"]
+    },
+    {
+      "id": "GITLEAKS-005",
+      "tool": "gitleaks",
+      "selector": "runtime-data",
+      "owner": "security-owner",
+      "reviewer": "release-owner",
+      "reason": "Runtime data directories can contain generated local secrets and databases but are gitignored and excluded from release artifacts.",
+      "compensating_control": "Tracked source, package manifests, built artifacts, and release archives remain scanned; runtime secrets are validated by startup fail-closed checks.",
+      "expiry": "2026-08-17",
+      "requirements": ["SEC-18", "RC-08"]
+    }
+  ]
+}

@@ -7,11 +7,15 @@ on:
         required: true
         type: string
   workflow_dispatch:
+    # checkov:skip=CKV_GHA_7: Manual RC/package rebuilds require an operator-supplied version; release.yml consumes the protected artifact path.
     inputs:
       version:
         description: "Version string (e.g. 0.1.3). Defaults to dev-<sha>."
         required: false
         default: ""
+
+permissions:
+  contents: read
 
 jobs:
   build:

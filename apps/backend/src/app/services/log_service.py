@@ -8,6 +8,7 @@ Audit logs are append-only.  No update or delete path exists through this servic
 
 import json
 import logging
+import threading
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -15,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.core.time import utcnow, utcnow_iso
 
 _logger = logging.getLogger(__name__)
+_AUDIT_CHAIN_LOCK = threading.RLock()
 
 # Keys (substring match, case-insensitive) whose values must never reach the DB.
 REDACTED_KEYS = {
@@ -152,10 +154,11 @@ def write_log(
         _now_iso = utcnow_iso()
 
         def _do_write(session: Session) -> None:
-            import hashlib
-
             from sqlalchemy import select
 
+            from app.core.audit_chain import compute_log_hash, lock_audit_chain
+
+            lock_audit_chain(session)
             stmt = select(Log).order_by(Log.id.desc()).limit(1).with_for_update()
 
             try:
@@ -167,21 +170,6 @@ def write_log(
                 ).scalar_one_or_none()
 
             previous_hash = last_log.log_hash if last_log else None
-
-            entry_data = {
-                "timestamp": _now_iso,
-                "action": action,
-                "actor_id": actor_id,
-                "role_at_time": role_at_time,
-                "entity_type": entity_type,
-                "entity_id": entity_id,
-                "diff": diff_str,
-                "ip_address": effective_ip,
-                "previous_hash": previous_hash,
-            }
-            # Serialize deterministically
-            payload = json.dumps(entry_data, sort_keys=True)
-            log_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
             entry = Log(
                 timestamp=utcnow(),
@@ -210,16 +198,18 @@ def write_log(
                 session_id=session_id,
                 role_at_time=role_at_time,
                 previous_hash=previous_hash,
-                log_hash=log_hash,
             )
+            entry.log_hash = compute_log_hash(entry, previous_hash)
             session.add(entry)
             session.commit()
 
         if db is not None:
-            _do_write(db)
+            with _AUDIT_CHAIN_LOCK:
+                _do_write(db)
         else:
-            with SessionLocal() as _db:
-                _do_write(_db)
+            with _AUDIT_CHAIN_LOCK:
+                with SessionLocal() as _db:
+                    _do_write(_db)
 
         _publish_audit_to_redis(action, entity_type, entity_id, actor_id, severity, _now_iso)
     except Exception:  # noqa: BLE001

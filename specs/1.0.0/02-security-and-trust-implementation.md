@@ -108,12 +108,12 @@ transports and trusted-proxy behavior matches configuration.
 **Requirements:** SEC-15, SEC-16, SEC-17, SEC-18
 **Depends on:** SEC-3; can overlap SEC-5
 
-- [ ] Choose sanitize, rasterize, or reject policy for SVG/active uploads and enforce safe serving.
-- [ ] Serialize audit-chain writes and implement verification plus supported repair procedure.
-- [ ] Define and implement safeguards for clear-lab, wipe restore, tenant deletion, revoke/uninstall,
+- [x] Choose sanitize, rasterize, or reject policy for SVG/active uploads and enforce safe serving.
+- [x] Serialize audit-chain writes and implement verification plus supported repair procedure.
+- [x] Define and implement safeguards for clear-lab, wipe restore, tenant deletion, revoke/uninstall,
   and bulk import, including audit events.
-- [ ] Standardize scan suppression metadata and make the complete scan set an RC artifact gate.
-- [ ] Add malicious-upload, concurrent audit, tamper/repair, destructive cancellation/recovery, and
+- [x] Standardize scan suppression metadata and make the complete scan set an RC artifact gate.
+- [x] Add malicious-upload, concurrent audit, tamper/repair, destructive cancellation/recovery, and
   scanner-exception tests.
 
 **Verification:** SEC-15 through SEC-18 evidence is attached to the exact RC artifact; no open high

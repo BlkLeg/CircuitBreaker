@@ -227,8 +227,8 @@ def create_local_user(
     """
     from app.core.security import gravatar_hash
     from app.core.time import utcnow_iso
-    from app.db.models import Log
     from app.services.auth_service import _validate_password
+    from app.services.log_service import write_log
 
     email = payload.email.strip().lower()
     if db.query(User).filter(User.email == email).first():
@@ -276,11 +276,9 @@ def create_local_user(
             status_code=409, detail="A user with this email already exists."
         ) from None
 
-    audit = Log(
-        level="info",
-        category="admin",
+    write_log(
+        db=db,
         action="user_local_created",
-        actor=actor.email,
         actor_name=actor.display_name or actor.email,
         actor_id=actor.id,
         entity_type="user",
@@ -293,9 +291,10 @@ def create_local_user(
                 "password_generated": payload.generate_password,
             }
         ),
-        created_at_utc=now,
+        actor=actor.email,
+        severity="info",
+        category="admin",
     )
-    db.add(audit)
     try:
         db.commit()
     except IntegrityError:

@@ -3,6 +3,18 @@
 Use to reject content that does not match the declared or inferred type.
 """
 
+from pathlib import Path
+
+ACTIVE_CONTENT_MIME_TYPES = {
+    "image/svg+xml",
+    "text/html",
+    "application/xhtml+xml",
+    "application/xml",
+    "text/xml",
+}
+
+ACTIVE_CONTENT_SUFFIXES = {".svg", ".svgz", ".html", ".htm", ".xhtml", ".xml"}
+
 # MIME -> list of leading-byte signatures (any match passes)
 MAGIC_BYTES: dict[str, list[bytes]] = {
     "image/png": [b"\x89PNG\r\n\x1a\n"],
@@ -25,6 +37,17 @@ SUFFIX_TO_MIME: dict[str, str] = {
 }
 
 
+def normalize_content_type(content_type: str | None) -> str:
+    return (content_type or "").split(";", 1)[0].strip().lower()
+
+
+def is_active_content_type(content_type: str | None, filename: str | None = None) -> bool:
+    """Return True for upload types that can execute script or carry active markup."""
+    ct = normalize_content_type(content_type)
+    suffix = (filename and Path(filename).suffix.lower()) or ""
+    return ct in ACTIVE_CONTENT_MIME_TYPES or suffix in ACTIVE_CONTENT_SUFFIXES
+
+
 def verify_image_magic_bytes(
     data: bytes, content_type: str | None, *, allow_svg: bool = False
 ) -> bool:
@@ -36,10 +59,12 @@ def verify_image_magic_bytes(
     """
     if not data:
         return False
-    ct = (content_type or "").strip().lower()
+    ct = normalize_content_type(content_type)
+    if not allow_svg and is_active_content_type(ct):
+        return False
     if allow_svg and ("svg" in ct or ct == "image/svg+xml"):
         return True
-    signatures = MAGIC_BYTES.get(ct) or MAGIC_BYTES.get(ct.split(";")[0].strip())
+    signatures = MAGIC_BYTES.get(ct)
     if not signatures:
         return False
     for sig in signatures:
