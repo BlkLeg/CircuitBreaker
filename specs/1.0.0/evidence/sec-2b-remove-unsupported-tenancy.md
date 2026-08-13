@@ -34,10 +34,28 @@ The compatibility policy records this behavior in
 - `apps/backend/tests/test_single_tenant_contract.py`
   - authenticated direct calls to legacy tenant CRUD/member paths return `410`;
   - crafted `X-Tenant-ID` headers do not select request tenant context.
+  - tenant-shaped upgraded rows, tenant memberships, users with legacy `tenant_id`, and JWT
+    `tenant_id` claims remain inert compatibility data while legacy tenant APIs stay `410`.
 - `apps/frontend/src/__tests__/tenant-context.test.jsx`
   - tenant context exposes no active tenant;
   - stale `cb_active_tenant_id` local storage is cleared;
   - `switchTenant` cannot set local storage or reload.
+
+## Local verification
+
+```bash
+cd apps/backend
+pytest -q --no-cov tests/test_single_tenant_contract.py
+
+cd ../frontend
+npm run test -- src/__tests__/tenant-context.test.jsx \
+  src/__tests__/oobe-wizard.test.jsx \
+  src/__tests__/oauth-providers-manager.test.jsx
+```
+
+Result: **PASS** on 2026-08-11. Backend SEC-2B contract tests include the tenant-shaped
+upgrade rehearsal; focused frontend tests cover stale tenant storage, OOBE setup-token flows, and
+OAuth/OIDC provider management.
 
 ## Remaining tenant references review
 

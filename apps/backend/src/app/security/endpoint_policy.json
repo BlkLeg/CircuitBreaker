@@ -338,5 +338,49 @@
       "public_reason": "SPA fallback serves the browser application; data APIs remain under /api/v1.",
       "disclosure": "frontend application shell"
     }
+  ],
+  "static_surfaces": [
+    {
+      "transport": "http",
+      "methods": ["GET", "HEAD"],
+      "path": "/uploads/{path:path}",
+      "policy": "public-upload-media",
+      "public_reason": "Uploaded media is user-facing browser content and is served only under the upload safety policy.",
+      "disclosure": "uploaded media bytes; active document types are forced inert by response headers"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET", "HEAD"],
+      "path": "/user-icons/{path:path}",
+      "policy": "public-ui-asset",
+      "public_reason": "User and device icon images are referenced by the browser UI.",
+      "disclosure": "icon image bytes only"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET", "HEAD"],
+      "path": "/branding/{path:path}",
+      "policy": "public-ui-asset",
+      "public_reason": "Branding and favicon assets must render before or outside authenticated API calls.",
+      "disclosure": "branding image or icon bytes only"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET", "HEAD"],
+      "path": "/assets/{path:path}",
+      "policy": "public-ui-asset",
+      "public_reason": "Frontend build assets are public browser application resources.",
+      "disclosure": "frontend asset bytes only",
+      "optional": true
+    },
+    {
+      "transport": "http",
+      "methods": ["GET", "HEAD"],
+      "path": "/icons/{path:path}",
+      "policy": "public-ui-asset",
+      "public_reason": "Frontend icon assets are public browser application resources.",
+      "disclosure": "frontend icon bytes only",
+      "optional": true
+    }
   ]
 }

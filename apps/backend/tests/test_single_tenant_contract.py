@@ -68,3 +68,58 @@ async def test_tenant_header_does_not_select_request_context():
 
     assert response.status_code == 204
     assert seen_tenant_ids == [None]
+
+
+@pytest.mark.asyncio
+async def test_upgraded_tenant_shaped_rows_remain_inert(client, db_session, factories):
+    from app.core.security import create_token
+    from app.db.models import Hardware, Tenant, User, tenant_members
+    from app.services.settings_service import get_or_create_settings
+
+    tenant_a = Tenant(name="upgraded-tenant-a")
+    tenant_b = Tenant(name="upgraded-tenant-b")
+    db_session.add_all([tenant_a, tenant_b])
+    db_session.flush()
+    user = factories.user(role="viewer", tenant_id=tenant_b.id)
+    db_session.execute(
+        tenant_members.insert().values(
+            tenant_id=tenant_b.id,
+            user_id=user.id,
+            tenant_role="member",
+        )
+    )
+    hardware = factories.hardware(tenant_id=tenant_a.id, ip_address="192.0.2.177")
+    cfg = get_or_create_settings(db_session)
+    token = create_token(
+        user.id,
+        cfg.jwt_secret,
+        1,
+        role="viewer",
+        extra_claims={"tenant_id": tenant_a.id},
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
+    listed = await client.get("/api/v1/hardware", headers=headers)
+    assert listed.status_code == 200
+    assert any(row["id"] == hardware.id for row in listed.json())
+
+    gone = await client.get(
+        f"/api/v1/tenants/{tenant_a.id}",
+        headers={**headers, "X-Tenant-ID": str(tenant_a.id)},
+    )
+    assert gone.status_code == 410
+
+    db_session.expire_all()
+    assert db_session.get(Tenant, tenant_a.id) is not None
+    assert db_session.get(Tenant, tenant_b.id) is not None
+    assert db_session.get(User, user.id).tenant_id == tenant_b.id
+    assert db_session.get(Hardware, hardware.id).tenant_id == tenant_a.id
+    assert (
+        db_session.execute(
+            tenant_members.select().where(
+                tenant_members.c.tenant_id == tenant_b.id,
+                tenant_members.c.user_id == user.id,
+            )
+        ).first()
+        is not None
+    )

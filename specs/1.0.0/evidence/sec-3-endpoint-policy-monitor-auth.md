@@ -26,6 +26,9 @@
 - The gate also fails stale allowlist entries whose method/path/transport no longer exist at runtime.
 - The full inventory gate fails if method, path, transport, endpoint name, dependency calls,
   auth/RBAC policy, tenant policy, or disclosure class drift from the runtime route table.
+- The full inventory now includes mounted static/file surfaces separately from FastAPI routes:
+  uploads, user icons, branding assets, and conditional frontend `/assets` and `/icons` mounts.
+  The gate fails if a runtime static mount lacks a reviewed public disclosure policy.
 - The policy test also fails if the SEC-07 review metadata or CODEOWNERS mapping for
   `endpoint_policy.json` is removed or changed unexpectedly.
 - Monitor read routes now require `require_scope("read", "*")`, so scoped API/service tokens must
@@ -46,8 +49,12 @@
     detail/history/events/probe-runs/uptime;
   - viewers cannot create monitors;
   - editors can create monitors.
-- Monitor WebSocket tests cover unauthenticated handshake rejection and authenticated session-cookie
-  connection/reconnect behavior.
+- Monitor WebSocket subscriptions authorize every requested monitor ID with the same read-scope and
+  legacy-tenant policy used by HTTP monitor reads. Inaccessible IDs are filtered, not enumerated.
+- Monitor WebSocket tests cover unauthenticated handshake rejection, authenticated session-cookie
+  connection/reconnect behavior, revoked session reconnect denial, wrong-tenant subscription
+  filtering, service JWT read-scope enforcement, write-only service JWT denial, and expired-demo
+  identity denial.
 
 ## Current route-policy posture
 
@@ -102,7 +109,10 @@ cd ../..
 python3 scripts/validate_v1_release_control.py
 ```
 
-Result: **PASS**, 56 pytest cases plus Ruff, mypy, and release-control validation.
+Result: **PASS**, monitor API/stream authorization cases plus endpoint inventory, Ruff, mypy, and
+release-control validation. The latest local rerun covered endpoint inventory, SEC-2B tenant
+contract, monitor API, monitor stream auth, bootstrap security, SEC-10 auth controls, and events SSE
+auth.
 
 Masqueraded-admin identity remains not applicable in the current runtime: the model still has
 historical masquerade fields, but there is no active route, transport claim, or request marker that

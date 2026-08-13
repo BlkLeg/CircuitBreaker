@@ -25,17 +25,25 @@ import asyncio
 import json
 import logging
 import os
+from types import SimpleNamespace
+from typing import Any
 
+import jwt
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
 import app.db.session as _db_session
 from app.core.auth_cookie import is_websocket_secure, token_from_websocket_scope, ws_require_wss
 from app.core.network_acl import is_ip_in_cidrs as _is_ip_in_cidrs
+from app.core.rbac import effective_scopes, has_scope
 from app.core.redis import get_redis
-from app.core.security import decode_token
+from app.core.security import (
+    SESSION_AUDIENCE,
+    verify_salted_api_token_hash,
+)
 from app.core.time import utcnow, utcnow_iso
-from app.db.models import User
+from app.db.models import APIToken, User
+from app.services import monitor_service
 from app.services.settings_service import get_or_create_settings
 from app.services.user_service import is_session_revoked
 
@@ -125,6 +133,142 @@ async def _redis_listener(ws: WebSocket, channels: set[str], stop_event: asyncio
             pass
 
 
+def _reader_snapshot(user: Any, *, scopes: set[str] | None = None) -> Any:
+    """Detach the fields needed for read-scope and legacy-tenant checks."""
+    return SimpleNamespace(
+        id=getattr(user, "id", None),
+        email=getattr(user, "email", None),
+        role=getattr(user, "role", "viewer"),
+        scopes=json.dumps(sorted(scopes)) if scopes is not None else getattr(user, "scopes", None),
+        is_admin=bool(getattr(user, "is_admin", False)),
+        is_superuser=bool(getattr(user, "is_superuser", False)),
+        is_active=bool(getattr(user, "is_active", True)),
+        locked_until=getattr(user, "locked_until", None),
+        demo_expires=getattr(user, "demo_expires", None),
+        tenant_id=getattr(user, "tenant_id", None),
+    )
+
+
+def _is_reader_active(user: Any) -> bool:
+    if not getattr(user, "is_active", False):
+        return False
+    locked_until = getattr(user, "locked_until", None)
+    if locked_until and locked_until > utcnow():
+        return False
+    demo_expires = getattr(user, "demo_expires", None)
+    return not (getattr(user, "role", None) == "demo" and demo_expires and demo_expires <= utcnow())
+
+
+def _has_monitor_read_scope(reader: Any, token_scopes: set[str] | None = None) -> bool:
+    scopes = token_scopes if token_scopes is not None else effective_scopes(reader)
+    return has_scope(scopes, "read", "*")
+
+
+def _normalise_scope_set(raw_scopes: object) -> set[str]:
+    if not isinstance(raw_scopes, list):
+        return set()
+    return {str(scope).strip() for scope in raw_scopes if str(scope).strip()}
+
+
+def _authenticate_monitor_reader(db: Any, raw_token: str) -> Any | None:
+    """Authenticate a monitor stream identity with the HTTP monitor read policy.
+
+    The monitor stream accepts browser session cookies, first-message session
+    JWTs, service-account JWTs, and stored API tokens. A successful handshake is
+    not enough: the identity must also carry the same ``read:*`` authority that
+    HTTP monitor reads require.
+    """
+    cfg = get_or_create_settings(db)
+    if not cfg.auth_enabled:
+        return _reader_snapshot(
+            SimpleNamespace(
+                id=0,
+                email="auth-disabled@system",
+                role="admin",
+                scopes=None,
+                is_admin=True,
+                is_superuser=True,
+                is_active=True,
+                locked_until=None,
+                demo_expires=None,
+                tenant_id=None,
+            )
+        )
+    if not cfg.jwt_secret or not raw_token or is_session_revoked(db, raw_token):
+        return None
+
+    try:
+        payload = jwt.decode(
+            raw_token,
+            cfg.jwt_secret,
+            algorithms=["HS256"],
+            audience=[SESSION_AUDIENCE],
+        )
+    except (jwt.PyJWTError, ValueError, TypeError):
+        payload = None
+
+    if isinstance(payload, dict):
+        uid_raw = payload.get("sub", payload.get("user_id"))
+        try:
+            uid = int(uid_raw)
+        except (TypeError, ValueError):
+            uid = None
+        if uid == 0:
+            token_scopes = _normalise_scope_set(payload.get("scopes"))
+            if not _has_monitor_read_scope(
+                _reader_snapshot(SimpleNamespace(id=0, role="admin", is_active=True)),
+                token_scopes,
+            ):
+                return None
+            return _reader_snapshot(
+                SimpleNamespace(
+                    id=0,
+                    email="api-token@system",
+                    role="admin",
+                    scopes=None,
+                    is_admin=True,
+                    is_superuser=True,
+                    is_active=True,
+                    locked_until=None,
+                    demo_expires=None,
+                    tenant_id=None,
+                ),
+                scopes=token_scopes,
+            )
+        if uid is not None:
+            user = db.get(User, uid)
+            if user and _is_reader_active(user) and _has_monitor_read_scope(user):
+                return _reader_snapshot(user)
+            return None
+
+    for candidate in db.query(APIToken).all():
+        stored = candidate.token_hash or ""
+        if not verify_salted_api_token_hash(raw_token, stored):
+            continue
+        if candidate.expires_at and candidate.expires_at <= utcnow():
+            return None
+        user = db.get(User, candidate.created_by)
+        token_scopes = _normalise_scope_set(candidate.scopes)
+        if user and _is_reader_active(user) and _has_monitor_read_scope(user, token_scopes):
+            return _reader_snapshot(user, scopes=token_scopes)
+        return None
+
+    return None
+
+
+def _authorized_monitor_channels(db: Any, reader: Any, monitor_ids: list[Any]) -> set[str]:
+    channels: set[str] = set()
+    seen: set[int] = set()
+    for raw_mid in monitor_ids[:_MAX_SUBSCRIPTIONS]:
+        if not isinstance(raw_mid, int) or raw_mid in seen:
+            continue
+        seen.add(raw_mid)
+        monitor = monitor_service.get_monitor(db, raw_mid)
+        if monitor and monitor_service.reader_can_access_monitor(db, reader, monitor):
+            channels.add(f"monitor:{raw_mid}")
+    return channels
+
+
 async def _ping_loop(ws: WebSocket, main_task: asyncio.Task) -> None:
     try:
         while True:
@@ -168,27 +312,12 @@ async def monitor_stream(websocket: WebSocket) -> None:
             except WebSocketDisconnect:
                 return
 
-        authenticated = False
+        reader: Any | None = None
 
         with _db_session.SessionLocal() as db:
-            cfg = get_or_create_settings(db)
-            if cfg.jwt_secret:
-                if is_session_revoked(db, raw_token):
-                    authenticated = False
-                else:
-                    uid = decode_token(raw_token, cfg.jwt_secret)
-                    if uid is not None:
-                        u = db.get(User, uid)
-                        if u and u.is_active:
-                            if not (u.locked_until and u.locked_until > utcnow()):
-                                if not (
-                                    u.role == "demo"
-                                    and u.demo_expires
-                                    and u.demo_expires <= utcnow()
-                                ):
-                                    authenticated = True
+            reader = _authenticate_monitor_reader(db, raw_token)
 
-        if not authenticated:
+        if reader is None:
             logger.warning("Monitor WS auth failed (ip=%s)", client_ip)
             await websocket.send_text(json.dumps({"error": "unauthorized"}))
             await websocket.close(code=1008)
@@ -236,11 +365,8 @@ async def monitor_stream(websocket: WebSocket) -> None:
                 if isinstance(msg, dict) and "subscribe" in msg:
                     monitor_ids = msg["subscribe"]
                     if isinstance(monitor_ids, list):
-                        new_channels = {
-                            f"monitor:{mid}"
-                            for mid in monitor_ids[:_MAX_SUBSCRIPTIONS]
-                            if isinstance(mid, int)
-                        }
+                        with _db_session.SessionLocal() as db:
+                            new_channels = _authorized_monitor_channels(db, reader, monitor_ids)
                         subscribed_channels.update(new_channels)
                         if listener_task:
                             stop_event.set()

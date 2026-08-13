@@ -1,6 +1,6 @@
 # SEC-1 Tenant Decision and Inventory
 
-**Status:** Decision recorded; SEC-2B authorized
+**Status:** Decision recorded; SEC-2B authorized; SEC-02 through SEC-04 not applicable for 1.0
 **Generated:** 2026-08-11
 **Requirement:** SEC-01
 **Decision:** True multi-tenancy is deferred beyond 1.0. Circuit Breaker 1.0 is single-tenant with
@@ -27,7 +27,8 @@ rg -n "tenant_id|current_tenant|row_security|tenant_members" \
 
 ## Tenant-bearing SQLAlchemy models
 
-Static scan of `apps/backend/src/app/db/models.py` found these classes with `tenant_id`:
+Regenerated from SQLAlchemy model metadata at current `HEAD`, then reconciled against the migrated
+PostgreSQL test schema used by the SEC gates. These mapped tables carry `tenant_id`:
 
 | Table | Model |
 |---|---|
@@ -72,16 +73,19 @@ Additional tenant structures:
 
 ## Follow-on requirements for SEC-2B
 
-- Define migration behavior for existing databases with more than one tenant.
-- Decide whether existing tenant rows/columns remain inert or are collapsed to a single default.
-- Remove or block `/api/v1/tenants` and tenant member management for v1.
-- Remove/hide tenant switcher, tenant page, local-storage active tenant, and `X-Tenant-ID` behavior.
-- Update tests so RBAC remains covered without suggesting tenant isolation.
-- Update docs/release notes to state true multi-tenancy is a long-term goal.
+- Existing tenant rows/columns remain inert compatibility metadata and are not collapsed.
+- `/api/v1/tenants` and tenant member management return stable `410 Gone`.
+- Tenant switcher/page/storage/header behavior is hard-disabled for v1.
+- RBAC tests remain independent of tenant isolation claims.
+- Docs/release notes state true multi-tenancy is a long-term goal and separate trust domains must
+  use separate deployments for v1.
+
+Under ADR 0003 and the SEC-2B implementation path, SEC-02, SEC-03, and SEC-04 are explicitly
+deferred/not applicable to the 1.0 release because true multi-tenancy is not a supported security
+boundary.
 
 ## User impact
 
 Homelab users keep the important v1 behavior: multiple users, roles, maps, environments, tags, and
 organizational views. Users needing hard isolation between groups/customers/sites must run separate
 Circuit Breaker deployments for v1.
-

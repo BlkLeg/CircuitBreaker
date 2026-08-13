@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from fastapi.routing import APIRoute, APIWebSocketRoute
+from fastapi.staticfiles import StaticFiles
+from starlette.routing import Mount
 
 from app.main import app
 
@@ -33,6 +35,14 @@ _READ_DEPENDENCIES = frozenset(
         "app.core.rbac.require_scope.<locals>._dep",
     }
 )
+
+
+def _static_file_mounts() -> list[Mount]:
+    return [
+        route
+        for route in app.routes
+        if isinstance(route, Mount) and isinstance(route.app, StaticFiles)
+    ]
 
 
 def _dependency_calls(dependant: Any) -> set[str]:
@@ -96,6 +106,21 @@ def _public_policy_by_route_key() -> dict[tuple[str, tuple[str, ...], str], dict
     }
 
 
+def _static_policy_by_route_key() -> dict[tuple[str, tuple[str, ...], str], dict[str, Any]]:
+    return {
+        (
+            entry["transport"],
+            tuple(sorted(entry["methods"])),
+            entry["path"],
+        ): entry
+        for entry in _load_policy().get("static_surfaces", [])
+    }
+
+
+def _static_surface_key(route: Mount) -> tuple[str, tuple[str, ...], str]:
+    return ("http", ("GET", "HEAD"), f"{route.path.rstrip('/')}/{{path:path}}")
+
+
 def test_public_endpoint_policy_entries_are_well_formed():
     policy = _load_policy()
     seen: set[tuple[str, tuple[str, ...], str]] = set()
@@ -123,6 +148,22 @@ def test_public_endpoint_policy_entries_are_well_formed():
         assert entry["disclosure"]
         if entry["transport"] == "websocket":
             assert entry["methods"] == ["WEBSOCKET"]
+
+    seen_static: set[tuple[str, tuple[str, ...], str]] = set()
+    for entry in policy.get("static_surfaces", []):
+        key = (
+            entry["transport"],
+            tuple(sorted(entry["methods"])),
+            entry["path"],
+        )
+        assert key not in seen_static, f"duplicate static surface policy entry: {key}"
+        seen_static.add(key)
+        assert entry["transport"] == "http"
+        assert entry["methods"] == ["GET", "HEAD"]
+        assert entry["path"].endswith("/{path:path}")
+        assert entry["policy"]
+        assert entry["public_reason"]
+        assert entry["disclosure"]
 
 
 def test_public_endpoint_allowlist_requires_codeowner_review():
@@ -170,12 +211,41 @@ def test_runtime_routes_reconcile_with_public_endpoint_policy():
     )
 
 
+def test_static_file_surfaces_reconcile_with_public_endpoint_policy():
+    reviewed_static = _static_policy_by_route_key()
+    runtime_static = _static_file_mounts()
+    runtime_keys = {_static_surface_key(route) for route in runtime_static}
+
+    stale_static = {
+        key
+        for key, entry in reviewed_static.items()
+        if key not in runtime_keys and not entry.get("optional")
+    }
+    assert not stale_static, "static policy contains surfaces absent from runtime: " + ", ".join(
+        f"{transport} {','.join(methods)} {path}"
+        for transport, methods, path in sorted(stale_static)
+    )
+
+    unclassified = [
+        _static_surface_key(route)
+        for route in runtime_static
+        if _static_surface_key(route) not in reviewed_static
+    ]
+    assert not unclassified, "static file mounts lack public policy entry: " + ", ".join(
+        f"{transport} {','.join(methods)} {path}"
+        for transport, methods, path in sorted(unclassified)
+    )
+
+
 def test_full_endpoint_inventory_matches_runtime_routes():
     public_policy = _public_policy_by_route_key()
+    static_policy = _static_policy_by_route_key()
     runtime_routes = [
         route for route in app.routes if isinstance(route, (APIRoute, APIWebSocketRoute))
     ]
+    runtime_static = _static_file_mounts()
     expected: list[dict[str, Any]] = []
+    expected_static: list[dict[str, Any]] = []
     for route in runtime_routes:
         key = _route_key(route)
         public_entry = public_policy.get(key)
@@ -202,8 +272,29 @@ def test_full_endpoint_inventory_matches_runtime_routes():
         )
 
     expected.sort(key=lambda row: (row["transport"], row["path"], row["methods"], row["name"]))
+    for route in runtime_static:
+        key = _static_surface_key(route)
+        entry = static_policy.get(key)
+        expected_static.append(
+            {
+                "transport": "http",
+                "methods": ["GET", "HEAD"],
+                "path": key[2],
+                "name": route.name,
+                "mount_class": f"{route.app.__class__.__module__}.{route.app.__class__.__name__}",
+                "auth_policy": entry["policy"] if entry else "unclassified",
+                "rbac_policy": "none" if entry else "unclassified",
+                "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+                "public_reason": entry["public_reason"] if entry else "",
+                "disclosure": entry["disclosure"] if entry else "",
+            }
+        )
+
+    expected_static.sort(key=lambda row: (row["transport"], row["path"], row["methods"]))
 
     inventory = _load_inventory()
     assert inventory["version"] == 1
     assert inventory["route_count"] == len(expected)
+    assert inventory["static_surface_count"] == len(expected_static)
     assert inventory["routes"] == expected
+    assert inventory["static_surfaces"] == expected_static

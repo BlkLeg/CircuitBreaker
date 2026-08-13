@@ -9004,5 +9004,83 @@
       "transport": "websocket"
     }
   ],
+  "static_surface_count": 5,
+  "static_surfaces": [
+    {
+      "auth_policy": "public-ui-asset",
+      "disclosure": "frontend asset bytes only",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "mount_class": "starlette.staticfiles.StaticFiles",
+      "name": "assets",
+      "path": "/assets/{path:path}",
+      "public_reason": "Frontend build assets are public browser application resources.",
+      "rbac_policy": "none",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "public-ui-asset",
+      "disclosure": "branding image or icon bytes only",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "mount_class": "starlette.staticfiles.StaticFiles",
+      "name": "branding",
+      "path": "/branding/{path:path}",
+      "public_reason": "Branding and favicon assets must render before or outside authenticated API calls.",
+      "rbac_policy": "none",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "public-ui-asset",
+      "disclosure": "frontend icon bytes only",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "mount_class": "starlette.staticfiles.StaticFiles",
+      "name": "icons",
+      "path": "/icons/{path:path}",
+      "public_reason": "Frontend icon assets are public browser application resources.",
+      "rbac_policy": "none",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "public-upload-media",
+      "disclosure": "uploaded media bytes; active document types are forced inert by response headers",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "mount_class": "starlette.staticfiles.StaticFiles",
+      "name": "uploads",
+      "path": "/uploads/{path:path}",
+      "public_reason": "Uploaded media is user-facing browser content and is served only under the upload safety policy.",
+      "rbac_policy": "none",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "public-ui-asset",
+      "disclosure": "icon image bytes only",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "mount_class": "starlette.staticfiles.StaticFiles",
+      "name": "user-icons",
+      "path": "/user-icons/{path:path}",
+      "public_reason": "User and device icon images are referenced by the browser UI.",
+      "rbac_policy": "none",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    }
+  ],
   "version": 1
 }
