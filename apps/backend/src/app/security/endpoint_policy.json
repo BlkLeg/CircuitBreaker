@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "notes": "SEC-3 route policy. Routes listed here are the only runtime routes allowed to lack FastAPI-level auth dependencies. Auth-flow entries may still authenticate internally; moving those checks into dependencies should shrink this file over time.",
+  "notes": "SEC-3 route policy. Routes listed here are the only runtime routes allowed to lack FastAPI-level auth dependencies. Auth-flow entries may still authenticate internally; moving those checks into dependencies should shrink this file over time. The 'authenticated' policy below describes a bootstrapped deployment: while auth_enabled is false (first run) the routes named in app.core.security._PRE_BOOTSTRAP_SETUP_SURFACE run as the admin sentinel and every other route answers 401, and under the CB_LEGACY_AUTH rollback the sentinel is granted everywhere.",
   "security_review": {
     "requirement": "SEC-07",
     "owner": "security-owner",

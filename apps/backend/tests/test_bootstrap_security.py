@@ -39,6 +39,19 @@ def _prepare_bootstrap_state(db_session, setup_token: str = _SETUP_TOKEN) -> App
     return cfg
 
 
+def _restore_bootstrapped_state(db_session) -> None:
+    """Put `auth_enabled` back so a bootstrap test cannot disarm later ones.
+
+    `AppSettings` is seeded once per session by the `app_cfg` fixture and is not
+    covered by the per-test rollback, so a test that turns auth off has to turn
+    it back on itself.
+    """
+    cfg = db_session.get(AppSettings, 1)
+    if cfg is not None:
+        cfg.auth_enabled = True
+        db_session.commit()
+
+
 @pytest.mark.asyncio
 async def test_bootstrap_initialize_requires_setup_token(client, db_session):
     _prepare_bootstrap_state(db_session)
@@ -256,3 +269,58 @@ def test_concurrent_bootstrap_requests_create_exactly_one_first_admin(setup_db):
         session.query(User).delete()
         cfg.auth_enabled = True
         session.commit()
+
+
+# ── SEC-09 / P0-4: the setup window is not an open admin session ─────────────
+# Before the first admin exists there is nobody to authenticate, so first-run
+# runs as the admin sentinel. It used to do that on every route, which let
+# anyone who could reach the port during the window rewrite settings and OAuth
+# providers — and so capture the operator's account as it was created.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/api/v1/hardware"),
+        ("get", "/api/v1/monitors"),
+        ("get", "/api/v1/agents"),
+        ("get", "/api/v1/logs"),
+        ("post", "/api/v1/admin/clear-lab"),
+    ],
+)
+async def test_unbootstrapped_app_does_not_hand_out_admin_off_the_setup_surface(
+    client, db_session, method, path
+):
+    _prepare_bootstrap_state(db_session)
+    try:
+        resp = await getattr(client, method)(path)
+        assert resp.status_code in (401, 403), f"{method.upper()} {path} -> {resp.status_code}"
+    finally:
+        _restore_bootstrapped_state(db_session)
+
+
+@pytest.mark.asyncio
+async def test_unbootstrapped_app_cannot_rewrite_settings_before_an_admin_exists(
+    client, db_session
+):
+    _prepare_bootstrap_state(db_session)
+    try:
+        resp = await client.put("/api/v1/settings", json={"site_name": "attacker"})
+        assert resp.status_code in (401, 403)
+    finally:
+        _restore_bootstrapped_state(db_session)
+
+
+@pytest.mark.asyncio
+async def test_first_run_surface_still_reachable_while_unbootstrapped(client, db_session):
+    """The wizard's own calls must keep working, or OOBE cannot complete."""
+    _prepare_bootstrap_state(db_session)
+    try:
+        assert (await client.get("/api/v1/bootstrap/status")).status_code == 200
+        assert (await client.get("/api/v1/settings")).status_code == 200
+        # The OAuth provider step runs before an account can exist.
+        oauth = await client.patch("/api/v1/settings/oauth", json={"oidc_providers": []})
+        assert oauth.status_code not in (401, 403)
+    finally:
+        _restore_bootstrapped_state(db_session)

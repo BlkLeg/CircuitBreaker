@@ -324,11 +324,49 @@ def _is_user_accessible(db: Session, user_id: int) -> bool:
     return True
 
 
+#: Routes that may act as the admin sentinel while the app is unbootstrapped.
+#:
+#: Before the first admin exists there is nobody to authenticate, so first-run
+#: has to run as *something*. It used to run as an admin on every route, which
+#: meant anyone who could reach the port during the setup window could rewrite
+#: settings and OAuth providers — and so hand themselves the operator's account
+#: at the moment it was created. The setup token (SEC-09) guarded only the
+#: account creation itself, not the configuration around it.
+#:
+#: This is the surface the OOBE wizard actually touches before it flips
+#: `auth_enabled`: the bootstrap endpoints (themselves setup-token gated), the
+#: auth routes, the settings read that renders the wizard, and the OAuth write
+#: the provider step performs before an account can exist. Everything else —
+#: inventory, monitors, agents, admin, uploads, docs — answers 401 until an
+#: admin exists, which is what it would have done anyway had auth been on.
+#:
+#: `(prefix, methods)`; `methods` of None means any method.
+_PRE_BOOTSTRAP_SETUP_SURFACE: tuple[tuple[str, frozenset[str] | None], ...] = (
+    ("/api/v1/bootstrap", None),
+    ("/api/v1/auth", None),
+    ("/api/v1/settings/oauth", frozenset({"PATCH"})),
+    ("/api/v1/settings", frozenset({"GET", "HEAD"})),
+)
+
+
+def _is_pre_bootstrap_setup_surface(request: HTTPConnection) -> bool:
+    """Whether this unbootstrapped request is part of first-run setup."""
+    path = request.scope.get("path", "")
+    # WebSocket connections carry no method; treat them as a read for matching.
+    method = str(request.scope.get("method", "GET")).upper()
+    for prefix, methods in _PRE_BOOTSTRAP_SETUP_SURFACE:
+        if path == prefix or path.startswith(f"{prefix}/"):
+            if methods is None or method in methods:
+                return True
+    return False
+
+
 def resolve_optional_user_id_sync(db: Session, request: HTTPConnection) -> int | None:
     """Return the authenticated user_id, or None if absent/invalid (synchronous).
 
     Same logic as :func:`get_optional_user` for use from sync middleware.
-    Returns 0 when LegacyTokenMiddleware granted legacy admin or auth is disabled.
+    Returns 0 when LegacyTokenMiddleware granted legacy admin, or when the app
+    is unbootstrapped and the request is part of the first-run setup surface.
     """
     _set_request_token_scopes(request, None)
     if _is_legacy_admin(request):
@@ -341,7 +379,11 @@ def resolve_optional_user_id_sync(db: Session, request: HTTPConnection) -> int |
     cfg = get_or_create_settings(db)
 
     if not cfg.auth_enabled:
-        return 0  # App not bootstrapped / auth disabled — open access
+        # App not bootstrapped. The admin-equivalent sentinel is handed out only
+        # to the routes first-run genuinely needs — see _PRE_BOOTSTRAP_SETUP_SURFACE.
+        if _is_pre_bootstrap_setup_surface(request):
+            return 0
+        return None
 
     if not cfg.jwt_secret:
         return None

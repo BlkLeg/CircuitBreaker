@@ -47,7 +47,7 @@ only Python 3.14 and FastAPI 0.138.2, neither of which the project supports).
 | P0-2 audit-log wipe | **FIXED** | `api/logs.py` now requires `CLEAR_AUDIT_LOG` + idempotency key + verified backup, and writes `clear_audit_log_completed` as the surviving chain genesis; 3 new tests |
 | P0-3 XFF spoofing | **FIXED** | `core/rate_limit.py` walks the chain right-to-left skipping trusted CIDRs; 4 new tests including identity-rotation |
 | P0-5 monitor SSRF | **FIXED** | New `MONITOR_TARGET_POLICY` applied at request time in the web collector, with per-hop redirect re-validation; LAN/loopback still allowed, link-local/metadata refused; 3 new tests |
-| P0-4 pre-bootstrap admin | **OPEN** | Needs a product decision (see below) |
+| P0-4 pre-bootstrap admin | **FIXED** | First run grants the admin sentinel only on `_PRE_BOOTSTRAP_SETUP_SURFACE` (bootstrap routes, auth routes, the settings read the wizard renders from, and the OAuth write its provider step needs); every other route answers 401 until an admin exists |
 | Gate blindness (audit finding #9) | **FIXED** | New `test_every_runtime_route_is_a_kind_this_gate_understands` fails on any unclassifiable route object |
 
 ### New findings discovered during remediation
@@ -125,14 +125,30 @@ collector, SEC-10 controls, agents API, monitor API, monitor stream auth) passes
 files. The endpoint inventory was regenerated and its only delta is the intended
 `require_role` → `require_scope` change on `get_agent_probes`.
 
-### Still open — needs your decision
+### P0-4 resolution — setup surface allowlisted
 
-**P0-4, pre-bootstrap anonymous-admin.** `core/security.py:343-344` returns the
-user-id-0 admin sentinel for every anonymous request while `auth_enabled` is false.
-Closing it means restricting the pre-bootstrap surface to an allowlist
-(bootstrap/onboarding/status), which changes OOBE behavior and risks breaking the
-first-run wizard. The alternative is documenting private-network binding as the
-accepted control and recording it as an RC-08 exception. I did not pick for you.
+Decision taken: allowlist rather than accept private-network binding. While
+`auth_enabled` is false, `resolve_optional_user_id_sync` grants the admin
+sentinel only for `_PRE_BOOTSTRAP_SETUP_SURFACE` — `/api/v1/bootstrap/**` (already
+setup-token gated under SEC-09), `/api/v1/auth/**`, `GET /api/v1/settings`, and
+`PATCH /api/v1/settings/oauth`. Everything else answers 401 until the first admin
+exists, which is what it would have done with auth on.
+
+The surface was derived from what the wizard actually calls, not guessed: the
+OOBE steps run start → domain → account → theme → regional → email → summary, and
+only the first three precede account creation. The OAuth provider step writes
+`/settings/oauth` *before* an account can exist, so that one write has to stay
+open; it remains the narrowest residual risk in the window and is the reason the
+setup token still matters.
+
+One behavior change fell out of this: `tests/api/test_ws_agents_stream.py`'s
+cookie-less handshake test relied on the old open access to reach the agent
+presence stream's in-handler auth timeout. That stream is not part of setting an
+instance up — no agent can enrol before an admin exists — so the handshake is now
+rejected, and the test asserts the rejection. Worth knowing: the handler's
+`_STREAM_AUTH_TIMEOUT_SECONDS` branch is now unreachable through the router in
+both states (bootstrapped, `require_auth` rejects it; unbootstrapped, the
+allowlist does), so it is dead defence in depth rather than a live control.
 
 ## Prioritized gaps to fill
 

@@ -39,28 +39,32 @@ def _auth_enabled(enabled: bool):
                 db.commit()
 
 
-def test_stream_rejects_connection_with_no_cookie_and_auth_timeout(ws_client, monkeypatch):
-    from starlette.websockets import WebSocketDisconnect
+def test_stream_rejects_cookieless_connection_before_the_app_is_bootstrapped(ws_client):
+    """Pre-OOBE, the presence stream is refused rather than opened as admin.
 
-    from app.api import ws_agents
+    This used to connect: while `auth_enabled` was false every route ran as the
+    admin sentinel, so a cookie-less handshake got through the router and the
+    handler's own first-message-token timeout was what eventually closed it.
+    First run now only grants that sentinel on the setup surface
+    (`app.core.security._PRE_BOOTSTRAP_SETUP_SURFACE`), and an operator presence
+    stream is not part of setting the instance up — no agent can enrol before an
+    admin exists — so the handshake is rejected outright.
 
-    # Same test-overridable-var pattern as Task 11's heartbeatInterval — avoids
-    # actually sleeping the real 10s auth timeout per test run.
-    monkeypatch.setattr(ws_agents, "_STREAM_AUTH_TIMEOUT_SECONDS", 0.2)
-
-    # The handler's own auth-timeout branch is only reachable pre-OOBE
-    # (auth_enabled=False) — once True, the router-level require_auth
-    # dependency 401s a cookie-less WS handshake before this endpoint's body
-    # ever runs. See _auth_enabled()'s docstring and [[ws-auth-enabled-router-gate]].
+    Note the handler's `_STREAM_AUTH_TIMEOUT_SECONDS` branch is unreachable
+    through the router in both states now: bootstrapped, `require_auth` rejects
+    a cookie-less handshake; unbootstrapped, this does. It is dead defence in
+    depth rather than a live control.
+    """
     with _auth_enabled(False):
-        with ws_client.websocket_connect("/api/v1/agents/stream") as ws:
-            # No cookie present (TestClient doesn't set one) and we never send a
-            # first-message token — server sends an auth_timeout error, then
-            # closes 1008.
-            msg = json.loads(ws.receive_text())
-            assert msg["error"] == "auth_timeout"
-            with pytest.raises(WebSocketDisconnect):
-                ws.receive_text()
+        with pytest.raises(Exception) as exc_info:  # noqa: B017 - Starlette version varies.
+            with ws_client.websocket_connect("/api/v1/agents/stream"):
+                pass  # pragma: no cover - connecting at all is the failure.
+    denial = str(exc_info.value)
+    assert (
+        "403" in denial
+        or "401" in denial
+        or exc_info.type.__name__ in {"WebSocketDisconnect", "WebSocketDenialResponse"}
+    )
 
 
 def _login_viewer(ws_client, app_cfg):
