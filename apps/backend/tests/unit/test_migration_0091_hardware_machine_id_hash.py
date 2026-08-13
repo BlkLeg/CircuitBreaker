@@ -9,8 +9,6 @@ Tests verify:
 
 from pathlib import Path
 
-import pytest
-
 
 def test_migration_module_exists():
     """Test that migration 0091 module can be found."""
@@ -50,8 +48,9 @@ def test_migration_revision_properties():
 
 def test_schema_has_machine_id_hash_column(setup_db):
     """Integration test: verify Hardware table has machine_id_hash column and index."""
-    from app.db.session import engine
     from sqlalchemy import inspect as sa_inspect
+
+    from app.db.session import engine
 
     # After setup_db fixture, the schema should be created from current models,
     # which now includes the machine_id_hash column added by the migration.
@@ -70,8 +69,7 @@ def test_schema_has_machine_id_hash_column(setup_db):
     # Verify index exists
     indexes = {idx["name"] for idx in insp.get_indexes("hardware")}
     assert "ix_hardware_machine_id_hash" in indexes, (
-        "ix_hardware_machine_id_hash index should exist. "
-        f"Available indexes: {indexes}"
+        f"ix_hardware_machine_id_hash index should exist. Available indexes: {indexes}"
     )
 
 
@@ -80,7 +78,9 @@ def test_hardware_model_has_machine_id_hash():
     from app.db.models import Hardware
 
     # Verify the model has the attribute
-    assert hasattr(Hardware, "machine_id_hash"), "Hardware model should have machine_id_hash attribute"
+    assert hasattr(Hardware, "machine_id_hash"), (
+        "Hardware model should have machine_id_hash attribute"
+    )
 
     # Verify the column is mapped
     mapper = Hardware.__mapper__
@@ -97,7 +97,7 @@ def test_can_query_hardware_with_machine_id_hash(setup_db, db_session, factories
     from app.db.models import Hardware
 
     # Create a hardware record with no machine_id_hash (should be NULL)
-    hw1 = factories.hardware(name="NoHash")
+    factories.hardware(name="NoHash")
     db_session.commit()
 
     # Query it back

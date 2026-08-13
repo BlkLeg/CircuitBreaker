@@ -69,8 +69,8 @@ only Python 3.14 and FastAPI 0.138.2, neither of which the project supports).
    rationale; the new guard test makes an undeclared one fail.
 3. **LOW — no test covered `DELETE /api/v1/logs`.** That is how it shipped with no
    safeguard: nothing failed when the guardrail was absent.
-4. **HIGH — the committed backend suite does not pass, and the failures are
-   order-dependent.** On the supported interpreter and pinned FastAPI, `pytest tests`
+4. **HIGH — the committed backend suite did not pass, and the failures were
+   order-dependent.** *(RESOLVED — see "Suite restored to green" below.)* On the supported interpreter and pinned FastAPI, `pytest tests`
    at `c68842b6` exits 1 with **19 failures** (monitor scheduler/targets, monitor
    engine e2e, discovery auto-monitor, discovery probes, windscribe privacy score).
    Every one of them passes when its file is run alone or in small groups, so they
@@ -80,6 +80,40 @@ only Python 3.14 and FastAPI 0.138.2, neither of which the project supports).
    remediation (19 vs 19, same test ids), so it is pre-existing, not introduced here.
    Fixing it is REL-19/REL-20 work (test isolation), but it blocks any honest
    "suite green at the RC commit" claim.
+
+### Suite restored to green (2026-08-13)
+
+`pytest tests` now exits 0 with **zero failures** on Python 3.12.13 / FastAPI
+0.135.1, down from 19. Three distinct root causes, none of them a product bug:
+
+1. **Test-state leak (18 of 19 failures).** `tests/api/test_monitor_stream_auth.py`
+   — added by the SEC-08 slice — commits a hardware row and a monitor per case
+   through its own `SessionLocal`, because the stream handler opens its own
+   session and cannot see the test's SAVEPOINT. That is the same constraint the
+   agent suites hit, but `conftest.py`'s reaper only cleaned up `agents`, so the
+   monitor rows survived into every later test and broke anything that counts
+   monitors. Generalized the reaper to be table-driven (MonitorItem, Agent,
+   Hardware, User, Tenant, deleted child-first).
+2. **Time-bomb test.** `test_privacy_score_history_buckets_by_day_and_picks_latest`
+   hardcoded 2026-07-13/14 while the endpoint only returns the last 30 days. It
+   passed when written on 08-11 and began failing on 08-12 for a reason unrelated
+   to what it tests. Dates are now relative to today.
+3. **A test that never actually ran.** `test_arp_scan_accepts_16_subnet` read the
+   module global `_ARP_CAPABLE`, which is `None` until `_arp_available()` fills it
+   in — so the guard skipped the test rather than running it. Once anything
+   earlier in the session probed the capability, the skip stopped firing and the
+   test failed, because its patch target was wrong too: `srp` is imported inside
+   the function, so it must be patched in `scapy.sendrecv`. Now it calls the
+   capability function, patches the right target, and asserts `srp` was invoked.
+
+Also fixed while making the project's own gates green: 2 mypy errors in
+`ws_monitors.py` and `auth.py` (both real `Optional` narrowing gaps in SEC-08/SEC-10
+code, fixed rather than suppressed) and 6 ruff findings in untouched test files.
+`ruff check src/app` and `mypy src/app` (the `make lint` gates) both pass clean.
+
+Worth noting for REL-19/REL-20: two of these three were tests that reported
+success without exercising their subject. A green suite is not the same as a
+covering one.
 
 ### Verification performed for this remediation
 

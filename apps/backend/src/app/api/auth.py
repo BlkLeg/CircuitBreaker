@@ -282,7 +282,7 @@ def login_compat(
     # Early check for force_password_change before creating a full session.
     email_norm = payload.email.strip().lower()
     user = db.query(User).filter(User.email == email_norm).first()
-    if user and getattr(user, "locked_until", None) and user.locked_until > utcnow():
+    if user and user.locked_until and user.locked_until > utcnow():
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if (
         user

@@ -137,17 +137,30 @@ def app_cfg(setup_db):
 # ── Per-test DB session (rolled back after each test) ─────────────────────────
 
 
-def _agent_ids_committed() -> set[int]:
-    """Agent ids visible to a *fresh* connection, i.e. genuinely committed."""
-    from app.db.models import Agent
+def _reaped_models() -> tuple[type, ...]:
+    """Tables tests legitimately commit outside the per-test transaction.
+
+    Ordered so a child is deleted before whatever it points at: monitor rows
+    name a hardware target, and hardware and users can carry a tenant.
+    """
+    from app.db.models import Agent, Hardware, MonitorItem, Tenant, User
+
+    return (MonitorItem, Agent, Hardware, User, Tenant)
+
+
+def _committed_ids() -> dict[str, set[int]]:
+    """Ids visible to a *fresh* connection, i.e. genuinely committed."""
     from app.db.session import SessionLocal
 
     with SessionLocal() as probe:
-        return {row[0] for row in probe.execute(select(Agent.id)).all()}
+        return {
+            model.__name__: {row[0] for row in probe.execute(select(model.id)).all()}
+            for model in _reaped_models()
+        }
 
 
-def _reap_agents_committed_outside_the_test(known_agent_ids: set[int]) -> None:
-    """Delete `agents` rows that this test committed on some *other* connection.
+def _reap_agents_committed_outside_the_test(known_ids: dict[str, set[int]]) -> None:
+    """Delete rows this test committed on some *other* connection.
 
     Several agent suites must commit for real rather than write through
     `db_session`: `test_ws_agents_link.py::_active_agent_with_key` exists
@@ -169,18 +182,27 @@ def _reap_agents_committed_outside_the_test(known_agent_ids: set[int]) -> None:
     transaction` and will not be rolled back until the fixture below finishes.
     (Observed exactly that: `DELETE FROM agents WHERE agents.id IN (25)`
     waiting on `Lock/transactionid` for over an hour.)
+
+    Monitors are the same story as agents: `test_monitor_stream_auth.py` commits
+    a hardware row and a monitor per case because the stream handler opens its
+    own session and cannot see the SAVEPOINT either. Left behind, those rows
+    broke every later test that counts monitors — `test_monitor_targets.py`,
+    the scheduler suites, `test_discovery_auto_monitor.py` — but only in a full
+    run, which is the worst way to find out.
     """
-    from app.db.models import Agent
     from app.db.session import SessionLocal
 
     with SessionLocal() as reaper:
-        leaked = [
-            row[0]
-            for row in reaper.execute(select(Agent.id)).all()
-            if row[0] not in known_agent_ids
-        ]
-        if leaked:
-            reaper.execute(delete(Agent).where(Agent.id.in_(leaked)))
+        deleted = False
+        for model in _reaped_models():
+            known = known_ids.get(model.__name__, set())
+            leaked = [
+                row[0] for row in reaper.execute(select(model.id)).all() if row[0] not in known
+            ]
+            if leaked:
+                reaper.execute(delete(model).where(model.id.in_(leaked)))
+                deleted = True
+        if deleted:
             reaper.commit()
 
 
@@ -202,7 +224,7 @@ def db_session(setup_db):
 
     from app.db.session import engine
 
-    known_agent_ids = _agent_ids_committed()
+    known_ids = _committed_ids()
     connection = engine.connect()
     outer_tx = connection.begin()
     session = Session(bind=connection, join_transaction_mode="create_savepoint")
@@ -212,7 +234,7 @@ def db_session(setup_db):
         session.close()
         outer_tx.rollback()
         connection.close()
-        _reap_agents_committed_outside_the_test(known_agent_ids)
+        _reap_agents_committed_outside_the_test(known_ids)
 
 
 @pytest_asyncio.fixture

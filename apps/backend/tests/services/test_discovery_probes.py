@@ -12,13 +12,20 @@ def test_arp_scan_rejects_oversized_subnet() -> None:
 
 
 def test_arp_scan_accepts_16_subnet() -> None:
-    from app.services.discovery_probes import _ARP_CAPABLE, _run_arp_scan
+    # `_ARP_CAPABLE` starts as None and is only filled in by `_arp_available()`,
+    # so importing the global read None — falsy — and this test skipped itself
+    # instead of running. It failed the moment anything earlier in the session
+    # probed the capability first, because the patch target below was wrong too:
+    # `srp` is imported inside `_run_arp_scan`, so it must be patched where it is
+    # looked up, in scapy, not as an attribute of the module under test.
+    from app.services.discovery_probes import _arp_available, _run_arp_scan
 
-    if not _ARP_CAPABLE:
-        pytest.skip("scapy not available")
-    with patch("app.services.discovery_probes.srp", return_value=([], [])):
+    if not _arp_available():
+        pytest.skip("scapy not available or no NET_RAW capability")
+    with patch("scapy.sendrecv.srp", return_value=([], [])) as srp:
         result = asyncio.run(_run_arp_scan("192.168.0.0/16"))
     assert isinstance(result, list)
+    assert srp.call_count == 1
 
 
 @pytest.mark.asyncio

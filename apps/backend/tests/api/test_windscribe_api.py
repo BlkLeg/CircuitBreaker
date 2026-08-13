@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -242,9 +242,14 @@ async def test_privacy_score_history_buckets_by_day_and_picks_latest(
     client, auth_headers, db_session
 ):
     _set_windscribe(db_session, True)
-    day1 = datetime(2026, 7, 13, 9, 0, tzinfo=UTC)
-    day1_later = datetime(2026, 7, 13, 21, 0, tzinfo=UTC)
-    day2 = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
+    # Relative to today, not fixed calendar dates: the endpoint only returns the
+    # last 30 days, so hardcoded dates pass until they age out of the window and
+    # then fail for a reason that has nothing to do with bucketing.
+    day1_date = (datetime.now(UTC) - timedelta(days=3)).date()
+    day2_date = (datetime.now(UTC) - timedelta(days=2)).date()
+    day1 = datetime(day1_date.year, day1_date.month, day1_date.day, 9, 0, tzinfo=UTC)
+    day1_later = datetime(day1_date.year, day1_date.month, day1_date.day, 21, 0, tzinfo=UTC)
+    day2 = datetime(day2_date.year, day2_date.month, day2_date.day, 9, 0, tzinfo=UTC)
 
     _seed_snapshot(db_session, score=80, grade="B", created_at=day1)
     _seed_snapshot(
@@ -264,13 +269,15 @@ async def test_privacy_score_history_buckets_by_day_and_picks_latest(
     assert len(days) == 2
 
     by_date = {d["date"]: d for d in days}
+    day1_key = day1_date.isoformat()
+    day2_key = day2_date.isoformat()
     # day1's later (higher id) snapshot wins over the earlier one
-    assert by_date["2026-07-13"]["score"] == 72
-    assert by_date["2026-07-13"]["warning_count"] == 1
-    assert by_date["2026-07-13"]["info_count"] == 1
-    assert by_date["2026-07-13"]["critical_count"] == 0
-    assert by_date["2026-07-14"]["score"] == 95
-    assert by_date["2026-07-14"]["critical_count"] == 1
+    assert by_date[day1_key]["score"] == 72
+    assert by_date[day1_key]["warning_count"] == 1
+    assert by_date[day1_key]["info_count"] == 1
+    assert by_date[day1_key]["critical_count"] == 0
+    assert by_date[day2_key]["score"] == 95
+    assert by_date[day2_key]["critical_count"] == 1
 
 
 @pytest.mark.asyncio

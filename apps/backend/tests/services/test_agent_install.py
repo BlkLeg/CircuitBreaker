@@ -95,7 +95,9 @@ def test_render_install_script_creates_versioned_symlink_layout():
     assert 'install -m 0755 "$TMP_BIN" /usr/local/bin/cb-agent' not in script
 
 
-def test_build_install_command_self_signed_includes_hash_verification(db_session, app_cfg, monkeypatch):
+def test_build_install_command_self_signed_includes_hash_verification(
+    db_session, app_cfg, monkeypatch
+):
     from app.services.certificate_service import generate_selfsigned
 
     # Generate a valid self-signed certificate
@@ -135,9 +137,7 @@ def test_build_install_command_public_tls_omits_hash_verification(db_session, ap
 def test_tls_mode_and_pin_raises_when_no_cert_and_no_live_cert(monkeypatch):
     """Fail closed when cert/pin cannot be obtained for self-signed."""
     # Mock _live_nginx_cert_pem to return None (simulating cert file not available)
-    monkeypatch.setattr(
-        agent_install, "_live_nginx_cert_pem", lambda: None
-    )
+    monkeypatch.setattr(agent_install, "_live_nginx_cert_pem", lambda: None)
 
     # No cert from database (None)
     with pytest.raises(ValueError, match="Cannot obtain TLS pin"):
@@ -146,14 +146,13 @@ def test_tls_mode_and_pin_raises_when_no_cert_and_no_live_cert(monkeypatch):
 
 def test_tls_mode_and_pin_raises_for_self_signed_without_pin(monkeypatch, db_session):
     """Fail closed when self-signed cert has no available pin."""
-    from app.db.models import Certificate
-    from app.core.time import utcnow
     from datetime import timedelta
 
+    from app.core.time import utcnow
+    from app.db.models import Certificate
+
     # Mock _live_nginx_cert_pem to return None
-    monkeypatch.setattr(
-        agent_install, "_live_nginx_cert_pem", lambda: None
-    )
+    monkeypatch.setattr(agent_install, "_live_nginx_cert_pem", lambda: None)
 
     # Add a self-signed certificate with invalid/incomplete PEM
     # (that will cause _spki_pin to fail)
@@ -172,9 +171,7 @@ def test_tls_mode_and_pin_raises_for_self_signed_without_pin(monkeypatch, db_ses
 def test_build_install_command_fails_closed_without_pin(monkeypatch, db_session):
     """Install command generation fails when TLS pin cannot be obtained."""
     # Mock _live_nginx_cert_pem to return None
-    monkeypatch.setattr(
-        agent_install, "_live_nginx_cert_pem", lambda: None
-    )
+    monkeypatch.setattr(agent_install, "_live_nginx_cert_pem", lambda: None)
 
     # No certificate in database
     with pytest.raises(ValueError, match="Cannot obtain TLS pin"):

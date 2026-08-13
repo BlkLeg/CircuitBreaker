@@ -210,7 +210,7 @@ def _authenticate_monitor_reader(db: Any, raw_token: str) -> Any | None:
     if isinstance(payload, dict):
         uid_raw = payload.get("sub", payload.get("user_id"))
         try:
-            uid = int(uid_raw)
+            uid = int(uid_raw) if uid_raw is not None else None
         except (TypeError, ValueError):
             uid = None
         if uid == 0:
