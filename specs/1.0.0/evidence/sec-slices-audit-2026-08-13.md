@@ -36,6 +36,70 @@ Two independent auditors converged on the same real defect (mid-connection revoc
 
 ---
 
+## Remediation status (updated 2026-08-13, after commit `c68842b6`)
+
+Verified on **Python 3.12.13 with FastAPI 0.135.1** in a container (the host has
+only Python 3.14 and FastAPI 0.138.2, neither of which the project supports).
+
+| Gap | Status | Change |
+|---|---|---|
+| P0-1 agent probes leak | **FIXED** | `api/agents.py` now uses `require_scope("read","*")` + per-row `reader_can_access_monitor`; regression test asserts a write-only token gets 403 |
+| P0-2 audit-log wipe | **FIXED** | `api/logs.py` now requires `CLEAR_AUDIT_LOG` + idempotency key + verified backup, and writes `clear_audit_log_completed` as the surviving chain genesis; 3 new tests |
+| P0-3 XFF spoofing | **FIXED** | `core/rate_limit.py` walks the chain right-to-left skipping trusted CIDRs; 4 new tests including identity-rotation |
+| P0-5 monitor SSRF | **FIXED** | New `MONITOR_TARGET_POLICY` applied at request time in the web collector, with per-hop redirect re-validation; LAN/loopback still allowed, link-local/metadata refused; 3 new tests |
+| P0-4 pre-bootstrap admin | **OPEN** | Needs a product decision (see below) |
+| Gate blindness (audit finding #9) | **FIXED** | New `test_every_runtime_route_is_a_kind_this_gate_understands` fails on any unclassifiable route object |
+
+### New findings discovered during remediation
+
+1. **HIGH — dependency drift silently disables the SEC-06/07 gate.** `pyproject.toml`
+   declared `fastapi>=0.111.0` unbounded while `requirements.txt` pins `0.135.1`,
+   and CI installs from **pyproject** (`pip install -e "apps/backend/[dev]"`) — so CI
+   resolves whatever is newest. From FastAPI **0.138** onward, `include_router`
+   leaves an internal `_IncludedRouter` wrapper in `app.routes` instead of the
+   flattened routes, and the inventory sees **4 routes instead of 428**. Bisected:
+   0.136.0 good, 0.138.2 broken. The developer's own `.venv` is already on 0.138.2,
+   so the SEC-07 "passes locally" evidence could not have been produced there.
+   *Fixed:* bounded to `<0.137` with a comment, plus the new gate guard above.
+2. **MEDIUM — four public endpoints were never covered by SEC-06 at all.**
+   `/api/openapi.json`, `/api/docs`, `/api/redoc`, `/docs/oauth2-redirect` are plain
+   Starlette `Route` objects, so every reconciliation test skipped them. They are
+   unauthenticated and `/api/openapi.json` discloses the entire API schema.
+   *Fixed:* declared in a new `framework_surfaces` policy section with disclosure
+   rationale; the new guard test makes an undeclared one fail.
+3. **LOW — no test covered `DELETE /api/v1/logs`.** That is how it shipped with no
+   safeguard: nothing failed when the guardrail was absent.
+4. **HIGH — the committed backend suite does not pass, and the failures are
+   order-dependent.** On the supported interpreter and pinned FastAPI, `pytest tests`
+   at `c68842b6` exits 1 with **19 failures** (monitor scheduler/targets, monitor
+   engine e2e, discovery auto-monitor, discovery probes, windscribe privacy score).
+   Every one of them passes when its file is run alone or in small groups, so they
+   are cross-test pollution, not broken logic. This matters for the ledger: several
+   SEC rows cite whole-suite "pytest … pass locally" as their evidence method, and
+   that run does not currently pass. Confirmed identical before and after this
+   remediation (19 vs 19, same test ids), so it is pre-existing, not introduced here.
+   Fixing it is REL-19/REL-20 work (test isolation), but it blocks any honest
+   "suite green at the RC commit" claim.
+
+### Verification performed for this remediation
+
+Baseline and post-change full-suite runs were compared on the same environment:
+both produce **exactly the same 19 pre-existing failures** — zero regressions. Every
+file touched here (endpoint policy gate, destructive actions, rate limit, monitor
+collector, SEC-10 controls, agents API, monitor API, monitor stream auth) passes:
+200+ tests, exit 0. `ruff check` and `ruff format --check` are clean on all changed
+files. The endpoint inventory was regenerated and its only delta is the intended
+`require_role` → `require_scope` change on `get_agent_probes`.
+
+### Still open — needs your decision
+
+**P0-4, pre-bootstrap anonymous-admin.** `core/security.py:343-344` returns the
+user-id-0 admin sentinel for every anonymous request while `auth_enabled` is false.
+Closing it means restricting the pre-bootstrap surface to an allowlist
+(bootstrap/onboarding/status), which changes OOBE behavior and risks breaking the
+first-run wizard. The alternative is documenting private-network binding as the
+accepted control and recording it as an RC-08 exception. I did not pick for you.
+
 ## Prioritized gaps to fill
 
 ### P0 — block RC (security holes contradicting a "passed" claim)

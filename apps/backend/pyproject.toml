@@ -11,7 +11,12 @@ name = "circuit-breaker-backend"
 dynamic = ["version"]
 requires-python = ">=3.12,<4"
 dependencies = [
-    "fastapi>=0.111.0",
+    # Upper bound is load-bearing, not caution: from 0.138 `include_router` keeps
+    # an internal wrapper in `app.routes` instead of the flattened routes, so the
+    # SEC-06/07 endpoint inventory sees 4 routes instead of 428 and the security
+    # gate stops covering the API. Raise it only together with the route walk in
+    # scripts/generate_endpoint_inventory.py and tests/test_endpoint_policy_inventory.py.
+    "fastapi>=0.111.0,<0.137",
     "uvicorn[standard]>=0.29.0",
     "uptime-kuma-api-v2>=1.0.1",
     "sqlalchemy>=2.0.0",

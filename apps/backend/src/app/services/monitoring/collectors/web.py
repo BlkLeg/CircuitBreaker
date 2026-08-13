@@ -10,6 +10,11 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
+from app.core.url_validation import (
+    MONITOR_TARGET_POLICY,
+    validate_outbound_url,
+    validate_redirect_target,
+)
 from app.services.monitoring.collectors import CheckResult, Sample, register
 
 if TYPE_CHECKING:
@@ -17,10 +22,19 @@ if TYPE_CHECKING:
 
 _DEFAULT_RANGES = ["200-299"]
 
+#: httpx's own default redirect ceiling, applied to the manual hop loop.
+_MAX_REDIRECTS = 20
+
 
 def _request(url: str, params: dict) -> tuple[httpx.Response, float]:
     """One HTTP request. Returns (response, latency_ms). Mocked in tests."""
     import httpx
+
+    # SEC-12: a monitor URL is attacker-influenced input — whoever can create a
+    # monitor chooses the host, method, headers and body. Checking it here rather
+    # than only at save time also covers rows created before this policy existed
+    # and names that resolve somewhere new between save and check.
+    validate_outbound_url(url, MONITOR_TARGET_POLICY)
 
     method = str(params.get("method", "GET")).upper()
     headers = dict(params.get("headers") or {})
@@ -37,10 +51,31 @@ def _request(url: str, params: dict) -> tuple[httpx.Response, float]:
         headers=headers or None,
         content=params.get("body") or None,
         timeout=float(params.get("timeout", 10.0)),
-        follow_redirects=bool(params.get("follow_redirects", True)),
+        # Redirects are followed manually below so each hop is re-validated: an
+        # allowed target must not be able to bounce the check into link-local.
+        follow_redirects=False,
         auth=auth,
         verify=bool(params.get("verify_tls", True)),
     )
+    if bool(params.get("follow_redirects", True)):
+        hops = 0
+        while resp.is_redirect and hops < _MAX_REDIRECTS:
+            target = validate_redirect_target(
+                str(resp.request.url),
+                resp.headers.get("location", ""),
+                MONITOR_TARGET_POLICY,
+            )
+            resp = httpx.request(
+                method,
+                target.url,
+                headers=headers or None,
+                content=params.get("body") or None,
+                timeout=float(params.get("timeout", 10.0)),
+                follow_redirects=False,
+                auth=auth,
+                verify=bool(params.get("verify_tls", True)),
+            )
+            hops += 1
     return resp, round((time.monotonic() - t0) * 1000, 2)
 
 

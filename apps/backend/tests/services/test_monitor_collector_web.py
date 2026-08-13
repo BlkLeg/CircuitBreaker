@@ -1,5 +1,8 @@
 from unittest.mock import MagicMock, patch
 
+import httpx as _httpx
+import pytest
+
 from app.services.monitoring.collectors import COLLECTORS, web
 
 
@@ -86,3 +89,46 @@ def test_status_range_parser():
     assert web._status_accepted(301, ["200-299"]) is False
     assert web._status_accepted(301, ["200-299", "301"]) is True
     assert web._status_accepted(200, []) is True  # empty → default 200-299
+
+
+# ── SEC-12: a monitor URL is attacker-influenced input ───────────────────────
+# Whoever can create a monitor picks the host, method, headers and body, so the
+# check itself must refuse the targets an SSRF wants while still allowing the
+# LAN and localhost targets the product exists to watch.
+
+
+def test_request_refuses_link_local_metadata_target():
+    with pytest.raises(ValueError, match="Monitor URL"):
+        web._request("http://169.254.169.254/latest/meta-data/", {})
+
+
+def test_request_allows_private_and_loopback_targets():
+    sent = []
+
+    def _fake_request(method, url, **kwargs):
+        sent.append(url)
+        resp = MagicMock(spec=_httpx.Response)
+        resp.is_redirect = False
+        resp.status_code = 200
+        return resp
+
+    for target in ("http://10.0.0.9/health", "http://127.0.0.1:8080/health"):
+        with patch.object(_httpx, "request", side_effect=_fake_request):
+            web._request(target, {})
+
+    assert sent == ["http://10.0.0.9/health", "http://127.0.0.1:8080/health"]
+
+
+def test_redirect_into_link_local_is_refused():
+    def _fake_request(method, url, **kwargs):
+        resp = MagicMock(spec=_httpx.Response)
+        resp.is_redirect = True
+        resp.status_code = 302
+        resp.headers = {"location": "http://169.254.169.254/latest/meta-data/"}
+        resp.request = MagicMock()
+        resp.request.url = url
+        return resp
+
+    with patch.object(_httpx, "request", side_effect=_fake_request):
+        with pytest.raises(ValueError, match="Monitor URL"):
+            web._request("http://10.0.0.9/health", {"follow_redirects": True})

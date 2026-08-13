@@ -1,19 +1,25 @@
 """Logs API — query, clear, and stream audit log entries.
 
-Audit logs are append-only. No update or delete endpoints exist by design.
+Audit entries are append-only: nothing updates or deletes an individual row.
+The one exception is the whole-log wipe below, which is guarded as a
+destructive action and records itself as the new chain genesis.
 """
 
 import asyncio
 import json
 from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import distinct, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.core.destructive_actions import (
+    audit_destructive_outcome,
+    require_destructive_confirmation,
+)
 from app.core.rbac import require_role
 from app.core.time import elapsed_seconds as _elapsed_seconds
 from app.db.models import Log, User
@@ -293,12 +299,55 @@ def list_audit_logs(
 
 
 @router.delete("")
-def clear_logs(db: Session = Depends(get_db), _: Any = require_role("admin")) -> dict[str, int]:
-    deleted = db.execute(select(Log)).scalars().all()
-    count = len(deleted)
-    for row in deleted:
-        db.delete(row)
-    db.commit()
+def clear_logs(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, require_role("admin")],
+) -> dict[str, int]:
+    """Wipe the audit log, including its hash chain.
+
+    This is the only action that destroys its own evidence, so it carries the
+    heaviest guardrail: typed confirmation, an idempotency key, and a verified
+    backup. The clearing itself is written back after the delete and becomes
+    the new chain genesis — an emptied log still says who emptied it.
+    """
+    try:
+        require_destructive_confirmation(
+            request,
+            db,
+            actor_id=user.id,
+            action="clear_audit_log",
+            target="audit_log",
+            confirmation="CLEAR_AUDIT_LOG",
+            backup_required=True,
+        )
+        deleted = db.execute(select(Log)).scalars().all()
+        count = len(deleted)
+        for row in deleted:
+            db.delete(row)
+        db.commit()
+        audit_destructive_outcome(
+            db,
+            actor_id=user.id,
+            action="clear_audit_log",
+            target="audit_log",
+            outcome="completed",
+            details={"deleted": count},
+        )
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        audit_destructive_outcome(
+            db,
+            actor_id=user.id,
+            action="clear_audit_log",
+            target="audit_log",
+            outcome="failed",
+            details={"error": str(exc)},
+        )
+        raise HTTPException(status_code=500, detail=f"Clear audit log failed: {exc}") from exc
     return {"deleted": count}
 
 

@@ -1348,6 +1348,37 @@ async def test_agent_probes_lists_assigned_monitors_with_execution_state(
 
 
 @pytest.mark.asyncio
+async def test_agent_probes_reject_scoped_token_without_read(client, factories, db_session):
+    """SEC-08: the assigned-probes list is monitor data and carries the read scope.
+
+    A write-only token could once enumerate every monitor's name and host
+    through this route, because a role check ignores token scopes.
+    """
+    from app.core.security import create_salted_api_token_hash
+    from app.db.models import APIToken
+
+    agent = _probe_ready_agent(factories, "scope-check")
+    factories.monitor_item(name="edge icmp", host="10.0.0.9", probe_agent_id=agent.id)
+    owner = factories.user(role="admin")
+    db_session.add(
+        APIToken(
+            token_hash=create_salted_api_token_hash("sec8-probes-write-only"),
+            label="SEC-08 write-only token",
+            created_by=owner.id,
+            scopes=["write:*"],
+        )
+    )
+    db_session.flush()
+
+    resp = await client.get(
+        f"/api/v1/agents/{agent.id}/probes",
+        headers={"Authorization": "Bearer sec8-probes-write-only"},
+    )
+
+    assert resp.status_code == 403, resp.text
+
+
+@pytest.mark.asyncio
 async def test_eligible_agents_listing_reports_online_grant_readiness_concurrency_and_scope(
     client, factories, viewer_headers, probe_presence
 ):

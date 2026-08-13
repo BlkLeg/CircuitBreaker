@@ -107,23 +107,49 @@ def _request_from_trusted_proxy(request: Request) -> bool:
     return any(peer.version == net.version and peer in net for net in _trusted_proxy_networks())
 
 
-def _first_forwarded_for(headers: object) -> str:
+def _forwarded_client_identity(headers: object) -> str:
+    """Return the rightmost X-Forwarded-For hop we did not put there ourselves.
+
+    The shipped nginx *appends* (`$proxy_add_x_forwarded_for`), so a client's own
+    header survives to the left of its real address. Reading left to right would
+    therefore let any caller choose its own rate-limit key and rotate identities
+    past the login and MFA limits. Walking right to left and stopping at the
+    first hop outside `trusted_proxy_cidrs` yields the nearest address an
+    attacker cannot forge: everything further left was written by an untrusted
+    party. Returns "" when the whole chain is our own proxies (or unreadable),
+    leaving the caller on the socket peer.
+    """
     raw = ""
     if hasattr(headers, "get"):
         raw = str(headers.get("x-forwarded-for") or "")
-    return raw.split(",", 1)[0].strip()
+    if not raw:
+        return ""
+
+    trusted = _trusted_proxy_networks()
+    for entry in reversed(raw.split(",")):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            candidate = ipaddress.ip_address(entry)
+        except ValueError:
+            # An unreadable hop ends the verifiable chain — anything to its left
+            # is hearsay, so fall back to the peer rather than guess.
+            _logger.debug("Ignoring invalid X-Forwarded-For value from trusted proxy")
+            return ""
+        if any(candidate.version == net.version and candidate in net for net in trusted):
+            continue
+        return str(candidate)
+    return ""
 
 
 def trusted_client_identity(request: Request) -> str:
     """Return the rate-limit key, honoring forwarded identity only from trusted proxies."""
 
     if _request_from_trusted_proxy(request):
-        forwarded = _first_forwarded_for(getattr(request, "headers", {}))
+        forwarded = _forwarded_client_identity(getattr(request, "headers", {}))
         if forwarded:
-            try:
-                return str(ipaddress.ip_address(forwarded))
-            except ValueError:
-                _logger.debug("Ignoring invalid X-Forwarded-For value from trusted proxy")
+            return forwarded
     return get_remote_address(request)
 
 

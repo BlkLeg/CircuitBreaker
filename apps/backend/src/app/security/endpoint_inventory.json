@@ -1010,7 +1010,7 @@
       "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.agents.get_agent_probes",
-        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
         "app.db.session.get_db"

@@ -382,5 +382,39 @@
       "disclosure": "frontend icon bytes only",
       "optional": true
     }
+  ],
+  "framework_surfaces": [
+    {
+      "transport": "http",
+      "methods": ["GET", "HEAD"],
+      "path": "/api/openapi.json",
+      "policy": "public-api-schema",
+      "public_reason": "FastAPI serves the generated OpenAPI document; it is the published API contract for SRV-01 and the CLI/SDK.",
+      "disclosure": "route paths, parameter and response schemas, and descriptions for the whole API surface; no data and no credentials"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET", "HEAD"],
+      "path": "/api/docs",
+      "policy": "public-api-schema",
+      "public_reason": "Swagger UI renders the public OpenAPI document above and adds no surface of its own.",
+      "disclosure": "same schema content as /api/openapi.json"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET", "HEAD"],
+      "path": "/api/redoc",
+      "policy": "public-api-schema",
+      "public_reason": "ReDoc renders the public OpenAPI document above and adds no surface of its own.",
+      "disclosure": "same schema content as /api/openapi.json"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET", "HEAD"],
+      "path": "/docs/oauth2-redirect",
+      "policy": "public-protocol-endpoint",
+      "public_reason": "Swagger UI's OAuth redirect target; it returns a static page that hands the browser back to the docs UI.",
+      "disclosure": "static HTML shim only"
+    }
   ]
 }

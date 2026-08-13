@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core import agent_crypto, agent_scope
 from app.core.rate_limit import get_limit, limiter
-from app.core.rbac import require_role
+from app.core.rbac import require_role, require_scope
 from app.core.scheduler import reload_discovery_jobs
 from app.core.time import utcnow
 from app.db.bucket import epoch_bucket
@@ -456,7 +456,7 @@ async def get_probe_eligible_agents(
 def get_agent_probes(
     agent_id: int,
     db: Annotated[Session, Depends(get_db)],
-    _user: Annotated[User, require_role("viewer")],
+    user: Annotated[User, require_scope("read", "*")],
 ) -> Any:
     """§7's Assigned Probes section: what this vantage is responsible for.
 
@@ -464,18 +464,27 @@ def get_agent_probes(
     returned side by side and never folded into one another — the UP/DOWN pill
     shows target state only, and a monitor whose agent is offline keeps its last
     known target state (§2, D-12).
+
+    This is a monitor read, so it carries the same `read` scope and tenant rule
+    as `/monitors` — a scoped token without `read` cannot enumerate a vantage's
+    assignments, and rows the reader could not fetch directly are not listed
+    here either.
     """
     agent = agent_registry.get_agent(db, agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
     grant = agent_registry.structured_grants_dict(db, agent_id).get(probe_eligibility.CAPABILITY)
-    items = list(
-        db.execute(
+    items = [
+        item
+        for item in db.execute(
             select(MonitorItem)
             .where(MonitorItem.probe_agent_id == agent_id)
             .order_by(MonitorItem.name, MonitorItem.id)
         ).scalars()
-    )
+        if monitor_service.reader_can_access_monitor(
+            db, user, {"target_type": item.target_type, "target_id": item.target_id}
+        )
+    ]
     return AgentProbesRead(
         agent_id=agent_id,
         max_concurrent=_max_concurrent(grant),

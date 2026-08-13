@@ -14,7 +14,7 @@ from typing import Any
 
 from fastapi.routing import APIRoute, APIWebSocketRoute
 from fastapi.staticfiles import StaticFiles
-from starlette.routing import Mount
+from starlette.routing import Mount, Route
 
 from app.main import app
 
@@ -185,6 +185,46 @@ def test_public_endpoint_allowlist_requires_codeowner_review():
     )
     assert "Require review from Code Owners: \u2713 Enabled" in branch_protection
     assert "SEC-07 Public Route Review Gate" in branch_protection
+
+
+def test_every_runtime_route_is_a_kind_this_gate_understands():
+    """No route object may be silently skipped by the reconciliation below.
+
+    The other tests in this file iterate `app.routes` and ignore anything that
+    is not an APIRoute, an APIWebSocketRoute, or a StaticFiles mount. That
+    `continue` is the gate's blind spot: a framework change or an `app.mount()`
+    of a sub-application would drop routes out of the inventory without failing
+    anything, leaving SEC-06's "every endpoint declares a policy" claim covering
+    a fraction of the real surface. FastAPI 0.141 does exactly this — it stores
+    an internal `_IncludedRouter` wrapper in `app.routes` instead of the flat
+    routes — so this assertion is what turns that drift into a loud failure.
+    """
+    declared_framework = {
+        ("http", tuple(sorted(entry["methods"])), entry["path"])
+        for entry in _load_policy().get("framework_surfaces", [])
+    }
+
+    unrecognized: list[str] = []
+    for route in app.routes:
+        if isinstance(route, (APIRoute, APIWebSocketRoute)):
+            continue
+        if isinstance(route, Mount):
+            if isinstance(route.app, StaticFiles):
+                continue
+            unrecognized.append(f"{type(route).__name__} mount at {route.path}")
+            continue
+        if isinstance(route, Route):
+            key = ("http", tuple(sorted(route.methods or [])), route.path)
+            if key in declared_framework:
+                continue
+            unrecognized.append(f"undeclared framework route {route.path}")
+            continue
+        unrecognized.append(f"{type(route).__module__}.{type(route).__name__}")
+
+    assert not unrecognized, (
+        "app.routes contains entries this gate cannot classify, so the endpoint "
+        "inventory would silently under-report the real surface: " + ", ".join(sorted(unrecognized))
+    )
 
 
 def test_runtime_routes_reconcile_with_public_endpoint_policy():

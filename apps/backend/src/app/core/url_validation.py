@@ -58,6 +58,18 @@ LAN_INTEGRATION_POLICY = OutboundPolicy(
     allow_private=True,
     allow_unresolved_hostname=True,
 )
+MONITOR_TARGET_POLICY = OutboundPolicy(
+    name="Monitor URL",
+    allowed_schemes=frozenset({"http", "https"}),
+    # Watching your own LAN — and the host Circuit Breaker runs on — is the
+    # product's whole point, so private and loopback targets stay allowed. What
+    # this policy still refuses is what no monitor legitimately needs and what an
+    # SSRF wants: link-local, and with it the 169.254.169.254 metadata service,
+    # which `_is_forbidden_address` rejects for every policy.
+    allow_private=True,
+    allow_local=True,
+    allow_unresolved_hostname=True,
+)
 EGRESS_PROXY_POLICY = OutboundPolicy(
     name="Egress proxy URL",
     allowed_schemes=frozenset({"http", "https"}),

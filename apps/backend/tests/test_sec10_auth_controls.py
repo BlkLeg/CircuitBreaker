@@ -282,7 +282,12 @@ class TestSEC10TrustedProxyIdentity:
 
         assert identity == "203.0.113.10"
 
-    def test_trusted_proxy_uses_first_valid_forwarded_for(self, monkeypatch):
+    def test_trusted_proxy_uses_nearest_untrusted_forwarded_hop(self, monkeypatch):
+        """The rightmost hop outside the trusted CIDRs wins.
+
+        The shipped nginx appends to X-Forwarded-For, so entries further left
+        may have been supplied by the caller itself.
+        """
         from app.core import rate_limit
 
         monkeypatch.setattr(rate_limit.settings, "trusted_proxy_cidrs", ["10.0.0.0/8"])
@@ -292,4 +297,4 @@ class TestSEC10TrustedProxyIdentity:
             _request("10.1.2.3", "198.51.100.44, 198.51.100.45")
         )
 
-        assert identity == "198.51.100.44"
+        assert identity == "198.51.100.45"
