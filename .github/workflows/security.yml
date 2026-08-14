@@ -17,6 +17,11 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
+      # The runner's default python3 is 3.10; the validator parses
+      # .gitleaks.toml with tomllib, which is stdlib only from 3.11.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Validate suppression metadata
         run: python3 scripts/validate_security_suppressions.py
 

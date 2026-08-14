@@ -281,6 +281,14 @@
       "policy": "public-ui-asset",
       "public_reason": "SPA fallback serves the browser application; data APIs remain under /api/v1.",
       "disclosure": "frontend application shell"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET"],
+      "path": "/",
+      "policy": "public-ui-asset",
+      "public_reason": "Backend-only deployments register a static landing page in place of the SPA fallback; the two are mutually exclusive on the `_frontend_dir` branch in main.py.",
+      "disclosure": "product name and the fact that no frontend build is present"
     }
   ],
   "static_surfaces": [

@@ -122,6 +122,17 @@ jobs:
           .venv/bin/pip install --upgrade pip
           .venv/bin/pip install -e "apps/backend/[dev]"
 
+      # See dev-ci.yml: the SEC-06/07 endpoint policy/inventory gate reconciles
+      # against the live route table, and main.py registers a different surface
+      # depending on whether a frontend build is present. Build it so the gate
+      # measures the surface a deployment actually ships.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - name: Build frontend (route surface under test)
+        run: cd apps/frontend && npm ci && npm run build
+
       - name: Backend tests
         run: cd apps/backend && PYTHONPATH=src ../../.venv/bin/pytest
 

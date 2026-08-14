@@ -95,6 +95,19 @@ jobs:
           .venv/bin/pip install --upgrade pip
           .venv/bin/pip install -e "apps/backend/[dev]"
 
+      # The endpoint policy/inventory gate (SEC-06/07) reconciles the checked-in
+      # inventory against the live route table, and main.py branches on whether
+      # a frontend build exists: with one it serves the SPA fallback and mounts
+      # /assets and /icons, without one it serves a bare landing page at "/".
+      # Testing the backend without building the frontend therefore measures a
+      # route surface that no deployment ships, and the gate cannot pass.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - name: Build frontend (route surface under test)
+        run: cd apps/frontend && npm ci && npm run build
+
       - name: Backend tests
         run: cd apps/backend && PYTHONPATH=src ../../.venv/bin/pytest
 

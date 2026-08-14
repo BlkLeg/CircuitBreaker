@@ -16,10 +16,16 @@ from fastapi.routing import APIRoute, APIWebSocketRoute
 from fastapi.staticfiles import StaticFiles
 from starlette.routing import Mount, Route
 
+import app.main as main_module
 from app.main import app
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _ENDPOINT_POLICY_REPO_PATH = "apps/backend/src/app/security/endpoint_policy.json"
+
+# main.py registers exactly one of these, depending on whether a frontend build
+# directory exists: the SPA fallback when it does, the landing page when it does not.
+_SPA_FALLBACK_KEY = ("http", ("GET",), "/{full_path:path}")
+_API_LANDING_KEY = ("http", ("GET",), "/")
 
 _AUTH_DEPENDENCIES = frozenset(
     {
@@ -235,6 +241,19 @@ def test_runtime_routes_reconcile_with_public_endpoint_policy():
     runtime_keys = {_route_key(route) for route in runtime_routes}
 
     stale_policy = reviewed_public - runtime_keys
+
+    # main.py branches on `_frontend_dir`: with a build it serves the SPA
+    # fallback, without one it serves a static landing page at "/". The two are
+    # mutually exclusive, so the policy declares both and exactly one is live.
+    # Excuse only the one that structurally cannot exist in this configuration
+    # (CI runs this suite without building the frontend). The reverse direction
+    # below is untouched: whichever route IS live still has to be declared, so
+    # neither can go unreviewed.
+    if main_module._frontend_dir is None:
+        stale_policy = stale_policy - {_SPA_FALLBACK_KEY}
+    else:
+        stale_policy = stale_policy - {_API_LANDING_KEY}
+
     assert not stale_policy, "endpoint policy contains routes absent from runtime: " + ", ".join(
         f"{transport} {','.join(methods)} {path}"
         for transport, methods, path in sorted(stale_policy)
