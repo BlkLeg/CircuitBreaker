@@ -103,6 +103,12 @@ class BootstrapStatusResponse(BaseModel):
     client_hash_salt: str = "circuitbreaker-salt-v1"
     setup_token_required: bool = True
     setup_token_expires_at: str | None = None
+    #: Absolute path of the generated 0600 token file, so the OOBE wizard can
+    #: show a command that works on this deployment (CB_DATA_DIR differs between
+    #: a native install and the container). Never the token itself — see SEC-09.
+    #: None once bootstrap is done, or when the operator supplied CB_SETUP_TOKEN
+    #: and no file was written.
+    setup_token_path: str | None = None
 
 
 # Onboarding (OOBE) step state — public API, no auth required

@@ -81,6 +81,22 @@ def _bootstrap_token_file_path() -> Path:
     return _bootstrap_data_dir() / _BOOTSTRAP_TOKEN_FILE
 
 
+def bootstrap_token_location() -> str | None:
+    """Where the operator can read the generated setup token, if anywhere.
+
+    The path is a signpost, not a secret: it is already published in the
+    install docs, and it changes per deployment (/var/lib/circuitbreaker
+    natively, /data in the container) which is exactly why the wizard cannot
+    hardcode it. The token behind it never leaves the server.
+
+    Returns None when the operator supplied CB_SETUP_TOKEN, because in that
+    case no file is written and they already know the value.
+    """
+    if (os.environ.get(_BOOTSTRAP_TOKEN_ENV) or "").strip():
+        return None
+    return str(_bootstrap_token_file_path())
+
+
 def _bootstrap_token_ttl_hours() -> int:
     raw = (os.environ.get(_BOOTSTRAP_TOKEN_TTL_ENV) or "").strip()
     if not raw:
@@ -542,6 +558,9 @@ def bootstrap_status(db: Session) -> BootstrapStatusResponse:
             setup_token_expires_at=cfg.bootstrap_token_expires_at.isoformat()
             if cfg is not None and cfg.bootstrap_token_expires_at
             else None,
+            # Only while it is actually needed — a bootstrapped install has no
+            # reason to hand filesystem paths to unauthenticated callers.
+            setup_token_path=bootstrap_token_location() if needs_bootstrap else None,
         )
     except HTTPException:
         raise

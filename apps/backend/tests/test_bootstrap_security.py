@@ -324,3 +324,66 @@ async def test_first_run_surface_still_reachable_while_unbootstrapped(client, db
         assert oauth.status_code not in (401, 403)
     finally:
         _restore_bootstrapped_state(db_session)
+
+
+# ── Pointing the operator at the token ───────────────────────────────────────
+# OOBE used to say "find this in your server data directory", which is not a
+# place — CB_DATA_DIR is /var/lib/circuitbreaker on a native install and /data
+# in the container. The status response carries the resolved path so the wizard
+# can print a command that works, without ever carrying the token itself.
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_status_points_at_the_token_file(client, db_session, monkeypatch, tmp_path):
+    cfg = _prepare_bootstrap_state(db_session)
+    cfg.bootstrap_token_hash = None
+    cfg.bootstrap_token_expires_at = None
+    cfg.bootstrap_token_used_at = None
+    monkeypatch.delenv("CB_SETUP_TOKEN", raising=False)
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path))
+
+    resp = await client.get("/api/v1/bootstrap/status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    token_file = tmp_path / "bootstrap-setup-token"
+    assert body["setup_token_path"] == str(token_file)
+    # The path is a signpost; the token behind it stays on the server (SEC-09).
+    assert token_file.read_text(encoding="utf-8").strip() not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_status_omits_the_path_when_the_operator_supplied_the_token(
+    client, db_session, monkeypatch, tmp_path
+):
+    """CB_SETUP_TOKEN writes no file, so there is no path to point at."""
+    cfg = _prepare_bootstrap_state(db_session)
+    cfg.bootstrap_token_hash = None
+    cfg.bootstrap_token_expires_at = None
+    cfg.bootstrap_token_used_at = None
+    operator_token = "operator-provided-bootstrap-token"
+    monkeypatch.setenv("CB_SETUP_TOKEN", operator_token)
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path))
+
+    resp = await client.get("/api/v1/bootstrap/status")
+
+    assert resp.status_code == 200
+    assert resp.json()["setup_token_path"] is None
+    assert operator_token not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_status_stops_pointing_at_the_token_once_bootstrapped(
+    client, db_session, monkeypatch, tmp_path
+):
+    """A completed install has no reason to hand out filesystem paths pre-auth."""
+    monkeypatch.delenv("CB_SETUP_TOKEN", raising=False)
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path))
+    _restore_bootstrapped_state(db_session)
+
+    resp = await client.get("/api/v1/bootstrap/status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["needs_bootstrap"] is False
+    assert body["setup_token_path"] is None

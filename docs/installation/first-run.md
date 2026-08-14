@@ -36,6 +36,7 @@ Circuit Breaker accepts the token from one of two places:
 
 - `CB_SETUP_TOKEN` — set this environment variable before first start for unattended or production installs.
 - `CB_DATA_DIR/bootstrap-setup-token` — if `CB_SETUP_TOKEN` is not set, the backend generates a token and writes it to this file with `0600` permissions.
+  The wizard prints the resolved path for your deployment, so you can copy the `sudo cat …` command straight off the setup screen.
 
 The token is never returned by the public status API or shown in the browser. It expires after 24 hours by default. To change the lifetime before setup, set `CB_SETUP_TOKEN_TTL_HOURS` to a value from `1` to `168`.
 

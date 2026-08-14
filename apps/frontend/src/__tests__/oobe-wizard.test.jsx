@@ -27,6 +27,9 @@ vi.mock('../api/auth.js', () => ({
       data: { fqdn: 'cb.example.com', app_url: 'https://cb.example.com/' },
     }),
     meWithToken: vi.fn().mockResolvedValue({ data: {} }),
+    bootstrapStatus: vi.fn().mockResolvedValue({
+      data: { setup_token_path: '/var/lib/circuitbreaker/bootstrap-setup-token' },
+    }),
   },
 }));
 
@@ -166,6 +169,30 @@ describe('OOBEWizardPage', () => {
     expect(screen.getByLabelText('Email')).toBeInTheDocument();
     expect(screen.getByLabelText('Password')).toBeInTheDocument();
     expect(screen.getByLabelText('Confirm Password')).toBeInTheDocument();
+  });
+
+  it('points at the setup token file instead of naming a vague directory', async () => {
+    render(<OOBEWizardPage onCompleted={vi.fn()} />);
+    await getStartedAndSkipDomain();
+
+    // The path is per-deployment (/var/lib/circuitbreaker natively, /data in
+    // the container), so it has to come from the server, not a hardcoded string.
+    await waitFor(() =>
+      expect(
+        screen.getByText(/sudo cat \/var\/lib\/circuitbreaker\/bootstrap-setup-token/)
+      ).toBeInTheDocument()
+    );
+  });
+
+  it('falls back to naming CB_SETUP_TOKEN when the operator supplied one', async () => {
+    const { authApi } = await import('../api/auth.js');
+    authApi.bootstrapStatus.mockResolvedValueOnce({ data: { setup_token_path: null } });
+
+    render(<OOBEWizardPage onCompleted={vi.fn()} />);
+    await getStartedAndSkipDomain();
+
+    await waitFor(() => expect(screen.getByText(/CB_SETUP_TOKEN/)).toBeInTheDocument());
+    expect(screen.queryByText(/sudo cat/)).not.toBeInTheDocument();
   });
 
   it('shows password validation rules on the account step', async () => {

@@ -65,6 +65,9 @@ function OOBEWizardPage({ onCompleted }) {
   const [, setOnboardingLoaded] = useState(false);
   const [email, setEmail] = useState('');
   const [setupToken, setSetupToken] = useState('');
+  // Where the operator can read the token. Resolved server-side because
+  // CB_DATA_DIR differs per deployment; never the token itself.
+  const [setupTokenPath, setSetupTokenPath] = useState(null);
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -124,6 +127,23 @@ function OOBEWizardPage({ onCompleted }) {
   useEffect(() => {
     setAvatarLoadError(false);
   }, [email, photoPreview, step]);
+
+  useEffect(() => {
+    let cancelled = false;
+    authApi
+      .bootstrapStatus()
+      .then((res) => {
+        if (!cancelled) setSetupTokenPath(res?.data?.setup_token_path || null);
+      })
+      .catch(() => {
+        // A missing hint is a worse wizard, not a broken one — the token field
+        // still works, so never let this block bootstrap.
+        if (!cancelled) setSetupTokenPath(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const languages = [
     { value: 'en', label: 'English' },
@@ -1123,16 +1143,41 @@ function OOBEWizardPage({ onCompleted }) {
                     autoComplete="one-time-code"
                     required
                   />
-                  <p
+                  <div
                     style={{
                       fontSize: '0.75rem',
                       color: 'var(--color-text-muted)',
-                      marginTop: '0.25rem',
+                      marginTop: '0.375rem',
                     }}
                   >
-                    Find this one-time token in your server data directory or set it with
-                    CB_SETUP_TOKEN.
-                  </p>
+                    {setupTokenPath ? (
+                      <>
+                        <p style={{ margin: 0 }}>
+                          This one-time token never leaves your server. Run this on the machine you
+                          installed on:
+                        </p>
+                        <code
+                          style={{
+                            display: 'block',
+                            marginTop: '0.375rem',
+                            padding: '0.5rem 0.625rem',
+                            borderRadius: '0.375rem',
+                            background: 'var(--color-surface-2, var(--color-surface))',
+                            border: '1px solid var(--color-border)',
+                            fontFamily: 'var(--font-mono, monospace)',
+                            wordBreak: 'break-all',
+                            userSelect: 'all',
+                          }}
+                        >
+                          sudo cat {setupTokenPath}
+                        </code>
+                      </>
+                    ) : (
+                      <p style={{ margin: 0 }}>
+                        This installation uses the token you set in CB_SETUP_TOKEN.
+                      </p>
+                    )}
+                  </div>
                 </div>
 
                 {/* ── OAuth confirmation banner (shown after returning from OAuth) ── */}
