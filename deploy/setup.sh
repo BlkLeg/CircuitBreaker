@@ -1240,22 +1240,20 @@ stage10_final_output() {
   if [[ "$NO_TLS" == "false" ]]; then
     # HTTPS is available
     if [[ -n "$CB_FQDN" ]]; then
-      echo -e "  ${GREEN}✓${RESET}  https://${CB_FQDN}/ ${BOLD}(PRIMARY - Use this for account creation)${RESET}"
+      echo -e "  ${GREEN}✓${RESET}  https://${CB_FQDN}/"
       if [[ "$CB_CERT_TYPE" == "letsencrypt" ]]; then
         echo -e "     ${DIM}Certificate: Let's Encrypt (trusted)${RESET}"
       else
         echo -e "     ${DIM}Certificate: Self-signed (accept browser warning)${RESET}"
       fi
     else
-      echo -e "  ${GREEN}✓${RESET}  https://${detected_ip}/ ${BOLD}(PRIMARY - Use this for account creation)${RESET}"
+      echo -e "  ${GREEN}✓${RESET}  https://${detected_ip}/"
       echo -e "     ${DIM}Certificate: Self-signed (accept browser warning)${RESET}"
     fi
-    
-    # HTTP fallback (but warn about limitations)
-    if [[ -n "$CB_FQDN" ]]; then
-      echo -e "  ${YELLOW}⚠${RESET}  http://${CB_FQDN}:${CB_PORT}/ ${DIM}(Limited - no account creation)${RESET}"
-    fi
-    echo -e "  ${YELLOW}⚠${RESET}  http://${detected_ip}:${CB_PORT}/ ${DIM}(Limited - no account creation)${RESET}"
+    # Port ${CB_PORT} is deliberately not offered here. On a TLS install it does
+    # nothing but 301 to the URL above (deploy/nginx/circuitbreaker-tls.conf),
+    # so listing it as an access URL sends operators to a port that cannot
+    # serve the app — during onboarding, which is the worst time to be wrong.
   else
     # No TLS - HTTP only
     if [[ -n "$CB_FQDN" ]]; then
