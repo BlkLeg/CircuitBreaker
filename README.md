@@ -9,7 +9,7 @@
 > pass. The draft v1.0 support boundary is tracked in
 > [docs/release/1.0.0-support-contract.md](docs/release/1.0.0-support-contract.md).
 
-📖 **[User Guide](https://circuitbreaker.shawnji.com)** | 🗣️ **[Discord](https://discord.gg/SBdBRfmD)** | 🐦 **[X/Twitter](https://x.com/TryHostingCB)**
+📖 **[User Guide](https://blkleg.github.io/CircuitBreaker/)** | 🗣️ **[Discord](https://discord.gg/SBdBRfmD)** | 🐦 **[X/Twitter](https://x.com/TryHostingCB)**
 
 ---
 

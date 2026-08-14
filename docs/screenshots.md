@@ -1,6 +1,6 @@
 # Circuit Breaker — Screenshot Gallery
 
-📖 [Back to README](../README.md) | 🌐 [User Guide](https://circuitbreaker.shawnji.com)
+📖 [Back to README](../README.md) | 🌐 [User Guide](https://blkleg.github.io/CircuitBreaker/)
 
 ---
 

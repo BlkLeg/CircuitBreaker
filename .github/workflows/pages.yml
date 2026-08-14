@@ -1,0 +1,101 @@
+name: Deploy Pages
+
+# GitHub Pages publishes ONE artifact as the ENTIRE site. Every path the site
+# serves must therefore be produced by this single workflow — if a second
+# workflow also called actions/deploy-pages, whichever ran last would erase the
+# other's output. That is why the installer redirect that used to live in
+# release.yml's `deploy-redirect` job is built here instead.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'install.sh'
+      - '.github/workflows/pages.yml'
+  # Re-publish after a release so /install.sh tracks the shipped installer.
+  workflow_run:
+    workflows: ['Release']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deployments race; queue instead of cancelling so a release-
+# triggered publish is not dropped by a docs push landing at the same moment.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Site
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # mkdocs.yml uses the built-in `readthedocs` theme and only core markdown
+      # extensions (admonition, tables, toc), so plain mkdocs is sufficient.
+      - name: Install MkDocs
+        run: pip install 'mkdocs~=1.6'
+
+      - name: Build documentation
+        run: mkdocs build --site-dir _site
+
+      # ── Installer entry points ────────────────────────────────────────────
+      # Installs do NOT depend on Pages: every documented command curls
+      # raw.githubusercontent.com. These paths are additive conveniences.
+
+      # A real, curl-able installer URL. Equivalent to what the docs already
+      # tell users to run, which also points at install.sh on the main branch.
+      - name: Publish installer script
+        run: cp install.sh _site/install.sh
+
+      # Preserves the previous behaviour of the old Pages root: a browser-only
+      # meta-refresh to the latest release asset. curl does not follow meta
+      # refresh, so this is a human "click here" page, never a pipe target.
+      - name: Publish installer redirect
+        run: |
+          mkdir -p _site/install
+          cat > _site/install/index.html <<'HTML'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta http-equiv="refresh" content="0; url=https://github.com/BlkLeg/circuitbreaker/releases/latest/download/install.sh">
+            <title>Circuit Breaker Installer</title>
+          </head>
+          <body>
+            <p>Redirecting to Circuit Breaker installer...
+              <a href="https://github.com/BlkLeg/circuitbreaker/releases/latest/download/install.sh">Click here if not redirected.</a>
+            </p>
+          </body>
+          </html>
+          HTML
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site/
+
+  deploy:
+    name: Deploy Site
+    needs: build
+    runs-on: ubuntu-22.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4

@@ -14,8 +14,7 @@ on:
 permissions:
   contents: write    # create GitHub Release, upload assets
   packages: write    # push Docker image to GHCR
-  pages: write       # deploy GitHub Pages (install redirect)
-  id-token: write    # OIDC for pages deployment + cosign keyless signing
+  id-token: write    # OIDC for cosign keyless signing
 
 jobs:
   # ── Derive version ────────────────────────────────────────────────────────────
@@ -186,29 +185,3 @@ jobs:
             install.sh \
             setup.sh \
             packaging/circuit-breaker-release-key.asc
-
-  # ── Deploy install redirect to GitHub Pages ───────────────────────────────────
-  deploy-redirect:
-    name: Deploy Install Redirect
-    needs: release
-    runs-on: ubuntu-22.04
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    steps:
-      - name: Generate redirect page
-        run: |
-          mkdir -p _site
-          printf '<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="utf-8">\n  <meta http-equiv="refresh" content="0; url=https://github.com/BlkLeg/circuitbreaker/releases/latest/download/install.sh">\n  <title>Circuit Breaker Installer</title>\n</head>\n<body>\n  <p>Redirecting to Circuit Breaker installer...\n    <a href="https://github.com/BlkLeg/circuitbreaker/releases/latest/download/install.sh">Click here if not redirected.</a>\n  </p>\n</body>\n</html>\n' > _site/index.html
-          echo "circuitbreaker.shawnji.com" > _site/CNAME
-
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
-
-      - uses: actions/upload-pages-artifact@v4
-        with:
-          path: _site/
-
-      - name: Deploy to GitHub Pages
-        id: deploy
-        uses: actions/deploy-pages@v4

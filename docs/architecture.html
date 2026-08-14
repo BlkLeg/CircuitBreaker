@@ -1,0 +1,1880 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Circuit Breaker Architecture</title>
+<meta name="description" content="Architecture and data-flow walkthrough of Circuit Breaker: nine annotated diagrams covering deployment, request lifecycle, telemetry, real-time fan-out, monitoring, the Go edge agent, discovery, the topology map engine, and the whole system connected.">
+<style>
+  :root {
+    --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --serif: "Iowan Old Style", "Charter", "Bitstream Charter", "Palatino Linotype", Palatino, Georgia, serif;
+
+    --paper:        #eceff0;
+    --surface:      #f7f9f9;
+    --surface-sunk: #e3e7e8;
+    --line:         #c3ccce;
+    --line-soft:    #d6dcdd;
+    --text:         #1b262c;
+    --muted:        #5f6f77;
+
+    --copper:       #a75c17;
+    --copper-wash:  #f3e4d5;
+    --signal:       #0f6f66;
+    --signal-wash:  #dceceb;
+    --crit:         #9c2b2b;
+
+    --measure: 66ch;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:        #0d1418;
+      --surface:      #141d22;
+      --surface-sunk: #101a1f;
+      --line:         #2c3b43;
+      --line-soft:    #223037;
+      --text:         #dee7e9;
+      --muted:        #8c9ea6;
+
+      --copper:       #d98c46;
+      --copper-wash:  #2a1f14;
+      --signal:       #45bdad;
+      --signal-wash:  #10262a;
+      --crit:         #e0736e;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:        #0d1418;
+    --surface:      #141d22;
+    --surface-sunk: #101a1f;
+    --line:         #2c3b43;
+    --line-soft:    #223037;
+    --text:         #dee7e9;
+    --muted:        #8c9ea6;
+
+    --copper:       #d98c46;
+    --copper-wash:  #2a1f14;
+    --signal:       #45bdad;
+    --signal-wash:  #10262a;
+    --crit:         #e0736e;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--text);
+    font-family: var(--serif);
+    font-size: 16.5px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: 0 28px 120px;
+  }
+
+  /* ── Masthead ───────────────────────────────────────────────── */
+
+  .masthead {
+    padding: 64px 0 34px;
+    border-bottom: 2px solid var(--text);
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--copper);
+    margin: 0 0 18px;
+  }
+
+  h1 {
+    font-family: var(--mono);
+    font-size: clamp(30px, 5.2vw, 50px);
+    font-weight: 600;
+    letter-spacing: -0.03em;
+    line-height: 1.05;
+    margin: 0 0 20px;
+    text-wrap: balance;
+  }
+
+  .standfirst {
+    max-width: var(--measure);
+    font-size: 19px;
+    line-height: 1.55;
+    margin: 0;
+    color: var(--text);
+  }
+
+  .standfirst em { color: var(--muted); font-style: italic; }
+
+  /* ── Stat strip ─────────────────────────────────────────────── */
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border-bottom: 1px solid var(--line);
+    margin: 0 0 8px;
+  }
+
+  .stat {
+    background: var(--paper);
+    padding: 18px 16px 20px;
+  }
+
+  .stat b {
+    display: block;
+    font-family: var(--mono);
+    font-size: 25px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+
+  .stat span {
+    display: block;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-top: 7px;
+  }
+
+  /* ── Layout ─────────────────────────────────────────────────── */
+
+  .body-grid { display: block; }
+
+  @media (min-width: 1180px) {
+    .body-grid {
+      display: grid;
+      grid-template-columns: 172px minmax(0, 1fr);
+      gap: 52px;
+      align-items: start;
+    }
+    .toc {
+      position: sticky;
+      top: 32px;
+      padding-top: 60px;
+    }
+  }
+
+  .toc { display: none; }
+  @media (min-width: 1180px) { .toc { display: block; } }
+
+  .toc p {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 14px;
+    padding-bottom: 9px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .toc a {
+    display: block;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.35;
+    color: var(--muted);
+    text-decoration: none;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .toc a:hover, .toc a:focus-visible { color: var(--copper); }
+  .toc a i { font-style: normal; color: var(--copper); margin-right: 7px; }
+  .toc a.star { color: var(--text); font-weight: 600; }
+  .toc a.star::after { content: " ★"; color: var(--copper); }
+
+  /* ── Featured section ───────────────────────────────────────── */
+
+  section.featured {
+    border-top: 2px solid var(--copper);
+    margin-top: 68px;
+    padding-top: 34px;
+  }
+
+  .badge {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--paper);
+    background: var(--copper);
+    padding: 4px 10px 4px 11px;
+    margin-bottom: 16px;
+  }
+
+  .specline {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(146px, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    margin: 26px 0 10px;
+  }
+
+  .specline div { background: var(--surface); padding: 14px 14px 15px; }
+
+  .specline b {
+    display: block;
+    font-family: var(--mono);
+    font-size: 17px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--copper);
+  }
+
+  .specline span {
+    display: block;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    line-height: 1.4;
+    color: var(--muted);
+    margin-top: 5px;
+  }
+
+  /* ── Sections ───────────────────────────────────────────────── */
+
+  section { padding-top: 60px; scroll-margin-top: 24px; }
+
+  h2 {
+    font-family: var(--mono);
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.22;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+
+  h2 .sec {
+    color: var(--copper);
+    margin-right: 12px;
+    font-weight: 500;
+  }
+
+  .dek {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    margin: 0 0 22px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  section > p {
+    max-width: var(--measure);
+    margin: 0 0 18px;
+  }
+
+  h3 {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--copper);
+    margin: 34px 0 12px;
+  }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.855em;
+    background: var(--surface-sunk);
+    border: 1px solid var(--line-soft);
+    border-radius: 2px;
+    padding: 1px 5px;
+    white-space: nowrap;
+  }
+
+  strong { font-weight: 600; }
+
+  a { color: var(--copper); }
+
+  /* ── Figures ────────────────────────────────────────────────── */
+
+  figure {
+    margin: 30px 0 34px;
+    padding: 0;
+  }
+
+  .frame {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    padding: 22px 20px 18px;
+    overflow-x: auto;
+  }
+
+  figure svg {
+    display: block;
+    width: 100%;
+    min-width: 700px;
+    max-width: 100%;
+    height: auto;
+  }
+
+  /* Wide figures render at native scale and scroll inside their frame rather
+     than shrinking their labels below legibility. */
+  figure svg.w1100 { min-width: 1100px; }
+  figure svg.w1320 { min-width: 1320px; }
+
+  figcaption {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: var(--muted);
+    margin-top: 11px;
+    padding-left: 13px;
+    border-left: 2px solid var(--copper);
+    max-width: 78ch;
+  }
+
+  figcaption b {
+    color: var(--text);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    font-size: 10.5px;
+    margin-right: 8px;
+  }
+
+  /* SVG primitives */
+  svg text { font-family: var(--mono); fill: var(--text); }
+  svg .t   { font-size: 12px; }
+  svg .ts  { font-size: 10.5px; fill: var(--muted); }
+  svg .tt  { font-size: 10px; fill: var(--muted); letter-spacing: 0.08em; }
+  svg .box        { fill: var(--surface-sunk); stroke: var(--line); stroke-width: 1.2; }
+  svg .box-acc    { fill: var(--copper-wash);  stroke: var(--copper); stroke-width: 1.4; }
+  svg .box-sig    { fill: var(--signal-wash);  stroke: var(--signal); stroke-width: 1.4; }
+  svg .box-ghost  { fill: none; stroke: var(--line); stroke-width: 1.2; stroke-dasharray: 4 4; }
+  svg .flow   { stroke: var(--copper); stroke-width: 1.5; fill: none; }
+  svg .stream { stroke: var(--signal); stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; }
+  svg .hair   { stroke: var(--line); stroke-width: 1; fill: none; }
+  svg .hair-d { stroke: var(--line); stroke-width: 1; fill: none; stroke-dasharray: 3 4; }
+  svg .fill-acc { fill: var(--copper); }
+  svg .fill-sig { fill: var(--signal); }
+  svg .acc-txt  { fill: var(--copper); }
+  svg .sig-txt  { fill: var(--signal); }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    margin: 0 0 8px;
+    padding-bottom: 14px;
+  }
+
+  .legend i { font-style: normal; display: inline-flex; align-items: center; gap: 8px; }
+  .legend .k { width: 26px; height: 0; border-top-width: 2px; display: inline-block; }
+  .legend .k-solid  { border-top-style: solid; border-color: var(--copper); }
+  .legend .k-dash   { border-top-style: dashed; border-color: var(--signal); }
+  .legend .k-hair   { border-top-style: solid; border-color: var(--line); }
+
+  /* ── Tables ─────────────────────────────────────────────────── */
+
+  .tablewrap { overflow-x: auto; margin: 22px 0 8px; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 540px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+  }
+
+  th {
+    text-align: left;
+    font-weight: 600;
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 0 16px 9px 0;
+    border-bottom: 1px solid var(--text);
+    white-space: nowrap;
+  }
+
+  td {
+    padding: 10px 16px 10px 0;
+    border-bottom: 1px solid var(--line-soft);
+    vertical-align: top;
+    line-height: 1.5;
+  }
+
+  td:first-child { color: var(--copper); white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 1px solid var(--line); }
+
+  /* ── Note blocks ────────────────────────────────────────────── */
+
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(258px, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    margin: 24px 0 8px;
+  }
+
+  .card { background: var(--surface); padding: 18px 18px 20px; }
+
+  .card h4 {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    margin: 0 0 8px;
+    color: var(--copper);
+  }
+
+  .card p { margin: 0; font-size: 14.5px; line-height: 1.55; }
+
+  .pull {
+    border-left: 2px solid var(--signal);
+    padding: 2px 0 2px 18px;
+    margin: 26px 0;
+    max-width: var(--measure);
+    color: var(--muted);
+    font-style: italic;
+  }
+
+  ol.talk { max-width: var(--measure); padding-left: 0; list-style: none; margin: 22px 0 0; counter-reset: t; }
+
+  ol.talk li {
+    counter-increment: t;
+    padding: 0 0 22px 46px;
+    position: relative;
+  }
+
+  ol.talk li::before {
+    content: counter(t, decimal-leading-zero);
+    position: absolute;
+    left: 0;
+    top: 2px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--copper);
+    border: 1px solid var(--line);
+    padding: 2px 6px;
+  }
+
+  ol.talk b { display: block; font-family: var(--mono); font-size: 13.5px; margin-bottom: 3px; }
+
+  footer {
+    margin-top: 80px;
+    padding-top: 22px;
+    border-top: 2px solid var(--text);
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 30px;
+    justify-content: space-between;
+  }
+
+  :focus-visible { outline: 2px solid var(--copper); outline-offset: 3px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <p class="eyebrow">Architecture &amp; data flow · self-hosted infrastructure platform</p>
+    <h1>Circuit Breaker</h1>
+    <p class="standfirst">
+      A homelab and small-datacenter control plane: it discovers what you run, draws it as a live
+      topology, polls it for health, and keeps a tamper-evident record of every change. Every data
+      path in the system exists to feed one screen — <em>the topology map in §9, and the whole
+      machine assembled in §12.</em>
+    </p>
+  </header>
+
+  <div class="stats">
+    <div class="stat"><b>73.8k</b><span>Python · backend</span></div>
+    <div class="stat"><b>89.0k</b><span>JS/JSX · frontend</span></div>
+    <div class="stat"><b>12.7k</b><span>Go · edge agent</span></div>
+    <div class="stat"><b>45.4k</b><span>Lines of test</span></div>
+    <div class="stat"><b>435</b><span>Routed endpoints</span></div>
+    <div class="stat"><b>109</b><span>DB migrations</span></div>
+    <div class="stat"><b>11</b><span>Map layout engines</span></div>
+    <div class="stat"><b>10</b><span>Entity types graphed</span></div>
+  </div>
+
+  <div class="body-grid">
+
+    <nav class="toc" aria-label="Contents">
+      <p>Contents</p>
+      <a href="#repo"><i>1</i>The repo</a>
+      <a href="#deploy"><i>2</i>Deployment</a>
+      <a href="#request"><i>3</i>Request path</a>
+      <a href="#telemetry"><i>4</i>Telemetry</a>
+      <a href="#realtime"><i>5</i>Real-time</a>
+      <a href="#monitors"><i>6</i>Monitoring</a>
+      <a href="#agent"><i>7</i>Edge agent</a>
+      <a href="#discovery"><i>8</i>Discovery</a>
+      <a href="#map" class="star"><i>9</i>The map engine</a>
+      <a href="#security"><i>10</i>Security</a>
+      <a href="#talk"><i>11</i>Talking points</a>
+      <a href="#whole"><i>12</i>Whole system</a>
+    </nav>
+
+    <main>
+
+<!-- ══════════════════════════════════════════════════════════ 1 -->
+<section id="repo">
+  <h2><span class="sec">§1</span>The shape of the repo</h2>
+  <p class="dek">Three deployable units in one monorepo, plus the packaging that ships them</p>
+
+  <p>
+    Everything lives under <code>apps/</code>. The backend owns all domain logic and is the only
+    thing that touches the database; the frontend is a pure API consumer; the Go agent is an
+    optional edge process that runs on machines you want first-party telemetry from.
+  </p>
+
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>Path</th><th>What it is</th><th>Stack</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>apps/backend</td>
+          <td>API, workers, integrations, migrations. 57 router modules, 82 service modules, 80+ ORM models.</td>
+          <td>Python 3.12 · FastAPI · SQLAlchemy 2 · Alembic · Pydantic v2</td>
+        </tr>
+        <tr>
+          <td>apps/frontend</td>
+          <td>Single-page app. 29 pages, 164 components, 27 custom hooks — half of which are stream consumers.</td>
+          <td>React · Vite · React Flow · sigma + graphology · d3-force · Plotly · i18next</td>
+        </tr>
+        <tr>
+          <td>apps/agent</td>
+          <td>Edge collector: host facts, network scoping, remote probes. Ships its own updater and spool.</td>
+          <td>Go 1.25 · Noise IK (flynn/noise) · gorilla/websocket · miekg/dns</td>
+        </tr>
+        <tr>
+          <td>docker/ · deploy/</td>
+          <td>Single-image runtime: supervisord unit files, nginx config, Postgres bootstrap, migration and OOBE hooks.</td>
+          <td>Dockerfile.mono · supervisord · nginx · pgbouncer</td>
+        </tr>
+        <tr>
+          <td>specs/ · docs/</td>
+          <td>Release-gate evidence, ADRs, security suppression ledger, and the user-facing MkDocs site.</td>
+          <td>Markdown · JSON policy files checked in CI</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>The one rule that shapes the backend</h3>
+  <p>
+    Routers decode and authorize; services do the work. An API module under <code>app/api/</code>
+    resolves the caller, validates a Pydantic schema, and calls into <code>app/services/</code>.
+    No SQL and no domain branching live in the route layer, which is what makes the same logic
+    reusable from the six background workers — they import services directly and never call
+    the HTTP API.
+  </p>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ 2 -->
+<section id="deploy">
+  <h2><span class="sec">§2</span>One image, one process tree</h2>
+  <p class="dek">Postgres, NATS, Redis, the API, six workers and nginx under a single supervisor</p>
+
+  <p>
+    The deployment target is somebody's homelab, so the whole stack ships as one container with a
+    read-only root filesystem and a single writable <code>/data</code> volume. Supervisord runs the
+    process tree; the API binds only to loopback and nginx is the only thing listening on a public
+    port. Postgres, NATS and Redis are embedded by default and each can be pointed at an external
+    instance through an env var instead.
+  </p>
+
+  <div class="legend" aria-hidden="true">
+    <i><span class="k k-solid"></span> synchronous call</i>
+    <i><span class="k k-dash"></span> message bus / stream</i>
+    <i><span class="k k-hair"></span> shared data access</i>
+  </div>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="0 0 960 470" role="img" aria-label="Deployment diagram: a browser and Go agents connect through nginx to a FastAPI process; the API and six worker processes exchange messages over an embedded NATS JetStream bus and share PostgreSQL with TimescaleDB and Redis, all inside a single read-only container.">
+        <defs>
+          <marker id="f1a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="fill-acc"/>
+          </marker>
+          <marker id="f1s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="fill-sig"/>
+          </marker>
+        </defs>
+
+        <!-- container -->
+        <rect x="170" y="16" width="530" height="418" class="box-acc" fill="none"/>
+        <text x="182" y="36" class="tt">CONTAINER · READ-ONLY ROOTFS · CAP_DROP ALL · NO-NEW-PRIVILEGES</text>
+
+        <!-- external clients -->
+        <rect x="16" y="50" width="132" height="54" class="box"/>
+        <text x="82" y="74" class="t" text-anchor="middle">Browser</text>
+        <text x="82" y="90" class="ts" text-anchor="middle">React SPA</text>
+
+        <rect x="16" y="152" width="132" height="60" class="box"/>
+        <text x="82" y="176" class="t" text-anchor="middle">cb-agent hosts</text>
+        <text x="82" y="192" class="ts" text-anchor="middle">Go · Noise over WSS</text>
+
+        <line x1="148" y1="76" x2="184" y2="76" class="flow" marker-end="url(#f1a)"/>
+        <text x="166" y="66" class="tt" text-anchor="middle">HTTPS</text>
+        <polyline points="148,182 163,182 163,92 184,92" class="flow" marker-end="url(#f1a)"/>
+
+        <!-- nginx -->
+        <rect x="190" y="52" width="120" height="54" class="box"/>
+        <text x="250" y="76" class="t" text-anchor="middle">nginx</text>
+        <text x="250" y="92" class="ts" text-anchor="middle">:8080 / :8443</text>
+
+        <!-- api -->
+        <line x1="310" y1="79" x2="336" y2="79" class="flow" marker-end="url(#f1a)"/>
+        <rect x="340" y="52" width="170" height="54" class="box-acc"/>
+        <text x="425" y="76" class="t" text-anchor="middle">FastAPI · uvicorn</text>
+        <text x="425" y="92" class="ts" text-anchor="middle">2 workers, loopback only</text>
+
+        <!-- workers -->
+        <rect x="540" y="44" width="146" height="124" class="box"/>
+        <text x="613" y="63" class="t" text-anchor="middle">6 workers</text>
+        <text x="551" y="82" class="ts">discovery</text>
+        <text x="551" y="98" class="ts">notification</text>
+        <text x="551" y="114" class="ts">telemetry</text>
+        <text x="551" y="130" class="ts">monitor-scheduler</text>
+        <text x="551" y="146" class="ts">monitor-poll</text>
+        <text x="551" y="162" class="ts">probe-dispatch</text>
+
+        <!-- bus -->
+        <rect x="350" y="196" width="280" height="34" class="box-sig"/>
+        <text x="490" y="217" class="t" text-anchor="middle">NATS + JetStream</text>
+
+        <line x1="425" y1="106" x2="425" y2="192" class="stream" marker-end="url(#f1s)"/>
+        <text x="433" y="152" class="tt sig-txt">publish</text>
+        <line x1="605" y1="168" x2="605" y2="192" class="stream" marker-end="url(#f1s)"/>
+        <text x="613" y="184" class="tt sig-txt">consume</text>
+
+        <!-- data rail -->
+        <polyline points="360,106 360,150 305,150 305,248" class="hair"/>
+        <polyline points="655,168 655,248" class="hair"/>
+        <line x1="305" y1="248" x2="655" y2="248" class="hair"/>
+        <text x="480" y="243" class="tt" text-anchor="middle">SQLALCHEMY SESSIONS</text>
+
+        <line x1="345" y1="248" x2="345" y2="276" class="hair" marker-end="url(#f1a)"/>
+        <line x1="565" y1="248" x2="565" y2="276" class="hair" marker-end="url(#f1a)"/>
+
+        <rect x="190" y="280" width="230" height="56" class="box"/>
+        <text x="305" y="304" class="t" text-anchor="middle">PostgreSQL 15</text>
+        <text x="305" y="320" class="ts" text-anchor="middle">TimescaleDB · pgbouncer</text>
+
+        <rect x="445" y="280" width="240" height="56" class="box"/>
+        <text x="565" y="304" class="t" text-anchor="middle">Redis</text>
+        <text x="565" y="320" class="ts" text-anchor="middle">cache · rate limits · presence</text>
+
+        <!-- footer inside container -->
+        <line x1="190" y1="360" x2="686" y2="360" class="hair-d"/>
+        <text x="190" y="382" class="ts">supervisord — restarts any unit in place; no orchestrator required</text>
+        <text x="190" y="402" class="ts">/data — pgdata · nats store · redis · uploads · vault key · worker heartbeats</text>
+        <text x="190" y="422" class="ts">every embedded service is swappable for an external one via env var</text>
+
+        <!-- external targets -->
+        <rect x="740" y="44" width="204" height="62" class="box"/>
+        <text x="842" y="68" class="t" text-anchor="middle">Managed hardware</text>
+        <text x="842" y="86" class="ts" text-anchor="middle">iDRAC · iLO · UPS · SNMP</text>
+        <text x="842" y="99" class="ts" text-anchor="middle">Proxmox · Uptime Kuma</text>
+
+        <rect x="740" y="140" width="204" height="58" class="box"/>
+        <text x="842" y="164" class="t" text-anchor="middle">LAN under discovery</text>
+        <text x="842" y="182" class="ts" text-anchor="middle">nmap · mDNS · ARP · DHCP</text>
+
+        <line x1="686" y1="72" x2="736" y2="72" class="flow" marker-end="url(#f1a)"/>
+        <polyline points="686,140 712,140 712,168 736,168" class="flow" marker-end="url(#f1a)"/>
+      </svg>
+    </div>
+    <figcaption>
+      <b>Fig 1</b> Nothing but nginx is reachable from the network. The API and the six workers never
+      call each other directly — they meet on the NATS bus and in the database, which is why any
+      worker can be restarted, scaled out, or run against an external Postgres without the API
+      noticing.
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ 3 -->
+<section id="request">
+  <h2><span class="sec">§3</span>What happens to one request</h2>
+  <p class="dek">Seven middleware layers, then authorization, then a service, then an audit entry</p>
+
+  <p>
+    Every call from the SPA carries a HttpOnly session cookie and, on writes, a double-submit CSRF
+    token. Starlette wraps middleware in reverse registration order, so the last one added in
+    <code>main.py</code> is the first one executed — the diagram below is in <em>execution</em>
+    order, which is the order that actually matters when you are debugging a 403.
+  </p>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="0 0 800 690" role="img" aria-label="Request lifecycle: a browser request passes through nginx, then tenant resolution, rate limiting, security headers, logging, legacy token shim, CSRF and CORS middleware, then route matching, then auth and RBAC dependencies, then a service module which writes to Postgres, appends a hash-chained audit row, and publishes an event to NATS.">
+        <defs>
+          <marker id="f2a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="fill-acc"/>
+          </marker>
+          <marker id="f2s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="fill-sig"/>
+          </marker>
+        </defs>
+
+        <!-- entry -->
+        <rect x="200" y="18" width="320" height="46" class="box"/>
+        <text x="360" y="38" class="t" text-anchor="middle">Browser — axios, withCredentials</text>
+        <text x="360" y="54" class="ts" text-anchor="middle">Cookie: session · Header: X-CSRF-Token</text>
+        <line x1="360" y1="64" x2="360" y2="80" class="flow" marker-end="url(#f2a)"/>
+
+        <rect x="200" y="82" width="320" height="38" class="box"/>
+        <text x="360" y="106" class="t" text-anchor="middle">nginx — TLS, buffering off for streams</text>
+        <line x1="360" y1="120" x2="360" y2="136" class="flow" marker-end="url(#f2a)"/>
+
+        <!-- middleware label -->
+        <text x="24" y="152" class="tt acc-txt">MIDDLEWARE</text>
+        <text x="24" y="167" class="tt">EXECUTION</text>
+        <text x="24" y="182" class="tt">ORDER</text>
+        <line x1="24" y1="196" x2="24" y2="392" class="hair"/>
+
+        <rect x="200" y="138" width="320" height="32" class="box"/>
+        <text x="212" y="158" class="t">1 · TenantMiddleware</text>
+        <text x="508" y="158" class="ts" text-anchor="end">resolve tenant scope</text>
+
+        <rect x="200" y="176" width="320" height="32" class="box"/>
+        <text x="212" y="196" class="t">2 · TenantRateLimit</text>
+        <text x="508" y="196" class="ts" text-anchor="end">token bucket</text>
+
+        <rect x="200" y="214" width="320" height="32" class="box"/>
+        <text x="212" y="234" class="t">3 · SecurityHeaders</text>
+        <text x="508" y="234" class="ts" text-anchor="end">CSP · HSTS · frame-deny</text>
+
+        <rect x="200" y="252" width="320" height="32" class="box"/>
+        <text x="212" y="272" class="t">4 · Logging</text>
+        <text x="508" y="272" class="ts" text-anchor="end">redacted at the filter</text>
+
+        <rect x="200" y="290" width="320" height="32" class="box"/>
+        <text x="212" y="310" class="t">5 · LegacyToken</text>
+        <text x="508" y="310" class="ts" text-anchor="end">deprecated API tokens</text>
+
+        <rect x="200" y="328" width="320" height="32" class="box"/>
+        <text x="212" y="348" class="t">6 · CSRF</text>
+        <text x="508" y="348" class="ts" text-anchor="end">double-submit on writes</text>
+
+        <rect x="200" y="366" width="320" height="32" class="box"/>
+        <text x="212" y="386" class="t">7 · CORS</text>
+        <text x="508" y="386" class="ts" text-anchor="end">same-origin unless configured</text>
+
+        <line x1="360" y1="398" x2="360" y2="416" class="flow" marker-end="url(#f2a)"/>
+
+        <!-- routing -->
+        <rect x="200" y="418" width="320" height="42" class="box"/>
+        <text x="360" y="438" class="t" text-anchor="middle">Route match — 435 endpoints</text>
+        <text x="360" y="454" class="ts" text-anchor="middle">every one covered by a checked-in auth policy</text>
+        <line x1="360" y1="460" x2="360" y2="478" class="flow" marker-end="url(#f2a)"/>
+
+        <rect x="200" y="480" width="320" height="52" class="box-acc"/>
+        <text x="360" y="500" class="t" text-anchor="middle">Dependencies — require_auth / require_role</text>
+        <text x="360" y="516" class="ts" text-anchor="middle">role hierarchy + scopes, session revocation check</text>
+        <line x1="360" y1="532" x2="360" y2="550" class="flow" marker-end="url(#f2a)"/>
+
+        <rect x="200" y="552" width="320" height="42" class="box"/>
+        <text x="360" y="572" class="t" text-anchor="middle">Service module</text>
+        <text x="360" y="588" class="ts" text-anchor="middle">all domain logic lives here</text>
+        <line x1="360" y1="594" x2="360" y2="612" class="flow" marker-end="url(#f2a)"/>
+
+        <rect x="200" y="614" width="320" height="42" class="box"/>
+        <text x="360" y="634" class="t" text-anchor="middle">PostgreSQL</text>
+        <text x="360" y="650" class="ts" text-anchor="middle">one transaction per request</text>
+
+        <!-- right branches -->
+        <polyline points="520,192 570,192" class="hair" marker-end="url(#f2a)"/>
+        <rect x="576" y="176" width="204" height="32" class="box"/>
+        <text x="678" y="196" class="ts" text-anchor="middle">Redis — counters</text>
+
+        <polyline points="520,506 570,506" class="hair" marker-end="url(#f2a)"/>
+        <rect x="576" y="482" width="204" height="46" class="box"/>
+        <text x="678" y="502" class="ts" text-anchor="middle">viewer · editor · admin · demo</text>
+        <text x="678" y="518" class="ts" text-anchor="middle">+ granular read/write scopes</text>
+
+        <polyline points="520,566 570,566" class="hair" marker-end="url(#f2a)"/>
+        <rect x="576" y="546" width="204" height="42" class="box-acc"/>
+        <text x="678" y="566" class="ts" text-anchor="middle">audit_log — SHA-256 chain</text>
+        <text x="678" y="580" class="ts" text-anchor="middle">actor · IP · diff · prev_hash</text>
+
+        <polyline points="520,632 548,632 548,616 570,616" class="stream" marker-end="url(#f2s)"/>
+        <rect x="576" y="600" width="204" height="32" class="box-sig"/>
+        <text x="678" y="620" class="ts" text-anchor="middle">NATS publish → live clients</text>
+      </svg>
+    </div>
+    <figcaption>
+      <b>Fig 2</b> The interesting part is layer 8. All 435 routes are enumerated into
+      <code>endpoint_inventory.json</code> and diffed against <code>endpoint_policy.json</code> in CI:
+      adding a route without an auth dependency fails the build unless it is explicitly listed as an
+      allowed exception. Authorization is a tested property of the app, not a convention.
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ 4 -->
+<section id="telemetry">
+  <h2><span class="sec">§4</span>Telemetry: poll, queue, batch, cache</h2>
+  <p class="dek">Device polling is decoupled from database writes by a durable JetStream queue</p>
+
+  <p>
+    The telemetry worker polls every enabled device on its own interval — Redfish for iDRAC and iLO,
+    SNMP for UPS units and switches, the Proxmox API for hypervisors. Credentials are pulled from
+    the Fernet vault at poll time and never held in plaintext at rest. The naive version of this
+    writes a row per poll; instead each sample is published to a JetStream subject and a separate
+    pull consumer batches up to 50 rows per commit.
+  </p>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="0 0 1000 350" role="img" aria-label="Telemetry pipeline: devices are polled by the telemetry collector using vault-decrypted credentials, samples are published to a JetStream stream, an ingest worker pulls and batch-writes them to TimescaleDB hypertables and a Redis cache, and the cache publish drives a WebSocket stream to the browser; a dashed fallback path writes directly to the database when NATS is unavailable.">
+        <defs>
+          <marker id="f3a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="fill-acc"/>
+          </marker>
+          <marker id="f3s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="fill-sig"/>
+          </marker>
+        </defs>
+
+        <rect x="16" y="110" width="130" height="62" class="box"/>
+        <text x="81" y="134" class="t" text-anchor="middle">Devices</text>
+        <text x="81" y="150" class="ts" text-anchor="middle">Redfish · SNMP</text>
+        <text x="81" y="163" class="ts" text-anchor="middle">IPMI · Proxmox</text>
+
+        <line x1="146" y1="141" x2="182" y2="141" class="flow" marker-end="url(#f3a)"/>
+        <text x="164" y="104" class="tt" text-anchor="middle">POLL</text>
+
+        <rect x="186" y="110" width="146" height="62" class="box"/>
+        <text x="259" y="134" class="t" text-anchor="middle">telemetry_collector</text>
+        <text x="259" y="150" class="ts" text-anchor="middle">per-device interval</text>
+        <text x="259" y="163" class="ts" text-anchor="middle">client pool reuse</text>
+
+        <!-- vault -->
+        <rect x="186" y="26" width="146" height="46" class="box-acc"/>
+        <text x="259" y="46" class="ts" text-anchor="middle">Fernet vault</text>
+        <text x="259" y="61" class="ts" text-anchor="middle">decrypt credentials</text>
+        <line x1="259" y1="72" x2="259" y2="106" class="hair" marker-end="url(#f3a)"/>
+
+        <line x1="332" y1="141" x2="368" y2="141" class="stream" marker-end="url(#f3s)"/>
+        <text x="350" y="104" class="tt sig-txt" text-anchor="middle">PUB</text>
+
+        <rect x="372" y="110" width="158" height="62" class="box-sig"/>
+        <text x="451" y="130" class="t" text-anchor="middle">TELEMETRY stream</text>
+        <text x="451" y="147" class="ts" text-anchor="middle">telemetry.ingest.{hw_id}</text>
+        <text x="451" y="161" class="ts" text-anchor="middle">durable across restarts</text>
+
+        <line x1="530" y1="141" x2="566" y2="141" class="stream" marker-end="url(#f3s)"/>
+        <text x="548" y="104" class="tt sig-txt" text-anchor="middle">PULL</text>
+
+        <rect x="570" y="110" width="152" height="62" class="box"/>
+        <text x="646" y="130" class="t" text-anchor="middle">ingest worker</text>
+        <text x="646" y="147" class="ts" text-anchor="middle">batches ≤ 50 / commit</text>
+        <text x="646" y="161" class="ts" text-anchor="middle">acks after write</text>
+
+        <polyline points="722,128 748,128 748,96 776,96" class="flow" marker-end="url(#f3a)"/>
+        <polyline points="722,155 748,155 748,196 776,196" class="flow" marker-end="url(#f3a)"/>
+
+        <rect x="780" y="66" width="150" height="58" class="box"/>
+        <text x="855" y="88" class="t" text-anchor="middle">TimescaleDB</text>
+        <text x="855" y="106" class="ts" text-anchor="middle">hypertables, retained</text>
+
+        <rect x="780" y="166" width="150" height="58" class="box"/>
+        <text x="855" y="188" class="t" text-anchor="middle">Redis cache</text>
+        <text x="855" y="206" class="ts" text-anchor="middle">60 s TTL, latest state</text>
+
+        <polyline points="930,195 954,195 954,270 470,270" class="stream" marker-end="url(#f3s)"/>
+        <rect x="200" y="248" width="266" height="46" class="box-sig"/>
+        <text x="333" y="268" class="t" text-anchor="middle">WS /api/v1/telemetry/stream</text>
+        <text x="333" y="284" class="ts" text-anchor="middle">health rings update in place</text>
+
+        <line x1="200" y1="271" x2="164" y2="271" class="stream" marker-end="url(#f3s)"/>
+        <text x="90" y="268" class="ts">to every open map</text>
+
+        <!-- fallback -->
+        <polyline points="259,172 259,214 700,214 700,180 776,180" class="hair-d" marker-end="url(#f3a)"/>
+        <text x="420" y="208" class="tt">FALLBACK · NATS UNAVAILABLE → COLLECTOR WRITES DIRECT</text>
+
+        <line x1="16" y1="316" x2="984" y2="316" class="hair"/>
+        <text x="16" y="336" class="ts">Decoupling buys three things: poll latency never blocks on the DB, an ingest-worker restart loses nothing, and a DB hiccup degrades to a queue depth instead of dropped samples.</text>
+      </svg>
+    </div>
+    <figcaption>
+      <b>Fig 3</b> The dashed fallback is the point of the design. When NATS is unavailable the
+      collector writes straight through rather than failing — the queue is an optimization the
+      system can lose without losing monitoring.
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ 5 -->
+<section id="realtime">
+  <h2><span class="sec">§5</span>Real-time fan-out</h2>
+  <p class="dek">One bus, six transports, one hook per stream on the client</p>
+
+  <p>
+    Anything that changes state publishes a message; nothing polls the database to find out what
+    happened. Subjects are namespaced <code>&lt;domain&gt;.&lt;entity&gt;.&lt;event&gt;</code> and
+    declared as constants in a single module, so the set of things the system can announce is
+    greppable in one file. Each subject family surfaces on exactly one transport.
+  </p>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="0 0 980 382" role="img" aria-label="Real-time fan-out: workers, API handlers and the agent link publish to six NATS subject families, each of which is exposed by one server-sent-events or WebSocket endpoint, each consumed by one React hook.">
+        <defs>
+          <marker id="f4s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="fill-sig"/>
+          </marker>
+        </defs>
+
+        <text x="16" y="18" class="tt acc-txt">PRODUCERS</text>
+        <text x="250" y="18" class="tt acc-txt">SUBJECTS</text>
+        <text x="520" y="18" class="tt acc-txt">TRANSPORT</text>
+        <text x="770" y="18" class="tt acc-txt">CLIENT</text>
+
+        <rect x="16" y="120" width="160" height="118" class="box-acc"/>
+        <text x="96" y="150" class="t" text-anchor="middle">Publishers</text>
+        <text x="28" y="174" class="ts">6 worker processes</text>
+        <text x="28" y="192" class="ts">API route handlers</text>
+        <text x="28" y="210" class="ts">agent link session</text>
+        <text x="28" y="228" class="ts">integration sync</text>
+
+        <line x1="176" y1="178" x2="196" y2="178" class="stream" stroke-dasharray="none"/>
+        <line x1="196" y1="48" x2="196" y2="316" class="stream" stroke-dasharray="none"/>
+
+        <line x1="196" y1="48"  x2="246" y2="48"  class="stream" marker-end="url(#f4s)"/>
+        <line x1="196" y1="102" x2="246" y2="102" class="stream" marker-end="url(#f4s)"/>
+        <line x1="196" y1="156" x2="246" y2="156" class="stream" marker-end="url(#f4s)"/>
+        <line x1="196" y1="210" x2="246" y2="210" class="stream" marker-end="url(#f4s)"/>
+        <line x1="196" y1="264" x2="246" y2="264" class="stream" marker-end="url(#f4s)"/>
+        <line x1="196" y1="316" x2="246" y2="316" class="stream" marker-end="url(#f4s)"/>
+
+        <rect x="250" y="30" width="216" height="36" class="box-sig"/>
+        <text x="262" y="53" class="ts">notifications.* · alert.*</text>
+        <rect x="250" y="84" width="216" height="36" class="box-sig"/>
+        <text x="262" y="107" class="ts">discovery.scan.* · device.found</text>
+        <rect x="250" y="138" width="216" height="36" class="box-sig"/>
+        <text x="262" y="161" class="ts">telemetry.update · proxmox.*</text>
+        <rect x="250" y="192" width="216" height="36" class="box-sig"/>
+        <text x="262" y="215" class="ts">alert.monitor.down.{id}</text>
+        <rect x="250" y="246" width="216" height="36" class="box-sig"/>
+        <text x="262" y="269" class="ts">topology.node.* · cable.*</text>
+        <rect x="250" y="298" width="216" height="36" class="box-sig"/>
+        <text x="262" y="321" class="ts">agents.event</text>
+
+        <line x1="466" y1="48"  x2="512" y2="48"  class="stream" marker-end="url(#f4s)"/>
+        <line x1="466" y1="102" x2="512" y2="102" class="stream" marker-end="url(#f4s)"/>
+        <line x1="466" y1="156" x2="512" y2="156" class="stream" marker-end="url(#f4s)"/>
+        <line x1="466" y1="210" x2="512" y2="210" class="stream" marker-end="url(#f4s)"/>
+        <line x1="466" y1="264" x2="512" y2="264" class="stream" marker-end="url(#f4s)"/>
+        <line x1="466" y1="316" x2="512" y2="316" class="stream" marker-end="url(#f4s)"/>
+
+        <rect x="516" y="30" width="216" height="36" class="box"/>
+        <text x="528" y="53" class="ts">SSE /events/stream</text>
+        <rect x="516" y="84" width="216" height="36" class="box"/>
+        <text x="528" y="107" class="ts">WS /discovery/stream</text>
+        <rect x="516" y="138" width="216" height="36" class="box"/>
+        <text x="528" y="161" class="ts">WS /telemetry/stream</text>
+        <rect x="516" y="192" width="216" height="36" class="box"/>
+        <text x="528" y="215" class="ts">WS /monitors/stream</text>
+        <rect x="516" y="246" width="216" height="36" class="box"/>
+        <text x="528" y="269" class="ts">WS /topology/stream</text>
+        <rect x="516" y="298" width="216" height="36" class="box"/>
+        <text x="528" y="321" class="ts">WS /agents/stream</text>
+
+        <line x1="732" y1="48"  x2="762" y2="48"  class="stream" marker-end="url(#f4s)"/>
+        <line x1="732" y1="102" x2="762" y2="102" class="stream" marker-end="url(#f4s)"/>
+        <line x1="732" y1="156" x2="762" y2="156" class="stream" marker-end="url(#f4s)"/>
+        <line x1="732" y1="210" x2="762" y2="210" class="stream" marker-end="url(#f4s)"/>
+        <line x1="732" y1="264" x2="762" y2="264" class="stream" marker-end="url(#f4s)"/>
+        <line x1="732" y1="316" x2="762" y2="316" class="stream" marker-end="url(#f4s)"/>
+
+        <text x="766" y="53" class="ts">sseClient → mitt emitter</text>
+        <text x="766" y="107" class="ts">useDiscoveryStream</text>
+        <text x="766" y="161" class="ts">useTelemetryStream</text>
+        <text x="766" y="215" class="ts">useMonitorStream</text>
+        <text x="766" y="269" class="ts">useTopologyStream</text>
+        <text x="766" y="321" class="ts">useAgentLive</text>
+
+        <line x1="16" y1="352" x2="964" y2="352" class="hair"/>
+        <text x="16" y="368" class="ts">Every stream re-checks its session every 15 s — revoking a session kills an open stream instead of waiting for the client to disconnect. SSE degrades to a 2 s DB poll if NATS is down.</text>
+      </svg>
+    </div>
+    <figcaption>
+      <b>Fig 4</b> Notifications use SSE because they are one-directional and need to survive proxies;
+      the rest use WebSockets because the client also sends (viewport hints, subscription filters).
+      Connections are capped globally and per-IP so a stuck browser tab cannot exhaust the server.
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ 6 -->
+<section id="monitors">
+  <h2><span class="sec">§6</span>The monitoring engine</h2>
+  <p class="dek">One clock, two work queues, deliberately separated</p>
+
+  <p>
+    Uptime checks run on a single scheduler guarded by a Postgres advisory lock — many replicas may
+    be running, exactly one enqueues. Each tick atomically claims due items and advances their
+    <code>next_due_at</code> in the same statement, so all scheduling state lives in the database and
+    a restart resumes cleanly with nothing wedged.
+  </p>
+
+  <p>
+    The design decision worth pointing at is the second queue. Checks executed by a remote agent go
+    to their own JetStream work queue, never onto the server's. An agent that stops draining backs
+    up its own queue and nothing else.
+  </p>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="0 0 980 410" role="img" aria-label="Monitoring engine: a single scheduler holding a Postgres advisory lock claims due monitor items and publishes to two separate JetStream work queues — one drained by server-side poll workers, one by a dispatcher that hands checks to remote agents — with both result paths converging on the events tables and the alert subject.">
+        <defs>
+          <marker id="f5a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="fill-acc"/>
+          </marker>
+          <marker id="f5s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="fill-sig"/>
+          </marker>
+        </defs>
+
+        <rect x="16" y="126" width="140" height="62" class="box"/>
+        <text x="86" y="150" class="t" text-anchor="middle">monitor_items</text>
+        <text x="86" y="168" class="ts" text-anchor="middle">next_due_at, interval</text>
+
+        <line x1="156" y1="157" x2="186" y2="157" class="flow" marker-end="url(#f5a)"/>
+
+        <rect x="190" y="118" width="150" height="78" class="box-acc"/>
+        <text x="265" y="142" class="t" text-anchor="middle">scheduler</text>
+        <text x="265" y="160" class="ts" text-anchor="middle">PG advisory lock</text>
+        <text x="265" y="176" class="ts" text-anchor="middle">1 s tick · ≤200/tick</text>
+        <text x="265" y="190" class="ts" text-anchor="middle">≤50 per vantage</text>
+
+        <polyline points="340,140 362,140 362,66 386,66" class="stream" marker-end="url(#f5s)"/>
+        <polyline points="340,174 362,174 362,250 386,250" class="stream" marker-end="url(#f5s)"/>
+
+        <!-- server path -->
+        <rect x="390" y="42" width="156" height="50" class="box-sig"/>
+        <text x="468" y="62" class="ts" text-anchor="middle">MONITOR_POLL queue</text>
+        <text x="468" y="78" class="ts" text-anchor="middle">mon.poll.item</text>
+
+        <line x1="546" y1="67" x2="576" y2="67" class="stream" marker-end="url(#f5s)"/>
+        <rect x="580" y="42" width="150" height="50" class="box"/>
+        <text x="655" y="62" class="ts" text-anchor="middle">monitor_poll worker</text>
+        <text x="655" y="78" class="ts" text-anchor="middle">executes from server</text>
+
+        <line x1="730" y1="67" x2="760" y2="67" class="flow" marker-end="url(#f5a)"/>
+        <rect x="764" y="42" width="180" height="50" class="box"/>
+        <text x="854" y="62" class="ts" text-anchor="middle">HTTP · TCP · ICMP · DNS</text>
+        <text x="854" y="78" class="ts" text-anchor="middle">targets on your LAN</text>
+
+        <!-- agent path -->
+        <rect x="390" y="226" width="156" height="50" class="box-sig"/>
+        <text x="468" y="246" class="ts" text-anchor="middle">MONITOR_PROBE queue</text>
+        <text x="468" y="262" class="ts" text-anchor="middle">mon.probe.remote</text>
+
+        <line x1="546" y1="251" x2="576" y2="251" class="stream" marker-end="url(#f5s)"/>
+        <rect x="580" y="226" width="150" height="50" class="box"/>
+        <text x="655" y="246" class="ts" text-anchor="middle">probe_dispatch</text>
+        <text x="655" y="262" class="ts" text-anchor="middle">routes to a vantage</text>
+
+        <line x1="730" y1="251" x2="760" y2="251" class="stream" marker-end="url(#f5s)"/>
+        <rect x="764" y="226" width="180" height="50" class="box"/>
+        <text x="854" y="246" class="ts" text-anchor="middle">cb-agent executes</text>
+        <text x="854" y="262" class="ts" text-anchor="middle">checks from inside the net</text>
+
+        <!-- separation note -->
+        <line x1="390" y1="158" x2="944" y2="158" class="hair-d"/>
+        <text x="398" y="152" class="tt acc-txt">SEPARATE STREAMS — A STALLED AGENT CANNOT DELAY A SERVER CHECK</text>
+
+        <!-- converge -->
+        <polyline points="854,92 854,110 962,110 962,320 620,320" class="flow" marker-end="url(#f5a)"/>
+        <polyline points="854,276 854,300 620,300" class="flow" marker-end="url(#f5a)"/>
+
+        <rect x="330" y="290" width="286" height="52" class="box"/>
+        <text x="473" y="312" class="t" text-anchor="middle">monitor_events · uptime_events</text>
+        <text x="473" y="329" class="ts" text-anchor="middle">state transition detected here, not at poll time</text>
+
+        <line x1="330" y1="316" x2="300" y2="316" class="stream" marker-end="url(#f5s)"/>
+        <rect x="16" y="290" width="280" height="52" class="box-sig"/>
+        <text x="156" y="312" class="t" text-anchor="middle">notification_worker</text>
+        <text x="156" y="329" class="ts" text-anchor="middle">email · webhook · UI alert</text>
+
+        <text x="16" y="380" class="ts">A check only becomes an event when its status changes — flapping is absorbed by the</text>
+        <text x="16" y="396" class="ts">transition test, so a degraded target does not turn into a thousand notifications.</text>
+      </svg>
+    </div>
+    <figcaption>
+      <b>Fig 5</b> Fair sharing lives in the scheduler: no single vantage may take more than 50 slots
+      of a 200-item tick, so one agent with a thousand assigned checks cannot starve the rest.
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ 7 -->
+<section id="agent">
+  <h2><span class="sec">§7</span>The edge agent link</h2>
+  <p class="dek">Noise-encrypted, spool-backed, and written to assume the network lies</p>
+
+  <p>
+    The Go agent connects outbound over WSS and authenticates with a Noise IK handshake — there is no
+    session cookie and no bearer token on this path; the handshake <em>is</em> the authentication, and
+    the agent's static key is its identity from enrollment onward. Both endpoints bypass session
+    middleware entirely, which is why they get their own nginx locations and their own tests.
+  </p>
+
+  <p>
+    Most of the interesting engineering is in failure handling. A severed network is often not a
+    closed socket: a firewall <code>DROP</code>, a container detach, or a stale NAT entry produces a
+    black hole where writes keep succeeding into nothing. Both sides therefore run a 60 s read
+    deadline against a 20 s heartbeat — a silent peer is a disconnect, and a disconnect is what hands
+    the outage to the disk spool.
+  </p>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="0 0 900 470" role="img" aria-label="Agent link sequence: the Go agent dials over WSS, completes a Noise IK handshake, sends hello and receives capabilities, then exchanges data frames and pings; during an outage frames go to a 64 mebibyte disk spool and are drained at a paced rate after reconnect.">
+        <defs>
+          <marker id="f6a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="fill-acc"/>
+          </marker>
+          <marker id="f6s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="fill-sig"/>
+          </marker>
+        </defs>
+
+        <rect x="90" y="18" width="220" height="42" class="box-acc"/>
+        <text x="200" y="38" class="t" text-anchor="middle">cb-agent</text>
+        <text x="200" y="53" class="ts" text-anchor="middle">Go, on your host</text>
+
+        <rect x="590" y="18" width="220" height="42" class="box-acc"/>
+        <text x="700" y="38" class="t" text-anchor="middle">/api/v1/agents/link</text>
+        <text x="700" y="53" class="ts" text-anchor="middle">FastAPI WebSocket</text>
+
+        <line x1="200" y1="60" x2="200" y2="440" class="hair-d"/>
+        <line x1="700" y1="60" x2="700" y2="440" class="hair-d"/>
+
+        <line x1="200" y1="92" x2="694" y2="92" class="flow" marker-end="url(#f6a)"/>
+        <text x="450" y="86" class="ts" text-anchor="middle">WSS dial · pinned TLS · 10 s handshake budget</text>
+
+        <line x1="200" y1="126" x2="694" y2="126" class="flow" marker-end="url(#f6a)"/>
+        <text x="450" y="120" class="ts" text-anchor="middle">Noise IK — static key from enrollment</text>
+
+        <line x1="200" y1="160" x2="694" y2="160" class="flow" marker-end="url(#f6a)"/>
+        <text x="450" y="154" class="ts" text-anchor="middle">hello — host facts, arch, capabilities offered</text>
+
+        <line x1="700" y1="194" x2="206" y2="194" class="flow" marker-end="url(#f6a)"/>
+        <text x="450" y="188" class="ts" text-anchor="middle">hello.ack + capabilities.set — server decides what is granted</text>
+
+        <line x1="200" y1="228" x2="694" y2="228" class="stream" marker-end="url(#f6s)"/>
+        <text x="450" y="222" class="ts" text-anchor="middle">data frames — host samples, probe results, discovery findings</text>
+
+        <line x1="700" y1="258" x2="206" y2="258" class="stream" marker-end="url(#f6s)"/>
+        <text x="450" y="252" class="ts" text-anchor="middle">ping every 20 s · both sides read-deadline at 60 s</text>
+
+        <!-- outage band -->
+        <rect x="60" y="286" width="780" height="84" class="box-ghost"/>
+        <text x="72" y="304" class="tt acc-txt">OUTAGE — NO FIN, NO RST, JUST SILENCE</text>
+
+        <rect x="96" y="314" width="208" height="44" class="box-acc"/>
+        <text x="200" y="333" class="ts" text-anchor="middle">spool to disk · 64 MiB ring</text>
+        <text x="200" y="348" class="ts" text-anchor="middle">samples survive a reboot</text>
+
+        <line x1="310" y1="336" x2="560" y2="336" class="hair-d"/>
+        <text x="590" y="332" class="ts">read deadline trips</text>
+        <text x="590" y="348" class="ts">→ reconnect with backoff</text>
+
+        <line x1="200" y1="398" x2="694" y2="398" class="stream" marker-end="url(#f6s)"/>
+        <text x="450" y="392" class="ts" text-anchor="middle">paced catch-up — ≤40 frames/s, ≤2.5 MiB/s from the spool head</text>
+
+        <line x1="700" y1="430" x2="206" y2="430" class="flow" marker-end="url(#f6a)"/>
+        <text x="450" y="424" class="ts" text-anchor="middle">transport.rekey · signed update offer when a new build ships</text>
+      </svg>
+    </div>
+    <figcaption>
+      <b>Fig 6</b> The pacing budget is the reason a day-long outage does not become an incident:
+      2,880 queued samples clear in about 72 seconds instead of arriving as one burst that knocks the
+      ingest path over.
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ 8 -->
+<section id="discovery">
+  <h2><span class="sec">§8</span>Discovery never writes to your inventory</h2>
+  <p class="dek">Eight probe sources land in a staging table; a human promotes them</p>
+
+  <p>
+    Scans fan out across whatever the deployment can reach — port sweeps, mDNS, the kernel ARP cache,
+    DHCP leases, SNMP and LLDP neighbor tables, the Docker socket, the Proxmox API, OPNsense. Results
+    are fingerprinted against a vendor catalog and a device knowledge base, then written to
+    <code>scan_results</code>, which nothing else reads from.
+  </p>
+
+  <p>
+    Promoting a result into real <code>hardware</code>, <code>service</code> or <code>network</code>
+    rows requires an explicit merge. This is a product decision with an architectural consequence:
+    the discovery pipeline is append-only and can be re-run, dropped, or replaced without any risk to
+    the inventory a user has curated.
+  </p>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="0 0 1044 300" role="img" aria-label="Discovery pipeline: eight probe sources feed a scan job, results are fingerprinted against the vendor catalog, staged in the scan_results table, and only enter the live inventory through an explicit human merge; dismissed results are retained as history.">
+        <defs>
+          <marker id="f7a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="fill-acc"/>
+          </marker>
+        </defs>
+
+        <rect x="16" y="42" width="150" height="164" class="box"/>
+        <text x="91" y="64" class="t" text-anchor="middle">Probe sources</text>
+        <text x="28" y="88" class="ts">nmap · masscan</text>
+        <text x="28" y="106" class="ts">mDNS / zeroconf</text>
+        <text x="28" y="124" class="ts">ARP cache</text>
+        <text x="28" y="142" class="ts">DHCP leases</text>
+        <text x="28" y="160" class="ts">SNMP · LLDP</text>
+        <text x="28" y="178" class="ts">Docker socket</text>
+        <text x="28" y="196" class="ts">Proxmox · OPNsense</text>
+
+        <line x1="166" y1="124" x2="196" y2="124" class="flow" marker-end="url(#f7a)"/>
+
+        <rect x="200" y="96" width="150" height="56" class="box"/>
+        <text x="275" y="118" class="t" text-anchor="middle">discovery worker</text>
+        <text x="275" y="136" class="ts" text-anchor="middle">progress → NATS → UI</text>
+
+        <line x1="350" y1="124" x2="380" y2="124" class="flow" marker-end="url(#f7a)"/>
+
+        <rect x="384" y="96" width="150" height="56" class="box"/>
+        <text x="459" y="118" class="t" text-anchor="middle">fingerprint</text>
+        <text x="459" y="136" class="ts" text-anchor="middle">OUI · catalog · device KB</text>
+
+        <line x1="534" y1="124" x2="564" y2="124" class="flow" marker-end="url(#f7a)"/>
+
+        <rect x="568" y="96" width="150" height="56" class="box"/>
+        <text x="643" y="118" class="t" text-anchor="middle">scan_results</text>
+        <text x="643" y="136" class="ts" text-anchor="middle">staging only, inert</text>
+
+        <line x1="718" y1="124" x2="748" y2="124" class="flow" marker-end="url(#f7a)"/>
+
+        <rect x="752" y="88" width="120" height="72" class="box-acc"/>
+        <text x="812" y="112" class="t" text-anchor="middle">Review</text>
+        <text x="812" y="130" class="ts" text-anchor="middle">a person</text>
+        <text x="812" y="146" class="ts" text-anchor="middle">clicks merge</text>
+
+        <polyline points="872,108 890,108 890,56 902,56" class="flow" marker-end="url(#f7a)"/>
+        <polyline points="872,142 890,142 890,210 902,210" class="hair-d" marker-end="url(#f7a)"/>
+
+        <rect x="906" y="30" width="130" height="54" class="box"/>
+        <text x="971" y="52" class="ts" text-anchor="middle">live inventory</text>
+        <text x="971" y="68" class="ts" text-anchor="middle">hardware · service</text>
+
+        <rect x="906" y="184" width="130" height="54" class="box-ghost"/>
+        <text x="971" y="206" class="ts" text-anchor="middle">dismissed</text>
+        <text x="971" y="222" class="ts" text-anchor="middle">kept as history</text>
+
+        <line x1="16" y1="256" x2="1028" y2="256" class="hair"/>
+        <text x="16" y="276" class="ts">Reconcilers run the same merge logic on a schedule for authoritative sources — a Proxmox cluster's own node list, an agent's own network facts —</text>
+        <text x="16" y="292" class="ts">but even those write through the staging table, so every change to inventory has the same shape and the same audit trail.</text>
+      </svg>
+    </div>
+    <figcaption>
+      <b>Fig 7</b> Everything upstream of the review gate is disposable. That is what makes it safe to
+      run aggressive scans against a production network you care about.
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ 9 -->
+<section id="map" class="featured">
+  <p class="badge">The centerpiece</p>
+  <h2><span class="sec">§9</span>The map engine</h2>
+  <p class="dek">Every other data path in this document exists to put something on this screen</p>
+
+  <p>
+    This is the component the whole product is for, and the one that took the most hours to get
+    right — not because the graph is hard to draw, but because it has to stay <em>beautiful and
+    correct</em> while eight independent data sources mutate it underneath the user's cursor.
+    Telemetry pushes a health change, a discovery finishes, a monitor flips a node red, someone
+    drags forty nodes at once, and the layout has to survive all of it without losing an edge or
+    throwing away a position somebody spent an afternoon arranging.
+  </p>
+
+  <div class="specline">
+    <div><b>3,000</b><span>lines in MapPage,<br>orchestrating 10 hooks</span></div>
+    <div><b>11</b><span>layout engines,<br>all pure functions</span></div>
+    <div><b>2</b><span>renderers —<br>React Flow &amp; Sigma/WebGL</span></div>
+    <div><b>10</b><span>node types ×<br>11 relation kinds</span></div>
+    <div><b>10</b><span>saved maps, each with<br>its own membership</span></div>
+  </div>
+
+  <h3>The one idea that makes it work</h3>
+  <p>
+    <strong>The graph and its picture are two different things, fetched separately and stored
+    separately.</strong> The server owns the <em>semantic</em> graph — which hardware hosts which VM,
+    which service depends on which storage — derived from the inventory tables by
+    <code>build_topology_graph</code> and returned with stable prefixed IDs like <code>hw-12</code>
+    and <code>svc-4</code>. The client owns the <em>visual</em> graph — positions, boundary shapes,
+    freehand labels, drawn lines, per-edge routing overrides — persisted as one JSON blob per map.
+  </p>
+
+  <p>
+    That split is what lets everything else be simple. Deleting a service removes a node without
+    disturbing anyone's layout. Re-running discovery adds nodes that auto-place into free space
+    rather than triggering a full re-layout. And a layout engine can be swapped, rewritten, or added
+    without a migration, because no server code has an opinion about geometry.
+  </p>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="0 0 1100 500" class="w1100" role="img" aria-label="Map engine data flow: inventory tables are projected into a semantic graph served with an ETag, a separate layout blob supplies positions and annotations, live telemetry and monitor overlays fold onto node data without re-layout, all three merge into a client graph store which feeds eleven pure layout functions and two renderers, and user drags flow back through an edge integrity guard into a debounced layout save.">
+        <defs>
+          <marker id="f8a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="fill-acc"/>
+          </marker>
+          <marker id="f8s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="fill-sig"/>
+          </marker>
+        </defs>
+
+        <!-- row 1 · structure -->
+        <text x="16" y="30" class="tt acc-txt">STRUCTURE — WHAT EXISTS AND WHAT CONNECTS TO WHAT</text>
+
+        <rect x="16" y="40" width="180" height="76" class="box"/>
+        <text x="106" y="64" class="t" text-anchor="middle">Inventory tables</text>
+        <text x="106" y="82" class="ts" text-anchor="middle">hardware · compute · service</text>
+        <text x="106" y="96" class="ts" text-anchor="middle">storage · network · cluster</text>
+        <text x="106" y="110" class="ts" text-anchor="middle">misc · external · docker ×2</text>
+
+        <line x1="196" y1="78" x2="222" y2="78" class="flow" marker-end="url(#f8a)"/>
+
+        <rect x="226" y="40" width="200" height="76" class="box-acc"/>
+        <text x="326" y="64" class="t" text-anchor="middle">build_topology_graph</text>
+        <text x="326" y="82" class="ts" text-anchor="middle">11 relation kinds · bulk tag</text>
+        <text x="326" y="96" class="ts" text-anchor="middle">and conflict maps, no N+1</text>
+        <text x="326" y="110" class="ts" text-anchor="middle">tenant-filtered per reader</text>
+
+        <line x1="426" y1="78" x2="452" y2="78" class="flow" marker-end="url(#f8a)"/>
+
+        <rect x="456" y="40" width="200" height="76" class="box"/>
+        <text x="556" y="64" class="t" text-anchor="middle">GET /graph/topology</text>
+        <text x="556" y="82" class="ts" text-anchor="middle">ETag over graph contents</text>
+        <text x="556" y="96" class="ts" text-anchor="middle">→ 304 when nothing moved</text>
+        <text x="556" y="110" class="ts" text-anchor="middle">?map_id filters membership</text>
+
+        <!-- row 2 · live state -->
+        <text x="16" y="150" class="tt acc-txt">LIVE STATE — HOW IT IS DOING RIGHT NOW</text>
+
+        <rect x="16" y="160" width="180" height="80" class="box-sig"/>
+        <text x="106" y="184" class="t" text-anchor="middle">Live sources</text>
+        <text x="106" y="204" class="ts" text-anchor="middle">telemetry WebSocket</text>
+        <text x="106" y="220" class="ts" text-anchor="middle">monitor target rollups</text>
+        <text x="106" y="234" class="ts" text-anchor="middle">discovery + IP conflicts</text>
+
+        <line x1="196" y1="200" x2="222" y2="200" class="stream" marker-end="url(#f8s)"/>
+
+        <rect x="226" y="160" width="200" height="80" class="box"/>
+        <text x="326" y="188" class="t" text-anchor="middle">fold onto node.data</text>
+        <text x="326" y="210" class="ts" text-anchor="middle">status · latency · uptime %</text>
+        <text x="326" y="226" class="ts" text-anchor="middle">matched by id, applied in place</text>
+
+        <line x1="426" y1="200" x2="452" y2="200" class="stream" marker-end="url(#f8s)"/>
+
+        <rect x="456" y="160" width="200" height="80" class="box-sig"/>
+        <text x="556" y="188" class="t" text-anchor="middle">no re-layout</text>
+        <text x="556" y="210" class="ts" text-anchor="middle">geometry untouched, so a</text>
+        <text x="556" y="226" class="ts" text-anchor="middle">health ring pulses without a jump</text>
+
+        <!-- row 3 · presentation -->
+        <text x="16" y="280" class="tt acc-txt">PRESENTATION — WHERE THE USER PUT IT</text>
+
+        <rect x="16" y="290" width="180" height="80" class="box"/>
+        <text x="106" y="318" class="t" text-anchor="middle">graph_layouts</text>
+        <text x="106" y="340" class="ts" text-anchor="middle">one row per map,</text>
+        <text x="106" y="356" class="ts" text-anchor="middle">ten maps maximum</text>
+
+        <line x1="196" y1="330" x2="222" y2="330" class="flow" marker-end="url(#f8a)"/>
+
+        <rect x="226" y="290" width="200" height="80" class="box"/>
+        <text x="326" y="314" class="ts" text-anchor="middle">positions · node shapes</text>
+        <text x="326" y="332" class="ts" text-anchor="middle">boundaries · labels · lines</text>
+        <text x="326" y="350" class="ts" text-anchor="middle">per-edge routing overrides</text>
+
+        <line x1="426" y1="330" x2="452" y2="330" class="flow" marker-end="url(#f8a)"/>
+
+        <rect x="456" y="290" width="200" height="80" class="box"/>
+        <text x="556" y="324" class="t" text-anchor="middle">GET /graph/layout</text>
+        <text x="556" y="346" class="ts" text-anchor="middle">one JSON document</text>
+
+        <!-- converge -->
+        <polyline points="656,78 690,78 690,158 700,158" class="flow" marker-end="url(#f8a)"/>
+        <line x1="656" y1="200" x2="700" y2="200" class="stream" marker-end="url(#f8s)"/>
+        <polyline points="656,330 690,330 690,242 700,242" class="flow" marker-end="url(#f8a)"/>
+
+        <rect x="704" y="130" width="156" height="140" class="box-acc"/>
+        <text x="782" y="158" class="t" text-anchor="middle">client store</text>
+        <text x="782" y="182" class="ts" text-anchor="middle">nodes[] + edges[]</text>
+        <text x="782" y="200" class="ts" text-anchor="middle">boundaries, labels</text>
+        <text x="782" y="222" class="ts" text-anchor="middle">refs mirror state so</text>
+        <text x="782" y="238" class="ts" text-anchor="middle">callbacks stay stable</text>
+        <text x="782" y="260" class="ts" text-anchor="middle">one source of truth</text>
+
+        <!-- layout engines -->
+        <line x1="740" y1="270" x2="740" y2="314" class="flow" marker-end="url(#f8a)"/>
+        <line x1="824" y1="314" x2="824" y2="270" class="flow" marker-end="url(#f8a)"/>
+        <text x="696" y="296" class="tt" text-anchor="end">RUN</text>
+        <text x="838" y="296" class="tt">POSITIONS</text>
+
+        <rect x="704" y="318" width="156" height="106" class="box"/>
+        <text x="782" y="340" class="t" text-anchor="middle">11 layout engines</text>
+        <text x="716" y="362" class="ts">dagre · force · tree</text>
+        <text x="716" y="378" class="ts">radial · concentric</text>
+        <text x="716" y="394" class="ts">ELK layered · mindmap</text>
+        <text x="716" y="410" class="ts">cortex · rack grid · …</text>
+
+        <!-- renderers -->
+        <line x1="860" y1="166" x2="900" y2="166" class="flow" marker-end="url(#f8a)"/>
+        <line x1="860" y1="248" x2="900" y2="248" class="flow" marker-end="url(#f8a)"/>
+
+        <rect x="904" y="130" width="180" height="72" class="box-acc"/>
+        <text x="994" y="154" class="t" text-anchor="middle">React Flow</text>
+        <text x="994" y="174" class="ts" text-anchor="middle">custom nodes + edges,</text>
+        <text x="994" y="190" class="ts" text-anchor="middle">handles, boundaries, drag</text>
+
+        <rect x="904" y="212" width="180" height="72" class="box"/>
+        <text x="994" y="236" class="t" text-anchor="middle">Sigma · WebGL</text>
+        <text x="994" y="256" class="ts" text-anchor="middle">graphology + ForceAtlas2</text>
+        <text x="994" y="272" class="ts" text-anchor="middle">when the DOM gives up</text>
+
+        <!-- interaction return path -->
+        <line x1="994" y1="284" x2="994" y2="314" class="flow" marker-end="url(#f8a)"/>
+
+        <rect x="904" y="318" width="180" height="106" class="box"/>
+        <text x="994" y="340" class="t" text-anchor="middle">drag &amp; draw</text>
+        <text x="916" y="362" class="ts">snap edges to nearest handle</text>
+        <text x="916" y="378" class="ts">0.5 px movement threshold</text>
+        <text x="916" y="394" class="ts">integrity guard restores any</text>
+        <text x="916" y="410" class="ts">edge a change event drops</text>
+
+        <polyline points="904,400 880,400 880,446 430,446" class="flow" marker-end="url(#f8a)"/>
+
+        <rect x="226" y="420" width="200" height="52" class="box-acc"/>
+        <text x="326" y="442" class="t" text-anchor="middle">POST /graph/layout</text>
+        <text x="326" y="460" class="ts" text-anchor="middle">snapshot written once, on dirty</text>
+
+        <line x1="326" y1="420" x2="326" y2="374" class="flow" marker-end="url(#f8a)"/>
+      </svg>
+    </div>
+    <figcaption>
+      <b>Fig 8</b> Three fetches, one store, two renderers, and exactly one write path. Note that the
+      live-overlay row never reaches the layout engines — that is the invariant that keeps the map
+      from twitching every time a device changes state.
+    </figcaption>
+  </figure>
+
+  <h3>Four decisions worth defending</h3>
+
+  <div class="cards">
+    <div class="card">
+      <h4>Layouts are pure functions</h4>
+      <p>All eleven take <code>(nodes, edges, viewport)</code> and return positions. Nothing about
+        them touches the network, so switching engines is instant, undoable, and testable without a
+        DOM. Adding a twelfth is one file and one entry in a list.</p>
+    </div>
+    <div class="card">
+      <h4>Two renderers, chosen by scale</h4>
+      <p>React Flow gives real DOM nodes — rich custom cards, telemetry rings, port handles,
+        drag-to-arrange. It also stops being pleasant somewhere in the hundreds. Sigma over WebGL
+        takes the same graph when the estate outgrows the DOM.</p>
+    </div>
+    <div class="card">
+      <h4>Edges are derived, not drawn</h4>
+      <p>A link between two nodes means a real relation exists in the database —
+        <code>hosts</code>, <code>runs</code>, <code>on_network</code>, <code>depends_on</code>. You
+        can add ad-hoc edges, and they render dashed in a different colour precisely so nobody
+        mistakes decoration for fact.</p>
+    </div>
+    <div class="card">
+      <h4>One hook per concern</h4>
+      <p>Data load, layout, mutations, edge interaction, boundary interaction, visual lines, drag
+        snapping, real-time merge, timers, and tab state are ten separate hooks. Every timer lives in
+        one of them, so unmount cleanup is a single path instead of a leak hunt.</p>
+    </div>
+  </div>
+
+  <h3>The bug that cost the most hours</h3>
+  <p>
+    Multi-select drag could silently drop edges. React Flow emits a batch of change events during a
+    drag, and a race between the position update and the edge re-snap could commit a node array whose
+    edges no longer resolved — connections vanished from the screen and, if an autosave landed first,
+    from the database. The fix is <code>useEdgeIntegrityGuard</code>: snapshot the edge ID set at drag
+    start, diff it against every candidate commit, and restore anything that went missing. It is
+    fifty lines that exist entirely to make a feature feel trustworthy.
+  </p>
+
+  <p class="pull">
+    A topology map is judged in the first three seconds — whether it looks considered or looks like
+    a graph library's default output. Most of the refinement time went into things nobody will ever
+    name: edge routing that picks handle sides by relative position, boundary shapes that sit behind
+    nodes without eating clicks, auto-placement that finds free space instead of stacking, and a
+    viewport fit that frames the estate rather than centring the bounding box.
+  </p>
+
+  <h3>What it also does</h3>
+  <p>
+    Beyond drawing: infer parent links from device role and gateway heuristics when nothing declares
+    them, collapse network members into cloud groups, auto-group Docker containers into boundaries,
+    compute per-edge bandwidth from uplink speeds with type caps for wireless and tunnels, review
+    LLDP neighbour findings, create a monitor from a right-click, and keep up to ten separate maps
+    with independent membership over the same inventory.
+  </p>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ 10 -->
+<section id="security">
+  <h2><span class="sec">§10</span>Security posture</h2>
+  <p class="dek">The controls that shaped the architecture rather than sitting on top of it</p>
+
+  <p>
+    This is infrastructure tooling holding IPMI credentials and hypervisor API keys for someone's
+    entire estate. Several of the design choices above exist because of that, not despite it.
+  </p>
+
+  <div class="cards">
+    <div class="card">
+      <h4>Route policy gate</h4>
+      <p>All 435 routes are enumerated into a checked-in inventory and diffed against an explicit
+        policy file in CI. A new endpoint without an auth dependency fails the build.</p>
+    </div>
+    <div class="card">
+      <h4>Fernet secrets vault</h4>
+      <p>Every credential is encrypted at rest with a key that lives outside the database. The vault
+        starts uninitialized and refuses to generate an ephemeral key at import time — a wrong key is
+        a loud failure, never silent data loss.</p>
+    </div>
+    <div class="card">
+      <h4>Hash-chained audit log</h4>
+      <p>Each entry stores <code>SHA-256(payload + prev_hash)</code> under a write lock, so concurrent
+        appends cannot fork the chain. Verification walks the chain and reports the first break.</p>
+    </div>
+    <div class="card">
+      <h4>Mid-stream revalidation</h4>
+      <p>Long-lived SSE and WebSocket connections re-check session validity every 15 seconds.
+        Revoking a session ends the stream instead of waiting for the client to reconnect.</p>
+    </div>
+    <div class="card">
+      <h4>Least-privilege container</h4>
+      <p>Read-only root filesystem, <code>cap_drop: ALL</code> with seven capabilities added back for
+        named reasons, <code>no-new-privileges</code>, and supervisor-dropped UIDs per service.</p>
+    </div>
+    <div class="card">
+      <h4>SSRF and egress control</h4>
+      <p>Integration targets pass a URL validator and a network ACL before any request leaves the
+        process; outbound traffic can be pinned to a proxy, and an air-gap mode disables it entirely.</p>
+    </div>
+  </div>
+
+  <p class="pull">
+    The project is pre-1.0 and says so in its own README: not fully audited, LAN-only until the
+    release gates pass. The gates themselves — the suppression ledger, the endpoint policy, the
+    evidence files under <code>specs/</code> — are checked into the repo and run in CI.
+  </p>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ 11 -->
+<section id="talk">
+  <h2><span class="sec">§11</span>Five things worth saying out loud</h2>
+  <p class="dek">The decisions a reviewer will ask about, and the answers</p>
+
+  <ol class="talk">
+    <li>
+      <b>Why one container instead of a compose stack?</b>
+      The users are homelabbers, and every additional service is a support burden. Bundling Postgres,
+      NATS and Redis under supervisord means the install is one command and one volume — and because
+      each is reached through a URL from config, any of them can be pointed at an external instance
+      when someone outgrows the default. The convenience is the default, not the ceiling.
+    </li>
+    <li>
+      <b>Why a message bus in a single-node app?</b>
+      Not for scale — for decoupling and durability. It is what lets the collector stop caring whether
+      the database is slow, lets a worker restart mid-upgrade without losing samples, and lets six
+      independent processes fan work out without any of them knowing the others exist. Every path
+      that uses it also has a degraded mode that works without it.
+    </li>
+    <li>
+      <b>Why does the agent exist at all when SNMP already works?</b>
+      Vantage point. An agent sees what an out-of-band controller cannot — process-level host facts,
+      the kernel neighbor table, and checks executed from inside a network segment the server cannot
+      route to. It is optional, and the system is fully functional without it.
+    </li>
+    <li>
+      <b>What's the hardest bug you fixed here?</b>
+      The silent-link failure in the agent. Writes to a black-holed socket keep succeeding, so the
+      agent believed a dead link was healthy and an entire outage's samples went into the void instead
+      of the spool. The fix — symmetric read deadlines on both ends, tied to a heartbeat interval both
+      sides agree on — is three lines and a long comment explaining why they are load-bearing.
+    </li>
+    <li>
+      <b>What would you change?</b>
+      <code>main.py</code> is 2,100 lines of router registration and lifespan wiring; that wants to be
+      a declarative router manifest. <code>MapPage.jsx</code> is 3,000 lines even after ten hooks were
+      extracted from it — the remaining orchestration should become a reducer. The frontend is JSX
+      with JSDoc types rather than TypeScript, which the stream-heavy hooks would benefit from most.
+      And the 80-model single ORM module should be a package split by bounded context — there is a
+      proposal for it already in the tree.
+    </li>
+  </ol>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ 12 -->
+<section id="whole">
+  <h2><span class="sec">§12</span>The whole system, connected</h2>
+  <p class="dek">Every piece from §2 through §9 on one canvas, following one loop</p>
+
+  <p>
+    Read it left to right and the story is simple: the estate is polled and scanned by workers,
+    everything they learn is announced on a bus, the API turns that into inventory and pushes live
+    changes down open streams, and the map draws it. Read the bottom bar and the loop closes — what
+    the user does on the map re-enters the system as new work.
+  </p>
+
+  <div class="legend" aria-hidden="true">
+    <i><span class="k k-solid"></span> synchronous call</i>
+    <i><span class="k k-dash"></span> message bus / live stream</i>
+    <i><span class="k k-hair"></span> shared data access</i>
+  </div>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="0 0 1320 700" class="w1320" role="img" aria-label="Complete system diagram: the physical estate is polled and scanned by five worker processes which publish to a NATS JetStream bus; the API consumes the bus through an in-process bridge and serves 435 routes plus six live stream endpoints through nginx to the React app, whose topology map is the primary consumer; all processes share PostgreSQL, TimescaleDB, the audit chain, Redis and the credential vault; user actions on the map re-enter the loop as new work.">
+        <defs>
+          <marker id="f9a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="fill-acc"/>
+          </marker>
+          <marker id="f9s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="fill-sig"/>
+          </marker>
+        </defs>
+
+        <!-- top rail: agents dial out to nginx -->
+        <polyline points="194,303 214,303 214,32 1100,32 1100,52" class="flow" marker-end="url(#f9a)"/>
+        <text x="620" y="26" class="tt acc-txt">AGENTS DIAL OUT — NOISE IK OVER WSS, NO SESSION, NO INBOUND PORT</text>
+
+        <!-- column headers -->
+        <text x="16"  y="52" class="tt">ESTATE</text>
+        <text x="234" y="52" class="tt acc-txt">01 · COLLECT</text>
+        <text x="464" y="52" class="tt acc-txt">02 · DISTRIBUTE</text>
+        <text x="670" y="52" class="tt acc-txt">03 · SERVE</text>
+        <text x="920" y="52" class="tt acc-txt">04 · RENDER</text>
+
+        <!-- Col A · estate -->
+        <rect x="16" y="64" width="178" height="58" class="box"/>
+        <text x="105" y="88" class="ts" text-anchor="middle">Managed hardware</text>
+        <text x="105" y="106" class="ts" text-anchor="middle">Redfish · SNMP · IPMI</text>
+
+        <rect x="16" y="134" width="178" height="58" class="box"/>
+        <text x="105" y="158" class="ts" text-anchor="middle">Hypervisors &amp; APIs</text>
+        <text x="105" y="176" class="ts" text-anchor="middle">Proxmox · OPNsense · Kuma</text>
+
+        <rect x="16" y="204" width="178" height="58" class="box"/>
+        <text x="105" y="228" class="ts" text-anchor="middle">LAN segments</text>
+        <text x="105" y="246" class="ts" text-anchor="middle">scan and check targets</text>
+
+        <rect x="16" y="274" width="178" height="58" class="box"/>
+        <text x="105" y="298" class="ts" text-anchor="middle">Agent hosts</text>
+        <text x="105" y="316" class="ts" text-anchor="middle">Go binary, your machines</text>
+
+        <rect x="16" y="344" width="178" height="58" class="box"/>
+        <text x="105" y="368" class="ts" text-anchor="middle">Your inbox &amp; chat</text>
+        <text x="105" y="386" class="ts" text-anchor="middle">SMTP · webhooks</text>
+
+        <!-- Col B · collectors -->
+        <line x1="194" y1="93"  x2="230" y2="93"  class="flow" marker-end="url(#f9a)"/>
+        <line x1="194" y1="163" x2="230" y2="163" class="flow" marker-end="url(#f9a)"/>
+        <line x1="194" y1="233" x2="230" y2="233" class="flow" marker-end="url(#f9a)"/>
+        <polyline points="194,251 212,251 212,303 230,303" class="flow" marker-end="url(#f9a)"/>
+
+        <rect x="234" y="64" width="190" height="58" class="box"/>
+        <text x="329" y="88" class="ts" text-anchor="middle">telemetry_collector</text>
+        <text x="329" y="106" class="ts" text-anchor="middle">per-device interval</text>
+
+        <rect x="234" y="134" width="190" height="58" class="box"/>
+        <text x="329" y="158" class="ts" text-anchor="middle">integration sync</text>
+        <text x="329" y="176" class="ts" text-anchor="middle">cluster + VM inventory</text>
+
+        <rect x="234" y="204" width="190" height="58" class="box"/>
+        <text x="329" y="228" class="ts" text-anchor="middle">discovery worker</text>
+        <text x="329" y="246" class="ts" text-anchor="middle">scan → stage → review</text>
+
+        <rect x="234" y="274" width="190" height="58" class="box"/>
+        <text x="329" y="298" class="ts" text-anchor="middle">monitor scheduler</text>
+        <text x="329" y="316" class="ts" text-anchor="middle">→ poll · → probe dispatch</text>
+
+        <rect x="234" y="344" width="190" height="58" class="box"/>
+        <text x="329" y="368" class="ts" text-anchor="middle">notification worker</text>
+        <text x="329" y="386" class="ts" text-anchor="middle">routes alerts to sinks</text>
+
+        <line x1="234" y1="373" x2="198" y2="373" class="flow" marker-end="url(#f9a)"/>
+
+        <!-- Col C · bus -->
+        <line x1="424" y1="93"  x2="460" y2="93"  class="stream" marker-end="url(#f9s)"/>
+        <line x1="424" y1="163" x2="460" y2="163" class="stream" marker-end="url(#f9s)"/>
+        <line x1="424" y1="233" x2="460" y2="233" class="stream" marker-end="url(#f9s)"/>
+        <line x1="424" y1="303" x2="460" y2="303" class="stream" marker-end="url(#f9s)"/>
+        <line x1="460" y1="373" x2="428" y2="373" class="stream" marker-end="url(#f9s)"/>
+
+        <rect x="464" y="64" width="166" height="338" class="box-sig"/>
+        <text x="547" y="98" class="t" text-anchor="middle">NATS</text>
+        <text x="547" y="118" class="t" text-anchor="middle">JetStream</text>
+        <line x1="484" y1="138" x2="610" y2="138" class="hair"/>
+        <text x="547" y="164" class="ts" text-anchor="middle">CB_EVENTS</text>
+        <text x="547" y="192" class="ts" text-anchor="middle">TELEMETRY</text>
+        <text x="547" y="220" class="ts" text-anchor="middle">MONITOR_POLL</text>
+        <text x="547" y="248" class="ts" text-anchor="middle">MONITOR_PROBE</text>
+        <line x1="484" y1="274" x2="610" y2="274" class="hair"/>
+        <text x="547" y="300" class="ts" text-anchor="middle">durable queues,</text>
+        <text x="547" y="318" class="ts" text-anchor="middle">at-least-once,</text>
+        <text x="547" y="336" class="ts" text-anchor="middle">every consumer has</text>
+        <text x="547" y="354" class="ts" text-anchor="middle">a degraded mode</text>
+
+        <!-- Col D · core -->
+        <line x1="630" y1="93" x2="666" y2="93" class="stream" marker-end="url(#f9s)"/>
+        <line x1="670" y1="196" x2="634" y2="196" class="stream" marker-end="url(#f9s)"/>
+        <text x="650" y="84" class="tt sig-txt" text-anchor="middle">sub</text>
+        <text x="650" y="188" class="tt sig-txt" text-anchor="middle">pub</text>
+
+        <rect x="670" y="64" width="210" height="58" class="box"/>
+        <text x="775" y="88" class="ts" text-anchor="middle">NATS → WS bridge</text>
+        <text x="775" y="106" class="ts" text-anchor="middle">in the API process</text>
+
+        <rect x="670" y="144" width="210" height="100" class="box-acc"/>
+        <text x="775" y="170" class="t" text-anchor="middle">FastAPI</text>
+        <text x="682" y="192" class="ts">435 routes, policy-gated</text>
+        <text x="682" y="210" class="ts">7 middleware layers</text>
+        <text x="682" y="228" class="ts">RBAC + audit on write</text>
+
+        <rect x="670" y="264" width="210" height="68" class="box-sig"/>
+        <text x="775" y="288" class="ts" text-anchor="middle">SSE + 5 WebSocket streams</text>
+        <text x="775" y="306" class="ts" text-anchor="middle">capped globally and per-IP,</text>
+        <text x="775" y="322" class="ts" text-anchor="middle">revalidated every 15 s</text>
+
+        <line x1="775" y1="122" x2="775" y2="260" class="stream" marker-end="url(#f9s)"/>
+
+        <!-- nginx + client -->
+        <polyline points="880,175 898,175 898,90 916,90" class="flow" marker-start="url(#f9a)" marker-end="url(#f9a)"/>
+        <polyline points="880,298 908,298 908,104 916,104" class="stream" marker-end="url(#f9s)"/>
+
+        <rect x="920" y="56" width="384" height="52" class="box"/>
+        <text x="1112" y="78" class="t" text-anchor="middle">nginx</text>
+        <text x="1112" y="96" class="ts" text-anchor="middle">TLS · static SPA · per-stream proxy locations</text>
+
+        <line x1="1112" y1="108" x2="1112" y2="128" class="flow" marker-end="url(#f9a)"/>
+
+        <rect x="920" y="132" width="384" height="300" class="box"/>
+        <text x="934" y="156" class="ts">React SPA — 29 pages, 164 components</text>
+
+        <rect x="938" y="170" width="348" height="152" class="box-acc"/>
+        <text x="1112" y="196" class="t" text-anchor="middle">TOPOLOGY MAP ENGINE</text>
+        <text x="952" y="222" class="ts">11 layout engines · React Flow + Sigma/WebGL</text>
+        <text x="952" y="242" class="ts">semantic graph and visual layer fetched apart</text>
+        <text x="952" y="262" class="ts">telemetry, monitor and discovery overlays fold</text>
+        <text x="952" y="282" class="ts">onto nodes without touching geometry</text>
+        <text x="952" y="306" class="ts">10 saved maps over one shared inventory</text>
+
+        <text x="938" y="352" class="ts">Discovery review · Monitors · Agents · IPAM</text>
+        <text x="938" y="372" class="ts">Racks · Storage · Logs · Audit · Settings</text>
+        <text x="938" y="400" class="tt acc-txt">EVERY PAGE READS THE SAME API THE MAP DOES</text>
+
+        <!-- state rail -->
+        <polyline points="329,402 329,452" class="hair"/>
+        <polyline points="880,220 890,220 890,452" class="hair"/>
+        <line x1="144" y1="452" x2="1176" y2="452" class="hair"/>
+        <text x="24" y="446" class="tt">PERSIST</text>
+
+        <line x1="144"  y1="452" x2="144"  y2="466" class="hair" marker-end="url(#f9a)"/>
+        <line x1="402"  y1="452" x2="402"  y2="466" class="hair" marker-end="url(#f9a)"/>
+        <line x1="660"  y1="452" x2="660"  y2="466" class="hair" marker-end="url(#f9a)"/>
+        <line x1="918"  y1="452" x2="918"  y2="466" class="hair" marker-end="url(#f9a)"/>
+        <line x1="1176" y1="452" x2="1176" y2="466" class="hair" marker-end="url(#f9a)"/>
+
+        <rect x="24"   y="470" width="240" height="66" class="box"/>
+        <text x="144" y="496" class="ts" text-anchor="middle">PostgreSQL</text>
+        <text x="144" y="516" class="ts" text-anchor="middle">inventory · 80+ tables</text>
+
+        <rect x="282"  y="470" width="240" height="66" class="box"/>
+        <text x="402" y="496" class="ts" text-anchor="middle">TimescaleDB</text>
+        <text x="402" y="516" class="ts" text-anchor="middle">telemetry hypertables</text>
+
+        <rect x="540"  y="470" width="240" height="66" class="box-acc"/>
+        <text x="660" y="496" class="ts" text-anchor="middle">audit_log</text>
+        <text x="660" y="516" class="ts" text-anchor="middle">SHA-256 hash chain</text>
+
+        <rect x="798"  y="470" width="240" height="66" class="box"/>
+        <text x="918" y="496" class="ts" text-anchor="middle">Redis</text>
+        <text x="918" y="516" class="ts" text-anchor="middle">cache · limits · presence</text>
+
+        <rect x="1056" y="470" width="240" height="66" class="box-acc"/>
+        <text x="1176" y="496" class="ts" text-anchor="middle">Fernet vault</text>
+        <text x="1176" y="516" class="ts" text-anchor="middle">credentials at rest</text>
+
+        <!-- loop -->
+        <polyline points="1046,432 1046,562 660,562 660,584" class="flow" marker-end="url(#f9a)"/>
+
+        <rect x="24" y="588" width="1272" height="88" class="box-acc"/>
+        <text x="44" y="612" class="tt acc-txt">05 · THE LOOP CLOSES</text>
+        <text x="44" y="638" class="ts">A scan finds a host → you merge it → a node appears on the map → you right-click and add a monitor → the scheduler enqueues it →</text>
+        <text x="44" y="660" class="ts">a poll worker or an agent runs the check → the event alerts you and repaints that same node. Every user action re-enters at 01 · COLLECT.</text>
+      </svg>
+    </div>
+    <figcaption>
+      <b>Fig 9</b> Three things are true everywhere on this canvas: nothing but nginx is reachable
+      from the network, no two processes call each other directly, and no path writes to your
+      inventory without either a human decision or an audit row. The map is not a view bolted onto
+      the platform — it is what the platform is for.
+    </figcaption>
+  </figure>
+</section>
+
+    </main>
+  </div>
+
+  <footer>
+    <span>Circuit Breaker · architecture reference</span>
+    <span>backend · frontend · agent — one monorepo</span>
+  </footer>
+
+</div>
+</body>
+</html>
