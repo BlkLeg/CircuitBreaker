@@ -1655,7 +1655,10 @@ run_upgrade() {
   # docker-proxy, backend + health wait, per-worker start, nginx
   # restart+verify — instead of a blanket target-start that can silently
   # leave backing services down (Wants= is a weak dependency).
+  cb_arm_service_start_diagnostics
   stage8_start_services
+  CB_STAGE_HINTS=()
+  CB_STAGE_DIAGS=()
 
   stage10_final_output
 }

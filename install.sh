@@ -62,13 +62,66 @@ cb_warn() {
   echo -e "  ${YELLOW}⚠${RESET}  $1"
 }
 
+# Read-only diagnostics run automatically by cb_fail, populated before each
+# major stage alongside CB_STAGE_HINTS. Format: "Label::shell command".
+# Nothing here may mutate state — these run unattended on the failure path, so
+# retries, restarts and installs stay in CB_STAGE_HINTS for a human to decide.
+CB_STAGE_DIAGS=()
+CB_DIAG_LINES=50
+_CB_DIAG_RUNNING=false
+
+# /etc/circuitbreaker/.env holds the JWT secret, vault key and DB password.
+# Printing it verbatim on a failure path puts them on the terminal — and into
+# whatever the user pastes into an issue — so mask secrets and any credentials
+# embedded in connection URLs before showing it.
+cb_env_redacted() {
+  local env_file=/etc/circuitbreaker/.env
+  if [[ ! -r "$env_file" ]]; then
+    echo "(not readable: $env_file)"
+    return 0
+  fi
+  sed -E \
+    -e 's/^([A-Za-z0-9_]*(SECRET|PASSWORD|PASSWD|TOKEN|KEY|CREDENTIAL)[A-Za-z0-9_]*)=.+$/\1=<redacted>/' \
+    -e 's#^([A-Za-z0-9_]+)=([a-zA-Z][a-zA-Z0-9+.-]*://)[^:@/]+:[^@]*@#\1=\2<redacted>:<redacted>@#' \
+    "$env_file"
+}
+
+cb_run_diagnostics() {
+  # A diagnostic that itself calls cb_fail must not re-enter this loop.
+  [[ "${_CB_DIAG_RUNNING}" == "true" ]] && return 0
+  [[ ${#CB_STAGE_DIAGS[@]} -eq 0 ]] && return 0
+  _CB_DIAG_RUNNING=true
+
+  echo -e "\n  ${BOLD}Diagnostics${RESET} ${DIM}(collected automatically — no need to re-run these)${RESET}"
+  local _entry _label _cmd _out
+  for _entry in "${CB_STAGE_DIAGS[@]}"; do
+    _label="${_entry%%::*}"
+    _cmd="${_entry#*::}"
+    echo -e "\n  ${CYAN}▸${RESET} ${_label}"
+    echo -e "    ${DIM}\$ ${_cmd}${RESET}"
+    _out="$(eval "${_cmd}" 2>&1 | tail -n "${CB_DIAG_LINES}")" || true
+    if [[ -z "${_out}" ]]; then
+      echo -e "    ${DIM}(no output)${RESET}"
+    else
+      printf '%s\n' "${_out}" | sed 's/^/    /'
+    fi
+    if [[ -n "${LOG_FILE:-}" ]]; then
+      { echo "=== diagnostic: ${_label} — ${_cmd}"; printf '%s\n' "${_out}"; } \
+        >> "${LOG_FILE}" 2>/dev/null || true
+    fi
+  done
+
+  _CB_DIAG_RUNNING=false
+}
+
 cb_fail() {
   echo -e "\n  ${RED}✗  ERROR: $1${RESET}"
   if [[ -n "${2:-}" ]]; then
     echo -e "  ${YELLOW}→  $2${RESET}"
   fi
+  cb_run_diagnostics
   if [[ ${#CB_STAGE_HINTS[@]} -gt 0 ]]; then
-    echo -e "\n  ${BOLD}Debug steps:${RESET}"
+    echo -e "\n  ${BOLD}Next steps:${RESET}"
     local _hint_i=1
     for _hint in "${CB_STAGE_HINTS[@]}"; do
       echo -e "    ${DIM}${_hint_i}.${RESET} ${_hint}"
@@ -81,6 +134,24 @@ cb_fail() {
 
 # Hint array populated before each major stage; cleared on success
 CB_STAGE_HINTS=()
+
+# stage8_start_services runs on both the fresh-install and the upgrade path,
+# so both arm the same diagnostics here rather than only the one main() walks.
+cb_arm_service_start_diagnostics() {
+  CB_STAGE_HINTS=(
+    "Full log: tail -50 ${CB_DATA_DIR}/logs/install.log"
+    "Manual start: systemctl start circuitbreaker.target"
+    "Re-check anytime: cb doctor"
+  )
+  CB_STAGE_DIAGS=(
+    "circuitbreaker-backend status::systemctl status circuitbreaker-backend --no-pager -l"
+    "circuitbreaker-backend logs::journalctl -u circuitbreaker-backend --no-pager -n 50"
+    "Health check::if [[ -x /usr/local/bin/cb ]]; then /usr/local/bin/cb doctor; else echo '(cb CLI not installed yet)'; fi"
+    "Effective config (secrets redacted)::cb_env_redacted"
+    "All Circuit Breaker logs::journalctl -u 'circuitbreaker-*' --no-pager -n 50"
+    "nginx config test::nginx -t"
+  )
+}
 
 cb_section() {
   echo -e "\n  ${BOLD}$1${RESET}"
@@ -654,8 +725,13 @@ main() {
       "Full log: tail -50 ${CB_DATA_DIR}/logs/install.log"
       "Retry: bash install.sh --unattended"
     )
+    CB_STAGE_DIAGS=(
+      "Install log (tail)::tail -n 50 ${LOG_FILE}"
+      "Disk space::df -h ${CB_DATA_DIR} /opt /var"
+    )
     stage1_bootstrap
     CB_STAGE_HINTS=()
+    CB_STAGE_DIAGS=()
 
     CB_STAGE_HINTS=(
       "Full log: tail -50 ${CB_DATA_DIR}/logs/install.log"
@@ -663,8 +739,13 @@ main() {
       "Retry with fresh deps: bash install.sh --force-deps"
       "Manual package check: ${PKG_MGR} install -y postgresql-15 redis nginx pgbouncer"
     )
+    CB_STAGE_DIAGS=(
+      "Install log (tail)::tail -n 50 ${LOG_FILE}"
+      "Network reachability::curl -sS -o /dev/null -w 'github.com -> HTTP %{http_code} in %{time_total}s\\n' -m 10 https://github.com"
+    )
     stage2_dependencies
     CB_STAGE_HINTS=()
+    CB_STAGE_DIAGS=()
 
     stage4_write_systemd_units
 
@@ -675,16 +756,29 @@ main() {
       "Check disk space: df -h ${CB_DATA_DIR}"
       "Retry: bash install.sh --force-deps"
     )
+    CB_STAGE_DIAGS=(
+      "circuitbreaker-postgres status::systemctl status circuitbreaker-postgres --no-pager -l"
+      "circuitbreaker-postgres logs::journalctl -u circuitbreaker-postgres --no-pager -n 40"
+      "Install log (tail)::tail -n 40 ${LOG_FILE}"
+      "Disk space::df -h ${CB_DATA_DIR}"
+    )
     stage3_configure_postgres
     CB_STAGE_HINTS=()
+    CB_STAGE_DIAGS=()
 
     CB_STAGE_HINTS=(
       "Full log: tail -50 ${CB_DATA_DIR}/logs/install.log"
       "pgbouncer status: systemctl status circuitbreaker-pgbouncer"
       "pgbouncer logs: journalctl -u circuitbreaker-pgbouncer -n 30"
     )
+    CB_STAGE_DIAGS=(
+      "circuitbreaker-pgbouncer status::systemctl status circuitbreaker-pgbouncer --no-pager -l"
+      "circuitbreaker-pgbouncer logs::journalctl -u circuitbreaker-pgbouncer --no-pager -n 40"
+      "Install log (tail)::tail -n 40 ${LOG_FILE}"
+    )
     stage3_configure_pgbouncer
     CB_STAGE_HINTS=()
+    CB_STAGE_DIAGS=()
 
     CB_STAGE_HINTS=(
       "Full log: tail -50 ${CB_DATA_DIR}/logs/install.log"
@@ -692,8 +786,15 @@ main() {
       "Redis logs: journalctl -u circuitbreaker-redis -n 30"
       "Port check: ss -tlnp | grep 6379"
     )
+    CB_STAGE_DIAGS=(
+      "circuitbreaker-redis status::systemctl status circuitbreaker-redis --no-pager -l"
+      "circuitbreaker-redis logs::journalctl -u circuitbreaker-redis --no-pager -n 40"
+      "Redis data dir::ls -ld ${CB_DATA_DIR}/redis"
+      "Install log (tail)::tail -n 40 ${LOG_FILE}"
+    )
     stage3_configure_redis
     CB_STAGE_HINTS=()
+    CB_STAGE_DIAGS=()
 
     CB_STAGE_HINTS=(
       "Full log: tail -50 ${CB_DATA_DIR}/logs/install.log"
@@ -701,8 +802,15 @@ main() {
       "NATS logs: journalctl -u circuitbreaker-nats -n 30"
       "NATS binary: ls -la /opt/circuitbreaker/bin/nats-server"
     )
+    CB_STAGE_DIAGS=(
+      "circuitbreaker-nats status::systemctl status circuitbreaker-nats --no-pager -l"
+      "circuitbreaker-nats logs::journalctl -u circuitbreaker-nats --no-pager -n 40"
+      "NATS binary::ls -la /opt/circuitbreaker/bin/nats-server /usr/local/bin/nats-server 2>&1"
+      "Install log (tail)::tail -n 40 ${LOG_FILE}"
+    )
     stage3_configure_nats
     CB_STAGE_HINTS=()
+    CB_STAGE_DIAGS=()
 
     stage3_configure_nginx
     stage3_configure_docker_proxy
@@ -711,14 +819,10 @@ main() {
     stage6_apply_binary
     stage9_install_cb_cli
 
-    CB_STAGE_HINTS=(
-      "Service status: systemctl status circuitbreaker.target"
-      "All CB logs: journalctl -u 'circuitbreaker-*' --no-pager -n 50"
-      "Check config: cat /etc/circuitbreaker/.env"
-      "Manual start: systemctl start circuitbreaker.target"
-    )
+    cb_arm_service_start_diagnostics
     stage8_start_services
     CB_STAGE_HINTS=()
+    CB_STAGE_DIAGS=()
 
     stage10_final_output
   else
