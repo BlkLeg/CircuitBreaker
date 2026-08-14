@@ -1,6 +1,6 @@
 {
   "name": "circuit-breaker-ui",
-  "version": "1.0.0-rc.1",
+  "version": "1.0.0-rc.2",
   "private": true,
   "dependencies": {
     "@dagrejs/dagre": "^1.1.8",
