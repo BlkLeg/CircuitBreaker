@@ -216,8 +216,15 @@ export default function AgentsPage() {
     try {
       const { data } = await getInstallCommand();
       setInstallCommand(data);
-    } catch {
-      toast.error('Could not generate an install command');
+    } catch (err) {
+      // The server answers with an operator-fixable reason when it can (an
+      // unreadable TLS cert, no certificate at all). Dropping it on the floor
+      // left this button failing with nothing to act on and the explanation
+      // only in the backend journal.
+      const detail = err?.response?.data?.detail;
+      toast.error(
+        typeof detail === 'string' && detail ? detail : 'Could not generate an install command'
+      );
     }
   };
 

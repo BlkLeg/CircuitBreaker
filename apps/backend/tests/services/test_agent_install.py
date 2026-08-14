@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from app.services import agent_install
@@ -246,3 +248,89 @@ def test_build_install_command_prefers_successor_key_once_rotation_starts(db_ses
     # the one this fresh install stays valid under after the current key is
     # retired at the end of the overlap window.
     assert resp.script_sha256 == hashlib.sha256(expected_script.encode()).hexdigest()
+
+
+# ── Reading the cert nginx actually serves ───────────────────────────────────
+# Every test above mocks _live_nginx_cert_pem, so nothing ever exercised the
+# real read against a real file. A native install leaves that file readable
+# only by root and the nginx group while the backend runs as `breaker`, so the
+# PermissionError was swallowed by `except OSError` and surfaced as "neither
+# live nginx cert nor database cert available" — a 500 on Add Agent with no
+# clue in the message about what was actually wrong.
+
+
+def _write_cert(tmp_path, cn="circuitbreaker"):
+    from app.services.certificate_service import generate_selfsigned
+
+    cert_pem, _, _ = generate_selfsigned(cn)
+    tls_dir = tmp_path / "tls"
+    tls_dir.mkdir(parents=True, exist_ok=True)
+    cert_file = tls_dir / "fullchain.pem"
+    cert_file.write_text(cert_pem)
+    return cert_file, cert_pem
+
+
+def test_live_nginx_cert_pem_reads_the_file_the_installer_writes(tmp_path, monkeypatch):
+    cert_file, cert_pem = _write_cert(tmp_path)
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path))
+
+    assert agent_install._live_nginx_cert_pem() == cert_pem
+    mode, pin = agent_install._tls_mode_and_pin(None)
+    assert mode == "self_signed"
+    assert pin == agent_install._spki_pin(cert_pem)
+    assert cert_file.exists()
+
+
+def test_missing_cert_file_is_not_an_error_by_itself(tmp_path, monkeypatch):
+    """No file at all is a legitimate "fall back to the database row" case."""
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path))
+
+    assert agent_install._live_nginx_cert_pem() is None
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+def test_unreadable_cert_says_so_instead_of_claiming_none_exists(tmp_path, monkeypatch):
+    cert_file, _ = _write_cert(tmp_path)
+    cert_file.chmod(0o000)
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path))
+
+    with pytest.raises(ValueError) as exc_info:
+        agent_install._tls_mode_and_pin(None)
+
+    message = str(exc_info.value)
+    assert str(cert_file) in message
+    assert "readable" in message.lower() or "permission" in message.lower()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+def test_unreadable_cert_does_not_silently_pin_a_stale_database_cert(tmp_path, monkeypatch):
+    """A DB row need not be what nginx serves; pinning it would break enrollment
+    in a way that only shows up as a TLS failure on the agent, far from here."""
+    from app.db.models import Certificate
+    from app.services.certificate_service import generate_selfsigned
+
+    other_pem, _, _ = generate_selfsigned("something-else.invalid")
+    stale = Certificate(domain="something-else.invalid", type="self-signed", cert_pem=other_pem)
+
+    cert_file, _ = _write_cert(tmp_path)
+    cert_file.chmod(0o000)
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path))
+
+    with pytest.raises(ValueError):
+        agent_install._tls_mode_and_pin(stale)
+
+
+def test_letsencrypt_needs_no_pin_even_with_an_unreadable_file(tmp_path, monkeypatch, db_session):
+    """A publicly trusted cert is validated by the OS trust store, so an
+    unreadable local file is irrelevant and must not block the install."""
+    from app.db.models import Certificate
+
+    cert_file, _ = _write_cert(tmp_path)
+    cert_file.chmod(0o000)
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path))
+
+    mode, pin = agent_install._tls_mode_and_pin(
+        Certificate(domain="cb.example.com", type="letsencrypt", cert_pem="")
+    )
+    assert mode == "public"
+    assert pin == ""

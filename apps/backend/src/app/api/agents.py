@@ -197,7 +197,14 @@ def get_install_command(
     from app.services import agent_install
 
     server_url = f"{request.url.scheme}://{request.url.netloc}"
-    return agent_install.build_install_command(db, server_url)
+    try:
+        return agent_install.build_install_command(db, server_url)
+    except ValueError as exc:
+        # A missing or unreadable TLS certificate is an operator-fixable
+        # deployment problem, not a bug in the request. Surfacing it as a bare
+        # 500 put the only explanation in the backend journal and left the UI
+        # saying "unable to generate install" with nothing to act on.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 def _rotation_status(state: agent_crypto.ServerKeyRotationState) -> ServerKeyRotationStatus:

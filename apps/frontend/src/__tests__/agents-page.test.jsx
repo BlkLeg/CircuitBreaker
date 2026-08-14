@@ -61,7 +61,7 @@ vi.mock('../hooks/useAgentLive', () => ({ useAgentLive: mockUseAgentLive }));
 const mockToast = { success: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() };
 vi.mock('../components/common/Toast', () => ({ useToast: () => mockToast }));
 
-import { getAgent, getAgentsPresence, listAgents } from '../api/agents';
+import { getAgent, getAgentsPresence, getInstallCommand, listAgents } from '../api/agents';
 
 describe('AgentsPage', () => {
   beforeEach(() => {
@@ -454,5 +454,52 @@ describe('AgentsPage fleet filters', () => {
       expect(screen.getByText('No agents match the current filters.')).toBeInTheDocument()
     );
     expect(screen.getByText(/pending-host/i)).toBeInTheDocument();
+  });
+});
+
+describe('AgentsPage install command errors', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUseAgentLive.mockReturnValue({ statuses: new Map(), connected: true });
+  });
+
+  it('shows what the server said went wrong instead of a generic failure', async () => {
+    // The backend answers 503 with an operator-fixable reason (an unreadable
+    // TLS cert, say). Swallowing it left "Add agent" failing with nothing to
+    // act on and the only explanation buried in journalctl.
+    getInstallCommand.mockRejectedValueOnce({
+      response: {
+        status: 503,
+        data: { detail: 'The TLS certificate at /x/y.pem is not readable' },
+      },
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/agents']}>
+        <AgentsPage />
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(screen.getByText('Add agent')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Add agent'));
+
+    await waitFor(() =>
+      expect(mockToast.error).toHaveBeenCalledWith(expect.stringContaining('not readable'))
+    );
+  });
+
+  it('falls back to a generic message when the server offers no detail', async () => {
+    getInstallCommand.mockRejectedValueOnce(new Error('network down'));
+
+    render(
+      <MemoryRouter initialEntries={['/agents']}>
+        <AgentsPage />
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(screen.getByText('Add agent')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Add agent'));
+
+    await waitFor(() =>
+      expect(mockToast.error).toHaveBeenCalledWith('Could not generate an install command')
+    );
   });
 });

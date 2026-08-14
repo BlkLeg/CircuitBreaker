@@ -132,6 +132,20 @@ cmd_doctor() {
     "setsebool -P httpd_can_network_connect on   (SELinux hosts only)" \
     "getsebool httpd_can_network_connect 2>/dev/null; tail -n 20 /var/log/nginx/error.log"
 
+  # The backend reads the public cert off disk to compute the TLS pin it bakes
+  # into cb-agent install commands. It runs as `breaker` while the cert lives in
+  # an nginx-owned directory, so a permissions regression there breaks Add Agent
+  # with a 500 and touches nothing else — every check above stays green.
+  cb_tls_cert="${CB_DATA_DIR:-/var/lib/circuitbreaker}/tls/fullchain.pem"
+  if [[ -f "$cb_tls_cert" ]]; then
+    backend_user=$(systemctl show circuitbreaker-backend -p User --value 2>/dev/null)
+    backend_user="${backend_user:-breaker}"
+    check "Backend reads TLS cert" \
+      "sudo -u ${backend_user} test -r '${cb_tls_cert}'" \
+      "chmod 751 $(dirname "$cb_tls_cert") && chmod 644 ${cb_tls_cert}" \
+      "ls -ld $(dirname "$cb_tls_cert") '${cb_tls_cert}'"
+  fi
+
   # A local-only check above can be green while the host firewall or SELinux
   # silently drops every external connection — neither shows up in
   # `journalctl -u nginx`, so this looks like a working install until someone

@@ -810,8 +810,20 @@ stage3_configure_nginx() {
     local nginx_group="nginx"
     id -g nginx &>/dev/null || nginx_group="www-data"
     chown -R root:"$nginx_group" "${CB_DATA_DIR}/tls"
-    chmod 750 "${CB_DATA_DIR}/tls"
+    # The backend runs as `breaker` and has to read the public certificate to
+    # compute the TLS pin it hands to cb-agent installs. root:nginx 750/640
+    # locked it out of both the directory and the file, and the resulting
+    # PermissionError surfaced as "Add Agent" failing with a 500.
+    #
+    # o+x (not o+r) on the directory: `breaker` can open a known path but not
+    # enumerate the directory. fullchain.pem is world-readable because it is
+    # the server's public certificate — every TLS client is handed a copy
+    # during the handshake. privkey.pem stays root:nginx-only.
+    chmod 751 "${CB_DATA_DIR}/tls"
     chmod 640 "${CB_DATA_DIR}/tls"/*.pem
+    if [[ -f "${CB_DATA_DIR}/tls/fullchain.pem" ]]; then
+      chmod 644 "${CB_DATA_DIR}/tls/fullchain.pem"
+    fi
   else
     use_tls=false
   fi

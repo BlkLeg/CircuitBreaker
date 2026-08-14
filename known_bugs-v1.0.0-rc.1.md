@@ -3,7 +3,7 @@
 Found while installing rc.1 on Ubuntu Server 26.04 LTS (native one-line install).
 Last updated 2026-08-14.
 
-Item 1 is open and needs one piece of data from a running instance. Items 2 and 3
+Item 1 is open and needs one piece of data from a running instance. Items 2, 3 and 4
 are fixed. The two install-blocking defects at the bottom are fixed and carried in
 rc.2.
 
@@ -172,6 +172,53 @@ the token behind host access, which the operator already has — they just SSH'd
 True in-browser autofill only works if the token stops being a secret from the
 browser, which is the thing SEC-09 forbids. If that trade is acceptable, it is a
 deliberate posture change that needs the ledger row reopened — not a UI tweak.
+
+---
+
+## 4. Add Agent returned a 500 — the backend could not read its own TLS cert — FIXED
+
+**Status:** fixed. `GET /api/v1/agents/install-command` raised
+`ValueError: Cannot obtain TLS pin for self-signed certificate: neither live nginx
+cert nor database cert available` on every native install, so the agent — the whole
+distributed half of the product — could not be installed at all.
+
+Nothing was missing. `_live_nginx_cert_pem()` reads
+`$CB_DATA_DIR/tls/fullchain.pem`, which is exactly where `deploy/setup.sh` writes the
+self-signed cert. The problem was that it could not open it: the installer left that
+tree `root:$nginx_group` with the directory at `750` and the file at `640`, and
+`circuitbreaker-backend.service` runs as `breaker`, which is in neither. The
+resulting `PermissionError` was caught by a blanket `except OSError: return None`,
+so an unreadable certificate was indistinguishable from an absent one and the error
+message named the wrong problem.
+
+It only ever worked in the container because `entrypoint-mono.sh:160` chowns both TLS
+files to `breaker:breaker` — the same user the backend runs as. Every unit test
+mocked `_live_nginx_cert_pem`, so nothing exercised the real read against a real
+file on the real layout.
+
+Four parts to the fix:
+
+- **The permissions.** `fullchain.pem` is now `644` and the directory `751`. That
+  file is the server's *public* certificate — every TLS client is handed a copy
+  during the handshake — so there was never a reason to restrict it. `privkey.pem`
+  stays `640 root:$nginx_group`, and `o+x` without `o+r` on the directory lets the
+  backend open a known path without being able to enumerate the directory. The
+  block runs on upgrades too, so existing installs self-heal.
+- **Unreadable is no longer confused with absent.** `FileNotFoundError` still falls
+  back to the database row; `PermissionError` now raises and names the path, the
+  reason and the `chmod` that fixes it. Falling back on a permission error would
+  have been worse than failing: a `Certificate` row need not be what nginx serves,
+  and pinning it would hand agents a pin that fails their TLS handshake, surfacing
+  far from here as an unexplained enrollment failure.
+- **The endpoint answers 503, not 500.** A missing or unreadable certificate is an
+  operator-fixable deployment problem, not a bug in the request.
+- **The UI shows it.** `handleShowInstallCommand` swallowed the response entirely
+  and toasted "Could not generate an install command", which is why the only real
+  explanation was in `journalctl`. It now prefers the server's detail and keeps the
+  generic message as the fallback.
+
+`cb doctor` gained a matching check — the backend reading the cert as its own service
+user — because this failure mode leaves every other check green.
 
 ---
 

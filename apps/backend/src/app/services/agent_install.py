@@ -114,21 +114,41 @@ def _active_certificate(db: Session) -> Certificate | None:
     return db.execute(select(Certificate).order_by(Certificate.updated_at.desc())).scalars().first()
 
 
+def _live_nginx_cert_path() -> Path:
+    import os
+
+    return Path(os.environ.get("CB_DATA_DIR", "/data")) / "tls" / "fullchain.pem"
+
+
 def _live_nginx_cert_pem() -> str | None:
-    """Read nginx.mono.conf's actual TLS listener cert straight off disk.
+    """Read nginx's actual TLS listener cert straight off disk.
 
     The `Certificate` table (certificate_service.py) manages a separate,
     unrelated concern — nginx's own `ssl_certificate` always points at
     {CB_DATA_DIR}/tls/fullchain.pem regardless of what that table contains,
-    and entrypoint-mono.sh generates that file's default self-signed cert
-    with a CN-only subject (no SAN), so this is the only source that
-    reliably matches what an agent's TLS handshake actually sees.
-    """
-    import os
+    and both entrypoint-mono.sh and deploy/setup.sh generate that file's
+    self-signed cert themselves, so this is the only source that reliably
+    matches what an agent's TLS handshake actually sees.
 
-    path = Path(os.environ.get("CB_DATA_DIR", "/data")) / "tls" / "fullchain.pem"
+    Returns None when there is genuinely no file — a legitimate "fall back to
+    the database row" case. A file that exists but cannot be read is a
+    different situation and raises: quietly pinning a `Certificate` row that
+    is not what nginx serves would hand agents a pin that fails their TLS
+    handshake, surfacing far from here as an unexplained enrollment failure.
+    """
+    path = _live_nginx_cert_path()
     try:
         return path.read_text()
+    except FileNotFoundError:
+        return None
+    except PermissionError as exc:
+        raise ValueError(
+            f"The TLS certificate at {path} exists but is not readable by the "
+            f"backend service user ({exc.strerror}). It is the server's public "
+            "certificate, so it should be world-readable; only the private key "
+            "beside it needs to stay restricted. Re-run the installer or fix it "
+            f"with: chmod 644 {path}"
+        ) from exc
     except OSError:
         return None
 
@@ -146,8 +166,10 @@ def _tls_mode_and_pin(cert: Certificate | None) -> tuple[str, str]:
     if cert is not None:
         return "self_signed", _spki_pin(cert.cert_pem)
     raise ValueError(
-        "Cannot obtain TLS pin for self-signed certificate: "
-        "neither live nginx cert nor database cert available"
+        "Cannot obtain TLS pin for the self-signed certificate: no cert at "
+        f"{_live_nginx_cert_path()} and no certificate record in the database. "
+        "An agent needs the pin to trust this server, so the install command "
+        "cannot be generated without it."
     )
 
 
