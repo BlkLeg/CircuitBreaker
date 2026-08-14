@@ -11,7 +11,7 @@ RUN npm run build
 
 # Stage 2: Python dependency builder — includes gcc and build tools, excluded from runtime.
 # Splitting into a separate stage sheds ~80-100 MB of compiler tooling from the final image.
-FROM python:3.12.9-slim-bookworm AS python-builder
+FROM python:3.12.14-slim-bookworm AS python-builder
 WORKDIR /app/backend
 
 # Build tools needed for compiling C extensions on platforms without manylinux wheels
@@ -42,7 +42,7 @@ COPY apps/backend/src ./src
 RUN pip install --no-cache-dir --no-deps .
 
 # Stage 3: Runtime image — build tools stripped; final image only carries what runs.
-FROM python:3.12.9-slim-bookworm
+FROM python:3.12.14-slim-bookworm
 WORKDIR /app/backend
 
 # Runtime-only deps: tini (init), gosu (privilege drop).
