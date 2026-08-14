@@ -2,9 +2,10 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Annotated
 
 from pydantic import AliasChoices, Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 def _version_candidates() -> list[Path]:
@@ -60,7 +61,11 @@ class Settings(BaseSettings):
         "",
         validation_alias=AliasChoices("CB_RATE_LIMIT_STORAGE_URL", "RATE_LIMIT_STORAGE_URL"),
     )
-    trusted_proxy_cidrs: list[str] = Field(
+    # NoDecode: pydantic-settings JSON-decodes complex fields inside the env
+    # source before any mode="before" validator runs, so the comma-separated
+    # form install.sh writes to /etc/circuitbreaker/.env would raise
+    # SettingsError at import time. Opt out and let the validator below decide.
+    trusted_proxy_cidrs: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["127.0.0.1/32", "::1/128"],
         validation_alias=AliasChoices("CB_TRUSTED_PROXY_CIDRS", "TRUSTED_PROXY_CIDRS"),
     )
@@ -71,8 +76,10 @@ class Settings(BaseSettings):
     airgap: bool = False
     docker_host: str = ""
     api_prefix: str = "/api/v1"
-    # Default same-origin only; set CORS_ORIGINS JSON array for dev (e.g. ["http://localhost:5173"]).
-    cors_origins: list[str] = []
+    # Default same-origin only; set CORS_ORIGINS to a JSON array or a comma-separated
+    # list for dev (e.g. ["http://localhost:5173"]). NoDecode for the same reason as
+    # trusted_proxy_cidrs above.
+    cors_origins: Annotated[list[str], NoDecode] = []
 
     @field_validator("cors_origins", mode="before")
     @classmethod

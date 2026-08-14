@@ -32,7 +32,7 @@ Circuit Breaker is configured via environment variables. All variables can be pa
 |---|---|---|
 | `CB_REDIS_URL` | `redis://localhost:6379/0` | Redis URL used for shared rate limits, session/dependency state, telemetry cache, and pub/sub. Production startup fails closed when Redis is unavailable unless degraded mode is explicitly enabled. |
 | `CB_RATE_LIMIT_STORAGE_URL` | _(derived from `CB_REDIS_URL`)_ | Optional override for application rate-limit storage. Use Redis in production; `memory://` is accepted only for tests or explicitly degraded operation. |
-| `CB_TRUSTED_PROXY_CIDRS` | `127.0.0.1/32,::1/128` | CIDRs for reverse proxies whose `X-Forwarded-For` value may be trusted for rate-limit identity. Requests from other peers are keyed by the socket peer address. |
+| `CB_TRUSTED_PROXY_CIDRS` | `127.0.0.1/32,::1/128` | Comma-separated (a JSON array is also accepted). CIDRs for reverse proxies whose `X-Forwarded-For` value may be trusted for rate-limit identity. Requests from other peers are keyed by the socket peer address. |
 | `CB_EGRESS_PROXY_URL` | _(required in strict production)_ | HTTP forward proxy used by public outbound clients such as webhooks, threat-feed downloads, and custom S3 backup endpoints. The proxy should block link-local/metadata and non-approved destinations. |
 | `CB_ALLOW_DEGRADED_DEPENDENCIES` | `false` | Test/emergency switch. When `false`, startup refuses missing Redis/NATS, memory rate-limit storage, missing egress proxy, and empty/placeholder critical secrets. |
 
