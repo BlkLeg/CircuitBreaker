@@ -120,6 +120,17 @@ jobs:
           output: trivy-image-results.sarif
           severity: 'CRITICAL,HIGH'
           exit-code: '1'
+          # Block on findings that can actually be acted on. A pre-flight scan of
+          # the built image measured 109 HIGH/CRIT, of which 4 were fixable — all
+          # four are fixed in ffee1414. The other 105 are Debian stable packages
+          # (perl-base, zlib1g, libsqlite3-0, util-linux, ncurses) marked
+          # affected, fix_deferred or will_not_fix, with no upstream patch to
+          # apply. Without this the gate can never pass, and a gate that can
+          # never pass gets bypassed instead of obeyed. Any NEW vulnerability
+          # that has a fix still fails the release, which is the property worth
+          # keeping. The SARIF upload below is unfiltered, so all 105 stay
+          # visible in code scanning.
+          ignore-unfixed: true
           limit-severities-for-sarif: true
           trivyignores: '.trivyignore'
 
