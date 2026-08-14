@@ -92,51 +92,11 @@
     },
     {
       "transport": "http",
-      "methods": ["GET"],
-      "path": "/api/v1/auth/me",
-      "policy": "auth-internal",
-      "public_reason": "Compatibility endpoint currently performs session handling inside the endpoint.",
-      "disclosure": "current-user result or unauthenticated response"
-    },
-    {
-      "transport": "http",
       "methods": ["POST"],
       "path": "/api/v1/auth/logout",
-      "policy": "auth-internal",
-      "public_reason": "Compatibility endpoint currently performs logout/session handling inside the endpoint.",
+      "policy": "auth-flow",
+      "public_reason": "Logout is idempotent session teardown and must stay reachable with an already-invalid session; requiring auth to log out would strand a client whose token expired. It reads only the caller's own token and revokes only the session that token names.",
       "disclosure": "logout result"
-    },
-    {
-      "transport": "http",
-      "methods": ["DELETE"],
-      "path": "/api/v1/auth/me",
-      "policy": "auth-internal",
-      "public_reason": "Compatibility endpoint currently performs account-deletion authorization inside the endpoint.",
-      "disclosure": "delete result or unauthenticated response"
-    },
-    {
-      "transport": "http",
-      "methods": ["PUT"],
-      "path": "/api/v1/auth/me/avatar",
-      "policy": "auth-internal",
-      "public_reason": "Compatibility endpoint currently performs avatar authorization inside the endpoint.",
-      "disclosure": "avatar update result or unauthenticated response"
-    },
-    {
-      "transport": "http",
-      "methods": ["POST"],
-      "path": "/api/v1/auth/mfa/setup",
-      "policy": "auth-internal",
-      "public_reason": "MFA setup currently performs session validation inside the endpoint.",
-      "disclosure": "MFA setup result or unauthenticated response"
-    },
-    {
-      "transport": "http",
-      "methods": ["POST"],
-      "path": "/api/v1/auth/mfa/activate",
-      "policy": "auth-internal",
-      "public_reason": "MFA activation currently performs session validation inside the endpoint.",
-      "disclosure": "MFA activation result or unauthenticated response"
     },
     {
       "transport": "http",
@@ -145,22 +105,6 @@
       "policy": "auth-flow",
       "public_reason": "MFA verification is part of the login challenge flow.",
       "disclosure": "MFA verification result"
-    },
-    {
-      "transport": "http",
-      "methods": ["POST"],
-      "path": "/api/v1/auth/mfa/disable",
-      "policy": "auth-internal",
-      "public_reason": "MFA disable currently performs session validation inside the endpoint.",
-      "disclosure": "MFA disable result or unauthenticated response"
-    },
-    {
-      "transport": "http",
-      "methods": ["POST"],
-      "path": "/api/v1/auth/mfa/backup-codes/regenerate",
-      "policy": "auth-internal",
-      "public_reason": "Backup-code regeneration currently performs session validation inside the endpoint.",
-      "disclosure": "backup-code result or unauthenticated response"
     },
     {
       "transport": "http",

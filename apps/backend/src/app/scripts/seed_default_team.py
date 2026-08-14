@@ -3,15 +3,26 @@
 Ensures Default Tenant (id=1) exists and assigns all tenant-capable entities
 that have a NULL tenant_id to tenant_id=1.
 
-Idempotent — safe to run multiple times.
+Idempotent — safe to re-run, but NOT safe to run casually on v1.
+
+Multi-tenancy is deferred for v1 (SEC-2B): the deployment is single-tenant and
+the tenant columns exist only to carry upgraded data. The read rule in
+``monitor_service.reader_can_access_monitor`` hides a row only when the reader
+and the row *both* carry tenant ids and they differ — so while rows stay
+tenantless, everything is visible and the rule is inert.
+
+Stamping every row with tenant_id=1 takes that rule out of its inert state. Any
+user carrying a different tenant id immediately stops seeing data that was
+visible a moment earlier. That is a live authorization change performed by a
+script whose name suggests routine setup, in a release whose tenancy story is
+"deferred" — so it requires explicit confirmation rather than a bare invocation.
 
 Usage:
-    python -m app.scripts.seed_default_team
-    # or via make:
-    make db-seed-default-team
+    CB_CONFIRM_TENANT_SEED=1 python -m app.scripts.seed_default_team
 """
 
 import logging
+import os
 
 from app.db.models import (
     ExternalNode,
@@ -28,7 +39,26 @@ from app.db.session import SessionLocal
 _logger = logging.getLogger(__name__)
 
 
-def seed_default_tenant() -> None:
+_CONFIRM_ENV = "CB_CONFIRM_TENANT_SEED"
+
+
+def seed_default_tenant(*, confirmed: bool | None = None) -> None:
+    """Assign tenantless rows to Default Tenant. See the module docstring first.
+
+    Requires explicit confirmation — pass ``confirmed=True`` or set
+    ``CB_CONFIRM_TENANT_SEED=1`` — because it changes who can read what.
+    """
+    if confirmed is None:
+        confirmed = os.getenv(_CONFIRM_ENV, "").strip().lower() in {"1", "true", "yes"}
+    if not confirmed:
+        raise SystemExit(
+            "Refusing to seed tenant ids without confirmation.\n"
+            "This assigns every tenantless row to tenant_id=1, which activates the "
+            "tenant read rule and can hide data from users carrying a different "
+            "tenant id. Multi-tenancy is deferred for v1 (SEC-2B).\n"
+            f"Re-run with {_CONFIRM_ENV}=1 if that is what you intend."
+        )
+
     db = SessionLocal()
     try:
         tenant = db.query(Tenant).filter(Tenant.id == 1).first()

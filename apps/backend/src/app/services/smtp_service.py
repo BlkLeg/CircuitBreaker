@@ -66,18 +66,29 @@ def resolve_public_base_url(cfg: AppSettings, fallback_base_url: str | None = No
     return candidate.rstrip("/")
 
 
-def public_base_from_request_headers(headers: object, fallback_base_url: str = "") -> str:
-    """Extract the externally reachable base URL from proxy/request headers.
+def public_base_from_request(conn: object, fallback_base_url: str = "") -> str:
+    """Extract the externally reachable base URL for links we put in emails.
 
-    Prefers X-Forwarded-Host > Host over the raw fallback so that links in
-    emails use the correct public hostname even when api_base_url is unset.
-    Works with any headers mapping (e.g. Starlette Headers).
+    Prefers X-Forwarded-Host > Host over the raw fallback so links use the
+    correct public hostname even when api_base_url is unset.
+
+    Takes the connection rather than a bare headers mapping on purpose: the
+    forwarded headers are only evidence when the socket peer is one of our
+    proxies, and a headers mapping cannot answer that. Getting this wrong is a
+    password-reset link pointed at an attacker's host, so the trust decision has
+    to travel with the data.
     """
-    host = headers.get("x-forwarded-host") or headers.get("host", "")  # type: ignore[attr-defined]
+    from app.core.forwarded import forwarded_host, forwarded_proto
+
+    headers = getattr(conn, "headers", None)
+    default_host = ""
+    if headers is not None and hasattr(headers, "get"):
+        default_host = str(headers.get("host") or "")
+
+    host = forwarded_host(conn, default_host).split(",")[0].strip()
     if host:
-        proto = headers.get("x-forwarded-proto", "https")  # type: ignore[attr-defined]
-        # X-Forwarded-Host may be a comma-separated list; take the first entry.
-        return f"{proto}://{host.split(',')[0].strip()}"
+        proto = forwarded_proto(conn, "https").split(",")[0].strip() or "https"
+        return f"{proto}://{host}"
     return fallback_base_url.rstrip("/")
 
 

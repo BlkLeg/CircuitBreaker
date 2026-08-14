@@ -7,6 +7,8 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.types import ASGIApp
 
+from app.core.forwarded import forwarded_proto
+
 _CSP = (
     "default-src 'self'; "
     "script-src 'self' 'strict-dynamic'; "
@@ -35,12 +37,15 @@ _SECURITY_HEADERS = {
 
 
 def _is_secure_request(request: Request) -> bool:
-    """Return True when the request arrived over TLS or via a TLS-terminating proxy."""
+    """Return True when the request arrived over TLS or via a TLS-terminating proxy.
+
+    The forwarded header is trusted only from a configured proxy: HSTS is a
+    sticky, browser-persisted commitment, so letting any peer trigger it lets an
+    attacker pin a host to https that may not serve it.
+    """
     if request.url.scheme == "https":
         return True
-    if request.headers.get("x-forwarded-proto", "").lower() == "https":
-        return True
-    return False
+    return forwarded_proto(request).lower() == "https"
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):

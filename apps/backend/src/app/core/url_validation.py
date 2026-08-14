@@ -70,6 +70,15 @@ MONITOR_TARGET_POLICY = OutboundPolicy(
     allow_local=True,
     allow_unresolved_hostname=True,
 )
+OIDC_POLICY = OutboundPolicy(
+    name="OIDC URL",
+    allowed_schemes=frozenset({"http", "https"}),
+    # On-prem identity providers are normal, so RFC1918/ULA stays allowed; what
+    # an attacker-supplied provider config must never reach is loopback or
+    # link-local (and with it the cloud metadata service). Hostnames must
+    # resolve: an unresolvable IdP is a misconfiguration, not a target.
+    allow_private=True,
+)
 EGRESS_PROXY_POLICY = OutboundPolicy(
     name="Egress proxy URL",
     allowed_schemes=frozenset({"http", "https"}),
@@ -245,6 +254,22 @@ def outbound_async_client(**kwargs: Any) -> httpx.AsyncClient:
         kwargs["proxy"] = proxy_url
         kwargs["trust_env"] = False
     return httpx.AsyncClient(**kwargs)
+
+
+def validate_lan_target(url: str, label: str) -> None:
+    """Re-check a LAN integration target immediately before connecting.
+
+    Integrations validate their URL when an operator saves it, but a hostname
+    that pointed at a LAN device then can point at loopback, link-local, or the
+    cloud metadata address by the time a poll runs. Calling this from the client
+    constructor closes that rebinding window; it raises ``ConnectionError`` so
+    it surfaces as an unreachable device rather than an unhandled crash inside a
+    poller.
+    """
+    try:
+        validate_outbound_url(url, LAN_INTEGRATION_POLICY)
+    except ValueError as exc:
+        raise ConnectionError(f"{label} rejected: {exc}") from exc
 
 
 def reject_ssrf_url(url: str) -> None:

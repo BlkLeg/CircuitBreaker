@@ -41,13 +41,28 @@ def compute_log_hash(log: Log, previous_hash: str | None) -> str:
 
 
 def lock_audit_chain(session: Session) -> None:
-    """Take the strongest audit-chain write lock available for this database."""
+    """Take the strongest audit-chain write lock available for this database.
+
+    On PostgreSQL this must succeed. The lock is what serialises hash-chain
+    appends; losing it silently lets two concurrent writers compute
+    `previous_hash` from the same tip and produce a fork that later reads as
+    tampering. Swallowing the error turned the one control protecting chain
+    integrity into a no-op precisely when the database was under stress.
+
+    Non-PostgreSQL backends (SQLite in tests and single-user installs) have no
+    advisory locks and are single-writer anyway, so they are a no-op by design
+    rather than by failure.
+    """
+    bind = session.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
     try:
-        bind = session.get_bind()
-        if bind.dialect.name == "postgresql":
-            session.execute(text("SELECT pg_advisory_xact_lock(487143216)"))
-    except Exception:
-        _logger.debug("audit-chain advisory lock unavailable", exc_info=True)
+        session.execute(text("SELECT pg_advisory_xact_lock(487143216)"))
+    except Exception as exc:
+        _logger.error("audit-chain advisory lock could not be acquired", exc_info=True)
+        raise RuntimeError(
+            "Refusing to append to the audit chain without its serialisation lock"
+        ) from exc
 
 
 def verify_audit_chain(session: Session) -> dict[str, Any]:

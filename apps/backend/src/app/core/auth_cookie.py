@@ -65,7 +65,12 @@ def auth_response_with_cookie(
 def _is_secure_request(request: Request) -> bool:
     if request.url and request.url.scheme == "https":
         return True
-    return request.headers.get("x-forwarded-proto", "").strip().lower() == "https"
+    # `X-Forwarded-Proto` counts only from one of our own proxies. Believing any
+    # peer let a plain-HTTP caller claim https and get a `Secure` cookie — which
+    # the browser would then refuse to send back over the connection it has.
+    from app.core.forwarded import forwarded_proto
+
+    return forwarded_proto(request).strip().lower() == "https"
 
 
 def clear_auth_cookie_response(status_code: int = 204) -> Response:
@@ -89,10 +94,16 @@ def token_from_websocket_scope(scope: dict) -> str | None:
 
 
 def is_websocket_secure(scope: dict) -> bool:
-    """True if the WebSocket handshake is considered secure (e.g. X-Forwarded-Proto: https)."""
-    for name, value in scope.get("headers", []):
-        if name == b"x-forwarded-proto":
-            return bool(value.decode("latin-1").strip().lower() == "https")
+    """True if the WebSocket handshake is considered secure (e.g. X-Forwarded-Proto: https).
+
+    The header is honoured only behind a trusted proxy; otherwise this falls
+    back to whether the handshake itself was wss, so a plain-ws client cannot
+    talk its way past `CB_WS_REQUIRE_WSS` by asserting the header.
+    """
+    from app.core.forwarded import forwarded_proto
+
+    if forwarded_proto(scope).strip().lower() == "https":
+        return True
     return bool(scope.get("type") == "websocket" and (scope.get("scheme") or "ws") == "wss")
 
 

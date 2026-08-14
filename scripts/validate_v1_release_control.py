@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import re
 import sys
 from collections import Counter
@@ -75,6 +76,74 @@ REQUIRED_EXCEPTION_FIELDS = [
     "closure",
     "notes",
 ]
+
+
+# A pass must be reproducible from something immutable. These are the ways the
+# ledger has been observed to record a pass that nobody can re-derive.
+NON_REPRODUCIBLE_COMMIT_PREFIXES = ("working-tree@", "dirty@", "local@")
+# Words that mean the row is not actually finished, whatever `status` claims.
+PENDING_NOTE_MARKERS = ("pending", "rerun required", "to be rerun", "not yet run", "tbd")
+
+
+def sha256_of(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def validate_evidence_integrity(
+    row: dict[str, str], *, ledger_path: Path, index: int, ledger_dir: Path
+) -> None:
+    """Check that a `passed` row's evidence is immutable, present, and unmodified.
+
+    The ledger previously recorded schema-valid rows that were nonetheless
+    impossible to verify: commits pinned to a developer's dirty working tree,
+    digests left behind after the evidence file was rewritten, and notes saying
+    a rerun was still outstanding next to a status of `passed`. Shape validation
+    passed all three, which is how a "fully evidenced" ledger came to contain
+    none of those things.
+    """
+    rid = row["requirement_id"]
+    where = f"{display_path(ledger_path)}:{index}"
+
+    commit = row["commit"].strip()
+    for prefix in NON_REPRODUCIBLE_COMMIT_PREFIXES:
+        if commit.startswith(prefix):
+            fail(
+                f"{where}: {rid} is passed but pins {commit!r}. A pass must cite an "
+                f"immutable commit — a development tree is supporting evidence, not "
+                f"release evidence."
+            )
+
+    notes = row.get("notes", "").lower()
+    for marker in PENDING_NOTE_MARKERS:
+        if marker in notes:
+            fail(
+                f"{where}: {rid} is passed but its notes still say {marker!r}. "
+                f"Resolve the outstanding work or lower the status."
+            )
+
+    evidence_url = row["evidence_url"].strip()
+    recorded_digest = row["evidence_digest"].strip()
+    if not evidence_url or evidence_url.startswith(("http://", "https://")):
+        # Remote evidence cannot be hashed from here; the digest stands as-is.
+        return
+
+    evidence_path = (ROOT / evidence_url).resolve()
+    if not evidence_path.exists():
+        # Try relative to the ledger's own directory before giving up.
+        evidence_path = (ledger_dir / evidence_url).resolve()
+    if not evidence_path.exists():
+        fail(f"{where}: {rid} evidence file not found: {evidence_url}")
+
+    actual = sha256_of(evidence_path)
+    if recorded_digest != actual:
+        fail(
+            f"{where}: {rid} evidence digest is stale.\n"
+            f"  recorded: {recorded_digest}\n"
+            f"  actual:   {actual}\n"
+            f"  file:     {evidence_url}\n"
+            f"The evidence changed after it was recorded; mark the row "
+            f"`superseded` or `invalidated` and re-evidence it."
+        )
 
 
 def canonical_requirement_ids() -> set[str]:
@@ -167,6 +236,13 @@ def validate_ledger(
                 )
             if row["status"] == "passed" and row["invalidation_state"] != "current":
                 fail(f"{display_path(ledger_path)}:{index}: {rid} passed evidence is not current")
+            if row["status"] == "passed":
+                validate_evidence_integrity(
+                    row,
+                    ledger_path=ledger_path,
+                    index=index,
+                    ledger_dir=ledger_path.parent,
+                )
 
         if row["status"] == "excepted" and not row["exception_id"].strip():
             fail(f"{display_path(ledger_path)}:{index}: {rid} excepted without exception_id")
@@ -200,7 +276,7 @@ def validate_exceptions(
     for index, row in enumerate(rows, start=2):
         exception_id = row["exception_id"].strip()
         if not exception_id:
-            fail(f"{EXCEPTIONS.relative_to(ROOT)}:{index}: missing exception_id")
+            fail(f"{display_path(exceptions_path)}:{index}: missing exception_id")
         requirement_ids = [
             part.strip() for part in row["requirement_ids"].split(";") if part.strip()
         ]

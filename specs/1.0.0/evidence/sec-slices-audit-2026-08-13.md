@@ -150,6 +150,54 @@ rejected, and the test asserts the rejection. Worth knowing: the handler's
 both states (bootstrapped, `require_auth` rejects it; unbootstrapped, the
 allowlist does), so it is dead defence in depth rather than a live control.
 
+### P1 closed (2026-08-13, second remediation pass)
+
+All eight P1 items are fixed. Verified on **Python 3.12.14 / FastAPI 0.136.3**
+in a container (the host is still 3.14-only): `pytest tests` exits 0 with
+**2287 passed, 16 skipped, zero failures**, and `ruff check src/app`,
+`ruff format --check`, and `mypy src/app` (282 files) are clean. The endpoint
+inventory was regenerated; its delta is exactly the intended dependency changes
+on the three integrations listings and the seven auth routes.
+
+| Gap | Status | Change |
+|---|---|---|
+| P1-6 mid-connection revocation | **FIXED** | `ws_monitors._ping_loop` re-runs the full handshake policy every 30 s and closes 1008 with `session_revoked`; `events.py` re-checks every 15 s in both the NATS and DB-poll generators and emits a terminal `session_revoked` frame. 6 new tests, incl. a live WS connection dropped after revocation. |
+| P1-7 no container image scan | **FIXED** | `release.yml` runs `aquasecurity/trivy-action` `scan-type: image` against the pushed digest, **before** cosign — a HIGH/CRIT image is never signed or attested. SARIF uploaded under `trivy-image`. |
+| P1-8 monitor rollup leaks | **FIXED** | `graph.build_topology_graph` takes a `reader` and filters rollups through `reader_can_access_monitor` (node stays, rollup withheld); the 3 integrations monitor listings gained `require_scope("read","*")`. 6 new tests. |
+| P1-9 gate-blind auth routes | **FIXED** | 7 routes moved from in-handler `get_optional_user` checks to `require_auth_always`; their `auth-internal` exemptions deleted, so the gate now *derives* the protection. The `auth-internal` category is empty. `/auth/logout` stays exempt as `auth-flow` with a stated reason (idempotent teardown must survive an expired token). |
+| P1-10 client tenant selection | **FIXED** | `tenant_id` dropped from `TopologyCreate` and from the list filter; extra keys are ignored, so an old client gets a tenantless topology rather than an error. |
+| P1-11 icon suffix from filename | **FIXED** | Suffix now derived from the magic-byte-validated MIME via a new shared `MIME_TO_SUFFIX`; the client filename no longer reaches disk. |
+| P1-12 ungoverned gitleaks allowlists | **FIXED** | `validate_security_suppressions.py` parses `.gitleaks.toml` and requires a manifest row per `[[allowlists]]` id (and fails on an unnamed block); 6 `gitleaks-config` rows added with owner/reason/compensating control/expiry. |
+| P1-13 gate passes without scanners | **FIXED** | Gate mode now counts a missing Gitleaks / Trivy-fs / Trivy-config as a gate failure instead of a skip. Report-only mode still skips. |
+
+### P2 and release-control closed (2026-08-14, third remediation pass)
+
+| Gap | Status | Change |
+|---|---|---|
+| P2 challenge-token lockout | **FIXED** | New `_reject_if_locked_out` applied at force-change and MFA-token redemption. Both previously checked only signature, expiry, and `is_active`, so a token issued just before a lockout still bought a full session. Reuses login's generic 401 so it is not an account oracle. |
+| P2 MFA feeds lockout | **FIXED** | A wrong TOTP/backup code now calls `record_failed_login`; a correct one calls `reset_login_attempts`. Previously only the rate limiter stood there, so the second factor could be ground down indefinitely. |
+| P2 session cache per-process | **FIXED** | Ships behind `uvicorn --workers 2`, so this was live, not theoretical. Revocations now write a marker (and a flush epoch) to Redis; a cache hit is confirmed against it via one `MGET`. Redis unreachable ⇒ cache bypassed and the caller does full DB validation — slow, not stale. 7 tests. |
+| P2 forwarded-header trust | **FIXED** | New `app/core/forwarded.py` is the single trust decision for `X-Forwarded-*`; `rate_limit.py` now delegates to it. Cookie `Secure`, HSTS, the WS secure check, and the OAuth redirect URI honour the headers only behind a configured proxy. The unused `public_base_from_request_headers` took a bare headers mapping (which cannot answer "is this peer trusted?") and was reshaped to take the connection. 14 tests. |
+| P2 LAN connect-time validation | **FIXED** | New `validate_lan_target`; iLO and Proxmox clients re-validate in their constructors, closing the rebinding window between persist and poll. |
+| P2 OIDC weaker validator | **FIXED** | `_validate_oidc_url` delegates to the shared validator under a new `OIDC_POLICY`. The parallel copy resolved on port 443 regardless of the real port and knew nothing of the reserved-range / IPv4-mapped-IPv6 rules. OPNsense had a *third* copy — also unified. All four OAuth/OIDC clients now use `outbound_async_client()`, so they respect the egress proxy. |
+| P2 `requirements-pg.txt` unscanned | **FIXED** | Added to the CI pip-audit job; pip-audit added to the local gate (it had none at all), fail-closed when absent. |
+| P2 advisory lock fails open | **FIXED** | `lock_audit_chain` raises on PostgreSQL instead of swallowing. Losing it lets two writers derive `previous_hash` from the same tip and fork the chain, which later reads as tampering. Non-PostgreSQL stays a no-op by design. |
+| P2 health disclosure | **FIXED** | `version` and `timescaledb_available` are authenticated-only; liveness fields stay anonymous for the healthcheck, proxy, and frontend poll. |
+| P2 tenant residue | **FIXED (seed script)** / **kept (UI strings)** | The seed script stamps tenant ids onto every row, which *activates* the otherwise-inert tenant read rule and can hide data — it now refuses without `CB_CONFIRM_TENANT_SEED=1`. The `tenant_mismatch` UI strings are kept: the backend really does emit that reason code from three services, so removing them would render a real refusal as an opaque code. |
+| Release-control validator | **FIXED** | Recomputes `evidence_digest` from the file, rejects `working-tree@`/`dirty@`/`local@` pins, and fails `passed` rows whose notes still say pending/rerun/TBD. Also fixed a latent `NameError` (`EXCEPTIONS` undefined) that would have crashed the exception-register path. All three checks negative-tested. |
+| RC-07 named owners | **FIXED** | `owner-map.md` names shawnji for every prefix. Owner==reviewer is unavoidable with one codeowner; rather than invent a second name, that is recorded as exception `EXC-002` with the automated gates as the compensating control. |
+| RC-08 exception register | **FIXED** | Register populated: `EXC-001` (deferred multi-tenancy, covers SEC-02/03/04) and `EXC-002` (single codeowner), both with owner, rationale, compensating control, approval, and a 2026-11-13 expiry. |
+| Ledger re-truthed | **FIXED** | SEC-02/03/04 moved from `passed` to `excepted` (a waiver is not a test result). The nine other over-claimed rows — every `passed` row in the ledger pinned to a working tree — moved to `in_progress`/`not_evidenced` with a note stating the implementation is complete and only the immutable-commit evidence capture remains. |
+
+**Found while fixing, not a SEC finding:** `/api/v1/integrations/native/monitors`
+is declared *after* `/{integration_id}/monitors`, so FastAPI matches the
+parameterized route first and `list_native_monitors` is unreachable — a reader
+gets 422 (`"native"` is not an int). Pre-existing routing bug, left as-is and
+documented in `tests/api/test_monitor_read_side_channels.py`.
+
+Still open from this document at the end of the second pass: the **P2** list and
+the release-control items — both closed in the third pass below.
+
 ## Prioritized gaps to fill
 
 ### P0 — block RC (security holes contradicting a "passed" claim)

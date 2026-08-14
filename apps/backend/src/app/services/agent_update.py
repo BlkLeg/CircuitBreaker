@@ -63,8 +63,7 @@ def semver_key(version: str) -> tuple[int, ...]:
     produces plain x.y.z tags, so component-wise numeric comparison is
     sufficient."""
     return tuple(
-        int(m.group()) if (m := _SEMVER_COMPONENT.match(part)) else 0
-        for part in version.split(".")
+        int(m.group()) if (m := _SEMVER_COMPONENT.match(part)) else 0 for part in version.split(".")
     )
 
 

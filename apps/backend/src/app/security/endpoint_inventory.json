@@ -1387,7 +1387,7 @@
       "transport": "http"
     },
     {
-      "auth_policy": "auth-internal",
+      "auth_policy": "auth-flow",
       "dependency_calls": [
         "app.api.auth.logout",
         "app.db.session.get_db"
@@ -1405,13 +1405,14 @@
       "transport": "http"
     },
     {
-      "auth_policy": "auth-internal",
+      "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.auth.delete_me",
         "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
         "app.db.session.get_db"
       ],
-      "disclosure": "delete result or unauthenticated response",
+      "disclosure": "authenticated response; see route response model/schema",
       "endpoint_module": "app.api.auth",
       "endpoint_name": "delete_me",
       "methods": [
@@ -1419,18 +1420,19 @@
       ],
       "name": "delete_me",
       "path": "/api/v1/auth/me",
-      "rbac_policy": "none",
+      "rbac_policy": "authenticated-session",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
     {
-      "auth_policy": "auth-internal",
+      "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.auth.get_me_compat",
         "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
         "app.db.session.get_db"
       ],
-      "disclosure": "current-user result or unauthenticated response",
+      "disclosure": "authenticated response; see route response model/schema",
       "endpoint_module": "app.api.auth",
       "endpoint_name": "get_me_compat",
       "methods": [
@@ -1438,18 +1440,19 @@
       ],
       "name": "get_me_compat",
       "path": "/api/v1/auth/me",
-      "rbac_policy": "none",
+      "rbac_policy": "authenticated-session",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
     {
-      "auth_policy": "auth-internal",
+      "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.auth.upload_avatar",
         "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
         "app.db.session.get_db"
       ],
-      "disclosure": "avatar update result or unauthenticated response",
+      "disclosure": "authenticated response; see route response model/schema",
       "endpoint_module": "app.api.auth",
       "endpoint_name": "upload_avatar",
       "methods": [
@@ -1457,18 +1460,19 @@
       ],
       "name": "upload_avatar",
       "path": "/api/v1/auth/me/avatar",
-      "rbac_policy": "none",
+      "rbac_policy": "authenticated-session",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
     {
-      "auth_policy": "auth-internal",
+      "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.auth.mfa_activate",
         "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
         "app.db.session.get_db"
       ],
-      "disclosure": "MFA activation result or unauthenticated response",
+      "disclosure": "authenticated response; see route response model/schema",
       "endpoint_module": "app.api.auth",
       "endpoint_name": "mfa_activate",
       "methods": [
@@ -1476,18 +1480,19 @@
       ],
       "name": "mfa_activate",
       "path": "/api/v1/auth/mfa/activate",
-      "rbac_policy": "none",
+      "rbac_policy": "authenticated-session",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
     {
-      "auth_policy": "auth-internal",
+      "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.auth.mfa_regenerate_backup_codes",
         "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
         "app.db.session.get_db"
       ],
-      "disclosure": "backup-code result or unauthenticated response",
+      "disclosure": "authenticated response; see route response model/schema",
       "endpoint_module": "app.api.auth",
       "endpoint_name": "mfa_regenerate_backup_codes",
       "methods": [
@@ -1495,18 +1500,19 @@
       ],
       "name": "mfa_regenerate_backup_codes",
       "path": "/api/v1/auth/mfa/backup-codes/regenerate",
-      "rbac_policy": "none",
+      "rbac_policy": "authenticated-session",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
     {
-      "auth_policy": "auth-internal",
+      "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.auth.mfa_disable",
         "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
         "app.db.session.get_db"
       ],
-      "disclosure": "MFA disable result or unauthenticated response",
+      "disclosure": "authenticated response; see route response model/schema",
       "endpoint_module": "app.api.auth",
       "endpoint_name": "mfa_disable",
       "methods": [
@@ -1514,18 +1520,19 @@
       ],
       "name": "mfa_disable",
       "path": "/api/v1/auth/mfa/disable",
-      "rbac_policy": "none",
+      "rbac_policy": "authenticated-session",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
     {
-      "auth_policy": "auth-internal",
+      "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.auth.mfa_setup",
         "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
         "app.db.session.get_db"
       ],
-      "disclosure": "MFA setup result or unauthenticated response",
+      "disclosure": "authenticated response; see route response model/schema",
       "endpoint_module": "app.api.auth",
       "endpoint_name": "mfa_setup",
       "methods": [
@@ -1533,7 +1540,7 @@
       ],
       "name": "mfa_setup",
       "path": "/api/v1/auth/mfa/setup",
-      "rbac_policy": "none",
+      "rbac_policy": "authenticated-session",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
@@ -4731,6 +4738,7 @@
     {
       "auth_policy": "health",
       "dependency_calls": [
+        "app.db.session.get_db",
         "app.main.health"
       ],
       "disclosure": "bounded health state",
@@ -4812,6 +4820,7 @@
       "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.integrations.list_all_monitors",
+        "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
         "app.db.session.get_db"
@@ -4824,7 +4833,7 @@
       ],
       "name": "list_all_monitors",
       "path": "/api/v1/integrations/monitors",
-      "rbac_policy": "authenticated-session",
+      "rbac_policy": "declared-role-or-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
@@ -4853,6 +4862,7 @@
       "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.integrations.list_native_monitors",
+        "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
         "app.db.session.get_db"
@@ -4865,7 +4875,7 @@
       ],
       "name": "list_native_monitors",
       "path": "/api/v1/integrations/native/monitors",
-      "rbac_policy": "authenticated-session",
+      "rbac_policy": "declared-role-or-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
@@ -5187,6 +5197,7 @@
       "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.integrations.list_monitors_for_integration",
+        "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
         "app.db.session.get_db"
@@ -5199,7 +5210,7 @@
       ],
       "name": "list_monitors_for_integration",
       "path": "/api/v1/integrations/{integration_id}/monitors",
-      "rbac_policy": "authenticated-session",
+      "rbac_policy": "declared-role-or-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },

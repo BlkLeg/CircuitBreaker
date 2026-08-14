@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.audit import log_audit
 from app.core.config import settings
 from app.core.security import require_write_auth
+from app.core.upload_validation import MIME_TO_SUFFIX
 from app.db.models import ComputeNetwork, UserIcon
 from app.db.session import get_db
 from app.schemas.compute_units import ComputeUnit, ComputeUnitCreate, ComputeUnitUpdate
@@ -162,7 +163,12 @@ async def upload_icon(
     # Ensure directory exists before saving (fix for brand-new instances handling first uploads)
     ICON_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-    suffix = Path(file.filename).suffix or ".png"
+    # Suffix comes from the content type we just magic-byte verified, never from
+    # the client's filename: a PNG body named "x.html" was previously stored and
+    # served as .html, leaving the serving middleware as the only thing standing
+    # between an upload and active content. `file.content_type` is already
+    # constrained to ALLOWED_TYPES above, so the lookup always hits.
+    suffix = MIME_TO_SUFFIX[file.content_type]
     slug = f"user-{uuid.uuid4().hex[:8]}{suffix}"
     dest = ICON_UPLOAD_DIR / slug
     dest.write_bytes(data)

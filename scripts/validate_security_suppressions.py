@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import tomllib
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "specs/1.0.0/release-control/security-suppressions.json"
 TRIVY_IGNORE = ROOT / ".trivyignore"
 GITLEAKS_IGNORE = ROOT / ".gitleaksignore"
+GITLEAKS_CONFIG = ROOT / ".gitleaks.toml"
 
 REQUIRED_FIELDS = {
     "id",
@@ -50,6 +52,30 @@ def _ignore_entries(path: Path) -> set[str]:
             continue
         entries.add(line)
     return entries
+
+
+def _gitleaks_config_allowlist_ids(path: Path) -> set[str]:
+    """Return the `id` of every `[[allowlists]]` block in `.gitleaks.toml`.
+
+    A config allowlist suppresses findings exactly like a `.gitleaksignore`
+    entry does, but broader — it is path-pattern based, so one block can silence
+    a whole tree. Validating only the ignore files left these outside the
+    governance the ignore files are subject to.
+    """
+    if not path.exists():
+        return set()
+    config = tomllib.loads(path.read_text(encoding="utf-8"))
+    blocks = config.get("allowlists")
+    if not isinstance(blocks, list):
+        return set()
+    ids: set[str] = set()
+    for index, block in enumerate(blocks, start=1):
+        block_id = block.get("id") if isinstance(block, dict) else None
+        if not block_id:
+            # An unnamed block cannot be tied to an owner or an expiry.
+            _fail(f"{path.name} allowlist #{index} has no `id` to govern it by")
+        ids.add(str(block_id))
+    return ids
 
 
 def validate(path: Path, today: date) -> None:
@@ -92,6 +118,11 @@ def validate(path: Path, today: date) -> None:
     }
     if missing_gitleaks:
         _fail(f".gitleaksignore entries missing manifest metadata: {sorted(missing_gitleaks)}")
+
+    config_manifest = by_tool.get("gitleaks-config", set())
+    missing_config = _gitleaks_config_allowlist_ids(GITLEAKS_CONFIG) - config_manifest
+    if missing_config:
+        _fail(f".gitleaks.toml allowlists missing manifest metadata: {sorted(missing_config)}")
 
 
 def main() -> None:

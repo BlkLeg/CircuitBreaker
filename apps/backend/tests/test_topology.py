@@ -129,3 +129,40 @@ async def test_save_layout_rejects_non_object_json(client, auth_headers):
         headers=auth_headers,
     )
     assert resp.status_code == 422
+
+
+# ── SEC-2B: no client-facing tenant selection ────────────────────────────────
+#
+# v1 is single-tenant per deployment and multi-tenancy is deferred, so the API
+# must not let a caller choose which tenant it writes into or filters by. The
+# field used to be honoured on create and as a list filter, which also let a
+# caller probe which tenant ids exist.
+
+
+@pytest.mark.asyncio
+async def test_create_topology_ignores_client_supplied_tenant_id(client, auth_headers, db_session):
+    from app.db.models import Topology
+
+    resp = await client.post(
+        TOPOLOGIES_URL,
+        json={"name": "tenant-injection", "tenant_id": 4242},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 201, resp.text
+
+    created = db_session.get(Topology, resp.json()["id"])
+    assert created.tenant_id is None
+
+
+@pytest.mark.asyncio
+async def test_list_topologies_ignores_tenant_id_query_parameter(client, auth_headers):
+    """An unknown tenant filter must not be honoured — nor 422 as an unexpected arg."""
+    created = await client.post(
+        TOPOLOGIES_URL, json={"name": "tenant-filter-probe"}, headers=auth_headers
+    )
+    assert created.status_code == 201, created.text
+
+    resp = await client.get(f"{TOPOLOGIES_URL}?tenant_id=999999", headers=auth_headers)
+    assert resp.status_code == 200, resp.text
+    names = [t["name"] for t in resp.json()]
+    assert "tenant-filter-probe" in names

@@ -146,6 +146,62 @@ async def get_redis() -> aioredis.Redis | None:
     return None
 
 
+# ── Sync client ──────────────────────────────────────────────────────────────
+#
+# The session-validation cache lives on a synchronous code path
+# (`resolve_optional_user_id_sync`) and has to reach shared state to stay
+# coherent across the uvicorn workers. That cannot await, so it gets its own
+# small blocking client rather than bending the async one around it.
+
+_sync_redis: Any | None = None
+_sync_last_reconnect_attempt: float = 0.0
+
+
+def get_sync_redis() -> Any | None:
+    """Return a blocking Redis client, or ``None`` when Redis is unreachable.
+
+    Reconnect probes are rate-limited exactly like :func:`get_redis` so a hot
+    path never blocks on repeated connection attempts to a down server.
+    """
+    global _sync_redis, _sync_last_reconnect_attempt
+
+    if _sync_redis is not None:
+        return _sync_redis
+
+    now = time.monotonic()
+    if now - _sync_last_reconnect_attempt < _RECONNECT_COOLDOWN_S:
+        return None
+    _sync_last_reconnect_attempt = now
+
+    try:
+        import redis as _sync_redis_mod
+
+        client = _sync_redis_mod.from_url(
+            _url,
+            password=_resolve_redis_password(_url),
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
+        client.ping()
+    except Exception:
+        return None
+
+    _sync_redis = client
+    return _sync_redis
+
+
+def reset_sync_redis() -> None:
+    """Drop the cached sync client (used by tests and on connection errors)."""
+    global _sync_redis
+    client, _sync_redis = _sync_redis, None
+    if client is not None:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
 async def close_redis() -> None:
     """Gracefully close the Redis connection."""
     global _redis

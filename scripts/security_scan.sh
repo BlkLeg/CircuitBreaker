@@ -129,6 +129,13 @@ elif docker_available; then
 fi
 if ! $GITLEAKS_RAN; then
     echo "gitleaks not found (install: https://github.com/gitleaks/gitleaks/releases), skipping." >> "$REPORT_FILE"
+    # Fail closed: a gate that "passes" because the scanner is absent is not a
+    # gate. An RC rerun on a host without gitleaks would otherwise regress
+    # silently. Report-only mode keeps skipping.
+    if $GATE_MODE; then
+        GATE_FAILURES=$((GATE_FAILURES + 1))
+        echo "  ⚠ GATE FAILURE: Gitleaks unavailable — cannot attest secret scanning" >> "$REPORT_FILE"
+    fi
 fi
 echo "\`\`\`" >> "$REPORT_FILE"
 
@@ -208,6 +215,11 @@ elif docker_available; then
 fi
 if ! $TRIVY_RAN; then
     echo "Trivy not found (install: https://aquasecurity.github.io/trivy/latest/getting-started/installation/), skipping." >> "$REPORT_FILE"
+    # Fail closed — see the Gitleaks note above.
+    if $GATE_MODE; then
+        GATE_FAILURES=$((GATE_FAILURES + 1))
+        echo "  ⚠ GATE FAILURE: Trivy unavailable — cannot attest filesystem scanning" >> "$REPORT_FILE"
+    fi
 fi
 echo "\`\`\`" >> "$REPORT_FILE"
 
@@ -237,6 +249,11 @@ elif docker_available; then
     fi
 else
     echo "Trivy not found, skipping config scan." >> "$REPORT_FILE"
+    # Fail closed — see the Gitleaks note above.
+    if $GATE_MODE; then
+        GATE_FAILURES=$((GATE_FAILURES + 1))
+        echo "  ⚠ GATE FAILURE: Trivy unavailable — cannot attest config/IaC scanning" >> "$REPORT_FILE"
+    fi
 fi
 echo "\`\`\`" >> "$REPORT_FILE"
 
@@ -251,6 +268,37 @@ if $GATE_MODE; then
     fi
 else
     (cd apps/frontend && npm audit --audit-level=high) >> "$REPO_ROOT/$REPORT_FILE" 2>&1 || true
+fi
+echo "\`\`\`" >> "$REPORT_FILE"
+
+# ── 9b. pip-audit (Python dependencies) ─────────────────────────────────────
+# SEC-18 claims Python dependency scanning, but the local gate ran none — only
+# the CI job did, and that one skipped requirements-pg.txt entirely. Both
+# manifests are audited here so a local `--gate` run attests what CI attests.
+echo "## 9b. pip-audit (Python dependencies)" >> "$REPORT_FILE"
+echo "\`\`\`" >> "$REPORT_FILE"
+echo "Running pip-audit..."
+if ! .venv/bin/pip-audit --version > /dev/null 2>&1; then
+    .venv/bin/pip install pip-audit --quiet
+fi
+PIP_AUDIT_ARGS="-r apps/backend/requirements.txt"
+[ -f apps/backend/requirements-pg.txt ] && PIP_AUDIT_ARGS="$PIP_AUDIT_ARGS -r apps/backend/requirements-pg.txt"
+if .venv/bin/pip-audit --version > /dev/null 2>&1; then
+    if $GATE_MODE; then
+        if ! .venv/bin/pip-audit $PIP_AUDIT_ARGS >> "$REPORT_FILE" 2>&1; then
+            GATE_FAILURES=$((GATE_FAILURES + 1))
+            echo "  ⚠ GATE FAILURE: pip-audit findings" >> "$REPORT_FILE"
+        fi
+    else
+        .venv/bin/pip-audit $PIP_AUDIT_ARGS >> "$REPORT_FILE" 2>&1 || true
+    fi
+else
+    echo "pip-audit unavailable (install: pip install pip-audit), skipping." >> "$REPORT_FILE"
+    # Fail closed — see the Gitleaks note above.
+    if $GATE_MODE; then
+        GATE_FAILURES=$((GATE_FAILURES + 1))
+        echo "  ⚠ GATE FAILURE: pip-audit unavailable — cannot attest Python dependencies" >> "$REPORT_FILE"
+    fi
 fi
 echo "\`\`\`" >> "$REPORT_FILE"
 

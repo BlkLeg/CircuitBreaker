@@ -31,14 +31,17 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from starlette.responses import StreamingResponse
 
 from app.core import subjects
 from app.core.nats_client import nats_client
 from app.core.rbac import require_role
+from app.core.security import _extract_token, _is_user_accessible, decode_token
 from app.db.models import Log
 from app.db.session import SessionLocal
+from app.services.settings_service import get_or_create_settings
+from app.services.user_service import is_session_revoked
 
 logger = logging.getLogger(__name__)
 
@@ -47,17 +50,76 @@ router = APIRouter()
 _KEEPALIVE_INTERVAL = 15  # seconds between SSE keepalive comments
 # Log SSE NATS queue drops at most once per interval to avoid log spam under load
 _QUEUE_FULL_LOG_INTERVAL_S = 30.0
+# How often a live stream re-checks that its session is still valid. This is the
+# upper bound on how long a revoked session keeps receiving alert data.
+_REVALIDATE_INTERVAL_S = 15.0
+
+
+# ── Mid-stream revocation ────────────────────────────────────────────────────
+
+
+def _session_still_valid(raw_token: str | None) -> bool:
+    """Re-run the connect-time auth policy against current DB state.
+
+    Authenticating only at connect meant a revoked or expired session kept
+    receiving notification and alert events until the client disconnected —
+    which, for an SSE stream a dashboard holds open, can be indefinitely.
+    """
+    with SessionLocal() as db:
+        cfg = get_or_create_settings(db)
+        if not cfg.auth_enabled:
+            # Pre-bootstrap: there are no sessions to revoke yet.
+            return True
+        if not cfg.jwt_secret or not raw_token:
+            return False
+        if is_session_revoked(db, raw_token):
+            return False
+        uid = decode_token(raw_token, cfg.jwt_secret)
+        if uid is None:
+            return False
+        return _is_user_accessible(db, uid)
+
+
+async def _revoked_frame(raw_token: str | None, state: dict[str, float]) -> str | None:
+    """Return a terminal SSE frame once the session stops being valid, else None.
+
+    Rate-limited to one DB check per `_REVALIDATE_INTERVAL_S` so a 2 s poll loop
+    does not turn into a 2 s auth query. Fails closed: if the check itself
+    errors we end the stream rather than keep streaming unvalidated.
+    """
+    now = time.monotonic()
+    if now < state["next_check"]:
+        return None
+    state["next_check"] = now + _REVALIDATE_INTERVAL_S
+    loop = asyncio.get_running_loop()
+    try:
+        valid = await loop.run_in_executor(None, _session_still_valid, raw_token)
+    except Exception:
+        logger.warning("SSE revalidation failed; closing stream", exc_info=True)
+        valid = False
+    if valid:
+        return None
+    return "event: session_revoked\ndata: {}\n\n"
+
+
+def _revalidation_state() -> dict[str, float]:
+    return {"next_check": time.monotonic() + _REVALIDATE_INTERVAL_S}
 
 
 # ── NATS-backed SSE ──────────────────────────────────────────────────────────
 
 
-def _nats_event_generator(queue: asyncio.Queue[Any]) -> AsyncIterator[str]:
+def _nats_event_generator(queue: asyncio.Queue[Any], raw_token: str | None) -> AsyncIterator[str]:
     """Async generator that reads from an asyncio.Queue populated by NATS callbacks."""
 
     async def _gen() -> AsyncGenerator[str, None]:
         yield ": keepalive\n\n"
+        revalidation = _revalidation_state()
         while True:
+            revoked = await _revoked_frame(raw_token, revalidation)
+            if revoked is not None:
+                yield revoked
+                break
             try:
                 item = await asyncio.wait_for(queue.get(), timeout=_KEEPALIVE_INTERVAL)
                 yield item
@@ -75,7 +137,7 @@ def _nats_event_generator(queue: asyncio.Queue[Any]) -> AsyncIterator[str]:
 # ── DB-poll fallback SSE ─────────────────────────────────────────────────────
 
 
-def _db_poll_generator() -> AsyncIterator[str]:
+def _db_poll_generator(raw_token: str | None) -> AsyncIterator[str]:
     """Poll the logs / notifications tables every 2 s as a fallback stream.
 
     All SQLAlchemy calls run in a thread via run_in_executor so the asyncio
@@ -108,8 +170,13 @@ def _db_poll_generator() -> AsyncIterator[str]:
                 )
                 last_log_id = None
 
+        revalidation = _revalidation_state()
         while True:
             await asyncio.sleep(2)
+            revoked = await _revoked_frame(raw_token, revalidation)
+            if revoked is not None:
+                yield revoked
+                break
             if last_log_id is None:
                 try:
                     max_id = await loop.run_in_executor(None, _seed)
@@ -166,12 +233,15 @@ def _db_poll_generator() -> AsyncIterator[str]:
 
 
 @router.get("/stream")
-async def events_stream(_user: Any = require_role("viewer")) -> StreamingResponse:
+async def events_stream(request: Request, _user: Any = require_role("viewer")) -> StreamingResponse:
     """Stream real-time notification and alert events via SSE.
 
     Automatically selects NATS-backed delivery when available, falling back
     to DB polling when NATS is not connected.
     """
+    # Captured once here; the stream re-checks it against the DB as it runs so
+    # revoking a session actually ends the stream it authorized.
+    raw_token = _extract_token(request)
     if nats_client.is_connected:
         queue: asyncio.Queue = asyncio.Queue(maxsize=512)
         _last_queue_full_log = 0.0
@@ -230,7 +300,7 @@ async def events_stream(_user: Any = require_role("viewer")) -> StreamingRespons
 
         async def _cleanup_generator() -> AsyncGenerator[str, None]:
             try:
-                async for chunk in _nats_event_generator(queue):
+                async for chunk in _nats_event_generator(queue, raw_token):
                     yield chunk
             finally:
                 for sub in subscriptions:
@@ -252,7 +322,7 @@ async def events_stream(_user: Any = require_role("viewer")) -> StreamingRespons
     # NATS not available — fall back to DB polling
     logger.debug("SSE /events/stream: NATS unavailable, using DB-poll fallback")
     return StreamingResponse(
-        _db_poll_generator(),
+        _db_poll_generator(raw_token),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

@@ -3,6 +3,8 @@ from typing import Any
 import requests
 import urllib3
 
+from app.core.url_validation import validate_lan_target as _validate_lan_target
+
 urllib3.disable_warnings()
 
 # Reuse connections to the same host to avoid connection pool exhaustion (urllib3).
@@ -18,6 +20,11 @@ class ILOClient:
 
     def __init__(self, host: str, username: str, password: str, ca_bundle: str = None):
         self.base = f"https://{host}"
+        # Re-validate at connect time, not just when the integration was saved.
+        # A hostname that resolved to a LAN address at persist time can resolve
+        # somewhere else by the time we poll it — that is DNS rebinding, and the
+        # persist-time check alone cannot see it.
+        _validate_lan_target(self.base, "iLO host")
         self.auth = (username, password)
         self.ca_bundle = ca_bundle or self._get_default_ca_bundle()
         self._session = requests.Session()

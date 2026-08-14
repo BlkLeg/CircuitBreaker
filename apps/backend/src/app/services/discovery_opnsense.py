@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-import socket
 from typing import Any
 
 import httpx
@@ -27,46 +26,21 @@ def _reject_ssrf_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> None
 def _validate_opnsense_host(host: str) -> None:
     """Block loopback/link-local targets for literal IPs and for resolved DNS.
 
-    Private LAN ranges remain allowed.  httpx requests use follow_redirects=False
+    Private LAN ranges remain allowed. httpx requests use follow_redirects=False
     so a 302 to an internal URL cannot bypass this check.
+
+    Delegates to the shared outbound validator: this was a third hand-rolled
+    copy of the same logic (after OIDC's), and each copy knew a slightly
+    different set of forbidden ranges. Called on every discovery run, so it is
+    also the connect-time rebinding check for this integration.
     """
+    from app.core.url_validation import LAN_INTEGRATION_POLICY, validate_outbound_url
+
     host = host.strip()
     try:
-        addr = ipaddress.ip_address(host)
-    except ValueError:
-        try:
-            infos = socket.getaddrinfo(
-                host,
-                443,
-                type=socket.SOCK_STREAM,
-                proto=socket.IPPROTO_TCP,
-            )
-        except socket.gaierror as exc:
-            raise ValueError(f"OPNsense: cannot resolve host {host!r} — {exc}") from exc
-        if not infos:
-            raise ValueError(f"OPNsense: host {host!r} did not resolve to any address")
-        seen: set[str] = set()
-        for info in infos:
-            ip_str = str(info[4][0])
-            if ip_str in seen:
-                continue
-            seen.add(ip_str)
-            try:
-                resolved = ipaddress.ip_address(ip_str)
-            except ValueError:
-                continue
-            try:
-                _reject_ssrf_ip(resolved)
-            except ValueError as exc:
-                raise ValueError(
-                    f"OPNsense: host {host!r} resolves to {ip_str}, which is not allowed ({exc})"
-                ) from exc
-        return
-
-    try:
-        _reject_ssrf_ip(addr)
+        validate_outbound_url(f"https://{host}", LAN_INTEGRATION_POLICY)
     except ValueError as exc:
-        raise ValueError(f"OPNsense: host {host!r} is a {exc}") from exc
+        raise ValueError(f"OPNsense: host {host!r} is not an allowed target — {exc}") from exc
 
 
 # ── Endpoint constants ────────────────────────────────────────────────────────

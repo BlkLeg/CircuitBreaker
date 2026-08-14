@@ -1,7 +1,7 @@
 import hashlib
 import json
 import logging
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
@@ -39,13 +39,19 @@ from app.db.models import (
     Storage,
     Tag,
     TopologyNode,
+    User,
 )
 from app.db.session import get_db
 from app.services.ip_reservation import bulk_conflict_map
 
 _logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["graph"], dependencies=[require_scope("read", "*")])
+# One shared Depends object, not a fresh `require_scope(...)` per use site, so
+# FastAPI's per-request dependency cache resolves the reader once even though it
+# is both a router guard and a handler parameter.
+_READ_SCOPE = require_scope("read", "*")
+
+router = APIRouter(tags=["graph"], dependencies=[_READ_SCOPE])
 
 
 def _edge_arm(
@@ -323,8 +329,15 @@ def build_topology_graph(
     environment: str | None = None,
     environment_id: int | None = None,
     include: str = "hardware,compute,services,storage,networks,misc,external",
+    reader: object | None = None,
 ) -> dict:
-    """Pure callable graph builder — shared by /graph/topology and /topologies/{id}."""
+    """Pure callable graph builder — shared by /graph/topology and /topologies/{id}.
+
+    `reader` is the authenticated user the graph is being built for. When given,
+    monitor rollups are filtered by the same tenant rule `/monitors` applies, so
+    the map cannot be used as a side channel around it. `None` means an internal
+    caller with no reader context and applies no filter.
+    """
     include_set = {i.strip().lower() for i in include.split(",")}
     nodes: list[dict] = []
     edges: list[dict] = []
@@ -389,6 +402,12 @@ def build_topology_graph(
         if include_key not in include_set:
             continue
         for row in monitor_service.list_target_summaries(db, target_type):
+            if reader is not None and not monitor_service.reader_can_access_monitor(
+                db, reader, {"target_type": target_type, "target_id": row["target_id"]}
+            ):
+                # Node stays on the map under its own inventory rules; only the
+                # rollup is withheld, so it renders as unmonitored.
+                continue
             monitor_rollups[(target_type, row["target_id"])] = row
 
     def monitor_fields(target_type: str, entity_id: int) -> dict[str, Any]:
@@ -1046,9 +1065,21 @@ def _topology_etag(
     environment: str | None,
     environment_id: int | None,
     include: str,
+    reader_tenant_id: int | None = None,
 ) -> str:
-    """Lightweight version string for topology (for ETag / If-None-Match)."""
-    parts = [f"env={environment}", f"eid={environment_id}", f"inc={include}"]
+    """Lightweight version string for topology (for ETag / If-None-Match).
+
+    `reader_tenant_id` is part of the key because the body is reader-dependent:
+    monitor rollups are filtered by the reader's tenant. Without it, two readers
+    in different tenants share one validator for two different bodies, and a
+    revalidating cache could answer one of them with the other's 304.
+    """
+    parts = [
+        f"env={environment}",
+        f"eid={environment_id}",
+        f"inc={include}",
+        f"tenant={reader_tenant_id}",
+    ]
     for model in (Hardware, ComputeUnit, Service, Network, Storage):
         try:
             row = db.execute(select(func.max(model.updated_at))).scalar_one_or_none()
@@ -1069,13 +1100,16 @@ def _topology_etag(
 @router.get("/topology")
 def get_topology(
     request: Request,
+    user: Annotated[User, _READ_SCOPE],
     environment: str | None = Query(None),
     environment_id: int | None = Query(None),
     include: str = Query("hardware,compute,services,storage,networks,misc,external"),
     map_id: int | None = Query(None),
     db: Session = Depends(get_db),
 ) -> Response:
-    etag = _topology_etag(db, environment, environment_id, include)
+    etag = _topology_etag(
+        db, environment, environment_id, include, getattr(user, "tenant_id", None)
+    )
     if_none_match = (request.headers.get("if-none-match") or "").strip().strip('"')
     if if_none_match and if_none_match == etag:
         return Response(status_code=304)
@@ -1084,6 +1118,7 @@ def get_topology(
         environment=environment,
         environment_id=environment_id,
         include=include,
+        reader=user,
     )
     # Filter nodes/edges by map membership when map_id is specified
     if map_id is not None:

@@ -26,6 +26,21 @@ MAGIC_BYTES: dict[str, list[bytes]] = {
     "image/vnd.microsoft.icon": [b"\x00\x00\x01\x00", b"\x00\x00\x02\x00"],
 }
 
+# MIME -> the one extension we will ever write to disk for it. Callers derive
+# the stored filename from the magic-byte-validated type rather than from the
+# client's filename, so a PNG body uploaded as "x.html" cannot be stored — and
+# later served — under an active-content suffix.
+MIME_TO_SUFFIX: dict[str, str] = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/x-icon": ".ico",
+    "image/vnd.microsoft.icon": ".ico",
+}
+
+
 # Extension -> MIME for branding/docs uploads
 SUFFIX_TO_MIME: dict[str, str] = {
     ".png": "image/png",

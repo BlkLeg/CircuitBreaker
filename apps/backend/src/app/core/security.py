@@ -95,7 +95,41 @@ def _set_request_token_scopes(request: HTTPConnection, scopes: tuple[str, ...] |
     request.state.token_scopes = scopes
 
 
+# ── Cross-worker cache coherence ─────────────────────────────────────────────
+#
+# The app ships behind `uvicorn --workers 2`, so the per-process cache alone
+# meant a logout handled by worker A left worker B honouring the same token
+# until its own entry aged out. Revocations are therefore also written to Redis,
+# which every worker shares, and a cache hit is confirmed against it before it
+# is trusted. Redis unreachable ⇒ the cache is bypassed and the caller does the
+# full database validation, so the degraded mode is slow rather than stale.
+
+_REVOKED_KEY_PREFIX = "cb:sess:revoked:"
+_FLUSH_EPOCH_KEY = "cb:sess:flush-epoch"
+# Comfortably longer than the cache TTL: once no cached entry can survive, the
+# marker has nothing left to invalidate and Redis can expire it.
+_REVOKED_MARKER_TTL_S = _SESSION_CACHE_TTL_S * 6
+
+_local_flush_epoch: str | None = None
+
+
+def _shared_cache_state(token_hash: str) -> tuple[bool, bool, str | None]:
+    """Return (reachable, token_revoked, flush_epoch) from the shared store."""
+    from app.core.redis import get_sync_redis, reset_sync_redis
+
+    client = get_sync_redis()
+    if client is None:
+        return False, False, None
+    try:
+        epoch, revoked = client.mget(_FLUSH_EPOCH_KEY, f"{_REVOKED_KEY_PREFIX}{token_hash}")
+    except Exception:
+        reset_sync_redis()
+        return False, False, None
+    return True, revoked is not None, epoch
+
+
 def _session_cache_get(token_hash: str) -> tuple[int, tuple[str, ...] | None] | None:
+    global _local_flush_epoch
     now = time.monotonic()
     with _session_cache_lock:
         entry = _session_cache.get(token_hash)
@@ -105,7 +139,24 @@ def _session_cache_get(token_hash: str) -> tuple[int, tuple[str, ...] | None] | 
         if expiry <= now:
             _session_cache.pop(token_hash, None)
             return None
-        return user_id, scopes
+
+    reachable, revoked, epoch = _shared_cache_state(token_hash)
+    if not reachable:
+        # Cannot prove the entry is still valid — fall through to the database
+        # rather than serve a decision another worker may already have revoked.
+        return None
+    if revoked:
+        with _session_cache_lock:
+            _session_cache.pop(token_hash, None)
+        return None
+    if epoch != _local_flush_epoch:
+        # Another worker cleared every session (password change, bulk revoke).
+        _local_flush_epoch = epoch
+        with _session_cache_lock:
+            _session_cache.clear()
+        return None
+
+    return user_id, scopes
 
 
 def _session_cache_set(
@@ -128,12 +179,40 @@ def invalidate_session_cache(token: str | None = None) -> None:
 
     If token is provided, only that token's entry is removed. If token is None,
     the entire cache is cleared (use when revoking by session_id or user_id).
+
+    The invalidation is also recorded in Redis so the other uvicorn workers stop
+    honouring the same token; see the cross-worker note above. A Redis failure
+    here is logged and swallowed — the local cache is still cleared, and the
+    read path bypasses the cache entirely while Redis is unreachable, so the
+    result is a correct-but-slower validation rather than a stale session.
     """
     with _session_cache_lock:
         if token is not None:
             _session_cache.pop(_hash_token_for_cache(token), None)
         else:
             _session_cache.clear()
+
+    from app.core.redis import get_sync_redis, reset_sync_redis
+
+    client = get_sync_redis()
+    if client is None:
+        return
+    try:
+        if token is not None:
+            client.setex(
+                f"{_REVOKED_KEY_PREFIX}{_hash_token_for_cache(token)}",
+                _REVOKED_MARKER_TTL_S,
+                "1",
+            )
+        else:
+            client.incr(_FLUSH_EPOCH_KEY)
+    except Exception:
+        _logger.warning(
+            "Could not publish session invalidation to Redis; other workers will "
+            "fall back to database validation",
+            exc_info=True,
+        )
+        reset_sync_redis()
 
 
 def _log_api_token_deprecation() -> None:

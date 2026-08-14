@@ -178,8 +178,15 @@ jobs:
           python3.12 -m venv .venv
           .venv/bin/pip install --upgrade pip pip-audit
           .venv/bin/pip install -e "apps/backend/[dev]"
+      # requirements-pg.txt (asyncpg, psycopg2) ships in the PostgreSQL
+      # deployment but was audited by nothing — the driver that terminates every
+      # database connection was the one dependency set with no CVE coverage.
       - name: Run pip-audit
-        run: .venv/bin/pip-audit -r apps/backend/requirements.txt --format=json --output pip-audit-results.json
+        run: |
+          .venv/bin/pip-audit \
+            -r apps/backend/requirements.txt \
+            -r apps/backend/requirements-pg.txt \
+            --format=json --output pip-audit-results.json
       - name: Upload pip-audit results
         uses: actions/upload-artifact@v5
         if: always()

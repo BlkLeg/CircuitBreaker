@@ -15,6 +15,7 @@ permissions:
   contents: write    # create GitHub Release, upload assets
   packages: write    # push Docker image to GHCR
   id-token: write    # OIDC for cosign keyless signing
+  security-events: write  # upload container image scan SARIF to code scanning
 
 jobs:
   # ── Derive version ────────────────────────────────────────────────────────────
@@ -105,6 +106,29 @@ jobs:
           docker push "${IMAGE}:latest"
           DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE}:${VERSION}")
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      # SEC-18 claims container vulnerability scanning; before this step the
+      # pipeline only ever ran `trivy fs`/`config` over the source tree, so the
+      # base image and OS packages the image actually ships were never scanned.
+      # Placed before cosign so a HIGH/CRIT image is never signed or attested.
+      - name: Scan container image for vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.docker_push.outputs.digest }}
+          format: sarif
+          output: trivy-image-results.sarif
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+          limit-severities-for-sarif: true
+          trivyignores: '.trivyignore'
+
+      - name: Upload container image scan results
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: trivy-image-results.sarif
+          category: trivy-image
 
       - name: Install cosign v2.4.1
         run: |

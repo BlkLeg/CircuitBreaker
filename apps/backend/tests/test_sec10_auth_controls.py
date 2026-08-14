@@ -273,10 +273,10 @@ class TestSEC10OAuthCallbackState:
 
 class TestSEC10TrustedProxyIdentity:
     def test_untrusted_peer_cannot_spoof_forwarded_for(self, monkeypatch):
-        from app.core import rate_limit
+        from app.core import forwarded, rate_limit
 
         monkeypatch.setattr(rate_limit.settings, "trusted_proxy_cidrs", ["10.0.0.0/8"])
-        monkeypatch.setattr(rate_limit, "_trusted_proxy_cache", None)
+        monkeypatch.setattr(forwarded, "_trusted_proxy_cache", None)
 
         identity = rate_limit.trusted_client_identity(_request("203.0.113.10", "198.51.100.44"))
 
@@ -288,10 +288,10 @@ class TestSEC10TrustedProxyIdentity:
         The shipped nginx appends to X-Forwarded-For, so entries further left
         may have been supplied by the caller itself.
         """
-        from app.core import rate_limit
+        from app.core import forwarded, rate_limit
 
         monkeypatch.setattr(rate_limit.settings, "trusted_proxy_cidrs", ["10.0.0.0/8"])
-        monkeypatch.setattr(rate_limit, "_trusted_proxy_cache", None)
+        monkeypatch.setattr(forwarded, "_trusted_proxy_cache", None)
 
         identity = rate_limit.trusted_client_identity(
             _request("10.1.2.3", "198.51.100.44, 198.51.100.45")

@@ -4,7 +4,6 @@ Profiles (relaxed / normal / strict) are stored in AppSettings.rate_limit_profil
 and determine the per-category rate strings used by @limiter.limit decorators.
 """
 
-import ipaddress
 import logging
 import threading
 import time
@@ -15,15 +14,19 @@ from slowapi.util import get_remote_address
 from starlette.requests import Request
 
 from app.core.config import settings
+from app.core.forwarded import (
+    client_host,
+    forwarded_client_identity,
+    request_from_trusted_proxy,
+    trusted_proxy_networks,
+)
 from app.core.redis import _resolve_redis_password
 
 _logger = logging.getLogger(__name__)
-_IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 _PROFILE_CACHE_TTL_S = 300
 _profile_cache: tuple[str, float] | None = None
 _profile_cache_lock = threading.Lock()
-_trusted_proxy_cache: tuple[tuple[_IPNetwork, ...], tuple[str, ...]] | None = None
 
 PROFILES: dict[str, dict[str, str]] = {
     "relaxed": {
@@ -74,73 +77,13 @@ def _rate_limit_storage_uri() -> str:
     return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, ""))
 
 
-def _trusted_proxy_networks() -> tuple[_IPNetwork, ...]:
-    global _trusted_proxy_cache
-    raw = tuple(settings.trusted_proxy_cidrs)
-    if _trusted_proxy_cache and _trusted_proxy_cache[1] == raw:
-        return _trusted_proxy_cache[0]
-
-    networks: list[_IPNetwork] = []
-    for cidr in raw:
-        try:
-            networks.append(ipaddress.ip_network(cidr, strict=False))
-        except ValueError:
-            _logger.warning("Ignoring invalid trusted proxy CIDR: %s", cidr)
-    _trusted_proxy_cache = (tuple(networks), raw)
-    return _trusted_proxy_cache[0]
-
-
-def _client_host(request: Request) -> str:
-    client = getattr(request, "client", None)
-    host = getattr(client, "host", None)
-    return str(host or "")
-
-
-def _request_from_trusted_proxy(request: Request) -> bool:
-    host = _client_host(request)
-    if not host:
-        return False
-    try:
-        peer = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return any(peer.version == net.version and peer in net for net in _trusted_proxy_networks())
-
-
-def _forwarded_client_identity(headers: object) -> str:
-    """Return the rightmost X-Forwarded-For hop we did not put there ourselves.
-
-    The shipped nginx *appends* (`$proxy_add_x_forwarded_for`), so a client's own
-    header survives to the left of its real address. Reading left to right would
-    therefore let any caller choose its own rate-limit key and rotate identities
-    past the login and MFA limits. Walking right to left and stopping at the
-    first hop outside `trusted_proxy_cidrs` yields the nearest address an
-    attacker cannot forge: everything further left was written by an untrusted
-    party. Returns "" when the whole chain is our own proxies (or unreadable),
-    leaving the caller on the socket peer.
-    """
-    raw = ""
-    if hasattr(headers, "get"):
-        raw = str(headers.get("x-forwarded-for") or "")
-    if not raw:
-        return ""
-
-    trusted = _trusted_proxy_networks()
-    for entry in reversed(raw.split(",")):
-        entry = entry.strip()
-        if not entry:
-            continue
-        try:
-            candidate = ipaddress.ip_address(entry)
-        except ValueError:
-            # An unreadable hop ends the verifiable chain — anything to its left
-            # is hearsay, so fall back to the peer rather than guess.
-            _logger.debug("Ignoring invalid X-Forwarded-For value from trusted proxy")
-            return ""
-        if any(candidate.version == net.version and candidate in net for net in trusted):
-            continue
-        return str(candidate)
-    return ""
+# The trusted-proxy primitives live in app.core.forwarded so that every reader
+# of an X-Forwarded-* header shares one trust decision. Re-exported under the
+# old private names because this module's tests and call sites already use them.
+_trusted_proxy_networks = trusted_proxy_networks
+_client_host = client_host
+_request_from_trusted_proxy = request_from_trusted_proxy
+_forwarded_client_identity = forwarded_client_identity
 
 
 def trusted_client_identity(request: Request) -> str:

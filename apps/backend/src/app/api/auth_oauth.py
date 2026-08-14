@@ -2,11 +2,9 @@
 
 import base64
 import hashlib
-import ipaddress
 import json
 import logging
 import secrets
-import socket
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -20,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.core.rate_limit import get_limit, limiter
 from app.core.time import utcnow_iso
+from app.core.url_validation import OIDC_POLICY, outbound_async_client, validate_outbound_url
 from app.db.models import AppSettings, OAuthState, User
 from app.db.session import get_db
 from app.services.credential_vault import get_vault
@@ -68,66 +67,21 @@ def exchange_auth_code(
 # ── OIDC safety helpers (S1/S2) ───────────────────────────────────────────────
 
 
-def _validate_hostname_resolves_safe(hostname: str, label: str) -> None:
-    """Reject hostnames whose DNS A/AAAA include loopback or link-local targets.
-
-    Private (RFC1918 / ULA) addresses are allowed so on-prem IdPs and firewalls
-    keep working.  This closes obvious SSRF where a hostname only resolves to
-    127.0.0.1 or 169.254.x.x (metadata-style ranges are link-local in IPv4).
-    """
-    if not hostname:
-        raise HTTPException(400, f"{label} has an empty hostname")
-    try:
-        infos = socket.getaddrinfo(
-            hostname,
-            443,
-            type=socket.SOCK_STREAM,
-            proto=socket.IPPROTO_TCP,
-        )
-    except socket.gaierror as exc:
-        raise HTTPException(
-            400,
-            f"{label}: cannot resolve hostname {hostname!r} — {exc}",
-        ) from exc
-    if not infos:
-        raise HTTPException(400, f"{label}: hostname {hostname!r} did not resolve")
-    seen: set[str] = set()
-    for info in infos:
-        ip_str = str(info[4][0])
-        if ip_str in seen:
-            continue
-        seen.add(ip_str)
-        try:
-            addr = ipaddress.ip_address(ip_str)
-        except ValueError:
-            continue
-        if addr.is_loopback or addr.is_link_local:
-            raise HTTPException(
-                400,
-                f"{label} resolves to {ip_str} (loopback or link-local), which is not allowed",
-            )
-
-
 def _validate_oidc_url(url: str, label: str = "OIDC URL") -> None:
     """Reject discovery_url / token_endpoint values that target loopback or
     link-local addresses (prevents SSRF via attacker-controlled provider config).
 
-    Literal IPs are checked directly; hostnames are checked via DNS so obvious
-    metadata/loopback targets are rejected before httpx connects.
+    Delegates to the shared outbound validator rather than the hand-rolled
+    checks this used to carry. The parallel implementation drifted from the
+    shared one — it resolved on port 443 regardless of the URL's real port and
+    knew nothing of the reserved-range and IPv4-mapped-IPv6 rules
+    `_is_forbidden_address` applies — so OIDC was the weakest SSRF surface in
+    the codebase while looking guarded.
     """
-    parsed = urlparse(url)
-    if parsed.scheme not in ("https", "http"):
-        raise HTTPException(400, f"{label} must be an HTTP/HTTPS URL")
-    host = parsed.hostname or ""
     try:
-        addr = ipaddress.ip_address(host)
-        if addr.is_loopback or addr.is_link_local:
-            raise HTTPException(
-                400,
-                f"{label} targets a loopback or link-local address and is not allowed",
-            )
-    except ValueError:
-        _validate_hostname_resolves_safe(host, label)
+        validate_outbound_url(url, OIDC_POLICY)
+    except ValueError as exc:
+        raise HTTPException(400, f"{label}: {exc}") from exc
 
 
 def _validate_token_endpoint_host(token_endpoint: str, discovery_url: str) -> None:
@@ -357,14 +311,15 @@ def _get_app_base_url(db: Session, request: Request | None = None) -> str:
     if api_base_url:
         return str(api_base_url).rstrip("/")
     if request is not None:
-        proto = (
-            (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip()
-        )
-        host = (
-            (request.headers.get("x-forwarded-host") or request.headers.get("host") or "")
-            .split(",")[0]
-            .strip()
-        )
+        # Forwarded values count only from a configured proxy. This URL becomes
+        # the OAuth redirect_uri, so an attacker who could set X-Forwarded-Host
+        # could point the provider's callback — and the authorization code with
+        # it — at a host they control. Untrusted peers fall back to the real
+        # scheme and the Host header.
+        from app.core.forwarded import forwarded_host, forwarded_proto
+
+        proto = forwarded_proto(request, request.url.scheme).split(",")[0].strip()
+        host = forwarded_host(request, request.headers.get("host") or "").split(",")[0].strip()
         if host:
             return f"{proto}://{host}".rstrip("/")
     return "http://localhost:8080"
@@ -659,7 +614,7 @@ async def github_callback(
     _ensure_provider_enabled(db, "github", cfg, provider_type="oauth")
     base_url = _get_app_base_url(db, request)
 
-    async with httpx.AsyncClient() as client:
+    async with outbound_async_client() as client:
         token_resp = await client.post(
             "https://github.com/login/oauth/access_token",
             json={
@@ -781,7 +736,7 @@ async def google_callback(
     base_url = _get_app_base_url(db, request)
     redirect_uri = f"{base_url}/api/v1/auth/oauth/google/callback"
 
-    async with httpx.AsyncClient() as client:
+    async with outbound_async_client() as client:
         token_resp = await client.post(
             "https://oauth2.googleapis.com/token",
             data={
@@ -872,7 +827,7 @@ async def oidc_authorize(
     db.commit()
 
     _validate_oidc_url(cfg["discovery_url"], "OIDC discovery_url")
-    async with httpx.AsyncClient() as client:
+    async with outbound_async_client() as client:
         disc_resp = await client.get(cfg["discovery_url"], timeout=10.0, follow_redirects=False)
         disc = _json_or_502(disc_resp, "OIDC", _STAGE_DISCOVERY)
 
@@ -913,7 +868,7 @@ async def oidc_callback(
     redirect_uri = f"{base_url}/api/v1/auth/oauth/oidc/{provider_slug}/callback"
 
     _validate_oidc_url(cfg["discovery_url"], "OIDC discovery_url")
-    async with httpx.AsyncClient() as client:
+    async with outbound_async_client() as client:
         disc_resp = await client.get(cfg["discovery_url"], timeout=10.0, follow_redirects=False)
         disc = _json_or_502(disc_resp, "OIDC", _STAGE_DISCOVERY)
         token_ep = disc.get("token_endpoint")

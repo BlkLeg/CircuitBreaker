@@ -40,7 +40,13 @@ class ProxmoxIntegration:
     ) -> None:
         from proxmoxer import ProxmoxAPI
 
+        from app.core.url_validation import validate_lan_target
+
         self.host = host
+        # Connect-time re-validation — see validate_lan_target. Persist-time
+        # validation alone leaves a DNS-rebinding window open between saving the
+        # integration and every subsequent poll.
+        validate_lan_target(f"https://{host}", "Proxmox host")
 
         kwargs: dict[str, Any] = {
             "user": user,

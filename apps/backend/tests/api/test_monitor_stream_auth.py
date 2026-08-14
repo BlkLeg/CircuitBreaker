@@ -3,6 +3,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from starlette.testclient import WebSocketDenialResponse
 
 
 def _login_user(
@@ -132,9 +133,88 @@ def test_monitor_stream_rejects_revoked_session_on_reconnect(ws_client, app_cfg,
         )
         db.commit()
 
+    # The reconnect must be refused. *Where* it is refused moved earlier once the
+    # session-validation cache stopped serving revoked tokens for up to 10 s:
+    #
+    #   before — the cached "valid" verdict got the handshake past the router's
+    #            require_auth dependency, and only the handler's own check
+    #            caught it, so the client saw {"error": "unauthorized"} on an
+    #            accepted socket.
+    #   now    — the dependency itself re-validates, so the handshake is denied
+    #            outright and no socket is ever accepted.
+    #
+    # Both are correct refusals and either is acceptable here; the security
+    # property under test is that a revoked session cannot reconnect. Pinning
+    # the assertion to the late path would have been pinning it to the cache bug.
+    try:
+        with ws_client.websocket_connect("/api/v1/monitors/stream") as ws:
+            assert json.loads(ws.receive_text()) == {"error": "unauthorized"}
+            with pytest.raises(Exception) as exc_info:  # noqa: B017 - Starlette version varies.
+                ws.receive_text()
+        assert getattr(exc_info.value, "code", None) in {1008, 4401}
+    except WebSocketDenialResponse as denial:
+        assert denial.status_code in {401, 403}, denial.status_code
+
+
+def _revoke_committed(token, user_id):
+    """Commit a revoked session row on its own connection.
+
+    The stream re-authenticates through its own SessionLocal, so the revocation
+    has to be visible outside the test's transaction to be seen at all.
+    """
+    from datetime import timedelta
+
+    from app.core.time import utcnow
+    from app.db.models import UserSession
+    from app.db.session import SessionLocal
+    from app.services.user_service import _hash_token
+
+    with SessionLocal() as db:
+        db.add(
+            UserSession(
+                user_id=user_id,
+                jwt_token_hash=_hash_token(token),
+                expires_at=utcnow() + timedelta(hours=1),
+                revoked=True,
+            )
+        )
+        db.commit()
+
+
+def test_monitor_stream_closes_when_session_is_revoked_mid_connection(
+    ws_client, app_cfg, monkeypatch
+):
+    """Revocation must end a *live* stream, not just refuse the next handshake.
+
+    The test above only proves reconnects are refused. Before the ping loop
+    re-checked authority, an already-open connection kept receiving monitor
+    data for as long as the client held it open.
+    """
+    from unittest.mock import AsyncMock
+
+    from app.api import ws_monitors
+
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=None))
+    # The re-check rides the ping loop; shorten it so the test does not wait 30 s.
+    monkeypatch.setattr(ws_monitors, "_PING_INTERVAL_SECONDS", 0.05)
+
+    token, user_id = _login_viewer(ws_client, app_cfg)
+
     with ws_client.websocket_connect("/api/v1/monitors/stream") as ws:
-        assert json.loads(ws.receive_text()) == {"error": "unauthorized"}
-        with pytest.raises(Exception) as exc_info:  # noqa: B017 - Starlette version varies here.
+        assert json.loads(ws.receive_text()) == {"status": "connected"}
+
+        _revoke_committed(token, user_id)
+
+        # Pings may still be in flight from before the revocation landed.
+        for _ in range(20):
+            message = json.loads(ws.receive_text())
+            if message.get("error") == "session_revoked":
+                break
+            assert message.get("type") == "ping", message
+        else:
+            pytest.fail("stream never closed after the session was revoked")
+
+        with pytest.raises(Exception) as exc_info:  # noqa: B017 - Starlette version varies.
             ws.receive_text()
 
     assert getattr(exc_info.value, "code", None) in {1008, 4401}

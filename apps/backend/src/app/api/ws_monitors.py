@@ -54,6 +54,9 @@ router = APIRouter()
 _MAX_CONNECTIONS: int = int(os.getenv("CB_WS_MON_MAX_CONNECTIONS", "100"))
 _MAX_PER_IP: int = int(os.getenv("CB_WS_MON_MAX_PER_IP", "10"))
 _MAX_SUBSCRIPTIONS: int = 500
+# Doubles as the revocation re-check interval — see _ping_loop. This is the
+# upper bound on how long a revoked session keeps receiving monitor data.
+_PING_INTERVAL_SECONDS: int = 30
 
 _connections: set[WebSocket] = set()
 _ip_counts: dict[str, int] = {}
@@ -269,12 +272,36 @@ def _authorized_monitor_channels(db: Any, reader: Any, monitor_ids: list[Any]) -
     return channels
 
 
-async def _ping_loop(ws: WebSocket, main_task: asyncio.Task) -> None:
+async def _ping_loop(ws: WebSocket, main_task: asyncio.Task, raw_token: str) -> None:
+    """Keepalive pings, and the only place a live connection re-checks its authority.
+
+    Authenticating at handshake alone meant a revoked session, a deactivated
+    user, or a token whose scopes were narrowed kept receiving monitor data for
+    as long as it stayed connected — potentially indefinitely. Re-running the
+    full handshake policy here bounds that to one ping interval and keeps a
+    single definition of who may read this stream.
+    """
     try:
         while True:
-            await asyncio.sleep(30)
+            await asyncio.sleep(_PING_INTERVAL_SECONDS)
             if ws.application_state == WebSocketState.DISCONNECTED:
                 main_task.cancel()
+                break
+            with _db_session.SessionLocal() as db:
+                still_authorized = _authenticate_monitor_reader(db, raw_token) is not None
+            if not still_authorized:
+                logger.info("Monitor WS closing: session no longer authorized")
+                try:
+                    await ws.send_text(json.dumps({"error": "session_revoked"}))
+                    await ws.close(code=1008)
+                except Exception:
+                    # Already gone — the receive loop's own disconnect handling
+                    # will clean up.
+                    pass
+                # Deliberately no main_task.cancel(): closing the socket makes
+                # the handler's next receive raise WebSocketDisconnect, which it
+                # already handles and which runs its cleanup. Cancelling instead
+                # propagates CancelledError out through the ASGI app.
                 break
             await ws.send_text(json.dumps({"type": "ping", "ts": utcnow_iso()}))
     except asyncio.CancelledError:
@@ -348,7 +375,7 @@ async def monitor_stream(websocket: WebSocket) -> None:
         listener_task: asyncio.Task | None = None
         _current_task = asyncio.current_task()
         assert _current_task is not None
-        ping_task = asyncio.create_task(_ping_loop(websocket, _current_task))
+        ping_task = asyncio.create_task(_ping_loop(websocket, _current_task, raw_token))
 
         try:
             while True:

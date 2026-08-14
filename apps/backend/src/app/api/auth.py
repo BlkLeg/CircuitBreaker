@@ -35,6 +35,7 @@ from app.core.security import (
     create_token,
     get_optional_user,
     hash_password,
+    require_auth_always,
 )
 from app.core.time import utcnow, utcnow_iso
 from app.core.users import auth_backend, fastapi_users
@@ -377,6 +378,7 @@ def force_change_password(
     user = db.get(User, user_id)
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="User not found or inactive")
+    _reject_if_locked_out(user)
 
     from app.services.auth_service import _make_token, _to_profile
     from app.services.user_service import record_session
@@ -623,16 +625,28 @@ def vault_reset_password(
 # ---------------------------------------------------------------------------
 
 
+def _reject_if_locked_out(user: User) -> None:
+    """Refuse a challenge-token redemption for a user who is currently locked out.
+
+    Login checks the lockout, but the tokens login *hands out* — the
+    force-change token and the MFA token — were only checked for signature,
+    expiry, and `is_active`. A caller holding one issued just before the lockout
+    (or who triggers the lockout by brute-forcing the second factor) could keep
+    redeeming it for a full session, which is the one thing lockout exists to
+    stop. The 401 matches login's generic reply so it discloses nothing extra.
+    """
+    locked_until = getattr(user, "locked_until", None)
+    if locked_until and locked_until > utcnow():
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+
 @router.get("/me", response_model=UserProfile, tags=["auth"])
 def get_me_compat(
     request: Request,
-    user_id: int | None = Depends(get_optional_user),
+    user_id: int = Depends(require_auth_always),
     db: Session = Depends(get_db),
 ) -> UserProfile:
     """Backward-compat endpoint returning the current user's profile."""
-    if user_id is None:
-        detail = "Token invalid or expired" if _extract_token(request) else "Not authenticated"
-        raise HTTPException(status_code=401, detail=detail)
     if user_id == 0:
         return UserProfile(
             id=0,
@@ -691,12 +705,10 @@ def logout(request: Request, response: Response, db: Session = Depends(get_db)) 
 def delete_me(
     request: Request,
     response: Response,
-    user_id: int | None = Depends(get_optional_user),
+    user_id: int = Depends(require_auth_always),
     db: Session = Depends(get_db),
 ) -> Response:
     """Delete the authenticated user's own account."""
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
     from app.services.auth_service import delete_account
 
     delete_account(db, user_id)
@@ -890,11 +902,9 @@ async def upload_avatar(
     response: Response,
     display_name: str | None = Form(None),
     profile_photo: UploadFile | None = File(None),
-    user_id: int | None = Depends(get_optional_user),
+    user_id: int = Depends(require_auth_always),
     db: Session = Depends(get_db),
 ) -> UserProfile:
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
     from app.services.auth_service import update_profile
 
     result = await update_profile(
@@ -957,7 +967,7 @@ def _verify_mfa_confirmation_code(user: User, code: str) -> bool:
 def mfa_setup(
     request: Request,
     response: Response,
-    user_id: int | None = Depends(get_optional_user),
+    user_id: int = Depends(require_auth_always),
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
     """Generate a new TOTP secret and return the provisioning URI.
@@ -966,8 +976,6 @@ def mfa_setup(
     activated.  The secret is stored immediately so subsequent calls to this
     endpoint rotate it.
     """
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
@@ -991,15 +999,13 @@ def mfa_activate(
     request: Request,
     response: Response,
     payload: MfaConfirmRequest,
-    user_id: int | None = Depends(get_optional_user),
+    user_id: int = Depends(require_auth_always),
     db: Session = Depends(get_db),
 ) -> Response:
     """Confirm a newly generated TOTP secret and enable MFA."""
     from app.services.auth_service import _make_token, _to_profile
     from app.services.user_service import record_session, revoke_token_session
 
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
@@ -1049,7 +1055,11 @@ def mfa_verify(
     not yet fully authenticated, the mfa_token from /login is required.
     """
     from app.services.auth_service import _make_token, _to_profile
-    from app.services.user_service import record_session
+    from app.services.user_service import (
+        record_failed_login,
+        record_session,
+        reset_login_attempts,
+    )
 
     cfg = get_or_create_settings(db)
     if not cfg.jwt_secret:
@@ -1072,6 +1082,7 @@ def mfa_verify(
     user = db.get(User, tok.get("user_id"))
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="User not found or inactive")
+    _reject_if_locked_out(user)
 
     code = payload.code.strip()
 
@@ -1079,7 +1090,9 @@ def mfa_verify(
     if user.totp_secret:
         totp = pyotp.TOTP(user.totp_secret)
         if totp.verify(code, valid_window=1):
-            # Normal MFA login
+            # A completed second factor ends the login attempt, so the counter
+            # that the failures below feed is cleared here.
+            reset_login_attempts(db, user)
             token = _make_token(user, cfg)
             record_session(db, user, request, token, cfg)
             from app.schemas.auth import AuthResponse
@@ -1097,12 +1110,19 @@ def mfa_verify(
                 stored.pop(i)
                 user.backup_codes = json.dumps(stored)
                 db.commit()
+                reset_login_attempts(db, user)
                 token = _make_token(user, cfg)
                 record_session(db, user, request, token, cfg)
                 from app.schemas.auth import AuthResponse
 
                 body = AuthResponse(token=token, user=_to_profile(user)).model_dump()
                 return auth_response_with_cookie(request, token, body, cfg.session_timeout_hours)
+
+    # A wrong second factor is a failed login attempt and must count toward the
+    # same lockout the password step feeds. Previously only the rate limiter
+    # stood here, so an attacker holding a valid mfa_token could grind TOTP
+    # codes at the limiter's pace indefinitely and never lock the account.
+    record_failed_login(db, user, cfg)
 
     from app.core.audit import log_audit
 
@@ -1124,7 +1144,7 @@ def mfa_disable(
     request: Request,
     response: Response,
     payload: MfaConfirmRequest,
-    user_id: int | None = Depends(get_optional_user),
+    user_id: int = Depends(require_auth_always),
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
     """Disable MFA for the authenticated user.
@@ -1132,8 +1152,6 @@ def mfa_disable(
     Requires either a valid TOTP code or one of the user's backup codes
     to prevent disabling MFA without physical possession of the device.
     """
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
@@ -1159,12 +1177,10 @@ def mfa_regenerate_backup_codes(
     request: Request,
     response: Response,
     payload: MfaConfirmRequest,
-    user_id: int | None = Depends(get_optional_user),
+    user_id: int = Depends(require_auth_always),
     db: Session = Depends(get_db),
 ) -> MfaBackupCodesResponse:
     """Replace existing MFA backup codes after re-verifying user possession."""
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")

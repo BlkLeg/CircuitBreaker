@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from app.api import (
     auth,
@@ -96,7 +97,7 @@ from app.core.time import utcnow
 from app.db import models  # noqa: F401 — import to register all model metadata with Base
 from app.db.async_session import AsyncSessionLocal
 from app.db.models import IntegrationConfig
-from app.db.session import engine, get_session_context
+from app.db.session import engine, get_db, get_session_context
 from app.middleware.csrf import CSRFMiddleware
 from app.middleware.legacy_token import LegacyTokenMiddleware
 from app.middleware.logging_middleware import LoggingMiddleware
@@ -1919,8 +1920,26 @@ app.include_router(
 # ── Health check ───────────────────────────────────────────────────────────
 
 
+def _health_caller_is_authenticated(request: Request, db) -> bool:
+    """Best-effort auth check for deciding how much health detail to disclose.
+
+    Any failure means "treat as anonymous". This endpoint is the Docker
+    healthcheck and the frontend's liveness poll, so it must keep answering when
+    the database is unreachable — and that is precisely when resolving a user
+    will throw. Taking the session as an argument (rather than opening its own)
+    is safe for that: `get_db` only constructs a lazily-connecting Session, so
+    the dependency itself cannot fail on a down database.
+    """
+    try:
+        from app.core.security import resolve_optional_user_id_sync
+
+        return resolve_optional_user_id_sync(db, request) is not None
+    except Exception:
+        return False
+
+
 @app.api_route(f"{_V1}/health", methods=["GET", "HEAD"])
-async def health():
+async def health(request: Request, db: Session = Depends(get_db)):
     from app.core.redis import redis_health
     from app.core.server_state import ServerState, get_state
 
@@ -1945,17 +1964,26 @@ async def health():
     redis_ok = await redis_health()
     redis_status = "ok" if redis_ok else "error"
 
-    return {
+    body = {
         "state": state.value,
         "ready": state == ServerState.READY,
-        "version": settings.app_version,
         "uptime_s": round(time.time() - SERVER_START_TIME),
-        "timescaledb_available": timescaledb_available,
         "checks": {
             "db": db_status,
             "redis": redis_status,
         },
     }
+
+    # Build version and installed database extensions are unauthenticated
+    # fingerprinting material — they tell a scanner which published CVEs to try
+    # before it has any credentials. Liveness (the fields above) is what the
+    # healthcheck, the reverse proxy, and the frontend poll actually need, so
+    # the detail is reserved for authenticated callers.
+    if _health_caller_is_authenticated(request, db):
+        body["version"] = settings.app_version
+        body["timescaledb_available"] = timescaledb_available
+
+    return body
 
 
 # ── Static files & SPA fallback ────────────────────────────────────────────

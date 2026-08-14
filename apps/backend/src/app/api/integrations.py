@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.rbac import require_scope
 from app.core.security import require_write_auth
 from app.core.url_validation import reject_ssrf_url_proxmox as reject_ssrf_url
 from app.db.models import (
@@ -32,6 +33,12 @@ from app.schemas.integration import (
 
 _logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Monitor status is monitor data wherever it is served from. The router only
+# carries `require_auth`, which ignores token scopes, so these listings were a
+# side channel a write-only token could read monitor state through — the same
+# gap that was closed on `/agents/{id}/probes`.
+_READ_SCOPE = require_scope("read", "*")
 
 _MSG_NOT_FOUND = "Integration not found"
 _MSG_UNKNOWN_TYPE = "Unknown integration type"
@@ -155,7 +162,7 @@ def create_integration(
     return _to_read(integ, db)
 
 
-@router.get("/monitors", response_model=list[IntegrationMonitorRead])
+@router.get("/monitors", response_model=list[IntegrationMonitorRead], dependencies=[_READ_SCOPE])
 def list_all_monitors(db: Session = Depends(get_db)) -> list[IntegrationMonitorRead]:
     """All monitors across all integrations — used by the integrations settings panel."""
     rows = (
@@ -237,7 +244,11 @@ def test_integration(
     return TestConnectionResult(ok=ok, message=message)
 
 
-@router.get("/{integration_id}/monitors", response_model=list[IntegrationMonitorRead])
+@router.get(
+    "/{integration_id}/monitors",
+    response_model=list[IntegrationMonitorRead],
+    dependencies=[_READ_SCOPE],
+)
 def list_monitors_for_integration(
     integration_id: int,
     db: Session = Depends(get_db),
@@ -292,7 +303,9 @@ def update_monitor_link(
 # ── Native monitor endpoints ────────────────────────────────────────────────
 
 
-@router.get("/native/monitors", response_model=list[IntegrationMonitorRead])
+@router.get(
+    "/native/monitors", response_model=list[IntegrationMonitorRead], dependencies=[_READ_SCOPE]
+)
 def list_native_monitors(db: Session = Depends(get_db)) -> list[IntegrationMonitorRead]:
     """List all native (built-in) monitors."""
     native = _get_native_integration(db)

@@ -32,8 +32,13 @@ _logger = logging.getLogger(__name__)
 
 
 class TopologyCreate(BaseModel):
+    # No `tenant_id`: v1 is single-tenant per deployment (SEC-2B), so letting a
+    # client name the tenant it writes into is a tenant-selection surface for a
+    # feature that is deliberately deferred. Extra keys are ignored by pydantic,
+    # so a client still sending `tenant_id` gets a tenantless topology rather
+    # than an error. Rows created before this carry legacy ids and still read
+    # back below.
     name: str
-    tenant_id: int | None = None
     is_default: bool = False
 
 
@@ -98,13 +103,11 @@ def _edge_to_cytoscape(edge: TopologyEdge, nodes: list[TopologyNode]) -> dict[st
 
 @router.get("")
 def list_topologies(
-    tenant_id: int | None = None,
     db: Session = Depends(get_db),
 ) -> list[dict]:
-    q = db.query(Topology)
-    if tenant_id is not None:
-        q = q.filter(Topology.tenant_id == tenant_id)
-    topologies = q.order_by(Topology.id).all()
+    # No `tenant_id` filter parameter — see TopologyCreate. Filtering by a
+    # client-supplied tenant let a caller enumerate which tenant ids exist.
+    topologies = db.query(Topology).order_by(Topology.id).all()
     return [
         {
             "id": t.id,
@@ -127,7 +130,6 @@ def create_topology(
 ) -> dict:
     topology = Topology(
         name=payload.name,
-        tenant_id=payload.tenant_id,
         is_default=payload.is_default,
     )
     db.add(topology)
