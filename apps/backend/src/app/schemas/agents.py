@@ -107,6 +107,34 @@ class HardwareSummary(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class AgentLatestSample(BaseModel):
+    """Newest host-telemetry summary for one fleet row.
+
+    Exactly the eight summary columns `_sample_json` already projects off
+    `AgentHostSample` — never `raw`, which is a JSONB payload no fleet-wide read
+    has any business materializing.
+
+    `AgentPresenceRead.latest is None` is a real state meaning "no host sample
+    stored" (telemetry was never granted, or the agent has not reported yet) and
+    must never be coerced to zeros: a row of `0%` reads as a healthy idle host.
+
+    The backend deliberately does **not** judge staleness here — it hands back
+    the newest sample with its `collected_at` and lets the client decide what
+    counts as stale. Server-side that judgement would make "telemetry was
+    disabled an hour ago" and "the agent is wedged" indistinguishable.
+    """
+
+    collected_at: datetime
+    cpu_pct: float | None = None
+    mem_pct: float | None = None
+    root_disk_pct: float | None = None
+    net_rx_bps: float | None = None
+    net_tx_bps: float | None = None
+    max_temp_c: float | None = None
+    load_1: float | None = None
+    uptime_s: int | None = None
+
+
 class AgentPresenceRead(BaseModel):
     """One fleet table row's worth of presence + grant + hardware data —
     the bulk lookup Task 12 adds so `AgentsPage` (Task 14) can render the
@@ -125,6 +153,44 @@ class AgentPresenceRead(BaseModel):
     last_seen_at: datetime | None
     capabilities: dict[str, CapabilityGrant] = {}
     hardware: HardwareSummary | None = None
+    # The fleet table's head metric values, filled by `_latest_samples` with one
+    # DISTINCT ON query for the whole fleet. `None` = no sample stored at all.
+    latest: AgentLatestSample | None = None
+    # The agent's last-reported outbound-spool backlog, copied straight off the
+    # already-loaded `Agent` row — no extra query. It rides this endpoint for
+    # the same reason it rides `/{agent_id}/telemetry`: the page already polls
+    # presence every 30s, so the backlog chip is live with no second poll.
+    # `None` means "never reported" (a build predating `HeartbeatPayload`) and
+    # stays distinct from 0 ("reported, and drained"), same as on `AgentRead`.
+    spool_depth: int | None = None
+    spool_bytes: int | None = None
+    spool_reported_at: datetime | None = None
+
+
+class AgentSeriesPoint(BaseModel):
+    """One 75s bucket of a fleet sparkline.
+
+    Deliberately narrower than `AgentLatestSample`: only the four fields that
+    actually move on a 30-minute scale get a line drawn for them. Disk and
+    temperature are head-value-only on the fleet table, so shipping them per
+    bucket for every agent would be payload nobody renders.
+    """
+
+    collected_at: datetime
+    cpu_pct: float | None = None
+    mem_pct: float | None = None
+    net_rx_bps: float | None = None
+    net_tx_bps: float | None = None
+
+
+class AgentSeriesRead(BaseModel):
+    """One agent's sparkline series. Agents with no samples in the window are
+    absent from the response entirely rather than carrying an empty `points`
+    list — the client treats a missing agent as an empty series, and an agent
+    that just came online must render no line rather than a row of zeros."""
+
+    agent_id: int
+    points: list[AgentSeriesPoint]
 
 
 class AgentPatch(BaseModel):

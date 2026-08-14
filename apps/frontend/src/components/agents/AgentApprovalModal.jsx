@@ -3,6 +3,7 @@ import PropTypes from 'prop-types';
 import { approveAgent, getAgent, getCapabilityDefaults } from '../../api/agents';
 import { hardwareApi } from '../../api/client';
 import { useToast } from '../common/Toast';
+import AgentIdentityComparison from './AgentIdentityComparison';
 
 // Task 14: this modal owns NO capability preset. The defaults come from
 // GET /api/v1/agents/capability-defaults, i.e. the server's single
@@ -145,26 +146,12 @@ export default function AgentApprovalModal({ agentId, onApproved, onClose }) {
         {loading && <p>Loading…</p>}
         {!loading && agent && (
           <>
-            <dl>
-              <dt>Hostname</dt>
-              <dd>{agent.hostname ?? 'unknown'}</dd>
-              <dt>OS / Arch</dt>
-              <dd>
-                {agent.os} / {agent.arch}
-              </dd>
-              <dt>Fingerprint</dt>
-              <dd className="agent-approval-modal__fingerprint">{agent.fingerprint}</dd>
-            </dl>
-            <p className="agent-approval-modal__warning">
-              Compare this fingerprint against the one printed by the agent before approving.
-            </p>
-
-            {agent.duplicate_machine_id && (
-              <p role="alert" className="agent-approval-modal__duplicate-warning">
-                Another enrolled agent already reports this same machine ID. Review both before
-                approving — this may be a cloned image or a re-enrollment of an existing device.
-              </p>
-            )}
+            {/* Redesign §2.2: the fingerprint comparison and the duplicate-machine
+                alert moved into a shared component because AddAgentPanel's inline
+                approve step must render the same control — a second, hand-rolled
+                copy of an anti-impostor check is how one of them drifts. This
+                modal stays the wrapper for the Review-a-pinned-row path. */}
+            <AgentIdentityComparison agent={agent} />
 
             <fieldset>
               <legend>Hardware link</legend>

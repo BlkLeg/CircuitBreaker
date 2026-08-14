@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+from collections import defaultdict
 from collections.abc import Mapping
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -34,9 +35,12 @@ from app.db.session import get_db
 from app.schemas.agent_frame import TYPE_CAPABILITIES_SET, TYPE_DISCONNECT, TYPE_UPDATE
 from app.schemas.agents import (
     AgentEventRead,
+    AgentLatestSample,
     AgentPatch,
     AgentPresenceRead,
     AgentRead,
+    AgentSeriesPoint,
+    AgentSeriesRead,
     AgentSummary,
     ApproveRequest,
     CapabilitiesUpdateRequest,
@@ -123,6 +127,21 @@ _HISTORY_SUMMARY_FIELDS = (
     "load_1",
     "uptime_s",
 )
+
+# Fleet sparkline series ("/metrics/series"). Same discipline as the history
+# block above and kept here beside it for that reason rather than in
+# core/constants.py: the cap is `window / bucket width`, so the three must stay
+# in step — change one and the LIMIT stops matching the grid it was derived
+# from. `_SERIES_FIELDS` is the subset of `_HISTORY_SUMMARY_FIELDS` that
+# actually moves on a 30-minute scale; disk and temperature are head-value-only
+# on the fleet table, so a per-bucket line for them would be payload nobody
+# renders.
+_SERIES_WINDOW = timedelta(minutes=30)
+_SERIES_BUCKET_SECONDS = 75
+# 24, derived rather than written down so the "cap == window / bucket width"
+# relationship cannot drift if either of the two above is retuned.
+_SERIES_MAX_POINTS = int(_SERIES_WINDOW.total_seconds() // _SERIES_BUCKET_SECONDS)
+_SERIES_FIELDS = ("cpu_pct", "mem_pct", "net_rx_bps", "net_tx_bps")
 
 
 def _as_float(value: Any) -> float | None:
@@ -258,6 +277,47 @@ async def post_server_key_rotate(
     return _rotation_status(state)
 
 
+def _latest_samples(db: Session, agent_ids: list[int]) -> dict[int, AgentLatestSample]:
+    """The newest host sample for every agent in the fleet, in **one** query.
+
+    `DISTINCT ON (agent_id) ... ORDER BY agent_id, collected_at DESC` is the
+    whole trick: PostgreSQL walks the existing composite index
+    `ix_agent_host_samples_agent_time` (`db/models.py:570`) and keeps the first
+    row it meets per agent, so the cost is independent of how much history each
+    agent has retained. No new index, no new collection, no schema change.
+
+    The query count must not scale with fleet size — the entire justification
+    for hanging `latest` off the bulk presence read rather than making the page
+    call `/{agent_id}/telemetry` per row. A later change to one-query-per-agent
+    would produce a byte-identical response and only get slower as fleets grow,
+    which is why a test pins the count instead of the payload.
+
+    Only the summary columns are selected — never `AgentHostSample.raw` and
+    never the ORM entity, which would drag that JSONB payload along with it.
+    The eight fields are exactly `AgentLatestSample`'s, which is why the history
+    tuple can be reused here rather than restated.
+    """
+    if not agent_ids:
+        return {}
+    rows = db.execute(
+        select(
+            AgentHostSample.agent_id,
+            AgentHostSample.collected_at,
+            *(getattr(AgentHostSample, field) for field in _HISTORY_SUMMARY_FIELDS),
+        )
+        .distinct(AgentHostSample.agent_id)
+        .where(AgentHostSample.agent_id.in_(agent_ids))
+        .order_by(AgentHostSample.agent_id, AgentHostSample.collected_at.desc())
+    ).all()
+    return {
+        row.agent_id: AgentLatestSample(
+            collected_at=row.collected_at,
+            **{field: getattr(row, field) for field in _HISTORY_SUMMARY_FIELDS},
+        )
+        for row in rows
+    }
+
+
 @router.get("/presence", response_model=list[AgentPresenceRead])
 async def get_agents_presence(
     db: Annotated[Session, Depends(get_db)],
@@ -286,6 +346,9 @@ async def get_agents_presence(
 
     presence = await agent_registry.bulk_presence(agent_ids)
     grants = agent_registry.bulk_structured_grants_dict(db, agent_ids)
+    # One DISTINCT ON for the whole fleet, hoisted out of the comprehension
+    # below so the head metric values cost one query rather than one per row.
+    latest_by_agent = _latest_samples(db, agent_ids)
 
     hardware_ids = {agent.hardware_id for agent in agents if agent.hardware_id is not None}
     hardware_by_id: dict[int, Hardware] = {}
@@ -310,8 +373,129 @@ async def get_agents_presence(
                 if agent.hardware_id in hardware_by_id
                 else None
             ),
+            # Absent from the map = the agent has stored no host sample at all.
+            # That stays `None` all the way to the client, which renders
+            # "telemetry off" — never `0%`, which would read as a healthy host.
+            latest=latest_by_agent.get(agent.id),
+            # Straight off the already-loaded `Agent` row: no extra query, and
+            # `None` ("never reported") stays distinct from 0 ("drained").
+            spool_depth=agent.spool_depth,
+            spool_bytes=agent.spool_bytes,
+            spool_reported_at=agent.spool_reported_at,
         )
         for agent in agents
+    ]
+
+
+def _series_window_start() -> datetime:
+    """The oldest instant `/metrics/series` reads, floored onto the same epoch
+    grid the aggregate groups on.
+
+    A bare `utcnow() - _SERIES_WINDOW` would straddle that grid: the window is
+    exactly `_SERIES_MAX_POINTS` bucket widths wide, so an unaligned start
+    leaves a *partial* bucket at both ends and a densely sampling agent
+    legitimately produces one bucket more than the cap — at which point the
+    LIMIT below stops being a safety net and starts deleting real points.
+    Flooring the start makes the window exactly `_SERIES_MAX_POINTS` whole
+    buckets, the newest of which is the partly filled one we are standing in.
+
+    Alignment is to the epoch itself, same as `epoch_bucket`, so two requests
+    seconds apart agree on the boundaries instead of sliding under the client.
+    """
+    seconds_since_epoch = int(utcnow().timestamp())
+    newest_bucket_start = datetime.fromtimestamp(
+        seconds_since_epoch // _SERIES_BUCKET_SECONDS * _SERIES_BUCKET_SECONDS, tz=UTC
+    )
+    oldest_bucket_offset = (_SERIES_MAX_POINTS - 1) * _SERIES_BUCKET_SECONDS
+    return newest_bucket_start - timedelta(seconds=oldest_bucket_offset)
+
+
+def _series_point_cap(db: Session, ids: list[int] | None) -> int:
+    """The series response's hard point cap, to be applied as a SQL `LIMIT`.
+
+    `_series_window_start` bounds each agent to `_SERIES_MAX_POINTS` buckets *by
+    construction*, so this LIMIT can never truncate a legitimate response. It
+    exists so the payload cannot grow with the agents' sample cadence — the
+    same discipline `/telemetry/history` applies with `_HISTORY_MAX_POINTS`,
+    and the reason it is a LIMIT rather than a Python slice: a slice would
+    still have the database build and ship the oversized result first.
+
+    An explicit `ids` list already states the fleet size; without one it costs a
+    single `count(*)` scalar — one cheap extra query for the request, never one
+    per agent.
+    """
+    if ids is not None:
+        return _SERIES_MAX_POINTS * len(ids)
+    agent_count = db.execute(select(func.count()).select_from(Agent)).scalar_one()
+    return _SERIES_MAX_POINTS * agent_count
+
+
+@router.get("/metrics/series", response_model=list[AgentSeriesRead])
+def get_agents_metrics_series(
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("viewer")],
+    ids: Annotated[list[int] | None, Query()] = None,
+) -> Any:
+    """A 30-minute, 75s-bucketed series per agent — the fleet table's sparkline
+    column, aggregated entirely in SQL exactly like `/telemetry/history`.
+
+    Declared here, immediately after "/presence" and far above "/{agent_id}",
+    so "metrics" isn't parsed as an agent id — same as "/pending",
+    "/install-command" and "/presence" above.
+
+    A route of its own rather than a flag on "/presence" precisely because the
+    two have different cadences: the head values refresh every 30s and this
+    every 120s, so folding them together would mean paying the aggregate's cost
+    on every fast tick. A 30-minute *shape* is visually indistinguishable two
+    minutes later; the head value beside it is what has to stay current.
+
+    `ids=[]` (present but empty) returns no rows, distinct from omitting `ids`
+    entirely (whole fleet) — the same convention "/presence" uses.
+
+    Agents with no samples in the window are simply absent from the response
+    rather than carrying an empty `points` list: the client reads a missing
+    agent as an empty series and draws nothing, which is what an agent that
+    just came online should look like.
+    """
+    if ids is not None and not ids:
+        return []
+
+    start = _series_window_start()
+    bucket = epoch_bucket(AgentHostSample.collected_at, _SERIES_BUCKET_SECONDS).label("bucket")
+    # Both the agent filter and the time range stay on the sample table so
+    # `ix_agent_host_samples_agent_time` (and hypertable chunk exclusion, where
+    # TimescaleDB is installed) still applies to the scan.
+    window = [AgentHostSample.collected_at >= start]
+    if ids is not None:
+        window.append(AgentHostSample.agent_id.in_(ids))
+
+    aggregate = (
+        select(
+            AgentHostSample.agent_id,
+            bucket,
+            *(func.avg(getattr(AgentHostSample, field)).label(field) for field in _SERIES_FIELDS),
+        )
+        .where(*window)
+        .group_by(AgentHostSample.agent_id, bucket)
+        .order_by(AgentHostSample.agent_id, bucket)
+        .limit(_series_point_cap(db, ids))
+    )
+
+    # Averaging in the database means raw samples — and the `raw` JSONB payload
+    # with them — are never materialized, however dense an agent's cadence is.
+    points_by_agent: dict[int, list[AgentSeriesPoint]] = defaultdict(list)
+    for row in db.execute(aggregate).all():
+        points_by_agent[row.agent_id].append(
+            AgentSeriesPoint(
+                collected_at=row.bucket,
+                # `avg()` over an integer column comes back as Decimal; `_as_float`
+                # makes it a plain JSON number and keeps a NULL average as a gap.
+                **{field: _as_float(getattr(row, field)) for field in _SERIES_FIELDS},
+            )
+        )
+    return [
+        AgentSeriesRead(agent_id=agent_id, points=points)
+        for agent_id, points in points_by_agent.items()
     ]
 
 

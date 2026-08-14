@@ -30,6 +30,11 @@ vi.mock('../api/agents', async () => {
       })
     ),
     getAgentsPresence: vi.fn(() => Promise.resolve({ data: [] })),
+    // The fleet redesign's second metric read (design §1.2). It has its own
+    // 120s cadence inside useFleetMetrics, so it has to exist on the mock even
+    // for the tests that only care about presence — an undefined export throws
+    // out of the hook's mount effect and takes the whole page down with it.
+    getAgentsMetricsSeries: vi.fn(() => Promise.resolve({ data: [] })),
     getInstallCommand: vi.fn(() =>
       Promise.resolve({
         data: { tls_mode: 'self_signed', command: 'curl ...', script_sha256: 'x' },
@@ -40,6 +45,11 @@ vi.mock('../api/agents', async () => {
     deleteAgent: vi.fn(),
     getAgent: vi.fn(),
     approveAgent: vi.fn(),
+    // AddAgentPanel's inline approve step reads the server's capability
+    // defaults and can reject from the panel; both are part of this module's
+    // surface now that enrollment finishes on this page.
+    getCapabilityDefaults: vi.fn(() => Promise.resolve({ data: {} })),
+    rejectAgent: vi.fn(),
     // The REAL implementation, pulled through importActual rather than
     // re-implemented here: Task 15 makes every REST response emit
     // {enabled, config}, and normalizeCapability is what keeps AgentsPage from
@@ -69,7 +79,11 @@ describe('AgentsPage', () => {
     mockUseAgentLive.mockReturnValue({ statuses: new Map(), connected: true });
   });
 
-  it('pins pending agents to a banner separate from the main table', async () => {
+  // The redesign replaced the floating pending banner with a pinned row at the
+  // top of the same dense list, so this now asserts the ordering rather than a
+  // separate section: the pending agent is the FIRST row in the table body,
+  // above the active fleet, and it carries the review affordance.
+  it('pins pending agents to the top of the fleet list, above the active fleet', async () => {
     render(
       <MemoryRouter initialEntries={['/agents']}>
         <AgentsPage />
@@ -77,8 +91,19 @@ describe('AgentsPage', () => {
     );
 
     await waitFor(() => expect(screen.getByText(/Waiting for approval/i)).toBeInTheDocument());
-    expect(screen.getByText(/box1/i)).toBeInTheDocument();
+
+    const table = screen.getByRole('table');
+    const rows = within(table).getAllByRole('row');
+    // rows[0] is the header row; rows[1] is the first body row.
+    const firstBodyRow = rows[1];
+    expect(firstBodyRow).toHaveAttribute('data-state', 'pending');
+    expect(within(firstBodyRow).getByText(/box1/i)).toBeInTheDocument();
+    expect(within(firstBodyRow).getByText(/Waiting for approval/i)).toBeInTheDocument();
+    expect(within(firstBodyRow).getByText('Review')).toBeInTheDocument();
+
+    // …and the active agent is still rendered, below it.
     expect(screen.getAllByText(/box2/i).length).toBeGreaterThan(0);
+    expect(within(rows[2]).getByText(/box2/i)).toBeInTheDocument();
   });
 
   it('renders online state, capabilities, and hardware from the bulk presence endpoint', async () => {
@@ -286,7 +311,8 @@ describe('AgentsPage', () => {
 });
 
 // Task 15: status / capability / online filters, plus verifying pending rows
-// stay pinned above the (now filterable) fleet table under every combination.
+// stay pinned at the top of the (now filterable) fleet table under every
+// combination.
 describe('AgentsPage fleet filters', () => {
   const FLEET = [
     {
@@ -395,7 +421,8 @@ describe('AgentsPage fleet filters', () => {
     expect(screen.queryByText('Probe Agent')).not.toBeInTheDocument();
     expect(screen.queryByText('Rejected Agent')).not.toBeInTheDocument();
 
-    // Pending row stays pinned in its banner regardless of the status filter.
+    // Pending rows are pinned to the top of the same list and are never
+    // subject to the filters — an inbox must not be filterable away.
     expect(screen.getByText(/Waiting for approval/i)).toBeInTheDocument();
     expect(screen.getByText(/pending-host/i)).toBeInTheDocument();
   });
@@ -438,13 +465,13 @@ describe('AgentsPage fleet filters', () => {
     expect(screen.queryByText('Revoked Agent')).not.toBeInTheDocument();
     expect(screen.queryByText('Rejected Agent')).not.toBeInTheDocument();
 
-    // All three filters active at once must still leave pending pinned above
-    // the table, in its own banner, untouched by any of them.
+    // All three filters active at once must still leave the pending row pinned
+    // at the top of the list, untouched by any of them.
     expect(screen.getByText(/Waiting for approval/i)).toBeInTheDocument();
     expect(screen.getByText(/pending-host/i)).toBeInTheDocument();
   });
 
-  it('shows an empty-state row when no fleet rows match, without hiding the pending banner', async () => {
+  it('shows an empty-state row when no fleet rows match, without hiding the pinned pending row', async () => {
     await renderPage();
 
     fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'active' } });
@@ -454,6 +481,209 @@ describe('AgentsPage fleet filters', () => {
       expect(screen.getByText('No agents match the current filters.')).toBeInTheDocument()
     );
     expect(screen.getByText(/pending-host/i)).toBeInTheDocument();
+  });
+});
+
+// Design §4's two states that used to have no rendering at all: an empty fleet
+// (which showed an empty 11-column table) and a failed presence poll (which
+// AgentsPage swallowed with `.catch(() => {})`, freezing every metric while the
+// page still looked live).
+describe('AgentsPage degraded states', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUseAgentLive.mockReturnValue({ statuses: new Map(), connected: true });
+  });
+
+  it('makes the add-agent panel the whole page when there are no agents at all', async () => {
+    listAgents.mockResolvedValue({ data: [] });
+    getAgentsPresence.mockResolvedValue({ data: [] });
+
+    render(
+      <MemoryRouter initialEntries={['/agents']}>
+        <AgentsPage />
+      </MemoryRouter>
+    );
+
+    // Expanded without being asked, and fetching the command on mount.
+    await waitFor(() => expect(getInstallCommand).toHaveBeenCalled());
+    expect(screen.getByText('Add an agent')).toBeInTheDocument();
+    // No table chrome and no filters — there is nothing to sort or filter.
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Status')).not.toBeInTheDocument();
+  });
+
+  it('keeps the last good metric values and marks them stale when a presence poll fails', async () => {
+    vi.useFakeTimers();
+    try {
+      listAgents.mockResolvedValue({
+        data: [{ id: 2, status: 'active', hostname: 'box2', agent_version: '0.1.0' }],
+      });
+      // One good poll, then the endpoint starts failing.
+      getAgentsPresence
+        .mockResolvedValueOnce({
+          data: [
+            {
+              agent_id: 2,
+              online: true,
+              connected_since: '2026-08-14T10:00:00Z',
+              last_seen_at: '2026-08-14T10:00:00Z',
+              capabilities: {},
+              hardware: null,
+              latest: { collected_at: '2026-08-14T10:00:00Z', cpu_pct: 81 },
+            },
+          ],
+        })
+        .mockRejectedValue(new Error('presence down'));
+
+      render(
+        <MemoryRouter initialEntries={['/agents']}>
+          <AgentsPage />
+        </MemoryRouter>
+      );
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(screen.getByText('81%')).toBeInTheDocument();
+      expect(screen.getByRole('table')).not.toHaveAttribute('data-stale');
+
+      // One full presence tick later the poll has failed.
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      // The value is kept — blanking it would be worse than showing it old —
+      // but the table is flagged stale so CSS dims it, and the note says how
+      // old "old" is.
+      expect(screen.getByText('81%')).toBeInTheDocument();
+      expect(screen.getByRole('table')).toHaveAttribute('data-stale', 'true');
+      expect(screen.getByText(/Last updated/i)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// Design §3's invariant, stated there as a rule the whole three-clock
+// arrangement rests on: "a WS push never overrides a metric value". The three
+// sources have deliberately disjoint slices — the stream owns presence
+// transitions, the 30s poll owns the head values, the 120s series owns the
+// sparkline shape — so nothing has to arbitrate between two sources claiming
+// the same number. The regression this guards against is a one-character one:
+// `{...row, ...push}` instead of writing the single key the push is allowed to
+// own, which would let a stream frame silently rewrite a measurement.
+describe('AgentsPage live merge invariant', () => {
+  const POLLED_CPU_PCT = 81;
+  // A push shaped like the thing it must not be allowed to write. The real
+  // stream frame carries none of these fields — that is the point: if the merge
+  // ever spreads the push wholesale, this is what the row would start printing.
+  const impostorPush = (eventType) => ({
+    event_type: eventType,
+    detail: null,
+    // Strictly newer than presenceFetchedAt, which isLivePushFresh compares
+    // with `<=` — a push landing in the same millisecond as the poll loses.
+    ts: Date.now() + 1,
+    cpu_pct: 5,
+    latest: { collected_at: '2026-08-14T10:01:00Z', cpu_pct: 5 },
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUseAgentLive.mockReturnValue({ statuses: new Map(), connected: true });
+    listAgents.mockResolvedValue({
+      data: [{ id: 2, status: 'active', hostname: 'box2', agent_version: '0.1.0' }],
+    });
+    getAgentsPresence.mockResolvedValue({
+      data: [
+        {
+          agent_id: 2,
+          online: false,
+          connected_since: null,
+          last_seen_at: '2026-08-14T10:00:00Z',
+          capabilities: {},
+          hardware: null,
+          latest: { collected_at: '2026-08-14T10:00:00Z', cpu_pct: POLLED_CPU_PCT },
+        },
+      ],
+    });
+  });
+
+  const renderPage = () =>
+    render(
+      <MemoryRouter initialEntries={['/agents']}>
+        <AgentsPage />
+      </MemoryRouter>
+    );
+
+  it('lets a connected push move the dot while the value stays the polled one', async () => {
+    const { rerender } = renderPage();
+
+    // Offline: the metric columns collapse, so nothing is claiming a reading.
+    await waitFor(() => expect(screen.getByText('offline')).toBeInTheDocument());
+    expect(screen.queryByText(`${POLLED_CPU_PCT}%`)).not.toBeInTheDocument();
+
+    mockUseAgentLive.mockReturnValue({
+      statuses: new Map([[2, impostorPush('connected')]]),
+      connected: true,
+    });
+    rerender(
+      <MemoryRouter initialEntries={['/agents']}>
+        <AgentsPage />
+      </MemoryRouter>
+    );
+
+    // The push flipped presence — that slice is its to own — and the number
+    // that appeared with it came from the poll, not from the frame that
+    // happened to be carrying one.
+    await waitFor(() => expect(screen.getByText('online')).toBeInTheDocument());
+    expect(screen.getByText(`${POLLED_CPU_PCT}%`)).toBeInTheDocument();
+    expect(screen.queryByText('5%')).not.toBeInTheDocument();
+  });
+
+  it('lets a revoked push move the status while the value stays the polled one', async () => {
+    getAgentsPresence.mockResolvedValue({
+      data: [
+        {
+          agent_id: 2,
+          online: true,
+          connected_since: '2026-08-14T09:00:00Z',
+          last_seen_at: '2026-08-14T10:00:00Z',
+          capabilities: {},
+          hardware: null,
+          latest: { collected_at: '2026-08-14T10:00:00Z', cpu_pct: POLLED_CPU_PCT },
+        },
+      ],
+    });
+    const { rerender } = renderPage();
+    await waitFor(() => expect(screen.getByText(`${POLLED_CPU_PCT}%`)).toBeInTheDocument());
+
+    mockUseAgentLive.mockReturnValue({
+      statuses: new Map([[2, impostorPush('revoked')]]),
+      connected: true,
+    });
+    rerender(
+      <MemoryRouter initialEntries={['/agents']}>
+        <AgentsPage />
+      </MemoryRouter>
+    );
+
+    // `status` is the other key a push may write. Everything else on the row —
+    // including the head value it was carrying — is still the poll's.
+    await waitFor(() => expect(screen.getByText('revoked')).toBeInTheDocument());
+    expect(screen.getByText(`${POLLED_CPU_PCT}%`)).toBeInTheDocument();
+    expect(screen.queryByText('5%')).not.toBeInTheDocument();
+  });
+
+  it('ignores a push that the poll has already overtaken, metrics included', async () => {
+    // The stale-push guard and the metric invariant meet here: a push older
+    // than the last successful poll loses outright, so it can move neither the
+    // dot nor — under any regression — the number beside it.
+    mockUseAgentLive.mockReturnValue({
+      statuses: new Map([[2, { ...impostorPush('connected'), ts: Date.now() - 60_000 }]]),
+      connected: true,
+    });
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('offline')).toBeInTheDocument());
+    expect(screen.queryByText('online')).not.toBeInTheDocument();
+    expect(screen.queryByText('5%')).not.toBeInTheDocument();
   });
 });
 

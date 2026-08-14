@@ -43,3 +43,48 @@ export const SCAN_STATUS_RUNNING_PULSE_DURATION_MS = 1500;
 
 // ── Privacy page ──────────────────────────────────────────────────────────────
 export const PRIVACY_REFRESH_INTERVAL_MS = 60_000;
+
+// ── Agents fleet page ─────────────────────────────────────────────────────────
+// Three clocks feed the fleet table and their slices are deliberately disjoint:
+// the WS stream owns presence transitions, the presence poll owns the head
+// metric values, and the series fetch owns the sparkline shape only. Keeping
+// the cadences here (rather than inline in the hook) is what lets the row, the
+// hook and the freshness policy agree on the same numbers.
+
+// MUST stay 30_000. utils/agentPresenceFreshness.LIVE_EVENT_MAX_AGE_MS (45s) is
+// documented and tested as 1.5x this interval — one full poll cycle of slack
+// before a live push is considered stale on its own. Changing this without
+// changing that constant silently narrows or widens that guard.
+export const FLEET_PRESENCE_REFRESH_MS = 30_000;
+// 4x the presence tick. A sparkline shows a 30-minute shape, so a 2-minute-old
+// series is visually indistinguishable from a fresh one; the head value beside
+// it is what has to stay current.
+export const FLEET_SERIES_REFRESH_MS = 120_000;
+// The client — never the backend — decides what counts as stale, so that
+// "telemetry was disabled an hour ago" and "the agent is wedged" stay
+// distinguishable. 90s is three presence ticks: two may be lost to a transient
+// failure before the values are dimmed.
+export const FLEET_METRIC_STALE_AFTER_MS = 90_000;
+
+// Sparkline geometry. Fixed pixel dimensions on purpose: the SVG is hand-rolled
+// precisely so no per-row ResizeObserver is needed (see Sparkline.jsx).
+export const SPARKLINE_WIDTH_PX = 64;
+export const SPARKLINE_HEIGHT_PX = 16;
+export const SPARKLINE_STROKE_WIDTH = 1.25;
+
+// Head-value tone thresholds. Warn is "worth a glance", critical is "this is
+// the reason the fleet feels slow". Memory runs hotter than CPU on a healthy
+// homelab box (page cache, ZFS ARC), so its warn band starts higher.
+export const CPU_WARN_PCT = 75;
+export const CPU_CRITICAL_PCT = 90;
+export const MEM_WARN_PCT = 80;
+export const MEM_CRITICAL_PCT = 92;
+export const DISK_WARN_PCT = 80;
+export const DISK_CRITICAL_PCT = 90;
+export const TEMP_WARN_C = 70;
+export const TEMP_CRITICAL_C = 85;
+
+// Any undrained outbound spool on an online agent is worth surfacing: it is the
+// one signal that predicts trouble before a metric goes red, so the threshold
+// is 1, not a percentage of anything.
+export const SPOOL_BACKLOG_WARN_DEPTH = 1;

@@ -76,3 +76,19 @@ export const setAgentCapabilities = (id, capabilities) =>
 export const deleteAgent = (id) => client.delete(`/agents/${id}`);
 export const getInstallCommand = () => client.get('/agents/install-command');
 export const triggerAgentUpdate = (id, version) => client.post(`/agents/${id}/update`, { version });
+
+// Fleet redesign §1.2: the sparkline series for the Agents page, deliberately a
+// second endpoint rather than a flag on /agents/presence. The two reads have
+// different costs and therefore different cadences — presence carries the head
+// values and ticks every 30s, while this returns a 30-minute downsampled window
+// (capped server-side at 24 points per agent) and is refetched every 120s.
+// Folding them together would mean paying the series cost on every fast tick.
+// `ids` follows the same convention as getAgentsPresence: omitted = whole
+// fleet, present-and-empty = nothing.
+export const getAgentsMetricsSeries = (params = {}) =>
+  client.get('/agents/metrics/series', {
+    params,
+    // Same reason as getAgentsPresence above: FastAPI's `ids: list[int] =
+    // Query()` wants repeated keys (ids=1&ids=2), not axios' default "[]" suffix.
+    paramsSerializer: { indexes: null },
+  });
