@@ -41,6 +41,7 @@ nav:
       - Backup & Restore: backup-restore.md
   - Reference:
       - Architecture Overview: overview.md
+      - Architecture Walkthrough: architecture.html
       - Metrics: metrics.md
       - Cross-Browser Audit: cross-browser-audit.md
   - Updates:
