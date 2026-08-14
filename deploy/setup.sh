@@ -39,6 +39,7 @@ CB_NATS_URL=nats://127.0.0.1:4222
 
 # ===== SEC-5 outbound/dependency safety =====
 CB_EGRESS_PROXY_URL=${CB_EGRESS_PROXY_URL}
+CB_ALLOW_DIRECT_EGRESS=${CB_ALLOW_DIRECT_EGRESS}
 CB_RATE_LIMIT_STORAGE_URL=${CB_RATE_LIMIT_STORAGE_URL}
 CB_TRUSTED_PROXY_CIDRS=${CB_TRUSTED_PROXY_CIDRS}
 CB_ALLOW_DEGRADED_DEPENDENCIES=${CB_ALLOW_DEGRADED_DEPENDENCIES}
@@ -209,6 +210,13 @@ stage1_bootstrap() {
       echo "CB_EGRESS_PROXY_URL=${CB_EGRESS_PROXY_URL:-}" >> /etc/circuitbreaker/.env
       appended="true"
     fi
+    # Without this the backend refuses to start on any host that has no forward
+    # proxy, which is nearly all of them. Only added when absent, so an operator
+    # who set it to false to force proxied egress keeps that choice on upgrade.
+    if ! grep -q '^CB_ALLOW_DIRECT_EGRESS=' /etc/circuitbreaker/.env; then
+      echo "CB_ALLOW_DIRECT_EGRESS=${CB_ALLOW_DIRECT_EGRESS:-true}" >> /etc/circuitbreaker/.env
+      appended="true"
+    fi
     if ! grep -q '^CB_RATE_LIMIT_STORAGE_URL=' /etc/circuitbreaker/.env; then
       echo "CB_RATE_LIMIT_STORAGE_URL=${CB_RATE_LIMIT_STORAGE_URL:-}" >> /etc/circuitbreaker/.env
       appended="true"
@@ -239,6 +247,7 @@ stage1_bootstrap() {
     export CB_REDIS_PASSWORD=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
     export CB_NATS_TOKEN=$(openssl rand -base64 48 | tr -d '/+=' )
     export CB_EGRESS_PROXY_URL="${CB_EGRESS_PROXY_URL:-}"
+    export CB_ALLOW_DIRECT_EGRESS="${CB_ALLOW_DIRECT_EGRESS:-true}"
     export CB_RATE_LIMIT_STORAGE_URL="${CB_RATE_LIMIT_STORAGE_URL:-}"
     export CB_TRUSTED_PROXY_CIDRS="${CB_TRUSTED_PROXY_CIDRS:-127.0.0.1/32,::1/128}"
     export CB_ALLOW_DEGRADED_DEPENDENCIES="${CB_ALLOW_DEGRADED_DEPENDENCIES:-false}"

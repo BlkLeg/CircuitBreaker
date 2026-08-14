@@ -21,9 +21,18 @@
   - resolved DNS answers, including mixed public/private answer sets;
   - loopback, link-local, unspecified, multicast, private, and reserved ranges;
   - redirect targets before following them.
-- Public outbound HTTP clients can be forced through `CB_EGRESS_PROXY_URL`; strict production startup
-  requires a configured egress proxy unless `CB_ALLOW_DEGRADED_DEPENDENCIES=true` is set for tests or
-  approved break-glass operation.
+- Public outbound HTTP clients can be forced through `CB_EGRESS_PROXY_URL`. Strict production startup
+  requires a configured egress proxy unless the host explicitly records that it has none via
+  `CB_ALLOW_DIRECT_EGRESS=true`, or `CB_ALLOW_DEGRADED_DEPENDENCIES=true` is set for tests or approved
+  break-glass operation. `CB_ALLOW_DIRECT_EGRESS` waives the proxy requirement and nothing else: the
+  shared outbound URL policy still validates every public request, and Redis, NATS, rate-limit storage
+  and secret gates all still fail closed. Every shipped deployment template sets it, because a
+  single-node install has no proxy to name and an empty `CB_EGRESS_PROXY_URL` would otherwise stop the
+  backend from starting at all.
+- `validate_egress_proxy()` returns a failure message or `None`; it previously returned the validated
+  proxy URL on success, which the caller read as a truthy error, so a correctly configured
+  `CB_EGRESS_PROXY_URL` failed startup with the URL itself as the message. No egress configuration
+  could start the backend before that fix — only blanket degraded mode.
 - Notification webhook delivery and notification sink tests now use the shared outbound request
   wrapper before POSTing.
 - Threat-feed downloads now use HTTPS-only policy and validate every redirect hop before streaming
@@ -61,6 +70,11 @@
   proxy CIDRs.
 - Strict startup rejects missing Redis/NATS, `memory://` rate-limit storage, missing egress proxy,
   empty secrets, and placeholder secrets. Explicit degraded mode bypasses the dependency gate.
+- A valid `CB_EGRESS_PROXY_URL` starts cleanly; an invalid one is rejected whether or not
+  `CB_ALLOW_DIRECT_EGRESS` is set, because opting out of a proxy is a choice and a malformed proxy
+  value is a mistake.
+- `CB_ALLOW_DIRECT_EGRESS` waives only the proxy requirement: with it set, missing Redis, missing
+  NATS and `memory://` rate-limit storage still fail startup. Falsey and empty values do not opt out.
 - Existing Proxmox URL tests continue to prove loopback/link-local rejection and LAN allowance.
 - Threat-feed URL tests continue to enforce HTTPS-only public feed URLs.
 

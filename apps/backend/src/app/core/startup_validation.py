@@ -27,12 +27,28 @@ class StartupValidationResult:
     warnings: tuple[str, ...] = ()
 
 
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes"}
+
+
 def allow_degraded_dependencies() -> bool:
-    return os.environ.get("CB_ALLOW_DEGRADED_DEPENDENCIES", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-    }
+    """Break-glass: waives every dependency gate below. Tests and emergencies only."""
+    return _env_flag("CB_ALLOW_DEGRADED_DEPENDENCIES")
+
+
+def allow_direct_egress() -> bool:
+    """Waives the egress-proxy requirement alone, and nothing else.
+
+    A single-node homelab host generally has no forward proxy to point
+    CB_EGRESS_PROXY_URL at, and an empty value is indistinguishable from an
+    operator who meant to configure one and did not. This flag records that
+    running without a proxy is a decision. It does not disable the outbound URL
+    policy in url_validation.py — SSRF checks, scheme and redirect validation
+    still apply to every public request — and it deliberately does not reach
+    the Redis, NATS, rate-limit-storage or secret gates, which is the whole
+    reason it is separate from CB_ALLOW_DEGRADED_DEPENDENCIES.
+    """
+    return _env_flag("CB_ALLOW_DIRECT_EGRESS")
 
 
 def _is_placeholder(value: str) -> bool:
@@ -72,10 +88,11 @@ async def validate_core_dependencies(redis_client: object | None, nats_connected
     proxy_error = validate_egress_proxy()
     if proxy_error:
         errors.append(proxy_error)
-    elif not settings.egress_proxy_url.strip():
+    elif not settings.egress_proxy_url.strip() and not allow_direct_egress():
         errors.append(
             "CB_EGRESS_PROXY_URL is required in production so public outbound HTTP clients "
-            "cannot bypass controlled egress"
+            "cannot bypass controlled egress; set CB_ALLOW_DIRECT_EGRESS=true to run without "
+            "a proxy on hosts that have none"
         )
     if redis_client is None:
         errors.append(
@@ -96,9 +113,17 @@ def effective_rate_limit_storage_uri() -> str:
 
 
 def validate_egress_proxy() -> str | None:
+    """Return an error message, or None when the configured proxy is usable.
+
+    This returns the *problem*, not the proxy. Returning the validated URL here
+    made a correctly configured proxy read as a truthy error at the call site,
+    so a valid CB_EGRESS_PROXY_URL failed startup with the URL itself as the
+    message — leaving degraded mode as the only way to boot at all.
+    """
     from app.core.url_validation import configured_egress_proxy_url
 
     try:
-        return configured_egress_proxy_url()
+        configured_egress_proxy_url()
     except ValueError as exc:
         return f"CB_EGRESS_PROXY_URL is invalid: {exc}"
+    return None
