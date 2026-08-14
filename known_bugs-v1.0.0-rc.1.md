@@ -3,8 +3,9 @@
 Found while installing rc.1 on Ubuntu Server 26.04 LTS (native one-line install).
 Last updated 2026-08-14.
 
-Items 1–3 are open. The two install-blocking defects at the bottom are fixed and
-carried in rc.2.
+Item 1 is open and needs one piece of data from a running instance. Items 2 and 3
+are fixed. The two install-blocking defects at the bottom are fixed and carried in
+rc.2.
 
 ---
 
@@ -42,16 +43,51 @@ first:
 - The routes are `React.lazy` behind `Suspense`; a chunk that fails to load leaves the
   boundary pending rather than throwing to `ErrorBoundary`.
 
-**To reproduce:** load the dashboard, click any nav entry, observe the URL change with
-no content change. Check the browser console for an unresolved chunk request or a
-framer-motion warning at the moment of the click.
+### Investigated and ruled out
+
+- **The routing structure is not the regression.** `App.jsx`'s Suspense →
+  AnimatePresence → motion.div → Routes block is byte-identical to what `8bb0ee25`
+  shipped as the fix. Whatever changed, it was not this file.
+- **Navigation is client-side and does fire.** The dock uses `NavLink`
+  (`components/MacOSDOCK.jsx:173`), and the URL updates — which is why a reload lands
+  on the right page. So the router state advances and the render does not follow.
+- **Not reproducible in jsdom.** Two attempts, both pass: the pattern with instantly
+  resolved lazy pages, and again with chunks deliberately resolved *after* the click,
+  the way a real first visit behaves. framer-motion does not run real animation timing
+  under jsdom, so `mode="wait"` never actually holds anything there. A jsdom test
+  cannot catch this class of bug, which is a large part of why it regressed unnoticed.
+- **No global reduced-motion kill switch.** The only `animation: none` rules are
+  scoped inside `styles/monitors.css`; nothing globally disables transitions in a way
+  that would stall an exit animation.
+
+### What is needed to close it
+
+Deliberately not fixed on a guess — a speculative change to the router is how this
+comes back a third time. From a browser on a running instance, at the moment of a
+click that does nothing:
+
+1. Does the new page's markup exist in the DOM but render invisible? Inspect the
+   `motion.div` under `.page-content` and read its computed `opacity`. Stuck at `0`
+   means the enter animation never ran and the fix is in the animation layer. Absent
+   entirely means the route never mounted and the fix is in AnimatePresence/Suspense.
+2. Any console error, unresolved chunk request in the Network tab, or framer-motion
+   warning at click time.
+
+Those two answers separate "wedged animation" from "wedged route", which are different
+fixes in different places.
 
 **Do not** simply delete the animation wrapper without checking `8bb0ee25` — it was
 added *as* the fix for this symptom, so removing it may reopen the original cause.
 
 ---
 
-## 2. Remove every suggestion to visit `IP:8088` — 443 is the port
+## 2. Remove every suggestion to visit `IP:8088` — 443 is the port — FIXED
+
+**Status:** fixed. The two `http://…:8088/ (Limited - no account creation)` lines are
+gone from `stage10_final_output`, along with the now-redundant `(PRIMARY …)` label on
+the HTTPS URL — with no competing URL beside it there is nothing to be primary over.
+The `--no-tls` branch still prints its `CB_PORT` URL, because that mode really does
+serve the app there, and every Proxmox 8088 reference is untouched.
 
 **Severity:** medium — misleads the operator during onboarding, which is the worst
 possible moment.
@@ -86,7 +122,19 @@ installer-output fix, not a docs sweep.
 
 ---
 
-## 3. Autoload the setup token during OOBE
+## 3. Point the user at the setup token during OOBE — FIXED
+
+**Status:** fixed, by pointing rather than autoloading — the token itself still never
+leaves the server, so SEC-09 stands and its evidence is not invalidated. The bootstrap
+status response now carries `setup_token_path` (the resolved path, never the token),
+and the wizard renders a copy-pasteable `sudo cat <path>` in place of "find this in
+your server data directory". The path has to come from the server because it differs
+per deployment — `/var/lib/circuitbreaker` natively, `/data` in the container — so a
+hardcoded string would be wrong for half of all installs. It is returned only while
+bootstrap is actually pending, and when the operator set `CB_SETUP_TOKEN` the wizard
+says so instead, since no file exists in that case.
+
+Original request and the constraint that shaped it, kept for the record:
 
 **Severity:** medium (usability) — **but it collides with an evidenced security
 control, so it needs a design decision before anyone implements it.**
