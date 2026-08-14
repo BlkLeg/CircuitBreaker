@@ -1,6 +1,7 @@
 # Notes & Runbooks
 
-Use Notes & Runbooks to keep operational knowledge next to your infrastructure.
+The **Docs** entry in the navigation (page heading: **Documentation**) is where notes and runbooks live.
+Use it to keep operational knowledge next to your infrastructure.
 
 You can write Markdown docs, organize them, and link them directly to assets.
 
@@ -8,7 +9,7 @@ You can write Markdown docs, organize them, and link them directly to assets.
 
 ## Create a Document
 
-1. Open **Notes & Runbooks**.
+1. Open **Docs**.
 2. Select **New Doc**.
 3. Add a title and content.
 4. Save.
@@ -54,6 +55,9 @@ Linked entities are visible in the document side panel.
 
 - Import one Markdown file
 - Import a ZIP of docs
+
+Images can be dropped into the editor once the document has been saved. They are uploaded to that doc
+(maximum 5 MB each) and inserted as Markdown image links.
 
 ---
 

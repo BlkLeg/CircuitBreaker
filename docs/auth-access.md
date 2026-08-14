@@ -17,6 +17,11 @@ During OOBE, you can create the first admin account via:
 
 Both paths finish in the same setup flow and keep all later OOBE steps (theme, regional, SMTP, vault key ceremony).
 
+First run is not an open admin session. Until the first admin exists, only the endpoints the setup wizard itself
+needs will answer: `/api/v1/bootstrap`, `/api/v1/auth`, `PATCH /api/v1/settings/oauth`, and `GET /api/v1/settings`.
+Every other route returns 401, and the bootstrap routes are additionally gated by the setup token. Even so,
+complete OOBE promptly and keep the port off untrusted networks while you do it.
+
 ---
 
 ## Sign-In Methods
@@ -28,19 +33,27 @@ Both paths finish in the same setup flow and keep all later OOBE steps (theme, r
 | **Google OAuth** | Sign in with your Google account |
 | **OIDC** | Generic OpenID Connect — works with Authentik, Keycloak, and others |
 | **MFA step-up** | TOTP code required after password if enabled on your account |
+| **API tokens** | Scoped, non-interactive tokens created by an admin under Profile → API tokens |
+
+### API tokens
+
+Admins can mint scoped API tokens from the **API tokens** tab of the Profile modal (`POST /api/v1/auth/api-token`).
+The token value is shown once at creation — copy it then, because it cannot be retrieved later. Existing tokens are
+listed and can be revoked individually (`GET /api/v1/auth/api-tokens`, `DELETE /api/v1/auth/api-tokens/{token_id}`). A token carries scopes rather
+than a session, so it is the right way to script against the API instead of reusing a user login.
 
 ---
 
 ## OAuth / OIDC Setup
 
-### Before you begin — set your Application Base URL
+### Before you begin — set your App URL
 
-OAuth providers send users back to a **redirect URI** after authentication. Circuit Breaker builds this URI from the **Application Base URL** setting.
+OAuth providers send users back to a **redirect URI** after authentication. Circuit Breaker builds this URI from the **App URL** setting.
 
 **Set this first:**
 
-1. Go to **Settings → Application**
-2. Set **Application Base URL** to the URL you use to access the app:
+1. Go to **Settings → Connectivity → External Access**
+2. Set **App URL (used in invite links)** to the URL you use to access the app:
    - Local access: `https://localhost`
    - LAN hostname: `https://circuitbreaker.local`
    - Cloudflare Tunnel / public domain: `https://cb.yourdomain.com`
@@ -61,13 +74,13 @@ If this is blank, the app falls back to the request host header — which breaks
      ```
      https://cb.yourdomain.com/api/v1/auth/oauth/github/callback
      ```
-     Replace the hostname with your actual Application Base URL.
+     Replace the hostname with your actual App URL.
 4. Click **Register application**
 5. Copy the **Client ID** and generate a **Client Secret**
 
 **2. Configure in Circuit Breaker**
 
-1. Go to **Settings → Security → OAuth/OIDC**
+1. Go to **Settings → Security → OAuth / SSO Providers**
 2. Expand **GitHub** and toggle it **on**
 3. Paste the **Client ID** and **Client Secret**
 4. The exact redirect URI is shown under the fields — confirm it matches what you registered on GitHub
@@ -75,7 +88,7 @@ If this is blank, the app falls back to the request host header — which breaks
 
 !!! tip "Redirect URI format"
     The redirect URI is always:
-    `{Application Base URL}/api/v1/auth/oauth/github/callback`
+    `{App URL}/api/v1/auth/oauth/github/callback`
 
 ---
 
@@ -99,7 +112,7 @@ If this is blank, the app falls back to the request host header — which breaks
 
 **2. Configure in Circuit Breaker**
 
-1. Go to **Settings → Security → OAuth/OIDC**
+1. Go to **Settings → Security → OAuth / SSO Providers**
 2. Expand **Google** and toggle it **on**
 3. Paste the **Client ID** and **Client Secret**
 4. Click **Save OAuth Settings**
@@ -117,15 +130,16 @@ In Authentik (example):
 1. Go to **Applications → Providers → Create → OAuth2/OpenID Provider**
 2. Set the **Redirect URI** to:
    ```
-   https://your-cb-url/api/v1/auth/oauth/oidc/my-provider/callback
+   https://your-cb-url/api/v1/auth/oauth/oidc/oidc/callback
    ```
-   Replace `my-provider` with the slug you'll use in Circuit Breaker.
+   Copy the exact value shown under the OIDC **Configure** panel in Circuit Breaker — the UI always uses the
+   `oidc` slug, so the segment is repeated.
 3. Note the **Client ID**, **Client Secret**, and **Discovery URL**
    - Discovery URL format: `https://authentik.local/application/o/my-app/.well-known/openid-configuration`
 
 **2. Configure in Circuit Breaker**
 
-1. Go to **Settings → Security → OAuth/OIDC**
+1. Go to **Settings → Security → OAuth / SSO Providers**
 2. Expand **OIDC** and toggle it **on**
 3. Enter the **Client ID**, **Client Secret**, and **Discovery URL**
 4. Click **Save OAuth Settings**
@@ -137,9 +151,9 @@ In Authentik (example):
 | Error | Cause | Fix |
 |---|---|---|
 | `redirect_uri_mismatch` | The callback URL registered with the provider doesn't match | Copy the exact URI shown under the provider's Configure panel in Settings |
-| `device_id and device_name are required for private IP` | Google received a private IP as the redirect URI | Set Application Base URL to `https://localhost` or a real domain |
+| `device_id and device_name are required for private IP` | Google received a private IP as the redirect URI | Set the App URL to `https://localhost` or a real domain |
 | `404 Not Found` on callback | Wrong callback URL format registered (e.g. NextAuth format) | Use `/api/v1/auth/oauth/github/callback`, not `/api/auth/callback/github` |
-| `Internal server error` at final step | Database schema issue | Run `docker compose up --build -d backend` to apply latest migrations |
+| `Internal server error` at final step | Database schema issue | Restart the container — migrations run on start (`docker compose up -d --build circuitbreaker`) |
 
 ---
 
@@ -149,11 +163,11 @@ Circuit Breaker supports TOTP-based MFA using any standard authenticator app (Go
 
 ### Enabling TOTP MFA
 
-1. Go to **Settings → Account → Security**.
+1. Open the user avatar in the header → **Profile** → **Security** tab.
 2. Click **Enable Two-Factor Authentication**.
 3. Scan the QR code with your authenticator app.
 4. Enter the 6-digit code from your app to confirm enrollment.
-5. **Save your recovery codes** — they are shown once. Treat them like your vault key: store them somewhere safe offline.
+5. **Save your backup codes** — they are shown once. Treat them like your vault key: store them somewhere safe offline.
 
 ### Signing In with TOTP
 
@@ -162,23 +176,41 @@ Once enrolled, the sign-in flow becomes:
 1. Enter email and password as usual.
 2. A second prompt appears — enter the 6-digit code from your authenticator app.
 
-Recovery codes can be used in place of the TOTP code if you lose access to your authenticator app. Each recovery code is single-use.
+Backup codes can be used in place of the TOTP code if you lose access to your authenticator app. Each backup code is single-use. An enrolled user can mint a fresh set with **Regenerate Backup Codes** on the same Profile → Security tab; regenerating invalidates the previous set.
 
-### Admin Reset (Lost Device)
+### Lost Device
 
-If a user loses access to their authenticator app and has no recovery codes:
+Backup codes are the recovery path — there is no admin control that clears another user's TOTP enrollment.
 
-1. Go to **Admin → Users**.
-2. Select the user.
-3. Click **Reset MFA**.
-
-The user's TOTP enrollment is cleared. They will be prompted to re-enroll on their next login.
+If a user loses their authenticator app and has no backup codes left, an admin's only options under
+**Admin → Users** are to reset the account's password (which does not clear MFA) or to delete the
+account and re-invite the person, who then enrolls again from scratch.
 
 ### Disabling TOTP
 
-1. Go to **Settings → Account → Security**.
+1. Open the user avatar in the header → **Profile** → **Security** tab.
 2. Click **Disable Two-Factor Authentication**.
-3. Confirm by entering your current TOTP code (or a recovery code).
+3. Confirm by entering your current TOTP code (or a backup code).
+
+---
+
+## Roles and Permissions
+
+Every account carries one role. Roles are hierarchical — `viewer` < `editor` < `admin`.
+
+| Role | What it can do |
+|---|---|
+| **viewer** | Read everything (`read:*`). No writes, no deletes, no admin surfaces. |
+| **editor** | Everything viewer can do, plus write access to hardware, services, networks, clusters, external nodes, compute, storage, misc, docs, graph and layout. No deletes and no admin surfaces. |
+| **admin** | Full access: read, write, delete, and the admin surfaces (users, invites, audit log, restore, masquerade). |
+| **demo** | Read-only, same scopes as viewer, but time-boxed. |
+
+Only `admin`, `editor` and `viewer` can be assigned to an account or carried by an invite. `demo` is not an
+assignable account role — it is a one-hour read-only session minted by `POST /api/v1/auth/demo` that expires
+on its own.
+
+An account that has tripped the login lockout is refused with `423 Locked` on authenticated requests until
+the lockout expires or an admin unlocks it from **Admin → Users**.
 
 ---
 
@@ -187,7 +219,11 @@ The user's TOTP enrollment is cleared. They will be prompted to re-enroll on the
 - Admins can invite users from **Admin → Users**.
 - Invite acceptance supports initial password set and role assignment.
 - Users can be force-prompted to change their password at next login.
-- OAuth users are created with the `viewer` role; an admin must elevate them.
+- OAuth users are created with the `viewer` role and an admin must elevate them — unless the user signs up
+  through an invite, in which case they get the role the invite carried.
+- When **Allow Masquerade** is enabled under **Settings → Security → Authentication**, an admin can act as
+  another user from **Admin → Users**. The masquerade token is short-lived, a banner stays visible for the
+  duration, and the action is written to the [Audit Log](audit-log.md).
 
 ---
 
@@ -196,7 +232,7 @@ The user's TOTP enrollment is cleared. They will be prompted to re-enroll on the
 - **Email reset** (recommended): available when SMTP is configured in Settings.
 - **Vault key reset** (offline fallback): recover access using your backed-up vault key.
 
-If SMTP is unavailable, vault-key recovery remains the fallback path. See [Deployment & Security](deployment-security.md#secrets-management--vault).
+If SMTP is unavailable, vault-key recovery remains the fallback path. See [Deployment & Security](deployment-security.md#3-secrets-management-vault).
 
 ---
 

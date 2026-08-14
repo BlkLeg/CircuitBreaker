@@ -1,3 +1,8 @@
+# Reference unit for the packaged layout (/var/lib/circuit-breaker, user
+# `circuitbreaker`). Nothing installs this file — nfpm.yaml ships
+# packaging/circuit-breaker.service instead. install.sh does not use it either;
+# that installer renders deploy/systemd/circuitbreaker-*.service against
+# /var/lib/circuitbreaker and the `breaker` user.
 [Unit]
 Description=Circuit Breaker (Native)
 Documentation=https://github.com/BlkLeg/circuitbreaker
@@ -9,8 +14,12 @@ Type=simple
 User=circuitbreaker
 Group=circuitbreaker
 WorkingDirectory=/var/lib/circuit-breaker
-EnvironmentFile=-/etc/circuit-breaker/env
-ExecStart=/usr/local/bin/circuit-breaker --config /etc/circuit-breaker/config.yaml
+# postinstall.sh generates circuit-breaker.env, not env.
+EnvironmentFile=-/etc/circuit-breaker/circuit-breaker.env
+# No --config: that flag routes to the YAML-style load_native_config() parser,
+# which raises on the TOML config the packages install. load_config_toml()
+# finds /etc/circuit-breaker/config.toml on its own.
+ExecStart=/usr/local/bin/circuit-breaker
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65535

@@ -21,55 +21,45 @@ Returns `text/plain; version=0.0.4; charset=utf-8` — the standard Prometheus s
 
 ## Authentication
 
-The metrics endpoint follows the same authentication model as the rest of the API:
-
-Authentication is always required. Provide a valid `Authorization: Bearer <token>` header (session JWT or `CB_API_TOKEN`).
-
-Without a token, the endpoint returns HTTP `401`.
+Authentication is always required — there is no unauthenticated mode for this endpoint. Provide a
+valid `Authorization: Bearer <token>` header. Without a valid token the endpoint returns HTTP `401`.
 
 ### Generating a token for Prometheus
 
-1. Log in to Circuit Breaker and copy a JWT from the browser's local storage (`cb:token`), **or**
-2. Set the `CB_API_TOKEN` environment variable on the backend to a static secret and use that value as the bearer token in Prometheus.
+Create a service account token as an admin:
 
-Using `CB_API_TOKEN` is recommended for scraping — it never expires and does not require an interactive login.
+```bash
+curl -X POST https://your-server/api/v1/auth/service-account \
+  -H "Authorization: Bearer <your-admin-jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"label": "prometheus", "scopes": ["read:*"]}'
+```
+
+The response contains the token. It defaults to a one-year lifetime (`expires_at` accepts an ISO
+datetime to shorten it) and can be revoked later from the API token list. A session JWT copied from
+the browser also works, but expires with the session.
+
+`CB_API_TOKEN` is deprecated and is **not** a working scrape credential: a request presenting it as a
+bearer token is rejected with `401` unless `CB_LEGACY_AUTH=true` is set on the backend. It is retained only for
+backward compatibility and has no scheduled removal release — use a service account instead.
 
 ---
 
 ## Prometheus Scrape Configuration
 
-### Without authentication (auth disabled)
-
 ```yaml
 scrape_configs:
   - job_name: 'circuit-breaker'
     static_configs:
-      - targets: ['your-server:8080']
-    metrics_path: '/api/v1/metrics'
-```
-
-### With authentication (`CB_API_TOKEN` or JWT)
-
-```yaml
-scrape_configs:
-  - job_name: 'circuit-breaker'
-    static_configs:
-      - targets: ['your-server:8080']
+      - targets: ['your-server:80']
     metrics_path: '/api/v1/metrics'
     authorization:
-      credentials: '<your-cb-api-token-or-jwt>'
+      credentials: '<your-service-account-token>'
 ```
 
-### Docker Compose — setting `CB_API_TOKEN`
-
-```yaml
-services:
-  backend:
-    environment:
-      - CB_API_TOKEN=your-static-secret-here
-```
-
-Then use `your-static-secret-here` as the bearer token in the Prometheus scrape config above.
+Use the port you published the app on: `CB_PORT` (default `80`) for HTTP or `CB_PORT_HTTPS`
+(default `443`) for HTTPS. `8080` and `8443` are the container-internal ports and are not reachable
+from outside the container.
 
 ---
 
@@ -88,7 +78,7 @@ Then use `your-static-secret-here` as the bearer token in the Prometheus scrape 
 | `circuitbreaker_hardware_total` | Gauge | — | Total hardware nodes in inventory |
 | `circuitbreaker_compute_units_total` | Gauge | `kind` | Compute units grouped by kind (`vm`, `container`) |
 | `circuitbreaker_services_total` | Gauge | — | Total services in inventory |
-| `circuitbreaker_services_by_status_total` | Gauge | `status` | Services grouped by operational status |
+| `circuitbreaker_services_by_status_total` | Gauge | `status` | Services grouped by operational status. One series per status: `running`, `stopped`, `degraded`, `maintenance` (zero-filled) |
 | `circuitbreaker_storage_items_total` | Gauge | `kind` | Storage items grouped by kind (`disk`, `pool`, `dataset`, `share`) |
 | `circuitbreaker_storage_capacity_gb_total` | Gauge | — | Sum of all configured storage capacity in GB |
 | `circuitbreaker_storage_used_gb_total` | Gauge | — | Sum of all reported storage usage in GB |
@@ -108,7 +98,7 @@ These follow the [kube-state-metrics](https://github.com/kubernetes/kube-state-m
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `circuitbreaker_service_status` | Gauge | `name`, `slug`, `environment`, `status` | Current status of each service. Value is `1` for the active status, `0` for all others |
+| `circuitbreaker_service_status` | Gauge | `name`, `slug`, `environment`, `status` | Current status of each service. One series per service per status (`running`, `stopped`, `degraded`, `maintenance`); value is `1` for the active status, `0` for all others |
 | `circuitbreaker_hardware_memory_configured_gb` | Gauge | `name`, `role` | Configured memory per hardware node in GB (omitted if not set) |
 | `circuitbreaker_compute_unit_memory_configured_mb` | Gauge | `name`, `kind` | Configured memory per compute unit in MB (omitted if not set) |
 | `circuitbreaker_compute_unit_cpu_cores_configured` | Gauge | `name`, `kind` | Configured CPU cores per compute unit (omitted if not set) |
@@ -166,6 +156,6 @@ circuitbreaker_services_total - sum(circuitbreaker_service_status{status="runnin
 ## Implementation Notes
 
 - **No global state:** A fresh `CollectorRegistry` is created per scrape request. There are no background threads or process-level metric accumulators. Every scrape reflects the current database state.
-- **DB-backed, not push-based:** Metrics are queried on demand from the Circuit Breaker SQLite database. They represent point-in-time inventory values, not counters that accumulate over time.
+- **DB-backed, not push-based:** Metrics are queried on demand from the Circuit Breaker PostgreSQL database. They represent point-in-time inventory values, not counters that accumulate over time.
 - **Null safety:** Per-resource metrics (memory, CPU, capacity, usage) are only emitted for resources where the value is explicitly configured. Resources with null values are silently omitted to avoid misleading zero values.
 - **OpenAPI schema:** The endpoint is excluded from the Circuit Breaker OpenAPI/Swagger UI (`include_in_schema=False`) because it returns plain text, not JSON.

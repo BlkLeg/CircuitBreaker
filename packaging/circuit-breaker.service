@@ -1,3 +1,7 @@
+# Shipped by the deb/rpm/apk packages (nfpm.yaml) and PKGBUILD.
+# Paths here are the packaged layout, which is NOT the layout install.sh
+# creates: packages use /var/lib/circuit-breaker and the `circuitbreaker` user,
+# while install.sh uses /var/lib/circuitbreaker and the `breaker` user.
 [Unit]
 Description=Circuit Breaker — Homelab Topology Mapper
 Documentation=https://github.com/BlkLeg/circuitbreaker
@@ -8,7 +12,13 @@ Wants=network-online.target
 Type=exec
 User=circuitbreaker
 Group=circuitbreaker
-ExecStart=/usr/local/bin/circuit-breaker serve
+# The binary is a PyInstaller bundle of app/start.py, whose parser takes only
+# optional flags — a `serve` subcommand exits 2 with "unrecognized arguments".
+# Passing --config is also wrong here: that flag feeds the YAML-style
+# load_native_config() parser, which raises on TOML section headers. The TOML
+# config at /etc/circuit-breaker/config.toml is picked up by load_config_toml()
+# through its own search path, so the binary is launched with no arguments.
+ExecStart=/usr/local/bin/circuit-breaker
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5

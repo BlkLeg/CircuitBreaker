@@ -27,7 +27,7 @@ If you installed natively with `install.sh` or via the Proxmox LXC helper (`cb-p
 cb update
 ```
 
-This pulls the latest release, restarts the systemd service, and runs migrations automatically.
+This re-runs the installer in upgrade mode, which pulls the latest release, restarts the `circuitbreaker.target` units, and runs migrations automatically.
 
 **For Proxmox LXC:** SSH into the container first, then run `cb update`:
 
@@ -59,25 +59,22 @@ docker compose pull
 docker compose up -d
 ```
 
-Or use `cb update` if the `cb` CLI is installed.
-
 ### What persists across upgrades
 
-Named Docker volumes preserve all data between container recreations:
+There are no named volumes. Everything lives in the host data directory bind-mounted at `/data`:
 
-| Volume | Contents |
+| Mount | Contents |
 |---|---|
-| `backend-data` | Database, vault key, uploads |
-| `caddy_data` | Caddy TLS certificates |
-| `nats_data` | NATS state |
-| `postgres_data` | PostgreSQL data (if using `--profile pg`) |
+| `${CB_DATA_DIR:-./circuitbreaker-data}` → `/data` | Postgres data, NATS and Redis state, uploads, TLS certificates, vault key |
+
+Recreating the container never touches it.
 
 ### Pinning to a specific version
 
-Edit `docker-compose.yml` to set a version tag:
+Set the tag in `~/.circuitbreaker/.env`:
 
-```yaml
-image: ghcr.io/blkleg/circuitbreaker:backend-v0.2.0
+```bash
+CB_TAG=1.0.0
 ```
 
 Then:
@@ -85,6 +82,8 @@ Then:
 ```bash
 docker compose up -d
 ```
+
+Only `:<version>` and `:latest` tags are published. `CB_IMAGE` overrides the whole image reference if you host your own build.
 
 ---
 
@@ -102,15 +101,15 @@ Or check **Settings → About** in the UI.
 
 ### Native / Proxmox LXC
 
-Re-run the installer with a specific version tag:
+Re-run the installer with the `--version` flag. Give the version **without** the leading `v` — the installer adds it when looking up the release tag:
 
 ```bash
-CB_VERSION=v0.1.4 curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | bash -s -- --version 0.3.5
 ```
 
 ### Docker Compose
 
-Edit `docker-compose.yml` to reference the previous image tag, then:
+Set `CB_TAG` in `~/.circuitbreaker/.env` to the previous version, then:
 
 ```bash
 docker compose up -d

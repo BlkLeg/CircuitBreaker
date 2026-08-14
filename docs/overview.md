@@ -47,6 +47,16 @@ The topology map gives you an at-a-glance view of your environment.
 
 ---
 
+## Monitoring
+
+Circuit Breaker runs its own checks against the things you have documented.
+
+- ICMP, TCP, HTTP, and DNS checks against hardware, compute units, services, external nodes, or a bare IP.
+- Live status with uptime and latency history.
+- Checks can run from the server or from a remote agent, so you can probe segments the server cannot reach.
+
+---
+
 ## Discovery (Beta)
 
 Circuit Breaker includes **Auto-Discovery (Beta)** to help you find devices and services faster.

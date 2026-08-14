@@ -4,7 +4,7 @@
 >
 > The Docker Compose full stack guide has been consolidated into **[Docker Compose Installation](docker-compose.md)**.
 >
-> That page covers the complete service list, environment variables, persistence layout, Caddy HTTPS setup, ARP scanning, and Docker socket configuration.
+> That page covers the service, environment variables, persistence layout, HTTPS, ARP scanning, and Docker socket configuration.
 
 ---
 

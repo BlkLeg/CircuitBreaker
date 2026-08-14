@@ -4,9 +4,10 @@
 
 **Circuit Breaker** is a self-hosted homelab visualization platform that maps your infrastructure—hardware, services, networks, and clusters—with interactive topology, live telemetry, and auto-discovery.
 
-> **⚠️ Beta Security Notice**
-> Not fully audited. Run on trusted LAN only. Do not expose publicly until the v1.0 security gates
-> pass. The draft v1.0 support boundary is tracked in
+> **⚠️ Release Candidate Security Notice**
+> 1.0.0-rc.2. Not fully audited; several 1.0 security acceptance rows are still unevidenced. Run on a
+> trusted LAN or behind a VPN — internet-exposed direct deployment is outside the 1.0.0 support
+> boundary, which is tracked in
 > [docs/release/1.0.0-support-contract.md](docs/release/1.0.0-support-contract.md).
 
 📖 **[User Guide](https://blkleg.github.io/CircuitBreaker/)** | 🗣️ **[Discord](https://discord.gg/SBdBRfmD)** | 🐦 **[X/Twitter](https://x.com/TryHostingCB)**
@@ -27,18 +28,18 @@
 - **Live Telemetry**: iDRAC/iLO/APC UPS/SNMP health badges update via WebSockets. Green/yellow/red health rings.
 - **Proxmox Integration**: One-click cluster import — nodes, VMs, and health metrics visualized instantly.
 - **Interactive Topology**: Hierarchical/cluster/radial layouts with live animations. Drag-to-save positions.
-- **3D Rack Simulator**: U-height drag-drop, cable management, front/rear views, power modeling.
-- **Vendor Catalog**: 100+ devices (Dell/HPE/Ubiquiti/Synology/APC). Freeform entry always works.
+- **Rack Diagrams**: U-slot drag-drop layout, cable overlay, and a per-rack inspector.
+- **Vendor Catalog**: 70+ devices across 20 vendors (Dell/HPE/Ubiquiti/Synology/APC). Freeform entry always works.
 - **Audit Logs**: Tamper-evident SHA-256 hash chain. Every change tracked with actor, IP, and diff.
 
 ---
 
 ## Security
 
-- **Authentication**: bcrypt passwords, TOTP MFA, OAuth/OIDC (GitHub, Google, Authentik, Keycloak), HttpOnly session cookies
+- **Authentication**: bcrypt passwords, TOTP MFA, OAuth (GitHub, Google) plus generic OIDC (Authentik, Keycloak, and other OIDC providers), HttpOnly session cookies
 - **RBAC**: 4 built-in roles (viewer/editor/admin/demo), granular scopes, admin masquerade with full audit trail
-- **Secrets Vault**: Fernet encryption at rest for all credentials; auto-generated key, never stored in plaintext
-- **Transport**: Automatic HTTPS via Caddy — Let's Encrypt for public domains, local self-signed CA for LAN
+- **Secrets Vault**: Fernet encryption at rest for all credentials; auto-generated key held in a root-owned 0640 env file, never stored in the database
+- **Transport**: Automatic HTTPS via Nginx — Let's Encrypt for public domains, local self-signed CA for LAN
 - **HTTP Hardening**: CSP, HSTS, X-Frame-Options, rate limiting, SSRF guard, and tamper-evident audit log
 
 > See [Security & Deployment](docs/deployment-security.md) for full details.
@@ -53,7 +54,7 @@
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | sudo bash
 ```
 
-Installs natively via systemd — no Docker required. Opens the OOBE setup wizard at `http://<host>:8088` on completion.
+Installs natively via systemd — no Docker required. On completion it prints the OOBE setup wizard URL: `https://<host>/`, using a self-signed certificate by default (accept the browser warning). The plain HTTP port (8088) stays reachable but cannot create the first account.
 
 **Upgrade:** `cb update` | **Uninstall:** `cb uninstall`
 
@@ -81,15 +82,17 @@ Docker mode now performs a compose-only deployment: installs Docker only if miss
 
 ## cb CLI
 
-`cb` is installed automatically alongside Circuit Breaker.
+`cb` is installed automatically by the native and Proxmox installers. Docker Compose deployments use
+`docker compose` directly from `~/.circuitbreaker` instead.
 
 | Command | Description |
 |---------|-------------|
-| `cb status` | Show service status |
-| `cb logs [-f]` | Show logs (add `-f` to follow) |
-| `cb restart` | Restart Circuit Breaker |
-| `cb update` | Pull latest release and restart |
-| `cb vault-recover` | Recover an uninitialized vault (edge cases only) |
+| `cb status` | Show status of all Circuit Breaker services |
+| `cb doctor` | Run health checks and diagnose issues |
+| `cb logs` | Tail all service logs (live) |
+| `cb restart` | Restart all services |
+| `cb update` | Update to the latest version |
+| `cb backup` | Back up the database |
 | `cb version` | Show installed version |
 | `cb uninstall` | Remove Circuit Breaker from this system |
 

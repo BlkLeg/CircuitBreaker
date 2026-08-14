@@ -8,7 +8,7 @@ The wizard runs once to create your admin account and configure core settings. S
 
 ## The Setup Wizard
 
-The wizard walks you through 6 steps:
+The wizard walks you through 7 steps, followed by the vault key screen:
 
 ### Step 1 — Welcome
 
@@ -16,7 +16,15 @@ An introduction screen. Click **Get Started** to begin.
 
 ---
 
-### Step 2 — Create Account
+### Step 2 — Domain
+
+Optional. Enter a fully qualified domain name (for example `circuitbreaker.example.com`) and click **Apply**, and Circuit Breaker generates a matching self-signed certificate and reconfigures nginx for it. The wizard then offers a link to continue at the new HTTPS address.
+
+Click **Skip** to stay on IP-based access — access by IP keeps working either way.
+
+---
+
+### Step 3 — Create Account
 
 Create the first admin account for this installation. You can use a **local email and password** or sign up with an **OAuth provider** (GitHub, Google, or OIDC/SSO).
 
@@ -42,7 +50,7 @@ Fill in:
 - **Password** — must be at least 8 characters with uppercase, lowercase, a digit, and a special character
 - **Confirm Password**
 
-Your **profile photo** is pulled from [Gravatar](https://gravatar.com) automatically based on your email. Click the avatar preview to upload a custom JPEG or PNG (max 10 MB).
+Your **profile photo** is pulled from [Gravatar](https://gravatar.com) automatically based on your email. Click the avatar preview to upload a custom JPEG or PNG. The upload form says 10 MB, but the server rejects anything over **5 MB** — keep it under 5 MB.
 
 #### OAuth / SSO Account
 
@@ -60,13 +68,13 @@ The provider choice you make here is automatically enabled as a login option for
 
 ---
 
-### Step 3 — Choose Your Theme
+### Step 4 — Choose Your Theme
 
 Pick a colour palette and light/dark mode. You can also set your preferred font family and size. All of these can be changed later in **Settings → Appearance**.
 
 ---
 
-### Step 4 — Regional Preferences
+### Step 5 — Regional Preferences
 
 Configure:
 - **Location** — search for your city to auto-set the weather widget and clock in the header
@@ -77,7 +85,7 @@ All of these can be changed later in **Settings → General**.
 
 ---
 
-### Step 5 — Email Recovery Setup (Optional)
+### Step 6 — Email Recovery Setup (Optional)
 
 Configure **SMTP** so Circuit Breaker can send password reset emails and user invite links. This step is optional — you can skip it and rely on your vault key as an offline recovery path.
 
@@ -93,15 +101,15 @@ If Caddy HTTPS is detected, the wizard offers to auto-fill the HTTPS URL and let
 
 ---
 
-### Step 6 — Confirmation
+### Step 7 — Confirmation
 
 Review your choices. Click **Create account and enter Circuit Breaker** to finish setup.
 
 ---
 
-## Vault Key Ceremony (Step 7)
+## Vault Key Ceremony (Step 8)
 
-If `CB_VAULT_KEY` was not pre-set in your environment, Circuit Breaker generates a Fernet encryption key during bootstrap and writes it to `/data/.env` (or `/app/data/.env` in Compose installs) inside the data volume.
+If `CB_VAULT_KEY` was not pre-set in your environment, Circuit Breaker generates a Fernet encryption key during bootstrap and writes it into the data directory — `/data/.env` in container installs, `/etc/circuitbreaker/.env` on native installs, where the installer generates one for you up front.
 
 **This key is shown only once.** A "Critical: Back Up Your Vault Key" screen appears before you enter the app.
 
@@ -113,9 +121,9 @@ The vault key protects:
 **Back it up now.** Recommended locations:
 - Your password manager
 - An offline secure note
-- The data volume itself (already written to `/data/.env`)
+- The data directory itself (already written to `.env` there)
 
-If you lose the vault key, you will need to re-enter all encrypted credentials after running `cb vault-recover`.
+If you lose the vault key, you will need to re-enter every encrypted credential afterwards.
 
 Check the **"I have securely backed up my vault key"** box and click **Continue to Circuit Breaker**.
 
@@ -141,7 +149,7 @@ The wizard only appears on a fresh install with no existing data. If you see the
 
 - Bootstrap has already been completed (data volume from a previous install).
 - Log in with the credentials you created earlier.
-- If you lost your credentials, use `cb vault-recover` or restore a backup. See [Backup & Restore](../backup-restore.md).
+- If you lost your credentials, restore a backup. See [Backup & Restore](../backup-restore.md).
 
 ---
 
@@ -150,4 +158,4 @@ The wizard only appears on a fresh install with no existing data. If you see the
 - [Configuration Reference](configuration.md) — environment variables and vault key setup
 - [Authentication & Access](../auth-access.md) — OAuth/OIDC configuration for ongoing use
 - [Backup & Restore](../backup-restore.md)
-- [cb CLI Tool](../cb-cli.md#cb-vault-recover) — vault recovery command
+- [cb CLI Tool](../cb-cli.md)

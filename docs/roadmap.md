@@ -13,6 +13,11 @@ Circuit Breaker is actively evolving. This page shows what is already available 
 - Auto-Discovery (Beta) with review-before-merge workflow.
 - Backup export and restore import.
 - **Monitoring**: native check engine (ICMP, TCP, HTTP, DNS) at `/monitors` with live status, uptime and latency history, and one-click monitoring on hardware, compute units, and services.
+- Remote probe agents: enroll and approve agents, then run checks and discovery from other network segments.
+- Interactive rack editor with cable overlay.
+- IPAM center for IP addresses, subnets, VLANs, and sites, with per-network IP scanning.
+- Multiple saved topology maps with a map switcher.
+- Certificate manager for tracking certificates and triggering renewals.
 
 ---
 
@@ -26,13 +31,11 @@ Circuit Breaker is actively evolving. This page shows what is already available 
 
 ### 2) Physical Context Enhancements
 
-- Expand rack-focused workflows and visuals.
 - Improve planning views for hardware placement and capacity.
 
 ### 3) Topology Insights
 
 - Better impact views for dependency chains.
-- More visual controls for map readability and sharing.
 
 ---
 
@@ -40,7 +43,7 @@ Circuit Breaker is actively evolving. This page shows what is already available 
 
 ### Network and Address Management
 
-- Richer IP visibility and conflict handling workflows.
+- IP conflict handling workflows.
 - Easier network-level troubleshooting context.
 
 ### Health and Alerts
@@ -65,4 +68,4 @@ Circuit Breaker is actively evolving. This page shows what is already available 
 
 ## Release Notes
 
-For version-by-version changes, see the [Updates](updates/v0-1-4_release.md) section in the docs navigation.
+For version-by-version changes, see the [Updates](updates/v0.3.3_release.md) section in the docs navigation.

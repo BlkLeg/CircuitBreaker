@@ -13,17 +13,38 @@ Auto-Discovery helps you find devices and services in your network, then add the
 - Places findings into a review queue.
 - Lets you approve and merge only what you want.
 
-Nothing is added automatically without your approval.
+Nothing is added automatically by default — every finding lands in the review queue and waits for you.
+The one exception is opt-in: if you turn on **Auto-Merge New Hosts** under **Discovery → Scan Settings**, newly
+discovered hosts are turned into hardware entities without review.
 
 ---
 
 ## Discovery UI (current)
 
-The Discovery page has a **left sidebar** with: **New Scan**, **All Scans**, **Proxmox VE**, **Scan Profiles**, **Review Queue**, and **History**. The "New Scan" view shows scan mode cards (Safe / Full / Docker), **TARGET SCOPE** (Single CIDR or VLANs), **SCAN TYPES** (e.g. SNMP, HTTP), and Start Scan / Cancel.
+The Discovery page has a **left sidebar** with a **New Scan** button, a **Discover Docker** button, a **Scans** list, and a **Configuration** group containing **Proxmox VE**, **OPNsense**, **Scan Profiles**, **Review Queue**, and **Scan Settings**. The "New Scan" view shows a **Scan from** selector, scan mode cards, **Target Scope** (Single CIDR or VLANs), **Scan Types** (e.g. SNMP, HTTP), and Start Scan / Cancel.
 
-If you see a different layout (e.g. bottom nav only, "• Ad-hoc Scan" title, NMAP SCAN PROFILE dropdown, PROGRESS / LIVE RESULTS), you are on an outdated frontend. Re-pull the Compose images with a current tag (e.g. `CB_TAG=v0.2.0 docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d` in your install directory) and hard-refresh the browser (Ctrl+Shift+R). See the [README Troubleshooting](../README.md#troubleshooting) section ("Old Discovery UI").
+If you see a different layout, you are on an outdated frontend. Pull the current image and restart (`docker compose pull && docker compose up -d` in your install directory), then hard-refresh the browser (Ctrl+Shift+R).
 
-**Scan reports 0 hosts:** This can happen if the scanner cannot reach the target network (e.g. the backend runs in a Docker bridge and the target is 192.168.1.0/24 on the host LAN). Use host networking for the discovery worker if you need to scan the host’s LAN, or ensure the scanner has a route to the target CIDR.
+**Scan reports 0 hosts:** This can happen if the scanner cannot reach the target network (e.g. the container runs on a Docker bridge and the target is 192.168.1.0/24 on the host LAN). Make sure the container has a route to the target CIDR, or run the scan from an agent that sits on that segment.
+
+---
+
+## Before Your First Scan
+
+### Scan authorization
+
+The first time you start a scan, a modal appears that cannot be dismissed by clicking away. It states that
+network scanning may be illegal without explicit authorization from the network owner, and requires you to
+tick **"I own or have explicit written authorization to scan this network"** before the scan runs. The
+acknowledgment is recorded once per instance. An admin can clear it again under
+**Discovery → Scan Settings → Legal → Scan Authorization**.
+
+### Nmap Active Scanning
+
+**Nmap Active Scanning** under **Discovery → Scan Settings → Scan Mode** is a persistent safety gate for
+nmap-based scans. It is the prerequisite for the Full and Deep Dive modes — while it is off, both mode
+cards are disabled. Keep it disabled until you have explicit authorization for the networks you intend
+to scan.
 
 ---
 
@@ -33,9 +54,13 @@ If you see a different layout (e.g. bottom nav only, "• Ad-hoc Scan" title, NM
 
 Circuit Breaker allows you to balance discovery depth against network safety and isolation requirements:
 
-- **Safe Mode (Default):** Performs ICMP pings (using user-space methods) and TCP connect scans on common ports (22, 80, 443, 8080, 8443). Safe mode operates entirely within standard Docker environments without requiring elevated capabilities like `NET_RAW`.
-- **Full Mode:** Utilizes comprehensive port scanning, ARP requests, and Scapy methodologies for deeper inspection, including MAC address resolution. This mode requires Docker elevated permissions (`NET_RAW`, `NET_ADMIN`) and usually host network mode.
-- **Docker-Aware Discovery:** Docker-aware discovery is **opt-in** for security. By default the Docker socket is not mounted. To enable it, run Compose with the Docker socket override: `docker compose -f docker-compose.yml -f docker-compose.docker-socket.yml up -d` (or with `docker-compose.prod.yml` for production). With the socket mounted read-only, the discovery pipeline can read container configurations and populate Docker network modes (bridges, overlays) and map container services to exposed ports. Enable "Docker Container Discovery" in Settings → Discovery.
+- **Safe (default):** Ping plus TCP connect. No `NET_RAW` required, so it works in a stock container.
+- **Full:** ARP sweep plus nmap OS fingerprint. Requires `NET_RAW`.
+- **Deep Dive:** Full scan plus L0 fingerprinting (rDNS, NetBIOS, mDNS, SSDP, HTTP). Requires `NET_RAW`.
+- **Docker:** Enumerates containers from the Docker socket. This is **opt-in** for security — by default the socket is not mounted. To enable it, run Compose with the socket override from the repo root: `docker compose -f docker-compose.yml -f docker/docker-compose.socket.yml up -d`. With the socket mounted, discovery can read container configuration, populate Docker network modes (bridges, overlays), and map container services to exposed ports. Turn on **Container Discovery** under **Settings → Integrations → Docker Integration**.
+- **OPNsense:** Pulls DHCP leases and the ARP table directly from OPNsense — instant, with no subnet sweep. Configure the firewall under **Discovery → OPNsense**.
+
+Full and Deep Dive are only selectable when **Nmap Active Scanning** is enabled (see above); with it off, both cards are disabled and the mode falls back to Safe.
 
 ### 2) Create a scan profile
 
@@ -74,6 +99,20 @@ Use **Scan History** to see completed, running, canceled, and failed jobs.
 
 ---
 
+## Running a Scan from an Agent
+
+The **Scan from** selector at the top of the New Scan view chooses where the scan executes:
+**Circuit Breaker server** (the default) or one of your registered agents.
+
+An agent runs a bounded connect-based sweep of its own segment and nothing else — it bundles no scanner.
+Selecting an agent therefore forces the Safe mode and its fields: no nmap arguments, no SNMP community,
+no Docker socket. Every other mode card is disabled while an agent is selected. Agents that cannot take
+the scan are listed with the reason underneath the selector.
+
+Use an agent when the target subnet is reachable from the agent but not from the Circuit Breaker server.
+
+---
+
 ## Safety and Good Practice
 
 - Start with a small range first.
@@ -87,42 +126,23 @@ If your environment has strict network controls, coordinate scanning windows bef
 
 ## ARP Scanning and Docker Desktop
 
-Circuit Breaker supports an ARP scan phase that resolves MAC addresses and improves host detection reliability on local subnets. This phase requires elevated Linux capabilities (`NET_RAW`, `NET_ADMIN`) and the container must run with `network_mode: host` to reach your LAN directly.
+Circuit Breaker has an ARP scan phase that resolves MAC addresses and improves host detection on local subnets. It needs two things: the `NET_RAW` capability, and Layer 2 adjacency to the subnet being scanned.
 
-**This configuration is incompatible with Docker Desktop** (macOS or Docker Desktop for Linux). Docker Desktop runs all containers inside a lightweight VM, so `network_mode: host` attaches the container to the VM's network rather than your actual LAN. It also breaks the nginx → backend proxy that the frontend relies on, resulting in a 502 error on every page load.
+The shipped `docker-compose.yml` already grants `NET_RAW` to the `circuitbreaker` container — it drops all capabilities and adds back only the ones the container needs. It does **not** offer `NET_ADMIN` or `network_mode: host`, so the container reaches your network through the Docker bridge.
 
-### Default behavior (Docker Desktop and all platforms)
-
-ARP scanning is disabled by default. Circuit Breaker automatically falls back to nmap TCP/ICMP host detection, which:
+Layer 2 adjacency is the part Compose cannot grant. When the container sits on a Docker bridge and the target subnet is elsewhere on your LAN, ARP has nothing to resolve and Circuit Breaker falls back to nmap TCP/ICMP host detection, which:
 
 - Works on all platforms and Docker environments.
 - Finds hosts and open ports without MAC address resolution.
-- Does not require any special Linux capabilities.
+- Does not require Layer 2 adjacency.
 
-All other scan phases (nmap, SNMP, HTTP probing) are fully functional.
+All other scan phases (nmap, SNMP, HTTP probing) are fully functional either way.
 
-### Enabling ARP scanning (native Linux Docker only)
+**Docker Desktop** (macOS, or Docker Desktop for Linux) runs every container inside a lightweight VM, so the container is never adjacent to your real LAN and MAC resolution is not available there.
 
-If you are running native Docker on Linux (not Docker Desktop), you can enable the ARP scan phase for MAC address resolution and more reliable LAN discovery:
+Admins can see exactly what the running instance can do with `GET /api/v1/discovery/readiness`, which reports the nmap binary, raw-socket privilege, ARP/MAC resolution, and LAN adjacency separately.
 
-1. Open `docker/docker-compose.yml`.
-2. In the `backend` service, uncomment the `cap_add` and `network_mode` blocks:
-   ```yaml
-   cap_add:
-     - NET_RAW
-     - NET_ADMIN
-   network_mode: "host"
-   ```
-3. In the `frontend` service, uncomment the `extra_hosts` block:
-   ```yaml
-   extra_hosts:
-     - "backend:host-gateway"
-   ```
-4. Run `make compose-up` to rebuild and restart the stack.
-
-> **Security note:** `NET_RAW` and `NET_ADMIN` allow the container to craft and send arbitrary raw network packets. Only enable this on trusted, isolated homelab networks.
-
-> **Docker Desktop users:** A workaround for enabling ARP scanning under Docker Desktop is being investigated. Track progress in the project issue tracker.
+> **Security note:** `NET_RAW` allows the container to craft and send raw network packets. This is why the container is otherwise capability-stripped, read-only, and started with `no-new-privileges`.
 
 ---
 
@@ -132,7 +152,6 @@ If you are running native Docker on Linux (not Docker Desktop), you can enable t
 - **Too many results:** narrow CIDR scope and use more specific profiles.
 - **Scan failed:** retry once, then check permissions and environment constraints.
 - **Unexpected matches:** keep findings in queue and merge only confirmed assets.
-- **502 error on page load:** this is caused by `network_mode: host` being enabled while running Docker Desktop. Comment out the `cap_add`, `network_mode`, and `extra_hosts` blocks in `docker/docker-compose.yml` and run `make compose-up` again.
 
 ---
 

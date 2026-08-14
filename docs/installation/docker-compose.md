@@ -1,6 +1,6 @@
 # Docker Compose Installation
 
-Deploy Circuit Breaker as a full stack using Docker Compose. Includes Caddy reverse proxy (automatic HTTPS), background workers, and NATS message broker. No local build required — all images are pulled from GHCR.
+Deploy Circuit Breaker with Docker Compose. The compose file runs a single container built from the mono image — Postgres, Redis, NATS, the backend, the workers and nginx all run inside it. No local build required; the image is pulled from GHCR.
 
 ---
 
@@ -10,15 +10,9 @@ Deploy Circuit Breaker as a full stack using Docker Compose. Includes Caddy reve
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | bash -s -- --docker
 ```
 
-Non-interactive:
-
-```bash
-CB_YES=1 curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | bash -s -- --docker
-```
-
 This mode is compose-only: it never runs the native/systemd installer path. It auto-detects Docker, installs Docker (engine + compose plugin) only when missing, downloads `docker-compose.yml`, `docker/docker-compose.socket.yml`, and `.env.example` to `~/.circuitbreaker/`, creates `.env` with generated secrets (if absent), then starts the stack.
 
-**Access at:** `http://<host>:8088` (HTTP) or `https://<domain>` (with Caddy HTTPS configured)
+**Access at:** `https://<host>/`. Port 80 serves a redirect to HTTPS, so use the HTTPS URL — account creation requires a secure context.
 
 ---
 
@@ -39,90 +33,72 @@ docker compose version
 
 ## Services
 
-The full stack runs the following services:
+The compose file defines one service:
 
 | Service | Image | Role |
 |---|---|---|
-| `backend` | `ghcr.io/blkleg/circuitbreaker:backend-*` | FastAPI application |
-| `frontend` | `ghcr.io/blkleg/circuitbreaker:frontend-*` | React SPA (served via nginx) |
-| `worker` | same as backend | Discovery workers (2 replicas) |
-| `notification-worker` | same as backend | Alerts and notifications |
-| `caddy` | `caddy:2-alpine` | Reverse proxy, automatic HTTPS |
-| `nats` | `nats:2-alpine` | Internal message broker |
+| `circuitbreaker` | `ghcr.io/blkleg/circuitbreaker:latest` | Mono image — Postgres, PgBouncer, Redis, NATS, backend, workers and nginx under supervisord |
 
-Optional:
+Published ports are `${CB_PORT:-80}:8080` (HTTP redirect) and `${CB_PORT_HTTPS:-443}:8443` (application).
 
-| Profile | Service | Role |
-|---|---|---|
-| `--profile pg` | `postgres` | PostgreSQL (instead of SQLite) |
+To pin a release, set `CB_TAG=<version>` in `.env` — the image line resolves to `${CB_IMAGE:-ghcr.io/blkleg/circuitbreaker:${CB_TAG:-latest}}`. Only `:<version>` and `:latest` tags are published.
 
 ---
 
 ## Environment Variables
 
-Configure via `.env` in the install directory (`~/.circuitbreaker/.env`):
+Configure via `.env` in the install directory (`~/.circuitbreaker/.env`).
+
+Required — the stack refuses to start without them:
+
+| Variable | Description |
+|---|---|
+| `CB_DB_PASSWORD` | Password for the embedded Postgres `breaker` role |
+| `CB_VAULT_KEY` | Fernet key for the credential vault |
+| `CB_JWT_SECRET` | Session/token signing secret; at least 32 characters |
+| `NATS_AUTH_TOKEN` | Internal NATS bus auth; at least 32 characters |
+
+Optional:
 
 | Variable | Default | Description |
 |---|---|---|
-| `CB_DOMAIN` | `circuitbreaker.local` | Domain Caddy listens on |
-| `CB_TLS_EMAIL` | _(empty)_ | Required for ACME/Let's Encrypt on public domains |
-| `CB_LOCAL_CERTS` | `local_certs` | Use local CA for `.local` / LAN hostnames |
-| `CB_DB_URL` | `sqlite:////data/app.db` | Database URL (override for PostgreSQL) |
-| `CB_VAULT_KEY` | _(empty)_ | Fernet key for credential vault; auto-generated at OOBE if empty |
-| `CB_DB_PASSWORD` | _(empty)_ | PostgreSQL password (used with `--profile pg`) |
-| `NATS_AUTH_TOKEN` | _(empty)_ | NATS authentication token |
-| `NATS_TLS` | `false` | Enable TLS for NATS connections |
-| `DB_POOL_SIZE` | `10` | SQLAlchemy connection pool size |
-| `DB_MAX_OVERFLOW` | `20` | SQLAlchemy max overflow connections |
+| `CB_PORT` | `80` | Host port mapped to the container's HTTP redirect listener |
+| `CB_PORT_HTTPS` | `443` | Host port mapped to the container's HTTPS listener |
+| `CB_DATA_DIR` | `./circuitbreaker-data` | Host directory bind-mounted at `/data` |
+| `CB_TAG` / `CB_IMAGE` | `latest` | Image tag, or a full image reference |
+| `CB_REDIS_URL` | _(empty — uses the embedded Redis)_ | External Redis URL |
+| `CB_RATE_LIMIT_STORAGE_URL` | _(empty)_ | Separate storage backend for rate limits |
+| `CB_TRUSTED_PROXY_CIDRS` | `127.0.0.1/32,::1/128` | Networks allowed to set forwarded headers |
+| `CB_EGRESS_PROXY_URL` | _(empty)_ | Forward proxy for outbound HTTP |
+| `CB_ALLOW_DIRECT_EGRESS` | `true` | Run without a forward proxy |
+| `CB_ALLOW_DEGRADED_DEPENDENCIES` | `false` | Break-glass: waives every dependency gate |
+| `CB_AIRGAP` | `false` | Disable outbound calls to the internet |
+| `CB_DOCKER_HOST` | _(empty)_ | Docker API endpoint for container discovery |
+
+`CB_ALLOW_DIRECT_EGRESS=true` is the compose default because most homelab hosts have no forward proxy. It waives only the `CB_EGRESS_PROXY_URL` requirement — SSRF and outbound URL policy still apply, and Redis, NATS, rate-limit storage and secrets still fail closed. Set `CB_EGRESS_PROXY_URL` and `CB_ALLOW_DIRECT_EGRESS=false` to force outbound traffic through a proxy. See the [Configuration Reference](configuration.md).
 
 ---
 
 ## Persistence
 
-| Volume / Mount | Contents |
+| Mount | Contents |
 |---|---|
-| `backend-data` (named volume) | Database (`app.db`), vault key, uploads |
-| `caddy_data` (named volume) | Caddy TLS certificates and state |
-| `nats_data` (named volume) | NATS JetStream state |
-| `postgres_data` (named volume) | PostgreSQL data (with `--profile pg`) |
-| `./icons/` (bind mount) | Custom icons synced into containers |
-| `./branding/` (bind mount) | Custom branding assets |
+| `${CB_DATA_DIR:-./circuitbreaker-data}` → `/data` | Postgres data, NATS and Redis state, uploads, TLS certificates, vault key |
+| `/run/circuitbreaker` → `/run/circuitbreaker` | Socket for the optional host-side helper daemon; harmless if not installed |
 
-Data volumes survive `docker compose down`. To wipe all data: `docker compose down -v`.
+There are no named volumes — everything lives in the data directory next to `docker-compose.yml`, so `docker compose down` never touches it. To wipe all data, delete that directory.
 
 ---
 
-## Caddy HTTPS
+## HTTPS
 
-Caddy handles HTTPS automatically:
+The mono image terminates TLS itself with the nginx it bundles. On first start the entrypoint generates a self-signed certificate at `/data/tls/fullchain.pem` and `/data/tls/privkey.pem` (365 days) if none is present, so your browser will warn on first visit.
 
-- **LAN / `.local` hostnames:** Caddy generates a local CA and issues a self-signed certificate. You must trust the CA certificate in your browser and OS.
-- **Public domains:** Set `CB_TLS_EMAIL` to enable ACME/Let's Encrypt. No manual certificate management needed.
-
-### Trusting the local CA certificate
-
-After first start, download the CA cert from Caddy:
+To use your own certificate, replace those two files in the data directory and restart:
 
 ```bash
-curl -k https://<host>/api/caddy/ca -o caddy-local-ca.crt
+docker compose restart
 ```
-
-**Linux (system-wide):**
-
-```bash
-sudo cp caddy-local-ca.crt /usr/local/share/ca-certificates/caddy-local-ca.crt
-sudo update-ca-certificates
-```
-
-**macOS:**
-
-```bash
-sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain caddy-local-ca.crt
-```
-
-**Windows:** Double-click the `.crt` file → Install Certificate → Local Machine → Trusted Root Certification Authorities.
-
-**Firefox:** Preferences → Privacy & Security → Certificates → View Certificates → Authorities → Import.
 
 ---
 
@@ -130,11 +106,10 @@ sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keyc
 
 ARP scanning lets the discovery engine resolve MAC addresses and detect hosts more reliably. It requires elevated Linux capabilities.
 
-Add to `docker-compose.yml` for the `backend` and `worker` services:
+The compose file already grants `NET_RAW` to the `circuitbreaker` service. For full ARP visibility on the host LAN, add `NET_ADMIN` and host networking to that service:
 
 ```yaml
 cap_add:
-  - NET_RAW
   - NET_ADMIN
 network_mode: host
 ```
@@ -150,10 +125,10 @@ Without these capabilities, Circuit Breaker falls back to nmap TCP/ICMP scanning
 To enable Circuit Breaker to discover containers running on the Docker host, mount the Docker socket using the override file:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.socket.yml up -d
+docker compose -f docker-compose.yml -f docker/docker-compose.socket.yml up -d
 ```
 
-This bind-mounts `/var/run/docker.sock` into the backend container with read-only access. Only enable this if you trust the Circuit Breaker application with socket access.
+This bind-mounts `/var/run/docker.sock` into the container read-write. The override file warns that this grants the container near-root-equivalent access to the host — prefer pointing `CB_DOCKER_HOST` at a read-only Docker API proxy (for example `Tecnativa/docker-socket-proxy`) instead.
 
 ---
 
@@ -167,7 +142,9 @@ mkdir -p ~/.circuitbreaker && cd ~/.circuitbreaker
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/docker-compose.yml -o docker-compose.yml
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/.env.example -o .env
 
-# 3. Edit .env — set CB_VAULT_KEY, NATS_AUTH_TOKEN, and CB_DOMAIN at minimum
+# 3. Edit .env — set CB_DB_PASSWORD, CB_VAULT_KEY, CB_JWT_SECRET and
+#    NATS_AUTH_TOKEN at minimum. CB_JWT_SECRET and NATS_AUTH_TOKEN must be
+#    at least 32 characters; compose refuses to start if any of the four is unset.
 nano .env
 
 # 4. Start the stack
@@ -188,22 +165,14 @@ docker compose logs -f
 # Stop without removing data
 docker compose down
 
-# Update to latest images
+# Update to latest image
 docker compose pull && docker compose up -d
 
-# Remove containers and all data
-docker compose down -v
+# Remove the container (data directory is untouched)
+docker compose down
 ```
 
-Or use the `cb` CLI if installed:
-
-```bash
-cb status
-cb logs -f
-cb update
-cb restart
-cb uninstall
-```
+Data lives in `${CB_DATA_DIR:-./circuitbreaker-data}` on the host, not in a Docker volume — remove that directory to wipe it.
 
 ---
 

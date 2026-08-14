@@ -20,21 +20,42 @@ The Settings area lets you control how Circuit Breaker looks, behaves, and prote
 - Dock and quick-navigation options
 - Map display defaults and visibility options
 
-### Inventory helpers
+### Inventory helpers (Resources tab)
 
-- Environment list management
-- Category list management
 - Location list management
+- Environment list management
+- Icon library management
 
-### Access and session behavior
+Categories are not managed here — they are created inline while editing hardware and services.
 
-- Authentication on/off
-- Session timeout
+### Device Roles
+
+- The device role catalog (labels and topology ranking) used by hardware and discovery.
+
+### Access and session behavior (Security tab)
+
+- Open registration on/off
+- Rate limit profile
+- Session duration
 - Concurrent sessions
 - Login lockout thresholds / durations
+- Invite expiry (days)
+- Allow masquerade
+- Audit log retention
+- Vault encryption status
 - Password Resets (available when SMTP is enabled)
-- OAuth/OIDC provider configuration
-- MFA enrollment and recovery workflows
+- OAuth / SSO provider configuration
+- MFA enrollment and backup-code workflows (per user, from Profile → Security)
+
+### Users (admins only)
+
+- Accounts, roles, invites, and active sessions.
+
+### Connectivity
+
+- Auto-Discovery settings (the same panel as Discovery → Scan Settings)
+- Discovery Engine v2 (always-on mDNS/SSDP listener)
+- External Access — the App URL used in invite links
 
 ### Email Notifications & SMTP
 
@@ -43,16 +64,29 @@ The Settings area lets you control how Circuit Breaker looks, behaves, and prote
 
 ### Integrations
 
-- Discovery-specific options from the Discovery settings area
+- NATS message bus
+- Network threat intelligence
+- Docker integration (container discovery)
+- Privacy & threat intelligence
+- CVE feed sync
 - Notification sinks and routing rules
-- OAuth/OIDC provider credentials and callback URLs
+- Proxmox VE and OPNsense (both configured from the Discovery page)
+- Service integrations (for example Uptime Kuma)
+
+### Monitoring
+
+- Auto-monitor hardware accepted from a discovery scan (General tab).
 
 ### System actions
 
-- Export backup
-- Import backup
-- Reset settings
+- Full backup (Download Backup)
 - Clear lab data
+- Database and host diagnostics (admins only)
+- Backup & Recovery — S3 target configuration and test upload (admins only)
+- Experimental features toggle
+- Factory reset (Reset to Defaults)
+
+Restoring a backup is an API operation, not a Settings control. See [Backup & Restore](backup-restore.md).
 
 ---
 
@@ -72,13 +106,14 @@ Use a default environment (for example, `prod`, `staging`, or `dev`) to speed up
 
 Use branding options to apply your preferred app name and visual identity.
 
-### Enable authentication
+### Open or close registration
 
-Turn on authentication when you want login protection and controlled sessions.
+Use **Open Registration** under **Settings → Security → Authentication** to decide whether anyone can create
+an account, or whether new users must be invited.
 
 ### Configure OAuth / OIDC sign-in
 
-1. Open **Settings → Security / OAuth**.
+1. Open **Settings → Security → OAuth / SSO Providers**.
 2. Enable a provider (GitHub, Google, or OIDC).
 3. Enter client credentials and copy the shown callback URL into your provider app.
 4. Save settings and test login from the login page.
@@ -91,17 +126,19 @@ Set session duration to match your environment’s security needs.
 
 ## Destructive Actions (Use Carefully)
 
-### Reset settings
+### Factory reset
 
-Resets configuration values to defaults.
+**Settings → System → Advanced → Reset to Defaults** resets all application settings to their defaults.
 
 ### Clear lab data
 
 Removes inventory data from the environment. Confirm this action carefully before proceeding.
 
-### Import backup with wipe option
+### Restore from a backup
 
-If you import with wipe enabled, existing data is removed before restore.
+Restore is an API operation: `POST /api/v1/admin/import`. If you send it with `wipe_before_import`, existing
+data is removed before the restore runs, and the request must carry the destructive-action confirmation
+headers. See [Backup & Restore](backup-restore.md).
 
 ---
 

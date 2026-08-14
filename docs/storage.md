@@ -21,7 +21,7 @@ Common fields:
 
 ### Virtualized & Proxmox Storage
 
-Storage entries can also be created dynamically. If a **Proxmox Cluster** is integrated within Settings, Circuit Breaker will detect and populate virtualized storage pools (ZFS, directory mounts, logical LVM block devices) directly as distinct infrastructure nodes on the Map. Every node automatically establishes ownership lines to their backing hardware host.
+Storage entries can also be created dynamically. If a **Proxmox Cluster** is integrated under **Discovery → Proxmox VE**, Circuit Breaker will detect and populate virtualized storage pools (ZFS, directory mounts, logical LVM block devices) directly as distinct infrastructure nodes on the Map. Every node automatically establishes ownership lines to their backing hardware host.
 
 ---
 

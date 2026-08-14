@@ -26,12 +26,17 @@ It combines inventory, dependencies, status, and editing tools in one place.
 
 ### Layout and view
 
-- Switch between traditional automated structures like **Dagre**, **Force**, and **Tree**.
-- For advanced architectural needs, use the new intelligent layouts:
-    - **Network-First Hierarchical**: Orders networks at the top, cascading down to hypervisors, compute nodes, and then services.
-    - **Radial and Concentric**: Radiates service-centric views outwards—perfect for microservice and Docker service visualizations.
-    - **Layered VLAN/Segment view**: Arranges components left-to-right (WAN, DMZ, LAN, Management, etc).
-    - **Circular Cluster**: Designed specifically to showcase Proxmox virtualization pools or Docker overlays.
+- Standard layouts: **Dagre (Hierarchical)**, **Force Directed**, **Tree**, and **Manual / Saved**.
+- Advanced layouts:
+    - **Network Hierarchy**: Orders networks at the top, cascading down to hypervisors, compute nodes, and then services.
+    - **Radial Services**: Radiates service-centric views outwards — useful for microservice and Docker service visualizations.
+    - **VLAN Flow**: Arranges components left-to-right by segment (WAN, DMZ, LAN, Management, etc).
+    - **Dagre (VLAN / LR)**: The hierarchical layout run left-to-right across VLANs.
+    - **Docker Clusters**: Circular clustering for Docker overlays and virtualization pools.
+    - **Rack Grid**, **Concentric Rings**, **Cortex (compact hierarchy)** and **Mindmap (root-centered)**.
+- Use **Presets** for one-click combinations: **Docker Stacks** (Docker Clusters layout, filtered to Docker) and **Service Mesh** (Radial Services).
+- Set **Edge Mode** to **Smooth**, **Straight**, or **Bundled**.
+- Set **Node Spacing** to **Compact**, **Normal**, **Roomy**, or **Sparse**.
 - Use **Cloud View** to simplify large mixed maps.
 - Save current placement with **Save Positions** (all customized options, including groupings and layouts, adhere to this state when reloaded).
 - Use **Refresh** to reload current data.

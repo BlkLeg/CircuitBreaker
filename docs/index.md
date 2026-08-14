@@ -6,7 +6,7 @@
 
 You can track your hardware, compute, services, storage, and networks, then see how everything connects on a live topology map. You can also attach notes and runbooks to the things you manage so your documentation stays with your inventory.
 
-Use [Getting Started](getting-started.md) for first setup, then browse feature guides from the left navigation.
+Start with [Installation](installation/index.md) to get Circuit Breaker running, then use [Getting Started](getting-started.md) to add your first assets. Feature guides are in the left navigation.
 
 For release-candidate planning, see the draft [v1.0 support contract](release/1.0.0-support-contract.md).
 
@@ -37,10 +37,12 @@ To see how to begin adding these components, proceed to [Getting Started](gettin
 - **[Settings](settings.md):** Control language, timezone, appearance, map defaults, and system behavior.
 - **[Authentication & Access](auth-access.md):** Local auth, OAuth/OIDC, MFA, invites, and recovery workflows.
 - **[Notifications](integrations-webhooks-notifications.md):** Route alerts to notification sinks and manage delivery.
+- **Monitoring:** Native ICMP, TCP, HTTP, and DNS checks with live status, uptime history, and latency history, on hardware, compute units, and services.
 - **[Backup & Restore](backup-restore.md):** Export your inventory snapshot and restore when needed.
 - **[Deployment & Security](deployment-security.md):** Choose a quick lab setup or a hardened setup.
 
 ## Integrations
 
 - **[Hardware Telemetry](hardware.md#telemetry)** — Connect to Dell iDRAC, HPE iLO, APC/CyberPower UPS, or any SNMP device to show live health data directly on the topology map.
+- **[Proxmox](compute.md#proxmox-workloads-clusters)** — Connect a Proxmox node with an API token to import QEMU VMs and LXC containers, map them to their host hardware, and pull node telemetry.
 - **[Prometheus Metrics](metrics.md)** — Scrape Circuit Breaker inventory data with Prometheus, Grafana Alloy, or any compatible agent. Includes a full metrics reference, scrape config examples, and PromQL queries.

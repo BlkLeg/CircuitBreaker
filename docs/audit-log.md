@@ -33,7 +33,7 @@ Each entry records:
 | **Entity** | The type and name of the affected object (e.g., `Hardware / pve-node-01`) |
 | **Actor** | The user or API token that performed the action |
 | **Source IP** | The IP address the request originated from |
-| **Severity** | `info`, `warning`, or `critical` |
+| **Severity** | `info`, `warn`, or `error` |
 
 ---
 
@@ -47,10 +47,15 @@ For update actions, you can expand entries to compare previous and current value
 
 Use filters at the top of the page to narrow results:
 
+- **Time range** (Last 1h / 24h / 7d / 30d / All time)
+- **Actor** (a specific user, or all users)
 - **Entity type**
 - **Action**
 - **Severity**
 - **Search by name**
+
+**Export CSV** writes the currently listed entries to a file. The export includes each entry's `log_hash`
+alongside the timestamp, severity, action, entity, actor, role at the time, and source IP.
 
 ---
 
@@ -60,6 +65,13 @@ Each audit log entry stores a hash of its content and the previous entry’s has
 
 - **API:** `GET /api/v1/admin/audit-log/verify-chain` (admin-only). Returns `valid`, `first_failure_id`, `message`, and `checked_count`. Use this for monitoring or compliance checks.
 
+On PostgreSQL, appends are serialised by an advisory lock, so two concurrent writers cannot fork the chain.
+
+If the chain is broken, `POST /api/v1/admin/audit-log/repair-chain` (admin-only) relinks the hashes from the
+first failing row onward. It is deliberately awkward to call: the body must carry `authorization` equal to
+exactly `REPAIR_AUDIT_CHAIN` plus a `reason` of 12–500 characters. Repair does not restore the original row
+content and does not hide the break — it reports every hash it changed and appends a repair event to the log.
+
 Append-only guarantees depend on your database and backup policy; verification only attests that stored entries are consistent with the hash chain.
 
 ---
@@ -67,5 +79,8 @@ Append-only guarantees depend on your database and backup policy; verification o
 ## Retention and Clearing
 
 Individual log entries cannot be edited.
+
+Entries older than the retention period set under **Settings → Security → Audit Log → Retention Period (days)**
+are purged automatically each day. The default is 90 days; set it to 0 to disable purging.
 
 Administrators can clear log history when needed. Use this carefully, especially if your environment depends on long-term activity history for audits.

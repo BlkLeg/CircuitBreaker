@@ -1,43 +1,85 @@
 # Security Verification Checklist
 
-Run after installation or upgrades to confirm non-root operation and security hardening.
+Run after installation or upgrades to confirm artifact provenance, non-root operation, and security hardening.
+
+## Artifact Verification
+
+Every release ships checksums, GPG signatures, SBOMs, and a cosign signature on the container image.
+
+`install.sh` verifies the SHA256 of the release bundle it downloads automatically, unless you pass `--skip-checksum`.
+
+### Release artifacts
+
+Download `SHA256SUMS` and `SHA256SUMS.asc` from the [GitHub release](https://github.com/BlkLeg/CircuitBreaker/releases) alongside whatever packages you fetched, then:
+
+```bash
+gpg --verify SHA256SUMS.asc SHA256SUMS
+sha256sum -c SHA256SUMS
+```
+
+Each individual artifact also has its own detached `.asc` signature.
+
+### Container image
+
+The GHCR image is signed keylessly with cosign (OIDC identity, no public key to distribute):
+
+```bash
+cosign verify ghcr.io/blkleg/circuitbreaker:<version> \
+  --certificate-identity-regexp 'https://github.com/BlkLeg/CircuitBreaker/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+### SBOMs
+
+Each release publishes CycloneDX and SPDX SBOMs for the backend and the frontend, plus a CycloneDX SBOM for the container image. The container SBOM is also attached to the image with `cosign attach sbom`, so `cosign download sbom` retrieves it.
 
 ## Quick Verification (30 seconds)
 
+The container's entrypoint deliberately starts as **root** so it can fix volume ownership and wire up the embedded services; supervisord then launches every application process as `breaker` (uid 1000). `docker compose exec circuitbreaker whoami` returning `root` is expected — the invariant to check is the process list:
+
 ```bash
-make check-user
+docker compose exec circuitbreaker ps aux
 ```
 
-Expected output:
-- `whoami` → `breaker` (never `root`)
-- `id` → `uid=1000(breaker) gid=1000(breaker)`
-- `/data` files owned by `1000:1000`
-- `touch /test_root_write` → permission denied
+Expected: `postgres`, `pgbouncer`, `redis-server`, `nats-server`, the backend API and `nginx` all run as `breaker`; only `supervisord` and the worker launcher run as root. If `ps` is unavailable in your image, the same privilege drop can be read from the supervisor config:
+
+```bash
+docker compose exec circuitbreaker grep -E '^\[program|^user=' /etc/supervisor/conf.d/supervisord.conf
+```
+
+```bash
+docker inspect circuitbreaker --format '{{json .HostConfig.SecurityOpt}}'
+docker compose exec circuitbreaker id breaker
+```
+
+Expected: `["no-new-privileges:true"]` and `uid=1000(breaker) gid=1000(breaker)`.
 
 ## Full Security Audit (2 minutes)
 
+From a repository checkout:
+
 ```bash
-make check-security
+make security-check    # gate mode — exits non-zero on HIGH/CRIT findings
+make security-report   # full report, never fails
 ```
 
-Acceptance criteria:
-- ✅ Container user: uid=1000 gid=1000 (breaker)
-- ✅ NoNewPrivs: 1
-- ✅ Root filesystem read-only (touch / fails)
-- ✅ /tmp writable (tmpfs)
-- ✅ /data writable (volume)
+Both run `scripts/security_scan.sh` and write `security_scan_report.md`.
 
 ## Manual Volume Remediation
 
-If install.sh didn't auto-fix ownership or you're upgrading manually:
+The entrypoint chowns `/data` to `breaker:breaker` and sets `/data/pgdata` to `0700` on every start. Remediate by hand only if the logs show `chown /data not permitted`:
 
 ```bash
 docker compose down
-docker run --rm -v circuitbreaker-data:/data alpine sh -c "chown -R 1000:1000 /data && chmod -R 750 /data && chmod 700 /data/pgdata 2>/dev/null || true"
+sudo chown -R 1000:1000 ./circuitbreaker-data
+sudo chmod -R 750 ./circuitbreaker-data
+sudo chmod 700 ./circuitbreaker-data/pgdata
 docker compose up -d
 ```
 
-**Note:** PostgreSQL requires strict `0700` permissions on `/data/pgdata` (owner-only access). The command above sets general permissions to `750` but corrects pgdata to `700`.
+Substitute your own `CB_DATA_DIR` if you set one.
+
+**Note:** PostgreSQL requires strict `0700` permissions on `pgdata` (owner-only access). The commands above set general permissions to `750` but correct pgdata to `700`.
 
 ## Troubleshooting
 
@@ -45,36 +87,15 @@ docker compose up -d
 
 **Symptoms:**
 - Container fails to start with "permission denied" errors
-- Logs show "Cannot write to /data"
+- Logs show `chown /data not permitted` or "Cannot write to /data"
 - Health check fails immediately
 
 **Diagnosis:**
 ```bash
-docker run --rm -v circuitbreaker-data:/data alpine ls -lan /data
+ls -lan ./circuitbreaker-data
 ```
 
 If files are owned by uid 0 (root), run manual remediation above.
-
-### Container starts as root despite Dockerfile USER directive
-
-**Symptoms:**
-- `docker compose exec circuitbreaker whoami` returns `root`
-- Security checks fail
-
-**Diagnosis:**
-1. Check docker-compose.yml doesn't override with `user: "0:0"`
-2. Verify image was built correctly:
-   ```bash
-   docker inspect ghcr.io/blkleg/circuitbreaker:mono-latest --format '{{.Config.User}}'
-   ```
-   Should return `breaker:breaker` or `1000:1000`
-
-**Fix:**
-```bash
-docker compose down
-docker compose build --no-cache
-docker compose up -d
-```
 
 ### PostgreSQL data directory permission error
 
@@ -89,7 +110,7 @@ DETAIL: Permissions should be u=rwx (0700) or u=rwx,g=rx (0750).
 **Fix:**
 ```bash
 docker compose down
-docker run --rm -v circuitbreaker-data:/data alpine chmod 700 /data/pgdata
+sudo chmod 700 ./circuitbreaker-data/pgdata
 docker compose up -d
 ```
 
@@ -100,7 +121,9 @@ If you downgrade from a non-root version to an older root version and then upgra
 **Fix:**
 ```bash
 docker compose down
-docker run --rm -v circuitbreaker-data:/data alpine sh -c "chown -R 1000:1000 /data && chmod -R 750 /data && chmod 700 /data/pgdata 2>/dev/null || true"
+sudo chown -R 1000:1000 ./circuitbreaker-data
+sudo chmod -R 750 ./circuitbreaker-data
+sudo chmod 700 ./circuitbreaker-data/pgdata
 docker compose up -d
 ```
 
@@ -108,10 +131,7 @@ docker compose up -d
 
 ### After Fresh Install
 
-1. Run security verification:
-   ```bash
-   make check-security
-   ```
+1. Verify the artifacts you downloaded, as described above.
 
 2. Verify health endpoint:
    ```bash
@@ -122,11 +142,11 @@ docker compose up -d
 
 ### After Upgrades
 
-1. Let install.sh auto-fix volume ownership (it checks automatically)
+1. Let the container entrypoint fix data-directory ownership (it does this on every start)
 
-2. Run verification after upgrade:
+2. Re-run the process check after upgrade:
    ```bash
-   make check-user
+   docker compose exec circuitbreaker ps aux
    ```
 
 3. Check logs for permission errors:
@@ -136,10 +156,10 @@ docker compose up -d
 
 ### Regular Audits
 
-Run security verification monthly or after any Docker/system updates:
+Run the scanners monthly or after any Docker/system updates, from a repository checkout:
 
 ```bash
-make check-security
+make security-check
 ```
 
 ## Advanced Verification
@@ -171,7 +191,7 @@ Should show `ro` (read-only) for the root filesystem.
 docker compose exec circuitbreaker ps aux
 ```
 
-All processes should run as `breaker` (uid 1000), not root, except for the initial tini/supervisord parent process which drops privileges immediately.
+All application processes should run as `breaker` (uid 1000). `supervisord` itself stays root so it can launch the discovery workers through `setpriv` with ambient `CAP_NET_RAW`; those workers drop to `breaker` themselves.
 
 ## Related Documentation
 

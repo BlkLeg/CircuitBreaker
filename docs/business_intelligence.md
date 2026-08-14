@@ -2,6 +2,9 @@
 
 Circuit Breaker's intelligence layer provides automated blast-radius analysis, predictive capacity forecasting, right-sizing recommendations, flap detection, and configurable telemetry retention — all derived from the same asset graph and live-metric data already collected by the platform.
 
+In 1.0 these are API-only capabilities: the jobs run on schedule and the `/api/v1/intel/` endpoints answer, but
+no screen in the app calls them. Read this as an API reference, not as a tour of a page you can open.
+
 ---
 
 ## New Models (migration 0058)
@@ -128,13 +131,16 @@ Runs three passes in order:
 
 ### Retention job (`run_retention_job`)
 
-Enforces a two-tier data lifecycle on `hardware_live_metrics`:
+Enforces the same two-tier data lifecycle on `hardware_live_metrics` and `agent_host_samples`:
 
 | Window | Behaviour |
 |--------|-----------|
 | 0 → `telemetry_hot_days` ago | Untouched (full resolution) |
 | `telemetry_hot_days` → `telemetry_warm_days` ago | Raw rows replaced with hourly averages (`source="hourly_agg"`) |
 | Beyond `telemetry_warm_days` | Deleted entirely |
+
+`hardware_live_metrics` warm rows are collapsed in place; `agent_host_samples` warm rows are collapsed into
+`agent_host_sample_hourly`, so the window behaves identically with and without TimescaleDB jobs.
 
 Thresholds default to 7 and 30 days and can be overridden per-instance via `AppSettings.telemetry_hot_days` / `telemetry_warm_days`.
 
@@ -160,7 +166,9 @@ The blast radius call is best-effort — a failure never blocks the status updat
 
 ## Uptime Kuma / External Monitor Integration
 
-`HardwareLiveMetric` rows carry a `source` field that identifies their origin. Future Uptime Kuma integration will write rows with `source="uptime_kuma"`, allowing the same capacity and flap-detection analytics to operate on externally-monitored assets without schema changes.
+`HardwareLiveMetric` rows carry a `source` field that identifies their origin. The Uptime Kuma integration is
+configured under **Settings → Integrations → Service Integrations** and writes rows with `source="uptime_kuma"`,
+so the capacity and flap-detection analytics already operate on externally-monitored assets without schema changes.
 
 Asset identity uses stable `(asset_type, asset_id)` tuples throughout, so external monitor data can be linked to existing hardware/service records by ID.
 

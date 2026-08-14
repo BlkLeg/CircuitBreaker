@@ -8,10 +8,15 @@ This guide walks you through the basic workflow for documenting your infrastruct
 
 On first launch, Circuit Breaker runs a short setup wizard. You'll be asked to:
 
+- Enter the one-time setup token — it comes from `CB_SETUP_TOKEN`, or from the `bootstrap-setup-token` file the backend writes into your data directory. The wizard will not let you create an account without it.
+- Optionally set a domain name (FQDN) so Circuit Breaker can obtain a proper HTTPS certificate. You can skip this and keep using the IP address.
 - Create your first admin account (local email/password **or OAuth/OIDC sign-up**)
-- **Choose your timezone** — all timestamps across the app (logs, telemetry readings, entity records) display in your local time. You can change this anytime from **Settings → General**.
+- Pick a theme palette and light/dark mode (changeable later in **Settings**)
+- **Choose your location and timezone** — all timestamps across the app (logs, telemetry readings, entity records) display in your local time. You can change this anytime from **Settings → General**.
 - Optionally configure SMTP and your external URL for password reset/invite links
 - Back up your vault key during the final setup step if shown
+
+See [First-Run Setup](installation/first-run.md) for the full wizard walkthrough, including where to find the setup token.
 
 ---
 
@@ -41,7 +46,7 @@ Documentation in Circuit Breaker works best when you build from the "ground up."
 The Circuit Breaker interface is divided into two main areas:
 
 - **The Map View**: A live, interactive topology map showing how all your documented components connect. Once your lab is set up, this is your primary dashboard.
-- **The Sidebar**: Quick access to lists for Hardware, Compute, Services, Storage, and Networks. From here, you can add new items or search for existing ones.
+- **The Dock**: The icon bar for jumping between Map, Discovery, Agents, Hardware, Compute, Services, Monitors, Storage, External, IPAM, and Settings. Choose which pages appear from **Settings → Navigation Dock**, and drag items in the dock itself to reorder them.
 
 ## Example: Documenting Nextcloud
 

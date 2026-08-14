@@ -25,7 +25,7 @@ Recommended fields:
 
 ## Proxmox Workloads & Clusters
 
-If you configure a **Proxmox API Integration** within Settings, Circuit Breaker bridges the virtual-to-physical gap effortlessly. QEMU and LXC workloads discovered across the API are automatically mapped downward structurally to their respective host Hardware nodes.
+If you configure a **Proxmox API Integration** under **Discovery → Proxmox VE**, Circuit Breaker bridges the virtual-to-physical gap effortlessly. QEMU and LXC workloads discovered across the API are automatically mapped downward structurally to their respective host Hardware nodes.
 
 Features unlocked during Proxmox Discovery include:
 

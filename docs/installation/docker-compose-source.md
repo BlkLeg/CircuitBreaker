@@ -1,6 +1,6 @@
 # Docker Compose — From Source
 
-Build and run Circuit Breaker locally from the Git repository. Use this method if you want to modify the source code, contribute to development, or build your own custom image.
+Build and run Circuit Breaker locally from the Git repository. Use this method if you want to modify the source code, contribute to development, or build your own image.
 
 ---
 
@@ -20,140 +20,92 @@ Build and run Circuit Breaker locally from the Git repository. Use this method i
 git clone https://github.com/BlkLeg/circuitbreaker.git
 cd circuitbreaker
 
-# 2. Copy the environment file
+# 2. Copy the environment file and fill in the required secrets
 cp .env.example .env
 
-# 3. Build images and start all services (use make for BuildKit + cache optimizations)
-DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose up -d --build
+# 3. Build the image and start the container
+docker compose up -d --build
 ```
 
-Or using the Makefile shortcut (recommended — enables BuildKit and npm/pip cache mounts):
+Before starting, set these four values in `.env` — compose refuses to start without them:
+
+| Variable | Notes |
+|---|---|
+| `CB_JWT_SECRET` | At least 32 characters. Generate: `python3 -c "import secrets; print(secrets.token_hex(32))"` |
+| `CB_VAULT_KEY` | Generate: `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
+| `CB_DB_PASSWORD` | Password for the embedded Postgres `breaker` role |
+| `NATS_AUTH_TOKEN` | At least 32 characters. Generate: `openssl rand -base64 32` |
+
+The first build takes a few minutes — it compiles the frontend bundle and installs Python dependencies.
+
+To build the image without starting anything:
 
 ```bash
-make compose-up
+make docker-build
 ```
 
-The first build takes a few minutes — it compiles the frontend bundle and installs Python dependencies. Subsequent builds are faster thanks to BuildKit cache mounts (pip and npm).
-
-**On a VPS or slow network**, pre-pull base images before the first build:
-
-```bash
-make compose-pull-bases   # caches python, node, nginx, caddy, nats
-make compose-up
-```
+That runs `docker build -f Dockerfile.mono` and tags the result with the contents of `VERSION`.
 
 ---
 
 ## What Gets Built
 
-The root `docker-compose.yml` builds the mono image from source:
+The root `docker-compose.yml` builds one service, `circuitbreaker`, from `Dockerfile.mono`. That single image runs Postgres, PgBouncer, Redis, NATS, the backend API, the workers and nginx under supervisord.
 
-| Service | Role | Port (internal) |
-|---|---|---|
-| `caddy` | Reverse proxy — HTTPS, routing | 80, 443 |
-| `backend` | FastAPI application | 8000 |
-| `frontend` | React app served by nginx | 8080 |
-| `worker` | Discovery worker (2 replicas) | — |
-| `notification-worker` | Alert/notification worker | — |
-| `nats` | NATS JetStream message bus | 4222 |
+| Container port | Role |
+|---|---|
+| `8080` | HTTP — redirects to HTTPS (the health endpoint is exempt) |
+| `8443` | HTTPS — the application |
 
-All services share the `circuitbreaker` bridge network. Caddy routes external traffic to frontend and backend.
+Published on the host as `${CB_PORT:-80}` and `${CB_PORT_HTTPS:-443}`.
 
 ---
 
 ## Accessing the UI
 
-By default Caddy binds to ports 80 and 443 and serves at:
-
 ```
-https://circuitbreaker.local
+https://localhost/
 ```
 
-You will need to trust the self-signed CA certificate. See [Trusting the CA Certificate](configuration.md#trusting-the-self-signed-ca-certificate).
+The entrypoint generates a self-signed certificate at `/data/tls/` on first start, so your browser will warn. Replace `fullchain.pem` and `privkey.pem` in the data directory with your own certificate and restart to get rid of the warning.
 
-To add the domain to your hosts file (Linux/macOS):
-
-```bash
-echo "127.0.0.1 circuitbreaker.local" | sudo tee -a /etc/hosts
-```
-
-Or extract and trust the CA automatically with:
-
-```bash
-make trust-ca
-```
-
----
-
-## Optional Profiles
-
-### PostgreSQL (instead of SQLite)
-
-```bash
-docker compose --profile pg up -d --build
-```
-
-Set `CB_DB_PASSWORD` in `.env` before starting if you want a custom password (default: `breaker`).
-
-### Cloudflare Tunnel
-
-```bash
-docker compose --profile tunnel up -d
-```
-
-Requires `CLOUDFLARE_TUNNEL_TOKEN` in `.env`. See [Remote Access & Tunnels](../remote-access.md).
-
----
-
-## Environment File
-
-Edit `.env` in the repository root to configure the stack:
-
-```bash
-# .env
-CB_VAULT_KEY=          # Leave blank to auto-generate during OOBE
-CB_DB_PASSWORD=breaker # PostgreSQL password (--profile pg only)
-CB_DOMAIN=circuitbreaker.local
-CB_TLS_EMAIL=          # Required for public ACME/Let's Encrypt certs
-```
-
-See the full variable list in the [Configuration Reference](configuration.md).
+Data lives in `${CB_DATA_DIR:-./circuitbreaker-data}` in the repository root, bind-mounted at `/data`.
 
 ---
 
 ## Useful Commands
 
 ```bash
-# Start all services (build if needed)
+# Start (build if needed)
 docker compose up -d --build
 
-# View logs for all services
+# View logs
 docker compose logs -f
 
-# Rebuild a single service after a code change
-docker compose up -d --build backend
+# Rebuild after a code change
+docker compose up -d --build
 
-# Stop without removing volumes
+# Stop the container (data directory untouched)
 docker compose down
 
-# Wipe everything and start fresh
-make compose-fresh
-
-# Pre-build all images without starting
+# Build the image without starting it
 make docker-build
-
-# Pre-pull base images (speeds up first build on VPS)
-make compose-pull-bases
 ```
 
 ---
 
 ## Development Workflow
 
-For active frontend or backend development, use the hot-reload dev mode instead of the full compose stack:
+For active frontend or backend development, use the hot-reload dev mode instead of the container:
 
 ```bash
-# Start backend (port 8000) + frontend Vite dev server (port 5173)
+# One-time: create the virtualenv and install npm packages
+make install
+
+# Start Postgres, Redis and NATS for development (docker-compose.deps.yml)
+make deps-up
+
+# Start backend (port 8000) + frontend Vite dev server (port 5173) + monitor workers
 make dev
 
 # Backend only
@@ -164,9 +116,12 @@ make frontend
 
 # Stop dev servers
 make stop
+
+# Stop and wipe the dev dependency containers
+make deps-down
 ```
 
-In dev mode the frontend proxies API calls to `http://localhost:8000`. No Caddy/TLS in this mode — access at `http://localhost:5173`.
+In dev mode the frontend proxies API calls to `http://localhost:8000`. There is no TLS in this mode — access at `http://localhost:5173`.
 
 ---
 

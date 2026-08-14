@@ -1,71 +1,64 @@
 # Uninstalling
 
-> **Warning:** Removing the data volume permanently deletes your database, vault key, and all uploads. Export a backup first — see [Backup & Restore](../backup-restore.md).
+> **Warning:** Uninstalling permanently deletes your database, vault key, and all uploads. Export a backup first — see [Backup & Restore](../backup-restore.md).
 
 ---
 
-## Quick Install (Script) — Using `cb uninstall`
+## Native / Quick Install — `cb uninstall`
 
-If you installed with `install.sh` and the `cb` CLI is available:
+If you installed with `install.sh` (or via the Proxmox helper, which uses the same installer inside the container), run:
 
 ```bash
 cb uninstall
 ```
 
-The command prompts you to confirm, then:
-1. Stops the running container.
-2. Removes the container.
-3. Asks whether to remove the data volume (your database and vault key).
-4. Removes the `cb` CLI binary from `/usr/local/bin/cb`.
-5. Removes the systemd service (if installed).
+There is a single confirmation prompt — **`Remove Circuit Breaker and ALL data? [y/N]`**. Answering `y` deletes the database and the vault key along with everything else; there is no second prompt offering to keep your data. Back up first.
+
+After you confirm, it:
+
+1. Stops and disables `circuitbreaker-postgres`, `-pgbouncer`, `-redis`, `-nats`, `-backend`, every `circuitbreaker-worker@*` unit, `circuitbreaker.target`, and nginx.
+2. Removes the `circuitbreaker-*` unit files, `circuitbreaker.target` and `circuitbreaker.slice`, then reloads systemd.
+3. Deletes `/opt/circuitbreaker`, `/etc/circuitbreaker`, `/etc/nats` and the data directory (`/var/lib/circuitbreaker` by default).
+4. Removes the nginx site config, the `nats-server` binary, and the `cb` CLI from `/usr/local/bin/cb`.
+5. Deletes the `breaker` system user and the `/etc/hosts` entry for the configured FQDN.
+6. Removes the nginx package and the NodeSource repository files.
+
+It also stops and removes the `cb-docker-proxy` container if the Docker telemetry proxy was set up.
 
 ---
 
-## Quick Install (Script) — One-Liner Uninstall
+## Proxmox LXC
 
-If the `cb` CLI is not available, run the uninstall script directly:
+Uninstalling means destroying the container. On the **PVE host**:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/uninstall.sh | bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/cb-proxmox-uninstall.sh)"
 ```
 
-The script:
-- Stops and removes the Circuit Breaker container.
-- Stops and removes the Caddy proxy container (if installed).
-- Removes associated Docker networks and volumes (with your confirmation).
-- Removes the self-signed CA certificate from the system trust store and Firefox NSS databases.
-- Removes the `cb` CLI and systemd service.
-- Removes `~/.circuit-breaker/install.conf`.
+It asks for the container ID, shows the container's hostname and status, and on confirmation runs `pct stop` followed by `pct destroy --purge`.
+
+The same removal is available as **Uninstall Container** (option 5) in `cb-proxmox-deploy.sh`, which lists the containers on the node and lets you pick one.
+
+Either way the container and all its data are destroyed — there is nothing left to clean up on the host.
 
 ---
 
-## Docker Compose — Prebuilt
+## Docker Compose
 
-Stop and remove containers only (data preserved):
+Stop and remove the container:
 
 ```bash
+cd ~/.circuitbreaker
 docker compose down
 ```
 
-Stop and remove containers **and** the data volume:
+The compose file declares no named volumes, so this leaves your data untouched. Everything lives in the data directory beside `docker-compose.yml` — `./circuitbreaker-data` unless you set `CB_DATA_DIR`. To wipe it:
 
 ```bash
-docker compose down -v
+rm -rf ./circuitbreaker-data
 ```
 
----
-
-## Docker Compose — From Source
-
-```bash
-docker compose -f docker/docker-compose.yml down
-```
-
-With volume removal:
-
-```bash
-docker compose -f docker/docker-compose.yml down -v
-```
+If you built from source, run the same commands from the repository checkout.
 
 ---
 
@@ -85,18 +78,28 @@ docker rmi ghcr.io/blkleg/circuitbreaker:latest
 
 ---
 
-## Removing the CA Certificate
+## Legacy Caddy Deployments
+
+Earlier releases shipped a single `circuit-breaker` container fronted by a `cb-caddy` proxy. `uninstall.sh` at the repository root still removes that layout and nothing else — it requires Docker, targets the container `circuit-breaker` and the volume `circuit-breaker-data`, and does not know about the systemd units or the `circuitbreaker` compose project described above.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/uninstall.sh | bash
+```
+
+It stops and removes the `circuit-breaker` and `cb-caddy` containers, their network and volumes (with confirmation), the Caddy CA certificate from the system trust store and Firefox NSS databases, and the `~/.circuit-breaker` config directory.
+
+### Removing the CA Certificate
 
 If you used HTTPS with Caddy's self-signed CA, remove the certificate from your trust store:
 
-### Linux (system store)
+#### Linux (system store)
 
 ```bash
 sudo rm /usr/local/share/ca-certificates/circuit-breaker-caddy-ca.crt
 sudo update-ca-certificates
 ```
 
-### macOS
+#### macOS
 
 ```bash
 sudo security delete-certificate -c "Circuit Breaker Caddy CA"
@@ -104,17 +107,17 @@ sudo security delete-certificate -c "Circuit Breaker Caddy CA"
 
 Or open **Keychain Access**, find the Circuit Breaker CA under **System**, and delete it.
 
-### Windows
+#### Windows
 
 Open **Manage Computer Certificates** → **Trusted Root Certification Authorities** → locate the Circuit Breaker CA entry → right-click → **Delete**.
 
-### Firefox
+#### Firefox
 
 **Settings → Privacy & Security → Certificates → View Certificates → Authorities** → find the Circuit Breaker CA → **Delete or Distrust**.
 
 ---
 
-## Removing Hosts File Entries
+### Removing Hosts File Entries
 
 If you added `circuitbreaker.local` to your hosts file:
 
@@ -131,3 +134,4 @@ On Windows, edit `C:\Windows\System32\drivers\etc\hosts` in a text editor runnin
 
 - [Backup & Restore](../backup-restore.md) — export your data before uninstalling
 - [cb CLI Tool](../cb-cli.md) — `cb uninstall` reference
+- [Proxmox LXC Installation](proxmox-lxc.md)

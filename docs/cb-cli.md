@@ -1,20 +1,32 @@
 # cb — Command-Line Tool
 
-`cb` is a small utility that ships with Circuit Breaker and gives you day-to-day operational commands without needing to remember Docker flags or container names.
+`cb` is the management CLI for **native Linux installs** of Circuit Breaker. It wraps the systemd
+units, health checks, and database backup so you do not have to remember unit names.
 
 ---
 
 ## Installation
 
-How `cb` gets on your system depends on how you installed Circuit Breaker:
+`cb` is placed on the system by the native installer only. The install script copies
+`deploy/cli/cb` to `/usr/local/bin/cb` during its "Installing Management CLI" stage.
 
 | Install method | How to get `cb` |
 |---|---|
-| One-line installer (`install.sh`) | Installed automatically |
-| Docker Compose (from source repo) | Run `make install-cb` after `docker compose up` |
-| Manual | `sudo install -Dm755 ./cb /usr/local/bin/cb` from the repo root |
+| One-line installer (`install.sh`) | Installed automatically at `/usr/local/bin/cb` |
+| `install.sh --docker` / Docker Compose | Not installed — use `docker compose ps` and `docker compose logs -f` instead |
 
-Once installed, `cb help` lists all available commands.
+If the copy fails, the installer falls back to telling you to use `systemctl status
+circuitbreaker.target` and `journalctl -u 'circuitbreaker-*'` directly.
+
+Running `cb` with no arguments prints the command list.
+
+---
+
+## Configuration
+
+`cb` has no config file of its own. It sources `/etc/circuitbreaker/.env` — the same environment
+file the services use — on every run, so it picks up `CB_DATA_DIR`, `CB_DB_PASSWORD`,
+`CB_REDIS_PASSWORD`, `CB_PORT`, `CB_FQDN`, and `DOCKER_PROXY_ENABLED` from your install.
 
 ---
 
@@ -22,62 +34,114 @@ Once installed, `cb help` lists all available commands.
 
 ### `cb status`
 
-Shows the running state of the Circuit Breaker container or service.
+Prints a table of every Circuit Breaker systemd unit with its active state and the time it entered
+that state.
 
 ```
 cb status
 ```
 
-- **Docker mode**: displays the container name, image, start time, and access URL.
-- **Compose mode**: lists all `cb-*` stack containers and their status in a table.
-- **Binary mode**: runs `systemctl status circuit-breaker`.
+Units covered: `circuitbreaker-postgres`, `circuitbreaker-pgbouncer`, `circuitbreaker-redis`,
+`circuitbreaker-nats`, `circuitbreaker-backend`, the workers
+(`circuitbreaker-worker@discovery`, `@notification`, `@telemetry`, `@monitor_scheduler`,
+`@monitor_poll`), and `nginx`. `circuitbreaker-docker-proxy` is added to the list when
+`DOCKER_PROXY_ENABLED=true`.
 
 ---
 
-### `cb logs [-f]`
+### `cb doctor`
 
-Prints the last 100 log lines. Add `-f` to follow in real-time.
+Runs a top-down health check of the whole stack. If you are not root, it re-executes itself under
+`sudo` automatically.
+
+```
+cb doctor
+```
+
+Checks performed, in order:
+
+| Check | What it proves |
+|---|---|
+| PostgreSQL (5432) | The database is listening |
+| pgbouncer (6432) | The pooler is listening |
+| DB connection | `psql` can authenticate through pgbouncer as `breaker` |
+| Redis (6379) | Redis answers `PING` with the configured password |
+| Redis data dir ownership | `${CB_DATA_DIR}/redis` is owned by the Redis service user, so `BGSAVE` can write |
+| SELinux context on Redis data dir | The directory is labelled `redis_var_lib_t` (SELinux hosts only) |
+| NATS (4222) | The internal bus is listening |
+| Backend API (8000) | `/api/v1/health` answers directly |
+| Docker proxy (2375) | Only when `DOCKER_PROXY_ENABLED=true` |
+| nginx (443, or `CB_PORT` when TLS is off) | The web front end is listening |
+| nginx → backend proxy | A request actually routes *through* nginx to the API — catches the SELinux `httpd_can_network_connect` case that leaves every other check green while the UI 502s |
+| firewalld allows the port | The port is open off-box (only when firewalld is running) |
+| SELinux allows nginx on the port | The port carries an SELinux port label (only when `semanage` is present) |
+
+When a check fails, `cb doctor` prints a fix hint and then automatically runs a read-only
+diagnostic — usually the tail of the relevant `journalctl` unit — so you do not have to go look it
+up. It shows 30 lines by default; set `CB_DOCTOR_LINES` to change that:
+
+```bash
+CB_DOCTOR_LINES=100 sudo cb doctor
+```
+
+The installer runs `cb doctor` itself as its health-check stage.
+
+---
+
+### `cb logs`
+
+Tails the logs of every Circuit Breaker unit live. It takes no flags and always follows — press
+`Ctrl+C` to stop.
 
 ```
 cb logs
-cb logs -f
 ```
+
+Under the hood this is a single `journalctl -f` across the postgres, pgbouncer, redis, nats,
+backend, `circuitbreaker-worker@*`, and nginx units.
 
 ---
 
 ### `cb restart`
 
-Restarts Circuit Breaker.
+Restarts the whole stack through the systemd target, waits a few seconds, then prints `cb status`.
 
 ```
 cb restart
 ```
 
-- **Docker mode**: `docker restart <container>`
-- **Compose mode**: restarts `cb-backend`, `cb-frontend`, and `cb-caddy` in sequence.
-- **Binary mode**: `sudo systemctl restart circuit-breaker`
-
 ---
 
 ### `cb update`
 
-Pulls the latest image from the registry and recreates the container in place.
+Re-runs the official installer in upgrade mode (`install.sh --upgrade`), fetched from the project
+repository. Requires outbound internet access.
 
 ```
 cb update
 ```
 
-Available in **Docker mode only** (single-container installs). For compose installs, use:
+---
 
-```bash
-docker compose pull && docker compose up -d
+### `cb backup`
+
+Runs `pg_dump` through pgbouncer on `127.0.0.1:6432` as the `breaker` user and writes an
+uncompressed SQL dump:
+
 ```
+cb backup
+```
+
+Output path: `${CB_DATA_DIR}/backups/cb-backup-<YYYYmmdd-HHMMSS>.sql`
+
+This is a database dump only — it does not capture uploads, the vault key, or config files. For the
+full-state snapshot that does, see [Backup & Restore](backup-restore.md).
 
 ---
 
 ### `cb version`
 
-Prints the installed version.
+Prints the contents of `/opt/circuitbreaker/share/VERSION`, or `unknown` if that file is missing.
 
 ```
 cb version
@@ -87,60 +151,29 @@ cb version
 
 ### `cb uninstall`
 
-Runs the uninstall script, removing containers, volumes (with confirmation), the `cb` command, and the config directory.
+Removes Circuit Breaker **and all of its data**. It prompts for confirmation first
+(`Remove Circuit Breaker and ALL data? [y/N]`) and does nothing unless you answer `y`.
 
 ```
-cb uninstall
+sudo cb uninstall
 ```
 
----
+What it removes:
 
-### `cb vault-recover`
+- Stops and disables every `circuitbreaker-*` unit, the `circuitbreaker.target`, and `nginx`
+- Kills any remaining processes owned by the `breaker` user
+- Deletes the systemd unit, timer, target, and slice files, then reloads systemd
+- Deletes `/opt/circuitbreaker`, `/etc/circuitbreaker`, `/etc/nats`, and **`$CB_DATA_DIR`**
+- Deletes `/etc/nginx/conf.d/circuitbreaker.conf`, `/usr/local/bin/nats-server`, and
+  `/usr/local/bin/cb`
+- Deletes the `breaker` system user and its home directory
+- Removes the `/etc/hosts` entry for `CB_FQDN`
+- Removes the **nginx package itself** and the NodeSource apt repository files
+- Stops and removes the `cb-docker-proxy` container, if one exists
 
-!!! note "Recovery path only"
-    You do not need this command during normal operation. The vault key is
-    generated automatically when you complete the first-run setup wizard.
-    Use `vault-recover` only if the vault ends up in an **uninitialized
-    (ephemeral)** state — for example after a crash, accidental deletion of
-    the data volume's `.env` file, or a headless deploy with no OOBE.
-
-Generates a fresh Fernet vault key and writes it directly into the container's data volume, then restarts the service to apply it.
-
-```
-cb vault-recover
-```
-
-The key is never printed to the terminal. If you need to back it up, retrieve it from the data volume:
-
-```bash
-# Docker / Compose
-docker exec cb-backend cat /app/data/.env   # compose
-docker exec circuit-breaker cat /data/.env  # single-container install
-```
-
-!!! warning
-    If existing encrypted secrets are present (SMTP password, SNMP communities,
-    Proxmox tokens), generating a new key will make them unreadable. You will
-    need to re-enter them in **Settings** after recovery.
-
----
-
-## Configuration
-
-`cb` reads its configuration from `~/.circuit-breaker/install.conf`, written by `install.sh` or `make install-cb`. You can inspect it to confirm which mode and container names are active:
-
-```
-cat ~/.circuit-breaker/install.conf
-```
-
-| Key | Description |
-|---|---|
-| `CB_MODE` | `docker`, `compose`, or `binary` |
-| `CB_CONTAINER` | Primary container name |
-| `CB_BACKEND_CONTAINER` | Container that runs the Python app (used for vault commands) |
-| `CB_DATA_DIR` | Path to the data directory **inside** the backend container |
-| `CB_PORT` | Host port Circuit Breaker is reachable on |
-| `CB_IMAGE` | Docker image reference (Docker mode only) |
+!!! warning "This deletes your data directory"
+    `$CB_DATA_DIR` holds the database, uploads, and TLS certificates. Take a backup before running
+    this if there is anything you want to keep.
 
 ---
 

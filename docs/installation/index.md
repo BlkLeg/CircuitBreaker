@@ -17,7 +17,7 @@ workflow, treat it as beta or development guidance until the matching acceptance
 | **Disk** | 2 GB |
 | **Network** | Outbound internet access (to download the installer and image) |
 
-> **Docker not required for native installs.** The default install method runs Circuit Breaker directly as a systemd service. Docker is only needed if you choose the `--docker` flag.
+> **Docker not required to run Circuit Breaker natively.** The default install method runs Circuit Breaker directly as systemd units. The installer does install Docker CE if it is absent, so container telemetry works — that step is best-effort and the install continues normally if it fails.
 
 ---
 
@@ -25,9 +25,11 @@ workflow, treat it as beta or development guidance until the matching acceptance
 
 | Method | Best for | Port | Effort |
 |---|---|---|---|
-| [Native Systemd](quick-install.md#native-recommended) | Most Linux users — fastest path, no Docker | 8088 | Low |
-| [Proxmox LXC](proxmox-lxc.md) | Proxmox VE users — isolated container on the PVE host | 8088 | Low |
-| [Docker Compose](docker-compose.md) | Users who prefer containerised deployments | 8088 / 443 | Low |
+| [Native Systemd](quick-install.md#native-recommended) | Most Linux users — fastest path, no containers to manage | 443 (8088 redirects to it) | Low |
+| [Proxmox LXC](proxmox-lxc.md) | Proxmox VE users — isolated container on the PVE host | 8088 (HTTPS) | Low |
+| [Docker Compose](docker-compose.md) | Users who prefer containerised deployments | 80 / 443 | Low |
+| [Single Docker Container](manual-docker.md) | One `docker run` behind your own reverse proxy | 8080 / 8443 (container) | Low |
+| [From Source](docker-compose-source.md) | Developers building the image from the repository | 80 / 443 | Medium |
 
 ---
 
@@ -39,8 +41,11 @@ workflow, treat it as beta or development guidance until the matching acceptance
 **I'm running Proxmox VE and want Circuit Breaker in an isolated LXC container.**
 → Use the [Proxmox LXC installer](proxmox-lxc.md). Runs on the PVE host, creates and configures the container automatically.
 
-**I want a full container stack (Caddy, NATS, workers) managed with Docker Compose.**
-→ Use the [Docker Compose](docker-compose.md) method.
+**I want to run Circuit Breaker as a container managed with Docker Compose.**
+→ Use the [Docker Compose](docker-compose.md) method. It runs the single mono image, which bundles Postgres, Redis, NATS, the backend, the workers and nginx.
+
+**I want to build the image from the repository.**
+→ See [Docker Compose — From Source](docker-compose-source.md).
 
 ---
 
@@ -48,7 +53,7 @@ workflow, treat it as beta or development guidance until the matching acceptance
 
 Regardless of method, your next steps are:
 
-1. Open Circuit Breaker in your browser at `http://<host>:8088` (or your configured domain).
+1. Open Circuit Breaker in your browser at the HTTPS URL the installer prints — `https://<host>/` for a native or Docker Compose install, `https://<container-ip>:8088` for Proxmox LXC. Plain HTTP redirects to HTTPS and cannot complete account creation, which requires a secure context.
 2. Complete the **first-run setup wizard** — see [First-Run Setup](first-run.md).
 3. Back up the vault key shown at the end of the wizard (only displayed once).
 4. Optionally review the [Configuration Reference](configuration.md) to tune environment variables.
@@ -58,6 +63,8 @@ Regardless of method, your next steps are:
 ## Related Pages
 
 - [First-Run Setup](first-run.md)
+- [Single Docker Container](manual-docker.md)
+- [Docker Compose — From Source](docker-compose-source.md)
 - [Configuration Reference](configuration.md)
 - [Upgrading](upgrading.md)
 - [Uninstalling](uninstalling.md)

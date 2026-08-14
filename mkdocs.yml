@@ -8,21 +8,24 @@ theme:
 
 nav:
   - Welcome: index.md
+  - Screenshots: screenshots.md
   - Roadmap: roadmap.md
   - Installation:
       - Overview & Methods: installation/index.md
       - Quick Install (Script): installation/quick-install.md
-      - Docker Compose (Prebuilt Full Stack): installation/docker-compose-prod.md
-      - Docker Compose (Prebuilt Single): installation/docker-compose.md
+      - Proxmox LXC: installation/proxmox-lxc.md
+      - Docker Compose: installation/docker-compose.md
       - Docker Compose (From Source): installation/docker-compose-source.md
       - Single Docker Container: installation/manual-docker.md
       - First-Run Setup: installation/first-run.md
       - Configuration Reference: installation/configuration.md
+      - Security Verification: installation/security-verification.md
       - Upgrading: installation/upgrading.md
       - Uninstalling: installation/uninstalling.md
   - Getting Started: getting-started.md
   - Features:
       - Hardware: hardware.md
+      - Hardware Telemetry: telemetry.md
       - Compute: compute.md
       - Storage: storage.md
       - Networks: networks.md
@@ -40,11 +43,17 @@ nav:
       - cb CLI Tool: cb-cli.md
       - Backup & Restore: backup-restore.md
   - Reference:
-      - Architecture Overview: overview.md
+      - Product Overview: overview.md
       - Architecture Walkthrough: architecture.html
       - Metrics: metrics.md
-      - Cross-Browser Audit: cross-browser-audit.md
+      - Intelligence API: business_intelligence.md
+  - Release Policy:
+      - Support Contract: release/1.0.0-support-contract.md
+      - Compatibility Policy: release/1.0.0-compatibility-policy.md
+      - Service Objectives: release/1.0.0-service-objectives.md
   - Updates:
+      - v0.3.3 Release Notes: updates/v0.3.3_release.md
+      - v0.2.8 Release Notes: updates/v0.2.8_release.md
       - v0.2.0 Overview: updates/v0.2.0-overview.md
       - v0.1.4 Release Notes: updates/v0-1-4_release.md
       - v0.1.4 Docs SOT: updates/v0-1-4_docs_sot.md
