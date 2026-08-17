@@ -92,6 +92,29 @@ def _make_hardware(db, *, ip=None, mac=None, name="TestHost") -> Hardware:
     db.refresh(hw)
     return hw
 
+@pytest.fixture
+def nmap_enabled(db):
+    """Turn on the ``nmap_enabled`` opt-in for tests that exercise nmap scan paths.
+
+    ``create_scan_job`` refuses any scan whose ``scan_types`` require nmap unless
+    ``AppSettings.nmap_enabled`` is set — an opt-in gate added in 11dcb910
+    (migration 0079) that defaults to False. It is checked before the CIDR is even
+    parsed, so with the flag off the tests below never reach the behaviour they
+    were written to cover. Most simply failed; the dangerous case was
+    ``test_create_scan_job_invalid_cidr_raises``, which kept passing on a
+    ValueError raised by the disabled flag rather than by the CIDR validator.
+    Enabling the flag restores what these tests actually check; the gate itself is
+    covered by ``test_create_scan_job_refuses_nmap_when_disabled``.
+
+    The ``db`` fixture truncates every table before each test, so this settings
+    row cannot leak into another test.
+    """
+    settings = get_or_create_settings(db)
+    settings.nmap_enabled = True
+    db.commit()
+    return settings
+
+
 # ─────────────────────────────────────────────────────────────────
 # 1. CIDR validation
 # ─────────────────────────────────────────────────────────────────
@@ -112,20 +135,33 @@ def test_validate_cidr_slash_zero_rejected():
 # ─────────────────────────────────────────────────────────────────
 # 2. create_scan_job
 # ─────────────────────────────────────────────────────────────────
-def test_create_scan_job_valid(db):
+def test_create_scan_job_valid(db, nmap_enabled):
     job = _make_job(db, CIDR_LAN)
     assert job.id is not None
     assert job.status == "queued"
     assert job.target_cidr == CIDR_LAN
 
-def test_create_scan_job_stores_normalised_cidr(db):
+def test_create_scan_job_stores_normalised_cidr(db, nmap_enabled):
     job = create_scan_job(db, CIDR_HOST_BITS, ["nmap"])
     assert job.target_cidr == CIDR_DEFAULT
 
-def test_create_scan_job_invalid_cidr_raises(db):
+def test_create_scan_job_invalid_cidr_raises(db, nmap_enabled):
     before = db.query(ScanJob).count()
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not a valid CIDR"):
         create_scan_job(db, "bad-input", ["nmap"])
+    assert db.query(ScanJob).count() == before
+
+
+def test_create_scan_job_refuses_nmap_when_disabled(db):
+    """The nmap opt-in gate: no ``nmap_enabled`` row, no nmap scan, no job row.
+
+    Deliberately does NOT take the ``nmap_enabled`` fixture — this is the one
+    test that wants the default-off setting.
+    """
+    before = db.query(ScanJob).count()
+    assert get_or_create_settings(db).nmap_enabled is False
+    with pytest.raises(ValueError, match="Nmap Active Scanning"):
+        create_scan_job(db, CIDR_LAN, ["nmap"])
     assert db.query(ScanJob).count() == before
 
 
@@ -144,13 +180,13 @@ def test_create_scan_job_allows_queueing_beyond_max_concurrent_scans(db):
 # ─────────────────────────────────────────────────────────────────
 # 3. Result state classification
 # ─────────────────────────────────────────────────────────────────
-def test_upsert_result_new_host(db):
+def test_upsert_result_new_host(db, nmap_enabled):
     job = _make_job(db)
     r = _make_result(db, job, ip=IP_RESULT_NEW)
     assert r.state == "new"
     assert r.merge_status == "pending"
 
-def test_upsert_result_matched_host(db):
+def test_upsert_result_matched_host(db, nmap_enabled):
     hw = _make_hardware(db, ip=IP_MATCHED)
     job = _make_job(db)
     r = _make_result(db, job, ip=IP_MATCHED, state="matched",
@@ -158,7 +194,7 @@ def test_upsert_result_matched_host(db):
     assert r.state == "matched"
     assert r.matched_entity_id == hw.id
 
-def test_upsert_result_conflict(db):
+def test_upsert_result_conflict(db, nmap_enabled):
     hw = _make_hardware(db, ip=IP_CONFLICT_HW, mac=MAC_EXISTING)
     job = _make_job(db)
     r = _make_result(db, job, ip=IP_CONFLICT_HW, mac=MAC_CONFLICT,
@@ -170,7 +206,7 @@ def test_upsert_result_conflict(db):
 # ─────────────────────────────────────────────────────────────────
 # 4. Auto-merge toggle
 # ─────────────────────────────────────────────────────────────────
-def test_auto_merge_disabled_by_default(db):
+def test_auto_merge_disabled_by_default(db, nmap_enabled):
     settings = get_or_create_settings(db)
     assert not settings.discovery_auto_merge
     job = _make_job(db)
@@ -179,7 +215,7 @@ def test_auto_merge_disabled_by_default(db):
     assert r.merge_status == "pending"
     assert db.query(Hardware).filter(Hardware.ip_address == IP_AUTO_MERGE_OFF).first() is None
 
-def test_auto_merge_creates_hardware(db):
+def test_auto_merge_creates_hardware(db, nmap_enabled):
     from app.services.discovery_service import _auto_merge_result
     settings = get_or_create_settings(db)
     settings.discovery_auto_merge = True
@@ -196,7 +232,7 @@ def test_auto_merge_creates_hardware(db):
 # ─────────────────────────────────────────────────────────────────
 # 5. merge_scan_result — accept / reject
 # ─────────────────────────────────────────────────────────────────
-def test_merge_accept_new_creates_hardware(db):
+def test_merge_accept_new_creates_hardware(db, nmap_enabled):
     job = _make_job(db)
     r = _make_result(db, job, ip=IP_ACCEPT_NEW)
     result = merge_scan_result(db, r.id, "accept", entity_type="hardware")
@@ -208,7 +244,7 @@ def test_merge_accept_new_creates_hardware(db):
     db.refresh(r)
     assert r.merge_status == "accepted"
 
-def test_merge_accept_returns_ports(db):
+def test_merge_accept_returns_ports(db, nmap_enabled):
     ports = json.dumps([
         {"port": 22, "protocol": "tcp", "name": "ssh"},
         {"port": 443, "protocol": "tcp", "name": "https"},
@@ -223,7 +259,7 @@ def test_merge_accept_returns_ports(db):
     assert "SSH" in names
     assert "HTTPS" in names
 
-def test_merge_accept_unknown_port_is_misc(db):
+def test_merge_accept_unknown_port_is_misc(db, nmap_enabled):
     ports = json.dumps([{"port": 12345, "protocol": "tcp", "name": "custom"}])
     job = _make_job(db)
     r = _make_result(db, job, ip=IP_ACCEPT_MISC, open_ports_json=ports)
@@ -231,7 +267,7 @@ def test_merge_accept_unknown_port_is_misc(db):
     misc = [p for p in result["ports"] if p["port"] == 12345]
     assert misc[0]["suggested_category"] == "misc"
 
-def test_merge_reject(db):
+def test_merge_reject(db, nmap_enabled):
     job = _make_job(db)
     r = _make_result(db, job, ip=IP_REJECT)
     result = merge_scan_result(db, r.id, "reject")
@@ -240,7 +276,7 @@ def test_merge_reject(db):
     assert r.merge_status == "rejected"
     assert db.query(Hardware).filter(Hardware.ip_address == IP_REJECT).first() is None
 
-def test_merge_already_accepted_returns_409(db):
+def test_merge_already_accepted_returns_409(db, nmap_enabled):
     from fastapi import HTTPException
     job = _make_job(db)
     r = _make_result(db, job, ip=IP_DOUBLE_ACCEPT)
@@ -249,7 +285,7 @@ def test_merge_already_accepted_returns_409(db):
         merge_scan_result(db, r.id, "accept", entity_type="hardware")
     assert exc_info.value.status_code == 409
 
-def test_merge_conflict_with_overrides(db):
+def test_merge_conflict_with_overrides(db, nmap_enabled):
     hw = _make_hardware(db, ip=IP_OVERRIDE_HW, mac=MAC_EXISTING, name="OldName")
     job = _make_job(db)
     r = _make_result(db, job, ip=IP_OVERRIDE_HW, mac=MAC_CONFLICT,
@@ -265,7 +301,7 @@ def test_merge_conflict_with_overrides(db):
 # ─────────────────────────────────────────────────────────────────
 # 6. bulk_merge_results
 # ─────────────────────────────────────────────────────────────────
-def test_bulk_merge_skips_conflicts(db):
+def test_bulk_merge_skips_conflicts(db, nmap_enabled):
     job = _make_job(db)
     hw = _make_hardware(db, ip=IP_BULK_BASE, mac=MAC_BULK_HW)
     r1 = _make_result(db, job, ip=IP_BULK_R1)
@@ -278,7 +314,7 @@ def test_bulk_merge_skips_conflicts(db):
     assert counts["skipped"] == 1
     assert counts["rejected"] == 0
 
-def test_bulk_merge_reject_all(db):
+def test_bulk_merge_reject_all(db, nmap_enabled):
     job = _make_job(db)
     r1 = _make_result(db, job, ip=IP_BULK_REJECT_1)
     r2 = _make_result(db, job, ip=IP_BULK_REJECT_2)
@@ -339,7 +375,7 @@ def test_discovery_status_accepts_valid_token(client, auth_headers):
     assert resp.status_code == 200
 
 
-def test_scan_endpoint_invalid_cidr_returns_422(client, auth_headers):
+def test_scan_endpoint_invalid_cidr_returns_422(client, auth_headers, nmap_enabled):
     resp = client.post("/api/v1/discovery/scan", json={
         "cidr": "not-a-cidr",
         "scan_types": ["nmap"],
@@ -544,9 +580,9 @@ def test_arp_available_returns_false_without_capability():
 # 13. WebSocket Event Emission Tests
 # ─────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio
-async def test_emit_result_processed_event_accept(db):
+async def test_emit_result_processed_event_accept(db, nmap_enabled):
     """Test that _emit_result_processed_event correctly emits accept events."""
-    from app.services.discovery_service import _emit_result_processed_event
+    from app.services.discovery_merge import _emit_result_processed_event
 
     job = _make_job(db)
     result = _make_result(db, job, ip="192.168.1.100")
@@ -566,9 +602,9 @@ async def test_emit_result_processed_event_accept(db):
 
 
 @pytest.mark.asyncio
-async def test_emit_result_processed_event_reject(db):
+async def test_emit_result_processed_event_reject(db, nmap_enabled):
     """Test that _emit_result_processed_event correctly emits reject events."""
-    from app.services.discovery_service import _emit_result_processed_event
+    from app.services.discovery_merge import _emit_result_processed_event
 
     job = _make_job(db)
     result = _make_result(db, job, ip="192.168.1.101")
@@ -588,7 +624,7 @@ async def test_emit_result_processed_event_reject(db):
 @pytest.mark.asyncio
 async def test_emit_result_processed_event_missing_result(db):
     """Test graceful handling when result doesn't exist."""
-    from app.services.discovery_service import _emit_result_processed_event
+    from app.services.discovery_merge import _emit_result_processed_event
 
     mock_emit = AsyncMock()
     with patch("app.services.discovery_service._emit_ws_event", mock_emit):
@@ -598,9 +634,9 @@ async def test_emit_result_processed_event_missing_result(db):
 
 
 @pytest.mark.asyncio
-async def test_emit_result_processed_event_exception_handling(db):
+async def test_emit_result_processed_event_exception_handling(db, nmap_enabled):
     """Test that exceptions in event emission are handled gracefully."""
-    from app.services.discovery_service import _emit_result_processed_event
+    from app.services.discovery_merge import _emit_result_processed_event
 
     job = _make_job(db)
     result = _make_result(db, job, ip="192.168.1.102")

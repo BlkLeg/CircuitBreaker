@@ -62,6 +62,12 @@ export default function DbStatusPanel() {
   };
 
   const isPostgres = health?.dialect === 'postgresql';
+  // One derivation for both the header and the Engine row so they cannot drift.
+  // Both used to render anything non-postgresql as 'SQLite', which has not been a
+  // supported application database since v0.2.0 — and because `health` is null
+  // until the fetch resolves, the header claimed 'SQLite' on every first paint.
+  // An unexpected dialect should name itself instead of being mislabelled.
+  const engineLabel = isPostgres ? 'PostgreSQL' : health?.dialect || 'Unknown';
 
   const statusColor = error ? 'var(--color-danger, #f85149)' : 'var(--color-online, #4caf50)';
 
@@ -86,9 +92,7 @@ export default function DbStatusPanel() {
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
         <Database size={18} style={{ color: statusColor, flexShrink: 0 }} />
-        <span style={{ fontWeight: 600, fontSize: '0.95rem' }}>
-          {isPostgres ? 'PostgreSQL' : 'SQLite'}
-        </span>
+        <span style={{ fontWeight: 600, fontSize: '0.95rem' }}>{engineLabel}</span>
         <span
           style={{
             marginLeft: 'auto',
@@ -122,10 +126,7 @@ export default function DbStatusPanel() {
 
       {health && (
         <div style={{ marginBottom: 14 }}>
-          <StatRow
-            label="Engine"
-            value={health.dialect === 'postgresql' ? 'PostgreSQL' : 'SQLite'}
-          />
+          <StatRow label="Engine" value={engineLabel} />
           <StatRow label="Schema version" value={health.alembic_version ?? 'unknown'} />
           {isPostgres && health.timescaledb_available != null && (
             <StatRow

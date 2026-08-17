@@ -11,12 +11,17 @@ following subjects are received:
   - topology.cable.removed       → {"type": "cable_removed", ...}
   - topology.node.status_changed → {"type": "node_status_changed", ...}
 
-Auth protocol (identical to ws_discovery.py):
-  1. Client connects.
-  2. Server waits up to 10 seconds for the first text message.
-  3. First message must be a valid JWT token (raw string).
-  4. On failure: sends {"error": "unauthorized"} and closes with code 1008.
-  5. On success: sends {"status": "connected"} and begins streaming events.
+Auth protocol:
+  1. main.py mounts this router behind Depends(require_auth), so a handshake
+     with no session is answered with an HTTP 401 and never upgraded. That
+     dependency accepts a bearer header as well as the cookie.
+  2. The handler then reads the session from the httpOnly `cb_session` cookie
+     the handshake carries — there is no first-message token step; tokens
+     stopped travelling in-band in 323ad9c2 so they never reach JS.
+  3. On failure: sends {"error": "unauthorized"} and closes with code 1008.
+     Reachable only for a caller that satisfied the dependency by some means
+     other than the cookie.
+  4. On success: sends {"status": "connected"} and begins streaming events.
 
 Client → server messages:
   {"type": "ping"}  → server responds with {"type": "pong", "ts": "<utc iso>"}

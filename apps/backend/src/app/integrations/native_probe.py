@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import IntegrationMonitor
 from app.integrations.base import ConfigField, IntegrationPlugin, MonitorStatus
+from app.services.ip_reservation import _parse_ports_json
 
 _logger = logging.getLogger(__name__)
 
@@ -171,9 +172,7 @@ def derive_probe_config(
         if service.ip_address:
             port: int | None = None
             try:
-                import json
-
-                ports = json.loads(service.ports_json) if service.ports_json else []
+                ports = _parse_ports_json(service.ports_json)
                 if ports:
                     port = int(ports[0].get("port", 80))
             except Exception:

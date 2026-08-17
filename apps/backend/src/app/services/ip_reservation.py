@@ -41,10 +41,18 @@ def _norm(ip: str | None) -> str | None:
     return ip.strip().lower()
 
 
-def _parse_ports_json(raw: str | None) -> list[dict]:
-    """Return the parsed port-entry list from a ports_json TEXT column value."""
+def _parse_ports_json(raw: list | str | None) -> list[dict]:
+    """Return the port-entry list from a services.ports_json value.
+
+    Migration 0026 cast this column to JSONB, so psycopg2 hands back a real list
+    and no decoding is needed. Rows written before that migration — or by any
+    caller still serialising by hand — arrive as a JSON string, so keep parsing
+    those rather than dropping them on the floor.
+    """
     if not raw:
         return []
+    if isinstance(raw, list):
+        return raw
     try:
         data = json.loads(raw)
         if isinstance(data, list):

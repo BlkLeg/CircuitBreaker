@@ -956,7 +956,25 @@ async def lifespan(app: FastAPI):
         misfire_grace_time=3600,
     )
 
-    # Daily PostgreSQL backup (no-op for SQLite installs)
+    # Chain any audit entries that a contended audit-chain lock forced into the
+    # spool (services/audit_spool.py). Runs often because the spool window is
+    # the one stretch where an audit record exists but carries no tamper
+    # evidence of its own — the shorter it is, the better. Cheap when idle: one
+    # indexed COUNT-shaped read that finds nothing and returns.
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    from app.services.audit_spool import drain as drain_audit_spool
+
+    scheduler.add_job(
+        drain_audit_spool,
+        trigger=IntervalTrigger(minutes=1),
+        id="audit_spool_drain",
+        replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=300,
+    )
+
+    # Daily PostgreSQL backup (skipped when pg_dump is not on PATH)
     from app.services.db_backup import backup_postgres
 
     scheduler.add_job(

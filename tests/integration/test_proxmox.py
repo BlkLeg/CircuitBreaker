@@ -8,6 +8,23 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+# ── Auth ─────────────────────────────────────────────────────────────────────
+#
+# First run stopped being an open admin session in cd1724ff: outside /bootstrap,
+# /auth, the settings read and the OAuth provider write, every route answers 401
+# until a real admin exists and presents a token. These tests drive ordinary
+# CRUD, so they no longer ride on the un-bootstrapped app — they bootstrap and
+# carry a Bearer header like any other caller.
+
+@pytest.fixture(autouse=True)
+def _authenticated_client(request):
+    # Tests here that only touch the ORM never build a client; don't make them
+    # pay for a bootstrap (and a bcrypt hash) they have no use for.
+    if "client" not in request.fixturenames:
+        return
+    request.getfixturevalue("client").headers.update(request.getfixturevalue("auth_headers"))
+
+
 # ── Model / Schema tests ────────────────────────────────────────────────────
 
 

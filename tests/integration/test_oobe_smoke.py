@@ -4,7 +4,7 @@ OOBE & E2E Smoke Audit — pre-ship checklist.
 Covers all sections from PROMPT.md:
   1. Fresh DB state (auth_enabled=False as OOBE completion marker)
   2. First page load (API-level)
-  3. Pre-bootstrap CRUD (no users yet, auth not enforced)
+  3. Pre-bootstrap CRUD (no admin yet, so everything off the setup surface is 401)
   4. First user registration (bootstrap enables auth), login/logout
   5. Password & form validation
   6. CB_API_TOKEN static token behaviour
@@ -20,6 +20,8 @@ CB_API_TOKEN tests require the env var to be set:
 import os
 
 import pytest
+
+from .conftest import _read_setup_token
 
 API = "/api/v1"
 
@@ -45,9 +47,14 @@ _PASS_WEAK = "weak"
 def _register(client, email=_EMAIL, password=_PASS):
     status = client.get(f"{API}/bootstrap/status")
     if status.status_code == 200 and status.json().get("needs_bootstrap"):
+        # SEC-4 (6be8c8d9): bootstrap is gated by a one-time setup token written to
+        # a 0600 file under CB_DATA_DIR. Without it Pydantic rejects the body with
+        # 422 before the handler's own email/password validation ever runs, which
+        # would quietly turn the 400/409 assertions below into false passes-as-fails.
         return client.post(
             f"{API}/bootstrap/initialize",
             json={
+                "setup_token": _read_setup_token(client),
                 "email": email,
                 "password": password,
                 "theme_preset": "one-dark",
@@ -60,8 +67,17 @@ def _login(client, email=_EMAIL, password=_PASS):
     return client.post(f"{API}/auth/login", json={"email": email, "password": password})
 
 
-def _auth_header(token: str) -> dict:
-    return {"Authorization": f"Bearer {token}"}
+def _auth_header(client, token: str) -> dict:
+    """Bearer credentials plus the double-submit CSRF header.
+
+    TestClient keeps the cb_session/cb_csrf cookies bootstrap sets, so the CSRF
+    middleware treats every later mutating request as a browser session and wants
+    X-CSRF-Token to match the cb_csrf cookie.
+    """
+    return {
+        "Authorization": f"Bearer {token}",
+        "X-CSRF-Token": client.cookies.get("cb_csrf") or "",
+    }
 
 
 def _create_hardware(client, name="OOBE-Server", **headers):
@@ -87,11 +103,17 @@ class TestFreshDB:
         assert resp.status_code == 200
         assert "jwt_secret" not in resp.json()
 
-    def test_entity_tables_empty_on_fresh_start(self, client):
+    def test_entity_tables_empty_on_fresh_start(self, client, auth_headers):
         """All data tables should be empty on a fresh install.
 
         /docs may contain at most one seeded welcome document; all other
         entity tables must be completely empty.
+
+        These reads need credentials: since cd1724ff (P0-4) the unbootstrapped app
+        no longer hands the admin sentinel to anything outside the setup surface,
+        so an anonymous GET /hardware is 401 rather than an empty list. Bootstrap
+        creates the admin account and nothing else, so the install under test is
+        still the fresh one this asserts about.
         """
         for path in (
             "/hardware",
@@ -102,7 +124,7 @@ class TestFreshDB:
             "/misc",
             "/docs",
         ):
-            resp = client.get(f"{API}{path}")
+            resp = client.get(f"{API}{path}", headers=auth_headers)
             assert resp.status_code == 200, f"GET {path} failed"
             body = resp.json()
             # Endpoints may return a list or a dict with a results key
@@ -134,12 +156,25 @@ class TestFirstPageLoad:
         assert resp.status_code == 200
 
     def test_topology_unauthenticated(self, client):
-        """Graph topology endpoint is accessible without auth."""
-        resp = client.get(f"{API}/graph/topology")
-        assert resp.status_code == 200
+        """Graph topology is NOT public before an admin exists.
 
-    def test_all_critical_read_endpoints_return_2xx(self, client):
-        """All major read endpoints return 2xx without auth credentials."""
+        This used to assert 200: while unbootstrapped, every route ran as the admin
+        sentinel. cd1724ff (P0-4) narrowed that sentinel to the routes the wizard
+        actually calls — bootstrap, auth, the settings read, the OAuth provider
+        write — because an open admin session on the whole API is exactly what an
+        attacker who reaches the port during the setup window wants. The topology
+        graph is inventory, not setup, so it answers 401 until OOBE completes.
+        """
+        resp = client.get(f"{API}/graph/topology")
+        assert resp.status_code == 401
+
+    def test_all_critical_read_endpoints_return_2xx(self, client, auth_headers):
+        """All major read endpoints return 2xx for the first real page load.
+
+        Authenticated, because the first page load that renders these is the one
+        after OOBE finishes — see test_topology_unauthenticated for why the
+        pre-bootstrap versions of these reads are 401 since cd1724ff.
+        """
         read_paths = [
             "/settings",
             "/hardware",
@@ -151,7 +186,7 @@ class TestFirstPageLoad:
             "/graph/topology",
         ]
         for path in read_paths:
-            resp = client.get(f"{API}{path}")
+            resp = client.get(f"{API}{path}", headers=auth_headers)
             assert resp.status_code < 300, f"GET {path} returned {resp.status_code}"
 
     def test_onboarding_endpoint_returns_step_state(self, client):
@@ -181,32 +216,41 @@ class TestFirstPageLoad:
 
 
 # ===========================================================================
-# 3. Pre-bootstrap CRUD (writes succeed without Authorization header)
+# 3. Pre-bootstrap CRUD (refused: the setup window is not an open admin session)
 # ===========================================================================
+#
+# Every assertion in this class was 201/200 until cd1724ff (P0-4). The old
+# behaviour was that an unbootstrapped app ran every request as the admin
+# sentinel, so anyone who reached the port during the setup window could write
+# inventory, rewrite settings and export the instance. The sentinel is now
+# granted only on the surface the wizard needs (bootstrap, auth, the settings
+# read, the OAuth provider write); everything else answers 401 until an admin
+# exists, which is what it would have done with auth on. The class still earns
+# its place — it pins that refusal from the outside, at the OOBE seam.
 
 
 class TestPreBootstrapCRUD:
     def test_create_hardware_no_auth(self, client):
         resp = _create_hardware(client)
-        assert resp.status_code == 201
+        assert resp.status_code == 401
 
     def test_create_service_no_auth(self, client):
         resp = client.post(f"{API}/services", json={"name": "TestSvc", "slug": "test-svc"})
-        assert resp.status_code == 201
+        assert resp.status_code == 401
 
     def test_create_network_no_auth(self, client):
         resp = client.post(f"{API}/networks", json={"name": "LAN"})
-        assert resp.status_code == 201
+        assert resp.status_code == 401
 
     def test_settings_update_no_auth(self, client):
-        """PUT /settings works without auth before bootstrap."""
+        """PUT /settings is refused before bootstrap — only the GET is on the surface."""
         resp = client.put(f"{API}/settings", json={"theme": "dark"})
-        assert resp.status_code == 200
+        assert resp.status_code == 401
 
     def test_admin_export_no_auth(self, client):
-        """Admin export is accessible before bootstrap."""
+        """Admin export is refused before bootstrap."""
         resp = client.get(f"{API}/admin/export")
-        assert resp.status_code == 200
+        assert resp.status_code == 401
 
 
 # ===========================================================================
@@ -271,7 +315,7 @@ class TestFirstUserAndAuthFlow:
         reg = _register(client)
         token = reg.json()["token"]
 
-        resp = _create_hardware(client, name="AuthedWrite", headers=_auth_header(token))
+        resp = _create_hardware(client, name="AuthedWrite", headers=_auth_header(client, token))
         assert resp.status_code == 201
 
     def test_login_success(self, client):
@@ -298,7 +342,7 @@ class TestFirstUserAndAuthFlow:
         """Logout endpoint must return 204 and require no server state."""
         reg = _register(client)
         token = reg.json()["token"]
-        resp = client.post(f"{API}/auth/logout", headers=_auth_header(token))
+        resp = client.post(f"{API}/auth/logout", headers=_auth_header(client, token))
         assert resp.status_code == 204
 
     def test_admin_export_requires_auth_after_bootstrap(self, client):
@@ -314,7 +358,7 @@ class TestFirstUserAndAuthFlow:
         reg = _register(client)
         token = reg.json()["token"]
 
-        resp = client.get(f"{API}/admin/export", headers=_auth_header(token))
+        resp = client.get(f"{API}/admin/export", headers=_auth_header(client, token))
         assert resp.status_code == 200
         assert "hardware" in resp.json()
 
@@ -325,6 +369,7 @@ class TestFirstUserAndAuthFlow:
         init_resp = client.post(
             f"{API}/bootstrap/initialize",
             json={
+                "setup_token": _read_setup_token(client),
                 "email": _EMAIL,
                 "password": _PASS,
                 "theme_preset": "one-dark",
@@ -460,7 +505,7 @@ class TestCBApiToken:
         assert reg.status_code == 200, f"Register failed: {reg.text}"
         jwt_token = reg.json()["token"]
 
-        resp = _create_hardware(client, name="JwtWithApiToken", headers=_auth_header(jwt_token))
+        resp = _create_hardware(client, name="JwtWithApiToken", headers=_auth_header(client, jwt_token))
         assert resp.status_code == 201
 
 
@@ -502,7 +547,7 @@ class TestSecretCleanliness:
         reg = _register(client)
         assert reg.status_code == 200
         token = reg.json()["token"]
-        resp = client.get(f"{API}/admin/export", headers=_auth_header(token))
+        resp = client.get(f"{API}/admin/export", headers=_auth_header(client, token))
         assert resp.status_code == 200
         data = resp.json()
         assert "users" not in data, "Export must not include user rows"

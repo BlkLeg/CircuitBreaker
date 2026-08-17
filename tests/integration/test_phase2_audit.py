@@ -100,8 +100,12 @@ def test_purge_disabled_when_zero(db):
     assert db.query(Log).count() == 7
 
 
-def test_audit_log_filters(client, db):
-    """Verify that log API filtering works with multiple filter params."""
+def test_audit_log_filters(client, db, auth_headers):
+    """Verify that log API filtering works with multiple filter params.
+
+    ``auth_headers`` bootstraps and logs in: since cd1724ff withdrew the open
+    first-run admin sentinel, /logs answers 401 until an admin exists.
+    """
     now = utcnow()
     db.add(
         Log(
@@ -125,13 +129,13 @@ def test_audit_log_filters(client, db):
     )
     db.commit()
 
-    r = client.get("/api/v1/logs", params={"action": "created"})
+    r = client.get("/api/v1/logs", params={"action": "created"}, headers=auth_headers)
     assert r.status_code == 200
     data = r.json()
     assert data["total_count"] >= 1
     assert all(log["action"] == "created" for log in data["logs"])
 
-    r = client.get("/api/v1/logs", params={"severity": "warn"})
+    r = client.get("/api/v1/logs", params={"severity": "warn"}, headers=auth_headers)
     assert r.status_code == 200
     data = r.json()
     assert all(log.get("severity") == "warn" or log.get("level") == "warn" for log in data["logs"])

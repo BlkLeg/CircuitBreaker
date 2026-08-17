@@ -24,6 +24,28 @@ CB_TLS_PIN="{tls_pin}"
 
 echo "Installing cb-agent from ${{CB_SERVER_URL}}..."
 
+# Every fetch below goes through cb_curl, which applies the same TLS trust the
+# agent itself will use once installed. Under self-signed TLS the target host
+# has no CA that can validate this server, so curl verifies the leaf's SPKI
+# against CB_TLS_PIN -- the identical check internal/tlsdial makes. curl
+# enforces --pinnedpubkey independently of --insecure, so the pair means "skip
+# the CA chain, require exactly this key", not "trust anything": a certificate
+# that does not match fails with exit 90. An empty pin is a publicly trusted
+# certificate, where the system trust store already applies and relaxing
+# verification would be a straight downgrade.
+if [ -n "${{CB_TLS_PIN}}" ] && ! curl --pinnedpubkey "sha256//" --version >/dev/null 2>&1; then
+  echo "curl here cannot verify this server's certificate:" >&2
+  echo "--pinnedpubkey needs curl 7.39 or newer." >&2
+  exit 1
+fi
+cb_curl() {{
+  if [ -n "${{CB_TLS_PIN}}" ]; then
+    curl -fsSL --insecure --pinnedpubkey "sha256//${{CB_TLS_PIN}}" "$@"
+  else
+    curl -fsSL "$@"
+  fi
+}}
+
 if ! id cb-agent >/dev/null 2>&1; then
   useradd --system --no-create-home --shell /usr/sbin/nologin cb-agent
 fi
@@ -39,7 +61,7 @@ esac
 
 TMP_BIN="$(mktemp)"
 CB_BINARY_URL="${{CB_SERVER_URL}}/api/v1/agents/binary/{latest_version}/linux/${{CB_ARCH}}"
-curl -fsSL "$CB_BINARY_URL" -o "$TMP_BIN"
+cb_curl "$CB_BINARY_URL" -o "$TMP_BIN"
 echo "${{CB_BINARY_SHA256}}  ${{TMP_BIN}}" | sha256sum -c
 
 mkdir -p /etc/circuit-breaker /var/lib/cb-agent
@@ -233,8 +255,14 @@ def build_install_command(db: Session, server_url: str) -> InstallCommandRespons
     if tls_mode == "public":
         command = f"curl -fsSL {server_url}/install-agent.sh | sudo sh"
     else:
+        # --pinnedpubkey is what actually verifies this fetch (curl enforces it
+        # even alongside -k, which is only here because the chain cannot
+        # validate). The digest check below stays as an independent second
+        # check rather than, as before, the only thing between -k and a
+        # MITM'd installer.
         command = (
-            f"curl -fsSLk {server_url}/install-agent.sh -o /tmp/cb-agent-install.sh && "
+            f'curl -fsSL --insecure --pinnedpubkey "sha256//{tls_pin}" '
+            f"{server_url}/install-agent.sh -o /tmp/cb-agent-install.sh && "
             f'echo "{script_sha256}  /tmp/cb-agent-install.sh" | sha256sum -c && '
             f"sudo sh /tmp/cb-agent-install.sh"
         )

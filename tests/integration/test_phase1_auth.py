@@ -1,5 +1,11 @@
 """Phase 1 tests: FastAPI-Users auth, rate-limit profiles, legacy token, bootstrap."""
 
+from .conftest import _read_setup_token
+
+# SEC-4 (6be8c8d9) made `setup_token` a required field on the bootstrap body, so
+# every POST below has to present the one-time token the server wrote under
+# CB_DATA_DIR; without it Pydantic answers 422 before the handler runs.
+
 
 class TestBootstrapFlow:
     """OOBE bootstrap creates a superuser and returns a valid token."""
@@ -13,6 +19,7 @@ class TestBootstrapFlow:
         resp = client.post(
             "/api/v1/bootstrap/initialize",
             json={
+                "setup_token": _read_setup_token(client),
                 "email": "admin@lab.local",
                 "password": "Admin1234!",
                 "theme_preset": "one-dark",
@@ -26,21 +33,31 @@ class TestBootstrapFlow:
         assert data["user"]["is_superuser"] is True
 
     def test_bootstrap_rejects_double_init(self, client):
-        client.post(
+        setup_token = _read_setup_token(client)
+        first = client.post(
             "/api/v1/bootstrap/initialize",
             json={
+                "setup_token": setup_token,
                 "email": "admin@lab.local",
                 "password": "Admin1234!",
                 "theme_preset": "one-dark",
             },
         )
+        assert first.status_code == 200
+        # Replay the consumed token: /bootstrap/status stops publishing the token
+        # path once auth is on, so this is the only way to send a well-formed second
+        # request — and the 409 must come from "already bootstrapped", not from a
+        # missing field.
         resp = client.post(
             "/api/v1/bootstrap/initialize",
             json={
+                "setup_token": setup_token,
                 "email": "admin2@lab.local",
                 "password": "Admin1234!",
                 "theme_preset": "one-dark",
             },
+            # The first call left a session cookie behind, so this one is CSRF-checked.
+            headers={"X-CSRF-Token": client.cookies.get("cb_csrf") or ""},
         )
         assert resp.status_code == 409
 
@@ -52,6 +69,7 @@ class TestLegacyLogin:
         client.post(
             "/api/v1/bootstrap/initialize",
             json={
+                "setup_token": _read_setup_token(client),
                 "email": "user@lab.local",
                 "password": "Secure1234!",
                 "theme_preset": "one-dark",
@@ -78,19 +96,46 @@ class TestLegacyLogin:
 
 
 class TestLegacyAPIToken:
-    """CB_API_TOKEN env var still grants admin access."""
+    """CB_API_TOKEN god-mode is deprecated — refused unless CB_LEGACY_AUTH rolls it back.
 
-    def test_api_token_bypass(self, client, monkeypatch):
-        monkeypatch.setenv("CB_API_TOKEN", "test-static-token")
-        # Enable auth via bootstrap first
-        client.post(
+    This class used to assert the bare env var still granted admin. It does not:
+    LegacyTokenMiddleware now answers 401 with a migration notice when a Bearer
+    matches CB_API_TOKEN, and only honours it while CB_LEGACY_AUTH=true, the
+    documented rollback toggle. Both halves are pinned below so neither the
+    refusal nor the escape hatch can regress unnoticed.
+    """
+
+    def _bootstrap(self, client):
+        resp = client.post(
             "/api/v1/bootstrap/initialize",
             json={
+                "setup_token": _read_setup_token(client),
                 "email": "admin@lab.local",
                 "password": "Admin1234!",
                 "theme_preset": "one-dark",
             },
         )
+        assert resp.status_code == 200, resp.text
+
+    def test_api_token_rejected_without_rollback_flag(self, client, monkeypatch):
+        monkeypatch.setenv("CB_API_TOKEN", "test-static-token")
+        monkeypatch.delenv("CB_LEGACY_AUTH", raising=False)
+        self._bootstrap(client)
+
+        resp = client.get(
+            "/api/v1/hardware",
+            headers={
+                "Authorization": "Bearer test-static-token",
+            },
+        )
+        assert resp.status_code == 401
+        assert "CB_API_TOKEN is deprecated" in resp.json()["detail"]
+
+    def test_api_token_bypass(self, client, monkeypatch):
+        monkeypatch.setenv("CB_API_TOKEN", "test-static-token")
+        monkeypatch.setenv("CB_LEGACY_AUTH", "true")
+        self._bootstrap(client)
+
         resp = client.get(
             "/api/v1/hardware",
             headers={
@@ -107,6 +152,7 @@ class TestPasswordValidation:
         client.post(
             "/api/v1/bootstrap/initialize",
             json={
+                "setup_token": _read_setup_token(client),
                 "email": "admin@lab.local",
                 "password": "Admin1234!",
                 "theme_preset": "one-dark",
@@ -134,8 +180,13 @@ class TestAppSettingsFields:
         assert data["registration_open"] is True
         assert data["rate_limit_profile"] == "normal"
 
-    def test_update_rate_limit_profile(self, client):
-        resp = client.put("/api/v1/settings", json={"rate_limit_profile": "strict"})
+    def test_update_rate_limit_profile(self, client, auth_headers):
+        # Authenticated: cd1724ff (P0-4) stopped the unbootstrapped app from handing
+        # the admin sentinel to writes, so an anonymous PUT /settings is 401. The
+        # field being writable is what this test is about, so it writes as an admin.
+        resp = client.put(
+            "/api/v1/settings", json={"rate_limit_profile": "strict"}, headers=auth_headers
+        )
         assert resp.status_code == 200
         assert resp.json()["rate_limit_profile"] == "strict"
 

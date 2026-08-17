@@ -12,6 +12,8 @@ import json
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.testclient import WebSocketDenialResponse
+from starlette.websockets import WebSocketDisconnect
 
 # ── NATSClient unit tests ────────────────────────────────────────────────────
 
@@ -121,9 +123,9 @@ def test_events_stream_route_exists():
     assert len(stream_routes) == 1, "Expected /stream route in events router"
 
 
-def test_events_status(client: TestClient):
+def test_events_status(client: TestClient, auth_headers):
     """GET /api/v1/events/status returns transport field."""
-    r = client.get("/api/v1/events/status")
+    r = client.get("/api/v1/events/status", headers=auth_headers)
     assert r.status_code == 200
     data = r.json()
     assert "transport" in data
@@ -134,25 +136,64 @@ def test_events_status(client: TestClient):
 # ── Topology WebSocket ────────────────────────────────────────────────────────
 
 
-def test_topology_ws_requires_auth(client: TestClient):
-    """WS /api/v1/topology/stream rejects connections with invalid tokens."""
-    with client.websocket_connect("/api/v1/topology/stream") as ws:
-        ws.send_text("not-a-valid-token")
-        msg = json.loads(ws.receive_text())
-        assert msg.get("error") in ("unauthorized", "auth_timeout")
+def test_topology_ws_requires_auth(client: TestClient, auth_headers):
+    """An unauthenticated handshake is refused before the socket is upgraded.
+
+    This asserts a *denial response*, not a post-handshake close, because the
+    stream carries no first-message token protocol any more. Credentials ride
+    the httpOnly ``cb_session`` cookie the handshake sends (323ad9c2), and
+    ``main.py`` mounts this router behind ``Depends(require_auth)``, so a
+    caller with no session never reaches the endpoint body: the dependency
+    raises 401 and Starlette answers the upgrade request with a plain HTTP
+    response, which the TestClient surfaces as ``WebSocketDenialResponse``.
+
+    ``auth_headers`` runs so the assertion is about a bootstrapped instance
+    refusing an anonymous client, rather than the weaker pre-OOBE refusal;
+    clearing the jar drops the session cookie login left on the client.
+    """
+    client.cookies.clear()
+
+    with pytest.raises(WebSocketDenialResponse) as exc_info:
+        with client.websocket_connect("/api/v1/topology/stream"):
+            pass  # pragma: no cover - reaching the body is the failure.
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.json() == {"detail": "Authentication required"}
 
 
-def test_topology_ws_rejects_empty_token(client: TestClient):
-    """WS rejects empty token with unauthorized."""
-    with client.websocket_connect("/api/v1/topology/stream") as ws:
-        ws.send_text("")
-        msg = json.loads(ws.receive_text())
-        assert "error" in msg or msg.get("status") == "connected"
+def test_topology_ws_rejects_empty_token(client: TestClient, auth_headers):
+    """An empty session cookie is no session: refused at the same gate."""
+    client.cookies.clear()
+
+    with pytest.raises(WebSocketDenialResponse) as exc_info:
+        with client.websocket_connect("/api/v1/topology/stream", headers={"Cookie": "cb_session="}):
+            pass  # pragma: no cover - reaching the body is the failure.
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.json() == {"detail": "Authentication required"}
 
 
-def test_topology_ws_status_endpoint(client: TestClient):
+def test_topology_ws_rejects_session_that_is_not_in_the_cookie(client: TestClient, auth_headers):
+    """The endpoint's own cookie check still closes 1008 when the gate lets one through.
+
+    ``require_auth`` accepts a bearer header as well as the cookie, but the
+    handler reads the cookie only — so a bearer-only handshake is the one way
+    to get past the router and still fail auth. That is the path that emits
+    the ``{"error": "unauthorized"}`` frame followed by a 1008 close; without
+    this case the endpoint's own rejection branch has no coverage at all.
+    """
+    client.cookies.clear()
+
+    with client.websocket_connect("/api/v1/topology/stream", headers=dict(auth_headers)) as ws:
+        assert json.loads(ws.receive_text()) == {"error": "unauthorized"}
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            ws.receive_text()
+    assert exc_info.value.code == 1008
+
+
+def test_topology_ws_status_endpoint(client: TestClient, auth_headers):
     """GET /api/v1/topology/ws/status returns connection metrics."""
-    r = client.get("/api/v1/topology/ws/status")
+    r = client.get("/api/v1/topology/ws/status", headers=auth_headers)
     assert r.status_code == 200
     data = r.json()
     assert "connections" in data
@@ -162,9 +203,9 @@ def test_topology_ws_status_endpoint(client: TestClient):
 # ── Settings: realtime fields ────────────────────────────────────────────────
 
 
-def test_settings_realtime_fields_readable(client: TestClient):
+def test_settings_realtime_fields_readable(client: TestClient, auth_headers):
     """AppSettings exposes realtime_notifications_enabled and realtime_transport."""
-    r = client.get("/api/v1/settings")
+    r = client.get("/api/v1/settings", headers=auth_headers)
     assert r.status_code == 200
     data = r.json()
     assert "realtime_notifications_enabled" in data
@@ -172,11 +213,12 @@ def test_settings_realtime_fields_readable(client: TestClient):
     assert data["realtime_transport"] in ("auto", "sse", "websocket")
 
 
-def test_settings_realtime_fields_writable(client: TestClient):
+def test_settings_realtime_fields_writable(client: TestClient, auth_headers):
     """PUT /api/v1/settings can update realtime fields."""
     r = client.put(
         "/api/v1/settings",
         json={"realtime_notifications_enabled": False, "realtime_transport": "sse"},
+        headers=auth_headers,
     )
     assert r.status_code == 200
     data = r.json()
@@ -184,4 +226,8 @@ def test_settings_realtime_fields_writable(client: TestClient):
     assert data["realtime_transport"] == "sse"
 
     # Restore
-    client.put("/api/v1/settings", json={"realtime_notifications_enabled": True})
+    client.put(
+        "/api/v1/settings",
+        json={"realtime_notifications_enabled": True},
+        headers=auth_headers,
+    )

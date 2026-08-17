@@ -42,7 +42,7 @@ from app.db.models import (
     User,
 )
 from app.db.session import get_db
-from app.services.ip_reservation import bulk_conflict_map
+from app.services.ip_reservation import _parse_ports_json, bulk_conflict_map
 
 _logger = logging.getLogger(__name__)
 
@@ -741,14 +741,9 @@ def build_topology_graph(
                 or (svc.compute_unit.ip_address if svc.compute_unit else None)
                 or (svc.hardware.ip_address if svc.hardware else None)
             )
-            parsed_ports = []
-            if svc.ports_json:
-                try:
-                    maybe_ports = json.loads(svc.ports_json)
-                    if isinstance(maybe_ports, list):
-                        parsed_ports = maybe_ports
-                except Exception:
-                    parsed_ports = []
+            # ports_json is JSONB (migration 0026); _parse_ports_json also still
+            # decodes the pre-migration string form.
+            parsed_ports = _parse_ports_json(svc.ports_json)
             nodes.append(
                 {
                     "id": f"svc-{svc.id}",

@@ -1242,6 +1242,17 @@ def delete_account(db: Session, user_id: int) -> None:
     db.delete(user)
     db.commit()
 
+    # The user_sessions rows go with the user (ON DELETE CASCADE), but the
+    # process-local session cache in core.security does not: it maps token hash to
+    # user id without re-reading the row, so the deleted account's token keeps
+    # resolving to an authenticated user id until the entry ages out. Every other
+    # path that ends a session (logout, revoke_session, revoke_all_sessions) clears
+    # it; deleting the account outright has to as well. Clearing wholesale rather
+    # than by token because a user may hold several, and this is a rare operation.
+    from app.core.security import invalidate_session_cache
+
+    invalidate_session_cache(None)
+
     from app.services.log_service import write_log
 
     write_log(

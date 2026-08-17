@@ -1,3 +1,10 @@
+"""Hardware telemetry endpoint tests.
+
+The read paths take ``auth_headers`` alongside the write path: cd1724ff withdrew
+the open first-run admin sentinel, so /hardware/{id}/telemetry answers 401 until
+an admin exists and authenticates, reads included.
+"""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock
@@ -6,13 +13,13 @@ from app.core.time import utcnow
 from app.db.models import Hardware, HardwareLiveMetric
 
 
-def test_get_telemetry_unconfigured_returns_200(client, db):
+def test_get_telemetry_unconfigured_returns_200(client, db, auth_headers):
     hw = Hardware(name="telemetry-unconfigured", role="server")
     db.add(hw)
     db.commit()
     db.refresh(hw)
 
-    resp = client.get(f"/api/v1/hardware/{hw.id}/telemetry")
+    resp = client.get(f"/api/v1/hardware/{hw.id}/telemetry", headers=auth_headers)
     assert resp.status_code == 200
     body = resp.json()
     assert body["hardware_id"] == hw.id
@@ -20,7 +27,7 @@ def test_get_telemetry_unconfigured_returns_200(client, db):
     assert body["source"] == "none"
 
 
-def test_get_telemetry_falls_back_to_db_when_cache_read_fails(client, db, monkeypatch):
+def test_get_telemetry_falls_back_to_db_when_cache_read_fails(client, db, monkeypatch, auth_headers):
     hw = Hardware(
         name="telemetry-db-fallback",
         role="server",
@@ -44,7 +51,7 @@ def test_get_telemetry_falls_back_to_db_when_cache_read_fails(client, db, monkey
         AsyncMock(side_effect=RuntimeError("redis unavailable")),
     )
 
-    resp = client.get(f"/api/v1/hardware/{hw.id}/telemetry")
+    resp = client.get(f"/api/v1/hardware/{hw.id}/telemetry", headers=auth_headers)
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "healthy"

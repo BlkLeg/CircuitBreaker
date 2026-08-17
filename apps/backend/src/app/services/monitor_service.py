@@ -1,7 +1,6 @@
 """Monitor service: monitor-id CRUD, events, history, and per-target rollups."""
 
 import asyncio
-import json
 import logging
 import re
 from collections.abc import Callable, Coroutine, Mapping, Sequence
@@ -29,6 +28,7 @@ from app.db.models import (
 )
 from app.schemas.agent_frame import TYPE_PROBE_CANCEL
 from app.schemas.monitor import CONFIG_MODELS, MonitorCreate, MonitorUpdate
+from app.services.ip_reservation import _parse_ports_json
 from app.services.monitoring import result_service
 from app.services.monitoring.state import PENDING
 
@@ -967,11 +967,8 @@ def _resolve_external_node(db: Session, target_id: int) -> TargetInfo | None:
 
 def _service_port(svc: Service) -> int | None:
     """First port declared on a service — structured ports_json wins over free text."""
-    try:
-        entries = json.loads(svc.ports_json) if svc.ports_json else []
-    except (TypeError, ValueError):
-        entries = []
-    for entry in entries if isinstance(entries, list) else []:
+    entries = _parse_ports_json(svc.ports_json)
+    for entry in entries:
         port = entry.get("port") if isinstance(entry, dict) else entry
         try:
             if port is not None and 1 <= int(port) <= 65535:

@@ -18,6 +18,12 @@ POSTGRES_DEV_DB     ?= circuitbreaker
 POSTGRES_DEV_PASS   ?= breaker
 CB_DB_URL_DEV       ?= postgresql://$(POSTGRES_DEV_USER):$(POSTGRES_DEV_PASS)@localhost:$(POSTGRES_DEV_PORT)/$(POSTGRES_DEV_DB)
 
+# Integration tests get their own database so a test run never truncates dev data.
+# Same host/credentials for both dependency modes: `deps-up` (Docker) and
+# `deps-native-up` (systemd) each expose Postgres on localhost:$(POSTGRES_DEV_PORT).
+POSTGRES_TEST_DB    ?= circuitbreaker_test
+CB_TEST_DB_URL      ?= postgresql://$(POSTGRES_DEV_USER):$(POSTGRES_DEV_PASS)@localhost:$(POSTGRES_DEV_PORT)/$(POSTGRES_TEST_DB)
+
 REDIS_DEV_NAME      ?= cb-redis-dev
 REDIS_DEV_PORT      ?= 6379
 CB_REDIS_URL_DEV    ?= redis://localhost:$(REDIS_DEV_PORT)/0
@@ -203,7 +209,7 @@ security-check: ## Run security scans (gate mode — fails on HIGH/CRIT)
 security-report: ## Run full security scan report (non-blocking)
 	./scripts/security_scan.sh
 
-.PHONY: lint format test security-check security-report
+.PHONY: lint format test test-db test-backend test-frontend security-check security-report
 
 lint: ## Run backend and frontend linters
 	cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/ruff check src/app
@@ -214,6 +220,23 @@ format: ## Format backend and frontend code
 	cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/ruff format src/
 	cd $(FRONTEND_DIR) && npm run format
 
-test: ## Run tests natively
-	cd $(BACKEND_DIR) && PYTHONPATH=src $(CURDIR)/.venv/bin/pytest ../../tests/integration -q
+test: test-backend test-frontend ## Run all tests natively (provisions the test DB first)
+
+test-db: ## Create the integration test database if it is missing (never drops it)
+	$(CURDIR)/.venv/bin/python scripts/ensure_test_db.py "$(CB_TEST_DB_URL)"
+
+# Why the two CB_ALLOW_* flags: the integration suite boots the REAL app lifespan,
+# and tests/integration/conftest.py deliberately points NATS at an unreachable port
+# so startup fails fast instead of hanging on a broker connect. Production startup
+# treats a dead broker — and a missing egress proxy — as fatal, so without these the
+# app aborts with "CRITICAL STARTUP FAILED" and every fixture dies in setup. They are
+# load-bearing, not leftovers; do not delete them.
+test-backend: test-db ## Run backend integration tests natively
+	cd $(BACKEND_DIR) && \
+		CB_TEST_DB_URL="$(CB_TEST_DB_URL)" \
+		CB_ALLOW_DEGRADED_DEPENDENCIES=true \
+		CB_ALLOW_DIRECT_EGRESS=true \
+		PYTHONPATH=src $(CURDIR)/.venv/bin/pytest ../../tests/integration -q
+
+test-frontend: ## Run frontend unit tests natively
 	cd $(FRONTEND_DIR) && npm test

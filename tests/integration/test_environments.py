@@ -1,5 +1,7 @@
 """Feature 2 — Environments tests."""
 
+import time
+
 import pytest
 from app.db.models import Environment
 from app.services.environments_service import resolve_environment_id
@@ -10,6 +12,33 @@ from app.services.environments_service import resolve_environment_id
 @pytest.fixture(autouse=True)
 def _authenticated_client(client, auth_headers):
     client.headers.update(auth_headers)
+
+def _wait_for_log(client, action, timeout=5.0):
+    """Return the environment audit entry for *action*, waiting for it to land.
+
+    LoggingMiddleware writes route-derived audit entries fire-and-forget in a
+    worker thread so the mutating request is not delayed by the insert, so the
+    row appears shortly after the response the test already received. Retry the
+    read rather than assume the write beat us; the assertions are unchanged.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        resp = client.get("/api/v1/logs")
+        assert resp.status_code == 200, (
+            f"GET /api/v1/logs failed: HTTP {resp.status_code} {resp.text}"
+        )
+        entry = next(
+            (
+                log
+                for log in resp.json()["logs"]
+                if log.get("entity_type") == "environment" and log.get("action") == action
+            ),
+            None,
+        )
+        if entry is not None or time.monotonic() >= deadline:
+            return entry
+        time.sleep(0.05)
+
 
 def _create_env(client, name="prod", color=None):
     payload = {"name": name}
@@ -167,11 +196,7 @@ def test_service_create_with_inline_environment(client):
 
 def test_environment_log_on_create(client):
     _create_env(client, name="prod")
-    logs = client.get("/api/v1/logs").json()["logs"]
-    entry = next(
-        (log for log in logs if log.get("entity_type") == "environment" and log.get("action") == "create_environment"),
-        None,
-    )
+    entry = _wait_for_log(client, "create_environment")
     assert entry is not None, "Expected a 'create_environment' log for environment"
     assert entry["entity_name"] == "prod"
 
@@ -180,11 +205,7 @@ def test_environment_log_on_rename(client):
     env = _create_env(client, name="prod").json()
     client.patch(f"/api/v1/environments/{env['id']}", json={"name": "production"})
 
-    logs = client.get("/api/v1/logs").json()["logs"]
-    entry = next(
-        (log for log in logs if log.get("entity_type") == "environment" and log.get("action") == "update_environment"),
-        None,
-    )
+    entry = _wait_for_log(client, "update_environment")
     assert entry is not None, "Expected a 'update_environment' log for environment"
 
 
@@ -192,9 +213,5 @@ def test_environment_log_on_delete(client):
     env = _create_env(client, name="prod").json()
     client.delete(f"/api/v1/environments/{env['id']}")
 
-    logs = client.get("/api/v1/logs").json()["logs"]
-    entry = next(
-        (log for log in logs if log.get("entity_type") == "environment" and log.get("action") == "delete_environment"),
-        None,
-    )
+    entry = _wait_for_log(client, "delete_environment")
     assert entry is not None, "Expected a 'delete_environment' log for environment"

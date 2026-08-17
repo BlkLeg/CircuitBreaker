@@ -57,12 +57,31 @@ class RouteOut(BaseModel):
     enabled: bool
 
 
+def _provider_config(sink: NotificationSink) -> dict:
+    """Read provider_config as a mapping, tolerating legacy double-encoded rows.
+
+    The column became JSONB in v0.2.0, but this module kept ``json.dumps``-ing the
+    payload on write, so rows created before that was fixed hold a JSON *string*
+    inside the JSONB column. Everything downstream — SinkOut, test_sink,
+    notification_worker._dispatch — subscripts it as a dict, so those rows raise on
+    read. Decode them here rather than leaving installs with unreadable sinks.
+    """
+    config = sink.provider_config
+    if isinstance(config, str):
+        try:
+            decoded = json.loads(config)
+        except ValueError:
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+    return config or {}
+
+
 def _sink_to_out(sink: NotificationSink) -> SinkOut:
     return SinkOut(
         id=sink.id,
         name=sink.name,
         provider_type=sink.provider_type,
-        provider_config=sink.provider_config,
+        provider_config=_provider_config(sink),
         enabled=sink.enabled,
     )
 
@@ -85,7 +104,10 @@ def create_sink(
     sink = NotificationSink(
         name=sink_in.name,
         provider_type=sink_in.provider_type,
-        provider_config=json.dumps(sink_in.provider_config),
+        # provider_config is JSONB — hand SQLAlchemy the dict. Serialising it here
+        # stored a JSON string inside the JSONB column, which every reader then
+        # choked on (SinkOut wants a dict, and the worker subscripts it).
+        provider_config=sink_in.provider_config,
         enabled=sink_in.enabled,
     )
     db.add(sink)
@@ -106,10 +128,7 @@ def update_sink(
         raise HTTPException(status_code=404, detail=_SINK_NOT_FOUND)
     updates = sink_in.model_dump(exclude_unset=True)
     for field, value in updates.items():
-        if field == "provider_config" and isinstance(value, dict):
-            setattr(sink, field, json.dumps(value))
-        else:
-            setattr(sink, field, value)
+        setattr(sink, field, value)
     db.commit()
     db.refresh(sink)
     return _sink_to_out(sink)
@@ -178,7 +197,7 @@ async def test_sink(
     if not sink:
         raise HTTPException(status_code=404, detail=_SINK_NOT_FOUND)
 
-    config = sink.provider_config
+    config = _provider_config(sink)
     provider_type = sink.provider_type
     webhook_url = config.get("webhook_url")
 

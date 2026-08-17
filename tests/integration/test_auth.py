@@ -7,6 +7,8 @@ Uses the existing ``client`` / ``db`` fixtures from conftest.py (PostgreSQL).
 import pyotp
 import pytest
 
+from .conftest import _read_setup_token
+
 DEFAULT_TEST_EMAIL = "test@example.com"
 DEFAULT_TEST_PASSWORD = "Secure1234!"
 BOOTSTRAP_TEST_PASSWORD = DEFAULT_TEST_PASSWORD
@@ -22,7 +24,12 @@ INVALID_WRONG_PASSWORD = "wrongpassword"
 def _register(client, email=DEFAULT_TEST_EMAIL, password=DEFAULT_TEST_PASSWORD, display_name=None):
     status = client.get("/api/v1/bootstrap/status")
     if status.status_code == 200 and status.json().get("needs_bootstrap"):
+        # SEC-4 (6be8c8d9): bootstrap is gated by a one-time setup token the server
+        # writes to a 0600 file under CB_DATA_DIR. Omitting it is a 422 from Pydantic
+        # before the handler runs, which turns every downstream auth assertion here
+        # into an unrelated KeyError. Fetch it the way the setup wizard does.
         body = {
+            "setup_token": _read_setup_token(client),
             "email": email,
             "password": password,
             "theme_preset": "one-dark",
@@ -41,8 +48,19 @@ def _login(client, email=DEFAULT_TEST_EMAIL, password=DEFAULT_TEST_PASSWORD):
     return client.post("/api/v1/auth/login", json={"email": email, "password": password})
 
 
-def _auth_header(token: str):
-    return {"Authorization": f"Bearer {token}"}
+def _auth_header(client, token: str):
+    """Bearer credentials plus the double-submit CSRF header.
+
+    TestClient keeps the cb_session/cb_csrf cookies the bootstrap and login
+    responses set, so from the CSRF middleware's point of view every later
+    mutating request is a browser session and needs X-CSRF-Token to match the
+    cb_csrf cookie. Sending it unconditionally also keeps working after
+    ``client.cookies.clear()``: with no session cookie the middleware never looks.
+    """
+    return {
+        "Authorization": f"Bearer {token}",
+        "X-CSRF-Token": client.cookies.get("cb_csrf") or "",
+    }
 
 
 def test_bootstrap_status_on_fresh_db(client):
@@ -56,6 +74,7 @@ def test_bootstrap_initialize_creates_admin_and_enables_auth(client):
     resp = client.post(
         "/api/v1/bootstrap/initialize",
         json={
+            "setup_token": _read_setup_token(client),
             "email": "bootstrap@example.com",
             "password": BOOTSTRAP_TEST_PASSWORD,
             "theme_preset": "one-dark",
@@ -83,11 +102,15 @@ def test_bootstrap_initialize_postgres_path_skips_sqlite_begin_immediate(client,
         assert "BEGIN IMMEDIATE" not in sql_text
         return original_execute(statement, *args, **kwargs)
 
+    # Read the setup token before the guard is installed: /bootstrap/status runs
+    # its own queries and the guard is only meant to police the bootstrap write.
+    setup_token = _read_setup_token(client)
     monkeypatch.setattr(db, "execute", _guarded_execute)
 
     resp = client.post(
         "/api/v1/bootstrap/initialize",
         json={
+            "setup_token": setup_token,
             "email": "bootstrap-postgres@example.com",
             "password": BOOTSTRAP_TEST_PASSWORD,
             "theme_preset": "one-dark",
@@ -97,9 +120,11 @@ def test_bootstrap_initialize_postgres_path_skips_sqlite_begin_immediate(client,
 
 
 def test_bootstrap_initialize_conflicts_after_first_user(client):
+    setup_token = _read_setup_token(client)
     first = client.post(
         "/api/v1/bootstrap/initialize",
         json={
+            "setup_token": setup_token,
             "email": "first@example.com",
             "password": BOOTSTRAP_TEST_PASSWORD,
             "theme_preset": "one-dark",
@@ -107,13 +132,20 @@ def test_bootstrap_initialize_conflicts_after_first_user(client):
     )
     assert first.status_code == 200
 
+    # Replay the same (now consumed) token: the second call must be refused for
+    # being a second bootstrap, not for a malformed body. /bootstrap/status stops
+    # publishing the token path once auth is on, so replay is the only way to send
+    # a syntactically valid request here.
     second = client.post(
         "/api/v1/bootstrap/initialize",
         json={
+            "setup_token": setup_token,
             "email": "second@example.com",
             "password": BOOTSTRAP_TEST_PASSWORD,
             "theme_preset": "dark-matter",
         },
+        # The first call left a session cookie behind, so this one is CSRF-checked.
+        headers={"X-CSRF-Token": client.cookies.get("cb_csrf") or ""},
     )
     assert second.status_code == 409
 
@@ -247,7 +279,7 @@ def test_vault_reset_returns_session_and_revokes_old_session(client):
     assert data["token"]
     assert data["user"]["email"] == DEFAULT_TEST_EMAIL
 
-    old_me = client.get("/api/v1/auth/me", headers=_auth_header(old_token))
+    old_me = client.get("/api/v1/auth/me", headers=_auth_header(client, old_token))
     assert old_me.status_code == 401
 
     old_login = _login(client, password=DEFAULT_TEST_PASSWORD)
@@ -343,6 +375,7 @@ def test_bootstrap_initialize_can_seed_smtp_settings(client, db):
     resp = client.post(
         "/api/v1/bootstrap/initialize",
         json={
+            "setup_token": _read_setup_token(client),
             "email": "bootstrap@example.com",
             "password": BOOTSTRAP_TEST_PASSWORD,
             "theme_preset": "one-dark",
@@ -393,7 +426,7 @@ class TestProfile:
     def test_get_me_with_token(self, client):
         reg = _register(client)
         token = reg.json()["token"]
-        resp = client.get("/api/v1/auth/me", headers=_auth_header(token))
+        resp = client.get("/api/v1/auth/me", headers=_auth_header(client, token))
         assert resp.status_code == 200
         assert resp.json()["email"] == DEFAULT_TEST_EMAIL
 
@@ -407,17 +440,17 @@ class TestProfile:
         reg = _register(client)
         token = reg.json()["token"]
 
-        logout_resp = client.post("/api/v1/auth/logout", headers=_auth_header(token))
+        logout_resp = client.post("/api/v1/auth/logout", headers=_auth_header(client, token))
         assert logout_resp.status_code == 204
 
-        resp = client.get("/api/v1/auth/me", headers=_auth_header(token))
+        resp = client.get("/api/v1/auth/me", headers=_auth_header(client, token))
         assert resp.status_code == 401
 
 
 def test_mfa_enable_sets_profile_flag_and_requires_challenge_on_login(client):
     reg = _register(client)
     token = reg.json()["token"]
-    headers = _auth_header(token)
+    headers = _auth_header(client, token)
 
     setup = client.post("/api/v1/auth/mfa/setup", headers=headers)
     assert setup.status_code == 200
@@ -438,11 +471,11 @@ def test_mfa_enable_sets_profile_flag_and_requires_challenge_on_login(client):
     old_me = client.get("/api/v1/auth/me", headers=headers)
     assert old_me.status_code == 401
 
-    me = client.get("/api/v1/auth/me", headers=_auth_header(activate_data["token"]))
+    me = client.get("/api/v1/auth/me", headers=_auth_header(client, activate_data["token"]))
     assert me.status_code == 200
     assert me.json()["mfa_enabled"] is True
 
-    sessions = client.get("/api/v1/users/me/sessions", headers=_auth_header(activate_data["token"]))
+    sessions = client.get("/api/v1/users/me/sessions", headers=_auth_header(client, activate_data["token"]))
     assert sessions.status_code == 200
     assert len(sessions.json()) == 1
 
@@ -465,7 +498,7 @@ def test_mfa_enable_sets_profile_flag_and_requires_challenge_on_login(client):
 def test_mfa_setup_rejects_when_mfa_already_enabled(client):
     reg = _register(client)
     token = reg.json()["token"]
-    headers = _auth_header(token)
+    headers = _auth_header(client, token)
 
     setup = client.post("/api/v1/auth/mfa/setup", headers=headers)
     assert setup.status_code == 200
@@ -480,7 +513,7 @@ def test_mfa_setup_rejects_when_mfa_already_enabled(client):
 
     second_setup = client.post(
         "/api/v1/auth/mfa/setup",
-        headers=_auth_header(activate.json()["token"]),
+        headers=_auth_header(client, activate.json()["token"]),
     )
     assert second_setup.status_code == 400
     assert "already enabled" in second_setup.json()["detail"].lower()
@@ -489,7 +522,7 @@ def test_mfa_setup_rejects_when_mfa_already_enabled(client):
 def test_mfa_backup_codes_can_be_regenerated_and_old_codes_stop_working(client):
     reg = _register(client)
     token = reg.json()["token"]
-    headers = _auth_header(token)
+    headers = _auth_header(client, token)
 
     setup = client.post("/api/v1/auth/mfa/setup", headers=headers)
     secret = setup.json()["secret"]
@@ -500,7 +533,7 @@ def test_mfa_backup_codes_can_be_regenerated_and_old_codes_stop_working(client):
     )
     assert activate.status_code == 200
     initial_codes = activate.json()["backup_codes"]
-    new_headers = _auth_header(activate.json()["token"])
+    new_headers = _auth_header(client, activate.json()["token"])
 
     regen = client.post(
         "/api/v1/auth/mfa/backup-codes/regenerate",
@@ -534,11 +567,11 @@ def test_mfa_backup_codes_can_be_regenerated_and_old_codes_stop_working(client):
 def test_delete_me(client):
     reg = _register(client)
     token = reg.json()["token"]
-    resp = client.delete("/api/v1/auth/me", headers=_auth_header(token))
+    resp = client.delete("/api/v1/auth/me", headers=_auth_header(client, token))
     assert resp.status_code == 204
 
-    resp = client.get("/api/v1/auth/me", headers=_auth_header(token))
-    assert resp.status_code == 401
+    resp = client.get("/api/v1/auth/me", headers=_auth_header(client, token))
+    assert resp.status_code == 401, resp.text
 
 
 def test_delete_me_unauthenticated(client):
@@ -558,6 +591,7 @@ def test_bootstrap_logs_scrub_sensitive_data(client):
     resp = client.post(
         "/api/v1/bootstrap/initialize",
         json={
+            "setup_token": _read_setup_token(client),
             "email": "admin@example.com",
             "password": password,
             "theme_preset": "one-dark",
@@ -569,7 +603,7 @@ def test_bootstrap_logs_scrub_sensitive_data(client):
     # Bootstrap enables auth — provide the token to access logs
     logs_resp = client.get(
         "/api/v1/logs",
-        headers=_auth_header(token),
+        headers=_auth_header(client, token),
     )
     assert logs_resp.status_code == 200
 

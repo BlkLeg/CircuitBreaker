@@ -1,8 +1,27 @@
 """Feature 3 — IP/Port reservation tests."""
-import json
+
+import pytest
 
 from app.core.time import utcnow
 from app.db.models import Service
+
+
+# ── Auth ─────────────────────────────────────────────────────────────────────
+#
+# First run stopped being an open admin session in cd1724ff: outside /bootstrap,
+# /auth, the settings read and the OAuth provider write, every route answers 401
+# until a real admin exists and presents a token. These tests drive ordinary
+# CRUD, so they no longer ride on the un-bootstrapped app — they bootstrap and
+# carry a Bearer header like any other caller.
+
+@pytest.fixture(autouse=True)
+def _authenticated_client(request):
+    # Tests here that only touch the ORM never build a client; don't make them
+    # pay for a bootstrap (and a bcrypt hash) they have no use for.
+    if "client" not in request.fixturenames:
+        return
+    request.getfixturevalue("client").headers.update(request.getfixturevalue("auth_headers"))
+
 
 # ── Test constants ────────────────────────────────────────────────────────────
 HW_IP_A    = "10.0.0.1"   # primary hardware test IP
@@ -149,8 +168,10 @@ def test_ports_backfill_from_string(db):
     _backfill_ports_json(db)
     db.refresh(svc)
 
+    # ports_json is JSONB as of migration 0026, so it round-trips as a real list
+    # rather than the JSON string this assertion used to have to decode.
     assert svc.ports_json is not None
-    parsed = json.loads(svc.ports_json)
+    parsed = svc.ports_json
     assert isinstance(parsed, list)
     ports_found = [p["port"] for p in parsed]
     assert 80 in ports_found

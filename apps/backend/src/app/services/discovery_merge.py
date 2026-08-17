@@ -243,14 +243,13 @@ def _auto_merge_result(db: Session, result: ScanResult, actor: str = "system") -
                             slug=_make_service_slug(db, svc_name, hw.id),
                             status="running",
                             hardware_id=hw.id,
-                            ports_json=json.dumps(
-                                [
-                                    {
-                                        "port": port_num,
-                                        "protocol": p.get("protocol", "tcp"),
-                                    }
-                                ]
-                            ),
+                            # JSONB column (migration 0026) — hand it the list, not a string.
+                            ports_json=[
+                                {
+                                    "port": port_num,
+                                    "protocol": p.get("protocol", "tcp"),
+                                }
+                            ],
                         )
                         db.add(svc)
                 db.commit()

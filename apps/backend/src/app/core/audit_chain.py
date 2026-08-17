@@ -6,6 +6,7 @@ previous_hash = log_hash of the prior entry. This module verifies the chain.
 
 import json
 import logging
+import time
 from typing import Any
 
 from sqlalchemy import select, text
@@ -40,7 +41,17 @@ def compute_log_hash(log: Log, previous_hash: str | None) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def lock_audit_chain(session: Session) -> None:
+_AUDIT_CHAIN_LOCK_ID = 487143216
+
+# How often a bounded waiter re-tries the advisory lock while waiting.
+_LOCK_RETRY_INTERVAL_SECONDS = 0.02
+
+
+class AuditChainLockTimeout(RuntimeError):
+    """The audit-chain lock stayed held by another connection past the deadline."""
+
+
+def lock_audit_chain(session: Session, *, wait_seconds: float | None = None) -> None:
     """Take the strongest audit-chain write lock available for this database.
 
     On PostgreSQL this must succeed. The lock is what serialises hash-chain
@@ -49,15 +60,50 @@ def lock_audit_chain(session: Session) -> None:
     tampering. Swallowing the error turned the one control protecting chain
     integrity into a no-op precisely when the database was under stress.
 
-    Non-PostgreSQL backends (SQLite in tests and single-user installs) have no
-    advisory locks and are single-writer anyway, so they are a no-op by design
-    rather than by failure.
+    ``wait_seconds`` bounds how long the caller queues for the lock. Writers
+    that append inside their own request transaction leave it ``None`` and wait
+    as long as it takes. Background writers — LoggingMiddleware persists its
+    route-derived entry on a throwaway connection in the default executor —
+    must pass a deadline: the lock is transaction-scoped, so a connection that
+    is idle-in-transaction after having appended a log entry holds it, and an
+    unbounded wait pins one of the few shared executor threads for as long as
+    that transaction lives. Exhaust them and the awaited executor work on the
+    request path (actor resolution, old-value fetch) stops being served, i.e.
+    a stalled audit write takes the API down with it.
+
+    Timing out raises :class:`AuditChainLockTimeout`. That drops the entry
+    loudly rather than appending it unserialised — the chain is never forked.
+
+    Non-PostgreSQL backends have no advisory locks, so the guard below is a
+    no-op by design rather than by failure. Nothing ships on one any more:
+    PostgreSQL has been the only supported application database since v0.2.0,
+    and the single SQLite file left in the product — the CVE store in
+    db/cve_session.py — has no audit chain to serialise. The branch stays as a
+    defensive no-op, pinned by test_audit_chain_lock_is_a_no_op_on_sqlite.
     """
     bind = session.get_bind()
     if bind.dialect.name != "postgresql":
         return
     try:
-        session.execute(text("SELECT pg_advisory_xact_lock(487143216)"))
+        if wait_seconds is None:
+            session.execute(text(f"SELECT pg_advisory_xact_lock({_AUDIT_CHAIN_LOCK_ID})"))
+            return
+
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            acquired = session.execute(
+                text(f"SELECT pg_try_advisory_xact_lock({_AUDIT_CHAIN_LOCK_ID})")
+            ).scalar()
+            if acquired:
+                return
+            if time.monotonic() >= deadline:
+                raise AuditChainLockTimeout(
+                    "audit-chain serialisation lock still held by another connection "
+                    f"after {wait_seconds}s"
+                )
+            time.sleep(_LOCK_RETRY_INTERVAL_SECONDS)
+    except AuditChainLockTimeout:
+        raise
     except Exception as exc:
         _logger.error("audit-chain advisory lock could not be acquired", exc_info=True)
         raise RuntimeError(

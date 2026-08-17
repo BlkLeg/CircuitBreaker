@@ -3,8 +3,13 @@ import os
 # Force NATS to fail fast in tests (unreachable port) so lifespan doesn't hang
 os.environ.setdefault("NATS_URL", "nats://127.0.0.1:19999")
 
-# Use a writable temp dir so the app lifespan doesn't crash on /data permission checks
-os.environ.setdefault("CB_DATA_DIR", "/tmp/cb-test-data")
+# Use a writable temp dir so the app lifespan doesn't crash on /data permission checks.
+# Key it on the target database: CB_DATA_DIR holds the one-time bootstrap setup
+# token file, so two suites running side by side against their own databases would
+# otherwise overwrite each other's token and fail bootstrap with a 403.
+_DATA_DIR_URL = os.environ.get("CB_TEST_DB_URL") or os.environ.get("CB_DB_URL") or ""
+_DATA_DIR_KEY = _DATA_DIR_URL.rsplit("/", 1)[-1] or "default"
+os.environ.setdefault("CB_DATA_DIR", f"/tmp/cb-test-data-{_DATA_DIR_KEY}")
 
 # Disable Alembic auto-migration in tests; conftest uses Base.metadata.create_all() instead
 os.environ.setdefault("CB_AUTO_MIGRATE", "false")
@@ -21,6 +26,8 @@ os.environ["CB_DB_URL"] = (
 # Test DB URL for fixtures (local/test only; must not contain production secrets).
 _TEST_DB_URL_DEFAULT = "postgresql://breaker:breaker@localhost:5432/circuitbreaker_test"
 TEST_DB_URL = os.environ.get("CB_TEST_DB_URL") or os.environ.get("CB_DB_URL") or _TEST_DB_URL_DEFAULT
+
+from pathlib import Path  # noqa: E402
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -126,20 +133,78 @@ def client(db_engine, db, monkeypatch):
         _config.settings.database_url = orig_db_url
 
 
+def _http_failure(step: str, resp) -> str:
+    """Build an assertion message that actually names the failure.
+
+    A bare ``resp.json()["token"]`` turns one broken bootstrap contract into
+    dozens of anonymous ``KeyError: 'token'`` tracebacks with the real 422 nowhere
+    in sight. Always report the step, the status code and the body.
+    """
+    body = resp.text
+    if len(body) > 2000:
+        body = body[:2000] + "... (truncated)"
+    return f"{step} failed: HTTP {resp.status_code} {body}"
+
+
+def _read_setup_token(client) -> str:
+    """Obtain the one-time bootstrap setup token the way the product intends.
+
+    Bootstrap is token-gated: the server mints a single-use setup token and either
+    takes it from ``CB_SETUP_TOKEN`` or writes it to a 0600 file under
+    ``CB_DATA_DIR``. ``GET /bootstrap/status`` publishes that file's path — the
+    same signpost the setup wizard shows the operator. Walking that real path (as
+    opposed to seeding ``bootstrap_token_hash`` or patching the check) is
+    deliberate: the token requirement landing without the fixture noticing is
+    exactly what broke every authenticated test here, and this keeps the fixture
+    on the hook for the contract.
+    """
+    env_token = (os.environ.get("CB_SETUP_TOKEN") or "").strip()
+    if env_token:
+        # Operator-supplied token: the server writes no file in this mode.
+        return env_token
+
+    resp = client.get("/api/v1/bootstrap/status")
+    assert resp.status_code == 200, _http_failure("GET /api/v1/bootstrap/status", resp)
+    status = resp.json()
+    assert status.get("needs_bootstrap") is True, (
+        "expected an un-bootstrapped app on this test's freshly truncated database, "
+        f"but /bootstrap/status reported {status}"
+    )
+    token_path = status.get("setup_token_path")
+    assert token_path, (
+        "/bootstrap/status did not report setup_token_path, so the setup token the "
+        f"bootstrap endpoint requires cannot be located. Response: {status}"
+    )
+    token_file = Path(token_path)
+    assert token_file.is_file(), (
+        f"/bootstrap/status pointed at {token_file} for the setup token but no such "
+        "file exists; the server did not write one."
+    )
+    setup_token = token_file.read_text(encoding="utf-8").strip()
+    assert setup_token, f"setup token file {token_file} is empty"
+    return setup_token
+
+
 @pytest.fixture
 def auth_headers(client):
     """Bootstrap the app, log in, and return Bearer auth headers.
 
     Auth is always enabled after bootstrap. Use this fixture in tests that
-    need a fully bootstrapped app with valid credentials.
+    need a fully bootstrapped app with valid credentials. Every step is asserted
+    with the status code and body, because a silent failure here degrades whole
+    test files into confusing downstream errors rather than one clear message.
     """
-    client.post(
+    bootstrap_resp = client.post(
         "/api/v1/bootstrap/initialize",
         json={
+            "setup_token": _read_setup_token(client),
             "email": "test@example.com",
             "password": "Secure1234!",
             "theme_preset": "one-dark",
         },
+    )
+    assert bootstrap_resp.status_code == 200, _http_failure(
+        "POST /api/v1/bootstrap/initialize", bootstrap_resp
     )
     login_resp = client.post(
         "/api/v1/auth/login",
@@ -148,6 +213,11 @@ def auth_headers(client):
             "password": "Secure1234!",
         },
     )
-    token = login_resp.json()["token"]
+    assert login_resp.status_code == 200, _http_failure("POST /api/v1/auth/login", login_resp)
+    login_body = login_resp.json()
+    assert isinstance(login_body, dict) and login_body.get("token"), (
+        f"login succeeded but returned no session token: {login_body}"
+    )
+    token = login_body["token"]
     csrf_token = client.cookies.get("cb_csrf", "")
     return {"Authorization": f"Bearer {token}", "X-CSRF-Token": csrf_token}

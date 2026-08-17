@@ -51,7 +51,14 @@ class Settings(BaseSettings):
     # Developer mode — enables verbose SQL logging, exposes
     # full stack traces in error responses.  NEVER enable in production.
     dev_mode: bool = False
-    database_url: str = ""  # Must be a postgresql:// URL; set via CB_DB_URL env var
+    # Must be a postgresql:// URL. CB_DB_URL first, matching db/session.py's own
+    # os.environ.get("CB_DB_URL", settings.database_url) precedence — without the
+    # alias this field only ever saw DATABASE_URL, so it stayed empty everywhere
+    # CB_DB_URL is the variable actually set (docker-compose.yml sets neither).
+    # session.py reads the environment directly and so was unaffected; db_client's
+    # _make_primary_engine has only this field, which is why the analytics engine
+    # fell back onto create_engine("").
+    database_url: str = Field("", validation_alias=AliasChoices("CB_DB_URL", "DATABASE_URL"))
     db_pool_url: str | None = None  # pgbouncer URL; falls back to database_url
     redis_url: str = Field(
         "redis://localhost:6379/0",
@@ -117,7 +124,8 @@ class Settings(BaseSettings):
     # In Docker Compose set UPLOADS_DIR=/app/data/uploads to match the compose volume.
     uploads_dir: str = "data/uploads"
     # Optional DuckDB file path for analytics queries.
-    # Leave empty to use SQLite for all queries (default for most deployments).
+    # Leave empty to run analytics on the primary PostgreSQL engine, which is
+    # what db_client._make_analytics_engine falls back to.
     analytics_db_path: str = ""
 
 

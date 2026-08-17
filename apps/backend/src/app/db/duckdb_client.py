@@ -3,7 +3,7 @@
 Wraps the engine returned by :func:`db_client.get_engine("analytics")` with a
 convenience API so callers never import engine internals.  When DuckDB is not
 installed or configured the client falls back gracefully — ``is_available()``
-returns ``False`` and ``query()`` routes through the primary SQLite engine.
+returns ``False`` and ``query()`` routes through the primary PostgreSQL engine.
 """
 
 from __future__ import annotations
@@ -35,7 +35,8 @@ def _quoted_table_identifier(table: str) -> str:
 
 
 def is_available() -> bool:
-    """Return ``True`` when the analytics engine is actually DuckDB (not the SQLite fallback)."""
+    """Return ``True`` when the analytics engine is really DuckDB rather than the
+    primary PostgreSQL engine it falls back to."""
     try:
         engine = get_engine("analytics")
         return engine.dialect.name == "duckdb"

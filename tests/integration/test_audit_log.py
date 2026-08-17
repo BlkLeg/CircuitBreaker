@@ -4,13 +4,90 @@ Covers sanitise_diff unit tests, log filter/pagination, immutability,
 and log entries produced by hardware/service/network/auth operations.
 """
 import json
+import time
 
+import pytest
 from app.db import models
 from app.services.log_service import sanitise_diff
 
 # ── Test constants ────────────────────────────────────────────────────────────
 IP_INTERNAL_HOST = "10.0.0.1"      # host field value in sanitise_diff nested test
 CIDR_AUDIT_LAN   = "192.168.1.0/24"  # network CIDR for audit-log create test
+
+# ── Fixtures ──────────────────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def _authenticated_client(request):
+    """Bootstrap + authenticate the HTTP client for every test that uses one.
+
+    Every API route in this file is behind auth, so an unauthenticated client
+    turns each audit assertion into an anonymous ``KeyError: 'logs'`` on a 401
+    body. Attaching the headers to the client itself (rather than each call)
+    also covers the mutating requests, whose audit entries are the actual
+    subject here — an anonymous POST is rejected before it can be audited.
+    Guarded on ``client`` being in the test's fixture closure so the pure
+    ``sanitise_diff`` unit tests below do not pay for a TestClient + bootstrap.
+    """
+    if "client" not in request.fixturenames:
+        return
+    client = request.getfixturevalue("client")
+    client.headers.update(request.getfixturevalue("auth_headers"))
+
+
+# ── Audit-log read helpers ───────────────────────────────────────────────────
+#
+# LoggingMiddleware persists route-derived audit entries fire-and-forget in a
+# worker thread so the mutating request is not delayed by the insert, and
+# write_log takes the audit-chain advisory lock on its own connection. The row
+# therefore lands a few milliseconds *after* the response the test already has:
+# reading /logs exactly once is a race the test loses under load. These helpers
+# retry the read until the entry under test shows up (or a short deadline
+# passes, so a genuinely missing entry still fails). Only the read is retried —
+# every assertion stays exactly as strict as before.
+
+_LOG_WAIT_SECONDS = 5.0
+
+
+def _logs_response(client, params=None, *, until=None, timeout=_LOG_WAIT_SECONDS):
+    """GET /api/v1/logs, retrying until *until* holds for the response body."""
+    deadline = time.monotonic() + timeout
+    while True:
+        resp = client.get("/api/v1/logs", params=params or {})
+        assert resp.status_code == 200, (
+            f"GET /api/v1/logs failed: HTTP {resp.status_code} {resp.text}"
+        )
+        data = resp.json()
+        if until is None or until(data) or time.monotonic() >= deadline:
+            return data
+        time.sleep(0.05)
+
+
+def _wait_for_logs(client, predicate, params=None, *, count=1):
+    """Return all log entries matching *predicate*, waiting for *count* of them."""
+    data = _logs_response(
+        client,
+        params,
+        until=lambda d: sum(1 for log in d["logs"] if predicate(log)) >= count,
+    )
+    return [log for log in data["logs"] if predicate(log)]
+
+
+def _wait_for_log(client, predicate, params=None):
+    """Return the first log entry matching *predicate*, or None after the wait."""
+    matches = _wait_for_logs(client, predicate, params)
+    return matches[0] if matches else None
+
+
+def _wait_for_actions(client, actions, predicate=None, params=None):
+    """Return the set of logged actions once every action in *actions* is present."""
+    keep = predicate or (lambda log: True)
+    data = _logs_response(
+        client,
+        params,
+        until=lambda d: actions <= {log.get("action") for log in d["logs"] if keep(log)},
+    )
+    return {log.get("action") for log in data["logs"] if keep(log)}
+
 
 # ── sanitise_diff unit tests ──────────────────────────────────────────────────
 
@@ -44,10 +121,9 @@ def test_sanitise_diff_redacts_list_of_dicts():
 def test_hardware_create_produces_log(client):
     client.post("/api/v1/hardware", json={"name": "pve-01"})
 
-    logs = client.get("/api/v1/logs").json()["logs"]
-    entry = next(
-        (log for log in logs if log.get("entity_type") == "hardware" and log.get("action") == "create_hardware"),
-        None,
+    entry = _wait_for_log(
+        client,
+        lambda log: log.get("entity_type") == "hardware" and log.get("action") == "create_hardware",
     )
     assert entry is not None, "Expected 'create_hardware' log"
     assert entry["entity_name"] == "pve-01"
@@ -63,10 +139,9 @@ def test_hardware_update_produces_log_with_diff(client):
     hw = client.post("/api/v1/hardware", json={"name": "pve-01"}).json()
     client.patch(f"/api/v1/hardware/{hw['id']}", json={"name": "pve-02"})
 
-    logs = client.get("/api/v1/logs").json()["logs"]
-    entry = next(
-        (log for log in logs if log.get("entity_type") == "hardware" and log.get("action") == "update_hardware"),
-        None,
+    entry = _wait_for_log(
+        client,
+        lambda log: log.get("entity_type") == "hardware" and log.get("action") == "update_hardware",
     )
     assert entry is not None, "Expected 'update_hardware' log"
 
@@ -81,10 +156,9 @@ def test_hardware_delete_produces_log(client):
     hw = client.post("/api/v1/hardware", json={"name": "pve-01"}).json()
     client.delete(f"/api/v1/hardware/{hw['id']}")
 
-    logs = client.get("/api/v1/logs").json()["logs"]
-    entry = next(
-        (log for log in logs if log.get("entity_type") == "hardware" and log.get("action") == "delete_hardware"),
-        None,
+    entry = _wait_for_log(
+        client,
+        lambda log: log.get("entity_type") == "hardware" and log.get("action") == "delete_hardware",
     )
     assert entry is not None, "Expected 'delete_hardware' log"
 
@@ -100,9 +174,11 @@ def test_service_create_update_delete_logs(client):
     client.patch(f"/api/v1/services/{svc['id']}", json={"name": "Plex Media"})
     client.delete(f"/api/v1/services/{svc['id']}")
 
-    logs = client.get("/api/v1/logs").json()["logs"]
-    svc_logs = [log for log in logs if log.get("entity_type") == "service"]
-    actions = {log["action"] for log in svc_logs}
+    actions = _wait_for_actions(
+        client,
+        {"create_service", "update_service", "delete_service"},
+        predicate=lambda log: log.get("entity_type") == "service",
+    )
     assert "create_service" in actions, "Expected 'create_service' log"
     assert "update_service" in actions, "Expected 'update_service' log"
     assert "delete_service" in actions, "Expected 'delete_service' log"
@@ -115,9 +191,11 @@ def test_network_create_update_delete_logs(client):
     client.patch(f"/api/v1/networks/{net['id']}", json={"name": "LAN-Updated"})
     client.delete(f"/api/v1/networks/{net['id']}")
 
-    logs = client.get("/api/v1/logs").json()["logs"]
-    net_logs = [log for log in logs if log.get("entity_type") == "network"]
-    actions = {log["action"] for log in net_logs}
+    actions = _wait_for_actions(
+        client,
+        {"create_network", "update_network", "delete_network"},
+        predicate=lambda log: log.get("entity_type") == "network",
+    )
     assert "create_network" in actions, "Expected 'create_network' log"
     assert "update_network" in actions, "Expected 'update_network' log"
     assert "delete_network" in actions, "Expected 'delete_network' log"
@@ -127,34 +205,24 @@ def test_network_create_update_delete_logs(client):
 
 def test_login_success_produces_log(client, auth_headers):
     # auth_headers fixture performs bootstrap + login; we check the resulting log
-    logs = client.get("/api/v1/logs", headers=auth_headers).json()["logs"]
-    entry = next(
-        (log for log in logs if log.get("entity_type") == "auth" and log.get("action") == "login_success"),
-        None,
+    entry = _wait_for_log(
+        client,
+        lambda log: log.get("entity_type") == "auth" and log.get("action") == "login_success",
     )
     assert entry is not None, "Expected 'login_success' auth log"
     assert entry.get("ip_address") is not None
 
 
 def test_login_failure_produces_warn_log(client):
-    # Bootstrap so that an account exists, then fail to log in
-    boot = client.post("/api/v1/bootstrap/initialize", json={
-        "email": "test@example.com",
-        "password": "Secure1234!",
-        "theme_preset": "one-dark",
-    })
-    token = boot.json().get("token")
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    # The account already exists: the autouse fixture bootstraps it and logs in.
+    # Bootstrap is one-shot and setup-token gated, so the test cannot mint its own
+    # account a second time — it only needs to fail a login against the real one.
     client.post("/api/v1/auth/login", json={
         "email": "test@example.com",
         "password": "wrong-password",
     })
 
-    logs = client.get("/api/v1/logs", headers=headers).json()["logs"]
-    entry = next(
-        (log for log in logs if log.get("action") == "login_failed"),
-        None,
-    )
+    entry = _wait_for_log(client, lambda log: log.get("action") == "login_failed")
     assert entry is not None, "Expected 'login_failed' log entry"
     assert entry.get("severity") == "warn"
 
@@ -242,7 +310,14 @@ def test_logs_do_not_enrich_reserved_system_actor_name(client, db, auth_headers)
 def test_settings_update_log_never_contains_credentials(client):
     client.put("/api/v1/settings", json={"timezone": "UTC"})
 
-    logs = client.get("/api/v1/logs").json()["logs"]
+    logs = _logs_response(
+        client,
+        until=lambda d: any(log.get("action") == "update_settings" for log in d["logs"]),
+    )["logs"]
+    assert any(entry.get("action") == "update_settings" for entry in logs), (
+        "Expected an 'update_settings' log — without it this test would scan a "
+        "log set that never contained the settings payload it is checking."
+    )
     for entry in logs:
         raw_diff = entry.get("diff") or ""
         if isinstance(raw_diff, dict):
@@ -271,9 +346,11 @@ def test_logs_filter_by_entity_type(client):
     client.post("/api/v1/hardware", json={"name": "pve-01"})
     client.post("/api/v1/services", json={"name": "Plex"})
 
-    resp = client.get("/api/v1/logs", params={"entity_type": "hardware"})
-    assert resp.status_code == 200
-    logs = resp.json()["logs"]
+    logs = _logs_response(
+        client,
+        {"entity_type": "hardware"},
+        until=lambda d: bool(d["logs"]),
+    )["logs"]
     assert len(logs) > 0
     assert all(log["entity_type"] == "hardware" for log in logs)
 
@@ -281,30 +358,23 @@ def test_logs_filter_by_entity_type(client):
 def test_logs_filter_by_action(client):
     client.post("/api/v1/hardware", json={"name": "pve-01"})
 
-    resp = client.get("/api/v1/logs", params={"action": "create_hardware"})
-    assert resp.status_code == 200
-    logs = resp.json()["logs"]
+    logs = _logs_response(
+        client,
+        {"action": "create_hardware"},
+        until=lambda d: bool(d["logs"]),
+    )["logs"]
     assert len(logs) > 0
     assert all(log["action"] == "create_hardware" for log in logs)
 
 
 def test_logs_filter_by_severity(client):
-    # Bootstrap + failed login to produce a 'warn' severity entry
-    boot = client.post("/api/v1/bootstrap/initialize", json={
-        "email": "test@example.com",
-        "password": "Secure1234!",
-        "theme_preset": "one-dark",
-    })
-    token = boot.json().get("token")
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    # Failed login against the bootstrapped account produces a 'warn' severity entry
     client.post("/api/v1/auth/login", json={
         "email": "test@example.com",
         "password": "badpass",
     })
 
-    resp = client.get("/api/v1/logs", params={"severity": "warn"}, headers=headers)
-    assert resp.status_code == 200
-    logs = resp.json()["logs"]
+    logs = _logs_response(client, {"severity": "warn"}, until=lambda d: bool(d["logs"]))["logs"]
     assert len(logs) > 0
     assert all(log.get("severity") == "warn" for log in logs)
 
@@ -312,9 +382,7 @@ def test_logs_filter_by_severity(client):
 def test_logs_search_by_entity_name(client):
     client.post("/api/v1/hardware", json={"name": "unique-device-xyz"})
 
-    resp = client.get("/api/v1/logs", params={"search": "unique-device"})
-    assert resp.status_code == 200
-    logs = resp.json()["logs"]
+    logs = _logs_response(client, {"search": "unique-device"}, until=lambda d: bool(d["logs"]))["logs"]
     assert len(logs) > 0
     names = [log.get("entity_name") or "" for log in logs]
     assert any("unique-device" in n for n in names)
@@ -327,15 +395,15 @@ def test_logs_pagination(client):
     for i in range(110):
         client.post("/api/v1/hardware", json={"name": f"hw-{i}"})
 
-    resp_p1 = client.get("/api/v1/logs", params={"limit": 100, "offset": 0})
-    assert resp_p1.status_code == 200
-    data_p1 = resp_p1.json()
+    data_p1 = _logs_response(
+        client,
+        {"limit": 100, "offset": 0},
+        until=lambda d: d["total_count"] > 100,
+    )
     assert len(data_p1["logs"]) == 100
     assert data_p1["total_count"] > 100
 
-    resp_p2 = client.get("/api/v1/logs", params={"limit": 100, "offset": 100})
-    assert resp_p2.status_code == 200
-    data_p2 = resp_p2.json()
+    data_p2 = _logs_response(client, {"limit": 100, "offset": 100})
     assert len(data_p2["logs"]) > 0
     assert len(data_p2["logs"]) <= 100
 
@@ -343,20 +411,11 @@ def test_logs_pagination(client):
 # ── OOBE log entry ────────────────────────────────────────────────────────────
 
 def test_oobe_complete_produces_log(client):
-    boot = client.post("/api/v1/bootstrap/initialize", json={
-        "email": "admin@example.com",
-        "password": "Secure1234!",
-        "theme_preset": "one-dark",
-        "timezone": "UTC",
-    })
-    token = boot.json().get("token")
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-
-    logs = client.get("/api/v1/logs", headers=headers).json()["logs"]
-    entry = next(
-        (log for log in logs if log.get("action") == "bootstrap_create_user"),
-        None,
-    )
+    # The bootstrap under test is the one the autouse fixture performs: it walks
+    # the real setup-token flow through POST /bootstrap/initialize. Bootstrap only
+    # ever runs once per install, so the test reads back that run's audit entry
+    # rather than trying to initialise an already-initialised app.
+    entry = _wait_for_log(client, lambda log: log.get("action") == "bootstrap_create_user")
     assert entry is not None, "Expected 'bootstrap_create_user' log entry"
 
     # Diff should not contain raw credentials
@@ -397,8 +456,9 @@ def test_graph_map_mutations_produce_graph_audit_logs(client, db, auth_headers):
     delete_resp = client.delete(f"/api/v1/graph/edges/{edge_id}", headers=auth_headers)
     assert delete_resp.status_code == 204
 
-    logs = client.get("/api/v1/logs", headers=auth_headers).json()["logs"]
-    actions = {log.get("action") for log in logs}
+    actions = _wait_for_actions(
+        client, {"save_graph_layout", "update_graph_edge", "delete_graph_edge"}
+    )
     assert "save_graph_layout" in actions
     assert "update_graph_edge" in actions
     assert "delete_graph_edge" in actions
@@ -438,8 +498,10 @@ def test_nested_relationship_mutations_are_audited(client, db, auth_headers):
     )
     assert remove_cluster_member.status_code == 204
 
-    logs = client.get("/api/v1/logs", headers=auth_headers).json()["logs"]
-    actions = {log.get("action") for log in logs}
+    actions = _wait_for_actions(
+        client,
+        {"add_hardware_member", "remove_hardware_member", "add_member", "remove_member"},
+    )
     assert "add_hardware_member" in actions
     assert "remove_hardware_member" in actions
     assert "add_member" in actions

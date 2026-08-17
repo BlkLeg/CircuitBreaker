@@ -829,7 +829,16 @@ class Service(Base):
     )
     url: Mapped[str | None] = mapped_column(String)
     ports: Mapped[str | None] = mapped_column(String)
-    ports_json: Mapped[str | None] = mapped_column(Text)
+    # Structured port bindings — JSONB as of v0.2.0 (migration 0026 casts this
+    # column alongside ip_conflict_json below). The model lagged the migration,
+    # so writers handed a list to a Text column and readers json.loads()'d a list
+    # psycopg2 had already parsed; both failed silently into empty port lists.
+    # none_as_null keeps an unset value a SQL NULL. SQLAlchemy's JSON default
+    # would store the *JSON* null instead, which reads back as None but is not
+    # NULL to Postgres — silently emptying the `ports_json IS NULL` predicate the
+    # legacy-ports backfill selects on, and matching how migration 0026 left
+    # already-NULL rows.
+    ports_json: Mapped[list | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
     description: Mapped[str | None] = mapped_column(Text)
     environment: Mapped[str | None] = mapped_column(String)
     # v0.1.4: environment registry
@@ -2086,6 +2095,41 @@ class Log(Base):
     # Phase 7: Non-repudiation
     previous_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     log_hash: Mapped[str | None] = mapped_column(String, unique=True, index=True, nullable=True)
+
+
+class PendingAuditLog(Base):
+    """An audit entry that occurred but could not be hash-chained yet.
+
+    Appending to `logs` means reading the chain tail and writing the next link,
+    which has to be serialised by the audit-chain advisory lock. A background
+    writer that cannot take that lock within its deadline (see
+    services/audit_spool.py for why the deadline exists) parks the entry here
+    instead of discarding it: the action really happened, so losing the record
+    would be a non-repudiation failure, and appending it unserialised would
+    fork the chain.
+
+    Deliberately carries no hash and no link to its neighbours. That is what
+    lets the insert be an ordinary uncontended INSERT — a chained write is
+    exactly the thing that could not be done at the time. Integrity for the
+    spool window rests on the row being committed and drained promptly, not on
+    the chain; audit_spool.drain moves rows into `logs` in id order, which is
+    the order they occurred.
+    """
+
+    __tablename__ = "pending_audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # The full Log constructor payload, JSON-encoded at defer time so a drain
+    # writes exactly the row the contended write would have written.
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # When the entry was spooled — operational metadata for alerting on spool
+    # age. The time the audited action happened lives inside payload
+    # (created_at_utc) and is what gets hashed.
+    deferred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, nullable=False, index=True
+    )
+    # Why it could not be chained inline, kept for forensics.
+    reason: Mapped[str | None] = mapped_column(String)
 
 
 class UserIcon(Base):

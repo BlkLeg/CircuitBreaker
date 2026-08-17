@@ -1,8 +1,53 @@
 """Feature 1 — Categories tests.
 
-Category endpoints are not auth-protected; all tests use the plain `client` fixture.
+Category endpoints are auth-protected like the rest of the API, so every test
+here runs against a bootstrapped app with admin credentials attached.
 """
 import json
+import time
+
+import pytest
+
+
+# ── Auth ─────────────────────────────────────────────────────────────────────
+#
+# First run stopped being an open admin session in cd1724ff: outside /bootstrap,
+# /auth, the settings read and the OAuth provider write, every route answers 401
+# until a real admin exists and presents a token. These tests drive ordinary
+# CRUD, so they no longer ride on the un-bootstrapped app — they bootstrap and
+# carry a Bearer header like any other caller.
+
+@pytest.fixture(autouse=True)
+def _authenticated_client(request):
+    # Tests here that only touch the ORM never build a client; don't make them
+    # pay for a bootstrap (and a bcrypt hash) they have no use for.
+    if "client" not in request.fixturenames:
+        return
+    request.getfixturevalue("client").headers.update(request.getfixturevalue("auth_headers"))
+
+
+# ── Log helpers ──────────────────────────────────────────────────────────────
+
+def _await_log_entry(client, action, timeout_s=5.0):
+    """Return the category audit entry for ``action``, waiting for it to land.
+
+    The logging middleware writes audit rows fire-and-forget on an executor
+    thread so the response is not held behind the audit-chain advisory lock, so
+    the row is not guaranteed to be visible the instant the mutating call
+    returns. Reading once races that thread; poll until the deadline instead.
+    Returns None if it never arrives, leaving the assertion to the caller.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        logs = client.get("/api/v1/logs").json()["logs"]
+        entry = next(
+            (log for log in logs if log.get("entity_type") == "category" and log.get("action") == action),
+            None,
+        )
+        if entry is not None or time.monotonic() >= deadline:
+            return entry
+        time.sleep(0.05)
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -126,11 +171,7 @@ def test_service_create_category_id_wins_over_string(client):
 
 def test_category_log_entry_on_create(client):
     _create_category(client, name="media")
-    logs = client.get("/api/v1/logs").json()["logs"]
-    entry = next(
-        (log for log in logs if log.get("entity_type") == "category" and log.get("action") == "create_category"),
-        None,
-    )
+    entry = _await_log_entry(client, "create_category")
     assert entry is not None, "Expected a 'create_category' log entry for category"
     assert entry["entity_name"] == "media"
 
@@ -139,11 +180,7 @@ def test_category_log_entry_on_rename(client):
     cat = _create_category(client, name="media").json()
     client.patch(f"/api/v1/categories/{cat['id']}", json={"name": "streaming"})
 
-    logs = client.get("/api/v1/logs").json()["logs"]
-    entry = next(
-        (log for log in logs if log.get("entity_type") == "category" and log.get("action") == "update_category"),
-        None,
-    )
+    entry = _await_log_entry(client, "update_category")
     assert entry is not None, "Expected a 'update_category' log entry for category"
     # Diff should capture before/after name
     if entry.get("diff"):
@@ -157,9 +194,5 @@ def test_category_log_entry_on_delete(client):
     cat = _create_category(client, name="media").json()
     client.delete(f"/api/v1/categories/{cat['id']}")
 
-    logs = client.get("/api/v1/logs").json()["logs"]
-    entry = next(
-        (log for log in logs if log.get("entity_type") == "category" and log.get("action") == "delete_category"),
-        None,
-    )
+    entry = _await_log_entry(client, "delete_category")
     assert entry is not None, "Expected a 'delete_category' log entry for category"

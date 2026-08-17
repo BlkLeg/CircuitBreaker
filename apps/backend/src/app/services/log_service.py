@@ -18,6 +18,15 @@ from app.core.time import utcnow, utcnow_iso
 _logger = logging.getLogger(__name__)
 _AUDIT_CHAIN_LOCK = threading.RLock()
 
+# Deadline for a background writer (no caller transaction) to obtain the
+# audit-chain lock. Appends hold it for a single INSERT, so anything near this
+# long means another connection is sitting idle-in-transaction on it. Waiting
+# longer would park a shared executor thread for the lifetime of that
+# transaction and buys nothing: on expiry the entry goes to the durable spool
+# (services/audit_spool.py) rather than being lost, so the deadline trades a
+# little chain latency for liveness, not for the record itself.
+_BACKGROUND_LOCK_WAIT_SECONDS = 1.0
+
 # Keys (substring match, case-insensitive) whose values must never reach the DB.
 REDACTED_KEYS = {
     "password",
@@ -116,6 +125,11 @@ def write_log(
     - ``diff`` values are sanitised before write: any key containing a sensitive
       substring is replaced with ``"***REDACTED***"`` regardless of nesting depth.
     """
+    # Imported here rather than at module scope, like the ORM imports below:
+    # app.core.audit_chain pulls in app.db.models, and this module is imported
+    # by callers that must not require the database layer to be importable.
+    from app.core.audit_chain import AuditChainLockTimeout
+
     try:
         from app.db.models import Log
         from app.db.session import SessionLocal
@@ -153,12 +167,45 @@ def write_log(
 
         _now_iso = utcnow_iso()
 
-        def _do_write(session: Session) -> None:
+        # Every field of the row this call is about to write, built once and
+        # used twice: to chain the entry now, or — if the chain lock cannot be
+        # had in time — to spool exactly the same row for a later drain. Sharing
+        # one definition is what guarantees the deferred copy is the real entry
+        # rather than a reconstruction that could drift from it.
+        log_fields = dict(
+            timestamp=utcnow(),
+            created_at_utc=_now_iso,
+            # Legacy fields
+            level=effective_level,
+            category=category,
+            action=action,
+            actor=effective_actor,
+            actor_gravatar_hash=actor_gravatar_hash,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            old_value=safe_old_value,
+            new_value=safe_new_value,
+            user_agent=user_agent,
+            ip_address=effective_ip,
+            details=safe_details,
+            status_code=status_code,
+            # Structured audit fields (Feature 6)
+            actor_id=actor_id,
+            actor_name=actor_name,
+            entity_name=entity_name,
+            diff=diff_str,
+            severity=severity,
+            # Phase 6.5 and 7
+            session_id=session_id,
+            role_at_time=role_at_time,
+        )
+
+        def _do_write(session: Session, lock_wait_seconds: float | None = None) -> None:
             from sqlalchemy import select
 
             from app.core.audit_chain import compute_log_hash, lock_audit_chain
 
-            lock_audit_chain(session)
+            lock_audit_chain(session, wait_seconds=lock_wait_seconds)
             stmt = select(Log).order_by(Log.id.desc()).limit(1).with_for_update()
 
             try:
@@ -171,34 +218,7 @@ def write_log(
 
             previous_hash = last_log.log_hash if last_log else None
 
-            entry = Log(
-                timestamp=utcnow(),
-                created_at_utc=_now_iso,
-                # Legacy fields
-                level=effective_level,
-                category=category,
-                action=action,
-                actor=effective_actor,
-                actor_gravatar_hash=actor_gravatar_hash,
-                entity_type=entity_type,
-                entity_id=entity_id,
-                old_value=safe_old_value,
-                new_value=safe_new_value,
-                user_agent=user_agent,
-                ip_address=effective_ip,
-                details=safe_details,
-                status_code=status_code,
-                # Structured audit fields (Feature 6)
-                actor_id=actor_id,
-                actor_name=actor_name,
-                entity_name=entity_name,
-                diff=diff_str,
-                severity=severity,
-                # Phase 6.5 and 7
-                session_id=session_id,
-                role_at_time=role_at_time,
-                previous_hash=previous_hash,
-            )
+            entry = Log(**log_fields, previous_hash=previous_hash)
             entry.log_hash = compute_log_hash(entry, previous_hash)
             session.add(entry)
             session.commit()
@@ -207,10 +227,31 @@ def write_log(
             with _AUDIT_CHAIN_LOCK:
                 _do_write(db)
         else:
+            # No caller transaction: this is a background writer (the HTTP audit
+            # middleware) on a connection of its own, so it queues for the
+            # audit-chain lock behind whatever transaction currently holds it.
+            # Bound that wait — see lock_audit_chain: an unbounded one parks a
+            # shared executor thread for the lifetime of some other connection's
+            # transaction.
             with _AUDIT_CHAIN_LOCK:
                 with SessionLocal() as _db:
-                    _do_write(_db)
+                    _do_write(_db, lock_wait_seconds=_BACKGROUND_LOCK_WAIT_SECONDS)
 
+        _publish_audit_to_redis(action, entity_type, entity_id, actor_id, severity, _now_iso)
+    except AuditChainLockTimeout:
+        # Deferred, not dropped and not forked. The action happened, so the
+        # record has to survive; it just cannot be chained while another
+        # connection holds the lock. audit_spool.drain links it in afterwards.
+        from app.services import audit_spool
+
+        audit_spool.defer(
+            log_fields,
+            reason=(
+                f"audit-chain lock held by another connection for >{_BACKGROUND_LOCK_WAIT_SECONDS}s"
+            ),
+        )
+        # Still announced live: the event occurred, so a realtime audit consumer
+        # must see it now rather than whenever the spool is next drained.
         _publish_audit_to_redis(action, entity_type, entity_id, actor_id, severity, _now_iso)
     except Exception:  # noqa: BLE001
         _logger.exception("write_log failed (action=%r)", action)

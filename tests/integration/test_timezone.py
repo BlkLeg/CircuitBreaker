@@ -1,14 +1,17 @@
 """Feature 5 — Timezone setting tests.
 
-Settings PUT is protected by require_write_auth. Tests run against a fresh DB
-before OOBE, so calls succeed without a configured jwt_secret.
+cd1724ff withdrew the open first-run admin sentinel, so an un-bootstrapped
+instance no longer acts as an admin: everything here except the settings read the
+setup wizard renders from answers 401 until an admin exists and authenticates.
+``auth_headers`` bootstraps and logs in, which is the state these endpoints are
+actually exercised in.
 """
 
 
 # ── Timezones endpoint ────────────────────────────────────────────────────────
 
-def test_timezones_endpoint_returns_sorted_list(client):
-    resp = client.get("/api/v1/timezones")
+def test_timezones_endpoint_returns_sorted_list(client, auth_headers):
+    resp = client.get("/api/v1/timezones", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
     tzs = data["timezones"]
@@ -29,32 +32,32 @@ def test_settings_default_timezone_is_utc(client):
 
 # ── Settings update ───────────────────────────────────────────────────────────
 
-def test_settings_update_valid_timezone(client):
-    resp = client.put("/api/v1/settings", json={"timezone": "America/Denver"})
+def test_settings_update_valid_timezone(client, auth_headers):
+    resp = client.put("/api/v1/settings", json={"timezone": "America/Denver"}, headers=auth_headers)
     assert resp.status_code == 200
 
-    get_resp = client.get("/api/v1/settings")
+    get_resp = client.get("/api/v1/settings", headers=auth_headers)
     assert get_resp.json()["timezone"] == "America/Denver"
 
 
-def test_settings_update_invalid_timezone(client):
-    resp = client.put("/api/v1/settings", json={"timezone": "Mars/Olympus"})
+def test_settings_update_invalid_timezone(client, auth_headers):
+    resp = client.put("/api/v1/settings", json={"timezone": "Mars/Olympus"}, headers=auth_headers)
     assert resp.status_code == 422
     detail = str(resp.json())
     assert "timezone" in detail.lower() or "valid" in detail.lower() or "iana" in detail.lower()
 
 
-def test_settings_update_empty_timezone(client):
-    resp = client.put("/api/v1/settings", json={"timezone": ""})
+def test_settings_update_empty_timezone(client, auth_headers):
+    resp = client.put("/api/v1/settings", json={"timezone": ""}, headers=auth_headers)
     assert resp.status_code == 422
 
 
 # ── Audit log on timezone change ──────────────────────────────────────────────
 
-def test_timezone_log_on_change(client):
-    client.put("/api/v1/settings", json={"timezone": "America/Denver"})
+def test_timezone_log_on_change(client, auth_headers):
+    client.put("/api/v1/settings", json={"timezone": "America/Denver"}, headers=auth_headers)
 
-    logs = client.get("/api/v1/logs").json()["logs"]
+    logs = client.get("/api/v1/logs", headers=auth_headers).json()["logs"]
     entry = next(
         (log for log in logs if log.get("entity_type") == "settings" and log.get("action") == "settings_update"),
         None,

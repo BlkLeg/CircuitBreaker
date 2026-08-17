@@ -1,8 +1,15 @@
+import http.server
 import os
+import re
+import shutil
+import ssl
+import subprocess
+import threading
 
 import pytest
 
 from app.services import agent_install
+from app.services.certificate_service import generate_selfsigned
 
 
 def test_render_install_script_embeds_server_identity():
@@ -334,3 +341,209 @@ def test_letsencrypt_needs_no_pin_even_with_an_unreadable_file(tmp_path, monkeyp
     )
     assert mode == "public"
     assert pin == ""
+
+
+# ── The binary download is verified, not just fetched ────────────────────────
+# build_install_command hands out `curl -fsSLk` for the *script* under
+# self-signed TLS, but the script's own binary download went out as plain
+# `curl -fsSL` against that same self-signed certificate -- so on the default
+# deployment it failed verification outright (curl exit 60), and the obvious
+# repair (`-k`) would have made it succeed while verifying nothing. The script
+# already carries the SPKI pin, and curl enforces --pinnedpubkey even when
+# --insecure is in force, so both fetches pin instead.
+#
+# The release gate never caught this because it reads the script's *text*; the
+# sh-level test below actually runs the fetch.
+
+_SELF_SIGNED = dict(
+    server_url="https://cb.example.com",
+    server_static_pk_hex="ab" * 32,
+    tls_pin="c" * 44,
+)
+
+
+def test_binary_download_is_pinned_when_the_server_is_self_signed():
+    script = agent_install.render_install_script(
+        manifest={"0.1.0": {"linux-amd64": "deadbeef"}}, **_SELF_SIGNED
+    )
+    assert '--pinnedpubkey "sha256//${CB_TLS_PIN}"' in script, (
+        "the install script downloads the agent binary from a self-signed origin "
+        "without pinning it -- the fetch either fails verification outright or, "
+        "with -k, accepts any certificate at all"
+    )
+    assert 'curl -fsSL "$CB_BINARY_URL"' not in script, (
+        "the binary download still calls curl directly, bypassing the pinned fetch helper"
+    )
+
+
+def test_install_command_pins_the_script_fetch_for_self_signed(db_session, app_cfg, monkeypatch):
+    """`-k` on the copied command made `sha256sum -c` the only thing standing
+    between the operator and a MITM'd installer. Pin it too, so the digest is a
+    second check rather than the sole one."""
+    from app.services.certificate_service import generate_selfsigned
+
+    cert_pem, _, _ = generate_selfsigned("cb.home")
+    monkeypatch.setattr(agent_install, "_live_nginx_cert_pem", lambda: cert_pem)
+    pin = agent_install._spki_pin(cert_pem)
+
+    resp = agent_install.build_install_command(db_session, "https://cb.home")
+
+    assert resp.tls_mode == "self_signed"
+    assert f'--pinnedpubkey "sha256//{pin}"' in resp.command
+    assert "sha256sum -c" in resp.command  # still there, now as the second check
+
+
+def test_install_command_does_not_pin_a_publicly_trusted_cert(db_session, app_cfg):
+    from datetime import timedelta
+
+    from app.core.time import utcnow
+    from app.db.models import Certificate
+
+    db_session.add(
+        Certificate(
+            domain="cb.example.com",
+            type="letsencrypt",
+            cert_pem="-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+            key_pem="-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----",
+            expires_at=utcnow() + timedelta(days=60),
+        )
+    )
+    db_session.flush()
+
+    resp = agent_install.build_install_command(db_session, "https://cb.example.com")
+
+    assert "--pinnedpubkey" not in resp.command
+    assert "-k" not in resp.command.split()
+
+
+def test_installer_refuses_to_run_on_a_curl_too_old_to_pin():
+    """--pinnedpubkey landed in curl 7.39. Failing closed with a sentence the
+    operator can act on beats aborting on `option --pinnedpubkey: is unknown`
+    halfway through an install."""
+    script = agent_install.render_install_script(
+        manifest={"0.1.0": {"linux-amd64": "deadbeef"}}, **_SELF_SIGNED
+    )
+    assert "7.39" in script
+    assert 'curl --pinnedpubkey "sha256//" --version' in script
+
+
+# ── ...and the fetch actually runs ───────────────────────────────────────────
+# Every assertion above reads the script's text, which is exactly the blind
+# spot that let the unverified download ship: `test_agent_release_gate.py`
+# reads the text too, and `_write_agent_toml` stands in for the heredoc rather
+# than executing it. This one runs the script's own fetch helper against a real
+# self-signed origin, so it fails if the flags are right but the behavior is
+# not.
+
+_FETCH_HELPER = re.compile(r"^cb_curl\(\) \{.*?^\}", re.MULTILINE | re.DOTALL)
+
+
+def _run_fetch(tmp_path, script: str, pin: str, url: str):
+    """Execute just the script's fetch helper, with CB_TLS_PIN bound to `pin`."""
+    helper = _FETCH_HELPER.search(script)
+    assert helper, "install script no longer defines a cb_curl fetch helper"
+    driver = tmp_path / "fetch.sh"
+    driver.write_text(
+        f'set -eu\nCB_TLS_PIN="{pin}"\n{helper.group(0)}\ncb_curl "{url}" -o "{tmp_path}/out"\n'
+    )
+    return subprocess.run(["sh", str(driver)], capture_output=True, text=True)
+
+
+@pytest.fixture
+def self_signed_origin(tmp_path):
+    """A real HTTPS server on a self-signed cert, plus that cert's SPKI pin."""
+    cert_pem, key_pem, _ = generate_selfsigned("cb.test")
+    (tmp_path / "t.crt").write_text(cert_pem)
+    (tmp_path / "t.key").write_text(key_pem)
+    root = tmp_path / "srv"
+    root.mkdir()
+    (root / "cb-agent").write_bytes(b"ELF-ish payload")
+
+    class _Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, directory=str(root), **kw)
+
+        def log_message(self, *a):
+            pass
+
+    class _QuietServer(http.server.HTTPServer):
+        # A client that rejects the certificate aborts mid-handshake, which
+        # socketserver reports by printing a traceback. That is the expected
+        # outcome of the pin-mismatch test, so it is noise, not a failure.
+        def handle_error(self, request, client_address):
+            pass
+
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(tmp_path / "t.crt", tmp_path / "t.key")
+    server = _QuietServer(("127.0.0.1", 0), _Handler)
+    server.socket = ctx.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield (
+            f"https://127.0.0.1:{server.server_address[1]}/cb-agent",
+            agent_install._spki_pin(cert_pem),
+        )
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.skipif(shutil.which("curl") is None, reason="curl not installed")
+def test_the_scripts_fetch_succeeds_against_the_certificate_it_pinned(tmp_path, self_signed_origin):
+    url, pin = self_signed_origin
+    script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex="ab" * 32,
+        tls_pin=pin,
+        manifest={"0.1.0": {"linux-amd64": "deadbeef"}},
+    )
+
+    result = _run_fetch(tmp_path, script, pin, url)
+
+    assert result.returncode == 0, (
+        "the install script cannot download its own binary from a self-signed "
+        f"server -- the default deployment: {result.stderr}"
+    )
+    assert (tmp_path / "out").read_bytes() == b"ELF-ish payload"
+
+
+@pytest.mark.skipif(shutil.which("curl") is None, reason="curl not installed")
+def test_the_scripts_fetch_refuses_a_certificate_that_does_not_match_the_pin(
+    tmp_path, self_signed_origin
+):
+    """The half `-k` alone would have thrown away. A MITM presenting its own
+    certificate is exactly what the pin is for, so this must not download."""
+    url, pin = self_signed_origin
+    other_pem, _, _ = generate_selfsigned("attacker.invalid")
+    wrong_pin = agent_install._spki_pin(other_pem)
+    script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex="ab" * 32,
+        tls_pin=wrong_pin,
+        manifest={"0.1.0": {"linux-amd64": "deadbeef"}},
+    )
+
+    result = _run_fetch(tmp_path, script, wrong_pin, url)
+
+    assert result.returncode != 0, "a certificate that does not match the pin was accepted"
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.skipif(shutil.which("curl") is None, reason="curl not installed")
+def test_the_scripts_fetch_still_rejects_a_self_signed_cert_when_there_is_no_pin(
+    tmp_path, self_signed_origin
+):
+    """An empty pin means the operator has a publicly trusted certificate. The
+    helper must not quietly relax verification for that case -- otherwise the
+    fix would hand every `public` install the trust posture of `-k`."""
+    url, _ = self_signed_origin
+    script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex="ab" * 32,
+        tls_pin="",
+        manifest={"0.1.0": {"linux-amd64": "deadbeef"}},
+    )
+
+    result = _run_fetch(tmp_path, script, "", url)
+
+    assert result.returncode != 0
+    assert not (tmp_path / "out").exists()

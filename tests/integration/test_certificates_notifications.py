@@ -1,10 +1,25 @@
 import pytest
 from datetime import datetime
 
+from .conftest import _read_setup_token
+
+
+def _auth_headers(client, token: str) -> dict:
+    """Bearer credentials plus the double-submit CSRF header.
+
+    TestClient keeps the cb_session/cb_csrf cookies bootstrap sets, so the CSRF
+    middleware treats every later mutating request as a browser session and wants
+    X-CSRF-Token to match the cb_csrf cookie.
+    """
+    return {
+        "Authorization": f"Bearer {token}",
+        "X-CSRF-Token": client.cookies.get("cb_csrf") or "",
+    }
+
 # ── Certificates ──────────────────────────────────────────────────────────────
 
 def test_certificate_crud(client, admin_token):
-    headers = {"Authorization": f"Bearer {admin_token}"}
+    headers = _auth_headers(client, admin_token)
     
     # 1. Create
     payload = {
@@ -43,7 +58,7 @@ def test_certificate_crud(client, admin_token):
 # ── Notifications ─────────────────────────────────────────────────────────────
 
 def test_notification_sinks_and_routes(client, admin_token):
-    headers = {"Authorization": f"Bearer {admin_token}"}
+    headers = _auth_headers(client, admin_token)
     
     # 1. Create Sink
     sink_payload = {
@@ -87,21 +102,27 @@ def test_notification_sinks_and_routes(client, admin_token):
 
 @pytest.fixture
 def admin_token(client):
-    # Try to bootstrap or login
+    """Bootstrap the app and return the first admin's session token.
+
+    The `db` fixture truncates every table before each test, so this always runs
+    against an un-bootstrapped app — there is no "already bootstrapped" branch to
+    fall back to. SEC-4 (6be8c8d9) also made `setup_token` required, so the body
+    carries the one-time token the server wrote under CB_DATA_DIR; omitting it is a
+    422 whose only visible symptom used to be `KeyError: 'token'` in this fixture.
+    """
+    email = f"test-admin-{datetime.now().timestamp()}@example.com"
     resp = client.post(
         "/api/v1/bootstrap/initialize",
         json={
-            "email": f"test-admin-{datetime.now().timestamp()}@example.com",
+            "setup_token": _read_setup_token(client),
+            "email": email,
             "password": "SecurePassword123!",
             "theme_preset": "one-dark",
         },
     )
-    if resp.status_code == 200:
-        return resp.json()["token"]
-    
-    # Fallback to login if already bootstrapped
-    resp = client.post(
-        "/api/v1/auth/login",
-        json={"email": "bootstrap@example.com", "password": "SecurePassword123!"}
+    assert resp.status_code == 200, (
+        f"POST /api/v1/bootstrap/initialize failed: HTTP {resp.status_code} {resp.text}"
     )
-    return resp.json()["token"]
+    token = resp.json().get("token")
+    assert token, f"bootstrap succeeded but returned no session token: {resp.json()}"
+    return token

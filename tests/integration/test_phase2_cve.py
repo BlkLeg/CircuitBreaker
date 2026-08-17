@@ -1,4 +1,15 @@
-"""Phase 2 tests — CVE service, API endpoints, and migration."""
+"""Phase 2 tests — CVE service, API endpoints, and migration.
+
+Two product contracts shape the arrangement here:
+
+* Once an admin account exists, every route outside the bootstrap/auth/settings-read
+  allowlist answers 401 (cd1724ff). The CVE routes are not on that list, so the
+  API tests bootstrap through ``auth_headers`` and send the Bearer/CSRF pair.
+* The app lifespan materialises the ``AppSettings`` singleton (id=1) at startup via
+  ``get_or_create_settings``, so by the time a test body runs behind ``client`` the
+  row is already there. Tests that need particular CVE settings mutate that row
+  instead of inserting a second id=1, which would violate ``pk_app_settings``.
+"""
 
 from datetime import UTC, datetime
 from unittest.mock import patch
@@ -6,7 +17,7 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy.orm import sessionmaker
 
-from app.db.models import AppSettings, CVEEntry
+from app.db.models import CVEEntry
 
 
 @pytest.fixture(autouse=True)
@@ -44,6 +55,23 @@ def _seed_cves(db, count=5):
     db.commit()
 
 
+def _set_cve_settings(db, **values):
+    """Point the AppSettings singleton at the CVE config a test needs.
+
+    The lifespan already created id=1, so ``db.add(AppSettings(id=1, ...))`` here
+    would insert a rival singleton and blow up on ``pk_app_settings``. Fetch the
+    row the app created and mutate it — that is also what the product's own
+    settings writes do.
+    """
+    from app.services.settings_service import get_or_create_settings
+
+    row = get_or_create_settings(db)
+    for field, value in values.items():
+        setattr(row, field, value)
+    db.commit()
+    return row
+
+
 def test_cve_model_in_test_db(db):
     """CVEEntry table should be created in the test DB."""
     db.add(
@@ -63,47 +91,52 @@ def test_cve_model_in_test_db(db):
     assert result.cvss_score == 8.1
 
 
-def test_cve_search_api(client, db):
+def test_cve_search_api(client, auth_headers, db):
     """GET /api/v1/cve/search should return results."""
     _seed_cves(db, 3)
-    r = client.get("/api/v1/cve/search", params={"vendor": "testvendor"})
+    r = client.get(
+        "/api/v1/cve/search", params={"vendor": "testvendor"}, headers=auth_headers
+    )
     assert r.status_code == 200
     data = r.json()
     assert data["total"] == 3
     assert len(data["items"]) == 3
 
 
-def test_cve_search_with_query(client, db):
+def test_cve_search_with_query(client, auth_headers, db):
     """GET /api/v1/cve/search?q= should filter by text."""
     _seed_cves(db, 5)
-    r = client.get("/api/v1/cve/search", params={"q": "CVE-2024-1002"})
+    r = client.get(
+        "/api/v1/cve/search", params={"q": "CVE-2024-1002"}, headers=auth_headers
+    )
     assert r.status_code == 200
     data = r.json()
     assert data["total"] >= 1
     assert any(item["cve_id"] == "CVE-2024-1002" for item in data["items"])
 
 
-def test_cve_search_by_severity(client, db):
+def test_cve_search_by_severity(client, auth_headers, db):
     _seed_cves(db, 5)
-    r = client.get("/api/v1/cve/search", params={"severity": "high"})
+    r = client.get(
+        "/api/v1/cve/search", params={"severity": "high"}, headers=auth_headers
+    )
     assert r.status_code == 200
     data = r.json()
     assert all(item["severity"] == "high" for item in data["items"])
 
 
-def test_cve_entity_endpoint_no_match(client, db):
+def test_cve_entity_endpoint_no_match(client, auth_headers, db):
     """GET /api/v1/cve/entity/unknown_type/999 should return empty for unrecognised entity types."""
-    r = client.get("/api/v1/cve/entity/unknown_type/999")
+    r = client.get("/api/v1/cve/entity/unknown_type/999", headers=auth_headers)
     assert r.status_code == 200
     data = r.json()
     assert data["items"] == []
     assert data["total"] == 0
 
 
-def test_cve_status_endpoint(client, db):
+def test_cve_status_endpoint(client, auth_headers, db):
     """GET /api/v1/cve/status should return sync status."""
-    db.add(AppSettings(id=1, cve_sync_enabled=False, cve_sync_interval_hours=24))
-    db.commit()
+    _set_cve_settings(db, cve_sync_enabled=False, cve_sync_interval_hours=24)
 
     import app.db.session as _db_session
     import app.services.cve_service as _cve_svc
@@ -111,7 +144,7 @@ def test_cve_status_endpoint(client, db):
     orig = _cve_svc.SessionLocal
     _cve_svc.SessionLocal = _db_session.SessionLocal
     try:
-        r = client.get("/api/v1/cve/status")
+        r = client.get("/api/v1/cve/status", headers=auth_headers)
     finally:
         _cve_svc.SessionLocal = orig
     assert r.status_code == 200
@@ -121,30 +154,30 @@ def test_cve_status_endpoint(client, db):
     assert "last_sync_at" in data
 
 
-def test_cve_sync_trigger(client, db):
+def test_cve_sync_trigger(client, auth_headers, db):
     """POST /api/v1/cve/sync should accept the request."""
     with patch("app.api.cve.cve_service.sync_nvd_feed", return_value=0):
-        r = client.post("/api/v1/cve/sync")
+        r = client.post("/api/v1/cve/sync", headers=auth_headers)
     assert r.status_code == 200
     assert r.json()["status"] == "sync_started"
 
 
-def test_settings_include_cve_fields(client, db):
+def test_settings_include_cve_fields(client, auth_headers, db):
     """GET /api/v1/settings should return CVE settings."""
-    db.add(AppSettings(id=1, cve_sync_enabled=True, cve_sync_interval_hours=12))
-    db.commit()
+    _set_cve_settings(db, cve_sync_enabled=True, cve_sync_interval_hours=12)
 
-    r = client.get("/api/v1/settings")
+    r = client.get("/api/v1/settings", headers=auth_headers)
     assert r.status_code == 200
     data = r.json()
     assert data["cve_sync_enabled"] is True
     assert data["cve_sync_interval_hours"] == 12
 
 
-def test_settings_update_cve_fields(client, db):
+def test_settings_update_cve_fields(client, auth_headers, db):
     """PUT /api/v1/settings should accept CVE fields."""
-    db.add(AppSettings(id=1))
-    db.commit()
+    # Start from the opposite of what the PUT asks for, so a no-op handler cannot
+    # pass this by leaving the lifespan-seeded defaults in place.
+    _set_cve_settings(db, cve_sync_enabled=False, cve_sync_interval_hours=24)
 
     r = client.put(
         "/api/v1/settings",
@@ -152,6 +185,7 @@ def test_settings_update_cve_fields(client, db):
             "cve_sync_enabled": True,
             "cve_sync_interval_hours": 6,
         },
+        headers=auth_headers,
     )
     assert r.status_code == 200
     data = r.json()
