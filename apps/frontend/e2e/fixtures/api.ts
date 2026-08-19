@@ -6,10 +6,24 @@ import type { Page } from '@playwright/test';
  * call degrades to "empty state" rather than an unhandled rejection that fails
  * an unrelated assertion.
  */
+/**
+ * Every /api/v1 response the app makes on boot, keyed by the tail of the URL.
+ * The list was not guessed — e2e/_probe captured the actual calls across the
+ * primary routes. Shapes matter: a page handed `{}` where it expects an array
+ * renders its ErrorBoundary ("a.map is not a function") instead of the page,
+ * which silently weakens every assertion made against it.
+ */
 const DEFAULTS: Record<string, unknown> = {
+  // Identity and app state
   'auth/me': { id: 1, email: 'operator@example.test', role: 'admin', is_active: true },
+  'bootstrap/status': { needs_setup: false, has_admin: true },
+  health: { state: 'ready', ready: true, uptime_s: 1, checks: { db: 'ok', redis: 'ok' } },
+  capabilities: {},
   settings: { default_environment: '', environments: [], map_default_filters: {} },
-  environments: [],
+  'settings/roles': [],
+  timezones: [],
+
+  // Inventory collections
   hardware: [],
   'compute-units': [],
   services: [],
@@ -17,21 +31,33 @@ const DEFAULTS: Record<string, unknown> = {
   networks: [],
   misc: [],
   'external-nodes': [],
+  clusters: [],
+  docs: [],
+  sites: [],
+  vlans: [],
+  ipam: [],
+  environments: [],
   tags: [],
   categories: [],
+
+  // Agents
   agents: [],
+  'agents/presence': [],
+  'agents/metrics/series': [],
+  'agents/install-command': { command: 'curl -fsSL https://example.test/install.sh | sh' },
+
+  // Monitoring and discovery
   monitors: [],
+  'monitors/overview': { total: 0, up: 0, down: 0, paused: 0, monitors: [] },
+  'discovery/status': { running: false, jobs: [] },
+  notifications: [],
+  certificates: [],
+
+  // Topology
   topologies: [],
   maps: [],
-  docs: [],
-  clusters: [],
-  certificates: [],
-  notifications: [],
-  'ipam/subnets': [],
   graph: { nodes: [], edges: [] },
   'graph/topology': { nodes: [], edges: [] },
-  health: { state: 'ready', ready: true, uptime_s: 1, checks: { db: 'ok', redis: 'ok' } },
-  'bootstrap/status': { needs_setup: false, has_admin: true },
 };
 
 export async function stubApi(page: Page, overrides: Record<string, unknown> = {}): Promise<void> {
@@ -57,7 +83,10 @@ export async function stubApi(page: Page, overrides: Record<string, unknown> = {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify(key ? responses[key] : {}),
+      // Unknown endpoints default to an empty collection, not {}: nearly
+      // every unstubbed call is a list, and {} makes pages throw
+      // "a.map is not a function" and render their ErrorBoundary.
+      body: JSON.stringify(key ? responses[key] : []),
     });
   });
 
@@ -87,4 +116,20 @@ export function collectConsoleErrors(page: Page): string[] {
  */
 export function significantErrors(errors: string[]): string[] {
   return errors.filter((e) => !/favicon|ResizeObserver loop|Failed to load resource.*404/i.test(e));
+}
+
+/**
+ * Assert the page is not showing its ErrorBoundary.
+ *
+ * Worth its own helper because the boundary renders INSIDE `.page-content`: a
+ * test that only checks `.page-content` is visible passes just as happily on a
+ * crashed page as on a working one. That is how the first version of
+ * navigation.spec.ts passed while /hardware was actually throwing
+ * "a.map is not a function".
+ */
+export async function expectNoErrorBoundary(page: Page, context: string): Promise<void> {
+  const text = await page.locator('.page-content').innerText();
+  if (/Something went wrong|An unexpected error occurred/i.test(text)) {
+    throw new Error(`${context}: page rendered its ErrorBoundary:\n${text.slice(0, 400)}`);
+  }
 }
