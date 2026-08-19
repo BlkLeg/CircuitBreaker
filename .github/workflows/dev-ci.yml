@@ -129,8 +129,18 @@ jobs:
       - name: Install frontend deps
         run: cd apps/frontend && npm ci
 
-      - name: Frontend tests
-        run: cd apps/frontend && npm test
+      # REL-15: coverage is enforced and retained, not just produced. The
+      # thresholds live in vitest.config.ts so a local run fails identically.
+      - name: Frontend tests with coverage
+        run: cd apps/frontend && npm run test:coverage
+
+      - name: Upload frontend coverage
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: frontend-coverage
+          path: apps/frontend/coverage/
+          retention-days: 14
 
       # -race is mandatory: the agent's daemon-startup ordering guarantees are
       # only observable under the race detector (see apps/agent/Makefile).
