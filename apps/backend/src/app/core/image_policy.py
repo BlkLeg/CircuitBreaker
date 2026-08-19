@@ -34,7 +34,9 @@ class UnsupportedImageFormat(ValueError):
 
 
 def is_supported_upload_format(fmt: str | None) -> bool:
-    return bool(fmt) and fmt.upper() in SUPPORTED_UPLOAD_FORMATS
+    # `fmt is not None` rather than `bool(fmt)`: mypy narrows on the former.
+    # An empty string still returns False, since "" is not in the set.
+    return fmt is not None and fmt.upper() in SUPPORTED_UPLOAD_FORMATS
 
 
 def ensure_supported_upload_format(fmt: str | None) -> str:
@@ -43,10 +45,12 @@ def ensure_supported_upload_format(fmt: str | None) -> str:
     The message names both the rejected format and the accepted set, so an
     operator can act on it without reading this file.
     """
-    if not is_supported_upload_format(fmt):
+    # Normalise first so the return type is plainly `str`, with no assert
+    # standing in for narrowing a caller cannot see.
+    normalized = (fmt or "").upper()
+    if normalized not in SUPPORTED_UPLOAD_FORMATS:
         supported = ", ".join(sorted(SUPPORTED_UPLOAD_FORMATS))
         raise UnsupportedImageFormat(
             f"Unsupported image format: {fmt or 'unrecognised'}. Supported formats: {supported}."
         )
-    assert fmt is not None  # narrowed by is_supported_upload_format
-    return fmt.upper()
+    return normalized
