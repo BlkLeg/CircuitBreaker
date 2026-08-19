@@ -25,6 +25,10 @@ jobs:
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
+      # The parity gate below needs the tree; this job previously had no
+      # checkout because it only ever read the ref name.
+      - uses: actions/checkout@v5
+
       - name: Derive version string
         id: ver
         run: |
@@ -34,6 +38,12 @@ jobs:
           else
             echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
           fi
+
+      # GOV-09: the git tag is not authoritative, VERSION is. Fail before
+      # anything is built if they disagree, rather than shipping artifacts
+      # whose name and contents claim different versions.
+      - name: Assert version parity
+        run: python3 scripts/check_version_parity.py --expected "${{ steps.ver.outputs.version }}"
 
   # ── Build all packages ────────────────────────────────────────────────────────
   build:
@@ -274,9 +284,22 @@ jobs:
         run: |
           # setup.sh kept as backward-compat alias for install.sh
           cp install.sh setup.sh
+
+          # GOV-20: an RC must not become GitHub's "Latest release". The flag
+          # comes from the same tested function that decides the registry tags,
+          # so the two channels can never disagree about what "stable" means.
+          PRERELEASE_FLAG=""
+          if [ "$(python3 scripts/release_channel.py --version "${VERSION}" --field prerelease)" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+            echo "Publishing ${VERSION} as a prerelease"
+          else
+            echo "Publishing ${VERSION} as a stable release"
+          fi
+
           gh release create "v${VERSION}" \
             --title "Circuit Breaker v${VERSION}" \
             --generate-notes \
+            ${PRERELEASE_FLAG} \
             dist/release/* \
             install.sh \
             setup.sh \
