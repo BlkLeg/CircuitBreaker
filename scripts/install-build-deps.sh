@@ -4,7 +4,11 @@
 # Does NOT invoke makepkg — that is the caller's responsibility.
 set -euo pipefail
 
-NFPM_VERSION="${NFPM_VERSION:-latest}"
+# GOV-18: pinned so rebuilding a release candidate uses an immutable tool
+# identity. "latest" resolved through the GitHub API at build time, so two
+# rebuilds of the same commit could package with different nfpm versions.
+# No leading "v": the resolver below strips it from the tag name.
+NFPM_VERSION="${NFPM_VERSION:-2.47.0}"
 APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
 
 log() { echo "[build-deps] $*"; }

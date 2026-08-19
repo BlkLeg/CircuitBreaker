@@ -53,6 +53,12 @@ jobs:
       - name: Mypy
         run: cd apps/backend && PYTHONPATH=src ../../.venv/bin/mypy src/app
 
+      # EXEC: the requirement ledger is the release's source of truth. It
+      # validated clean by hand but ran in no workflow, so it could drift from
+      # the specs unnoticed between releases.
+      - name: Validate 1.0.0 release-control ledger
+        run: python3 scripts/validate_v1_release_control.py
+
       - name: ESLint
         run: cd apps/frontend && npm run lint
 

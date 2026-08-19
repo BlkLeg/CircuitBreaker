@@ -119,12 +119,12 @@ elif docker_available; then
     GITLEAKS_DOCKER_ARGS="detect --no-git --source=/repo -v"
     [ -f .gitleaks.toml ] && GITLEAKS_DOCKER_ARGS="detect --no-git --source=/repo --config=/repo/.gitleaks.toml -v"
     if $GATE_MODE; then
-        if ! docker run --rm -v "$(pwd):/repo" ghcr.io/gitleaks/gitleaks:latest $GITLEAKS_DOCKER_ARGS >> "$REPORT_FILE" 2>&1; then
+        if ! docker run --rm -v "$(pwd):/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 $GITLEAKS_DOCKER_ARGS >> "$REPORT_FILE" 2>&1; then
             GATE_FAILURES=$((GATE_FAILURES + 1))
             echo "  ⚠ GATE FAILURE: Gitleaks found secrets" >> "$REPORT_FILE"
         fi
     else
-        docker run --rm -v "$(pwd):/repo" ghcr.io/gitleaks/gitleaks:latest $GITLEAKS_DOCKER_ARGS 2>&1 >> "$REPORT_FILE" || true
+        docker run --rm -v "$(pwd):/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 $GITLEAKS_DOCKER_ARGS 2>&1 >> "$REPORT_FILE" || true
     fi
 fi
 if ! $GITLEAKS_RAN; then
@@ -310,7 +310,7 @@ export GOBIN="${GOBIN:-/tmp/cb-security-go-bin}"
 export PATH="$GOBIN:$PATH"
 mkdir -p "$GOBIN"
 if ! command -v govulncheck > /dev/null 2>&1 && $GATE_MODE && command -v go > /dev/null 2>&1; then
-    go install golang.org/x/vuln/cmd/govulncheck@latest >> "$REPORT_FILE" 2>&1 || true
+    go install golang.org/x/vuln/cmd/govulncheck@v1.7.0 >> "$REPORT_FILE" 2>&1 || true
 fi
 if command -v govulncheck > /dev/null 2>&1; then
     if $GATE_MODE; then
@@ -322,7 +322,7 @@ if command -v govulncheck > /dev/null 2>&1; then
         (cd apps/agent && govulncheck ./...) >> "$REPO_ROOT/$REPORT_FILE" 2>&1 || true
     fi
 else
-    echo "govulncheck not found (install: go install golang.org/x/vuln/cmd/govulncheck@latest), skipping." >> "$REPORT_FILE"
+    echo "govulncheck not found (install: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0), skipping." >> "$REPORT_FILE"
     if $GATE_MODE; then
         GATE_FAILURES=$((GATE_FAILURES + 1))
         echo "  ⚠ GATE FAILURE: govulncheck unavailable" >> "$REPORT_FILE"
