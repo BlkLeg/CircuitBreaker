@@ -1857,6 +1857,9 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
             >
               {/* Environment */}
               <select
+                // ACC-10: the visible text is inside <option>, which is not an
+                // accessible name. Nothing labels this control otherwise.
+                aria-label="Filter topology by environment"
                 value={envFilter}
                 onChange={(e) => setEnvFilter(e.target.value ? Number(e.target.value) : '')}
                 style={{
@@ -1878,6 +1881,8 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
 
               {/* Group By */}
               <select
+                // ACC-10: `title` alone does not satisfy axe's select-name.
+                aria-label="Group topology nodes by dimension"
                 value={groupBy}
                 onChange={(e) => setGroupBy(e.target.value)}
                 style={{

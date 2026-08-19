@@ -1,5 +1,5 @@
 import React from 'react';
-import { FILTER_NODE_TYPES, NODE_STYLES, NODE_TYPE_LABELS } from './mapConstants';
+import { CHIP_STYLES, FILTER_NODE_TYPES, NODE_TYPE_LABELS } from './mapConstants';
 import { useHardwareRoles } from '../../hooks/useHardwareRoles';
 
 /**
@@ -32,7 +32,9 @@ export default function NodeTypeFilterBar({
       </span>
 
       {FILTER_NODE_TYPES.map((type) => {
-        const style = NODE_STYLES.get(type);
+        // ACC-10: CHIP_STYLES, not NODE_STYLES — the node palette is tuned for
+        // 40px nodes and fails 4.5:1 as 11px chip text in both states.
+        const chip = CHIP_STYLES.get(type);
         const isActive = includeTypes.get(type);
         return (
           <button
@@ -44,12 +46,13 @@ export default function NodeTypeFilterBar({
                 return next;
               })
             }
+            aria-pressed={!!isActive}
             style={{
               padding: '3px 8px',
               borderRadius: 4,
-              border: `1px solid ${style?.borderColor}`,
-              background: isActive ? style?.background : 'transparent',
-              color: isActive ? '#fff' : style?.background,
+              border: `1px solid ${chip?.chipBg}`,
+              background: isActive ? chip?.chipBg : 'transparent',
+              color: isActive ? '#fff' : chip?.chipText,
               fontSize: 11,
               cursor: 'pointer',
               transition: 'all 0.15s',
@@ -69,12 +72,15 @@ export default function NodeTypeFilterBar({
             return next;
           })
         }
+        aria-pressed={!!includeTypes.get('docker')}
         style={{
           padding: '3px 8px',
           borderRadius: 4,
-          border: '1px solid #0b6e8e',
-          background: includeTypes.get('docker') ? '#0b6e8e' : 'transparent',
-          color: includeTypes.get('docker') ? '#fff' : '#0b6e8e',
+          border: `1px solid ${CHIP_STYLES.get('docker_network').chipBg}`,
+          background: includeTypes.get('docker')
+            ? CHIP_STYLES.get('docker_network').chipBg
+            : 'transparent',
+          color: includeTypes.get('docker') ? '#fff' : CHIP_STYLES.get('docker_network').chipText,
           fontSize: 11,
           cursor: 'pointer',
           transition: 'all 0.15s',
@@ -105,9 +111,10 @@ export default function NodeTypeFilterBar({
                 borderRadius: 4,
                 fontSize: 11,
                 cursor: 'pointer',
-                border: '1px solid #4a7fa5',
-                background: hwRoleFilter === value ? '#4a7fa5' : 'transparent',
-                color: hwRoleFilter === value ? '#fff' : '#4a7fa5',
+                border: `1px solid ${CHIP_STYLES.get('hardware').chipBg}`,
+                background:
+                  hwRoleFilter === value ? CHIP_STYLES.get('hardware').chipBg : 'transparent',
+                color: hwRoleFilter === value ? '#fff' : CHIP_STYLES.get('hardware').chipText,
                 transition: 'all 0.15s',
               }}
             >

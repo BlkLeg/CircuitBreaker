@@ -50,6 +50,9 @@ export default function LegendPanel({ legendOpen, setLegendOpen, includeTypes })
             </div>
             <button
               onClick={() => setLegendOpen(false)}
+              // ACC-10: an icon-only button has no accessible name; the <X>
+              // glyph is an SVG, invisible to a screen reader.
+              aria-label="Close legend"
               style={{
                 background: 'none',
                 border: 'none',
