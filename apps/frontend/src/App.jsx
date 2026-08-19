@@ -133,6 +133,14 @@ function AppInner() {
       >
         <ErrorBoundary>
           <React.Suspense fallback={<LoadingScreen />}>
+            {/*
+              known_bugs-v1.0.0-rc.1.md item 1 reproduces from this route tree
+              (see e2e/navigation.spec.ts), but mode is NOT the cause: measured
+              on Firefox under 8-way load, "wait" wedged 2 times in 48 and
+              "sync" 1 in 48 — no difference. Left on "wait", the value
+              8bb0ee25 shipped. Do not switch it speculatively; the numbers are
+              in known_bugs.
+            */}
             <AnimatePresence mode="wait">
               <motion.div
                 key={location.pathname}
