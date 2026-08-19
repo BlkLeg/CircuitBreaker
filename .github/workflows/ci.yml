@@ -202,9 +202,10 @@ jobs:
       - name: Install frontend deps
         run: cd apps/frontend && npm ci
 
-      # The visual-* projects are excluded until REL-18 baselines are committed
-      # (see docs/testing-visual-baselines.md); playwright.config.ts already
-      # keeps visual.spec.ts out of these four.
+      # The visual-* projects carry the REL-18 baselines (committed 2026-08-19,
+      # see docs/testing-visual-baselines.md). They are separate projects so a
+      # stale baseline fails the visual gate and not the functional one;
+      # playwright.config.ts keeps visual.spec.ts out of the other four.
       - name: Run Playwright suite
         run: |
           cd apps/frontend
@@ -212,7 +213,9 @@ jobs:
             --project=chromium \
             --project=firefox \
             --project=webkit \
-            --project=mobile-chrome
+            --project=mobile-chrome \
+            --project=visual-desktop \
+            --project=visual-mobile
 
       # REL-20: a failed job must be diagnosable from retained artifacts alone.
       - name: Upload Playwright report
