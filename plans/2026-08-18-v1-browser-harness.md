@@ -631,22 +631,31 @@ filterwarnings = [
 ]
 ```
 
-- [ ] **Step 3: Raise the coverage ratchet to the measured value**
+- [ ] **Step 3: Do NOT raise the ratchet to 56 — the number is wrong**
 
-Change `--cov-fail-under=55` to `--cov-fail-under=56` and update the comment above it:
+**Corrected during execution on 2026-08-18.** The measured baseline is **55.42%**
+(`pyproject.toml:218-223`, 31717 statements, 14141 missed, on the full 2146-test run).
+`--cov-fail-under=56` is therefore *above* the measured coverage and would fail every run
+immediately — the exact failure mode the existing comment records for the previous aspirational
+`60`, which is why no CI job could run pytest at all.
 
-```toml
-    # REL-14: the ratchet must sit at or above the measured baseline. It was
-    # 55 against a real 55.42%, i.e. the gate was slacker than the number it
-    # was supposedly pinning. Raise this deliberately as coverage improves;
-    # never lower it to make a red build green.
-    "--cov-fail-under=56",
-```
+`--cov-fail-under=55` against a real 55.42% is a ratchet with 0.42% of slack, which is normal
+hygiene, not a defect. REL-14 asks for a threshold "based on a full supported suite" that
+"increases intentionally" — the existing value already is that, and raising it requires *adding
+coverage first*, not editing the number.
 
-- [ ] **Step 4: Verify the suite is green under both changes**
+Leave the ratchet at 55. Raise it only in a change that also adds the tests to clear the new
+figure.
+
+- [ ] **Step 4: Verify the suite is green under the filterwarnings change**
 
 Run: `cd apps/backend && python -m pytest -q 2>&1 | tail -20`
-Expected: PASS with coverage at or above 56%. **If coverage is below 56%, do not lower the gate** — add tests for the least-covered security-relevant module until it clears, or record why in the ledger.
+Expected: PASS with coverage at or above 55%.
+
+**This step requires Docker.** `tests/conftest.py:32-38` starts a
+`timescale/timescaledb:2.14.2-pg16` testcontainer and sets `CB_DB_URL` from it before any app
+module is imported — vanilla PostgreSQL is not a substitute, because `rollup_worker`'s
+`calculate_daily_rollups` uses the TimescaleDB-only `time_bucket()`.
 
 - [ ] **Step 5: Commit**
 

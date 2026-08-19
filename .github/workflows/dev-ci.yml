@@ -74,8 +74,10 @@ jobs:
     # 55.42%; it is now ratcheted to the measured number, so this job's exit
     # code means what it says.
     #
-    # The 35+ minute docker e2e suite (apps/agent/e2e) is deliberately NOT run
-    # here and remains a local/manual gate.
+    # The 35+ minute docker e2e suite (apps/agent/e2e) is not run here: it is
+    # too slow for the PR path. It is no longer unrun, though — AGT-01 requires
+    # it against every RC and on a schedule, so .github/workflows/e2e.yml runs
+    # it nightly and release.yml gates publication on it.
     steps:
       - uses: actions/checkout@v5
 

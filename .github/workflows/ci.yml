@@ -107,8 +107,10 @@ jobs:
     # 55.42%; it is now ratcheted to the measured number, so this job's exit
     # code means what it says.
     #
-    # The 35+ minute docker e2e suite (apps/agent/e2e) is deliberately NOT run
-    # here and remains a local/manual gate.
+    # The 35+ minute docker e2e suite (apps/agent/e2e) is not run here: it is
+    # too slow for the PR path. It is no longer unrun, though — AGT-01 requires
+    # it against every RC and on a schedule, so .github/workflows/e2e.yml runs
+    # it nightly and release.yml gates publication on it.
     steps:
       - uses: actions/checkout@v5
 
@@ -180,3 +182,45 @@ jobs:
 
       - name: Agent vet
         run: cd apps/agent && go vet ./...
+
+  browser-e2e:
+    name: Browser E2E
+    runs-on: ubuntu-22.04
+    # Pinned to the Playwright image so rendering matches the container the
+    # REL-18 visual baselines are generated in. A version skew between this tag
+    # and the @playwright/test version in package.json shows up as
+    # unexplainable screenshot diffs.
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.1-noble
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - name: Install frontend deps
+        run: cd apps/frontend && npm ci
+
+      # The visual-* projects are excluded until REL-18 baselines are committed
+      # (see docs/testing-visual-baselines.md); playwright.config.ts already
+      # keeps visual.spec.ts out of these four.
+      - name: Run Playwright suite
+        run: |
+          cd apps/frontend
+          npx playwright test \
+            --project=chromium \
+            --project=firefox \
+            --project=webkit \
+            --project=mobile-chrome
+
+      # REL-20: a failed job must be diagnosable from retained artifacts alone.
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: playwright-report
+          path: |
+            apps/frontend/playwright-report/
+            apps/frontend/test-results/
+          retention-days: 14

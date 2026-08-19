@@ -1,0 +1,61 @@
+name: Composed Agent E2E
+
+# AGT-01: the composed Docker journey must run against every RC and on a
+# schedule. It ran nowhere — ci.yml and dev-ci.yml both declared it
+# "deliberately NOT run here and remains a local/manual gate", and release.yml
+# never invoked it. 35+ minutes is a fair reason to keep it off the PR path;
+# it is not a reason for it never to run.
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  composed-journey:
+    name: Composed agent journey
+    runs-on: ubuntu-22.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-timeout requests
+
+      # REL-20: a recorded seed is what makes a failed run reproducible.
+      - name: Run the composed journey
+        env:
+          CB_E2E_SEED: ${{ github.run_id }}
+        run: |
+          cd apps/agent/e2e
+          python -m pytest test_agent_e2e.py -v \
+            --junitxml=junit-agent-e2e.xml \
+            --timeout=3600
+
+      - name: Collect container diagnostics
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          docker ps -a > diagnostics/containers.txt 2>&1 || true
+          for c in $(docker ps -aq); do
+            docker logs "$c" > "diagnostics/${c}.log" 2>&1 || true
+          done
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: composed-agent-e2e
+          path: |
+            apps/agent/e2e/junit-agent-e2e.xml
+            diagnostics/
+          retention-days: 30

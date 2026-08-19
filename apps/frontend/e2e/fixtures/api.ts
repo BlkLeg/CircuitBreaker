@@ -48,7 +48,9 @@ const DEFAULTS: Record<string, unknown> = {
 
   // Monitoring and discovery
   monitors: [],
-  'monitors/overview': { total: 0, up: 0, down: 0, paused: 0, monitors: [] },
+  // GET /monitors/overview returns a LIST (api/monitor.py returns
+  // filter_readable_monitors(...)), not a summary object.
+  'monitors/overview': [],
   'discovery/status': { running: false, jobs: [] },
   notifications: [],
   certificates: [],

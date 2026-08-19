@@ -63,10 +63,15 @@ jobs:
     with:
       version: ${{ needs.version.outputs.version }}
 
+  # ── Composed agent acceptance (AGT-01) ───────────────────────────────────────
+  composed-e2e:
+    name: Composed Agent E2E
+    uses: ./.github/workflows/e2e.yml
+
   # ── Create GitHub Release + push Docker ──────────────────────────────────────
   release:
     name: Publish Release
-    needs: [version, build, artifact-smoke]
+    needs: [version, build, artifact-smoke, composed-e2e]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
