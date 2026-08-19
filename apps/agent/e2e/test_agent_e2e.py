@@ -1272,21 +1272,36 @@ def _wait_until_and_return(getter, *, timeout=30, interval=1.0):
 
 
 @pytest.mark.e2e
+# AGT-04 / RC-08 forbid an unexplained xfail at sign-off, and this is the only
+# one in the repo. Its original reason named three production bugs — all three
+# have since been fixed, and the marker outlived them:
+#
+#   1. link.go Uninstall() read only one of the two frames the server queues.
+#      Fixed in 4aab49d5: drainPending() now loops until the read errors, after
+#      a real WS close handshake (link.go:1053-1061).
+#   2. ws_agents.link_stream swallowed frame-decrypt failures silently.
+#      Fixed in 4aab49d5: logged with agent id and exception (ws_agents.py:836).
+#   3. A second concurrent /link teardown deregistered the first, still-live
+#      connection. Fixed in ad197961: atomic compare-and-delete Lua scoped to
+#      worker_id (agent_registry.py:1274, deregister_agent_connection).
+#
+# The fixes landed at 16:53 on 2026-08-05; this marker was written at 14:42 the
+# same day in 6903d6db. With strict=False a now-passing test reported as xpass,
+# which is why nobody noticed for two weeks.
+#
+# strict=True is deliberate and self-resolving: if the test now passes, pytest
+# fails the run with XPASS(strict), which is the signal to delete this marker
+# entirely. If it still fails, it fails for a NEW reason that needs recording
+# here — not for the three above. Verifying that needs a Docker host, which the
+# 2026-08-18 remediation pass did not have.
 @pytest.mark.xfail(
     reason=(
-        "Known production bug (follow-up task required): "
-        "apps/agent/internal/link/link.go's Uninstall() one-shot uninstall-notification "
-        "connection does not fully drain the server's responses — both hello.ack AND "
-        "capabilities.set are sent before agent closes, but only one is currently read, "
-        "a real RST-on-close data-loss risk. Combined with silent unlogged frame-decrypt-failure "
-        "swallow in apps/backend/src/app/api/ws_agents.py's link_stream (bare except Exception: "
-        "continue with no logging) that makes root-causing from production logs impossible. "
-        "Collateral finding: second concurrent /link connection's teardown incorrectly deregisters "
-        "first (still-live) connection's registry entry too (apps/backend/src/app/services/"
-        "agent_registry.py's connection-registry deregister), a cross-worker presence-corruption "
-        "risk under multi-worker deployments (also requires follow-up task)."
+        "Stale marker pending verification: the three bugs it originally named "
+        "(link.go Uninstall drain, ws_agents decrypt-swallow, agent_registry "
+        "cross-connection deregister) were all fixed in 4aab49d5 and ad197961. "
+        "Run this test on a Docker host; XPASS(strict) means delete the marker."
     ),
-    strict=False,
+    strict=True,
 )
 def test_agent_uninstall_marks_server_revoked_and_removes_local_files():
     _up_server()
