@@ -9,6 +9,14 @@ export default defineConfig({
     pool: 'forks',
     maxConcurrency: 3,
     setupFiles: './src/__tests__/setup.js',
+    // 15s, not the 5s default. Under v8 coverage instrumentation the heavier
+    // render tests (fleet-table, monitors-dashboard, agent-discovery-scope,
+    // agent-assigned-probes) take 5.4-6.9s and intermittently trip the
+    // default — a different two or three of them on each run. `npm test` was
+    // green because it does not instrument; `npm run test:coverage`, which is
+    // what CI runs for the REL-15 gate, was failing roughly every other run on
+    // tests that have nothing to do with the change under review.
+    testTimeout: 15_000,
     // e2e/ holds Playwright specs. Vitest's default include pattern matches
     // *.spec.ts too, so without this it tries to run them and fails on
     // "Playwright Test needs to be invoked via 'npx playwright test'".
