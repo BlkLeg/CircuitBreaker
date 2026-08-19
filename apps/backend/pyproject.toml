@@ -215,13 +215,55 @@ addopts = [
     "--cov=./src/app",
     "--cov-report=xml",
     "--cov-report=term-missing",
-    # Ratcheted to the suite's real coverage, measured 2026-08-09 on the full
-    # 2146-test run: 55.42% (31717 statements, 14141 missed). The previous 60
-    # was aspirational and never met, which is why no CI job could run pytest
-    # at all — a subset run exits 1 regardless of results, and the full run
-    # exited 1 too. Raise this deliberately as coverage improves; never lower
-    # it to make a red build green.
-    "--cov-fail-under=55",
+    # Ratcheted to the suite's real coverage. Measured 2026-08-09 at 55.42%
+    # (2146 tests, 31717 statements, 14141 missed); re-measured 2026-08-19 at
+    # 57.78% (2378 tests, 32450 statements, 13702 missed) after the v1
+    # remediation plans added tests. Raised 55 -> 56 on that re-measurement,
+    # which is the only way to raise it: the coverage clears the new figure
+    # before the number moves. 56 rather than 57 leaves margin for the CI
+    # interpreter (3.12) differing slightly from the one this was measured on
+    # (3.14). The pre-remediation 60 was aspirational and never met, which is
+    # why no CI job could run pytest at all. Never lower this to make a red
+    # build green.
+    "--cov-fail-under=56",
+]
+# REL-08: un-awaited coroutine warnings and deprecations are tracked defects,
+# not noise. Errors by default; every ignore below names an owner and a removal
+# condition, and RC-08 requires this list to be empty or explained at sign-off.
+#
+# Enumerated on the full 2378-test run, 2026-08-19. The RuntimeWarnings this
+# turned up were real: "coroutine 'AsyncMockMixin._execute_mock_call' was never
+# awaited" in the SNMP probes was `async for` over pysnmp's next_cmd, a
+# coroutine rather than an async generator — fixed in discovery_probes.py, not
+# ignored here.
+#
+# Three warnings survive a full run and are tracked rather than silenced,
+# because none is reachable by a filter here — they are raised outside a test's
+# warning-capture context, so `error::` does not convert them:
+#   1. StarletteDeprecationWarning, raised at import of
+#      tests/api/test_monitor_stream_auth.py (collection time).
+#   2. CryptographyDeprecationWarning from scapy's FFDH import. It subclasses
+#      UserWarning, not DeprecationWarning, so the rules below never see it.
+#   3. PytestUnraisableExceptionWarning wrapping "coroutine
+#      'AsyncMockMixin._execute_mock_call' was never awaited". Raised at GC
+#      finalization, so the test it is reported against is where collection
+#      happened to run, not where the coroutine was created — tracemalloc puts
+#      the allocation inside the ASGI middleware chain of
+#      tests/services/test_monitor_probe_cancellation.py. shawnji (backend):
+#      open, needs localisation under PYTHONTRACEMALLOC before it can be fixed.
+#      The suite's other nine instances of this warning were real and are fixed
+#      (see discovery_probes.py).
+filterwarnings = [
+    "error::RuntimeWarning",
+    "error::DeprecationWarning",
+    # shawnji (backend): starlette's TestClient still imports httpx 0.x. Remove
+    # when starlette supports httpx2 or the suite drops starlette.testclient
+    # (only tests/api/test_monitor_stream_auth.py uses it).
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:DeprecationWarning",
+    # shawnji (backend): slowapi calls asyncio.iscoroutinefunction, deprecated
+    # in 3.14 and slated for removal in 3.16. Does not fire on CI's 3.12.
+    # Remove when slowapi moves to inspect.iscoroutinefunction.
+    "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning:slowapi.extension",
 ]
 markers = [
     "security: security regression tests (from audit report)",
