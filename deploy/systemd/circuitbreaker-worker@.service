@@ -16,6 +16,20 @@ ExecStartPre=/bin/sh -c 'umask 077; grep -E "^CB_VAULT_KEY=" /etc/circuitbreaker
 EnvironmentFile=-/run/circuitbreaker/vault.env
 Environment="DB_POOL_SIZE=3"
 Environment="DB_MAX_OVERFLOW=2"
+
+# AGT-11: the PyInstaller --onefile bundle extracts the whole application into
+# $TMPDIR/_MEI<random> on every start and only removes it on a clean exit, so a
+# crash loop or a kill mid-start leaves full copies behind. Six units run this
+# same bundle as `breaker` on a native install, so each gets its own directory
+# (%N) and reaps only that one — a shared directory would let a starting worker
+# delete the backend's live extraction. The sweep is never a bare /tmp/_MEI*,
+# which could hit another application's live bundle.
+#
+# PrivateTmp= is deliberately not used: discovery reads the host's real
+# /tmp/dnsmasq.leases and /tmp/dhcp.leases by absolute path, which a private
+# /tmp namespace would hide.
+Environment="TMPDIR=/var/lib/circuitbreaker/run/%N"
+ExecStartPre=/bin/sh -c 'mkdir -p "/var/lib/circuitbreaker/run/%N" && rm -rf "/var/lib/circuitbreaker/run/%N"/_MEI*'
 ExecStart=/opt/circuitbreaker/bin/circuit-breaker --worker-type %i
 Restart=on-failure
 RestartSec=10s
