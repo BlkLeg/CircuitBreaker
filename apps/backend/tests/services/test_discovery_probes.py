@@ -65,10 +65,16 @@ async def test_router_arp_table_returns_list_on_empty_walk() -> None:
 
     with (
         patch("app.services.discovery_probes.UdpTransportTarget") as mt,
-        patch("pysnmp.hlapi.v3arch.asyncio.cmdgen.next_cmd") as mnc,
+        patch("pysnmp.hlapi.v3arch.asyncio.cmdgen.walk_cmd") as mnc,
     ):
         mt.create = AsyncMock(return_value=MagicMock())
 
+        # walk_cmd is an async generator function, so patch() leaves a
+        # MagicMock and calling it returns this generator directly. Under the
+        # old next_cmd target patch() produced an AsyncMock, the call returned
+        # an un-awaited coroutine, `async for` raised TypeError, the probe's
+        # except swallowed it, and this assertion passed without ever reaching
+        # the empty-walk path it names.
         async def empty_iter(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
             return
             yield  # make it an async generator
@@ -88,7 +94,7 @@ async def test_lldp_probe_returns_list_on_empty_switch() -> None:
 
     with (
         patch("app.services.discovery_probes.UdpTransportTarget") as mt,
-        patch("pysnmp.hlapi.v3arch.asyncio.cmdgen.next_cmd") as mnc,
+        patch("pysnmp.hlapi.v3arch.asyncio.cmdgen.walk_cmd") as mnc,
     ):
         mt.create = AsyncMock(return_value=MagicMock())
 

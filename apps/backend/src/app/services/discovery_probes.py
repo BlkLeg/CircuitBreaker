@@ -475,9 +475,15 @@ async def _run_lldp_probe(ip: str, community: str, port: int = 161) -> list[dict
 
     async def _walk_oid(oid_str: str, field: str) -> None:
         try:
-            from pysnmp.hlapi.v3arch.asyncio.cmdgen import next_cmd
+            # walk_cmd, not next_cmd: next_cmd is a coroutine returning one
+            # 4-tuple, so `async for` over it raises "requires an object with
+            # __aiter__ method, got coroutine" on every call. The except below
+            # swallowed that at debug level, so this probe returned [] against
+            # every device and looked merely unlucky. walk_cmd is the async
+            # generator that yields the tuple this loop unpacks.
+            from pysnmp.hlapi.v3arch.asyncio.cmdgen import walk_cmd
 
-            async for err_ind, err_stat, _, var_binds in next_cmd(
+            async for err_ind, err_stat, _, var_binds in walk_cmd(
                 SnmpEngine(),
                 CommunityData(community, mpModel=1),
                 transport,
@@ -608,7 +614,8 @@ async def _run_router_arp_table(
         return []
 
     try:
-        from pysnmp.hlapi.v3arch.asyncio.cmdgen import next_cmd
+        # walk_cmd, not next_cmd — see the note in _run_lldp_probe.
+        from pysnmp.hlapi.v3arch.asyncio.cmdgen import walk_cmd
     except ImportError:
         return []
 
@@ -631,7 +638,7 @@ async def _run_router_arp_table(
             return
 
         try:
-            async for err_ind, err_stat, _, var_binds in next_cmd(
+            async for err_ind, err_stat, _, var_binds in walk_cmd(
                 SnmpEngine(),
                 CommunityData(community, mpModel=1),
                 transport,
