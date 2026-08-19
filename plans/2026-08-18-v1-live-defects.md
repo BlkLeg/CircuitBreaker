@@ -282,29 +282,43 @@ grep -n "tenant_mismatch" src/components/monitors/RunFromSelect.jsx src/componen
 Run: `cd apps/frontend && npx vitest run src/__tests__/single-tenant-copy.test.js`
 Expected: PASS — 2 passed
 
-- [ ] **Step 5: Remove the backend tenant argument**
+- [ ] **Step 5: Do NOT remove the backend tenant argument — verify why it stays**
 
-Inspect the call first — the helper's signature determines whether this is a safe deletion:
+**This step was reversed during execution on 2026-08-18.** The plan originally said to delete
+`getattr(user, "tenant_id", None)` at `graph.py:1111` on the premise that `User` has no
+`tenant_id` and the value is always `None`. Both halves of that premise are false, and making the
+change would reintroduce a fixed security bug.
 
-Run: `sed -n '1060,1125p' apps/backend/src/app/api/graph.py`
+Run the checks that establish this, and leave the code alone:
 
-Then remove the `getattr(user, "tenant_id", None)` argument at `graph.py:1111` and the corresponding parameter from the helper it calls, since `User` has no `tenant_id` in the single-tenant model and the value is always `None`. Leave a comment recording why the parameter went away:
-
-```python
-    # ADR-0003: 1.0 is single-tenant per deployment. This call used to pass
-    # getattr(user, "tenant_id", None), which was always None and made the
-    # cache key and query path look tenant-aware when nothing behind it was.
+```bash
+cd /home/shawnji/projects/CircuitBreaker
+grep -n "class User" -A40 apps/backend/src/app/db/models.py | grep tenant
+grep -n "def reader_can_access_monitor" -A18 apps/backend/src/app/services/monitor_service.py
+head -12 apps/backend/tests/api/test_monitor_read_side_channels.py
 ```
 
-- [ ] **Step 6: Verify the backend still passes its graph tests**
+Expected findings:
+
+- `User.tenant_id` exists (`db/models.py:1967`), as do `tenant_id` columns on 20+ models.
+- `reader_can_access_monitor` hides a monitor only when reader and target **both** carry tenant
+  ids and they differ — deliberate handling for *upgraded* data that still carries legacy ids,
+  which is the identifier-enumeration case SEC-04 names.
+- The topology body is reader-dependent through that filter (`graph.py:405-406`), so
+  `reader_tenant_id` belongs in the ETag key: without it a revalidating cache could answer one
+  reader with another reader's body.
+- `tests/api/test_monitor_read_side_channels.py` exists precisely because "the map handed out
+  rollups for targets belonging to another tenant" was a real SEC-08 defect that this code fixed.
+
+The only genuine SEC-05 remnant in this task is the user-facing copy in Steps 1–4.
+
+- [ ] **Step 6: Confirm the frontend copy fix stands alone**
 
 Run:
 ```bash
-cd apps/backend
-python -m pytest tests/api/test_graph_monitor_fields.py tests/test_layout_service.py -v
-grep -rn 'tenant_id' src/app/api/graph.py || echo "ok: no tenant_id remains in graph.py"
+cd apps/frontend && npx vitest run src/__tests__/single-tenant-copy.test.js
 ```
-Expected: tests pass; `ok: no tenant_id remains in graph.py`
+Expected: PASS — 2 passed
 
 - [ ] **Step 7: Commit**
 

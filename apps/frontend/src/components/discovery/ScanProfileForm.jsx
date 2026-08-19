@@ -66,7 +66,7 @@ const REASON_TEXT = new Map([
   // hosts, and nothing downstream can tell that from an empty segment.
   ['readiness_degraded', 'the agent reports its TCP connect collector as degraded'],
   ['readiness_unavailable', 'the agent reports its TCP connect collector as unavailable'],
-  ['tenant_mismatch', 'the agent belongs to a different tenant'],
+  ['tenant_mismatch', 'the agent is not registered to this deployment'],
   ['out_of_scope', 'the target is outside the agent network scope'],
   ['address_limit_exceeded', 'the target holds more addresses than the grant allows'],
   ['port_not_granted', 'a requested port is outside the granted port set'],

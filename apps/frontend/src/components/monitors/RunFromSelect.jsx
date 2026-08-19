@@ -17,7 +17,7 @@ const REASON_TEXT = new Map([
   ['no_link_owner', 'the agent has no live control link'],
   ['readiness_unknown', 'the agent has not reported probe readiness yet'],
   ['readiness_unavailable', 'the agent reports this probe type as unavailable'],
-  ['tenant_mismatch', 'the agent belongs to a different tenant'],
+  ['tenant_mismatch', 'the agent is not registered to this deployment'],
   ['unresolved_host', 'the target host does not resolve'],
   ['out_of_scope', 'the target is outside the agent network scope'],
   ['previous_run_in_flight', 'a previous run is still in flight'],
