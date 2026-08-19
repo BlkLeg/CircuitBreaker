@@ -153,3 +153,8 @@ FIXLIST/
 
 # Local reference repo for the monitoring port — never committed
 uptime-kuma/
+
+# Playwright generated output. Visual baselines under
+# apps/frontend/e2e/**/*-snapshots/ ARE tracked — they are reviewed artifacts.
+apps/frontend/playwright-report/
+apps/frontend/test-results/
