@@ -1,0 +1,80 @@
+name: Artifact Smoke
+
+# GOV-20 / ACC-17: a package is not publishable until it has been installed on
+# a clean host from the exact built candidate — not from a source checkout.
+# Nothing in the pipeline did this: release.yml downloaded the build artifacts
+# and uploaded them straight to a GitHub Release.
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deb-install:
+    name: Install .deb (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: amd64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Download candidate packages
+        uses: actions/download-artifact@v5
+        with:
+          name: packages-${{ matrix.arch }}
+          path: dist/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install the candidate .deb on a clean host
+        run: |
+          DEB=$(find dist -name '*.deb' | head -1)
+          [ -n "${DEB}" ] || { echo "::error::no .deb in packages-${{ matrix.arch }}"; exit 1; }
+          echo "Installing ${DEB}"
+          sudo apt-get update
+          sudo apt-get install -y "./${DEB}"
+
+      # GOV-09 parity, measured at the far end of the pipeline: the artifact a
+      # user receives must identify itself as the version being released.
+      # Paths come from nfpm.yaml, not from assumption.
+      - name: Assert the installed binary reports the candidate version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          INSTALLED=$(/usr/local/bin/circuit-breaker --version)
+          echo "installed binary reports: ${INSTALLED}"
+          [ "${INSTALLED}" = "${VERSION}" ] \
+            || { echo "::error::binary reports '${INSTALLED}', expected '${VERSION}'"; exit 1; }
+
+          SHIPPED=$(cat /usr/local/share/circuit-breaker/VERSION)
+          echo "shipped VERSION file reports: ${SHIPPED}"
+          [ "${SHIPPED}" = "${VERSION}" ] \
+            || { echo "::error::shipped VERSION is '${SHIPPED}', expected '${VERSION}'"; exit 1; }
+
+      - name: Assert the package shipped its unit and support files
+        run: |
+          for path in \
+            /lib/systemd/system/circuit-breaker.service \
+            /usr/local/share/circuit-breaker/frontend \
+            /usr/local/share/circuit-breaker/backend; do
+            [ -e "${path}" ] || { echo "::error::package did not install ${path}"; exit 1; }
+          done
+          echo "package contents present"
+
+      - name: Assert uninstall removes what it installed
+        run: |
+          sudo apt-get remove -y circuit-breaker
+          for path in \
+            /usr/local/bin/circuit-breaker \
+            /lib/systemd/system/circuit-breaker.service; do
+            [ ! -e "${path}" ] || { echo "::error::uninstall left ${path} behind"; exit 1; }
+          done
+          echo "uninstall clean"

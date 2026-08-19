@@ -43,10 +43,20 @@ jobs:
     with:
       version: ${{ needs.version.outputs.version }}
 
+  # ── Installed-artifact gate (GOV-20) ─────────────────────────────────────────
+  # Nothing may be published until the exact built candidate has been installed
+  # on a clean host and uninstalled again.
+  artifact-smoke:
+    name: Artifact Smoke
+    needs: [version, build]
+    uses: ./.github/workflows/artifact-smoke.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+
   # ── Create GitHub Release + push Docker ──────────────────────────────────────
   release:
     name: Publish Release
-    needs: [version, build]
+    needs: [version, build, artifact-smoke]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
