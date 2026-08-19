@@ -602,6 +602,7 @@ function HardwarePage() {
             <TagFilter value={tagFilter} onChange={setTagFilter} />
             <select
               className="filter-select"
+              aria-label="Filter by roles"
               value={roleFilter}
               onChange={(e) => setRoleFilter(e.target.value)}
               title="Filter by role"

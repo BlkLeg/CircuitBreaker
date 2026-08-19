@@ -217,6 +217,7 @@ export default function IPAddressesTab({
         <SearchBox value={q} onChange={setQ} />
         <select
           className="filter-select"
+          aria-label="Filter by scan network…"
           value={scanNetworkId}
           onChange={(e) => setScanNetworkId(e.target.value)}
           title="Select network to scan"

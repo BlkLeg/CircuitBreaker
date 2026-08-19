@@ -443,6 +443,7 @@ function ServicesPage() {
         <TagFilter value={tagFilter} onChange={setTagFilter} />
         <select
           className="filter-select"
+          aria-label="Filter by categories"
           value={categoryFilter}
           onChange={(e) => setCategoryFilter(e.target.value)}
         >
@@ -455,6 +456,7 @@ function ServicesPage() {
         </select>
         <select
           className="filter-select"
+          aria-label="Filter by environments"
           value={envFilter}
           onChange={(e) => setEnvFilter(e.target.value ? Number(e.target.value) : '')}
         >
