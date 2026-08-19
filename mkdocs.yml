@@ -41,6 +41,7 @@ nav:
       - Deployment & Security: deployment-security.md
       - Remote Access & Tunnels: remote-access.md
       - cb CLI Tool: cb-cli.md
+      - Visual Test Baselines: testing-visual-baselines.md
       - Backup & Restore: backup-restore.md
   - Reference:
       - Product Overview: overview.md

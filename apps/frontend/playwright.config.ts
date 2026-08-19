@@ -36,10 +36,35 @@ export default defineConfig({
     video: 'retain-on-failure',
   },
   projects: [
-    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
-    { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
-    { name: 'webkit', use: { ...devices['Desktop Safari'] } },
-    { name: 'mobile-chrome', use: { ...devices['Pixel 5'] } },
+    // Functional projects. They ignore visual.spec.ts so a missing or stale
+    // screenshot baseline cannot fail an unrelated PR — visual regression is
+    // opt-in through the visual-* projects below.
+    {
+      name: 'chromium',
+      use: { ...devices['Desktop Chrome'] },
+      testIgnore: /visual\.spec\.ts/,
+    },
+    { name: 'firefox', use: { ...devices['Desktop Firefox'] }, testIgnore: /visual\.spec\.ts/ },
+    { name: 'webkit', use: { ...devices['Desktop Safari'] }, testIgnore: /visual\.spec\.ts/ },
+    {
+      name: 'mobile-chrome',
+      use: { ...devices['Pixel 5'] },
+      testIgnore: /visual\.spec\.ts/,
+    },
+
+    // REL-18 visual regression. Baselines must be generated in the CI
+    // Playwright container (see docs/testing-visual-baselines.md); baselines
+    // made on a developer host will not match CI's font rendering.
+    {
+      name: 'visual-desktop',
+      testMatch: /visual\.spec\.ts/,
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'visual-mobile',
+      testMatch: /visual\.spec\.ts/,
+      use: { ...devices['Pixel 5'] },
+    },
   ],
   webServer: {
     command: 'npm run build && npm run preview -- --port 4173 --strictPort',
