@@ -1,6 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
-import { expectNoErrorBoundary, stubApi } from './fixtures/api';
+import { expectNoErrorBoundary, stubApi, waitForRouteSettled } from './fixtures/api';
 
 // ACC-10: WCAG 2.2 AA automation plus keyboard/focus checks. NB: '/' redirects
 // to /map and '/networks' to /ipam (App.jsx:145,150), so both are named by
@@ -13,6 +13,24 @@ test.describe('WCAG 2.2 AA', () => {
       await stubApi(page);
       await page.goto(path);
       await expect(page.locator('.page-content')).toBeVisible();
+      // Scan the settled page. Mid-fade every colour is composited toward the
+      // background, which axe reports as a contrast violation that is not
+      // there once the transition ends. See waitForRouteSettled.
+      await waitForRouteSettled(page);
+      // Belt and braces with the settle wait above. That one covers the
+      // framer-motion route fade; this covers per-component CSS transitions
+      // that start later, when a table or panel mounts on its own data. Either
+      // one in flight makes axe sample a colour composited toward the page
+      // background and report a contrast violation that is not there once the
+      // page is still.
+      await page.addStyleTag({
+        content: `*, *::before, *::after {
+          animation-duration: 0s !important;
+          animation-delay: 0s !important;
+          transition-duration: 0s !important;
+          transition-delay: 0s !important;
+        }`,
+      });
       await expectNoErrorBoundary(page, `a11y scan of ${path}`);
 
       const results = await new AxeBuilder({ page })
@@ -37,6 +55,7 @@ test('keyboard focus reaches the page and is visibly indicated', async ({ page }
   await stubApi(page);
   await page.goto('/map');
   await expect(page.locator('.page-content')).toBeVisible();
+  await waitForRouteSettled(page);
 
   await page.keyboard.press('Tab');
   const focused = page.locator(':focus');

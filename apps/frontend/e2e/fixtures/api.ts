@@ -1,11 +1,6 @@
+import { expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
-/**
- * Every /api/v1 response the app needs to boot and route, keyed by the tail of
- * the URL. A request with no entry gets an empty object, so a newly added boot
- * call degrades to "empty state" rather than an unhandled rejection that fails
- * an unrelated assertion.
- */
 /**
  * Every /api/v1 response the app makes on boot, keyed by the tail of the URL.
  * The list was not guessed — e2e/_probe captured the actual calls across the
@@ -57,7 +52,13 @@ const DEFAULTS: Record<string, unknown> = {
 
   // Topology
   topologies: [],
-  maps: [],
+  // NOT []: useMapTabs (hooks/useMapTabs.js:15-22) reacts to an empty list by
+  // POSTing mapsApi.create('Main') and reading `.id` off the response. The
+  // catch-all answers that POST with [], so activeMapId becomes undefined and
+  // MapPage.jsx:2997 sits on "Loading maps…" forever. Every /map assertion —
+  // the a11y scan included — was then measuring a loading placeholder rather
+  // than the topology page.
+  maps: [{ id: 1, name: 'Main', is_default: true }],
   graph: { nodes: [], edges: [] },
   'graph/topology': { nodes: [], edges: [] },
 };
@@ -89,6 +90,24 @@ export async function stubApi(page: Page, overrides: Record<string, unknown> = {
       // every unstubbed call is a list, and {} makes pages throw
       // "a.map is not a function" and render their ErrorBoundary.
       body: JSON.stringify(key ? responses[key] : []),
+    });
+  });
+
+  // HeaderWidgets.jsx:60,103 calls open-meteo.com directly — not through
+  // /api/v1, so the handler above never sees it. Left unstubbed the suite
+  // reaches the public internet on every page load: non-hermetic (it hangs or
+  // fails on a network-restricted runner), and it bakes the live temperature
+  // into every screenshot baseline.
+  await page.route('**://*.open-meteo.com/**', (route) => {
+    const isGeocoding = route.request().url().includes('geocoding-api');
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(
+        isGeocoding
+          ? { results: [{ latitude: 33.4484, longitude: -112.074, name: 'Phoenix' }] }
+          : { current: { temperature_2m: 72, weather_code: 0 } }
+      ),
     });
   });
 
@@ -134,4 +153,44 @@ export async function expectNoErrorBoundary(page: Page, context: string): Promis
   if (/Something went wrong|An unexpected error occurred/i.test(text)) {
     throw new Error(`${context}: page rendered its ErrorBoundary:\n${text.slice(0, 400)}`);
   }
+}
+
+/**
+ * Wait for the route-enter animation to finish before measuring anything.
+ *
+ * `.page-content` (App.jsx:127) is a static wrapper and is always opacity 1.
+ * The element that actually animates is the `motion.div` inside it, which
+ * fades 0 -> 1 over 150ms on every route change (App.jsx:135-141). Anything
+ * that samples colour during that window sees every pixel composited toward
+ * the page background: an axe scan 27ms in measured `.entity-table th` as
+ * #454341 on #2f2e2d (1.37:1) when the settled values are #c8bfb0 on #504945
+ * (4.85:1, passing). That is a spurious violation, and with CI retries it
+ * shows up as an unexplained flake rather than a failure.
+ *
+ * Returns the settled wrapper so callers can assert against it directly.
+ */
+export function routeWrapper(page: Page) {
+  return page.locator('.page-content > div').first();
+}
+
+/**
+ * 15s, not the 150ms the fade actually takes. The animation is rAF-driven, so
+ * it does not advance while the browser is starved — and with six projects
+ * running two workers each, alongside full-page screenshot capture, WebKit was
+ * observed sitting at opacity 0 for more than five seconds on /map, the
+ * heaviest route. A wedged AnimatePresence never resolves at all, so a longer
+ * ceiling still catches the known_bugs #1 symptom this assertion exists for;
+ * it only stops a slow machine from being reported as a wedge.
+ */
+const ROUTE_SETTLE_TIMEOUT_MS = 15_000;
+
+export async function waitForRouteSettled(page: Page): Promise<void> {
+  const wrapper = routeWrapper(page);
+  await wrapper.waitFor({ state: 'visible' });
+  await expect
+    .poll(async () => Number(await wrapper.evaluate((el) => getComputedStyle(el).opacity)), {
+      timeout: ROUTE_SETTLE_TIMEOUT_MS,
+      message: 'route wrapper never reached opacity 1 — see known_bugs item 1',
+    })
+    .toBeGreaterThan(0.99);
 }

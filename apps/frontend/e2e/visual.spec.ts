@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { expectNoErrorBoundary, stubApi } from './fixtures/api';
+import { expectNoErrorBoundary, stubApi, waitForRouteSettled } from './fixtures/api';
 
 // REL-18: reviewed desktop and mobile baselines with deterministic fixtures.
 //
@@ -23,11 +23,23 @@ const SURFACES = [
   { name: 'settings', path: '/settings' },
 ];
 
+// The header renders a live clock, date and weather widget (HeaderWidgets.jsx:81-85).
+// Left alone they change between every run, so every baseline diffs on the
+// second hand rather than on layout — and the usual response to a permanently
+// red visual gate is to switch it off. Freezing the clock is what makes the
+// fixtures deterministic in the sense REL-18 means.
+const FROZEN_CLOCK = new Date('2026-01-01T12:00:00Z');
+
 for (const surface of SURFACES) {
   test(`${surface.name} matches its baseline`, async ({ page }) => {
+    await page.clock.setFixedTime(FROZEN_CLOCK);
     await stubApi(page);
     await page.goto(surface.path);
     await expect(page.locator('.page-content')).toBeVisible();
+    // The route-enter fade is JS-driven (framer-motion), so the style tag below
+    // cannot freeze it. Wait for it to settle or the baseline captures a
+    // half-transparent page.
+    await waitForRouteSettled(page);
     // A screenshot of a crashed page committed as a baseline permanently
     // blesses the crash.
     await expectNoErrorBoundary(page, `visual baseline for ${surface.path}`);

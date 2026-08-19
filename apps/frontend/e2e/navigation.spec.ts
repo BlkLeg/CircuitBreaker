@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import {
   collectConsoleErrors,
   expectNoErrorBoundary,
+  routeWrapper,
   significantErrors,
   stubApi,
 } from './fixtures/api';
@@ -51,11 +52,23 @@ test.describe('client-side navigation completes without a reload', () => {
         'route never mounted — the fix is in AnimatePresence/Suspense'
       ).toBeVisible({ timeout: 10_000 });
 
-      const opacity = await content.evaluate((el) => getComputedStyle(el).opacity);
-      expect(
-        Number(opacity),
-        'route mounted but stuck at opacity 0 — the fix is in the animation layer'
-      ).toBeGreaterThan(0.9);
+      // Measure the element that actually animates. `.page-content` is a
+      // static wrapper and is always opacity 1 (App.jsx:127), so asserting on
+      // it can never detect a wedged transition — the framer-motion div inside
+      // it is what fades 0 -> 1 (App.jsx:135-141). Polled, because the fade
+      // takes 150ms and a single read right after mount legitimately sees a
+      // value below 0.9.
+      await expect
+        .poll(
+          async () =>
+            Number(await routeWrapper(page).evaluate((el) => getComputedStyle(el).opacity)),
+          {
+            // Same ceiling as waitForRouteSettled, and for the same reason.
+            timeout: 15_000,
+            message: 'route mounted but stuck at opacity 0 — the fix is in the animation layer',
+          }
+        )
+        .toBeGreaterThan(0.9);
 
       // The ErrorBoundary renders inside .page-content, so "visible" alone is
       // satisfied by a crashed page. Without this the test passes on a failure.
