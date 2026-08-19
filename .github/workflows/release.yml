@@ -92,20 +92,71 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | \
             docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # RC-02 claims amd64 AND arm64 for the container channel, but this step
+      # ran a plain `docker build` on an amd64 runner, so the published image
+      # was amd64 only and the support contract promised something that was
+      # never built. Native packages were already dual-arch via build.yml's
+      # ubuntu-22.04 + ubuntu-22.04-arm matrix; only the image was not.
+      #
+      # GOV-20: the tag list comes from scripts/release_channel.py, so a
+      # release candidate cannot move :latest.
       - name: Build and push Docker image
         id: docker_push
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           IMAGE="ghcr.io/blkleg/circuitbreaker"
-          docker build -f Dockerfile.mono \
-            -t "${IMAGE}:${VERSION}" \
-            -t "${IMAGE}:latest" \
+          TAG_ARGS=""
+          for tag in $(python3 scripts/release_channel.py --version "${VERSION}" --field tags); do
+            TAG_ARGS="${TAG_ARGS} -t ${IMAGE}:${tag}"
+          done
+          echo "Publishing tags:${TAG_ARGS}"
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            -f Dockerfile.mono \
+            ${TAG_ARGS} \
+            --provenance=true \
+            --sbom=true \
+            --metadata-file /tmp/build-metadata.json \
+            --push \
             .
-          docker push "${IMAGE}:${VERSION}"
-          docker push "${IMAGE}:latest"
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE}:${VERSION}")
-          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          # The metadata file is buildx's own record of what it pushed, which
+          # is more reliable than re-inspecting by tag: a concurrent push
+          # cannot move it between build and read.
+          DIGEST=$(python3 -c "import json;print(json.load(open('/tmp/build-metadata.json'))['containerimage.digest'])")
+          echo "digest=${IMAGE}@${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      # Prove both architectures are in the published manifest rather than
+      # trusting that --platform did what it was asked.
+      - name: Assert published manifest covers both architectures
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          docker buildx imagetools inspect \
+            "ghcr.io/blkleg/circuitbreaker:${VERSION}" --raw > /tmp/manifest.json
+          python3 - <<'PY'
+          import json, sys
+          index = json.load(open("/tmp/manifest.json"))
+          found = {
+              f"{m['platform']['os']}/{m['platform']['architecture']}"
+              for m in index.get("manifests", [])
+              if "platform" in m and m["platform"].get("architecture") != "unknown"
+          }
+          required = {"linux/amd64", "linux/arm64"}
+          missing = required - found
+          if missing:
+              print(f"::error::published manifest is missing {sorted(missing)}; found {sorted(found)}")
+              sys.exit(1)
+          print(f"manifest covers {sorted(found)}")
+          PY
 
       # SEC-18 claims container vulnerability scanning; before this step the
       # pipeline only ever ran `trivy fs`/`config` over the source tree, so the
