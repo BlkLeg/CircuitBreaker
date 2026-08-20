@@ -334,3 +334,57 @@ def test_letsencrypt_needs_no_pin_even_with_an_unreadable_file(tmp_path, monkeyp
     )
     assert mode == "public"
     assert pin == ""
+
+
+# ── The systemd unit the installer writes ────────────────────────────────────
+#
+# Nothing pinned this template before, which is exactly how the AF_NETLINK
+# defect shipped and stayed invisible: the agent e2e suite runs the binary in a
+# container with no systemd sandbox around it, and `cb-agent enroll` runs from
+# the operator's shell for the same reason. The unit is the only supported way
+# to run the daemon, so its sandbox is production behaviour and belongs under
+# test like any other.
+
+
+def _unit_directive(name: str) -> str:
+    """The value of one directive in the unit the install script writes."""
+    script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex="ab" * 32,
+        tls_pin="c" * 44,
+        manifest={"0.1.0": {"linux-amd64": "deadbeef"}},
+    )
+    for line in script.splitlines():
+        if line.startswith(f"{name}="):
+            return line.split("=", 1)[1].strip()
+    raise AssertionError(f"the unit template has no {name} directive:\n{script}")
+
+
+def test_unit_allows_netlink_so_discovery_and_probing_work():
+    """RTM_GETNEIGH and Go's net.Interfaces() are both netlink on Linux.
+
+    Without AF_NETLINK the daemon cannot enumerate its own interfaces, so the
+    derived `direct_private` scope arrives empty and every discovery target and
+    probe destination is refused `empty_scope` before a packet is sent.
+    """
+    families = _unit_directive("RestrictAddressFamilies").split()
+    assert "AF_NETLINK" in families, families
+
+
+def test_unit_still_grants_the_families_the_agent_already_needed():
+    families = _unit_directive("RestrictAddressFamilies").split()
+    for required in ("AF_UNIX", "AF_INET", "AF_INET6"):
+        assert required in families, families
+
+
+def test_unit_does_not_grant_raw_packet_access():
+    """AF_NETLINK is a read-only RTM_GETNEIGH dump, not a licence for AF_PACKET."""
+    families = _unit_directive("RestrictAddressFamilies").split()
+    assert "AF_PACKET" not in families, families
+
+
+def test_unit_keeps_the_filesystem_sandbox_self_update_depends_on():
+    """Self-update writes only under the state dir, which must stay writable."""
+    assert _unit_directive("ProtectSystem") == "strict"
+    assert _unit_directive("ReadWritePaths") == "/var/lib/cb-agent"
+    assert _unit_directive("NoNewPrivileges") == "true"

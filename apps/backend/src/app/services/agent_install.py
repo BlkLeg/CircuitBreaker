@@ -84,7 +84,13 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# AF_NETLINK is not optional: Go's net.Interfaces() has no /sys fallback on
+# Linux and the neighbour-cache dump (RTM_GETNEIGH) both go over a
+# NETLINK_ROUTE socket. Without it the daemon cannot enumerate its own
+# interfaces, so the derived direct_private scope arrives empty and every
+# discovery target and probe destination is refused before a packet is sent.
+# AF_PACKET stays out — this is a read-only route dump, not raw packet access.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SystemCallFilter=@system-service
 ReadWritePaths=/var/lib/cb-agent
 
