@@ -143,6 +143,16 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The action picks up .gitleaksignore on its own but not .gitleaks.toml
+          # — it only reads a config from GITLEAKS_CONFIG. Without this the job
+          # applied none of the allowlists that validate_security_suppressions.py
+          # governs, so the scheduled full-history run on main reported findings
+          # in paths (plans/, security_scan_report.md, apps/agent/e2e/.env) that
+          # the local gate has an owner, reason, and expiry recorded for. Push
+          # runs scan only the pushed commits, which is why this stayed hidden.
+          # Config only ever adds allowlists, so this cannot mask a new finding
+          # that the local gate would not also allow.
+          GITLEAKS_CONFIG: ${{ github.workspace }}/.gitleaks.toml
 
   checkov:
     name: Checkov (GitHub Actions / IaC)
