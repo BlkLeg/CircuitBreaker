@@ -1,0 +1,47 @@
+name: Bug report
+description: Something does not work as documented
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `cb version`
+    validations:
+      required: true
+  - type: dropdown
+    id: install-mode
+    attributes:
+      label: Install mode
+      description: >-
+        Names follow the Deployment Modes and Method Comparison tables in
+        docs/installation/index.md. Only native and mono ship in 1.0.0.
+      options:
+        - Native — Quick Install script
+        - Native — Proxmox LXC helper
+        - Mono — Docker Compose
+        - Mono — Single Docker Container (docker run)
+        - Mono — From Source
+        - Other / development checkout
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS and architecture
+      placeholder: "Ubuntu 24.04, arm64"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, what happened instead, and how to reproduce it.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: "Output of `cb doctor`. Redact secrets before pasting."
+      render: shell

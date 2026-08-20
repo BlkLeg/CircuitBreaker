@@ -9,7 +9,7 @@ As we are currently in the **1.0.0 release-candidate** stage, we are prioritizin
 ## 🛑 Before You Start
 
 1. **Check the Issues:** Someone might already be working on your idea or bug.
-2. **Give Us the Details:** There are no issue or PR forms yet, so include the information listed under "How to Report Bugs" below, and say what your PR changes and how you tested it.
+2. **Give Us the Details:** Use the issue form (`.github/ISSUE_TEMPLATE/bug_report.yml`) and fill in the pull-request template (`.github/PULL_REQUEST_TEMPLATE.md`); GitHub offers both automatically. They ask for the same information listed under "How to Report Bugs" below.
 3. **Start a Discussion:** For major architectural changes or new features, please open an Issue or raise it in [Discord](https://discord.gg/SBdBRfmD) before writing code.
 
 ---
@@ -58,10 +58,13 @@ staged `.ts`, `.tsx`, and `.py` files. `.pre-commit-config.yaml` additionally pi
 ## 🔒 Security Policy
 
 As a project built for home servers, security is our top priority.
+[`SECURITY.md`](SECURITY.md) is the authoritative policy — supported versions,
+scope, and response targets live there, not here.
 
 * **Do not report security vulnerabilities via public Issues.**
-* Please email letshost-admin@proton.me to report vulnerabilities privately.
-* We aim to acknowledge security reports within 24 hours.
+* Report privately through [GitHub Security Advisories](https://github.com/BlkLeg/CircuitBreaker/security/advisories/new)
+  — the only reporting channel [`SECURITY.md`](SECURITY.md#reporting-a-vulnerability) documents.
+* Response targets are in [`SECURITY.md`](SECURITY.md#what-to-expect).
 
 ---
 

@@ -1,5 +1,7 @@
 [build-system]
-requires = ["hatchling"]
+# >=1.27 is load-bearing: it is the first hatchling that understands the PEP 639
+# `license = "MIT"` SPDX string below. An older backend rejects it as "must be a table".
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -10,6 +12,19 @@ name = "circuit-breaker-backend"
 # After changing dependencies here, refresh the lockfile and regenerate that file.
 dynamic = ["version"]
 requires-python = ">=3.12,<4"
+# GOV-11: this must agree with /LICENSE, /package.json, /nfpm.yaml and /PKGBUILD.
+# PEP 639 SPDX expression - deliberately no "License :: OSI Approved" classifier,
+# which PEP 639 forbids alongside a license expression.
+license = "MIT"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Monitoring",
+    "Topic :: System :: Networking :: Monitoring",
+]
 dependencies = [
     # Upper bound is load-bearing, not caution: from 0.138 `include_router` keeps
     # an internal wrapper in `app.routes` instead of the flattened routes, so the
@@ -272,8 +287,8 @@ markers = [
 ]
 
 [tool.poetry]
-name = "circuit-breaker-backend"
-version = "0.2.0"
-description = "Circuit Breaker Backend"
-authors = ["Admin <admin@example.com>"]
+# Retained only so `poetry lock` can regenerate poetry.lock, which
+# scripts/gen_requirements.py reads. GOV-10: the name, version, description and
+# authors that used to sit here said 0.2.0 and admin@example.com, contradicting
+# the root VERSION file and the real metadata in [project] above.
 package-mode = false

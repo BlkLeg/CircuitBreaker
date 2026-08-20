@@ -11,3 +11,23 @@ apps/backend/scripts/generate_endpoint_inventory.py @blkleg
 apps/backend/tests/test_endpoint_policy_inventory.py @blkleg
 specs/1.0.0/evidence/sec-3-endpoint-policy-monitor-auth.md @blkleg
 specs/1.0.0/slices/sec-3-endpoint-policy-monitor-auth.md @blkleg
+
+# GOV-16 requires code owners for security, migrations, packaging, the agent
+# protocol and release workflows. Every path below was checked to exist; a rule
+# for a path GitHub cannot match is dead weight that silently owns nothing.
+
+# Migrations: a bad revision is unrecoverable on a customer database.
+apps/backend/migrations/ @blkleg
+
+# Packaging: these decide what lands on an end user's machine.
+packaging/ @blkleg
+nfpm.yaml @blkleg
+PKGBUILD @blkleg
+
+# Agent protocol: the Go framing and the Python schema are one wire contract,
+# and they must change together or agents and backend stop understanding each other.
+apps/agent/internal/frame/ @blkleg
+apps/backend/src/app/schemas/agent_frame.py @blkleg
+
+# Release workflow: the job that signs and publishes artifacts.
+.github/workflows/release.yml @blkleg
