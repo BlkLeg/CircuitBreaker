@@ -29,6 +29,7 @@ import (
 	"circuitbreaker.dev/cb-agent/internal/frame"
 	"circuitbreaker.dev/cb-agent/internal/hostinfo"
 	"circuitbreaker.dev/cb-agent/internal/link"
+	"circuitbreaker.dev/cb-agent/internal/logging"
 	"circuitbreaker.dev/cb-agent/internal/netscope"
 	"circuitbreaker.dev/cb-agent/internal/spool"
 	"circuitbreaker.dev/cb-agent/internal/status"
@@ -123,7 +124,7 @@ func rollbackExpiredUpdate(stateDir, currentLink string, now time.Time, reExec f
 	}
 	log.Printf("cb-agent: update to %s never confirmed before its rollback deadline — rolled back, re-executing", rolledBackFrom)
 	if err := reExec(); err != nil {
-		log.Printf("cb-agent: re-exec after rollback failed: %v", err)
+		logging.Errorf("cb-agent: re-exec after rollback failed: %v", err)
 	}
 }
 
@@ -184,7 +185,7 @@ func watchForRollback(stateDir, currentLink, pendingVersion string, window time.
 		// waiting on the marker either way: the currently-running binary is
 		// whatever it already is regardless of whether the marker is
 		// cleared now or later.
-		log.Printf("cb-agent: rollback failed: %v — clearing marker to avoid a permanently stuck retry loop", err)
+		logging.Errorf("cb-agent: rollback failed: %v — clearing marker to avoid a permanently stuck retry loop", err)
 		if clearErr := update.ClearMarker(stateDir); clearErr != nil {
 			log.Printf("cb-agent: %v", clearErr)
 		}
@@ -202,7 +203,7 @@ func watchForRollback(stateDir, currentLink, pendingVersion string, window time.
 		log.Printf("cb-agent: %v", err)
 	}
 	if err := reExec(); err != nil {
-		log.Printf("cb-agent: re-exec after rollback failed: %v", err)
+		logging.Errorf("cb-agent: re-exec after rollback failed: %v", err)
 	}
 }
 
@@ -226,9 +227,21 @@ func main() {
 	}
 }
 
+// configureLogging gives agent.toml's log_level an effect. An unknown value is
+// returned as an error rather than ignored: the setting used to be decoded and
+// dropped, so a typo looked exactly like a working configuration.
+func configureLogging(cfg *config.Config) error {
+	return logging.Configure(cfg.LogLevel)
+}
+
 func runDaemon() {
 	cfg, err := config.Load("/etc/circuit-breaker/agent.toml")
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
+		os.Exit(1)
+	}
+	// Before anything logs, so log_level applies to the whole run.
+	if err := configureLogging(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 		os.Exit(1)
 	}

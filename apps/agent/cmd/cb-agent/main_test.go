@@ -34,6 +34,7 @@ import (
 	"circuitbreaker.dev/cb-agent/internal/enroll"
 	"circuitbreaker.dev/cb-agent/internal/frame"
 	"circuitbreaker.dev/cb-agent/internal/link"
+	"circuitbreaker.dev/cb-agent/internal/logging"
 	"circuitbreaker.dev/cb-agent/internal/netscope"
 	"circuitbreaker.dev/cb-agent/internal/spool"
 	"circuitbreaker.dev/cb-agent/internal/status"
@@ -3170,5 +3171,48 @@ func TestDaemonLinkOptions_EveryActionableInboundFrameTypeHasAHandler(t *testing
 	// another route.
 	if opts.DataFrames == nil || opts.ControlFrames == nil {
 		t.Error("link.Options carries no outbound frame channels, so no handler could report anything")
+	}
+}
+
+// ── log_level ────────────────────────────────────────────────────────────────
+//
+// The setting was decoded into config.Config and read by nothing, so an
+// operator who set it got no change and a typo was accepted in silence.
+
+func TestConfigureLogging_AppliesTheConfiguredLevel(t *testing.T) {
+	previous := logging.CurrentLevel()
+	t.Cleanup(func() { logging.SetLevel(previous) })
+
+	if err := configureLogging(&config.Config{LogLevel: "warn"}); err != nil {
+		t.Fatalf("configureLogging() error = %v", err)
+	}
+	if got := logging.CurrentLevel(); got != logging.LevelWarn {
+		t.Errorf("level = %v, want warn", got)
+	}
+}
+
+func TestConfigureLogging_DefaultsToInfoWhenUnset(t *testing.T) {
+	previous := logging.CurrentLevel()
+	t.Cleanup(func() { logging.SetLevel(previous) })
+	logging.SetLevel(logging.LevelError)
+
+	if err := configureLogging(&config.Config{}); err != nil {
+		t.Fatalf("configureLogging() error = %v", err)
+	}
+	if got := logging.CurrentLevel(); got != logging.LevelInfo {
+		t.Errorf("level = %v, want info", got)
+	}
+}
+
+func TestConfigureLogging_RejectsAnUnknownLevel(t *testing.T) {
+	previous := logging.CurrentLevel()
+	t.Cleanup(func() { logging.SetLevel(previous) })
+
+	err := configureLogging(&config.Config{LogLevel: "verbose"})
+	if err == nil {
+		t.Fatal("configureLogging() = nil error for log_level=\"verbose\", want a rejection")
+	}
+	if !strings.Contains(err.Error(), "verbose") {
+		t.Errorf("error %q does not name the offending value", err)
 	}
 }
