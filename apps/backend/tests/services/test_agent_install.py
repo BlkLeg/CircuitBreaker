@@ -58,7 +58,20 @@ def test_render_install_script_excludes_other_os_digest_for_same_arch():
     assert "darwin-digest" not in script
 
 
-def test_render_install_script_is_valid_bash_syntax(tmp_path):
+def test_render_install_script_is_valid_sh_syntax(tmp_path):
+    """Checked with the interpreter the script's own shebang names.
+
+    The script is `#!/bin/sh`; checking it with `bash -n` tested a shell it
+    never runs under. `dash` is preferred when the host has it, because that is
+    what `/bin/sh` is on the Debian and Ubuntu targets and it rejects bashisms
+    bash accepts. Where it is absent — this developer host symlinks /bin/sh to
+    bash — the check is only as strict as the local /bin/sh, so treat a pass
+    here as necessary rather than sufficient; CI's image is the strict one.
+
+    The template is Python `str.format`, so a literal brace that loses its
+    doubling also lands here.
+    """
+    import shutil
     import subprocess
 
     script = agent_install.render_install_script(
@@ -70,7 +83,8 @@ def test_render_install_script_is_valid_bash_syntax(tmp_path):
     script_path = tmp_path / "install-agent.sh"
     script_path.write_text(script)
 
-    result = subprocess.run(["bash", "-n", str(script_path)], capture_output=True, text=True)
+    shell = shutil.which("dash") or "/bin/sh"
+    result = subprocess.run([shell, "-n", str(script_path)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
 
@@ -388,3 +402,96 @@ def test_unit_keeps_the_filesystem_sandbox_self_update_depends_on():
     assert _unit_directive("ProtectSystem") == "strict"
     assert _unit_directive("ReadWritePaths") == "/var/lib/cb-agent"
     assert _unit_directive("NoNewPrivileges") == "true"
+
+
+# ── Unprivileged ICMP ────────────────────────────────────────────────────────
+#
+# The agent's ICMP prober opens datagram ICMP (`icmp.ListenPacket("udp4", ...)`)
+# and holds no CAP_NET_RAW, so it can only send an echo request when the
+# cb-agent group falls inside net.ipv4.ping_group_range. The installer used to
+# check only whether *a* line for that sysctl existed in /etc/sysctl.conf, and
+# skip if one did — so a host with a narrower range already set (the kernel
+# default `1 0` disables the feature entirely) silently got an agent whose ICMP
+# probes could never succeed.
+
+
+def _run_icmp_block(tmp_path, *, current_range: str, gid: str = "997"):
+    """Execute the installer's ICMP snippet against stub sysctl/getent.
+
+    The snippet is shell inside a Python template, so this runs the real thing
+    rather than asserting on its source: stubs on PATH stand in for the kernel
+    and the passwd database, and the resulting sysctl.conf is the assertion.
+    """
+    import subprocess
+
+    script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex="ab" * 32,
+        tls_pin="c" * 44,
+        manifest={"0.1.0": {"linux-amd64": "deadbeef"}},
+    )
+    start = script.index("configure_unprivileged_icmp()")
+    end = script.index("\n}\n", start) + len("\n}\n")
+    snippet = script[start:end]
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    applied = tmp_path / "applied"
+    (bin_dir / "sysctl").write_text(
+        "#!/bin/sh\n"
+        f'if [ "$1" = "-n" ]; then echo "{current_range}"; exit 0; fi\n'
+        f'echo applied >> "{applied}"\n'
+        "exit 0\n"
+    )
+    (bin_dir / "getent").write_text(f'#!/bin/sh\necho "cb-agent:x:{gid}:"\n')
+    for stub in bin_dir.iterdir():
+        stub.chmod(0o755)
+
+    conf = tmp_path / "sysctl.conf"
+    conf.write_text("# existing host settings\n")
+    runner = tmp_path / "run.sh"
+    runner.write_text(
+        f"#!/bin/sh\nset -eu\nSYSCTL_CONF='{conf}'\n{snippet}\nconfigure_unprivileged_icmp\n"
+    )
+    runner.chmod(0o755)
+
+    result = subprocess.run(
+        ["/bin/sh", str(runner)],
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+    )
+    assert result.returncode == 0, result.stderr
+    return conf.read_text(), applied.exists()
+
+
+def test_icmp_range_is_widened_when_the_host_disables_ping_sockets(tmp_path):
+    """`1 0` is the kernel default and means "no group may": it must be fixed."""
+    conf, applied = _run_icmp_block(tmp_path, current_range="1\t0", gid="997")
+    assert "net.ipv4.ping_group_range" in conf, conf
+    assert applied, "the new range was written but never applied"
+
+
+def test_icmp_range_is_widened_when_an_existing_range_excludes_the_agent(tmp_path):
+    """A pre-existing narrow line used to make the installer skip entirely."""
+    conf, applied = _run_icmp_block(tmp_path, current_range="0\t100", gid="997")
+    line = [ln for ln in conf.splitlines() if ln.startswith("net.ipv4.ping_group_range")]
+    assert line, conf
+    low, high = line[-1].split("=")[1].split()
+    assert int(low) <= 997 <= int(high), line
+    assert applied
+
+
+def test_icmp_range_is_left_alone_when_it_already_covers_the_agent(tmp_path):
+    """Not gratuitously rewriting an operator's own working configuration."""
+    conf, applied = _run_icmp_block(tmp_path, current_range="0\t2147483647", gid="997")
+    assert "net.ipv4.ping_group_range" not in conf, conf
+    assert not applied
+
+
+def test_icmp_widening_keeps_groups_the_host_already_allowed(tmp_path):
+    """Widening is a union, never a replacement — other users keep their ping."""
+    conf, _ = _run_icmp_block(tmp_path, current_range="500\t600", gid="997")
+    line = [ln for ln in conf.splitlines() if ln.startswith("net.ipv4.ping_group_range")][-1]
+    low, high = line.split("=")[1].split()
+    assert int(low) <= 500 and int(high) >= 997, line
