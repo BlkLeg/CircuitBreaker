@@ -649,13 +649,30 @@ restored without it — means no agent's pinned `server_static_pk` can ever matc
    **Agents → Add agent**, then approve.
 4. Delete the stale agent rows once their replacements are approved.
 
-**Prefer rotation over loss.** If you *plan* to change the key, use
-`POST /api/v1/agents/server-key/rotate` (admin) instead. It mints a successor keypair with a
-**7-day overlap window** during which both keys are accepted, and pushes the successor to every
-connected agent immediately — each one persists it to
-`/var/lib/cb-agent/server_key_rotation.json` and trusts both keys thereafter. New install
-commands generated during the overlap embed the successor. Only one rotation may be in flight at
-a time; a second attempt returns 409 until the overlap elapses.
+**Prefer rotation over loss.** If you *plan* to change the key, rotate it instead of letting it
+go. Rotation mints a successor keypair with a **7-day overlap window** during which both keys are
+accepted, and pushes the successor to every connected agent immediately — each one persists it to
+`/var/lib/cb-agent/server_key_rotation.json` and trusts both keys thereafter. New install commands
+generated during the overlap embed the successor. Only one rotation may be in flight at a time; a
+second attempt returns 409 until the overlap elapses.
+
+There is no button for this and no `cb` subcommand — it is two admin API calls, deliberately, so
+that a key rotation is something you do on purpose:
+
+```sh
+# Where does the key stand right now?
+curl -fsS -H "Authorization: Bearer $CB_ADMIN_TOKEN" \
+  https://cb.example.com/api/v1/agents/server-key/status | jq
+
+# Start the 7-day overlap.
+curl -fsS -X POST -H "Authorization: Bearer $CB_ADMIN_TOKEN" \
+  https://cb.example.com/api/v1/agents/server-key/rotate | jq
+```
+
+`status` reports `active`, both key fingerprints and `overlap_expires_at`; neither endpoint ever
+returns key material. Watch the fleet reconnect before the overlap elapses — an agent that stays
+offline through the whole window still pins only the old key and will need its install command
+re-run.
 
 ### 2. Cloned machine ID
 
@@ -811,76 +828,57 @@ Work through these in order — each is independently able to break every agent:
 
 ## Known issues
 
-These are open defects, not design decisions. They are listed here rather than described away in
-the sections above, so that what those sections say about the intended behaviour stays readable.
+Defects are listed here rather than described away in the sections above, so that what those
+sections say about the intended behaviour stays readable.
 
-### `AF_NETLINK` is missing from the systemd unit, which disables discovery and probing
+Both entries below are now **fixed**, and are kept because the fix does not reach an agent that is
+already installed: the `AF_NETLINK` one needs the install command re-run on each host, or the
+drop-in it documents. Once your fleet is on a unit written by the current installer, neither
+applies.
 
-**Status: open. Affects every installed agent** — the installer's systemd unit is the only
-supported way to run the daemon. It is invisible to the agent e2e suite, which runs the binary in
-a container with no systemd sandbox around it, and to `cb-agent enroll`, which runs from your
-shell for the same reason.
+### Fixed in this release — `AF_NETLINK` and the systemd unit
 
-The unit the installer writes (`/etc/systemd/system/cb-agent.service`) carries:
+**Status: fixed.** Earlier agents were installed with a unit whose
+`RestrictAddressFamilies` line omitted `AF_NETLINK`. systemd enforces that as a
+seccomp filter on `socket()`, and two things the agent does need netlink: the
+`RTM_GETNEIGH` neighbour-cache dump, and Go's `net.Interfaces()`, which has no
+`/sys` fallback on Linux. An affected agent could not enumerate its own
+interfaces, so its derived `direct_private` scope arrived empty and every
+discovery target and probe destination was refused `empty_scope` before a
+packet was sent. Telemetry, enrollment, the link, the spool and self-update
+were unaffected — none of them touches netlink.
 
-```ini
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-```
+The installer now writes `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+AF_NETLINK`, and `apps/backend/tests/services/test_agent_install.py` pins the
+whole directive so it cannot regress. This does not grant raw packet access:
+`AF_PACKET` stays excluded, the agent holds no `CAP_NET_RAW`, and the only
+netlink protocol it opens is `NETLINK_ROUTE` for a read-only dump.
 
-systemd enforces that as a seccomp filter on `socket()`, so any call naming a family outside the
-list fails with `EAFNOSUPPORT` (errno 97). Two things the agent does need `AF_NETLINK`:
-
-1. **The neighbour cache dump.** `RTM_GETNEIGH` is sent over an `AF_NETLINK`/`NETLINK_ROUTE`
-   socket. It cannot be opened, so the neighbour-cache discovery method never returns an entry.
-2. **Interface enumeration.** Go's `net.Interfaces()` has no `/sys` fallback on Linux — it is
-   implemented over the same netlink socket. So the agent cannot see its own interfaces either.
-
-The second one is what makes this severe. `direct_private` scope is *derived* from the private
-prefixes the agent reports as directly attached, and an agent that cannot enumerate its
-interfaces reports none. The `hello` sent by `cb-agent enroll` still carries the real interface
-list — that command runs from your shell, outside the unit's sandbox — but the daemon's first
-`capability.readiness` frame replaces it with an empty list, and from then on:
-
-- the derived scope is empty, so every discovery target is refused `empty_scope` and every probe
-  destination is refused before a packet is sent;
-- the agent reports no MAC addresses, so host linkage falls back from the MAC signal to hostname.
-
-**Symptoms.** `cb-agent status` shows `discovery.neighbor: unavailable`, with the reason
-`discover: open netlink socket: address family not supported by protocol`. The agent's discovery
-page shows no scope entries. Discovery jobs and probe assignments come back refused rather than
-empty. Host telemetry, enrollment, the link, the spool and self-update all keep working normally
-— none of them touches netlink.
-
-**Workaround** until a fixed installer ships. On each agent host:
-
-```sh
-sudo systemctl edit cb-agent
-```
-
-and add:
+**Hosts installed before the fix keep their old unit file.** Re-run the install
+command from **Agents → Add agent** on each one — it rewrites the unit — or, as
+a per-host stopgap, `sudo systemctl edit cb-agent` and add:
 
 ```ini
 [Service]
 RestrictAddressFamilies=AF_NETLINK
 ```
 
-Repeated assignments of `RestrictAddressFamilies` are merged rather than replaced, so the drop-in
-only has to name the family that is missing — the unit's own three stay allowed. Then
-`sudo systemctl restart cb-agent` and confirm `cb-agent status` reports `discovery.neighbor:
-ready`.
+Repeated assignments are merged rather than replaced, so the drop-in only has
+to name the missing family. Then `sudo systemctl restart cb-agent` and confirm
+`cb-agent status` reports `discovery.neighbor: ready`.
 
-Adding `AF_NETLINK` does not grant the agent raw packet access: `AF_PACKET` stays excluded, the
-agent holds no `CAP_NET_RAW`, and the only netlink protocol it opens is `NETLINK_ROUTE` for a
-read-only `RTM_GETNEIGH` dump.
+### Fixed in this release — `log_level`
 
-**Fix.** The installer's unit template (`_INSTALL_SCRIPT_TEMPLATE` in
-`apps/backend/src/app/services/agent_install.py`) needs `AF_NETLINK` added to that line. Hosts
-installed before the fix keep the old unit file — re-running the install command from **Agents →
-Add agent** rewrites it.
+**Status: fixed.** `log_level` in `/etc/circuit-breaker/agent.toml` was decoded
+into the agent's config struct and read by nothing, so setting it changed
+neither what was logged nor how much, and a typo was accepted in silence.
 
-### `log_level` is parsed but ignored
+It now takes `debug`, `info` (the default), `warn` or `error`, and an
+unrecognised value stops the daemon at startup with a message naming it rather
+than being ignored. Output is still a plain message line on standard error,
+which systemd routes to the journal — `journalctl -u cb-agent` is unchanged.
 
-**Status: open.** `log_level` in `/etc/circuit-breaker/agent.toml` is read into the agent's
-config struct and never used — the daemon logs unconditionally to standard error, which systemd
-routes to the journal. Use `journalctl -u cb-agent` for agent logs; changing `log_level` has no
-effect today.
+Levels behave as follows. The agent's routine progress reporting is `info`, so
+`warn` and `error` quieten it; failures the agent could not recover from — a
+failed rollback, a failed re-exec after one — are logged at `error` and survive
+even the quietest setting. `debug` adds detail on top of `info`.
