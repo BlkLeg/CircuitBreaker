@@ -31,6 +31,7 @@ nav:
       - Networks: networks.md
       - Services: services.md
       - Auto-Discovery (Beta): discovery.md
+      - cb-agent: agent.md
       - Settings: settings.md
       - Authentication & Access: auth-access.md
       - Webhooks & Notifications: integrations-webhooks-notifications.md
@@ -59,6 +60,31 @@ nav:
       - v0.1.4 Release Notes: updates/v0-1-4_release.md
       - v0.1.4 Docs SOT: updates/v0-1-4_docs_sot.md
       - v0.1.2 Patch Notes: updates/v0-1-2_patch.md
+
+# Pages that are deliberately reachable by URL but absent from the sidebar.
+# Declaring them turns MkDocs' "not included in nav" notice from an INFO into a
+# WARNING for anything NOT listed here, so --strict fails on a page that fell
+# out of the nav by accident rather than by decision.
+#   - adr/, design/          — records, linked from the pages that cite them
+#   - assets/screenshots/MANIFEST.md — provenance record for the image assets
+#   - installation/docker-compose-prod.md — redirect stub kept for old bookmarks
+#     (its content moved into installation/docker-compose.md); a dead sidebar
+#     entry would be worse than none
+#   - the three audit/plan documents — working records, not product docs
+# Without this, "page exists but is not in the nav" is logged at INFO, which
+# --strict does not fail on, so a page can silently drop out of the sidebar.
+validation:
+  nav:
+    omitted_files: warn
+
+not_in_nav: |
+  /adr/*.md
+  /design/*.md
+  /assets/screenshots/MANIFEST.md
+  /installation/docker-compose-prod.md
+  /1.0.0-release-readiness-audit.md
+  /cross-browser-audit.md
+  /mono-db-production-plan.md
 
 markdown_extensions:
   - admonition

@@ -26,6 +26,7 @@
 
 - **Auto-Discovery**: Scan LAN with nmap/SNMP/ARP. Auto-populate Proxmox VMs, TrueNAS pools, UniFi APs. Review & merge into topology.
 - **Live Telemetry**: iDRAC/iLO/APC UPS/SNMP health badges update via WebSockets. Green/yellow/red health rings.
+- **Remote Agents**: Install `cb-agent` (Linux) on a remote site or a separate VLAN for host telemetry, monitor probes, and discovery from inside a network the server cannot reach. Outbound-only, Noise-encrypted, no inbound firewall rule.
 - **Proxmox Integration**: One-click cluster import — nodes, VMs, and health metrics visualized instantly.
 - **Interactive Topology**: Hierarchical/cluster/radial layouts with live animations. Drag-to-save positions.
 - **Rack Diagrams**: U-slot drag-drop layout, cable overlay, and a per-rack inspector.
@@ -103,6 +104,7 @@ Docker mode now performs a compose-only deployment: installs Docker only if miss
 - [Overview](docs/overview.md)
 - [Getting Started](docs/getting-started.md)
 - [Installation](docs/installation/index.md)
+- [cb-agent](docs/agent.md)
 - [v1.0 Support Contract](docs/release/1.0.0-support-contract.md)
 - [Backup & Restore](docs/backup-restore.md)
 - [Roadmap](docs/roadmap.md)
