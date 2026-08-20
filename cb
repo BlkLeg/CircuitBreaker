@@ -8,9 +8,12 @@
 #
 # Commands:
 #   status        Show service / container status
+#   doctor        Run health checks and diagnose issues
 #   logs [-f]     Show (or follow) logs
 #   restart       Restart Circuit Breaker
 #   update        Pull latest image and restart  (docker mode only)
+#   backup        Dump the database and config to a timestamped archive
+#   config        Validate the configuration  (cb config validate)
 #   vault-recover Recover from an uninitialized vault  (after-crash / headless deploy)
 #   version       Show installed version
 #   uninstall     Remove Circuit Breaker from this system
@@ -77,11 +80,34 @@ fi
 if [[ -z "$CB_DATA_DIR" ]]; then
   [[ "$CB_MODE" == "compose" ]] && CB_DATA_DIR="/app/data" || CB_DATA_DIR="/data"
 fi
+# The environment file the *binary* (deb/rpm/apk) install actually gets.
+# packaging/postinstall.sh generates circuit-breaker.env, not env, and both
+# packaging/circuit-breaker.service and packaging/systemd/circuit-breaker-native.service
+# carry `EnvironmentFile=-/etc/circuit-breaker/circuit-breaker.env`. This name is
+# defined once, here, because every time it was spelled out at its four call
+# sites one of them drifted back to the path nothing creates.
+CB_BINARY_ENV_FILE="${CB_BINARY_ENV_FILE:-/etc/circuit-breaker/circuit-breaker.env}"
+# The binary a package install puts on the host. Named once for the same reason
+# as the env file above: it is invoked from three commands, and an unguarded
+# invocation of a path that is not there is what produced a raw bash
+# "No such file or directory" and exit 127 instead of an operator-readable error.
+CB_BINARY="${CB_BINARY:-/usr/local/bin/circuit-breaker}"
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 _require_docker() {
   command -v docker >/dev/null 2>&1 || _fail "Docker is not installed or not in PATH."
   docker info >/dev/null 2>&1       || _fail "Docker daemon is not running."
+}
+
+# Binary-mode counterpart to _require_docker: refuse to exec a fixed path that
+# is not there. Without it the operator sees bash's own
+# "line NNN: /usr/local/bin/circuit-breaker: No such file or directory" and exit
+# 127; the docker branches already fail with a sentence and exit 1, and this
+# makes the binary branches match.
+_require_binary() {
+  local path="$1" why="${2:-}"
+  [[ -e "$path" ]] || _fail "${path} not found${why:+ — $why}"
+  [[ -x "$path" ]] || _fail "${path} is not executable${why:+ — $why}"
 }
 
 _container_running() {
@@ -95,6 +121,13 @@ _gen_fernet_key() {
     || _fail "openssl is required to generate a vault key. Install it and retry."
   openssl rand -base64 32
 }
+
+# A snippet run *inside* the backend container that resolves the database
+# connection the way the app does and leaves it in "$@" for psql/pg_dump.
+# Compose passes CB_DB_URL into the backend container; the mono image builds
+# its URL at entrypoint time, so `docker exec` there only ever sees
+# CB_DB_PASSWORD and the connection has to be rebuilt from it.
+_DB_CONN_SH='if [ -n "${CB_DB_URL:-}" ]; then set -- "$CB_DB_URL"; else export PGPASSWORD="${CB_DB_PASSWORD:-}"; set -- -h 127.0.0.1 -p 5432 -U breaker circuitbreaker; fi'
 
 ###############################################################################
 # COMMANDS
@@ -140,6 +173,167 @@ cmd_status() {
       ;;
   esac
   echo ""
+}
+
+# ── doctor ────────────────────────────────────────────────────────────────────
+# The same top-down health check the native CLI runs, expressed for the
+# container world.  Checks are ordered so that the first failure is usually the
+# cause of every failure below it — fix top-down.
+cmd_doctor() {
+  echo ""
+  echo -e "$LINE"
+  echo -e " ${B}Circuit Breaker — Health Check${R}"
+  echo -e "$LINE"
+  echo ""
+
+  local failed=0
+  local diag_lines="${CB_DOCTOR_LINES:-30}"
+
+  # $4 is an optional read-only diagnostic, run only when the check fails.  A
+  # failed check otherwise just sends the operator off to run a `docker logs`
+  # line by hand — the reason is in those lines, so print them here instead.
+  # Read-only only: repair commands stay in the hint for a human to run.
+  check() {
+    local name=$1 cmd=$2 hint=$3 diag=${4:-}
+    if eval "$cmd" &>/dev/null; then
+      printf "  ${G}✓${R}  %-30s OK\n" "$name"
+    else
+      printf "  ${RED}✗${R}  %-30s FAILED\n" "$name"
+      echo "     → $hint"
+      if [[ -n "$diag" ]]; then
+        local out=""
+        # A diagnostic that itself fails still tells us something, and `set -e`
+        # must not take the whole run down over it.
+        out="$(eval "$diag" 2>&1 | tail -n "$diag_lines")" || true
+        if [[ -n "$out" ]]; then
+          printf "     ${GR}\$ %s${R}\n" "$diag"
+          printf '%s\n' "$out" | sed 's/^/       /'
+        fi
+      fi
+      failed=$((failed + 1))
+    fi
+  }
+
+  case "$CB_MODE" in
+    docker|compose)
+      local ctr="$CB_BACKEND_CONTAINER" api_port=8080
+      # The mono image serves the API behind its own nginx on 8080; the compose
+      # backend container listens on 8000 directly.
+      if [[ "$CB_MODE" == "compose" ]]; then api_port=8000; fi
+
+      if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+        printf "  ${RED}✗${R}  %-30s FAILED\n" "Docker daemon"
+        echo "     → Install Docker, or start it: sudo systemctl start docker"
+        echo ""
+        echo -e "  ${Y}1 check failed.${R} Everything below runs through the daemon — nothing else can be checked."
+        echo ""
+        return 1
+      fi
+      printf "  ${G}✓${R}  %-30s OK\n" "Docker daemon"
+
+      check "Container '${ctr}'" \
+            "_container_running '${ctr}'" \
+            "Start it: cb restart   (or: docker start ${ctr})" \
+            "docker ps -a --filter 'name=^/${ctr}\$' --format '{{.Names}}  {{.Status}}'"
+
+      if _container_running "$ctr"; then
+        check "Container not restarting" \
+              "[[ \$(docker inspect -f '{{.State.Restarting}}' '${ctr}') == false ]]" \
+              "The container is crash-looping — the reason is in its own logs." \
+              "docker logs --tail 30 '${ctr}'"
+
+        check "Backend API (:${api_port})" \
+              "docker exec '${ctr}' curl -sf 'http://127.0.0.1:${api_port}/api/v1/health'" \
+              "The app is not answering inside the container." \
+              "docker logs --tail 30 '${ctr}'"
+
+        # A DB probe run the way the app connects: compose passes CB_DB_URL into
+        # the backend container, while the mono image builds its URL at
+        # entrypoint time, so `docker exec` there only ever sees CB_DB_PASSWORD.
+        local db_ok=1
+        docker exec "$ctr" sh -c "${_DB_CONN_SH}; exec psql \"\$@\" -tAc 'SELECT 1'" >/dev/null 2>&1 || db_ok=0
+        check "Database" \
+              "[[ $db_ok -eq 1 ]]" \
+              "Postgres is not accepting the app's credentials — check CB_DB_PASSWORD / CB_DB_URL." \
+              "docker logs --tail 30 '${ctr}'"
+
+        # Postgres, the WAL and uploads all share the data volume; it filling up
+        # takes the whole stack down and shows up nowhere else until it does.
+        local free_kb
+        free_kb=$(docker exec "$ctr" df -Pk "$CB_DATA_DIR" 2>/dev/null | awk 'NR==2 {print $4}')
+        check "Free space on ${CB_DATA_DIR}" \
+              "[[ ${free_kb:-0} -ge 1048576 ]]" \
+              "Under 1 GiB free on the data volume — prune old backups or grow the volume." \
+              "docker exec '${ctr}' df -h '${CB_DATA_DIR}'"
+
+        # An ephemeral vault (no persisted key) survives a restart looking fine
+        # and then cannot decrypt anything stored before it — see cb vault-recover.
+        check "Vault key persisted" \
+              "docker exec '${ctr}' sh -c '[ -n \"\$CB_VAULT_KEY\" ] || grep -qs \"^CB_VAULT_KEY=\" \"${CB_DATA_DIR}/.env\"'" \
+              "No persisted vault key — run: cb vault-recover"
+      fi
+
+      # The published port is the only thing an actual user touches; a healthy
+      # container behind a port that never got published still looks broken.
+      check "Published port :${CB_PORT}" \
+            "curl -sf --max-time 5 'http://127.0.0.1:${CB_PORT}/api/v1/health' -o /dev/null" \
+            "Nothing answers on localhost:${CB_PORT} — check the port mapping and any host firewall." \
+            "docker port '${CB_CONTAINER}'"
+      ;;
+
+    binary)
+      check "systemd unit" \
+            "systemctl is-active --quiet circuit-breaker" \
+            "Start it: sudo systemctl start circuit-breaker" \
+            "systemctl status circuit-breaker --no-pager -l | tail -n 5; journalctl -u circuit-breaker --no-pager -n 30"
+
+      check "Backend API (:${CB_PORT})" \
+            "curl -sf --max-time 5 'http://127.0.0.1:${CB_PORT}/api/v1/health' -o /dev/null" \
+            "The service is not answering on port ${CB_PORT}." \
+            "journalctl -u circuit-breaker --no-pager -n 30"
+
+      # Read the service's own environment file rather than guessing: it is the
+      # only place the data directory and DB credentials are recorded.
+      local env_file="$CB_BINARY_ENV_FILE" data_dir="/var/lib/circuit-breaker" db_url=""
+      if [[ -r "$env_file" ]]; then
+        data_dir=$(sed -n 's/^CB_DATA_DIR=//p' "$env_file" | tail -n1 | tr -d '"')
+        data_dir="${data_dir:-/var/lib/circuit-breaker}"
+        db_url=$(sed -n 's/^CB_DB_URL=//p' "$env_file" | tail -n1 | tr -d '"')
+      else
+        _warn "Cannot read ${env_file} — data directory and database checks may be skipped. Try: sudo cb doctor"
+      fi
+
+      if [[ -d "$data_dir" ]]; then
+        local free_kb
+        free_kb=$(df -Pk "$data_dir" 2>/dev/null | awk 'NR==2 {print $4}')
+        check "Free space on ${data_dir}" \
+              "[[ ${free_kb:-0} -ge 1048576 ]]" \
+              "Under 1 GiB free on the data directory — prune old backups or grow the filesystem." \
+              "df -h '${data_dir}'"
+      fi
+
+      if [[ -n "$db_url" ]]; then
+        if command -v psql >/dev/null 2>&1; then
+          local db_ok=1
+          psql "$db_url" -tAc 'SELECT 1' >/dev/null 2>&1 || db_ok=0
+          check "Database" \
+                "[[ $db_ok -eq 1 ]]" \
+                "Postgres is not accepting CB_DB_URL from ${env_file}."
+        else
+          _info "psql not installed — skipping the database check."
+        fi
+      fi
+      ;;
+  esac
+
+  echo ""
+  if [[ $failed -eq 0 ]]; then
+    _ok "All checks passed."
+  else
+    echo -e "  ${Y}${failed} check(s) failed.${R} Fix top-down — each layer depends on the one above."
+  fi
+  echo ""
+  [[ $failed -eq 0 ]]
 }
 
 cmd_logs() {
@@ -234,6 +428,130 @@ cmd_update() {
   esac
 }
 
+# ── backup ────────────────────────────────────────────────────────────────────
+# Database dump plus the config/vault material needed to read it again, in one
+# timestamped archive.  Uploads are deliberately not included — they are large
+# and are covered by the full-state snapshot (see docs/backup-restore.md).
+cmd_backup() {
+  local ts backup_dir stage archive
+  ts=$(date +%Y%m%d-%H%M%S)
+  backup_dir="${CB_BACKUP_DIR:-$CB_CONFIG_DIR/backups}"
+  archive="$backup_dir/cb-backup-${ts}.tar.gz"
+
+  mkdir -p "$backup_dir" || _fail "Cannot create backup directory $backup_dir."
+  stage=$(mktemp -d) || _fail "Cannot create a staging directory."
+  # shellcheck disable=SC2064  # $stage is fixed at trap time, deliberately
+  trap "rm -rf '$stage'" EXIT
+
+  _info "Backing up to ${archive}..."
+
+  case "$CB_MODE" in
+    docker|compose)
+      _require_docker
+      _container_running "$CB_BACKEND_CONTAINER" \
+        || _fail "Container '${CB_BACKEND_CONTAINER}' must be running to dump the database. Start it first."
+
+      # pg_dump runs inside the container, against the connection the app
+      # itself uses; the dump streams out to the host so a read-only container
+      # filesystem (and a full data volume) cannot break the backup.
+      docker exec "$CB_BACKEND_CONTAINER" \
+        sh -c "${_DB_CONN_SH}; exec pg_dump \"\$@\"" > "$stage/database.sql" \
+        || _fail "pg_dump failed — see the output above."
+      [[ -s "$stage/database.sql" ]] || _fail "pg_dump produced an empty file; refusing to write a useless backup."
+
+      # Without the vault key the dump's encrypted columns are unreadable, so
+      # the key travels with it — which is also why the archive is 0600.
+      if docker exec "$CB_BACKEND_CONTAINER" cat "${CB_DATA_DIR}/.env" > "$stage/data.env" 2>/dev/null \
+         && [[ -s "$stage/data.env" ]]; then
+        _ok "Captured ${CB_DATA_DIR}/.env (vault key and data-dir config)."
+      else
+        rm -f "$stage/data.env"
+        _warn "No ${CB_DATA_DIR}/.env in the container — the vault key is supplied through the environment. Keep CB_VAULT_KEY safe separately."
+      fi
+      # The host-side install config records the image, ports and volume the
+      # stack was created with — a restore without it is guesswork.
+      if [[ -f "$CB_CONFIG_DIR/env" ]]; then cp "$CB_CONFIG_DIR/env" "$stage/install.env"; fi
+      if [[ -f "$_CONF" ]]; then cp "$_CONF" "$stage/install.conf"; fi
+
+      {
+        echo "mode=$CB_MODE"
+        echo "created=$ts"
+        echo "container=$CB_BACKEND_CONTAINER"
+        echo "image=$(docker inspect -f '{{.Config.Image}}' "$CB_BACKEND_CONTAINER" 2>/dev/null)"
+      } > "$stage/manifest.txt"
+      ;;
+
+    binary)
+      command -v pg_dump >/dev/null 2>&1 \
+        || _fail "pg_dump is not installed on this host — install the PostgreSQL client package (postgresql-client) and retry."
+
+      local env_file="$CB_BINARY_ENV_FILE"
+      [[ -r "$env_file" ]] \
+        || _fail "Cannot read ${env_file} — the database credentials live there. Try: sudo cb backup"
+
+      # Read the credentials the same way the unit does, in a subshell so the
+      # secrets never leak into the rest of this process's environment.
+      local db_url
+      db_url=$(set -a; . "$env_file"; set +a; printf '%s' "${CB_DB_URL:-}")
+      [[ -n "$db_url" ]] || _fail "CB_DB_URL is not set in ${env_file}; cannot dump the database."
+
+      pg_dump "$db_url" > "$stage/database.sql" || _fail "pg_dump failed — see the output above."
+      [[ -s "$stage/database.sql" ]] || _fail "pg_dump produced an empty file; refusing to write a useless backup."
+
+      cp "$env_file" "$stage/service.env"
+      {
+        echo "mode=$CB_MODE"
+        echo "created=$ts"
+        echo "version=$("$CB_BINARY" --version 2>/dev/null || echo unknown)"
+      } > "$stage/manifest.txt"
+      ;;
+  esac
+
+  tar -czf "$archive" -C "$stage" . || _fail "Failed to write $archive."
+  chmod 600 "$archive"
+
+  _ok "Backup written: ${archive}"
+  echo -e "  ${GR}Contents: database.sql, config/vault material, manifest.txt${R}"
+  echo -e "  ${Y}This archive contains secrets — it is mode 0600. Store it somewhere equally protected.${R}"
+  echo -e "  ${GR}Uploads are not included; see docs/backup-restore.md for a full-state snapshot.${R}"
+}
+
+# ── config ────────────────────────────────────────────────────────────────────
+# Runs the backend's own configuration validator, so `cb` never has a second,
+# drifting opinion about what a valid configuration is.
+cmd_config() {
+  local action="${1:-}"
+  if [[ "$action" != "validate" ]]; then
+    echo "Usage: cb config validate"
+    return 2
+  fi
+
+  case "$CB_MODE" in
+    docker|compose)
+      _require_docker
+      _container_running "$CB_BACKEND_CONTAINER" \
+        || _fail "Container '${CB_BACKEND_CONTAINER}' must be running — the validator runs inside it."
+      docker exec "$CB_BACKEND_CONTAINER" python -m app.cli config validate
+      ;;
+    binary)
+      # Load the same environment file the unit does, so the validator sees
+      # exactly the configuration the service would start with.
+      local env_file="$CB_BINARY_ENV_FILE"
+      if [[ -f "$env_file" ]]; then
+        set -a
+        # shellcheck source=/dev/null
+        source "$env_file"
+        set +a
+      else
+        _warn "No ${env_file} — validating the ambient environment only."
+      fi
+      _require_binary "$CB_BINARY" \
+        "the validator ships with the Circuit Breaker binary. Install the package, or set CB_MODE in ${_CONF} to the mode this host actually runs."
+      "$CB_BINARY" --config-validate
+      ;;
+  esac
+}
+
 # ── vault-recover ─────────────────────────────────────────────────────────────
 # Recovery tool for when the vault is in "ephemeral" state (no key was ever
 # persisted).  Under normal operation this is handled automatically by the OOBE
@@ -306,7 +624,7 @@ cmd_vault_recover() {
       ;;
 
     binary)
-      local env_file="/etc/circuit-breaker/env"
+      local env_file="$CB_BINARY_ENV_FILE"
 
       if grep -q "^CB_VAULT_KEY=" "$env_file" 2>/dev/null; then
         _warn "A vault key already exists in ${env_file}."
@@ -359,18 +677,34 @@ cmd_version() {
       fi
       ;;
     binary)
-      /usr/local/bin/circuit-breaker --version 2>/dev/null \
+      "$CB_BINARY" --version 2>/dev/null \
         || cat /etc/circuit-breaker/version 2>/dev/null \
         || _warn "Version unknown."
       ;;
   esac
 }
 
+# The uninstaller for docker/compose/binary installs is the repo's uninstall.sh.
+# No installer copies it to /usr/local/bin/uninstall-circuit-breaker today, so
+# that path is only honoured when an operator has put it there themselves; the
+# checkout next to this script is the case that actually happens, and a plain
+# "not found" error is useless when the real command is one curl away.
+_CB_UNINSTALL_URL="https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh"
+
 cmd_uninstall() {
+  local here
+  here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
+
   if [[ -x /usr/local/bin/uninstall-circuit-breaker ]]; then
     exec /usr/local/bin/uninstall-circuit-breaker
+  elif [[ -f "$here/uninstall.sh" ]]; then
+    _info "Running ${here}/uninstall.sh"
+    exec bash "$here/uninstall.sh"
   else
-    _fail "Uninstall script not found at /usr/local/bin/uninstall-circuit-breaker"
+    _fail "$(printf '%s\n' \
+      "No uninstaller on this host." \
+      "  Run it from a checkout:  bash uninstall.sh" \
+      "  Or fetch it:             curl -fsSL ${_CB_UNINSTALL_URL} | bash")"
   fi
 }
 
@@ -386,9 +720,12 @@ usage() {
   echo ""
   echo -e "  ${G}Commands:${R}"
   echo -e "    status              Show container / service status"
+  echo -e "    doctor              Run health checks and diagnose issues"
   echo -e "    logs [-f]           Show logs  (${GR}-f${R} to follow in real-time)"
   echo -e "    restart             Restart Circuit Breaker"
   echo -e "    update              Pull latest image and restart  ${GR}(docker mode)${R}"
+  echo -e "    backup              Dump database + config to a timestamped archive"
+  echo -e "    config validate     Validate the configuration before it is used"
   echo -e "    vault-recover       Recover an uninitialized vault  ${GR}(recovery path only)${R}"
   echo -e "    version             Show installed version"
   echo -e "    uninstall           Remove Circuit Breaker from this system"
@@ -405,9 +742,12 @@ usage() {
 
 case "${1:-help}" in
   status)          cmd_status ;;
+  doctor)          cmd_doctor ;;
   logs)            cmd_logs "${2:-}" ;;
   restart)         cmd_restart ;;
   update)          cmd_update ;;
+  backup)          cmd_backup ;;
+  config)          cmd_config "${2:-}" ;;
   vault-recover)   cmd_vault_recover ;;
   version)         cmd_version ;;
   uninstall)       cmd_uninstall ;;

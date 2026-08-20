@@ -3,6 +3,27 @@
 
 [[ -f /etc/circuitbreaker/.env ]] && source /etc/circuitbreaker/.env
 
+# The native install's binary, named once so no call site can drift.
+CB_BIN="${CB_BIN:-/opt/circuitbreaker/bin/circuit-breaker}"
+
+_die() { echo "  $*" >&2; exit 1; }
+
+# Guards for anything this script runs by absolute path or by name. Without
+# them a missing tool surfaces as bash's own
+# "line NNN: /opt/circuitbreaker/bin/circuit-breaker: No such file or directory"
+# and exit 127, which tells the operator nothing about what to install.
+_require_binary() {
+  local path="$1" why="${2:-}"
+  [[ -e "$path" ]] || _die "${path} not found${why:+ — $why}"
+  [[ -x "$path" ]] || _die "${path} is not executable${why:+ — $why}"
+}
+
+_require_cmd() {
+  local cmd="$1" why="${2:-}"
+  command -v "$cmd" >/dev/null 2>&1 \
+    || _die "${cmd} is not installed or not in PATH${why:+ — $why}"
+}
+
 SERVICES=(
   "circuitbreaker-postgres"
   "circuitbreaker-pgbouncer"
@@ -34,8 +55,16 @@ cmd_status() {
 }
 
 cmd_doctor() {
+  # Most checks need root (journalctl, the pgbouncer password, sudo -u probes).
+  # Re-exec *this* script rather than /usr/local/bin/cb so a checkout copy
+  # doesn't silently hand off to a different installed version. With no sudo on
+  # the box, run what we can instead of dying on a failed exec.
   if [[ $EUID -ne 0 ]]; then
-    exec sudo /usr/local/bin/cb doctor
+    if command -v sudo >/dev/null 2>&1; then
+      exec sudo "$0" doctor
+    fi
+    echo ""
+    echo "  Not root and sudo is unavailable — checks that need privileges will fail."
   fi
   echo ""
   echo "  Circuit Breaker Health Check"
@@ -164,6 +193,14 @@ cmd_doctor() {
   [[ $FAILED -eq 0 ]] && echo "  All systems operational." \
                        || echo "  $FAILED check(s) failed. Fix top-down — each service depends on the one above."
   echo ""
+  # Nothing gates on this: install.sh names `cb doctor` only after a stage has
+  # already failed — once as a "Re-check anytime" hint, once as a diagnostic it
+  # collects — and deploy/setup.sh only prints it in a hint and a banner. The
+  # status still has to be the verdict rather than the exit code of the trailing
+  # echo (always 0), because an operator or a wrapper script polling `cb doctor`
+  # has no other signal, and the repo-root `cb` already exits non-zero on a
+  # failed check — the two CLIs must not disagree about what a failure means.
+  [[ $FAILED -eq 0 ]]
 }
 
 cmd_logs() {
@@ -190,12 +227,47 @@ cmd_update() {
 }
 
 cmd_backup() {
-  TS=$(date +%Y%m%d-%H%M%S)
-  FILE="${CB_DATA_DIR}/backups/cb-backup-${TS}.sql"
-  echo "Backing up to $FILE..."
+  # Without this guard a host missing the PostgreSQL client package still
+  # created the file via the redirect, let pg_dump die with exit 127, and then
+  # printed "Done:" over an empty dump.
+  _require_cmd pg_dump "install the PostgreSQL client package (postgresql-client) and retry"
+
+  # Fall back the way cmd_doctor already does, so an unset CB_DATA_DIR (no
+  # /etc/circuitbreaker/.env on this host) writes to the real data directory
+  # instead of trying to redirect into /backups/.
+  local dir="${CB_DATA_DIR:-/var/lib/circuitbreaker}/backups"
+  local ts file
+  ts=$(date +%Y%m%d-%H%M%S)
+  file="${dir}/cb-backup-${ts}.sql"
+  mkdir -p "$dir" || _die "Cannot create backup directory ${dir}."
+
+  echo "Backing up to $file..."
   PGPASSWORD="$CB_DB_PASSWORD" pg_dump \
-    -h 127.0.0.1 -p 6432 -U breaker circuitbreaker > "$FILE"
-  echo "Done: $FILE"
+    -h 127.0.0.1 -p 6432 -U breaker circuitbreaker > "$file" \
+    || { rm -f "$file"; _die "pg_dump failed — see the output above."; }
+  [[ -s "$file" ]] \
+    || { rm -f "$file"; _die "pg_dump produced an empty file; refusing to keep a useless backup."; }
+  echo "Done: $file"
+}
+
+cmd_config() {
+  local action="${1:-}"
+  if [[ "$action" != "validate" ]]; then
+    echo "Usage: cb config validate"
+    return 2
+  fi
+  # This script sources /etc/circuitbreaker/.env at the top, but without
+  # exporting — so re-source it with `set -a` here. The validator runs as a
+  # child process and must see exactly the environment the unit starts with,
+  # including the vault key the backend unit pulls in the same way.
+  set -a
+  # shellcheck source=/dev/null
+  [[ -f /etc/circuitbreaker/.env ]] && source /etc/circuitbreaker/.env
+  [[ -f /run/circuitbreaker/vault.env ]] && source /run/circuitbreaker/vault.env
+  set +a
+  _require_binary "$CB_BIN" \
+    "the validator ships with the Circuit Breaker install. Reinstall, or run 'cb update'."
+  "$CB_BIN" --config-validate
 }
 
 cmd_version() {
@@ -279,6 +351,7 @@ case "${1:-help}" in
   restart)   cmd_restart   ;;
   update)    cmd_update    ;;
   backup)    cmd_backup    ;;
+  config)    cmd_config "${2:-}" ;;
   version)   cmd_version   ;;
   uninstall) cmd_uninstall ;;
   *)
@@ -292,6 +365,8 @@ case "${1:-help}" in
     echo "    cb restart    Restart all services"
     echo "    cb update     Update to latest version"
     echo "    cb backup     Backup database"
+    echo "    cb config validate"
+    echo "                  Validate the configuration the units would start with"
     echo "    cb version    Show installed version"
     echo "    cb uninstall  Remove Circuit Breaker"
     echo ""
