@@ -44,6 +44,26 @@ jobs:
           print('Alembic head:', heads[0])
           "
 
+      # The repo-policy suite: tracked-file policy (GOV-12), governance files
+      # (GOV-10/11/14/16), cb CLI parity (SRV-06/GOV-05), restart probes
+      # (SRV-03), version parity and release channel. Until 2026-08-19 no
+      # workflow ran it, so "a policy test prevents recurrence" was a claim with
+      # nothing behind it — the suite passed locally and could rot unnoticed.
+      #
+      # It belongs in Lint: it is pure static analysis of the checked-out tree
+      # (git ls-files, file reads, no network) and finishes in under a second,
+      # so it fails fast and needs no database or services.
+      #
+      # Scoped to tests/build on purpose — the sibling repo-root suite
+      # tests/integration/ needs a live PostgreSQL that no job in this workflow
+      # provides, so it stays out rather than being added as a guaranteed
+      # failure. /pytest.ini overrides pytest's norecursedirs default (which
+      # contains "build") so the same collection happens for a plain
+      # `pytest tests/` locally, and so files added under tests/build/ later
+      # cannot be silently dropped.
+      - name: Repo policy tests (tests/build)
+        run: .venv/bin/pytest tests/build
+
       - name: Install frontend deps
         run: cd apps/frontend && npm ci
 
