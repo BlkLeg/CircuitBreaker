@@ -507,9 +507,7 @@ def test_enroll_releases_pending_lock_on_exception(db_session, ws_client, monkey
         # None` check (that read happens before lock acquisition) — the
         # db.flush() in the real create_pending_agent will raise IntegrityError
         # on device_pk unique constraint violation.
-        raise IntegrityError(
-            "Duplicate device_pk", orig="Duplicate", params={}
-        )
+        raise IntegrityError("Duplicate device_pk", orig="Duplicate", params={})
 
     # First connection: monkeypatch create_pending_agent to raise, simulating
     # a race. The lock must be released even though the exception is raised
