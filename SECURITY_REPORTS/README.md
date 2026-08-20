@@ -6,7 +6,7 @@ This file indexes both `SECURITY_REPORTS/` (audits, triage and raw scanner
 output) and `SECURITY_PATCHES/` (patch write-ups and the raw scan run they
 were triaged from). Every document in either directory describes the codebase
 as it stood on its own date, between 2026-03-10 (v0.2.0-beta) and 2026-06-30.
-None of them has been re-run against 1.0.0-rc.2. A finding is closed only if
+None of them has been re-run against 1.0.0-rc.3. A finding is closed only if
 the requirement ledger says so.
 
 The current security posture is defined by:
@@ -25,7 +25,7 @@ as history only. GOV-13 is the requirement this index exists to close.
 
 - **Superseded** — a later document, or a live control in the tree, covers the
   same ground. The row names what replaced it.
-- **Historical** — accurate for its date, not re-verified against 1.0.0-rc.2.
+- **Historical** — accurate for its date, not re-verified against 1.0.0-rc.3.
 - **Active** — at least one finding was still open in the tree when this index
   was written. Confirm against the ledger before acting.
 

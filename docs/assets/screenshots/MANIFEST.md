@@ -69,7 +69,7 @@ original commit dates, not the restore date. "Source version" is the value of
 `VERSION` at the commit that first added the file.
 
 `Matches RC UI` is **not verified** for every asset. Verifying it requires
-rendering the 1.0.0-rc.2 UI and comparing it against a capture taken against
+rendering the 1.0.0-rc.3 UI and comparing it against a capture taken against
 0.1.4–0.2.2, which was not done as part of this review. Treat every row as
 "unknown, presumed stale" until someone re-captures.
 
