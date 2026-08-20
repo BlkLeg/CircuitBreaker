@@ -179,13 +179,22 @@ docker volume rm circuit-breaker-data
 
 ## Health Check
 
-Circuit Breaker exposes a health endpoint:
+Circuit Breaker exposes four probe endpoints, and which one you use matters:
+
+| Endpoint | Answers | Use it for |
+| --- | --- | --- |
+| `GET /api/v1/livez` | Is the process able to serve at all? | Restart decisions — Docker `HEALTHCHECK`, systemd, Kubernetes liveness |
+| `GET /api/v1/readyz` | Can it safely serve traffic right now? (includes Postgres and Redis) | Load-balancer membership, Kubernetes readiness |
+| `GET /api/v1/startupz` | Has initialisation finished? | Holding a liveness probe off during a slow migration |
+| `GET /api/v1/health` | Combined legacy view | Dashboards and the built-in frontend poll |
 
 ```
-GET http://127.0.0.1:8080/api/v1/health
+GET http://127.0.0.1:8080/api/v1/livez
 ```
 
-It is the one path on port `8080` that is not redirected to HTTPS, which is what makes it usable as a Docker `HEALTHCHECK` or a plain-HTTP monitoring probe. Publish port `8080` if you want to reach it from outside the container.
+Point restart-deciding probes at `/livez` and nothing else. `/health` and `/readyz` both fold Postgres and Redis into their verdict, so wiring either one to a restart turns a brief dependency outage into a restart loop against a backend that is working fine.
+
+These four are the only paths on port `8080` that are not redirected to HTTPS, which is what makes them usable as a Docker `HEALTHCHECK` or a plain-HTTP monitoring probe. Publish port `8080` if you want to reach them from outside the container.
 
 ---
 

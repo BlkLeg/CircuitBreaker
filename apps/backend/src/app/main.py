@@ -1938,40 +1938,91 @@ def _health_caller_is_authenticated(request: Request, db) -> bool:
         return False
 
 
-@app.api_route(f"{_V1}/health", methods=["GET", "HEAD"])
-async def health(request: Request, db: Session = Depends(get_db)):
+async def _probe_dependencies() -> dict[str, str]:
+    """The dependency half of health, shared by /readyz and legacy /health.
+
+    Kept separate from liveness on purpose: a database or Redis outage means
+    "do not send me traffic", not "kill me and start another one". Conflating
+    the two is how a dependency blip turns into a restart storm.
+    """
     from app.core.redis import redis_health
-    from app.core.server_state import ServerState, get_state
 
-    state = get_state()
-
-    timescaledb_available: bool | None = None
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
             # Readiness contract check: discovery endpoints serialize ScanJob.error_reason.
             # If this column is missing (migration drift), report db as error.
             conn.execute(text("SELECT error_reason FROM scan_jobs LIMIT 1"))
-            timescaledb_available = bool(
-                conn.execute(
-                    text("SELECT 1 FROM pg_available_extensions WHERE name = 'timescaledb' LIMIT 1")
-                ).scalar()
-            )
         db_status = "ok"
     except Exception:
         db_status = "error"
 
-    redis_ok = await redis_health()
-    redis_status = "ok" if redis_ok else "error"
+    return {"db": db_status, "redis": "ok" if await redis_health() else "error"}
 
-    body = {
+
+@app.api_route(f"{_V1}/livez", methods=["GET", "HEAD"])
+async def livez() -> dict[str, object]:
+    """SRV-03 liveness: is this process able to serve at all?
+
+    Deliberately touches no dependency and takes no lock. If this handler runs,
+    the event loop is not wedged, which is the only question a container
+    HEALTHCHECK's restart decision should turn on.
+    """
+    return {"status": "alive", "uptime_s": round(time.time() - SERVER_START_TIME)}
+
+
+@app.api_route(f"{_V1}/startupz", methods=["GET", "HEAD"])
+async def startupz(response: Response) -> dict[str, object]:
+    """SRV-03 startup: has initialisation finished?
+
+    Lets an orchestrator hold off its liveness probe during a slow migration
+    instead of killing the process mid-upgrade.
+    """
+    from app.core.server_state import ServerState, get_state
+
+    state = get_state()
+    started = state is not ServerState.STARTING
+    if not started:
+        response.status_code = 503
+    return {"state": state.value, "started": started}
+
+
+@app.api_route(f"{_V1}/readyz", methods=["GET", "HEAD"])
+async def readyz(response: Response) -> dict[str, object]:
+    """SRV-03 readiness: can this instance safely serve traffic right now?
+
+    503 while STOPPING is what makes SIGTERM drain work — the load balancer
+    stops sending new requests before the process goes away.
+    """
+    from app.core.server_state import ServerState, get_state
+
+    state = get_state()
+    checks = await _probe_dependencies()
+    ready = state is ServerState.READY and all(v == "ok" for v in checks.values())
+    if not ready:
+        response.status_code = 503
+    return {"ready": ready, "state": state.value, "checks": checks}
+
+
+@app.api_route(f"{_V1}/health", methods=["GET", "HEAD"])
+async def health(request: Request, db: Session = Depends(get_db)):
+    """Legacy combined health, kept at its exact response shape.
+
+    The frontend's connectivity poll, scripts/test-mono-e2e.sh and
+    deploy/setup.sh's install-time wait all read this body, so the shape is
+    load-bearing. The restart-deciding probes moved to /livez; new consumers
+    should use /livez, /readyz or /startupz instead.
+    """
+    from app.core.server_state import ServerState, get_state
+
+    state = get_state()
+    checks = await _probe_dependencies()
+
+    body: dict[str, object] = {
         "state": state.value,
         "ready": state == ServerState.READY,
         "uptime_s": round(time.time() - SERVER_START_TIME),
-        "checks": {
-            "db": db_status,
-            "redis": redis_status,
-        },
+        "checks": checks,
     }
 
     # Build version and installed database extensions are unauthenticated
@@ -1980,6 +2031,22 @@ async def health(request: Request, db: Session = Depends(get_db)):
     # healthcheck, the reverse proxy, and the frontend poll actually need, so
     # the detail is reserved for authenticated callers.
     if _health_caller_is_authenticated(request, db):
+        timescaledb_available: bool | None = None
+        try:
+            with engine.connect() as conn:
+                timescaledb_available = bool(
+                    conn.execute(
+                        text(
+                            "SELECT 1 FROM pg_available_extensions "
+                            "WHERE name = 'timescaledb' LIMIT 1"
+                        )
+                    ).scalar()
+                )
+        except Exception:
+            # Same contract as before the probe was factored out: a database
+            # that cannot answer reports an unknown extension inventory, not a
+            # 500 on the endpoint the healthcheck depends on.
+            timescaledb_available = None
         body["version"] = settings.app_version
         body["timescaledb_available"] = timescaledb_available
 

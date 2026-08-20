@@ -260,6 +260,30 @@
     },
     {
       "transport": "http",
+      "methods": ["GET", "HEAD"],
+      "path": "/api/v1/livez",
+      "policy": "health",
+      "public_reason": "Container HEALTHCHECK restart probe; must answer before any credential exists.",
+      "disclosure": "process liveness and uptime"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET", "HEAD"],
+      "path": "/api/v1/startupz",
+      "policy": "health",
+      "public_reason": "Orchestrator startup probe; must answer while the server is still initialising.",
+      "disclosure": "lifecycle state"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET", "HEAD"],
+      "path": "/api/v1/readyz",
+      "policy": "health",
+      "public_reason": "Load balancer readiness probe; decides traffic routing, not authentication.",
+      "disclosure": "lifecycle state and ok/error per dependency"
+    },
+    {
+      "transport": "http",
       "methods": ["GET"],
       "path": "/favicon.ico",
       "policy": "public-ui-asset",

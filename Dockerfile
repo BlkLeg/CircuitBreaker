@@ -105,10 +105,13 @@ EXPOSE 8080
 USER breaker26:breaker26
 
 # Health check — uses Python stdlib (no wget/curl needed in the image).
+# /livez, not /health or /readyz: a HEALTHCHECK failure restarts the container, and the
+# only condition that warrants a restart is the process being unable to serve at all.
+# A Postgres or Redis outage means "stop routing to me" (/readyz), not "kill me".
 # start-period=45s: covers the entrypoint chown + Python/uvicorn cold start on Pi 4 SD card
 # (chown on a populated /data + uvicorn import chain can exceed 15s on arm64 slow storage).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/v1/health', timeout=4)" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/v1/livez', timeout=4)" || exit 1
 
 # checkov:skip=CKV_DOCKER_3: final runtime user is non-root (breaker26).
 # tini as PID 1 ensures SIGTERM is forwarded to uvicorn and zombie processes are reaped.

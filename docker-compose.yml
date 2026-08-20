@@ -77,7 +77,18 @@ services:
       - CB_AIRGAP=${CB_AIRGAP:-false}
       - CB_DOCKER_HOST=${CB_DOCKER_HOST:-}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/api/v1/health"]
+      # Must stay identical to the HEALTHCHECK in Dockerfile.mono — a compose
+      # healthcheck overrides the image's, so diverging here silently undoes it.
+      # /livez, not /health or /readyz: an unhealthy container is a restart
+      # candidate, and a Postgres or Redis outage means "stop routing to me",
+      # not "kill me". The body is matched because the :8080 server block
+      # 301-redirects anything it does not proxy and `curl -f` treats a 301 as
+      # success, so a status-code-only probe could pass without reaching the app.
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS --max-time 4 http://127.0.0.1:8080/api/v1/livez | grep -q '\"alive\"'",
+        ]
       interval: 10s
       timeout: 5s
       retries: 5

@@ -200,8 +200,14 @@ VOLUME ["/data"]
 
 EXPOSE 8080 8443
 
+# /livez, not /health or /readyz: a HEALTHCHECK failure restarts the container, and the
+# only condition that warrants a restart is the process being unable to serve at all.
+# A Postgres or Redis outage means "stop routing to me" (/readyz), not "kill me".
+# The body is matched rather than trusting the status code alone: the :8080 server block
+# 301-redirects everything it does not explicitly proxy, and `curl -f` treats a 301 as
+# success — so a missing nginx location would otherwise make this probe always pass.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-  CMD curl -f http://127.0.0.1:8080/api/v1/health || exit 1
+  CMD curl -fsS --max-time 4 http://127.0.0.1:8080/api/v1/livez | grep -q '"alive"' || exit 1
 
 # tini as PID1 (reaps zombies, forwards signals). Entrypoint starts as root to fix
 # volume ownership, then supervisord drops to breaker for application processes.

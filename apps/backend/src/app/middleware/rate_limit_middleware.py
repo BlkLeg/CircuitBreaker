@@ -35,6 +35,14 @@ _SKIP_PATHS: frozenset[str] = frozenset(
     [
         "/api/v1/health",
         "/api/v1/health/ready",
+        # SRV-03 probes. These must never be throttled and must never be turned
+        # into a 503 by the "Redis unavailable" branch below: the container
+        # HEALTHCHECK and deploy/scripts/healthcheck.sh both read /livez and
+        # restart on failure, so a Redis outage answered with 503 here would
+        # restart-storm a backend that is serving fine.
+        "/api/v1/livez",
+        "/api/v1/readyz",
+        "/api/v1/startupz",
         "/metrics",
     ]
 )
