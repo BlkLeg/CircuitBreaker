@@ -92,13 +92,23 @@ jobs:
         with:
           python-version: "3.12"
 
+      # SECURITY_SCAN_VENV has to match on both steps. security_scan.sh reads
+      # it to find its toolchain and provisions the venv itself when it is
+      # missing, so a mismatch here does not fail — it just installs twice.
+      # This is no longer .venv: on a developer machine that path is the
+      # backend environment, and semgrep's pins break it (see the comment in
+      # security_scan.sh).
       - name: Install scan tools
+        env:
+          SECURITY_SCAN_VENV: ${{ runner.temp }}/cb-scanner-venv
         run: |
-          python3.12 -m venv .venv
-          .venv/bin/pip install --upgrade pip
-          .venv/bin/pip install bandit semgrep
+          python3.12 -m venv "$SECURITY_SCAN_VENV"
+          "$SECURITY_SCAN_VENV/bin/pip" install --upgrade pip
+          "$SECURITY_SCAN_VENV/bin/pip" install bandit semgrep
 
       - name: Run security gate (fails on HIGH/CRIT)
+        env:
+          SECURITY_SCAN_VENV: ${{ runner.temp }}/cb-scanner-venv
         run: ./scripts/security_scan.sh --gate
 
       - name: Upload scan report
