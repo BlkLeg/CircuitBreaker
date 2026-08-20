@@ -469,7 +469,7 @@ Run: `cat docs/adr/0003-defer-true-multi-tenancy.md`
 ```markdown
 # ADR 0004: npm is not a supported distribution channel for 1.0
 
-**Status:** Accepted
+**Status:** Accepted for 1.0 planning
 **Date:** 2026-08-18
 **Requirements:** NPM-01 through NPM-15, RC-03, EXEC-06
 **Supersedes:** nothing
@@ -485,10 +485,12 @@ package, no publish workflow, and the root `package.json` is `private: true`.
 `apps/frontend/package.json` is a workspace manifest for the bundled UI, not a
 publishable artifact.
 
-The channels that do exist and are tested are: native systemd packages
-(deb/rpm/apk/Arch/AppImage/tar for amd64 and arm64), the mono container, and
-split Docker Compose. Each has signing, checksums, SBOMs and an installation
-gate. Adding npm would mean a new package identity, a registry namespace with
+The channels that do exist and are tested are native systemd packages
+(deb/rpm/apk/Arch/AppImage/tar for amd64 and arm64) and the mono container
+image. Split Docker Compose is *not* one of them — no Compose file in the
+repository wires separate containers together, per
+`docs/installation/index.md`'s "Why there is no split mode". Both channels that
+do ship carry signing, checksums, SBOMs and an installation gate. Adding npm would mean a new package identity, a registry namespace with
 its own MFA and access review, trusted publishing via OIDC, cross-platform
 tarball smoke tests on Linux/macOS/Windows, and a compromise-and-revocation
 procedure — NPM-12 through NPM-15 — for a channel with no current users.
@@ -501,14 +503,15 @@ npm is **not** a supported distribution channel for Circuit Breaker 1.0.
    (`tests/build/test_tracked_file_policy.py`).
 2. No package is published to npmjs under any name for 1.0.
 3. NPM-01 through NPM-15 are recorded as **not applicable** for 1.0 under
-   exception `EXC-002`, not as unmet requirements.
-4. Documentation names native, mono and split Compose as the only supported
-   installation methods, and does not present `npm`/`npx` examples.
+   exception `EXC-003`, not as unmet requirements.
+4. Documentation names native and mono — the two deployment modes that ship,
+   per `docs/installation/index.md`'s Deployment Modes table — as the only
+   supported installation methods, and does not present `npm`/`npx` examples.
 
 ## Consequences
 
 **Positive.** Fifteen release requirements close without writing a package.
-The supply-chain surface stays at three governed channels. No namespace to
+The supply-chain surface stays at two governed channels. No namespace to
 defend, no registry access review, no publish credential to rotate.
 
 **Negative.** Users who expect a `npx @blkleg/circuitbreaker` installer do not
@@ -545,11 +548,17 @@ head -1 specs/1.0.0/release-control/exception-register.csv
 cat specs/1.0.0/release-control/exception-register.csv
 ```
 
-Add `EXC-002` following the exact column order the header shows, with: the covered requirement IDs `NPM-01..NPM-15`, owner `shawnji (release)`, rationale pointing at ADR-0004, compensating control "npm is not published; root manifest is private and asserted by test", and no expiry (the decision is permanent for the 1.0 line, not time-boxed).
+Add `EXC-003` following the exact column order the header shows, with: the covered requirement IDs `NPM-01..NPM-15`, owner `shawnji (distribution)` and reviewer `shawnji (security)` (the `NPM` prefix owners in `owner-map.md`), rationale pointing at ADR-0004, and compensating control "npm is not published; root manifest is private and asserted by test".
+
+`EXC-003`, not `EXC-002` — `EXC-002` already carries RC-07's single-codeowner waiver, and an exception ID is the join key between the register and the ledger, so reusing it merges two unrelated waivers under one row.
+
+The decision is not time-boxed, but `expiry` is not optional: `validate_v1_release_control.py` fails any `active` exception without one. Give it the `2026-11-13` review date `EXC-001` and `EXC-002` already share and say in `notes` that the date is a review cadence, not the end of the decision.
 
 - [ ] **Step 4: Update the ledger**
 
-Set all fifteen `NPM-*` rows to `status=excepted`, `exception_id=EXC-002`, `evidence_url=docs/adr/0004-npm-out-of-scope-for-1.0.md`, `invalidation_state=current`:
+Set all fifteen `NPM-*` rows to `status=excepted`, `exception_id=EXC-003`, `evidence_url=docs/adr/0004-npm-out-of-scope-for-1.0.md`, `invalidation_state=exception`:
+
+`exception`, not `current`: `current` means "evidence captured and still valid" and the validator only accepts it on a `passed` row. The three `excepted` rows already in the ledger (SEC-02/03/04 under EXC-001) use `exception`.
 
 ```bash
 python3 - <<'PY'
@@ -562,9 +571,9 @@ changed = 0
 for row in rows:
     if row["requirement_id"].startswith("NPM-"):
         row["status"] = "excepted"
-        row["exception_id"] = "EXC-002"
+        row["exception_id"] = "EXC-003"
         row["evidence_url"] = "docs/adr/0004-npm-out-of-scope-for-1.0.md"
-        row["invalidation_state"] = "current"
+        row["invalidation_state"] = "exception"
         row["notes"] = "npm is not a 1.0 channel per ADR-0004; not applicable rather than unmet."
         changed += 1
 
@@ -592,7 +601,7 @@ git commit -m "docs(adr): npm is not a supported 1.0 distribution channel (NPM-0
 
 Fifteen requirements sat behind an unanswered conditional. No package,
 namespace or publish workflow was ever started, and the three channels that
-do exist are signed, gated and tested. Recorded as EXC-002 — not applicable
+do exist are signed, gated and tested. Recorded as EXC-003 — not applicable
 rather than unmet."
 ```
 
@@ -946,13 +955,18 @@ Set RC-01, RC-02 and RC-03 to `in_progress` with `evidence_url` pointing at thei
 
 Set REL-14 to `in_progress` noting the ratchet exists at `apps/backend/pyproject.toml` and, before Plan 3 Task 6, sat below the measured baseline.
 
-- [ ] **Step 2: Record the RC-02 contradiction as a risk, not a pass**
+- [x] **Step 2: Record the RC-02 contradiction as a risk, not a pass — OBSOLETE, verified 2026-08-19, no row added**
 
-Until Plan 1 Task 3 ships, `docs/release/1.0.0-support-contract.md:40` claims arm64 for a container channel the pipeline builds amd64-only. Add a row to `specs/1.0.0/release-control/risk-register.csv` describing it, owned by the release owner, with the mitigation pointing at Plan 1 Task 3.
+This step was written on the assumption that Plan 1 Task 3 had not landed. It had. Adding the risk row would have published a stale contradiction, so **no row was added, deliberately**, and this note is the record of that decision.
 
-Inspect the register's columns first:
+What was checked, and what it showed:
 
-Run: `head -1 specs/1.0.0/release-control/risk-register.csv && cat specs/1.0.0/release-control/risk-register.csv`
+- `.github/workflows/release.yml:148` — `docker buildx build --platform linux/amd64,linux/arm64`, so the container channel is built for both architectures.
+- `.github/workflows/release.yml:163-182` — an "Assert published manifest covers both architectures" step re-inspects the pushed manifest with `docker buildx imagetools inspect --raw` and fails the job if either `linux/amd64` or `linux/arm64` is absent. The claim is enforced, not merely intended.
+- Landed in commit `639afcf8` ("fix(release): build the container for amd64 and arm64").
+- `docs/release/1.0.0-support-contract.md`'s deployment-mode table therefore no longer contradicts the pipeline: its `arm64` claim for the "Mono container install" row matches what ships.
+
+The risk this step described no longer exists. RC-02 stays `in_progress` for the reason its own ledger note gives — the support contract is unapproved and unevidenced — not because of an architecture contradiction.
 
 - [ ] **Step 3: Correct the audit note**
 
@@ -994,8 +1008,8 @@ the marker was written."
 
 | Requirement | Task |
 |---|---|
-| GOV-01 (link checking) | 5 |
-| GOV-02 (screenshot provenance and anonymisation) | 6 |
+| GOV-01 (link checking) | 5 — the gate is wired into `.github/workflows/docs.yml`; it is uncommitted and has never run, so nothing yet proves the tree is link-clean. |
+| GOV-02 (screenshot provenance and anonymisation) | 6 — **provenance only**. `docs/assets/screenshots/MANIFEST.md` records source version, capture date, reviewer and what the review found for all sixteen assets. The anonymisation itself is **not** done: fifteen of the sixteen still show maintainer identity, city, a real hostname, real inventory names, rack locations or RFC1918 addressing, and "matches RC UI" is unverified for every one. GOV-02's acceptance ("no environment secrets or personal data remain") is unmet. |
 | GOV-03 (required media) | 6 — gaps named and assigned, capture itself follows Plan 3 |
 | GOV-06 (agent security/permissions/outbound/scope/update/uninstall, troubleshooting) | 4 |
 | GOV-08 (source canonical, no stale `site/`) | 1, 5 |
@@ -1008,6 +1022,6 @@ the marker was written."
 | NPM-01 – NPM-15 | 3 |
 | AGT-18 (recovery runbooks published) | 4 — published here; tabletop exercise still required for evidence |
 
-**Known gaps left open deliberately:** GOV-07's threat model, hardening guide, privacy statement and API reference are not written here — each is a substantial document, and GOV-06's agent page is the one whose absence actively harms users today. GOV-15 (branch protection evidence) needs repository settings screenshots, not code. GOV-19's provenance for native packages is tracked in Plan 1's self-review.
+**Known gaps left open deliberately:** GOV-02's anonymisation is not performed — the manifest documents exactly what must be blurred or re-captured, and Plan 3's seeded-data harness is the cheaper fix; until that runs, GOV-02's acceptance is unmet and the requirement stays `in_progress`. GOV-12's second acceptance clause is also unmet: git history was not reviewed for the test credentials that `apps/agent/e2e/.env` carried, so removing the file from the working tree does not remove them from earlier commits. GOV-13's index now covers `SECURITY_REPORTS/`, `SECURITY_PATCHES/` and `plans/`, each entry carrying a status marker; what remains unevidenced is that no test enforces either index, so a report added without a row would not be caught. GOV-07's threat model, hardening guide, privacy statement and API reference are not written here — each is a substantial document, and GOV-06's agent page is the one whose absence actively harms users today. GOV-15 (branch protection evidence) needs repository settings screenshots, not code. GOV-19's provenance for native packages is tracked in Plan 1's self-review.
 
-**Type consistency:** `tracked_files() -> list[str]` (Task 1) is used by every test in that file. `EXC-002` is written identically in the ADR (Task 3 Step 2), the exception register (Step 3) and the ledger rows (Step 4). Task 8 depends on Task 3 having already added the fifteen `excepted` rows — run them in order.
+**Type consistency:** `tracked_files() -> list[str]` (Task 1) is used by every test in that file. `EXC-003` is written identically in the ADR (Task 3 Step 2), the exception register (Step 3) and the ledger rows (Step 4). Task 8 depends on Task 3 having already added the fifteen `excepted` rows — run them in order.
