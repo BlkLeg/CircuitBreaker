@@ -156,3 +156,127 @@ func TestRun_PrintsPairingCodeAndReturnsOnActive(t *testing.T) {
 		t.Fatalf("Run() error = %v, want nil (status=active)", err)
 	}
 }
+
+// upgradeAndStall accepts the websocket upgrade and then does nothing at all,
+// which is what a server wedged behind its own dependency looks like from the
+// agent: the TCP connect and the HTTP upgrade both succeed, and the Noise
+// response never comes.
+func upgradeAndStall(t *testing.T) *httptest.Server {
+	t.Helper()
+	upgrader := websocket.Upgrader{}
+	stop := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		<-stop
+	}))
+	t.Cleanup(func() { close(stop); srv.Close() })
+	return srv
+}
+
+// TestRun_StalledServerDoesNotBlockForever is the enroll-side twin of the
+// defect internal/link already fixed (see its handshakeTimeout): gorilla's
+// ReadMessage has no deadline of its own, so a server that upgrades and then
+// says nothing left Run blocked in one read with nothing able to recover it.
+// runDaemon calls Run on *every* start before it reaches the link, the spool
+// or the status writer, so the whole daemon hung there — no error, no restart,
+// no telemetry, and nothing in the journal to explain it.
+func TestRun_StalledServerDoesNotBlockForever(t *testing.T) {
+	_, serverPub := generateTestKeypair(t)
+
+	previous := handshakeTimeout
+	handshakeTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { handshakeTimeout = previous })
+
+	srv := upgradeAndStall(t)
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	key, err := LoadOrCreateDeviceKey(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+	cfg := &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])}
+
+	done := make(chan error, 1)
+	go func() { done <- Run(cfg, key, "0.1.0-test") }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Run() = nil, want an error when the server never answers the handshake")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() never returned: the handshake read has no deadline")
+	}
+}
+
+// TestRun_ApprovalMayTakeLongerThanTheHandshakeDeadline guards the other
+// direction. Waiting for a human to press Approve is legitimately unbounded,
+// so the deadline that bounds the handshake must be cleared once the server
+// has proved it is answering — otherwise this fix would break the enrollment
+// it is meant to protect.
+func TestRun_ApprovalMayTakeLongerThanTheHandshakeDeadline(t *testing.T) {
+	serverPriv, serverPub := generateTestKeypair(t)
+
+	previous := handshakeTimeout
+	handshakeTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { handshakeTimeout = previous })
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		responder := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			return
+		}
+		if err := conn.WriteMessage(websocket.BinaryMessage, msg2); err != nil {
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+
+		pairing := map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"agent_id": 1, "pairing_code": "ABCD-EFGH-JKMN"},
+		}
+		pairingBytes, _ := json.Marshal(pairing)
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(pairingBytes))
+
+		// The operator takes their time. Comfortably longer than the
+		// (shortened) handshake deadline.
+		time.Sleep(4 * handshakeTimeout)
+
+		final := map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"agent_id": 1, "status": "active"},
+		}
+		finalBytes, _ := json.Marshal(final)
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(finalBytes))
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	key, err := LoadOrCreateDeviceKey(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+	cfg := &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])}
+
+	if err := Run(cfg, key, "0.1.0-test"); err != nil {
+		t.Fatalf("Run() error = %v, want nil — a slow approval is not a timeout", err)
+	}
+}

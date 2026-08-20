@@ -24,6 +24,21 @@ import (
 // stdout, and blocks until the server reports the agent is no longer
 // pending. Returns nil once status is "active" (caller proceeds to
 // internal/link.Run); returns an error for "rejected" or "revoked".
+// handshakeTimeout bounds the reads that happen before the server has proved
+// it is answering: the Noise handshake response, and the first frame after our
+// hello. gorilla's ReadMessage carries no deadline of its own, so a server
+// that accepts the upgrade and then stalls — wedged behind its own database,
+// or on the far side of a connection that went half-open — left Run blocked in
+// one read with nothing able to recover it. internal/link fixed exactly this
+// (see its own handshakeTimeout); enroll did not, and runDaemon calls Run on
+// every start before it reaches the link, the spool or the status writer, so
+// the whole daemon hung there silently.
+//
+// It is deliberately NOT the bound on waiting for approval: that wait is a
+// human pressing a button and is legitimately unbounded, so the deadline is
+// cleared as soon as the first frame arrives. A var so tests can shrink it.
+var handshakeTimeout = 10 * time.Second
+
 func Run(cfg *config.Config, key *DeviceKey, agentVersion string) error {
 	remotePub, err := hex.DecodeString(cfg.ServerStaticPK)
 	if err != nil || len(remotePub) != 32 {
@@ -58,6 +73,7 @@ func Run(cfg *config.Config, key *DeviceKey, agentVersion string) error {
 		return fmt.Errorf("enroll: send handshake message: %w", err)
 	}
 
+	_ = conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
 	_, msg2, err := conn.ReadMessage()
 	if err != nil {
 		return fmt.Errorf("enroll: read handshake response: %w", err)
@@ -84,11 +100,19 @@ func Run(cfg *config.Config, key *DeviceKey, agentVersion string) error {
 	fmt.Printf("device fingerprint: %s\n", fp)
 	fmt.Println("compare this fingerprint against the one shown on the approval screen")
 
+	// Still bounded: the server owes us its first frame promptly, whether that
+	// is the pairing code for a new device or the immediate status=active an
+	// already-enrolled agent gets on every daemon start. Cleared below, once
+	// that frame arrives.
+	_ = conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
 	for {
 		_, ct, err := conn.ReadMessage()
 		if err != nil {
 			return fmt.Errorf("enroll: connection closed while awaiting approval: %w", err)
 		}
+		// The server is answering. Everything from here on waits on a human,
+		// so no deadline applies.
+		_ = conn.SetReadDeadline(time.Time{})
 		pt, err := session.Decrypt(ct)
 		if err != nil {
 			return fmt.Errorf("enroll: %w", err)
