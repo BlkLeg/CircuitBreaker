@@ -31,6 +31,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install pytest pytest-timeout requests
 
+      # BLOCKING-2/6: GOV-12 untracked apps/agent/e2e/.env and replaced it
+      # with .env.example, but nothing recreated it. Every test in the suite
+      # shells out to `docker compose -f apps/agent/e2e/docker-compose.yml`,
+      # which `extends` the repo-root compose file and so has to interpolate
+      # its ${VAR:?...} guards from that .env — without it even `config` exits
+      # 1 ("required variable CB_DB_PASSWORD is missing a value"), before a
+      # single container is built. conftest.py's autouse fixture runs this same
+      # helper, so a local `pytest` needs no preceding ritual; running it here
+      # as well means the file also exists for the non-pytest parts of this job
+      # and that a template problem fails on a step that names itself rather
+      # than 40 minutes into the journey. `config` is the smoke check that the
+      # materialised file actually satisfies every guard.
+      - name: Materialise the e2e env file
+        run: |
+          cd apps/agent/e2e
+          python ensure_env.py
+          docker compose -f docker-compose.yml config >/dev/null
+
       # REL-20: a recorded seed is what makes a failed run reproducible.
       - name: Run the composed journey
         env:
