@@ -170,7 +170,7 @@ def forwarded_base_url(conn: Any) -> str:
 
     That is not cosmetic for an agent: it derives its websocket scheme by
     string-replacing `http` with `ws` (`internal/enroll` and `internal/link`),
-    so an `http://` base URL points it at `ws://` in the clear, where the
+    so an `http://` base URL points it at `ws://` in the clear, where the  # nosemgrep
     `tls_pin` the same response just issued is never checked and nginx's
     redirect-to-https is not something a websocket dialer follows.
 
