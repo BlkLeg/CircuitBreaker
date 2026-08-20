@@ -228,6 +228,36 @@ def configure_runtime(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # SRV-05: `cb config validate` on native and binary installs reaches the
+    # validator through this flag.  Handled before argument parsing and before
+    # anything binds a port, creates a directory or runs a migration, so
+    # validating a broken config cannot itself fail on the very dependency it
+    # is meant to be checking.  It also returns before the load_config_toml()
+    # call below, which is why app.cli does that merge itself — returning early
+    # without it would have the validator judge a configuration the server
+    # never runs with.  An explicit --config <file>.toml is forwarded so both
+    # read the same file.
+    arguments = sys.argv[1:] if argv is None else argv
+    if "--config-validate" in arguments:
+        from app.cli import main as cli_main
+
+        cli_args = ["config", "validate"]
+        toml_override: str | None = None
+        for index, item in enumerate(arguments):
+            if item == "--config" and index + 1 < len(arguments):
+                candidate = arguments[index + 1]
+            elif item.startswith("--config="):
+                candidate = item.split("=", 1)[1]
+            else:
+                continue
+            # configure_runtime() reads --config as the YAML-ish native config;
+            # only the .toml form is what load_config_toml() would have used.
+            if candidate.endswith(".toml"):
+                toml_override = candidate
+        if toml_override:
+            cli_args += ["--config", toml_override]
+        return cli_main(cli_args)
+
     args = build_parser().parse_args(argv)
     if args.version:
         print(resolve_app_version())
