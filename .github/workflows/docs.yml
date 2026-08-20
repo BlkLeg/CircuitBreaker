@@ -60,7 +60,12 @@ jobs:
 
   links:
     name: Link check
-    runs-on: ubuntu-22.04
+    # 24.04, not the 22.04 the rest of this file pins: lychee-action downloads a
+    # release binary, and from lychee v0.24.2 that binary is linked against
+    # GLIBC 2.38/2.39. Ubuntu 22.04 ships 2.35, so every invocation died with
+    # "version `GLIBC_2.38' not found" and the action reported it as a link
+    # failure. Nothing in this job is version-sensitive to the runner image.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
 
