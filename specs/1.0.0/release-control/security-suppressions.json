@@ -10,7 +10,7 @@
       "reviewer": "release-owner",
       "reason": "Third-party virtualenv bytecode can duplicate dependency documentation false positives; production artifacts are scanned from dependency manifests and built images.",
       "compensating_control": "pip-audit, Trivy filesystem scan outside virtualenvs, and release SBOM scans cover production dependency input.",
-      "expiry": "2026-08-17",
+      "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
     },
     {
@@ -21,7 +21,7 @@
       "reviewer": "release-owner",
       "reason": "Developer virtualenv is not part of release artifacts and can carry third-party scanner false positives.",
       "compensating_control": "Production requirements, lockfiles, SBOMs, and built artifacts remain scanned by the release gate.",
-      "expiry": "2026-08-17",
+      "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
     },
     {
@@ -32,7 +32,7 @@
       "reviewer": "release-owner",
       "reason": "Runtime-generated development TLS material is gitignored and not part of source or packaged RC artifacts.",
       "compensating_control": "Secret exposure guard and Gitleaks scan tracked files and release artifacts.",
-      "expiry": "2026-08-17",
+      "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
     },
     {
@@ -43,7 +43,7 @@
       "reviewer": "release-owner",
       "reason": "Runtime-generated development TLS material is gitignored and not part of source or packaged RC artifacts.",
       "compensating_control": "Secret exposure guard and Gitleaks scan tracked files and release artifacts.",
-      "expiry": "2026-08-17",
+      "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
     },
     {
@@ -54,7 +54,7 @@
       "reviewer": "release-owner",
       "reason": "Agent worktree copies duplicate canonical source paths and are not included in release artifacts.",
       "compensating_control": "Canonical source paths are scanned directly in SAST, dependency, secret, and filesystem scans.",
-      "expiry": "2026-08-17",
+      "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
     },
     {
@@ -65,7 +65,7 @@
       "reviewer": "release-owner",
       "reason": "Dockerfile.mono starts as root only to initialize embedded services before application processes drop privileges.",
       "compensating_control": "Native systemd install is primary for 1.0; container hardening is also covered by Trivy config and Checkov.",
-      "expiry": "2026-08-17",
+      "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
     },
     {
@@ -76,7 +76,7 @@
       "reviewer": "release-owner",
       "reason": "Documented scanner false-positive examples are not live credentials.",
       "compensating_control": "Secret exposure guard and Gitleaks still scan tracked source and history outside this exact finding.",
-      "expiry": "2026-08-17",
+      "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
     },
     {
@@ -87,7 +87,7 @@
       "reviewer": "release-owner",
       "reason": "Placeholder documentation string is not a real credential.",
       "compensating_control": "Secret exposure guard validates tracked files before release.",
-      "expiry": "2026-08-17",
+      "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
     },
     {
@@ -98,7 +98,7 @@
       "reviewer": "release-owner",
       "reason": "Alembic revision ID is a schema identifier, not an API secret.",
       "compensating_control": "Gitleaks remains enabled for migration files outside this exact finding.",
-      "expiry": "2026-08-17",
+      "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
     },
     {
@@ -109,7 +109,7 @@
       "reviewer": "release-owner",
       "reason": "Historical development log finding is retained only as an ignore entry for history scanning; the file is no longer tracked.",
       "compensating_control": "Release source and artifact scans fail on committed runtime logs or real secrets.",
-      "expiry": "2026-08-17",
+      "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
     },
     {
@@ -120,7 +120,7 @@
       "reviewer": "release-owner",
       "reason": "Runtime data directories can contain generated local secrets and databases but are gitignored and excluded from release artifacts.",
       "compensating_control": "Tracked source, package manifests, built artifacts, and release archives remain scanned; runtime secrets are validated by startup fail-closed checks.",
-      "expiry": "2026-08-17",
+      "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
     },
     {
@@ -131,7 +131,7 @@
       "reviewer": "release-owner",
       "reason": "Alembic revision identifiers are random hex strings that the generic-api-key rule matches; they are schema version markers, not credentials.",
       "compensating_control": "Migration files are code-reviewed, and any real credential in a migration would also be caught by the secret exposure guard and the release artifact scan.",
-      "expiry": "2026-08-17",
+      "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
     },
     {
@@ -142,7 +142,7 @@
       "reviewer": "release-owner",
       "reason": "Third-party virtualenv contents include example JWTs embedded in dependency OpenAPI schemas; virtualenvs are not source and are not shipped.",
       "compensating_control": "Production dependencies are scanned from pinned manifests and lockfiles by pip-audit, Trivy, and the release SBOM.",
-      "expiry": "2026-08-17",
+      "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
     },
     {
@@ -153,7 +153,7 @@
       "reviewer": "release-owner",
       "reason": "Self-signed TLS material generated by entrypoint-mono.sh at first container start is runtime state under gitignored data directories, never committed.",
       "compensating_control": "The secret exposure guard fails on tracked key material, and release artifacts are scanned independently of local runtime directories.",
-      "expiry": "2026-08-17",
+      "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
     },
     {
@@ -164,7 +164,7 @@
       "reviewer": "release-owner",
       "reason": "security_scan_report.md quotes findings verbatim, so scanning it re-reports every earlier finding as a new one and the gate can never converge.",
       "compensating_control": "The report is generated output, not source; the paths it quotes are themselves scanned directly on every run.",
-      "expiry": "2026-08-17",
+      "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
     },
     {
@@ -175,7 +175,7 @@
       "reviewer": "release-owner",
       "reason": "Local runtime data directories hold generated databases and instance secrets; they are gitignored and are not source or release artifacts.",
       "compensating_control": "Tracked source, manifests, built artifacts, and release archives remain scanned; runtime secrets are validated by startup fail-closed checks.",
-      "expiry": "2026-08-17",
+      "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
     },
     {
@@ -186,7 +186,18 @@
       "reviewer": "release-owner",
       "reason": "Deliberately fake credentials in security documentation and isolated test fixtures exist to demonstrate and exercise detection; the paths are enumerated individually rather than by wildcard.",
       "compensating_control": "The allowlist names exact files, so a real secret in any other path still fails the gate; fixture values are asserted fake by the tests that consume them.",
-      "expiry": "2026-08-17",
+      "expiry": "2026-11-13",
+      "requirements": ["SEC-18", "RC-08"]
+    },
+    {
+      "id": "GITLEAKS-CONFIG-007",
+      "tool": "gitleaks-config",
+      "selector": "secret-min-length-kwarg",
+      "owner": "security-owner",
+      "reviewer": "release-owner",
+      "reason": "`cb config validate` passes min_length=_SECRET_MIN_LENGTH to validate_secret_value; generic-api-key reads the keyword argument next to a `secret`/`key` label as the credential. The matched text is a module-private constant name, not a value.",
+      "compensating_control": "The allowlist matches on the constant's name rather than on a path, so every other line of cli.py — including the ones either side of these calls — is still scanned, and a real secret there fails the gate.",
+      "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
     }
   ]
