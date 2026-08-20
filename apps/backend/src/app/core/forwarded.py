@@ -156,3 +156,29 @@ def forwarded_host(conn: Any, default: str = "") -> str:
     if not value:
         return default
     return value.split(",")[0].strip() or default
+
+
+def forwarded_base_url(conn: Any) -> str:
+    """The absolute `scheme://host` an external client used to reach us.
+
+    nginx terminates TLS and proxies to uvicorn over plain HTTP, so
+    `request.url` reports `http` for every request the operator's browser made
+    over `https`. Anything that hands an absolute URL to a *third party* — the
+    agent install command and `/install-agent.sh`, which write it into
+    `/etc/circuit-breaker/agent.toml` as `server_url` — must therefore ask
+    here rather than read `request.url` directly.
+
+    That is not cosmetic for an agent: it derives its websocket scheme by
+    string-replacing `http` with `ws` (`internal/enroll` and `internal/link`),
+    so an `http://` base URL points it at `ws://` in the clear, where the
+    `tls_pin` the same response just issued is never checked and nginx's
+    redirect-to-https is not something a websocket dialer follows.
+
+    Trust is the same as everywhere else in this module: a peer that is not
+    one of our own proxies cannot steer the URL, and gets the real request's
+    scheme and host instead.
+    """
+    url = getattr(conn, "url", None)
+    scheme = forwarded_proto(conn, getattr(url, "scheme", "") or "http")
+    host = forwarded_host(conn, getattr(url, "netloc", "") or "")
+    return f"{scheme}://{host}"

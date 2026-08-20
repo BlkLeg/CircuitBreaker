@@ -213,9 +213,13 @@ def get_install_command(
     db: Annotated[Session, Depends(get_db)],
     _user: Annotated[User, require_role("admin")],
 ) -> Any:
+    from app.core.forwarded import forwarded_base_url
     from app.services import agent_install
 
-    server_url = f"{request.url.scheme}://{request.url.netloc}"
+    # Not `request.url`: nginx terminates TLS and proxies in the clear, so the
+    # raw scheme is http on every https deployment — and this URL is written
+    # into the agent's own config as `server_url`. See forwarded_base_url.
+    server_url = forwarded_base_url(request)
     try:
         return agent_install.build_install_command(db, server_url)
     except ValueError as exc:

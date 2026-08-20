@@ -2152,10 +2152,12 @@ async def favicon_file():
 @app.get("/install-agent.sh", include_in_schema=False)
 def get_install_agent_script(request: Request) -> Response:
     from app.core import agent_crypto
+    from app.core.forwarded import forwarded_base_url
     from app.db.session import SessionLocal
     from app.services import agent_install
 
-    server_url = f"{request.url.scheme}://{request.url.netloc}"
+    # Same reason as GET /api/v1/agents/install-command — see forwarded_base_url.
+    server_url = forwarded_base_url(request)
     with SessionLocal() as db:
         cert = agent_install._active_certificate(db)
         tls_mode, tls_pin = agent_install._tls_mode_and_pin(cert)
