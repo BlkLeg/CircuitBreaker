@@ -246,7 +246,15 @@ def list_audit_logs(
     db: Session = Depends(get_db),
     _: Any = require_role("admin"),
 ) -> LogsResponse:
-    """Admin-only endpoint that returns entries with category='audit'."""
+    """Admin-only endpoint that returns entries with category='audit'.
+
+    DISPOSITION (INC-12): superseded by `GET /logs?category=audit`, which
+    accepts a strict superset of these parameters — this route drops
+    entity_type, entity_id, entity_name, level, severity and search. The
+    /logs/audit *view* in the frontend uses the general route; this one is kept
+    only as an API convenience for existing clients. Tracked for removal under
+    INC-19's orphaned-route dispositions; do not build new callers on it.
+    """
     from datetime import datetime as _dt
 
     _order = Log.timestamp.asc() if sort == "asc" else Log.timestamp.desc()

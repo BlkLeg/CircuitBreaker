@@ -43,9 +43,16 @@ For update actions, you can expand entries to compare previous and current value
 
 ---
 
-## Filter and Search
+## The audit view
 
-Use filters at the top of the page to narrow results:
+**Where:** Administration → Audit Log (`/logs/audit`). Admin only.
+
+The audit view shows entries in the `audit` category only. The filters at the
+ top of the page — time range, action, actor, entity type, severity, and free
+text — all apply to it, and are the same controls the general Logs view uses.
+
+The general **Logs** view at `/logs` shows every category, audit entries
+included.
 
 - **Time range** (Last 1h / 24h / 7d / 30d / All time)
 - **Actor** (a specific user, or all users)
@@ -59,11 +66,23 @@ alongside the timestamp, severity, action, entity, actor, role at the time, and 
 
 ---
 
-## Hash chain and verification
+## Chain integrity
 
-Each audit log entry stores a hash of its content and the previous entry’s hash so entries form a chain. Tampering or reordering breaks the chain. Admins can verify the chain with:
+Audit entries are hash-chained: each entry's stored hash covers the previous
+entry's, so altering or deleting an entry breaks every link after it.
 
-- **API:** `GET /api/v1/admin/audit-log/verify-chain` (admin-only). Returns `valid`, `first_failure_id`, `message`, and `checked_count`. Use this for monitoring or compliance checks.
+The panel above the audit table reports the chain's state on load. When intact
+it is a single line naming how many entries were verified. When broken it names
+the first failing entry and offers **Repair chain**.
+
+Repair relinks the chain from the first failure onward and appends a repair
+record naming the operator and their stated reason. **It does not recover
+altered or deleted entries** — a broken chain is evidence, and repairing it
+removes the signal without restoring the data. Investigate before repairing.
+
+Because repair is deliberately hard to trigger by accident, it requires typing
+`REPAIR_AUDIT_CHAIN` exactly and giving a reason of at least twelve characters.
+Both are recorded.
 
 On PostgreSQL, appends are serialised by an advisory lock, so two concurrent writers cannot fork the chain.
 
