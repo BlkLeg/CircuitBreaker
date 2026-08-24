@@ -42,6 +42,18 @@ ROLE_DEFAULT_SCOPES: dict[str, set[str]] = {
     "admin": {_SCOPE_READ_ALL, _SCOPE_WRITE_ALL, _SCOPE_DELETE_ALL, _SCOPE_ADMIN_ALL},
 }
 
+# What a TOKEN must hold to satisfy a require_role gate. Roles are a user
+# concept; a token carries scopes, so a role gate has to be expressed as a
+# scope check before it can mean anything for a token. The mapping mirrors
+# ROLE_DEFAULT_SCOPES above — the scope each role's default set is defined by —
+# so the two cannot describe different privilege ladders.
+ROLE_SCOPE_REQUIREMENT: dict[str, tuple[str, str]] = {
+    "viewer": ("read", "*"),
+    "demo": ("read", "*"),
+    "editor": ("write", "*"),
+    "admin": ("admin", "*"),
+}
+
 
 def _service_user() -> User:
     """Return a sentinel User for service account (CB_API_TOKEN)."""
@@ -128,14 +140,40 @@ def require_role(*roles: str) -> params.Depends:
     - Service account (user_id=0) and is_superuser bypass all checks.
     - Locked users receive 423 Locked.
     - Insufficient role receives 403 Forbidden.
+    - A scoped token is checked against the role's scope requirement (B1/INC-14).
     """
 
+    # What a TOKEN must hold to satisfy a require_role gate for these roles.
+    # Roles are a user concept; a token carries scopes, so a role gate has to
+    # be expressed as a scope check before it can mean anything for a token.
+    # The mapping mirrors ROLE_DEFAULT_SCOPES — the scope each role's default
+    # set is defined by — so the two cannot describe different ladders.
+    # Uses the LOWEST-ranked accepted role, matching require_role's own
+    # min(allowed_ranks) logic.
+    ranked = sorted(roles, key=lambda r: ROLE_HIERARCHY.get(r, 0))
+    lowest = ranked[0] if ranked else "admin"
+    role_scope = ROLE_SCOPE_REQUIREMENT.get(lowest, ("admin", "*"))
+
     async def _dep(
+        request: HTTPConnection,
         user_id: int | None = Depends(get_optional_user),
         db: Session = Depends(get_db),
     ) -> User:
         if user_id is None:
             raise HTTPException(status_code=401, detail="Authentication required")
+
+        # A request authenticated by a scoped token is limited by that token,
+        # even on role-guarded routes. Without this, scopes narrowed only the
+        # two require_scope checks in the codebase and every token was a
+        # superuser everywhere else (INC-14). token_scopes is None for session
+        # users and for legacy unscoped tokens, so this branch never runs for
+        # them and their behaviour is unchanged.
+        token_scopes = _request_token_scopes(request)
+        if token_scopes is not None and roles:
+            action, resource = role_scope
+            if not has_scope(token_scopes, action, resource):
+                raise HTTPException(status_code=403, detail="Insufficient permissions")
+
         if user_id == 0:
             return _service_user()
         user = db.get(User, user_id)

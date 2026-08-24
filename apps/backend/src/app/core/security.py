@@ -523,6 +523,20 @@ def resolve_optional_user_id_sync(db: Session, request: HTTPConnection) -> int |
         uid = api_token_row.created_by
         if _is_user_accessible(db, uid):
             token_scopes = _normalise_token_scopes(api_token_row.scopes)
+            if token_scopes == ():
+                # D9 back-compat, and INC-04's fix for existing rows.
+                # APIToken.scopes is `mapped_column(JSONB, default=list)`, so every
+                # token created through the UI before scopes were settable stored
+                # [] — not NULL. Treating that as "no scopes granted" is what makes
+                # those tokens 403 on every require_scope route today. None means
+                # "unscoped: fall through to the creating user's own permissions",
+                # which is what they have always effectively had.
+                #
+                # Deliberately NOT done inside _normalise_token_scopes: the
+                # `uid == 0` service-account branch above calls it too, and a
+                # service account has no real creator — inheriting there would
+                # promote an empty-scoped service account to superuser.
+                token_scopes = None
             _session_cache_set(token_hash, uid, token_scopes)
             _set_request_token_scopes(request, token_scopes)
             return uid
