@@ -222,6 +222,16 @@ jobs:
     # unexplainable screenshot diffs.
     container:
       image: mcr.microsoft.com/playwright:v1.62.1-noble
+    # Steps in a container run as root, but the runner mounts its own home at
+    # /github/home and hands it to the job as $HOME — owned by the image's
+    # `pwuser`, not by root. Firefox refuses to start in that situation
+    # ("Running Nightly as root in a regular user's session is not supported"),
+    # which is why all 15 firefox specs failed to launch a browser at all while
+    # chromium, webkit and mobile-chrome passed. /root is root's own directory,
+    # so the ownership check succeeds. This is the workaround Playwright itself
+    # prints in the failure message. Nothing in this job needs $HOME to persist.
+    env:
+      HOME: /root
     steps:
       - uses: actions/checkout@v5
 
