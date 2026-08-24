@@ -4,29 +4,28 @@ import PropTypes from 'prop-types';
 import { useNavigate } from 'react-router-dom';
 import { searchApi } from '../api/client';
 import { useAuth } from '../context/AuthContext.jsx';
-import { canEdit, isAdmin } from '../utils/rbac';
+import { canEdit } from '../utils/rbac';
+import { NAV_GROUPS, canSeeNavItem } from '../data/navigation';
 
 // Navigation items — only honest entries that navigate directly to what they say.
 // Ghost commands (actions that just navigate to a route without applying a filter/action)
 // and the append-only audit-log "clear" command have been removed.
+// Navigation entries are generated from NAV_GROUPS so the palette cannot drift from
+// the menu and the dock — it used to keep its own nine-item list, which omitted
+// eleven destinations and offered a /networks redirect that no longer exists.
+const NAV_COMMANDS = NAV_GROUPS.flatMap((group) =>
+  group.items.map((item) => ({
+    id: `nav-${item.path}`,
+    icon: item.icon,
+    title: `Go to: ${item.label}`,
+    action_url: item.path,
+    navItem: item,
+    navGroup: group,
+  }))
+);
+
 const DEFAULT_ITEMS = [
-  // ── Navigation ──────────────────────────────────────────────────────────────
-  { id: 'nav-hardware', icon: '🖥️', title: 'Go to: Hardware', action_url: '/hardware' },
-  { id: 'nav-compute', icon: '💻', title: 'Go to: Compute', action_url: '/compute-units' },
-  { id: 'nav-services', icon: '🛠️', title: 'Go to: Services', action_url: '/services' },
-  { id: 'nav-networks', icon: '🔗', title: 'Go to: Networks', action_url: '/networks' },
-  { id: 'nav-storage', icon: '💾', title: 'Go to: Storage', action_url: '/storage' },
-  { id: 'nav-map', icon: '🗺️', title: 'Go to: Topology Map', action_url: '/map' },
-  { id: 'nav-logs', icon: '📋', title: 'Go to: Logs', action_url: '/logs' },
-  {
-    id: 'nav-ext',
-    icon: '☁️',
-    title: 'Go to: External / Cloud Nodes',
-    action_url: '/external-nodes',
-  },
-  { id: 'nav-docs', icon: '📄', title: 'Go to: Documentation', action_url: '/docs' },
   // ── Settings ─────────────────────────────────────────────────────────────────
-  { id: 'settings-open', icon: '⚙️', title: 'Go to: Settings', action_url: '/settings' },
   {
     id: 'settings-appearance',
     icon: '🎨',
@@ -201,15 +200,16 @@ function CommandPalette({ isOpen, onClose }) {
   if (!isOpen) return null;
 
   const showDefaults = !query.trim();
-  const visibleDefaultItems = DEFAULT_ITEMS.filter((item) => {
-    if ((item.id.startsWith('settings-') || item.id === 'settings-open') && !canEdit(user)) {
-      return false;
-    }
-    if (item.id === 'nav-logs' && !isAdmin(user)) {
+  const visibleNavCommands = NAV_COMMANDS.filter((cmd) =>
+    canSeeNavItem(cmd.navItem, cmd.navGroup, user)
+  );
+  const visibleSettingsItems = DEFAULT_ITEMS.filter((item) => {
+    if (item.id.startsWith('settings-') && !canEdit(user)) {
       return false;
     }
     return true;
   });
+  const visibleDefaultItems = [...visibleNavCommands, ...visibleSettingsItems];
   const defaultMatches = query.trim()
     ? visibleDefaultItems.filter((item) =>
         item.title.toLowerCase().includes(query.trim().toLowerCase())
@@ -261,7 +261,9 @@ function CommandPalette({ isOpen, onClose }) {
                   onMouseEnter={() => setSelectedIndex(idx)}
                 >
                   {showDefaults ? (
-                    <span className="palette-default-icon">{item.icon}</span>
+                    <span className="palette-default-icon">
+                      {typeof item.icon === 'string' ? item.icon : <item.icon size={15} />}
+                    </span>
                   ) : (
                     <span className={`palette-type-badge palette-type-${item.type}`}>
                       {TYPE_LABELS[item.type] ?? item.type}
