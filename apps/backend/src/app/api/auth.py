@@ -22,13 +22,23 @@ from typing import Annotated, Any
 
 import jwt as _jwt
 import pyotp
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
-from pydantic import BaseModel, model_validator
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
+from pydantic import BaseModel, field_validator, model_validator
 from sqlalchemy.orm import Session
 
 from app.core.auth_cookie import auth_response_with_cookie, clear_auth_cookie_response
 from app.core.rate_limit import get_limit, limiter
-from app.core.rbac import require_role
+from app.core.rbac import effective_scopes, require_role
 from app.core.security import (
     _extract_token,
     create_salted_api_token_hash,
@@ -38,6 +48,7 @@ from app.core.security import (
     require_auth_always,
 )
 from app.core.time import utcnow, utcnow_iso
+from app.core.token_scopes import GRANTABLE_SCOPES, SCOPE_PRESETS
 from app.core.users import auth_backend, fastapi_users
 from app.db.models import APIToken, User
 from app.db.session import get_db
@@ -407,6 +418,21 @@ def force_change_password(
 class CreateAPITokenRequest(BaseModel):
     label: str | None = None
     expires_at: str | None = None  # ISO datetime or None for no expiry
+    # B4 / INC-04: omitted means "the same access I have", NOT [] — an empty
+    # list stored here is exactly what made every UI-created token 403.
+    scopes: list[str] | None = None
+
+    @field_validator("scopes")
+    @classmethod
+    def _check_scopes(cls, v):
+        if v is None:
+            return v
+        from app.core.token_scopes import validate_scopes
+
+        return validate_scopes(v)
+
+
+_SERVICE_ACCOUNT_LABEL_PREFIX = "[Service Account] "
 
 
 class APITokenItem(BaseModel):
@@ -415,6 +441,10 @@ class APITokenItem(BaseModel):
     created_at: str
     expires_at: str | None
     last_used_at: str | None
+    scopes: list[str] = []
+    created_by: int | None = None
+    created_by_name: str | None = None
+    is_service_account: bool = False
 
 
 class CreateAPITokenResponse(BaseModel):
@@ -428,6 +458,13 @@ class CreateServiceAccountRequest(BaseModel):
     label: str | None = None
     scopes: list[str] = ["read:*"]
     expires_at: str | None = None  # ISO datetime or None for no expiry
+
+    @field_validator("scopes")
+    @classmethod
+    def _check_scopes(cls, v):
+        from app.core.token_scopes import validate_scopes
+
+        return validate_scopes(v)
 
 
 @router.post("/service-account", response_model=CreateAPITokenResponse, tags=["auth"])
@@ -522,6 +559,7 @@ def create_api_token(
         token_hash=token_hash,
         label=payload.label,
         created_by=current_user.id,
+        scopes=payload.scopes if payload.scopes else sorted(effective_scopes(current_user)),
         expires_at=expires_at,
     )
     db.add(api_token)
@@ -535,6 +573,20 @@ def create_api_token(
     )
 
 
+@router.get("/scopes", tags=["auth"])
+def list_grantable_scopes(
+    _user: Annotated[User, require_role("admin")],
+) -> dict:
+    """The scopes a token may be granted, and the presets the UI offers."""
+    return {
+        "scopes": [
+            {"scope": scope, "description": description}
+            for scope, description in sorted(GRANTABLE_SCOPES.items())
+        ],
+        "presets": SCOPE_PRESETS,
+    }
+
+
 @router.get("/api-tokens", response_model=list[APITokenItem], tags=["auth"])
 @limiter.limit(lambda: get_limit("auth"))
 def list_api_tokens(
@@ -542,14 +594,22 @@ def list_api_tokens(
     response: Response,
     current_user: Annotated[User, require_role("admin")],
     db: Session = Depends(get_db),
+    scope: str = Query("mine", pattern="^(mine|all)$"),
 ) -> list[APITokenItem]:
-    """List API tokens created by the current user (admin)."""
-    tokens = (
-        db.query(APIToken)
-        .filter(APIToken.created_by == current_user.id)
-        .order_by(APIToken.created_at.desc())
-        .all()
-    )
+    """List API tokens. `scope=all` returns the whole install's inventory."""
+    q = db.query(APIToken)
+    if scope == "mine":
+        q = q.filter(APIToken.created_by == current_user.id)
+    tokens = q.order_by(APIToken.created_at.desc()).all()
+
+    creator_ids = {t.created_by for t in tokens if t.created_by is not None}
+    creators: dict[int, str] = {}
+    if creator_ids:
+        for uid, email, name in db.query(User.id, User.email, User.display_name).filter(
+            User.id.in_(creator_ids)
+        ):
+            creators[uid] = name or email
+
     return [
         APITokenItem(
             id=t.id,
@@ -557,6 +617,10 @@ def list_api_tokens(
             created_at=t.created_at.isoformat() if t.created_at else "",
             expires_at=t.expires_at.isoformat() if t.expires_at else None,
             last_used_at=t.last_used_at.isoformat() if t.last_used_at else None,
+            scopes=list(t.scopes or []),
+            created_by=t.created_by,
+            created_by_name=creators.get(t.created_by),
+            is_service_account=bool(t.label and t.label.startswith(_SERVICE_ACCOUNT_LABEL_PREFIX)),
         )
         for t in tokens
     ]
@@ -571,19 +635,54 @@ def revoke_api_token(
     current_user: Annotated[User, require_role("admin")],
     db: Session = Depends(get_db),
 ) -> None:
-    """Revoke an API token. Only the creating admin can revoke their tokens."""
-    api_token = (
-        db.query(APIToken)
-        .filter(
-            APIToken.id == token_id,
-            APIToken.created_by == current_user.id,
-        )
-        .first()
-    )
+    """Revoke an API token. Any admin may revoke any token."""
+    api_token = db.get(APIToken, token_id)
     if not api_token:
         raise HTTPException(status_code=404, detail="API token not found")
     db.delete(api_token)
     db.commit()
+    from app.core.security import invalidate_token_cache
+
+    invalidate_token_cache()
+
+
+@router.post("/api-tokens/{token_id}/rotate", response_model=CreateAPITokenResponse, tags=["auth"])
+@limiter.limit(lambda: get_limit("auth"))
+def rotate_api_token(
+    request: Request,
+    response: Response,
+    token_id: int,
+    current_user: Annotated[User, require_role("admin")],
+    db: Session = Depends(get_db),
+) -> CreateAPITokenResponse:
+    """Replace a token's secret, keeping its label, scopes and expiry."""
+    old = db.get(APIToken, token_id)
+    if not old:
+        raise HTTPException(status_code=404, detail="API token not found")
+
+    raw_token = secrets.token_urlsafe(32)
+    replacement = APIToken(
+        token_hash=create_salted_api_token_hash(raw_token),
+        label=old.label,
+        created_by=current_user.id,
+        scopes=list(old.scopes or []),
+        expires_at=old.expires_at,
+    )
+    db.add(replacement)
+    db.delete(old)
+    db.commit()
+    db.refresh(replacement)
+
+    from app.core.security import invalidate_token_cache
+
+    invalidate_token_cache()
+
+    return CreateAPITokenResponse(
+        token=raw_token,
+        id=replacement.id,
+        label=replacement.label,
+        expires_at=replacement.expires_at.isoformat() if replacement.expires_at else None,
+    )
 
 
 @router.post("/vault-reset", tags=["auth"])

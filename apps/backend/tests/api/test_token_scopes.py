@@ -100,3 +100,92 @@ async def test_service_account_jwt_with_empty_scopes_is_denied_not_promoted(clie
 async def test_a_normal_session_is_unaffected(client, auth_headers, viewer_headers):
     assert (await client.get("/api/v1/kb/oui", headers=auth_headers)).status_code == 200
     assert (await client.get("/api/v1/kb/oui", headers=viewer_headers)).status_code == 403
+
+
+# ── B2/B3/B4: catalog, presets, validation ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_scope_catalog_is_served_to_admins(client, auth_headers):
+    resp = await client.get("/api/v1/auth/scopes", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert {s["scope"] for s in body["scopes"]} >= {"read:*", "write:telemetry", "*:*"}
+    assert [p["key"] for p in body["presets"]] == [
+        "read_only",
+        "telemetry_ingest",
+        "read_write",
+        "full_access",
+    ]
+
+
+def test_full_access_preset_is_star_star_not_admin_star():
+    from app.core.token_scopes import SCOPE_PRESETS
+
+    full = next(p for p in SCOPE_PRESETS if p["key"] == "full_access")
+    assert full["scopes"] == ["*:*"]
+
+
+def test_catalog_covers_every_scope_the_presets_grant():
+    from app.core.token_scopes import GRANTABLE_SCOPES, SCOPE_PRESETS
+
+    for preset in SCOPE_PRESETS:
+        for scope in preset["scopes"]:
+            assert scope in GRANTABLE_SCOPES, f"{preset['key']} grants uncatalogued {scope}"
+
+
+def test_catalog_matches_the_role_scope_requirements():
+    from app.core.rbac import ROLE_SCOPE_REQUIREMENT
+    from app.core.token_scopes import GRANTABLE_SCOPES
+
+    for action, resource in ROLE_SCOPE_REQUIREMENT.values():
+        assert f"{action}:{resource}" in GRANTABLE_SCOPES
+
+
+@pytest.mark.asyncio
+async def test_service_account_rejects_an_unknown_scope(client, auth_headers):
+    resp = await client.post(
+        "/api/v1/auth/service-account",
+        headers=auth_headers,
+        json={"label": "typo", "scopes": ["read:hardwrae"]},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_service_account_rejects_an_empty_scope_list(client, auth_headers):
+    resp = await client.post(
+        "/api/v1/auth/service-account",
+        headers=auth_headers,
+        json={"label": "empty", "scopes": []},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_api_token_accepts_and_stores_scopes(client, auth_headers, db_session):
+    from app.db.models import APIToken
+
+    resp = await client.post(
+        "/api/v1/auth/api-token",
+        headers=auth_headers,
+        json={"label": "ci", "scopes": ["read:*"]},
+    )
+    assert resp.status_code == 200
+    row = db_session.get(APIToken, resp.json()["id"])
+    assert row.scopes == ["read:*"]
+
+
+@pytest.mark.asyncio
+async def test_api_token_without_scopes_defaults_to_the_creators_scopes(
+    client, auth_headers, db_session
+):
+    from app.db.models import APIToken
+
+    resp = await client.post(
+        "/api/v1/auth/api-token", headers=auth_headers, json={"label": "inherit"}
+    )
+    assert resp.status_code == 200
+    row = db_session.get(APIToken, resp.json()["id"])
+    assert row.scopes, "scopes must not be empty"
+    assert "admin:*" in row.scopes

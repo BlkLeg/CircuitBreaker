@@ -174,6 +174,18 @@ def _session_cache_set(
         _session_cache[token_hash] = (user_id, expiry, scopes)
 
 
+def invalidate_token_cache() -> None:
+    """Drop every cached token resolution.
+
+    Called when a token is rotated or revoked. Coarse on purpose: the cache is
+    keyed by a hash of the raw secret, which the rotation path does not have
+    for the token it is retiring, and a token cache is small enough that
+    rebuilding it costs far less than a revoked credential that still works.
+    """
+    with _session_cache_lock:
+        _session_cache.clear()
+
+
 def invalidate_session_cache(token: str | None = None) -> None:
     """Invalidate session validation cache. Call when a session is revoked.
 
