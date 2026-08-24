@@ -175,12 +175,15 @@ def list_services(node_id: int, db: Session = Depends(get_db)) -> Any:
 
 # ── Standalone relationship deletes (by relation_id) ─────────────────────────
 
-# These use a separate APIRouter to avoid path prefix issues
+# A network link is addressed by its own id, not by the node it hangs off, so it
+# cannot live under this module's "/external-nodes/{node_id}" prefix. Mounted in
+# main.py at the /api/v1 root alongside `router` — INC-05 was this router being
+# defined and never mounted, which made unlinking impossible in the product.
 
-_rel_router = APIRouter(tags=["external-nodes"])
+relations_router = APIRouter(tags=["external-nodes"])
 
 
-@_rel_router.delete("/external-node-networks/{relation_id}", status_code=204)
+@relations_router.delete("/external-node-networks/{relation_id}", status_code=204)
 def unlink_network(
     relation_id: int,
     request: Request,
@@ -197,28 +200,6 @@ def unlink_network(
         user_id=user_id,
         action="external_node_network_unlinked",
         resource=f"external_node_network:{relation_id}",
-        status="ok",
-        severity="warn",
-    )
-
-
-@_rel_router.delete("/service-external-nodes/{relation_id}", status_code=204)
-def unlink_service(
-    relation_id: int,
-    request: Request,
-    db: Session = Depends(get_db),
-    user_id: int | None = Depends(require_write_auth),
-) -> None:
-    try:
-        svc.unlink_service(db, relation_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    log_audit(
-        db,
-        request,
-        user_id=user_id,
-        action="service_external_node_unlinked",
-        resource=f"service_external_node:{relation_id}",
         status="ok",
         severity="warn",
     )

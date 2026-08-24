@@ -1639,6 +1639,15 @@ app.include_router(
     tags=["external-nodes"],
     dependencies=[Depends(require_auth)],
 )
+# Relationship deletes address a link by its own id, so they mount at the API
+# root rather than under /external-nodes/{node_id}. Same auth dependency as the
+# router above — the routes themselves also carry require_write_auth.
+app.include_router(
+    external_nodes.relations_router,
+    prefix=_V1,
+    tags=["external-nodes"],
+    dependencies=[Depends(require_auth)],
+)
 app.include_router(bootstrap.router, prefix=f"{_V1}/bootstrap", tags=["bootstrap"])
 app.include_router(
     catalog.router,

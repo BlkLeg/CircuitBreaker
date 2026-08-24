@@ -91,7 +91,6 @@ _ENTITY_ALIASES = {
     "hardware-connections": "hardware_connection",
     "hardware-clusters": "cluster",
     "services": "service",
-    "service-external-nodes": "service_external_dependency",
     "storage": "storage",
     "networks": "network",
     "external-node-networks": "external_network_link",
