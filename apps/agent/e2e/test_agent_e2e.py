@@ -296,15 +296,78 @@ def _wait_until(predicate, *, timeout=30, interval=1.0):
     raise TimeoutError(f"condition not met within {timeout}s (last error: {last_exc})")
 
 
+def _read_setup_token_from_container() -> str:
+    """The one-time bootstrap setup token, read from inside the container.
+
+    SEC-4 made `/api/v1/bootstrap/initialize` require a token, and the server
+    writes the generated one to `$CB_DATA_DIR/bootstrap-setup-token`
+    (auth_service._write_bootstrap_token_file). That path only means anything
+    *inside* the mono container, where Dockerfile.mono pins CB_DATA_DIR=/data.
+    Reading it from the host — as this helper did — is wrong twice over:
+
+      * `CB_DATA_DIR` is declared in this directory's `.env`, which only the
+        `docker compose` CLI reads. It is never exported into the pytest
+        process, so `os.environ.get("CB_DATA_DIR", "/data")` always fell
+        through to the literal "/data" — a container path resolved against the
+        host. On a CI runner nothing is mounted there, so all 11 tests died on
+        `FileNotFoundError` before their first assertion — and a developer box
+        fares no better: /data there is either absent or a *different*, real
+        deployment's data directory, so the read fails or quietly picks up a
+        foreign token. This never worked anywhere; the composed job simply
+        never got far enough to show it until the httpx fix let collection run.
+      * Correcting the host path to the actual bind mount (`_E2E_DATA_DIR`)
+        would not be enough on its own: the file is 0600 and owned by the
+        container's `breaker` user (uid 1000), so a host-side read would still
+        only succeed for a developer who happens to share that uid, and never
+        for CI's `runner`. That is why this reads the file rather than
+        re-pointing it.
+
+    Asking the container for its own file sidesteps both: the path is correct
+    by construction (resolved from the container's own CB_DATA_DIR, exactly as
+    entrypoint-mono.sh and auth_service do), and `exec` runs as root — the mono
+    runtime deliberately starts as root (Dockerfile.mono) — which can read a
+    breaker-owned 0600 file. No CB_SETUP_TOKEN is injected, so the harness
+    keeps exercising the default generated-token path a real install uses.
+
+    Retried rather than read once: `bootstrap_status` only writes the file on a
+    request that finds an `AppSettings` row, and `_up_server`'s caller waits for
+    the endpoint to return 200, not for that row to exist. The window is short
+    and usually already closed, but it is real.
+    """
+    result: dict[str, str] = {}
+
+    def _read() -> bool:
+        proc = subprocess.run(
+            [
+                *COMPOSE, "exec", "-T", "circuitbreaker",
+                "sh", "-c", 'cat "${CB_DATA_DIR:-/data}/bootstrap-setup-token"',
+            ],
+            cwd=E2E_DIR,
+            capture_output=True,
+            text=True,
+        )
+        token = proc.stdout.strip()
+        if proc.returncode != 0 or not token:
+            raise RuntimeError(
+                f"setup token not readable yet (rc={proc.returncode}): "
+                f"{proc.stderr.strip() or proc.stdout.strip()}"
+            )
+        result["token"] = token
+        return True
+
+    _wait_until(_read, timeout=60)
+    return result["token"]
+
+
 def _bootstrap_admin(client: httpx.Client) -> str:
     status = client.get("/api/v1/bootstrap/status")
     if status.status_code == 200 and status.json().get("needs_bootstrap"):
+        # CB_SETUP_TOKEN still wins when set: it is auth_service's own operator
+        # escape hatch (ensure_bootstrap_token), and honouring it here lets a
+        # run pin a known token without patching the harness.
         setup_token = os.environ.get("CB_SETUP_TOKEN", "").strip()
         if not setup_token:
-            data_dir = Path(os.environ.get("CB_DATA_DIR", "/data"))
-            setup_token = (data_dir / "bootstrap-setup-token").read_text(
-                encoding="utf-8"
-            ).strip()
+            setup_token = _read_setup_token_from_container()
         resp = client.post(
             "/api/v1/bootstrap/initialize",
             json={

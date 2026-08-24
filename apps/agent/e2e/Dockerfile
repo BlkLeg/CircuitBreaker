@@ -1,4 +1,11 @@
-FROM golang:1.22 AS build
+# Kept in lockstep with Dockerfile.mono's agent-builder stage, which is what
+# actually ships the agent. This copy drifted: apps/agent/go.mod moved to
+# `go 1.25.13` (49b20ed1) while this file stayed on the 1.22 it was created
+# with (82f467db), so `go build` here died on "go.mod requires go >= 1.25.13
+# (running go 1.22.12; GOTOOLCHAIN=local)" — a hard failure, since the
+# golang images set GOTOOLCHAIN=local and so will not silently fetch a newer
+# toolchain. -bookworm matches the debian:bookworm-slim runtime stage below.
+FROM golang:1.26-bookworm AS build
 WORKDIR /src
 # Build context is apps/agent (set by the compose file's `build.context: ..`,
 # relative to this Dockerfile's own directory) — COPY paths are relative to
