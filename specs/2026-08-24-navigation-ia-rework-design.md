@@ -288,20 +288,28 @@ default set", which is precisely why `DEFAULT_ORDER` was extended with items
 `ORIGINAL_DOCK_ORDER` did not have — adding a checkbox was the only available lever.
 Keeping the hide-list would preserve the condition that caused the drift.
 
-It is replaced by `dock_items`: an explicit, ordered array of paths.
+It is replaced by `dock_order`: an explicit, ordered array of paths.
+
+**No backend change is required.** `dock_order` already exists end to end and is unused:
+`db/models.py:1307` (`Text`, "JSON array of path strings"), `schemas/settings.py:105` and
+`:375` (read and update), the `parse_dock_order` validator at `:338`, the JSON serializer
+branch in `settings_service.py:138`, and a `dock_order: null` default already sitting in
+`SettingsContext.jsx:31`. No frontend code reads or writes it — it is a dormant field of
+exactly the needed shape, in the same class as the orphaned routes INC-19 tracks. This
+design gives it its first caller rather than adding a second field beside it.
 
 **Read path**, following the legacy-tolerant pattern INC-06 used for plaintext sink
 secrets:
 
-1. `dock_items` is present → use it verbatim, filtered by `canSeeNavItem`.
-2. `dock_items` is absent, but a `dock_hidden_items` value exists → the install predates
+1. `dock_order` is present → use it verbatim, filtered by `canSeeNavItem`.
+2. `dock_order` is absent, but a `dock_hidden_items` value exists → the install predates
    this change. Derive `LEGACY_DOCK_DEFAULTS` minus those hidden paths.
 3. Neither is present → fresh install. Use `DEFAULT_DOCK_ITEMS`.
 
-In cases 2 and 3 the derived list is persisted to `dock_items` on the next save.
+In cases 2 and 3 the derived list is persisted to `dock_order` on the next save.
 
 `LEGACY_DOCK_DEFAULTS` is the current thirteen-item dock set, carried in `navigation.js`
-as migration input only and marked deletable once `dock_items` is universally written.
+as migration input only and marked deletable once `dock_order` is universally written.
 Without it, case 2 would silently drop four icons from the dock of every existing
 install — a preference change nobody asked for, in the name of fixing preferences.
 
@@ -310,7 +318,7 @@ a dated ticket alongside `LEGACY_DOCK_DEFAULTS`.
 
 ### 5.3 Reorder
 
-`dock_items` being ordered gives reorder a real implementation: up/down controls (or
+`dock_order` being ordered gives reorder a real implementation: up/down controls (or
 drag) within `DockSettings`, where the list already renders. This retires two pieces of
 dishonesty — the instruction at `DockSettings.jsx:44` that describes a gesture the dock
 does not support, and the orphaned `GripHorizontal` re-export at `navigation.js:155`.
@@ -377,9 +385,25 @@ with a scope picker, and rotation. None of that fits `ProfileModal`'s personal-t
 and under the old taxonomy the only slot available was "Administration", alongside Docs.
 This design gives INC-14 an address before its implementation has to invent one.
 
-This design does not specify INC-14's page contents. It reserves `/admin/tokens` in Govern
-and requires that the INC-14 work register it in `NAV_GROUPS` rather than adding a
-surface the route-coverage test will reject.
+### 8.1 INC-14's actual state (updated 2026-08-24, after `ecc2bad5`)
+
+INC-14's UI has since landed as `components/settings/AccessTokensManager.jsx` — scope
+catalog, fleet-wide inventory with a mine/all toggle, service-account creation, rotation
+and revocation, all wired to `api/tokens.js`. **It is imported by nothing.** It has no
+route, no Settings tab, and no nav entry.
+
+That is the condition this section was written to prevent, arriving before the rework
+could land. It does not invalidate the design; it changes one task from "reserve an
+address" to "mount an existing component at the address reserved for it."
+
+The component renders a bare `<div>` with no page chrome, so it needs no `embedded` prop
+of the kind `AdminUsersPage` and `KnowledgeBasePage` carry. A thin `AccessTokensPage`
+wrapper supplies the page heading and the `RequireAdmin` guard, and `NAV_GROUPS` gains the
+Govern entry. Its placement as a page rather than a Settings tab follows D2 unchanged:
+tokens are the subject of admin work, not vocabulary that shapes other pages.
+
+This design still does not specify the component's contents — those are INC-14's and are
+already built.
 
 ## 9. Testing
 
@@ -387,7 +411,7 @@ surface the route-coverage test will reject.
 |---|---|---|
 | Route coverage | every authenticated `<Route path>` in `App.jsx` is in exactly one nav group **or** in an explicit `UNLISTED_ROUTES` array with a stated reason | INC-11's `test_update_schemas_match_frontend_editable_columns`, which names its counterpart on both sides |
 | Surface parity | for a given user role, the hamburger and the dock candidate set contain the identical items. Seeded with a **viewer** so the Certificates leak fails if reintroduced | new |
-| Dock migration | a stored legacy `dock_hidden_items` produces the same visible dock as before, and `dock_items` is written through on next save | INC-06's legacy-row handling |
+| Dock migration | a stored legacy `dock_hidden_items` produces the same visible dock as before, and `dock_order` is written through on next save | INC-06's legacy-row handling |
 | Group integrity | every item has a `labelKey`; no path appears in two groups; every icon resolves | new |
 
 `UNLISTED_ROUTES` covers detail routes (`/monitors/:id`, `/agents/:id`,
@@ -418,8 +442,8 @@ against `NAV_ITEMS`; both are updated to `NAV_GROUPS` and to the new group names
 |---|---|
 | `apps/frontend/src/data/navigation.js` | rewritten as the single source; `NAV_GROUPS`, `canSeeNavItem`, derived exports; `ORIGINAL_DOCK_ORDER`/`DEFAULT_ORDER` gone; stale comment at `:24` and `GripHorizontal` export at `:155` removed |
 | `apps/frontend/src/components/Header.jsx` | renders `NAV_GROUPS`; local RBAC filter at `:36-49` replaced by `canSeeNavItem` |
-| `apps/frontend/src/components/MacOSDOCK.jsx` | membership derived; local RBAC at `:113-120` replaced; `dock_items` read path; behavior unchanged |
-| `apps/frontend/src/components/settings/DockSettings.jsx` | grouped list, reorder controls, `dock_items` write path, corrected hint at `:44` |
+| `apps/frontend/src/components/MacOSDOCK.jsx` | membership derived; local RBAC at `:113-120` replaced; `dock_order` read path; behavior unchanged |
+| `apps/frontend/src/components/settings/DockSettings.jsx` | grouped list, reorder controls, `dock_order` write path, corrected hint at `:44` |
 | `apps/frontend/src/components/settings/SettingsNav.jsx` | `users` tab descriptor removed |
 | `apps/frontend/src/pages/SettingsPage.jsx` | `AdminUsersPage` import and `activeTab === 'users'` branch at `:1762` removed |
 | `apps/frontend/src/components/CommandPalette.jsx` | nav entries generated from `NAV_GROUPS`; lucide icons; `/networks` entry gone |
@@ -427,8 +451,8 @@ against `NAV_ITEMS`; both are updated to `NAV_GROUPS` and to the new group names
 | `apps/frontend/src/__tests__/intel-nav.test.js` | updated to `NAV_GROUPS` |
 | `apps/frontend/src/__tests__/nav-coverage.test.js` | new — route coverage, surface parity, group integrity |
 | `apps/frontend/src/__tests__/dock-migration.test.js` | new — legacy preference migration |
-| backend settings schema | `dock_items` added; `dock_hidden_items` retained one release |
-| `docs/settings.md` | dock preferences section updated for reorder and `dock_items` |
+| *(no backend change)* | `dock_order` already exists unused; this design is its first caller |
+| `docs/settings.md` | dock preferences section updated for reorder and `dock_order` |
 
 ## 12. Sequencing
 
@@ -438,5 +462,6 @@ land **after** INC-10's UI merges and **before** INC-14 begins, so INC-14 regist
 has to be moved.
 
 If that ordering is not available, §3 (source of truth) and §4 (taxonomy) can land
-independently of §5.2 (dock storage migration), which is the only part carrying a schema
-change.
+independently of §5.2 (dock preference migration). Since §5.2 turned out to need no
+backend change — `dock_order` already exists — there is no schema work gating any part of
+this, and the split is purely one of review size.
