@@ -17,6 +17,11 @@ import FormModal from '../components/common/FormModal';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import { useToast } from '../components/common/Toast';
 import { useSettings } from '../context/SettingsContext';
+import {
+  ALERT_SEVERITY_ANY,
+  ALERT_SEVERITY_OPTIONS,
+  alertSeverityLabel,
+} from '../lib/alertSeverity';
 
 const PROVIDER_ICONS = {
   slack: <MessageSquare size={16} className="tw-text-cb-primary" />,
@@ -24,6 +29,11 @@ const PROVIDER_ICONS = {
   teams: <MessageSquare size={16} className="tw-text-cb-primary" />,
   email: <Mail size={16} className="tw-text-cb-primary" />,
 };
+
+// The route field is a floor, not an exact match — say so where it is set,
+// because the old dispatcher behaved the other way round (INC-03).
+const SEVERITY_HINT =
+  'A floor, not an exact match: a route set to Warning also receives Critical alerts.';
 
 const SEVERITY_COLORS = {
   info: 'tw-text-blue-500',
@@ -280,8 +290,8 @@ function NotificationsPage() {
         key: 'alert_severity',
         label: 'Severity Threshold',
         render: (v) => (
-          <span className={`tw-font-bold tw-uppercase tw-text-xs ${SEVERITY_COLORS[v] || ''}`}>
-            {v === '*' ? 'ALL EVENTS' : v}
+          <span className={`tw-font-bold tw-text-xs ${SEVERITY_COLORS[v] || ''}`}>
+            {alertSeverityLabel(v)}
           </span>
         ),
       },
@@ -307,12 +317,8 @@ function NotificationsPage() {
         name: 'alert_severity',
         label: 'Minimum Severity',
         type: 'select',
-        options: [
-          { value: '*', label: 'All Events (*)' },
-          { value: 'info', label: 'Info' },
-          { value: 'warning', label: 'Warning' },
-          { value: 'critical', label: 'Critical Only' },
-        ],
+        options: ALERT_SEVERITY_OPTIONS,
+        hint: SEVERITY_HINT,
         required: true,
       },
       { name: 'enabled', label: 'Enabled', type: 'checkbox', defaultValue: true },
@@ -497,7 +503,7 @@ function NotificationsPage() {
         open={showRouteForm}
         title="Add Routing Rule"
         fields={routeFields}
-        initialValues={{ alert_severity: '*', enabled: true }}
+        initialValues={{ alert_severity: ALERT_SEVERITY_ANY, enabled: true }}
         onSubmit={handleRouteSubmit}
         onClose={() => setShowRouteForm(false)}
       />

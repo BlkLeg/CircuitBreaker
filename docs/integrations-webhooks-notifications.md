@@ -46,13 +46,18 @@ webhook URLs along with every other secret.
 
 ### Routes
 
-Routes connect a sink to a severity: `info`, `warning`, `critical`, or `*` for all of them. A sink with no
-route receives nothing.
+Routes connect a sink to a **minimum** severity — a floor, not an exact match. A route set to
+`warning` receives warning *and* critical alerts; `critical` receives critical only; `info` receives
+everything on the ladder; `*` receives every event regardless. A sink with no route receives nothing.
+
+An alert whose severity is not one of `info` / `warning` / `critical` is treated as critical, so it
+reaches every route rather than being dropped.
 
 ## Troubleshooting
 
 - Verify the destination URL (or recipient address) on the sink.
-- Confirm a route exists for the severity you expect, and that both sink and route are enabled.
+- Confirm a route exists whose minimum severity is at or below the one you expect, and that both
+  sink and route are enabled.
 - Use the sink's **Test** action and read the error it returns — this is the only delivery diagnostic; there
   is no delivery log or history view. **Test** sends down the same path as a real alert, so a green
   test means delivery works.

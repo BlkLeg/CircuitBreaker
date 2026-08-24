@@ -3,6 +3,11 @@ import React, { useState, useEffect, useCallback } from 'react';
 import PropTypes from 'prop-types';
 import { Trash2, Play, Plus, ChevronDown, ChevronUp } from 'lucide-react';
 import api from '../../api/client';
+import {
+  ALERT_SEVERITY_ANY,
+  ALERT_SEVERITY_OPTIONS,
+  alertSeverityLabel,
+} from '../../lib/alertSeverity';
 
 const PROVIDER_TYPES = ['slack', 'discord', 'teams', 'email'];
 const PROVIDER_LABELS = {
@@ -11,7 +16,6 @@ const PROVIDER_LABELS = {
   teams: 'Microsoft Teams',
   email: 'Email (SMTP)',
 };
-const SEVERITIES = ['*', 'info', 'warning', 'critical'];
 
 function providerIcon(type) {
   const icons = { slack: '💬', discord: '🎮', teams: '🟦', email: '✉️' };
@@ -61,7 +65,7 @@ function SinkRow({ sink, routes, onRefresh }) {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [showRoutes, setShowRoutes] = useState(false);
-  const [newSeverity, setNewSeverity] = useState('*');
+  const [newSeverity, setNewSeverity] = useState(ALERT_SEVERITY_ANY);
   const [addingRoute, setAddingRoute] = useState(false);
 
   const sinkRoutes = routes.filter((r) => r.sink_id === sink.id);
@@ -139,7 +143,7 @@ function SinkRow({ sink, routes, onRefresh }) {
             {PROVIDER_LABELS[sink.provider_type] || sink.provider_type}
             {sinkRoutes.length > 0 && (
               <span style={{ marginLeft: 8, color: 'var(--color-primary)' }}>
-                {sinkRoutes.map((r) => r.alert_severity).join(', ')}
+                {sinkRoutes.map((r) => alertSeverityLabel(r.alert_severity)).join(', ')}
               </span>
             )}
           </div>
@@ -218,7 +222,7 @@ function SinkRow({ sink, routes, onRefresh }) {
                   }}
                 >
                   <span style={{ color: 'var(--color-primary)' }}>
-                    {r.alert_severity === '*' ? 'All severities' : r.alert_severity}
+                    {alertSeverityLabel(r.alert_severity)}
                   </span>
                   <button
                     className="btn btn-danger btn-sm"
@@ -238,9 +242,9 @@ function SinkRow({ sink, routes, onRefresh }) {
               onChange={(e) => setNewSeverity(e.target.value)}
               style={{ flex: 1, fontSize: 12 }}
             >
-              {SEVERITIES.map((s) => (
-                <option key={s} value={s}>
-                  {s === '*' ? '* (all)' : s}
+              {ALERT_SEVERITY_OPTIONS.map((severity) => (
+                <option key={severity.value} value={severity.value}>
+                  {severity.label}
                 </option>
               ))}
             </select>

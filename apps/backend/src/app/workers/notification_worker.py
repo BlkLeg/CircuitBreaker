@@ -16,6 +16,7 @@ from app.db.models import NotificationRoute
 from app.db.session import SessionLocal
 from app.services.credential_vault import get_vault
 from app.services.notification_secrets import decrypt_config
+from app.services.notification_severity import route_matches
 
 logger = logging.getLogger(__name__)
 
@@ -249,11 +250,23 @@ async def process_alert(msg: Any) -> None:
         return
 
     dispatch_tasks: list[tuple[str, dict[str, Any], int | None]] = []
+    # A sink is posted to once per alert however many routes select it. Under
+    # exact matching at most one route per sink could match; a floor means
+    # several can, and operators who worked around INC-03 by adding one route
+    # per severity have exactly that. `_is_duplicate` keys on the alert, not on
+    # the sink, so it would not catch this.
+    claimed_sink_ids: set[int] = set()
     with SessionLocal() as db:
         routes = db.query(NotificationRoute).filter(NotificationRoute.enabled).all()
         for route in routes:
-            if route.alert_severity == severity or route.alert_severity == "*":
+            # A route's severity is a floor, not an exact match: a route set to
+            # info must also receive warning and critical (INC-03).
+            if route_matches(route.alert_severity, severity):
                 sink_id = getattr(route.sink, "id", None)
+                if sink_id in claimed_sink_ids:
+                    continue
+                if sink_id is not None:
+                    claimed_sink_ids.add(sink_id)
                 try:
                     # Sink credentials are stored encrypted; delivery needs the
                     # plaintext. A sink whose secret cannot be decrypted is

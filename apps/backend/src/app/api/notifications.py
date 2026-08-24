@@ -1,5 +1,5 @@
 import json
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
@@ -71,7 +71,12 @@ class SinkOut(BaseModel):
 
 class RouteCreate(BaseModel):
     sink_id: int
-    alert_severity: str  # info|warning|critical|*
+    # A floor, not an exact match (INC-03) — and a closed set, so a typo is a 422
+    # rather than a route that looks configured and delivers nothing. Spelled as
+    # a Literal so the four values reach the OpenAPI schema; kept in step with
+    # ROUTE_SEVERITIES by test_notification_routes_api.py. RouteOut stays a bare
+    # ``str``: legacy rows still have to serialise.
+    alert_severity: Literal["*", "info", "warning", "critical"]
     enabled: bool = True
 
 

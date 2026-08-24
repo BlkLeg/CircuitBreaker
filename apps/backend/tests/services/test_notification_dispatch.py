@@ -7,74 +7,39 @@ worker loads the vault key, and dispatch receives a decrypted config.
 """
 
 import asyncio
-import json
 from unittest.mock import AsyncMock
 
 import pytest
 
 from app.db.models import NotificationRoute, NotificationSink
-from app.services.notification_secrets import encrypt_config
-
-_SLACK_URL = "https://hooks.slack.com/services/T00000000/B00000000/xoxbSECRETTOKEN"
-
-
-class _KeepOpenSession:
-    """Hand the worker the test's session without letting it close it."""
-
-    def __init__(self, session):
-        self._session = session
-
-    def __enter__(self):
-        return self._session
-
-    def __exit__(self, *_exc):
-        return False
-
-
-class _FakeMsg:
-    def __init__(self, subject: str, payload: dict):
-        self.subject = subject
-        self.data = json.dumps(payload).encode()
+from tests.services.notification_worker_harness import (
+    SLACK_URL,
+    FakeMsg,
+    attach_worker_session,
+    routed_slack_sink,
+)
 
 
 @pytest.fixture
 def worker_db(monkeypatch, db_session, app_cfg):
     """Point the worker's own SessionLocal at the rolled-back test session."""
-    from app.workers import notification_worker
-
-    monkeypatch.setattr(notification_worker, "SessionLocal", lambda: _KeepOpenSession(db_session))
-    monkeypatch.setattr(notification_worker, "_is_duplicate", AsyncMock(return_value=False))
-    return db_session
-
-
-def _routed_slack_sink(db_session) -> NotificationSink:
-    sink = NotificationSink(
-        name="Ops Slack",
-        provider_type="slack",
-        provider_config=encrypt_config("slack", {"webhook_url": _SLACK_URL}),
-        enabled=True,
-    )
-    db_session.add(sink)
-    db_session.flush()
-    db_session.add(NotificationRoute(sink_id=sink.id, alert_severity="*", enabled=True))
-    db_session.commit()
-    return sink
+    return attach_worker_session(monkeypatch, db_session)
 
 
 @pytest.mark.asyncio
 async def test_dispatch_receives_the_decrypted_webhook_url(worker_db, monkeypatch) -> None:
     from app.workers import notification_worker
 
-    _routed_slack_sink(worker_db)
+    routed_slack_sink(worker_db)
     sent = AsyncMock()
     monkeypatch.setattr(notification_worker, "notify_slack", sent)
 
     await notification_worker.process_alert(
-        _FakeMsg("alert.monitor.down", {"severity": "critical", "title": "Host down"})
+        FakeMsg("alert.monitor.down", {"severity": "critical", "title": "Host down"})
     )
 
     sent.assert_awaited_once()
-    assert sent.await_args.args[0]["webhook_url"] == _SLACK_URL
+    assert sent.await_args.args[0]["webhook_url"] == SLACK_URL
 
 
 @pytest.mark.asyncio
@@ -84,7 +49,7 @@ async def test_dispatch_still_delivers_a_legacy_plaintext_sink(worker_db, monkey
     sink = NotificationSink(
         name="Legacy",
         provider_type="slack",
-        provider_config={"webhook_url": _SLACK_URL},
+        provider_config={"webhook_url": SLACK_URL},
         enabled=True,
     )
     worker_db.add(sink)
@@ -95,10 +60,10 @@ async def test_dispatch_still_delivers_a_legacy_plaintext_sink(worker_db, monkey
     monkeypatch.setattr(notification_worker, "notify_slack", sent)
 
     await notification_worker.process_alert(
-        _FakeMsg("alert.monitor.down", {"severity": "warning", "title": "Flapping"})
+        FakeMsg("alert.monitor.down", {"severity": "warning", "title": "Flapping"})
     )
 
-    assert sent.await_args.args[0]["webhook_url"] == _SLACK_URL
+    assert sent.await_args.args[0]["webhook_url"] == SLACK_URL
 
 
 def test_init_vault_loads_the_key_in_the_worker_process() -> None:
