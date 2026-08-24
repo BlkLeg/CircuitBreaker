@@ -837,3 +837,29 @@
     transition: none;
   }
 }
+
+/* INC-13: server-key rotation panel. Sits between the page header and the
+   add-agent panel; admin-only, and absent entirely when no admin is viewing. */
+.agents-page__key-panel {
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  background: var(--color-surface);
+}
+
+.agents-page__key-panel dl {
+  margin: 0;
+}
+
+.agents-page__key-panel dt {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.agents-page__key-panel dd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}

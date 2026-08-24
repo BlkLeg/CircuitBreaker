@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 import { Satellite } from 'lucide-react';
 import PropTypes from 'prop-types';
 import {
@@ -17,6 +18,7 @@ import { useToast } from '../components/common/Toast';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import AgentApprovalModal from '../components/agents/AgentApprovalModal';
 import AddAgentPanel from '../components/agents/AddAgentPanel';
+import ServerKeyRotationPanel from '../components/agents/ServerKeyRotationPanel';
 import FleetTable from '../components/agents/FleetTable';
 import '../styles/agents.css';
 
@@ -177,6 +179,8 @@ FleetFilters.propTypes = {
 
 export default function AgentsPage() {
   const toast = useToast();
+  const { user } = useAuth();
+  const isAdmin = !!(user?.role === 'admin' || user?.is_admin || user?.is_superuser);
   const [params, setParams] = useSearchParams();
   const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -358,6 +362,8 @@ export default function AgentsPage() {
           {connected ? 'live' : 'reconnecting…'}
         </span>
       </header>
+
+      {isAdmin && <ServerKeyRotationPanel />}
 
       {/* The panel owns its own collapsed state and its own "Add agent" trigger,
           so the page deliberately renders no button of its own here. */}

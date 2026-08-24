@@ -71,6 +71,15 @@ vi.mock('../hooks/useAgentLive', () => ({ useAgentLive: mockUseAgentLive }));
 const mockToast = { success: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() };
 vi.mock('../components/common/Toast', () => ({ useToast: () => mockToast }));
 
+vi.mock('../components/agents/ServerKeyRotationPanel', () => ({
+  default: () => <div data-testid="server-key-rotation-panel" />,
+}));
+
+const mockAuthUser = vi.hoisted(() => ({ value: { role: 'admin' } }));
+vi.mock('../context/AuthContext', () => ({
+  useAuth: () => ({ user: mockAuthUser.value }),
+}));
+
 import { getAgent, getAgentsPresence, getInstallCommand, listAgents } from '../api/agents';
 
 describe('AgentsPage', () => {
@@ -732,4 +741,25 @@ describe('AgentsPage install command errors', () => {
       expect(mockToast.error).toHaveBeenCalledWith('Could not generate an install command')
     );
   });
+});
+
+it('shows the server-key rotation panel to an admin', async () => {
+  render(
+    <MemoryRouter initialEntries={['/agents']}>
+      <AgentsPage />
+    </MemoryRouter>
+  );
+  await waitFor(() => expect(screen.getByTestId('server-key-rotation-panel')).toBeInTheDocument());
+});
+
+it('hides the server-key rotation panel from a non-admin', async () => {
+  mockAuthUser.value = { role: 'viewer' };
+  render(
+    <MemoryRouter initialEntries={['/agents']}>
+      <AgentsPage />
+    </MemoryRouter>
+  );
+  await waitFor(() => expect(screen.getByRole('heading', { name: /agents/i })).toBeInTheDocument());
+  expect(screen.queryByTestId('server-key-rotation-panel')).not.toBeInTheDocument();
+  mockAuthUser.value = { role: 'admin' };
 });
