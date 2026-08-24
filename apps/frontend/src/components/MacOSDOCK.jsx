@@ -4,31 +4,16 @@ import { NavLink, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { useIsMobile } from '../hooks/useIsMobile';
-import { NAV_MAP as ALL_NAV_MAP } from '../data/navigation';
+import { NAV_MAP, canSeeNavItem, resolveDockPaths, NAV_GROUPS } from '../data/navigation';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext';
-import { canEdit, isAdmin } from '../utils/rbac';
 
-export const NAV_MAP = ALL_NAV_MAP;
-export { DEFAULT_ORDER } from '../data/navigation';
-const NAV_ENTRIES = Object.entries(NAV_MAP).map(([path, item]) => ({ path, ...item }));
+export { NAV_MAP };
+export { DEFAULT_DOCK_ITEMS as DEFAULT_ORDER } from '../data/navigation';
 
-const ORIGINAL_DOCK_ORDER = [
-  '/discovery',
-  '/map',
-  '/hardware',
-  '/compute-units',
-  '/services',
-  '/storage',
-  '/networks',
-  '/external-nodes',
-  '/ipam',
-  '/monitors',
-  '/certificates',
-  '/docs',
-  '/logs',
-  '/settings',
-];
+const GROUP_OF = Object.fromEntries(
+  NAV_GROUPS.flatMap((group) => group.items.map((item) => [item.path, group]))
+);
 
 const MOBILE_DOCK_ITEMS = new Set(['/map', '/hardware', '/settings']);
 const DOCK_TRIGGER_ZONE_PX = 100;
@@ -39,10 +24,6 @@ function getWsStatusClass(status) {
   if (status === 'connecting') return 'macos-dock-status--connecting';
   if (status === 'disconnected') return 'macos-dock-status--disconnected';
   return 'macos-dock-status--connected';
-}
-
-function findNavItem(path) {
-  return NAV_ENTRIES.find((entry) => entry.path === path) || null;
 }
 
 function isActivePath(pathname, itemPath) {
@@ -106,33 +87,16 @@ export default function MacOSDOCK({ pendingCount = 0, wsStatus = 'connected' }) 
   }, [isMobile, scheduleHideDock, showDock]);
 
   const dockItems = useMemo(() => {
-    const allowEditor = canEdit(user);
-    const allowAdmin = isAdmin(user);
-    return ORIGINAL_DOCK_ORDER.filter((path) => {
-      if (!findNavItem(path)) return false;
-      if ((path === '/settings' || path === '/ipam') && !allowEditor) {
-        return false;
-      }
-      if (path === '/logs' && !allowAdmin) return false;
-      return true;
-    })
-      .map((path) => {
-        const navItem = findNavItem(path);
-        if (!navItem) return null;
-        return { ...navItem, id: path.replace('/', '') || 'root' };
-      })
-      .filter(Boolean);
-  }, [user]);
+    return resolveDockPaths(settings)
+      .map((path) => NAV_MAP[path])
+      .filter((item) => item && canSeeNavItem(item, GROUP_OF[item.path], user))
+      .map((item) => ({ ...item, id: item.path.replace(/\//g, '-').slice(1) }));
+  }, [settings, user]);
 
-  const hiddenPaths = useMemo(
-    () => new Set(settings?.dock_hidden_items ?? []),
-    [settings?.dock_hidden_items]
+  const visibleItems = useMemo(
+    () => (isMobile ? dockItems.filter((item) => MOBILE_DOCK_ITEMS.has(item.path)) : dockItems),
+    [dockItems, isMobile]
   );
-
-  const visibleItems = useMemo(() => {
-    const filtered = dockItems.filter((item) => !hiddenPaths.has(item.path));
-    return isMobile ? filtered.filter((item) => MOBILE_DOCK_ITEMS.has(item.path)) : filtered;
-  }, [dockItems, hiddenPaths, isMobile]);
 
   return (
     <div

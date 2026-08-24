@@ -246,6 +246,27 @@ export function visibleNavGroups(user) {
   }).filter(Boolean);
 }
 
+/**
+ * The dock's stored membership, newest field first.
+ *
+ * `dock_order` is the ordered list this design writes. `dock_hidden_items` is the
+ * pre-rework hide-list; an install that has one but not the other predates this
+ * change, so it gets the dock it already had (LEGACY_DOCK_DEFAULTS minus whatever it
+ * had hidden) rather than being reset to the smaller default shelf.
+ */
+export function resolveDockPaths(settings) {
+  const order = settings?.dock_order;
+  if (Array.isArray(order)) return order;
+
+  const legacyHidden = settings?.dock_hidden_items;
+  if (Array.isArray(legacyHidden)) {
+    const hidden = new Set(legacyHidden);
+    return LEGACY_DOCK_DEFAULTS.filter((path) => !hidden.has(path));
+  }
+
+  return DEFAULT_DOCK_ITEMS;
+}
+
 /* ── Back-compat shims — removed in Task 9 once no consumer remains ─────────── */
 
 /** @deprecated use NAV_GROUPS */
