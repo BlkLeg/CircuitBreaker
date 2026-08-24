@@ -300,3 +300,40 @@ async def test_export_hostname_format(client, auth_headers, kb_hostname_entry):
     match = next(p for p in patterns if p["pattern"] == "pve")
     assert match["vendor"] == "Proxmox Server Solutions GmbH"
     assert match["match_type"] == "prefix"
+
+
+# ── contract pin ──────────────────────────────────────────────────────────────
+
+
+def test_update_schemas_match_frontend_editable_columns():
+    """Pin what PUT accepts against the frontend's inline-editable column set.
+
+    The counterpart is apps/frontend/src/__tests__/kb-tabs.test.js. INC-17 was
+    exactly this drift — a schema accepting fields nothing stored — so if this
+    fails, change BOTH files rather than only this expectation.
+
+    `match_type` is accepted here but is intentionally NOT inline-editable in
+    the UI: it is an enum, and the inline cell editor is a bare text input.
+    """
+    from app.schemas.kb import KbHostnameUpdate, KbOuiUpdate
+
+    assert sorted(KbOuiUpdate.model_fields) == ["device_type", "os_family", "vendor"]
+    assert sorted(KbHostnameUpdate.model_fields) == [
+        "device_type",
+        "match_type",
+        "os_family",
+        "vendor",
+    ]
+
+
+def test_oui_create_rejects_colon_formatted_prefix():
+    """Why the frontend normalises before sending: the API takes bare hex only."""
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    from app.schemas.kb import KbOuiCreate
+
+    with _pytest.raises(ValidationError):
+        KbOuiCreate(prefix="B8:27:EB", vendor="Raspberry Pi")
+
+    assert KbOuiCreate(prefix="b827eb", vendor="Raspberry Pi").prefix == "B827EB"
