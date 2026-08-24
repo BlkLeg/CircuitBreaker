@@ -1,0 +1,50 @@
+/* INC-12: audit hash-chain integrity, above the audit log table. */
+.audit-chain-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border: 1px solid var(--color-border);
+  border-left-width: 3px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.audit-chain-panel__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.audit-chain-panel--ok {
+  flex-direction: row;
+  align-items: center;
+  border-left-color: var(--color-success, #3fb950);
+}
+
+.audit-chain-panel--bad {
+  border-left-color: var(--color-danger, #f85149);
+}
+
+.audit-chain-panel--error {
+  flex-direction: row;
+  align-items: center;
+  border-left-color: var(--color-warning, #d29922);
+}
+
+.audit-chain-panel__detail {
+  opacity: 0.75;
+}
+
+.audit-chain-panel--ok button,
+.audit-chain-panel--error button,
+.audit-chain-panel__row button:last-child {
+  margin-left: auto;
+}
+
+.audit-chain-panel__note {
+  margin: 0;
+  font-size: 11px;
+  opacity: 0.75;
+}
