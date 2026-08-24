@@ -22,10 +22,11 @@ The Settings area lets you control how Circuit Breaker looks, behaves, and prote
 
 ### The dock
 
-Choose which pages appear in the dock and the order they appear in. The list is grouped
+Choose which pages appear in the dock and the order they appear in. The picker is grouped
 the same way the route menu is — Acquire, Inventory, Observe, Govern, System — and offers
-every destination your role can reach. The dock renders them left to right in the order
-shown, and the up/down controls beside a checked item change that order.
+every destination your role can reach. Ticking a page adds it to the **On the dock** list
+above the picker; that numbered list is the dock, read left to right, and its up/down
+controls are what change the order.
 
 A fresh install starts with nine items: Discovery, Agents, Hardware, Compute, Services,
 Map, Monitors, Logs, and Settings. An installation upgraded from a release before this

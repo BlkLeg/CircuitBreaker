@@ -1,9 +1,15 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { settingsApi } from '../../api/client';
 import { useSettings } from '../../context/SettingsContext';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { NAV_GROUPS, NAV_MAP, canSeeNavItem, resolveDockPaths } from '../../data/navigation';
+import {
+  NAV_GROUPS,
+  canSeeNavItem,
+  navGroupOf,
+  navItem,
+  resolveDockPaths,
+} from '../../data/navigation';
 
 export default function DockSettings() {
   const { settings, reloadSettings } = useSettings();
@@ -12,9 +18,11 @@ export default function DockSettings() {
   const [banner, setBanner] = useState(null);
   // Ordered list of paths currently on the dock.
   const [order, setOrder] = useState([]);
+  // Announced to screen readers after a move; the visible list moves at the same time.
+  const [announcement, setAnnouncement] = useState('');
 
   useEffect(() => {
-    setOrder(resolveDockPaths(settings).filter((path) => Object.hasOwn(NAV_MAP, path)));
+    setOrder(resolveDockPaths(settings).filter((path) => navItem(path) !== null));
   }, [settings]);
 
   const groups = useMemo(
@@ -26,19 +34,40 @@ export default function DockSettings() {
     [user]
   );
 
+  const isShown = useCallback(
+    (path) => {
+      const item = navItem(path);
+      return item !== null && canSeeNavItem(item, navGroupOf(path), user);
+    },
+    [user]
+  );
+
+  /**
+   * The dock as the user will actually see it, left to right. The picker below is
+   * grouped by taxonomy, so position cannot be read off it — this list is where order
+   * lives, and it is the list the up/down controls move things in.
+   */
+  const dockList = useMemo(() => order.filter(isShown).map(navItem), [order, isShown]);
+
   const toggle = (path) => {
     setOrder((prev) => (prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path]));
   };
 
+  /**
+   * Swaps with the adjacent *rendered* neighbour. `order` can hold paths this user
+   * cannot see, so stepping by raw index would silently trade places with a row that
+   * is not on screen.
+   */
   const move = (path, delta) => {
-    setOrder((prev) => {
-      const from = prev.indexOf(path);
-      const to = from + delta;
-      if (from < 0 || to < 0 || to >= prev.length) return prev;
-      const next = [...prev];
-      next.splice(to, 0, next.splice(from, 1)[0]);
-      return next;
-    });
+    const shown = order.filter(isShown);
+    const from = shown.indexOf(path);
+    const to = from + delta;
+    if (from < 0 || to < 0 || to >= shown.length) return;
+    const a = order.indexOf(path);
+    const b = order.indexOf(shown.at(to));
+    const [moved, displaced] = [order.at(a), order.at(b)];
+    setOrder(order.map((p, i) => (i === a ? displaced : i === b ? moved : p)));
+    setAnnouncement(`${navItem(path).label} moved to position ${to + 1} of ${shown.length}.`);
   };
 
   const handleSave = async () => {
@@ -58,9 +87,53 @@ export default function DockSettings() {
   return (
     <div>
       <p style={S.hint}>
-        Choose which pages appear in the dock, and the order they appear in. The dock shows them
-        left to right in the order listed here.
+        Choose which pages appear in the dock below, then arrange them in “On the dock” — that list
+        reads left to right exactly as the dock does.
       </p>
+
+      <div style={S.group}>
+        <div style={S.groupLabel}>On the dock</div>
+        {dockList.length === 0 ? (
+          <p style={S.empty}>Nothing is on the dock. Tick a page below to add it.</p>
+        ) : (
+          <ol style={S.orderedList}>
+            {dockList.map((item, position) => {
+              const Icon = item.icon;
+              return (
+                <li key={item.path} style={S.orderedItem}>
+                  <span style={S.ordinal}>{position + 1}</span>
+                  <Icon size={15} style={{ marginRight: 6, color: 'var(--color-text-muted)' }} />
+                  <span style={{ fontSize: 13 }}>{item.label}</span>
+                  <span style={S.moveGroup}>
+                    <button
+                      type="button"
+                      style={S.moveBtn}
+                      aria-label={`Move ${item.label} up`}
+                      disabled={position === 0}
+                      onClick={() => move(item.path, -1)}
+                    >
+                      <ChevronUp size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      style={S.moveBtn}
+                      aria-label={`Move ${item.label} down`}
+                      disabled={position === dockList.length - 1}
+                      onClick={() => move(item.path, 1)}
+                    >
+                      <ChevronDown size={14} />
+                    </button>
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+        )}
+      </div>
+
+      <div aria-live="polite" style={S.srOnly}>
+        {announcement}
+      </div>
 
       {groups.map((group) => (
         <div key={group.id} style={S.group}>
@@ -68,8 +141,7 @@ export default function DockSettings() {
           <div style={S.list}>
             {group.items.map((item) => {
               const Icon = item.icon;
-              const position = order.indexOf(item.path);
-              const checked = position >= 0;
+              const checked = order.includes(item.path);
               return (
                 <div key={item.path} style={S.item}>
                   <input
@@ -83,28 +155,6 @@ export default function DockSettings() {
                   <label htmlFor={`dock-item-${item.path}`} style={{ fontSize: 13 }}>
                     {item.label}
                   </label>
-                  {checked && (
-                    <span style={S.moveGroup}>
-                      <button
-                        type="button"
-                        style={S.moveBtn}
-                        aria-label={`Move ${item.label} up`}
-                        disabled={position === 0}
-                        onClick={() => move(item.path, -1)}
-                      >
-                        <ChevronUp size={14} />
-                      </button>
-                      <button
-                        type="button"
-                        style={S.moveBtn}
-                        aria-label={`Move ${item.label} down`}
-                        disabled={position === order.length - 1}
-                        onClick={() => move(item.path, 1)}
-                      >
-                        <ChevronDown size={14} />
-                      </button>
-                    </span>
-                  )}
                 </div>
               );
             })}
@@ -155,6 +205,41 @@ const S = {
     width: '100%',
     fontSize: 13,
     padding: '4px 0',
+  },
+  empty: {
+    fontSize: 12,
+    color: 'var(--color-text-muted)',
+    margin: '4px 0 0',
+  },
+  orderedList: {
+    listStyle: 'none',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+    margin: 0,
+    padding: 0,
+  },
+  orderedItem: {
+    display: 'flex',
+    alignItems: 'center',
+    width: '100%',
+    fontSize: 13,
+    padding: '4px 0',
+  },
+  ordinal: {
+    color: 'var(--color-text-muted)',
+    fontSize: 11,
+    fontVariantNumeric: 'tabular-nums',
+    minWidth: 16,
+    marginRight: 8,
+  },
+  srOnly: {
+    position: 'absolute',
+    width: 1,
+    height: 1,
+    overflow: 'hidden',
+    clip: 'rect(0 0 0 0)',
+    whiteSpace: 'nowrap',
   },
   moveGroup: {
     marginLeft: 'auto',

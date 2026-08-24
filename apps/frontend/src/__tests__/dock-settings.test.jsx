@@ -75,4 +75,49 @@ describe('dock settings', () => {
     setup({ dock_order: ['/map'] });
     expect(screen.queryByText(/drag items in the dock/i)).toBeNull();
   });
+
+  const dockRowText = () => screen.getAllByRole('listitem').map((li) => li.textContent);
+
+  // The picker is grouped by taxonomy, so it can never show position. These lock in the
+  // separate ordered list: /map sits in Acquire and /hardware in Inventory, so a taxonomy
+  // rendering would always put Map first no matter what dock_order says.
+  it('lists the dock in stored order, not taxonomy order', () => {
+    setup({ dock_order: ['/hardware', '/map'] });
+    expect(dockRowText()).toEqual(['1Hardware', '2Map']);
+  });
+
+  it('moves the row on screen, not just in the saved payload', async () => {
+    setup({ dock_order: ['/hardware', '/map'] });
+    fireEvent.click(screen.getByLabelText('Move Map up'));
+    expect(dockRowText()).toEqual(['1Map', '2Hardware']);
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(update).toHaveBeenCalled());
+    expect(update.mock.calls[0][0].dock_order).toEqual(['/map', '/hardware']);
+  });
+
+  it('announces the new position for screen readers', () => {
+    setup({ dock_order: ['/hardware', '/map'] });
+    fireEvent.click(screen.getByLabelText('Move Map up'));
+    expect(screen.getByText('Map moved to position 1 of 2.')).toBeTruthy();
+  });
+
+  it('adds and removes rows as the picker is ticked', () => {
+    setup({ dock_order: ['/map'] });
+    expect(dockRowText()).toEqual(['1Map']);
+    fireEvent.click(screen.getByLabelText('Storage'));
+    expect(dockRowText()).toEqual(['1Map', '2Storage']);
+    fireEvent.click(screen.getByLabelText('Map'));
+    expect(dockRowText()).toEqual(['1Storage']);
+  });
+
+  it('says nothing false about where the order is read from', () => {
+    setup({ dock_order: ['/map'] });
+    expect(screen.queryByText(/in the order listed here/i)).toBeNull();
+  });
+
+  it('offers no move controls when the dock is empty', () => {
+    setup({ dock_order: [] });
+    expect(screen.queryAllByRole('listitem')).toHaveLength(0);
+    expect(screen.getByText(/Nothing is on the dock/i)).toBeTruthy();
+  });
 });
