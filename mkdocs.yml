@@ -33,6 +33,7 @@ nav:
       - Auto-Discovery (Beta): discovery.md
       - Knowledge Base: knowledge-base.md
       - cb-agent: agent.md
+      - Agent Key Rotation: agent-key-rotation.md
       - Settings: settings.md
       - Authentication & Access: auth-access.md
       - Webhooks & Notifications: integrations-webhooks-notifications.md
