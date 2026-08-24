@@ -53,3 +53,27 @@ export function validateDuplicateName(name, currentEntities, editingId = null) {
 
   return null;
 }
+
+const MAC_PREFIX_SEPARATORS = /[:\-.\s]/g;
+const SIX_HEX = /^[0-9A-F]{6}$/;
+
+/**
+ * Reduce any conventional MAC or OUI spelling to the six uppercase hex
+ * characters the backend stores. `KbOuiCreate.validate_prefix` rejects
+ * anything else with a 422, so operator input is normalised before it is sent.
+ */
+export function normalizeMacPrefix(input) {
+  if (!input) return '';
+  return String(input).replace(MAC_PREFIX_SEPARATORS, '').toUpperCase().slice(0, 6);
+}
+
+export function isValidMacPrefix(input) {
+  return SIX_HEX.test(normalizeMacPrefix(input));
+}
+
+/** Display-only inverse of normalizeMacPrefix. Never sent to the API. */
+export function formatMacPrefix(prefix) {
+  const raw = String(prefix ?? '');
+  if (!SIX_HEX.test(raw.toUpperCase())) return raw;
+  return raw.toUpperCase().match(/.{2}/g).join(':');
+}
