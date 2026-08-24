@@ -26,10 +26,15 @@ jobs:
         with:
           python-version: "3.12"
 
+      # httpx, not requests: every HTTP call in test_agent_e2e.py and
+      # test_agent_release_gate.py goes through httpx.Client, and `requests` was
+      # installed here but imported by nothing. Collection therefore died on
+      # `ModuleNotFoundError: No module named 'httpx'` before a single container
+      # started, so this job has never got past collection since it was added.
       - name: Install test deps
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-timeout requests
+          pip install pytest pytest-timeout httpx
 
       # BLOCKING-2/6: GOV-12 untracked apps/agent/e2e/.env and replaced it
       # with .env.example, but nothing recreated it. Every test in the suite
