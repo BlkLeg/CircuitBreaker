@@ -48,3 +48,50 @@
   font-size: 11px;
   opacity: 0.75;
 }
+
+/* INC-10: blast radius, alongside VulnerabilityPanel in the detail drawers. */
+.blast-radius-panel {
+  border-top: 1px solid var(--color-border);
+  padding-top: 10px;
+  margin-top: 10px;
+}
+
+.blast-radius-panel__toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: none;
+  border: none;
+  color: inherit;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.blast-radius-panel__count {
+  font-weight: 400;
+  opacity: 0.75;
+  font-size: 12px;
+}
+
+.blast-radius-panel__body {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.blast-radius-panel__group {
+  margin-top: 8px;
+}
+
+.blast-radius-panel__group-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.7;
+}
+
+.blast-radius-panel__status {
+  opacity: 0.6;
+}
