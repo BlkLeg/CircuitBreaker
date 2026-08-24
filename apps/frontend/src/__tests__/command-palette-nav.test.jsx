@@ -1,6 +1,6 @@
 import React from 'react';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 const mockUser = { current: { role: 'admin' } };
@@ -57,5 +57,36 @@ describe('command palette navigation entries', () => {
   it('offers "Go to: Settings" exactly once', () => {
     open({ role: 'admin' });
     expect(screen.getAllByText('Go to: Settings')).toHaveLength(1);
+  });
+});
+
+const sectionLabels = (container) =>
+  [...container.querySelectorAll('.palette-section-label')].map((el) => el.textContent);
+
+describe('command palette section labels', () => {
+  // Spec §7: the group name is rendered as a section label. 21 "Go to:" rows are not
+  // scannable as one flat list.
+  it('heads each nav group once, in NAV_GROUPS order', () => {
+    open({ role: 'admin' });
+    expect(sectionLabels(document.body)).toEqual([
+      'Acquire',
+      'Inventory',
+      'Observe',
+      'Govern',
+      'System',
+      'Settings & Account',
+    ]);
+  });
+
+  it('drops a heading whose whole group the role cannot see', () => {
+    open({ role: 'viewer' });
+    expect(sectionLabels(document.body)).not.toContain('Govern');
+    expect(sectionLabels(document.body)).toContain('Acquire');
+  });
+
+  it('does not group search results, which are ranked by match', () => {
+    open({ role: 'admin' });
+    fireEvent.change(screen.getByLabelText('Search commands'), { target: { value: 'map' } });
+    expect(sectionLabels(document.body)).toEqual([]);
   });
 });

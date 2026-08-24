@@ -4,7 +4,7 @@
     "compute": "コンピュート",
     "services": "サービス",
     "network": "ネットワーク",
-    "external": "外部",
+    "externalNodes": "外部ノード",
     "storage": "ストレージ",
     "map": "マップ",
     "discovery": "検出",

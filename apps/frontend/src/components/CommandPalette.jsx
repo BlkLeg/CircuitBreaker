@@ -24,6 +24,10 @@ const NAV_COMMANDS = NAV_GROUPS.flatMap((group) =>
   }))
 );
 
+// The heading the settings deep-links sit under. Without it they would read as part of
+// whichever nav group happened to be rendered last.
+const SETTINGS_SECTION = 'Settings & Account';
+
 const DEFAULT_ITEMS = [
   // ── Settings ─────────────────────────────────────────────────────────────────
   {
@@ -252,7 +256,15 @@ function CommandPalette({ isOpen, onClose }) {
           {!loading &&
             items.map((item, idx) => {
               const isActive = idx === selectedIndex;
-              return (
+              // Section labels only on the default list: search results are ranked by
+              // match, so grouping them by nav taxonomy would be meaningless. The label
+              // is rendered as a sibling, not a wrapper, so idx keeps addressing items.
+              const section = showDefaults ? (item.navGroup?.label ?? SETTINGS_SECTION) : null;
+              const prevSection = showDefaults
+                ? (items[idx - 1]?.navGroup?.label ?? (idx > 0 ? SETTINGS_SECTION : null))
+                : null;
+              const heading = section && section !== prevSection ? section : null;
+              const button = (
                 <button
                   key={item.id}
                   ref={isActive ? activeItemRef : null}
@@ -274,6 +286,13 @@ function CommandPalette({ isOpen, onClose }) {
                     <span className="palette-item-desc">{item.description}</span>
                   )}
                 </button>
+              );
+              if (!heading) return button;
+              return (
+                <React.Fragment key={item.id}>
+                  <div className="palette-section-label">{heading}</div>
+                  {button}
+                </React.Fragment>
               );
             })}
         </div>

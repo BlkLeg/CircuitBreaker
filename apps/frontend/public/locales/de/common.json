@@ -4,7 +4,7 @@
     "compute": "Compute",
     "services": "Dienste",
     "network": "Netzwerk",
-    "external": "Extern",
+    "externalNodes": "Externe Knoten",
     "storage": "Speicher",
     "map": "Karte",
     "discovery": "Erkennung",
