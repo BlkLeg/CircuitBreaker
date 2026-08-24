@@ -82,8 +82,11 @@ EXPOSE 8000
 USER breaker26:breaker26
 
 # Process runs as breaker26 via entrypoint.sh.
+# /livez, not /health or /readyz: a HEALTHCHECK failure restarts the container, and the
+# only condition that warrants a restart is the process being unable to serve at all.
+# A Postgres or Redis outage means "stop routing to me" (/readyz), not "kill me".
 HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=3 \
-    CMD curl -f http://localhost:8000/api/v1/health || exit 1
+    CMD curl -f http://localhost:8000/api/v1/livez || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["python", "src/app/start.py"]

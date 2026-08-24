@@ -133,3 +133,49 @@ def test_ws_secure_check_ignores_an_untrusted_proto_claim():
         "headers": [(b"x-forwarded-proto", b"https")],
     }
     assert is_websocket_secure(spoofed) is False
+
+
+# ── forwarded_base_url ───────────────────────────────────────────────────────
+#
+# The absolute base URL an external client actually used to reach us. nginx
+# terminates TLS and proxies to uvicorn in the clear, so `request.url` alone
+# always says http — which is how the agent install command came to hand out
+# an http:// server_url on every https deployment.
+
+
+def _conn_with_url(peer: str, scheme: str, netloc: str, **headers) -> object:
+    conn = _conn(peer, **headers)
+    conn.url = SimpleNamespace(scheme=scheme, netloc=netloc)
+    return conn
+
+
+def test_base_url_prefers_the_scheme_a_trusted_proxy_terminated():
+    conn = _conn_with_url("10.0.0.1", "http", "cb.internal:8000", x_forwarded_proto="https")
+    assert core_forwarded.forwarded_base_url(conn) == "https://cb.internal:8000"
+
+
+def test_base_url_prefers_the_host_a_trusted_proxy_was_asked_for():
+    conn = _conn_with_url(
+        "10.0.0.1",
+        "http",
+        "cb.internal:8000",
+        x_forwarded_proto="https",
+        x_forwarded_host="cb.example.com",
+    )
+    assert core_forwarded.forwarded_base_url(conn) == "https://cb.example.com"
+
+
+def test_base_url_ignores_an_untrusted_peers_claim():
+    conn = _conn_with_url(
+        "203.0.113.5",
+        "http",
+        "cb.internal:8000",
+        x_forwarded_proto="https",
+        x_forwarded_host="evil.example.com",
+    )
+    assert core_forwarded.forwarded_base_url(conn) == "http://cb.internal:8000"
+
+
+def test_base_url_falls_back_to_the_real_request_when_no_header_is_sent():
+    conn = _conn_with_url("10.0.0.1", "https", "cb.example.com")
+    assert core_forwarded.forwarded_base_url(conn) == "https://cb.example.com"

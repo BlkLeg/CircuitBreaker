@@ -264,9 +264,27 @@ def validate_exceptions(
             fail(f"exception register missing required fields: {', '.join(missing_fields)}")
         rows = list(reader)
 
-    exception_ids = {row["exception_id"] for row in rows if row.get("exception_id")}
+    # An exception ID is the join key between the register and the ledger, so a
+    # reused ID silently merges two unrelated waivers: the ledger rows still
+    # resolve, the reverse lookup returns whichever row wins, and the rationale
+    # a reviewer reads is not the one that was approved. Reuse has been drafted
+    # at least once (EXC-002 covers RC-07's single-codeowner waiver and was also
+    # written into the npm deferral before it was corrected to EXC-003), so the
+    # collision is checked rather than assumed.
+    id_counts = Counter(row["exception_id"].strip() for row in rows if row.get("exception_id"))
+    duplicate_exception_ids = sorted(
+        exception_id for exception_id, count in id_counts.items() if count > 1
+    )
+    if duplicate_exception_ids:
+        fail(
+            f"{display_path(exceptions_path)}: duplicate exception IDs: "
+            f"{', '.join(duplicate_exception_ids)}. Each exception ID must identify "
+            f"exactly one waiver."
+        )
+
+    exception_ids = {row["exception_id"].strip() for row in rows if row.get("exception_id")}
     referenced_exception_ids = {
-        row["exception_id"] for row in ledger_rows if row.get("exception_id", "").strip()
+        row["exception_id"].strip() for row in ledger_rows if row.get("exception_id", "").strip()
     }
     unknown_references = sorted(referenced_exception_ids - exception_ids)
     if unknown_references:

@@ -136,6 +136,7 @@ import {
   useConnectionStateContext,
 } from '../providers/ConnectionStateProvider';
 import { CONNECTION_LINE_STYLE, DEFAULT_EDGE_OPTIONS } from '../lib/constants';
+import { resolveEnvironmentFilter } from '../lib/environmentFilter';
 
 // ── ReactFlow node/edge type registrations ───────────────────────────────────
 // Both 'iconNode'/'custom' keys registered for backward compat with saved layouts.
@@ -646,11 +647,6 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
   useEffect(() => {
     if (settings && !settingsApplied.current) {
       settingsApplied.current = true;
-      if (settings.default_environment) {
-        // Match default_environment string to an environment id
-        // (will be reconciled after environmentsList loads)
-        setEnvFilter(settings.default_environment);
-      }
       if (settings.map_default_filters && typeof settings.map_default_filters === 'object') {
         const f = settings.map_default_filters;
         if (f.include && typeof f.include === 'object') {
@@ -663,6 +659,25 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
       }
     }
   }, [settings]);
+
+  // AGT-12: default_environment is a NAME, but environment_id is an integer
+  // field server-side, so it cannot be applied until the environments list has
+  // loaded and can map it to an id. This used to assign the raw name inside the
+  // effect above, behind a comment promising a reconciliation that was never
+  // written — so any deployment with a configured default 422'd its map on
+  // load. A name that no longer matches resolves to '' (unfiltered) rather than
+  // failing every graph request.
+  //
+  // Guarded so it only ever seeds the initial value: without the ref it would
+  // fight the user's own selection whenever settings or the list re-resolve.
+  const defaultEnvApplied = useRef(false);
+  useEffect(() => {
+    if (defaultEnvApplied.current) return;
+    if (!settings?.default_environment) return;
+    if (!environmentsList.length) return;
+    defaultEnvApplied.current = true;
+    setEnvFilter(resolveEnvironmentFilter(settings.default_environment, environmentsList));
+  }, [settings, environmentsList]);
 
   useEffect(() => {
     scheduleTagDebounce(tagFilter);
@@ -1842,6 +1857,9 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
             >
               {/* Environment */}
               <select
+                // ACC-10: the visible text is inside <option>, which is not an
+                // accessible name. Nothing labels this control otherwise.
+                aria-label="Filter topology by environment"
                 value={envFilter}
                 onChange={(e) => setEnvFilter(e.target.value ? Number(e.target.value) : '')}
                 style={{
@@ -1863,6 +1881,8 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
 
               {/* Group By */}
               <select
+                // ACC-10: `title` alone does not satisfy axe's select-name.
+                aria-label="Group topology nodes by dimension"
                 value={groupBy}
                 onChange={(e) => setGroupBy(e.target.value)}
                 style={{

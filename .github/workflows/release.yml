@@ -25,6 +25,10 @@ jobs:
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
+      # The parity gate below needs the tree; this job previously had no
+      # checkout because it only ever read the ref name.
+      - uses: actions/checkout@v5
+
       - name: Derive version string
         id: ver
         run: |
@@ -35,6 +39,12 @@ jobs:
             echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
           fi
 
+      # GOV-09: the git tag is not authoritative, VERSION is. Fail before
+      # anything is built if they disagree, rather than shipping artifacts
+      # whose name and contents claim different versions.
+      - name: Assert version parity
+        run: python3 scripts/check_version_parity.py --expected "${{ steps.ver.outputs.version }}"
+
   # ── Build all packages ────────────────────────────────────────────────────────
   build:
     name: Build Packages
@@ -43,10 +53,25 @@ jobs:
     with:
       version: ${{ needs.version.outputs.version }}
 
+  # ── Installed-artifact gate (GOV-20) ─────────────────────────────────────────
+  # Nothing may be published until the exact built candidate has been installed
+  # on a clean host and uninstalled again.
+  artifact-smoke:
+    name: Artifact Smoke
+    needs: [version, build]
+    uses: ./.github/workflows/artifact-smoke.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+
+  # ── Composed agent acceptance (AGT-01) ───────────────────────────────────────
+  composed-e2e:
+    name: Composed Agent E2E
+    uses: ./.github/workflows/e2e.yml
+
   # ── Create GitHub Release + push Docker ──────────────────────────────────────
   release:
     name: Publish Release
-    needs: [version, build]
+    needs: [version, build, artifact-smoke, composed-e2e]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -92,20 +117,71 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | \
             docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # RC-02 claims amd64 AND arm64 for the container channel, but this step
+      # ran a plain `docker build` on an amd64 runner, so the published image
+      # was amd64 only and the support contract promised something that was
+      # never built. Native packages were already dual-arch via build.yml's
+      # ubuntu-22.04 + ubuntu-22.04-arm matrix; only the image was not.
+      #
+      # GOV-20: the tag list comes from scripts/release_channel.py, so a
+      # release candidate cannot move :latest.
       - name: Build and push Docker image
         id: docker_push
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           IMAGE="ghcr.io/blkleg/circuitbreaker"
-          docker build -f Dockerfile.mono \
-            -t "${IMAGE}:${VERSION}" \
-            -t "${IMAGE}:latest" \
+          TAG_ARGS=""
+          for tag in $(python3 scripts/release_channel.py --version "${VERSION}" --field tags); do
+            TAG_ARGS="${TAG_ARGS} -t ${IMAGE}:${tag}"
+          done
+          echo "Publishing tags:${TAG_ARGS}"
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            -f Dockerfile.mono \
+            ${TAG_ARGS} \
+            --provenance=true \
+            --sbom=true \
+            --metadata-file /tmp/build-metadata.json \
+            --push \
             .
-          docker push "${IMAGE}:${VERSION}"
-          docker push "${IMAGE}:latest"
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE}:${VERSION}")
-          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          # The metadata file is buildx's own record of what it pushed, which
+          # is more reliable than re-inspecting by tag: a concurrent push
+          # cannot move it between build and read.
+          DIGEST=$(python3 -c "import json;print(json.load(open('/tmp/build-metadata.json'))['containerimage.digest'])")
+          echo "digest=${IMAGE}@${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      # Prove both architectures are in the published manifest rather than
+      # trusting that --platform did what it was asked.
+      - name: Assert published manifest covers both architectures
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          docker buildx imagetools inspect \
+            "ghcr.io/blkleg/circuitbreaker:${VERSION}" --raw > /tmp/manifest.json
+          python3 - <<'PY'
+          import json, sys
+          index = json.load(open("/tmp/manifest.json"))
+          found = {
+              f"{m['platform']['os']}/{m['platform']['architecture']}"
+              for m in index.get("manifests", [])
+              if "platform" in m and m["platform"].get("architecture") != "unknown"
+          }
+          required = {"linux/amd64", "linux/arm64"}
+          missing = required - found
+          if missing:
+              print(f"::error::published manifest is missing {sorted(missing)}; found {sorted(found)}")
+              sys.exit(1)
+          print(f"manifest covers {sorted(found)}")
+          PY
 
       # SEC-18 claims container vulnerability scanning; before this step the
       # pipeline only ever ran `trivy fs`/`config` over the source tree, so the
@@ -213,9 +289,22 @@ jobs:
         run: |
           # setup.sh kept as backward-compat alias for install.sh
           cp install.sh setup.sh
+
+          # GOV-20: an RC must not become GitHub's "Latest release". The flag
+          # comes from the same tested function that decides the registry tags,
+          # so the two channels can never disagree about what "stable" means.
+          PRERELEASE_FLAG=""
+          if [ "$(python3 scripts/release_channel.py --version "${VERSION}" --field prerelease)" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+            echo "Publishing ${VERSION} as a prerelease"
+          else
+            echo "Publishing ${VERSION} as a stable release"
+          fi
+
           gh release create "v${VERSION}" \
             --title "Circuit Breaker v${VERSION}" \
             --generate-notes \
+            ${PRERELEASE_FLAG} \
             dist/release/* \
             install.sh \
             setup.sh \

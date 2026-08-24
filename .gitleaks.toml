@@ -33,8 +33,22 @@ id = "documented-and-test-fixtures"
 description = "Explicitly fake credentials used in security documentation and isolated test fixtures"
 paths = [
   'SECURITY_PATCHES/scanner_false_positives_2026-03-12\.md$',
-  'apps/agent/e2e/\.env$',
+  # GOV-12 untracked apps/agent/e2e/.env and moved the placeholders into
+  # .env.example, which the anchored `\.env$` pattern no longer matched.
+  # Both are named: the untracked .env still exists in a developer working
+  # tree, and the working tree is what the local gate scans.
+  'apps/agent/e2e/\.env(\.example)?$',
   'apps/backend/tests/services/test_agent_install\.py$',
   'plans/2026-07-27-cb-agent-slice1\.md$',
   'apps/backend/\.dev-data/\.env$',
 ]
+
+# `cb config validate` calls validate_secret_value(_JWT_SECRET_LABEL, jwt_secret,
+# min_length=_SECRET_MIN_LENGTH); generic-api-key sees `secret`/`key` next to an
+# `=` and reports the keyword argument as the credential. This matches on the
+# constant's name rather than on a path, so a real secret anywhere in cli.py --
+# including on the lines either side of these calls -- still fails the gate.
+[[allowlists]]
+id = "secret-min-length-kwarg"
+description = "min_length=_SECRET_MIN_LENGTH is a keyword argument naming a module constant, not a credential"
+regexes = ['_SECRET_MIN_LENGTH']

@@ -152,7 +152,10 @@ export const THEME_PRESETS = {
       surfaceAlt: '#504945',
       border: '#504945',
       text: '#ebdbb2',
-      textMuted: '#a89984',
+      // ACC-10: raised from #a89984, which measured 3.17:1 against surfaceAlt
+      // (#504945) — under the WCAG AA 4.5:1 floor. Kept in step with
+      // --color-text-muted in styles/main.css.
+      textMuted: '#c8bfb0',
       gridLine: 'rgba(254,128,25,0.1)',
     },
     light: {

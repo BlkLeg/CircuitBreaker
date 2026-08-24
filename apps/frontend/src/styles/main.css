@@ -20,7 +20,13 @@
   --color-danger: #fb4934;
   --color-danger-hover: #cc241d;
   --color-text: #ebdbb2;
-  --color-text-muted: #a89984;
+  /* ACC-10: was #a89984, which measured 3.17:1 against --color-border
+     (#504945) — the background used behind table headers and chips — well
+     under the WCAG AA 4.5:1 floor for normal text. #c8bfb0 measures 6.37:1 on
+     --color-secondary and 4.85:1 on --color-border, keeping margin above the
+     threshold rather than sitting on it, and stays clearly dimmer than
+     --color-text (#ebdbb2) so "muted" still reads as muted. */
+  --color-text-muted: #c8bfb0;
   --color-online: #b8bb26;
   --color-success: #b8bb26;
   --color-warning: #d79921;
@@ -787,7 +793,14 @@ body {
 .btn-primary {
   background: rgba(var(--color-primary-rgb), 0.1);
   border-color: rgba(var(--color-primary-rgb), 0.4);
-  color: var(--color-primary);
+  /* ACC-10: the raw primary (#fe8019 in the default theme) measures 3.98:1 on
+     this button's own tinted background — under the WCAG AA 4.5:1 floor for
+     normal text, and .btn-xs renders at 13px. Even a fully transparent fill
+     only reaches 4.59:1, so the fill alpha is not the lever; the text has to
+     lighten. Mixing toward white rather than hardcoding a lighter orange keeps
+     this derived from --color-primary, so custom themes stay themed. 80% mixes
+     to 4.72:1, leaving margin above the threshold rather than sitting on it. */
+  color: color-mix(in srgb, var(--color-primary) 80%, white);
 }
 
 .btn-primary:hover {

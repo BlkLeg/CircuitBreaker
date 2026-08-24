@@ -143,6 +143,16 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The action picks up .gitleaksignore on its own but not .gitleaks.toml
+          # — it only reads a config from GITLEAKS_CONFIG. Without this the job
+          # applied none of the allowlists that validate_security_suppressions.py
+          # governs, so the scheduled full-history run on main reported findings
+          # in paths (plans/, security_scan_report.md, apps/agent/e2e/.env) that
+          # the local gate has an owner, reason, and expiry recorded for. Push
+          # runs scan only the pushed commits, which is why this stayed hidden.
+          # Config only ever adds allowlists, so this cannot mask a new finding
+          # that the local gate would not also allow.
+          GITLEAKS_CONFIG: ${{ github.workspace }}/.gitleaks.toml
 
   checkov:
     name: Checkov (GitHub Actions / IaC)
@@ -178,17 +188,31 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: Install deps and pip-audit
+      # Not .venv: on a developer machine that path is the backend environment
+      # (`make lint` runs .venv/bin/ruff out of it), and a workflow is the
+      # worst place to keep teaching that pattern — it is how semgrep came to
+      # break the backend in security_scan.sh.
+      #
+      # `pip install -e "apps/backend/[dev]"` is gone rather than relocated. No
+      # step consumed it: pip-audit is invoked with -r and reads the
+      # requirements files directly, so it never needs the app importable. All
+      # the install did was put the application's pins in the same environment
+      # as the scanner, where they could move the scanner's own dependencies
+      # underneath it — the exact failure this job should be immune to.
+      - name: Install pip-audit
+        env:
+          AUDIT_VENV: ${{ runner.temp }}/cb-audit-venv
         run: |
-          python3.12 -m venv .venv
-          .venv/bin/pip install --upgrade pip pip-audit
-          .venv/bin/pip install -e "apps/backend/[dev]"
+          python3.12 -m venv "$AUDIT_VENV"
+          "$AUDIT_VENV/bin/pip" install --upgrade pip pip-audit
       # requirements-pg.txt (asyncpg, psycopg2) ships in the PostgreSQL
       # deployment but was audited by nothing — the driver that terminates every
       # database connection was the one dependency set with no CVE coverage.
       - name: Run pip-audit
+        env:
+          AUDIT_VENV: ${{ runner.temp }}/cb-audit-venv
         run: |
-          .venv/bin/pip-audit \
+          "$AUDIT_VENV/bin/pip-audit" \
             -r apps/backend/requirements.txt \
             -r apps/backend/requirements-pg.txt \
             --format=json --output pip-audit-results.json

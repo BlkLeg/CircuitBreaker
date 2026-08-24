@@ -236,3 +236,23 @@ func TestNewDialer_DialsThroughHTTPSProxy(t *testing.T) {
 		t.Errorf("message = %q, want %q", msg, "hello")
 	}
 }
+
+// TestNewDialer_PinnedDialerBoundsTheHandshake pins the timeout that the
+// pinned path silently lost.
+//
+// websocket.DefaultDialer carries HandshakeTimeout: 45s, and gorilla applies
+// it only `if d.HandshakeTimeout != 0`. NewDialer returned a bare
+// &websocket.Dialer{} whenever a pin was configured — so the unpinned
+// fallback was bounded and the path every real deployment takes was not. A
+// half-open connection to the server left `cb-agent enroll` blocked forever
+// with no error, no retry and nothing in the journal.
+func TestNewDialer_PinnedDialerBoundsTheHandshake(t *testing.T) {
+	pinned := NewDialer(strings.Repeat("c", 44))
+	if pinned.HandshakeTimeout == 0 {
+		t.Fatal("pinned dialer has no HandshakeTimeout; a half-open server hangs the agent forever")
+	}
+	if pinned.HandshakeTimeout != websocket.DefaultDialer.HandshakeTimeout {
+		t.Errorf("pinned HandshakeTimeout = %v, want DefaultDialer's %v",
+			pinned.HandshakeTimeout, websocket.DefaultDialer.HandshakeTimeout)
+	}
+}

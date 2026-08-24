@@ -288,6 +288,7 @@ function NetworkDetail({
               >
                 <select
                   className="filter-select"
+                  aria-label="Filter by add compute unit…"
                   value={newComputeId}
                   onChange={(e) => setNewComputeId(e.target.value)}
                   style={{ flex: '1 1 180px' }}
@@ -391,6 +392,7 @@ function NetworkDetail({
               >
                 <select
                   className="filter-select"
+                  aria-label="Filter by add hardware node…"
                   value={newHwId}
                   onChange={(e) => setNewHwId(e.target.value)}
                   style={{ flex: '1 1 180px' }}

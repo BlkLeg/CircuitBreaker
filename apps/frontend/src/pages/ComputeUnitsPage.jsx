@@ -405,6 +405,7 @@ function ComputeUnitsPage() {
         <TagFilter value={tagFilter} onChange={setTagFilter} />
         <select
           className="filter-select"
+          aria-label="Filter by kinds"
           value={kindFilter}
           onChange={(e) => setKindFilter(e.target.value)}
         >
@@ -414,6 +415,7 @@ function ComputeUnitsPage() {
         </select>
         <select
           className="filter-select"
+          aria-label="Filter by environments"
           value={envFilter}
           onChange={(e) => setEnvFilter(e.target.value ? Number(e.target.value) : '')}
         >
@@ -426,6 +428,7 @@ function ComputeUnitsPage() {
         </select>
         <select
           className="filter-select"
+          aria-label="Filter by hardware"
           value={hwFilter}
           onChange={(e) => setHwFilter(e.target.value)}
         >

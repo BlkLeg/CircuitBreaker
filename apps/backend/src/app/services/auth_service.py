@@ -17,6 +17,7 @@ from fastapi import HTTPException, UploadFile
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core import image_policy as _image_policy
 from app.core.config import settings as _settings
 from app.core.rbac import ROLE_DEFAULT_SCOPES
 from app.core.security import create_token, gravatar_hash, hash_password, verify_password
@@ -51,13 +52,11 @@ _DUMMY_HASH: str = _bcrypt.hashpw(b"cb-dummy-not-real", _bcrypt.gensalt(rounds=1
 
 _PROFILES_DIR = Path(_settings.uploads_dir) / "profiles"
 _MAX_PHOTO_BYTES = 5 * 1024 * 1024  # 5 MB
-_ALLOWED_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-_PILLOW_FORMAT_TO_MIME: dict[str, str] = {
-    "JPEG": "image/jpeg",
-    "PNG": "image/png",
-    "GIF": "image/gif",
-    "WEBP": "image/webp",
-}
+# AGT-10: derived, not restated. These were three independent literals (here,
+# and the Pillow-format map below) that happened to agree; a fifth format added
+# to one and not the others would have opened a gap silently.
+_ALLOWED_TYPES = set(_image_policy.SUPPORTED_UPLOAD_MIME_TYPES)
+_PILLOW_FORMAT_TO_MIME: dict[str, str] = dict(_image_policy.PILLOW_FORMAT_TO_MIME)
 _PILLOW_FORMAT_TO_EXT: dict[str, str] = {
     "JPEG": "jpg",
     "PNG": "png",
@@ -1121,9 +1120,15 @@ def _process_avatar(data: bytes) -> tuple[bytes, str]:
 
     from PIL import Image
 
+    from app.core.image_policy import ensure_supported_upload_format
+
     probe = Image.open(io.BytesIO(data))
     probe.verify()  # raises on corrupt or malicious files
-    detected_format = probe.format or "PNG"
+    # AGT-10: the accepted set is ours, not "whatever this Pillow wheel can
+    # decode". Taking probe.format unchecked let the supported formats vary by
+    # architecture and build options — including AVIF, whose plugin is what
+    # crashed the ARM64 package.
+    detected_format = ensure_supported_upload_format(probe.format)
 
     try:
         img = Image.open(io.BytesIO(data))

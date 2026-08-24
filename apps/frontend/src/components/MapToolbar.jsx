@@ -123,7 +123,15 @@ export default function MapToolbar({
         </>
       )}
       <span style={_sep}>Layout:</span>
-      <select value={layout} onChange={(e) => onChange(e.target.value)} style={_selectStyle}>
+      {/* ACC-10: the adjacent "Layout:" text is a plain <span>, not a <label>,
+          so it does not name this control. The two selects below carry a
+          title, which axe accepts; this one carried nothing. */}
+      <select
+        value={layout}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label="Topology layout algorithm"
+        style={_selectStyle}
+      >
         <optgroup label="Standard">
           {standardLayouts.map((l) => (
             <option key={l.id} value={l.id}>
@@ -192,7 +200,14 @@ export default function MapToolbar({
           <button
             style={{
               ..._baseBtn,
-              background: edgeLabelVisible ? 'var(--color-glow)' : 'var(--color-bg)',
+              // ACC-10: --color-glow is the primary at 0.35 alpha, which
+              // composites to #734723 over the page and leaves the #fe8019
+              // label at 3.13:1. At 0.15 the same colour pair measures 4.59:1.
+              // Scoped here rather than changed on --color-glow, which also
+              // drives node halos where it carries no text.
+              background: edgeLabelVisible
+                ? 'rgba(var(--color-primary-rgb), 0.15)'
+                : 'var(--color-bg)',
               color: edgeLabelVisible ? 'var(--color-primary)' : 'var(--color-text-muted)',
               border: edgeLabelVisible
                 ? '1px solid var(--color-primary)'

@@ -27,7 +27,7 @@ The mono image runs nginx inside the container (`docker/nginx.mono.conf`):
 
 | Container port | Behaviour |
 |---|---|
-| `8080` | HTTP. `301` redirects everything to HTTPS, except `/api/v1/health` so the Docker healthcheck still works |
+| `8080` | HTTP. `301` redirects everything to HTTPS, except `/api/v1/health`, `/api/v1/livez`, `/api/v1/readyz` and `/api/v1/startupz`, which are proxied so the Docker healthcheck (which polls `/api/v1/livez`) and plain-HTTP monitoring probes still work |
 | `8443` | HTTPS. Reads `/data/tls/fullchain.pem` and `/data/tls/privkey.pem` |
 
 `docker-compose.yml` publishes those as `${CB_PORT:-80}:8080` and `${CB_PORT_HTTPS:-443}:8443`.

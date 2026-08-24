@@ -1,0 +1,112 @@
+name: Docs
+
+# GOV-01: every Markdown and media target in the published docs is protected by
+# link checking, so a rename or a deleted asset cannot quietly ship a 404.
+# GOV-08: the site must build reproducibly from docs/ + mkdocs.yml alone.
+#
+# This workflow only gates. Publishing stays in pages.yml — GitHub Pages serves
+# one artifact as the whole site, so exactly one workflow may deploy it.
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'README.md'
+      - 'SECURITY.md'
+      - 'CONTRIBUTING.md'
+      - '.lycheeignore'
+      - '.github/workflows/docs.yml'
+  # CONTRIBUTING.md directs pull requests at `dev`, not `main`, so gating only on
+  # `main` would let every docs PR merge without a link check. Matches the
+  # trigger on codeql.yml and security.yml.
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'README.md'
+      - 'SECURITY.md'
+      - 'CONTRIBUTING.md'
+      - '.lycheeignore'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build docs (strict)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # mkdocs.yml uses the built-in `readthedocs` theme and only core markdown
+      # extensions, so plain mkdocs is sufficient. Kept in step with pages.yml,
+      # which builds the artifact that is actually published.
+      - name: Install MkDocs
+        run: pip install 'mkdocs~=1.6'
+
+      # --strict turns a broken nav reference or a missing page into a failure
+      # rather than a warning nobody reads.
+      - name: Build
+        run: mkdocs build --strict
+
+  links:
+    name: Link check
+    # 24.04, not the 22.04 the rest of this file pins: lychee-action downloads a
+    # release binary, and from lychee v0.24.2 that binary is linked against
+    # GLIBC 2.38/2.39. Ubuntu 22.04 ships 2.35, so every invocation died with
+    # "version `GLIBC_2.38' not found" and the action reported it as a link
+    # failure. Nothing in this job is version-sensitive to the runner image.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      # Blocking pass. --offline resolves only file targets, so a docs PR can
+      # be turned red by this repo and by nothing else — no rate limit, no
+      # third-party outage, no flake.
+      #
+      # Fragments (#anchor) are deliberately NOT checked: lychee slugifies
+      # headings GitHub-style, MkDocs slugifies them python-markdown-style, and
+      # they disagree on any heading containing punctuation ("## TLS / HTTPS"
+      # is #tls-https to MkDocs, #tls--https to lychee). Enabling
+      # --include-fragments here reports three false failures against links that
+      # resolve correctly on the published site.
+      - name: Check local links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: >-
+            --no-progress
+            --offline
+            'docs/**/*.md'
+            'README.md'
+            'SECURITY.md'
+            'CONTRIBUTING.md'
+          output: lychee/local.md
+          fail: true
+
+      # Advisory pass. External targets rot on someone else's schedule, so this
+      # reports into the job summary without blocking the PR. Read it when a
+      # docs change lands; do not let it gate one.
+      - name: Check external links (advisory)
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: >-
+            --no-progress
+            --exclude-loopback
+            --max-retries 2
+            'docs/**/*.md'
+            'README.md'
+            'SECURITY.md'
+            'CONTRIBUTING.md'
+          output: lychee/external.md
+          fail: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -12,6 +12,7 @@ venv/
 dist/
 build/
 !tests/build/
+# GOV-08: MkDocs build output. docs/ is canonical; site/ is generated.
 site/
 *.egg-info/
 .pytest_cache/
@@ -44,10 +45,10 @@ docker/.env
 frontend/.env.local
 frontend/.env.*.local
 .env
-# Fake, fixed test credentials required for the e2e harness to `docker
-# compose up` at all (the base compose file's ${VAR:?...} guards) — not a
-# real secret.
-!apps/agent/e2e/.env
+# GOV-12: the e2e harness's own credentials are no longer tracked. The base
+# compose file's ${VAR:?...} guards need apps/agent/e2e/.env to exist, so
+# ensure_env.py regenerates it from .env.example — run by conftest.py's autouse
+# fixture locally and as its own step in e2e.yml. No manual copy is needed.
 # Written per-run by the e2e harness's `_write_agent_toml` (it carries that
 # run's server_static_pk and tls_pin, which are generated fresh by the mono
 # container) and unlinked again in each test's `finally`. Never a source file.
@@ -72,6 +73,10 @@ dump.rdb
 
 # Runtime user data (preserve folder structure via .gitkeep)
 backend/data/uploads/**
+# GOV-12: 24 profile images were tracked here until the v1 cleanup.
+apps/backend/data/uploads/**
+!apps/backend/data/uploads/**/
+!apps/backend/data/uploads/**/.gitkeep
 backend/data/user-icons/**
 !backend/data/user-icons/**/
 !backend/data/user-icons/**/.gitkeep
@@ -108,6 +113,8 @@ Thumbs.db
 
 # IDE
 .idea/
+# GOV-12: generated lint output, not source.
+eslint_output.json
 .vscode/
 .cursor/
 .codex/
@@ -153,3 +160,14 @@ FIXLIST/
 
 # Local reference repo for the monitoring port — never committed
 uptime-kuma/
+
+# Playwright generated output. Visual baselines under
+# apps/frontend/e2e/**/*-snapshots/ ARE tracked — they are reviewed artifacts.
+apps/frontend/playwright-report/
+apps/frontend/test-results/
+
+# GOV-12: shell-quoting accidents. `-H`, `-d` (a captured nginx 301 page)
+# and `=1.9.0` all reached the index this way once already.
+/-H
+/-d
+/=*

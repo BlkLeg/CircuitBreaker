@@ -84,10 +84,44 @@ EOF
 if command -v docker >/dev/null 2>&1; then
   usermod -aG docker cb-agent || true
 fi
-if ! grep -q '^net.ipv4.ping_group_range' /etc/sysctl.conf 2>/dev/null; then
-  echo "net.ipv4.ping_group_range = 0 2147483647" >> /etc/sysctl.conf
-  sysctl -p >/dev/null 2>&1 || true
-fi
+# The agent's ICMP prober opens *datagram* ICMP and holds no CAP_NET_RAW, so it
+# can only send an echo request when the cb-agent group falls inside
+# net.ipv4.ping_group_range. Checking whether a line merely exists was not
+# enough: the kernel default is `1 0`, which disables the feature for everyone,
+# and a host that already carried a narrower range made the installer skip and
+# left every ICMP probe failing for a reason nothing reported.
+#
+# Read the effective value, and widen it only if it does not already cover the
+# agent — as a union, so groups the host already allowed keep their ping. That
+# is also why this no longer opens the range to every group on the machine.
+SYSCTL_CONF="${{SYSCTL_CONF:-/etc/sysctl.conf}}"
+configure_unprivileged_icmp() {{
+  cb_gid="$(getent group cb-agent 2>/dev/null | cut -d: -f3)"
+  [ -n "$cb_gid" ] || return 0
+
+  current="$(sysctl -n net.ipv4.ping_group_range 2>/dev/null || echo "1 0")"
+  low="$(printf '%s' "$current" | awk '{{print $1}}')"
+  high="$(printf '%s' "$current" | awk '{{print $2}}')"
+  case "$low$high" in *[!0-9]*|"") low=1; high=0 ;; esac
+
+  if [ "$low" -le "$high" ] && [ "$cb_gid" -ge "$low" ] && [ "$cb_gid" -le "$high" ]; then
+    return 0
+  fi
+
+  if [ "$low" -gt "$high" ]; then
+    # Disabled: this group becomes the whole range rather than a union with
+    # a sentinel that means "nobody".
+    new_low="$cb_gid"; new_high="$cb_gid"
+  else
+    new_low="$low"; new_high="$high"
+    [ "$cb_gid" -lt "$new_low" ] && new_low="$cb_gid"
+    [ "$cb_gid" -gt "$new_high" ] && new_high="$cb_gid"
+  fi
+
+  echo "net.ipv4.ping_group_range = $new_low $new_high" >> "$SYSCTL_CONF"
+  sysctl -w "net.ipv4.ping_group_range=$new_low $new_high" >/dev/null 2>&1 || true
+}}
+configure_unprivileged_icmp
 
 cat > /etc/systemd/system/cb-agent.service <<'EOF'
 [Unit]
@@ -106,7 +140,13 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# AF_NETLINK is not optional: Go's net.Interfaces() has no /sys fallback on
+# Linux and the neighbour-cache dump (RTM_GETNEIGH) both go over a
+# NETLINK_ROUTE socket. Without it the daemon cannot enumerate its own
+# interfaces, so the derived direct_private scope arrives empty and every
+# discovery target and probe destination is refused before a packet is sent.
+# AF_PACKET stays out — this is a read-only route dump, not raw packet access.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SystemCallFilter=@system-service
 ReadWritePaths=/var/lib/cb-agent
 

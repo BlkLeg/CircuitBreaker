@@ -1,7 +1,8 @@
 {
   "name": "circuit-breaker-ui",
-  "version": "1.0.0-rc.2",
+  "version": "1.0.0-rc.3",
   "private": true,
+  "license": "MIT",
   "dependencies": {
     "@dagrejs/dagre": "^1.1.8",
     "@dnd-kit/core": "^6.3.1",
@@ -56,7 +57,10 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "bundle-analyze": "ANALYZE=true npm run build",
-    "prepare": "cd ../.. && (husky 2>/dev/null || true)"
+    "prepare": "cd ../.. && (husky 2>/dev/null || true)",
+    "e2e": "playwright test",
+    "e2e:ui": "playwright test --ui",
+    "e2e:update-snapshots": "playwright test --update-snapshots"
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx,mjs,cjs}": [
@@ -72,7 +76,9 @@
     ]
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@eslint/js": "^9.39.3",
+    "@playwright/test": "^1.62.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",

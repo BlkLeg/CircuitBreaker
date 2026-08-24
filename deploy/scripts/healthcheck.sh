@@ -18,7 +18,9 @@ if [[ -f "$LOCK_FILE" ]]; then
   fi
 fi
 
-if curl -sf --max-time 5 http://127.0.0.1:8000/api/v1/health >/dev/null 2>&1; then
+# /livez, not /health or /readyz: this script restarts the unit, and a Postgres or Redis
+# outage must not do that — it would restart-storm a backend that is working fine.
+if curl -sf --max-time 5 http://127.0.0.1:8000/api/v1/livez >/dev/null 2>&1; then
   exit 0
 fi
 

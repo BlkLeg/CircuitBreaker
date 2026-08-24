@@ -42,6 +42,13 @@ func NewDialer(pin string) *websocket.Dialer {
 	return &websocket.Dialer{
 		Proxy:           http.ProxyFromEnvironment,
 		TLSClientConfig: pinnedTLSConfig(pin),
+		// Carried over from websocket.DefaultDialer deliberately. gorilla
+		// applies this only `if d.HandshakeTimeout != 0`, so a bare literal
+		// left the *pinned* path — the one every real deployment takes,
+		// because the installer always writes a tls_pin — with no bound at
+		// all, while the unpinned fallback above kept the 45s one. A
+		// half-open connection then hangs the caller forever.
+		HandshakeTimeout: websocket.DefaultDialer.HandshakeTimeout,
 	}
 }
 

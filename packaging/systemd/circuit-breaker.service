@@ -9,7 +9,11 @@ Type=oneshot
 RemainAfterExit=yes
 
 # ── Environment ─────────────────────────────────────────────────────────────
-# Override these via /etc/circuit-breaker/env or systemctl edit circuit-breaker
+# This unit reads no EnvironmentFile — override these with
+# `systemctl edit circuit-breaker`. /etc/circuit-breaker/circuit-breaker.env,
+# which postinstall.sh generates, is read by the two units that declare an
+# EnvironmentFile (packaging/circuit-breaker.service and
+# packaging/systemd/circuit-breaker-native.service), not by this one.
 Environment=CB_CONTAINER=circuit-breaker
 Environment=CB_IMAGE=ghcr.io/blkleg/circuitbreaker:latest
 Environment=CB_PORT=8080

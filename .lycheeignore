@@ -1,0 +1,26 @@
+# Targets the external link pass must not treat as real endpoints.
+# One extended regex per line, matched against the whole link.
+
+# ── Documentation placeholders ───────────────────────────────────────────────
+# Stand-ins the reader is expected to replace with their own value.
+^https?://(www\.)?example\.(com|test|org|net)
+^https?://cb\.yourdomain\.com
+^https?://your-(server|cb-url)
+^https?://<
+^https?://\$host
+
+# ── Operator-local addresses ─────────────────────────────────────────────────
+# Reachable from the reader's LAN, never from a CI runner.
+^https?://(localhost|127\.0\.0\.1)([:/]|$)
+^https?://[^/]+\.local([:/]|$)
+^https?://proxy:
+
+# ── Hosts that reject datacentre traffic ─────────────────────────────────────
+# These resolve for a human but answer a CI runner with 403 or a bot check,
+# which would make the advisory pass noise rather than signal.
+^https?://(www\.)?x\.com/
+^https?://discord\.gg/
+
+# ── Security-example URLs ────────────────────────────────────────────────────
+# Used in docs to show what URL validation rejects; not places to visit.
+^https?://legit\.com

@@ -58,6 +58,33 @@ export const NODE_STYLES = new Map([
   ['docker_container', { background: '#1e6ba8', borderColor: '#164e80', glowColor: '#2d8ae0' }],
 ]);
 
+// ── Filter-chip colours (ACC-10) ────────────────────────────────────────────
+// The toolbar chips reuse the node palette, but a colour that reads fine as a
+// 40px node fails as 11px text. NODE_STYLES.background against white gave
+// 3.12–4.31:1 for the active chips and NODE_STYLES.background against the page
+// (#282828) gave 2.43–3.42:1 for the inactive ones — all under the WCAG AA 4.5
+// floor for normal text. These are the same palette values, chosen for the
+// text they carry rather than for the node they fill:
+//
+//   chipBg   = the palette's own borderColor (its dark shade), white text on
+//              it measures 5.75–11.99:1
+//   chipText = the palette's glowColor where that already clears 4.5:1 on
+//              #282828, otherwise glowColor scaled toward white until it does
+//
+// Node rendering is deliberately untouched — NODE_STYLES still drives the
+// canvas, so this changes the toolbar and nothing else.
+export const CHIP_STYLES = new Map([
+  ['cluster', { chipBg: '#5b21b6', chipText: '#a78bfa' }], //  8.98 / 5.42
+  ['hardware', { chipBg: '#2c5f7a', chipText: '#6995b4' }], //  6.94 / 4.60
+  ['compute', { chipBg: '#1f5c2c', chipText: '#679b6f' }], //  8.00 / 4.56
+  ['service', { chipBg: '#8f4012', chipText: '#e07030' }], //  7.22 / 4.58
+  ['storage', { chipBg: '#5a3278', chipText: '#a182bc' }], //  9.71 / 4.52
+  ['network', { chipBg: '#0a6060', chipText: '#0eb8b8' }], //  7.36 / 6.01
+  ['misc', { chipBg: '#2d3748', chipText: '#838fa7' }], // 11.99 / 4.53
+  ['external', { chipBg: '#1565c0', chipText: '#64b5f6' }], //  5.75 / 6.66
+  ['docker_network', { chipBg: '#086080', chipText: '#1cb8d8' }], //  7.01 / 6.25
+]);
+
 // Per-relation edge accent colours — peers_with tracks the theme primary
 export const EDGE_COLORS = new Map([
   ['hosts', '#4a7fa5'],

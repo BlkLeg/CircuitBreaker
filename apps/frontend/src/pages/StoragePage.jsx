@@ -230,6 +230,7 @@ function StoragePage() {
         <TagFilter value={tagFilter} onChange={setTagFilter} />
         <select
           className="filter-select"
+          aria-label="Filter by kinds"
           value={kindFilter}
           onChange={(e) => setKindFilter(e.target.value)}
         >

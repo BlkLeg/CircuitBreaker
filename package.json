@@ -1,6 +1,6 @@
 {
   "name": "circuitbreaker",
-  "version": "1.0.0-rc.2",
+  "version": "1.0.0-rc.3",
   "private": true,
   "description": "Self-hosted infrastructure discovery, monitoring, and interactive topology visualization for homelabs and private networks.",
   "directories": {
@@ -8,7 +8,7 @@
     "test": "tests"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "npm --prefix apps/frontend test",
     "prepare": "husky"
   },
   "keywords": [

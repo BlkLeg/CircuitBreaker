@@ -139,7 +139,7 @@
 }
 
 .w-md-editor-toolbar li > button {
-  color: var(--color-text-muted, #a89984) !important;
+  color: var(--color-text-muted, #c8bfb0) !important;
   height: 32px !important;
   min-width: 32px !important;
   display: inline-flex !important;
@@ -212,7 +212,7 @@
 
 .w-md-editor-preview .wmde-markdown blockquote {
   border-left-color: var(--color-primary, #fe8019) !important;
-  color: var(--color-text-muted, #a89984) !important;
+  color: var(--color-text-muted, #c8bfb0) !important;
 }
 
 .w-md-editor-preview .wmde-markdown table th {
@@ -235,5 +235,5 @@
 }
 
 .w-md-editor-bar svg {
-  color: var(--color-text-muted, #a89984) !important;
+  color: var(--color-text-muted, #c8bfb0) !important;
 }

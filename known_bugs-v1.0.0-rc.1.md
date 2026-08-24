@@ -1,9 +1,10 @@
 # Known Bugs — v1.0.0-rc.1
 
 Found while installing rc.1 on Ubuntu Server 26.04 LTS (native one-line install).
-Last updated 2026-08-14.
+Last updated 2026-08-19.
 
-Item 1 is open and needs one piece of data from a running instance. Items 2, 3 and 4
+Item 1 is open. It now reproduces under browser automation (see below), but the cause is
+not yet localised. Items 2, 3 and 4
 are fixed. The two install-blocking defects at the bottom are fixed and carried in
 rc.2.
 
@@ -12,6 +13,80 @@ rc.2.
 ## 1. Sticky navigation — selecting a page in the dash does nothing until a manual reload
 
 **Severity:** high — the app looks broken on first use.
+**Status (2026-08-19): REPRODUCED under browser automation, cause not yet localised. Still open.**
+
+### Reproduction, 2026-08-19
+
+The 2026-08-18 attempt below could not reproduce this. It can now, because the earlier attempt
+was navigating away from a page that was never actually rendering: the API stub returned `[]`
+for `/api/v1/maps`, which sends `useMapTabs` down a create-then-read-`.id` path that leaves
+`/map` sitting on "Loading maps…" forever. Every navigation was therefore leaving a near-empty
+page. With `maps` stubbed to a real row, `/map` renders its React Flow canvas, and navigating
+away from *that* is what wedges.
+
+**Recipe.** Firefox, production build under `vite preview`, CPU contention (Playwright at 8–10
+workers on an 8-core host). Load `/`, wait for the topology to render, click the dock's
+Hardware link.
+
+**Observed, 3 times in roughly 180 attempts:** the URL advances to `/hardware`
+(`expect(page).toHaveURL(/\/hardware$/)` passes), and `.page-content` still contains the
+topology markup 10–15 seconds later. One route wrapper, `opacity: 1`, holding the *old* page.
+Not "never mounted" and not "stuck at opacity 0" — the two branches the diagnostic below was
+written for. It is the third shape: the outgoing route stays mounted and visible while the
+incoming one never takes over.
+
+**Ruled out with numbers: `AnimatePresence mode` is not the cause.** The leading hypothesis was
+that `mode="wait"` holds the incoming route behind an exit animation that never resolves. Under
+identical load, 48 runs each:
+
+| mode | wedges / 48 |
+|---|---|
+| `wait` (current) | 2 |
+| `sync` | 1 |
+
+That is no difference, so `App.jsx` was left on `wait` — the value `8bb0ee25` shipped. Switching
+it would have looked like a fix while changing nothing.
+
+**Not localised.** Adding request/response/console listeners to the probe changed the timing
+enough that 96 further attempts produced no wedge at all, so there is no network trace of one.
+The remaining hypothesis, and where to look next, is the `React.lazy` + `Suspense` pair: during
+a transition React keeps the previous UI on screen while the incoming route suspends, so a
+chunk request that stalls produces exactly this symptom — old content, new URL, no error
+boundary, fixed by a reload because the reload re-requests the chunk. Confirming that needs a
+wedge captured with the network log attached.
+
+**Why the suite does not assert on it.** At roughly 1-in-60 under artificial load, encoding this
+as a test would add a flaky failure to every PR without adding information. `e2e/navigation.spec.ts`
+keeps its deterministic assertions; this recipe is how to go looking for it deliberately.
+
+### Earlier reproduction attempt, 2026-08-18 (superseded)
+
+The Playwright harness this bug motivated now exists (`apps/frontend/e2e/`), and
+`e2e/navigation.spec.ts` encodes exactly the diagnostic this report asked for: it
+distinguishes "route never mounted" (fix is in AnimatePresence/Suspense) from "route mounted
+but stuck at opacity 0" (fix is in the animation layer), so a recurrence names its own cause
+instead of needing a live instance again.
+
+**The bug did not reproduce** — for the reason given above: `/map` was stuck on its loading
+placeholder, so nothing heavy was ever being navigated away from. What was tried:
+
+- Chromium, Firefox and mobile-Chrome, against a real production build served by `vite preview`
+  — not the dev server, since its on-demand transform hides lazy-chunk failures. (WebKit needs
+  `libgtk-4-1`, unavailable on the authoring host; it runs in the CI container.)
+- Six routes: `/hardware`, `/services`, `/ipam`, `/storage`, `/agents`, `/monitors`.
+- Both navigation paths: `history.pushState` + `popstate`, and clicking the dock `NavLink`.
+- Lazy-chunk latency injected at 300 ms, 1200 ms and 3000 ms, to mimic the first-visit chunk
+  timing this report points at. `AnimatePresence mode="wait"` held nothing; the incoming route
+  mounted, reached opacity 1, and the content changed every time.
+
+In every case the route mounted, became visible, and rendered its own content.
+
+**What is still untested, and is where I would look next.** The harness stubs the API at the
+network layer and answers instantly. The three conditions it therefore does *not* recreate are
+a real backend's response latency, the auth/redirect flow on a genuinely first visit, and a
+cold browser cache on a slow link. If this is still seen on a running instance, capture the two
+data points below — the harness assertions are written against exactly them.
+
 
 Clicking a nav entry changes the URL but the page content does not respond. Only a
 manual browser reload completes the navigation.

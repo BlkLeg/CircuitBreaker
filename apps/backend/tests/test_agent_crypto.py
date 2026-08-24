@@ -487,9 +487,7 @@ def test_start_server_key_rotation_defaults_to_seven_day_overlap(db_session, app
     assert state.overlap_expires_at == now + timedelta(days=7)
 
 
-def test_start_server_key_rotation_rejects_second_call_while_overlap_is_active(
-    db_session, app_cfg
-):
+def test_start_server_key_rotation_rejects_second_call_while_overlap_is_active(db_session, app_cfg):
     now = datetime(2026, 1, 1, tzinfo=UTC)
     first = start_server_key_rotation(db_session, overlap_seconds=3600, now=now)
     assert first is not None

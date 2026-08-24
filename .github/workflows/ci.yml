@@ -44,6 +44,26 @@ jobs:
           print('Alembic head:', heads[0])
           "
 
+      # The repo-policy suite: tracked-file policy (GOV-12), governance files
+      # (GOV-10/11/14/16), cb CLI parity (SRV-06/GOV-05), restart probes
+      # (SRV-03), version parity and release channel. Until 2026-08-19 no
+      # workflow ran it, so "a policy test prevents recurrence" was a claim with
+      # nothing behind it — the suite passed locally and could rot unnoticed.
+      #
+      # It belongs in Lint: it is pure static analysis of the checked-out tree
+      # (git ls-files, file reads, no network) and finishes in under a second,
+      # so it fails fast and needs no database or services.
+      #
+      # Scoped to tests/build on purpose — the sibling repo-root suite
+      # tests/integration/ needs a live PostgreSQL that no job in this workflow
+      # provides, so it stays out rather than being added as a guaranteed
+      # failure. /pytest.ini overrides pytest's norecursedirs default (which
+      # contains "build") so the same collection happens for a plain
+      # `pytest tests/` locally, and so files added under tests/build/ later
+      # cannot be silently dropped.
+      - name: Repo policy tests (tests/build)
+        run: .venv/bin/pytest tests/build
+
       - name: Install frontend deps
         run: cd apps/frontend && npm ci
 
@@ -52,6 +72,12 @@ jobs:
 
       - name: Mypy
         run: cd apps/backend && PYTHONPATH=src ../../.venv/bin/mypy src/app
+
+      # EXEC: the requirement ledger is the release's source of truth. It
+      # validated clean by hand but ran in no workflow, so it could drift from
+      # the specs unnoticed between releases.
+      - name: Validate 1.0.0 release-control ledger
+        run: python3 scripts/validate_v1_release_control.py
 
       - name: ESLint
         run: cd apps/frontend && npm run lint
@@ -66,13 +92,23 @@ jobs:
         with:
           python-version: "3.12"
 
+      # SECURITY_SCAN_VENV has to match on both steps. security_scan.sh reads
+      # it to find its toolchain and provisions the venv itself when it is
+      # missing, so a mismatch here does not fail — it just installs twice.
+      # This is no longer .venv: on a developer machine that path is the
+      # backend environment, and semgrep's pins break it (see the comment in
+      # security_scan.sh).
       - name: Install scan tools
+        env:
+          SECURITY_SCAN_VENV: ${{ runner.temp }}/cb-scanner-venv
         run: |
-          python3.12 -m venv .venv
-          .venv/bin/pip install --upgrade pip
-          .venv/bin/pip install bandit semgrep
+          python3.12 -m venv "$SECURITY_SCAN_VENV"
+          "$SECURITY_SCAN_VENV/bin/pip" install --upgrade pip
+          "$SECURITY_SCAN_VENV/bin/pip" install bandit semgrep
 
       - name: Run security gate (fails on HIGH/CRIT)
+        env:
+          SECURITY_SCAN_VENV: ${{ runner.temp }}/cb-scanner-venv
         run: ./scripts/security_scan.sh --gate
 
       - name: Upload scan report
@@ -101,8 +137,10 @@ jobs:
     # 55.42%; it is now ratcheted to the measured number, so this job's exit
     # code means what it says.
     #
-    # The 35+ minute docker e2e suite (apps/agent/e2e) is deliberately NOT run
-    # here and remains a local/manual gate.
+    # The 35+ minute docker e2e suite (apps/agent/e2e) is not run here: it is
+    # too slow for the PR path. It is no longer unrun, though — AGT-01 requires
+    # it against every RC and on a schedule, so .github/workflows/e2e.yml runs
+    # it nightly and release.yml gates publication on it.
     steps:
       - uses: actions/checkout@v5
 
@@ -154,8 +192,18 @@ jobs:
       - name: Install frontend deps
         run: cd apps/frontend && npm ci
 
-      - name: Frontend tests
-        run: cd apps/frontend && npm test
+      # REL-15: coverage is enforced and retained, not just produced. The
+      # thresholds live in vitest.config.ts so a local run fails identically.
+      - name: Frontend tests with coverage
+        run: cd apps/frontend && npm run test:coverage
+
+      - name: Upload frontend coverage
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: frontend-coverage
+          path: apps/frontend/coverage/
+          retention-days: 14
 
       # -race is mandatory: the agent's daemon-startup ordering guarantees are
       # only observable under the race detector (see apps/agent/Makefile).
@@ -164,3 +212,48 @@ jobs:
 
       - name: Agent vet
         run: cd apps/agent && go vet ./...
+
+  browser-e2e:
+    name: Browser E2E
+    runs-on: ubuntu-22.04
+    # Pinned to the Playwright image so rendering matches the container the
+    # REL-18 visual baselines are generated in. A version skew between this tag
+    # and the @playwright/test version in package.json shows up as
+    # unexplainable screenshot diffs.
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.1-noble
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - name: Install frontend deps
+        run: cd apps/frontend && npm ci
+
+      # The visual-* projects carry the REL-18 baselines (committed 2026-08-19,
+      # see docs/testing-visual-baselines.md). They are separate projects so a
+      # stale baseline fails the visual gate and not the functional one;
+      # playwright.config.ts keeps visual.spec.ts out of the other four.
+      - name: Run Playwright suite
+        run: |
+          cd apps/frontend
+          npx playwright test \
+            --project=chromium \
+            --project=firefox \
+            --project=webkit \
+            --project=mobile-chrome \
+            --project=visual-desktop \
+            --project=visual-mobile
+
+      # REL-20: a failed job must be diagnosable from retained artifacts alone.
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: playwright-report
+          path: |
+            apps/frontend/playwright-report/
+            apps/frontend/test-results/
+          retention-days: 14

@@ -169,6 +169,7 @@ function ClusterDetail({ cluster, isOpen, onClose, onUpdate }) {
               >
                 <select
                   className="filter-select"
+                  aria-label="Filter by select hardware…"
                   style={{ flex: 1 }}
                   value={selectedHwId}
                   onChange={(e) => setSelectedHwId(e.target.value)}

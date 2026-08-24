@@ -34,10 +34,30 @@ if ! python3 scripts/validate_security_suppressions.py >> "$REPORT_FILE" 2>&1; t
 fi
 echo "\`\`\`" >> "$REPORT_FILE"
 
-# Ensure .venv exists for Python tools
-if [ ! -d .venv ]; then
-    echo "Creating .venv for security tools..."
-    python3 -m venv .venv
+# ── Scanner toolchain venv ──────────────────────────────────────────────────
+# Deliberately not .venv. In this repo .venv is the backend *development*
+# environment — `make lint` runs "$SCAN_BIN"/ruff and "$SCAN_BIN"/mypy out of it,
+# and lint-staged calls the same paths on every commit. The scanners pin
+# dependencies that conflict with the application's: installing semgrep drags
+# opentelemetry-instrumentation down to 0.58b0, below the 0.65b0 the backend's
+# instrumentation needs, and leaves `import app.main` raising
+#
+#   ImportError: cannot import name 'detect_synthetic_user_agent'
+#
+# So `make security-check` used to break `make lint` and the app itself on the
+# same host, silently, as a side effect of scanning. CI never saw it because
+# each job builds a throwaway .venv on a fresh runner.
+#
+# Keeping the toolchain outside the repo also means no scanner ever scans its
+# own dependencies, so this needs no .gitignore, .trivyignore or SEC-18
+# suppression entry to stay out of the results. Point SECURITY_SCAN_VENV
+# somewhere durable to avoid reinstalling after /tmp is cleared; the default is
+# under this script's existing scratch root and is always safe to delete.
+SCAN_VENV="${SECURITY_SCAN_VENV:-$XDG_CACHE_HOME/scanner-venv}"
+SCAN_BIN="$SCAN_VENV/bin"
+if [ ! -x "$SCAN_BIN/python" ]; then
+    echo "Creating scanner toolchain venv at $SCAN_VENV..."
+    python3 -m venv "$SCAN_VENV"
 fi
 
 # Helper: run a tool, optionally gate on its exit code
@@ -65,17 +85,17 @@ docker_available() {
 echo "## 1. Bandit (Python SAST)" >> "$REPORT_FILE"
 echo "\`\`\`" >> "$REPORT_FILE"
 echo "Running Bandit..."
-if ! .venv/bin/bandit --version > /dev/null 2>&1; then
-    .venv/bin/pip install bandit --quiet
+if ! "$SCAN_BIN"/bandit --version > /dev/null 2>&1; then
+    "$SCAN_BIN"/pip install bandit --quiet
 fi
 # Gate: -lll = HIGH severity only, --skip B101 (assert in tests is fine)
 if $GATE_MODE; then
-    if ! .venv/bin/bandit -r apps/backend/src/ -lll --skip B101 -f txt >> "$REPORT_FILE" 2>&1; then
+    if ! "$SCAN_BIN"/bandit -r apps/backend/src/ -lll --skip B101 -f txt >> "$REPORT_FILE" 2>&1; then
         GATE_FAILURES=$((GATE_FAILURES + 1))
         echo "  ⚠ GATE FAILURE: Bandit HIGH findings" >> "$REPORT_FILE"
     fi
 else
-    .venv/bin/bandit -r apps/backend/src/ -ll --skip B101 -f txt >> "$REPORT_FILE" 2>&1 || true
+    "$SCAN_BIN"/bandit -r apps/backend/src/ -ll --skip B101 -f txt >> "$REPORT_FILE" 2>&1 || true
 fi
 echo "\`\`\`" >> "$REPORT_FILE"
 
@@ -83,17 +103,17 @@ echo "\`\`\`" >> "$REPORT_FILE"
 echo "## 2. Semgrep (SAST)" >> "$REPORT_FILE"
 echo "\`\`\`" >> "$REPORT_FILE"
 echo "Running Semgrep..."
-if ! .venv/bin/semgrep --version > /dev/null 2>&1; then
-    .venv/bin/pip install semgrep --quiet
+if ! "$SCAN_BIN"/semgrep --version > /dev/null 2>&1; then
+    "$SCAN_BIN"/pip install semgrep --quiet
 fi
 if $GATE_MODE; then
-    if ! .venv/bin/semgrep scan --config=p/default --error --severity ERROR \
+    if ! "$SCAN_BIN"/semgrep scan --config=p/default --error --severity ERROR \
         apps/backend/src/ apps/frontend/src/ docker/ >> "$REPORT_FILE" 2>&1; then
         GATE_FAILURES=$((GATE_FAILURES + 1))
         echo "  ⚠ GATE FAILURE: Semgrep ERROR findings" >> "$REPORT_FILE"
     fi
 else
-    .venv/bin/semgrep scan --config=p/default apps/backend/src/ apps/frontend/src/ docker/ >> "$REPORT_FILE" 2>&1 || true
+    "$SCAN_BIN"/semgrep scan --config=p/default apps/backend/src/ apps/frontend/src/ docker/ >> "$REPORT_FILE" 2>&1 || true
 fi
 echo "\`\`\`" >> "$REPORT_FILE"
 
@@ -106,25 +126,33 @@ GITLEAKS_CONFIG=""
 GITLEAKS_RAN=false
 if command -v gitleaks > /dev/null 2>&1; then
     GITLEAKS_RAN=true
+    # -v and no --report-path, matching the Docker branch below. The previous
+    # `--report-path /dev/stdout` was wrong twice over: gitleaks infers the
+    # report format from the path's extension, /dev/stdout has none, so it died
+    # with "Unknown report format:" and exit 1 on every run — which this branch
+    # then recorded as "Gitleaks found secrets" no matter what was in the tree.
+    # And opening /dev/stdout truncated the report this same command appends
+    # to, taking sections 0-3 with it. CI never saw either: no gitleaks binary
+    # is installed on the runners, so it always took the Docker branch.
     if $GATE_MODE; then
-        if ! gitleaks detect --no-git --source . $GITLEAKS_CONFIG --report-path /dev/stdout >> "$REPORT_FILE" 2>&1; then
+        if ! gitleaks detect --no-git --source . $GITLEAKS_CONFIG -v >> "$REPORT_FILE" 2>&1; then
             GATE_FAILURES=$((GATE_FAILURES + 1))
             echo "  ⚠ GATE FAILURE: Gitleaks found secrets" >> "$REPORT_FILE"
         fi
     else
-        gitleaks detect --no-git --source . $GITLEAKS_CONFIG --report-path /dev/stdout 2>&1 >> "$REPORT_FILE" || true
+        gitleaks detect --no-git --source . $GITLEAKS_CONFIG -v >> "$REPORT_FILE" 2>&1 || true
     fi
 elif docker_available; then
     GITLEAKS_RAN=true
     GITLEAKS_DOCKER_ARGS="detect --no-git --source=/repo -v"
     [ -f .gitleaks.toml ] && GITLEAKS_DOCKER_ARGS="detect --no-git --source=/repo --config=/repo/.gitleaks.toml -v"
     if $GATE_MODE; then
-        if ! docker run --rm -v "$(pwd):/repo" ghcr.io/gitleaks/gitleaks:latest $GITLEAKS_DOCKER_ARGS >> "$REPORT_FILE" 2>&1; then
+        if ! docker run --rm -v "$(pwd):/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 $GITLEAKS_DOCKER_ARGS >> "$REPORT_FILE" 2>&1; then
             GATE_FAILURES=$((GATE_FAILURES + 1))
             echo "  ⚠ GATE FAILURE: Gitleaks found secrets" >> "$REPORT_FILE"
         fi
     else
-        docker run --rm -v "$(pwd):/repo" ghcr.io/gitleaks/gitleaks:latest $GITLEAKS_DOCKER_ARGS 2>&1 >> "$REPORT_FILE" || true
+        docker run --rm -v "$(pwd):/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 $GITLEAKS_DOCKER_ARGS 2>&1 >> "$REPORT_FILE" || true
     fi
 fi
 if ! $GITLEAKS_RAN; then
@@ -168,16 +196,16 @@ echo "\`\`\`" >> "$REPORT_FILE"
 echo "## 6. Checkov (IaC)" >> "$REPORT_FILE"
 echo "\`\`\`" >> "$REPORT_FILE"
 echo "Running Checkov..."
-if ! .venv/bin/checkov --version > /dev/null 2>&1; then
-    .venv/bin/pip install checkov --quiet
+if ! "$SCAN_BIN"/checkov --version > /dev/null 2>&1; then
+    "$SCAN_BIN"/pip install checkov --quiet
 fi
 if $GATE_MODE; then
-    if ! .venv/bin/checkov -d docker/ -d .github/workflows/ --quiet >> "$REPORT_FILE" 2>&1; then
+    if ! "$SCAN_BIN"/checkov -d docker/ -d .github/workflows/ --quiet >> "$REPORT_FILE" 2>&1; then
         GATE_FAILURES=$((GATE_FAILURES + 1))
         echo "  ⚠ GATE FAILURE: Checkov findings" >> "$REPORT_FILE"
     fi
 else
-    .venv/bin/checkov -d docker/ -d .github/workflows/ --quiet >> "$REPORT_FILE" 2>&1 || true
+    "$SCAN_BIN"/checkov -d docker/ -d .github/workflows/ --quiet >> "$REPORT_FILE" 2>&1 || true
 fi
 echo "\`\`\`" >> "$REPORT_FILE"
 
@@ -278,19 +306,19 @@ echo "\`\`\`" >> "$REPORT_FILE"
 echo "## 9b. pip-audit (Python dependencies)" >> "$REPORT_FILE"
 echo "\`\`\`" >> "$REPORT_FILE"
 echo "Running pip-audit..."
-if ! .venv/bin/pip-audit --version > /dev/null 2>&1; then
-    .venv/bin/pip install pip-audit --quiet
+if ! "$SCAN_BIN"/pip-audit --version > /dev/null 2>&1; then
+    "$SCAN_BIN"/pip install pip-audit --quiet
 fi
 PIP_AUDIT_ARGS="-r apps/backend/requirements.txt"
 [ -f apps/backend/requirements-pg.txt ] && PIP_AUDIT_ARGS="$PIP_AUDIT_ARGS -r apps/backend/requirements-pg.txt"
-if .venv/bin/pip-audit --version > /dev/null 2>&1; then
+if "$SCAN_BIN"/pip-audit --version > /dev/null 2>&1; then
     if $GATE_MODE; then
-        if ! .venv/bin/pip-audit $PIP_AUDIT_ARGS >> "$REPORT_FILE" 2>&1; then
+        if ! "$SCAN_BIN"/pip-audit $PIP_AUDIT_ARGS >> "$REPORT_FILE" 2>&1; then
             GATE_FAILURES=$((GATE_FAILURES + 1))
             echo "  ⚠ GATE FAILURE: pip-audit findings" >> "$REPORT_FILE"
         fi
     else
-        .venv/bin/pip-audit $PIP_AUDIT_ARGS >> "$REPORT_FILE" 2>&1 || true
+        "$SCAN_BIN"/pip-audit $PIP_AUDIT_ARGS >> "$REPORT_FILE" 2>&1 || true
     fi
 else
     echo "pip-audit unavailable (install: pip install pip-audit), skipping." >> "$REPORT_FILE"
@@ -310,7 +338,7 @@ export GOBIN="${GOBIN:-/tmp/cb-security-go-bin}"
 export PATH="$GOBIN:$PATH"
 mkdir -p "$GOBIN"
 if ! command -v govulncheck > /dev/null 2>&1 && $GATE_MODE && command -v go > /dev/null 2>&1; then
-    go install golang.org/x/vuln/cmd/govulncheck@latest >> "$REPORT_FILE" 2>&1 || true
+    go install golang.org/x/vuln/cmd/govulncheck@v1.7.0 >> "$REPORT_FILE" 2>&1 || true
 fi
 if command -v govulncheck > /dev/null 2>&1; then
     if $GATE_MODE; then
@@ -322,7 +350,7 @@ if command -v govulncheck > /dev/null 2>&1; then
         (cd apps/agent && govulncheck ./...) >> "$REPO_ROOT/$REPORT_FILE" 2>&1 || true
     fi
 else
-    echo "govulncheck not found (install: go install golang.org/x/vuln/cmd/govulncheck@latest), skipping." >> "$REPORT_FILE"
+    echo "govulncheck not found (install: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0), skipping." >> "$REPORT_FILE"
     if $GATE_MODE; then
         GATE_FAILURES=$((GATE_FAILURES + 1))
         echo "  ⚠ GATE FAILURE: govulncheck unavailable" >> "$REPORT_FILE"

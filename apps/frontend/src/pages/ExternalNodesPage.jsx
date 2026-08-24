@@ -361,6 +361,7 @@ function ExternalNodesPage() {
         <TagFilter value={tagFilter} onChange={setTagFilter} />
         <select
           className="filter-select"
+          aria-label="Filter by providers"
           value={providerFilter}
           onChange={(e) => setProviderFilter(e.target.value)}
         >
@@ -373,6 +374,7 @@ function ExternalNodesPage() {
         </select>
         <select
           className="filter-select"
+          aria-label="Filter by kinds"
           value={kindFilter}
           onChange={(e) => setKindFilter(e.target.value)}
         >
@@ -385,6 +387,7 @@ function ExternalNodesPage() {
         </select>
         <select
           className="filter-select"
+          aria-label="Filter by environments"
           value={envFilter}
           onChange={(e) => setEnvFilter(e.target.value)}
         >
