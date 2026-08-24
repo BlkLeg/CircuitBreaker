@@ -163,7 +163,6 @@ function HardwarePage() {
             model: result.device_label,
             vendor_catalog_key: result.vendor_key ?? null,
             model_catalog_key: result.model_key ?? null,
-            u_height: result.u_height ?? null,
             role: result.role ?? null,
           });
         }
@@ -193,18 +192,6 @@ function HardwarePage() {
       },
     },
     { name: 'model', label: 'Model' },
-    {
-      name: 'u_height',
-      label: 'Rack Height (U)',
-      type: 'number',
-      hint: 'Rack units occupied (e.g. 1, 2, 4)',
-    },
-    {
-      name: 'rack_unit',
-      label: 'Rack Position (U)',
-      type: 'number',
-      hint: 'Starting rack unit where device is mounted',
-    },
     { name: 'ip_address', label: 'IP Address', type: 'ip-address-input' },
     {
       name: 'wan_uplink',

@@ -401,7 +401,7 @@ function EntityForm({
       );
     }
 
-    // ── Catalog typeahead (name + auto-fill vendor/model/u_height/role) ───────
+    // ── Catalog typeahead (name + auto-fill vendor/model/role) ───────
     if (field.type === 'catalog-search') {
       return (
         <CatalogSearch

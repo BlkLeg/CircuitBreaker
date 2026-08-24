@@ -2,14 +2,13 @@
 /**
  * BulkActionsDrawer — the primary UI for the Enhanced Bulk Review workflow.
  *
- * Presents 7 intelligent sections for multi-select discovery results:
+ * Presents 6 intelligent sections for multi-select discovery results:
  *  1. Group Info (cluster name, description)
  *  2. Network assignment (inferred CIDR, existing network, or new)
  *  3. Vendor catalog typeahead
  *  4. Role assignment
- *  5. Rack & U-slot placement
- *  6. Service detection summary
- *  7. Duplicate detection warnings
+ *  5. Service detection summary
+ *  6. Duplicate detection warnings
  *
  * Plus a mini topology preview via BulkPreviewMap.
  */
@@ -25,7 +24,6 @@ import {
   Network,
   Tag,
   Shield,
-  HardDrive,
   Layers,
   AlertTriangle,
   MapPin,
@@ -147,9 +145,6 @@ export default function BulkActionsDrawer({ results, onClose, onComplete }) {
   const [networkVlan, setNetworkVlan] = useState('');
   const [networkGateway, setNetworkGateway] = useState('');
   const [existingNetworkId, setExistingNetworkId] = useState(null);
-
-  // Rack
-  const [rackId, setRackId] = useState(null);
 
   // Per-node assignments
   const [assignments, setAssignments] = useState({});
@@ -330,8 +325,6 @@ export default function BulkActionsDrawer({ results, onClose, onComplete }) {
         payload.network = { name: '', existing_id: existingNetworkId };
       }
 
-      if (rackId) payload.rack_id = rackId;
-
       const res = await enhancedBulkMerge(payload);
       const { accepted = 0, skipped = 0 } = res.data;
 
@@ -373,7 +366,6 @@ export default function BulkActionsDrawer({ results, onClose, onComplete }) {
     return Array.from(seen.values());
   }, [suggestions?.services]);
   const roleSummary = suggestions?.role_summary || {};
-  const rackSuggestions = suggestions?.rack_suggestions || [];
 
   return (
     <div
@@ -750,68 +742,7 @@ export default function BulkActionsDrawer({ results, onClose, onComplete }) {
                 )}
               </Section>
 
-              {/* ─── 5. Rack Assignment ────────────────────────────── */}
-              <Section
-                icon={HardDrive}
-                title="Rack Placement"
-                badge={rackSuggestions.length || null}
-              >
-                {rackSuggestions.length > 0 ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {rackSuggestions.map((rs) => (
-                      <label
-                        key={rs.rack_id}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 8,
-                          fontSize: 12,
-                          cursor: 'pointer',
-                        }}
-                      >
-                        <input
-                          type="radio"
-                          name="rackId"
-                          value={rs.rack_id}
-                          checked={rackId === rs.rack_id}
-                          onChange={() => setRackId(rs.rack_id)}
-                        />
-                        <span>
-                          <strong>{rs.rack_name}</strong>
-                          <span style={{ color: 'var(--color-text-muted)', marginLeft: 6 }}>
-                            {rs.free_u} free U · {rs.height_u}U rack
-                          </span>
-                        </span>
-                      </label>
-                    ))}
-                    <label
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 8,
-                        fontSize: 12,
-                        cursor: 'pointer',
-                        color: 'var(--color-text-muted)',
-                      }}
-                    >
-                      <input
-                        type="radio"
-                        name="rackId"
-                        value=""
-                        checked={rackId === null}
-                        onChange={() => setRackId(null)}
-                      />
-                      No rack assignment
-                    </label>
-                  </div>
-                ) : (
-                  <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: 0 }}>
-                    No racks with available slots found.
-                  </p>
-                )}
-              </Section>
-
-              {/* ─── 6. Services ───────────────────────────────────── */}
+              {/* ─── 5. Services ───────────────────────────────────── */}
               <Section icon={Zap} title="Detected Services" badge={servicesByPort.length || null}>
                 <label
                   style={{
@@ -855,7 +786,7 @@ export default function BulkActionsDrawer({ results, onClose, onComplete }) {
                 )}
               </Section>
 
-              {/* ─── 7. Duplicates ─────────────────────────────────── */}
+              {/* ─── 6. Duplicates ─────────────────────────────────── */}
               {duplicates.length > 0 && (
                 <Section
                   icon={AlertTriangle}

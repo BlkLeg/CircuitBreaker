@@ -295,7 +295,6 @@ const RANK_MAP = new Map([
   ['network', 0],
   ['docker_network', 0],
   ['cluster', 0],
-  ['rack', 0],
   ['external', 0],
   ['hardware', 1],
   ['compute', 1],
@@ -477,68 +476,10 @@ export const getCircularClusterLayout = (nodes, edges, spacingMultiplier = 1) =>
   return { nodes: layoutNodes, edges };
 };
 
-// --- Grid Rack Layout (rack U-position aware) ---
-/**
- * @param {number} [spacingMultiplier] - default 1 (Density control)
- */
-export const getGridRackLayout = (nodes, edges, spacingMultiplier = 1) => {
-  const mult = Math.max(0.5, Number(spacingMultiplier) || 1);
-  const RACK_SPACING_X = 320 * mult;
-  const UNIT_HEIGHT = 72 * mult;
-  const COL_WIDTH = 260 * mult;
-
-  const racked = nodes.filter((n) => n.rack_id || n.data?.rack_id);
-  const unracked = nodes.filter((n) => !n.rack_id && !n.data?.rack_id);
-
-  // Group by rack_id
-  const racks = new Map();
-  racked.forEach((n) => {
-    const rid = n.rack_id ?? n.data?.rack_id ?? 'default';
-    if (!racks.has(rid)) racks.set(rid, []);
-    racks.get(rid).push(n);
-  });
-
-  const positions = new Map();
-  let ri = 0;
-  for (const [, rackNodes] of racks) {
-    const rackX = ri * RACK_SPACING_X;
-    rackNodes
-      .slice()
-      .sort(
-        (a, b) => (a.rack_unit ?? a.data?.rack_unit ?? 0) - (b.rack_unit ?? b.data?.rack_unit ?? 0)
-      )
-      .forEach((n, ui) => {
-        positions.set(n.id, { x: rackX, y: ui * UNIT_HEIGHT });
-      });
-    ri += 1;
-  }
-
-  // Place unracked nodes in a grid below the racks
-  const rackCount = Math.max(racks.size, 1);
-  const maxRackHeight = Math.max(...[...racks.values()].map((r) => r.length), 1) * UNIT_HEIGHT;
-  const unrackedRowGap = 140 * mult;
-  unracked.forEach((n, idx) => {
-    const col = idx % rackCount;
-    const row = Math.floor(idx / rackCount);
-    positions.set(n.id, {
-      x: col * COL_WIDTH,
-      y: maxRackHeight + unrackedRowGap + row * unrackedRowGap,
-    });
-  });
-
-  const layoutNodes = nodes.map((n) => ({
-    ...n,
-    position: positions.get(n.id) ?? n.position ?? { x: 0, y: 0 },
-  }));
-
-  return { nodes: layoutNodes, edges };
-};
-
 // --- Concentric Rings Layout (external → hardware → services → storage) ---
 const CONCENTRIC_RING_MAP = new Map([
   ['external', 0],
   ['cluster', 1],
-  ['rack', 1],
   ['hardware', 2],
   ['compute', 2],
   ['network', 2],

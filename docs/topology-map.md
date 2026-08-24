@@ -33,7 +33,7 @@ It combines inventory, dependencies, status, and editing tools in one place.
     - **VLAN Flow**: Arranges components left-to-right by segment (WAN, DMZ, LAN, Management, etc).
     - **Dagre (VLAN / LR)**: The hierarchical layout run left-to-right across VLANs.
     - **Docker Clusters**: Circular clustering for Docker overlays and virtualization pools.
-    - **Rack Grid**, **Concentric Rings**, **Cortex (compact hierarchy)** and **Mindmap (root-centered)**.
+    - **Concentric Rings**, **Cortex (compact hierarchy)** and **Mindmap (root-centered)**.
 - Use **Presets** for one-click combinations: **Docker Stacks** (Docker Clusters layout, filtered to Docker) and **Service Mesh** (Radial Services).
 - Set **Edge Mode** to **Smooth**, **Straight**, or **Bundled**.
 - Set **Node Spacing** to **Compact**, **Normal**, **Roomy**, or **Sparse**.

@@ -1898,7 +1898,6 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
                 <option value="none">Group by…</option>
                 <option value="type">By Type</option>
                 <option value="environment">By Environment</option>
-                <option value="rack">By Rack</option>
               </select>
 
               {/* Tag filter */}

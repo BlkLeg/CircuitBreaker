@@ -225,8 +225,6 @@ export function useMapDataLoad({
           telemetry_status: n.telemetry_status || 'unknown',
           telemetry_data: n.telemetry_data || null,
           telemetry_last_polled: n.telemetry_last_polled || null,
-          u_height: n.u_height ?? 1,
-          rack_unit: n.rack_unit ?? null,
           ip_conflict: n.ip_conflict ?? false,
           download_speed_mbps: n.download_speed_mbps ?? null,
           upload_speed_mbps: n.upload_speed_mbps ?? null,

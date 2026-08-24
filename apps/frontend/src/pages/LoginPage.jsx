@@ -473,7 +473,7 @@ function LoginPage() {
                 <span className="login-bullet-icon">
                   <Server size={14} />
                 </span>{' '}
-                Rack simulator
+                Hardware inventory
               </li>
               <li>
                 <span className="login-bullet-icon">

@@ -77,9 +77,6 @@ export interface Hardware extends Timestamps {
   mac_address?: string | null;
   status: string;
   status_override?: string | null;
-  rack_id?: number | null;
-  rack_unit?: number | null;
-  u_height?: number | null;
   telemetry_enabled: boolean;
   telemetry_status: string;
   telemetry_last_polled?: string | null;

@@ -63,17 +63,6 @@ You can choose existing values or create new ones directly while editing hardwar
 
 ---
 
-## Rack Position
-
-Use these fields to record physical placement:
-
-- **Rack Height (U)** — how many rack units the device occupies
-- **Rack Position (U)** — which rack unit it starts at (counting from the top)
-
-This helps with planning and maintenance work.
-
----
-
 ## Telemetry
 
 You can connect supported hardware telemetry to show live health indicators on the topology map.

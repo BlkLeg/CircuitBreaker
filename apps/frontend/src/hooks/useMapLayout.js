@@ -8,7 +8,6 @@ import {
   getRadialLayout,
   getElkLayeredLayout,
   getCircularClusterLayout,
-  getGridRackLayout,
   getConcentricLayout,
   getCortexLayout,
   getMindmapLayout,
@@ -21,6 +20,13 @@ import { settingsApi } from '../api/client';
 
 const RESIZE_LAYOUT_DEBOUNCE_MS = 200;
 const RESIZE_LAYOUT_MIN_DELTA_PX = 2;
+const DEFAULT_LAYOUT_ENGINE = 'dagre';
+// Engine ids retired with the rack feature. Stored preferences may still hold one,
+// which would otherwise leave the map on an engine nothing can apply.
+const RETIRED_LAYOUT_ENGINES = new Set(['grid_rack']);
+
+const resolveLayoutEngine = (engine) =>
+  !engine || RETIRED_LAYOUT_ENGINES.has(engine) ? DEFAULT_LAYOUT_ENGINE : engine;
 
 export function useMapLayout({
   nodes,
@@ -37,7 +43,9 @@ export function useMapLayout({
   dirtyRef,
   settings,
 }) {
-  const [layoutEngine, setLayoutEngine] = useState(() => settings?.graph_default_layout || 'dagre');
+  const [layoutEngine, setLayoutEngine] = useState(() =>
+    resolveLayoutEngine(settings?.graph_default_layout)
+  );
   const [edgeMode, setEdgeMode] = useState('smoothstep');
   const [edgeLabelVisible, setEdgeLabelVisible] = useState(true);
   const [nodeSpacing, setNodeSpacing] = useState(1);
@@ -124,8 +132,6 @@ export function useMapLayout({
         else if (engine === 'radial') layout = getRadialLayout(baseNodes, edges);
         else if (engine === 'circular_cluster')
           layout = getCircularClusterLayout(baseNodes, edges, layoutSpacing);
-        else if (engine === 'grid_rack')
-          layout = getGridRackLayout(baseNodes, edges, layoutSpacing);
         else if (engine === 'concentric') layout = getConcentricLayout(baseNodes, edges);
         else if (engine === 'cortex')
           layout = getCortexLayout(baseNodes, edges, viewport, layoutSpacing);
@@ -191,7 +197,6 @@ export function useMapLayout({
     if (groupBy === prevGroupByRef.current) return;
     prevGroupByRef.current = groupBy;
     if (groupBy === 'type') applyLayout('circular_cluster');
-    else if (groupBy === 'rack') applyLayout('grid_rack');
     else if (groupBy === 'environment') applyLayout('hierarchical_network');
     // 'none' keeps the current layout unchanged
   }, [groupBy, applyLayout]);

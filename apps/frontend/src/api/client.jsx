@@ -539,15 +539,6 @@ export const topologiesApi = {
   bulkNodes: (id, nodes) => client.put(`/topologies/${id}/nodes`, { nodes }),
 };
 
-export const racksApi = {
-  list: () => client.get('/racks'),
-  get: (id) => client.get(`/racks/${id}`),
-  create: (data) => client.post('/racks', data),
-  update: (id, data) => client.patch(`/racks/${id}`, data),
-  delete: (id) => client.delete(`/racks/${id}`),
-  connections: (rackId) => client.get(`/racks/${rackId}/connections`).then((r) => r.data),
-};
-
 export const eventsApi = {
   status: () => client.get('/events/status'),
 };

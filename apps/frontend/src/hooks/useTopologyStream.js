@@ -2,7 +2,7 @@
  * useTopologyStream()
  *
  * Maintains a single global WebSocket connection to
- * WS /api/v1/topology/stream for live topology map / rack updates.
+ * WS /api/v1/topology/stream for live topology map updates.
  *
  * Designed to be called once at the MapPage level (or app root) so the
  * connection persists while the map is open.
