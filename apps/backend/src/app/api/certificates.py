@@ -32,7 +32,10 @@ router = APIRouter(tags=["certificates"])
 
 
 @router.get("", response_model=list[CertificateRead])
-def list_certificates(db: Session = Depends(get_db)) -> list[Any]:
+def list_certificates(
+    db: Annotated[Session, Depends(get_db)],
+    _current_user: Annotated[User, require_role("admin")],
+) -> list[Any]:
     return svc.list_certificates(db)
 
 

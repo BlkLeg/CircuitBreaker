@@ -2282,6 +2282,7 @@
       "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.certificates.list_certificates",
+        "app.core.rbac.require_role.<locals>._dep",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
         "app.db.session.get_db"
@@ -2294,7 +2295,7 @@
       ],
       "name": "list_certificates",
       "path": "/api/v1/certificates",
-      "rbac_policy": "authenticated-session",
+      "rbac_policy": "declared-role-or-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
