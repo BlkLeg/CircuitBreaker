@@ -10,7 +10,6 @@ import {
   Search,
   X,
   Plug,
-  Users,
   Server,
   BookOpen,
 } from 'lucide-react';
@@ -65,13 +64,6 @@ export const SETTINGS_TABS = [
     label: 'Security',
     icon: ShieldCheck,
     description: 'Authentication and session management.',
-  },
-  {
-    id: 'users',
-    label: 'Users',
-    icon: Users,
-    description: 'Manage accounts, roles, invites, and sessions.',
-    adminOnly: true,
   },
   {
     id: 'system',

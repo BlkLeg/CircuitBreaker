@@ -40,6 +40,8 @@ export default defineConfig([
     languageOptions: {
       globals: {
         ...globals.browser,
+        // Tests run under Node: the coverage guards read source files off disk.
+        ...globals.node,
         ...globals.jest,
         describe: 'readonly',
         it: 'readonly',

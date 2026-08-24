@@ -26,7 +26,6 @@ import ClearLabDialog from '../components/common/ClearLabDialog';
 import FirstUserDialog from '../components/auth/FirstUserDialog';
 import TimezoneSelect from '../components/TimezoneSelect.jsx';
 import DiscoverySettingsPage from './settings/DiscoverySettingsPage.jsx';
-import AdminUsersPage from './AdminUsersPage.jsx';
 import KnowledgeBasePage from './KnowledgeBasePage.jsx';
 import VaultStatusPanel from '../components/settings/VaultStatusPanel.jsx';
 import DbStatusPanel from '../components/settings/DbStatusPanel.jsx';
@@ -1759,7 +1758,6 @@ export default function SettingsPage() {
             )}
 
             {/* ── Users Tab ──────────────────────────── */}
-            {activeTab === 'users' && isAdmin && <AdminUsersPage embedded />}
 
             {/* ── Knowledge Base Tab ─────────────────── */}
             {activeTab === 'kb' && isAdmin && <KnowledgeBasePage embedded />}
