@@ -9,7 +9,7 @@ import logging
 import time
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import BigInteger, bindparam, select, text
 from sqlalchemy.orm import Session
 
 from app.db.models import Log
@@ -45,6 +45,23 @@ _AUDIT_CHAIN_LOCK_ID = 487143216
 
 # How often a bounded waiter re-tries the advisory lock while waiting.
 _LOCK_RETRY_INTERVAL_SECONDS = 0.02
+
+# The lock id is a module constant, never user input, but interpolating it into
+# the statement text still made these two lines the only `text(f"...")` in the
+# backend — which is what Semgrep's avoid-sqlalchemy-text rule blocks on, and
+# what failed the Semgrep job and both security gates. Binding the id instead
+# leaves the SQL a literal string, so the rule has nothing dynamic to flag and
+# the value can no longer become part of the statement text. BigInteger is
+# explicit because PostgreSQL exposes pg_advisory_xact_lock(bigint) and
+# pg_advisory_xact_lock(int, int) but no single-argument integer overload; the
+# type keeps resolution unambiguous under server-side parameter binding, where
+# an untyped placeholder would otherwise have to be inferred.
+_ADVISORY_LOCK_STMT = text("SELECT pg_advisory_xact_lock(:lock_id)").bindparams(
+    bindparam("lock_id", _AUDIT_CHAIN_LOCK_ID, type_=BigInteger)
+)
+_TRY_ADVISORY_LOCK_STMT = text("SELECT pg_try_advisory_xact_lock(:lock_id)").bindparams(
+    bindparam("lock_id", _AUDIT_CHAIN_LOCK_ID, type_=BigInteger)
+)
 
 
 class AuditChainLockTimeout(RuntimeError):
@@ -86,14 +103,12 @@ def lock_audit_chain(session: Session, *, wait_seconds: float | None = None) -> 
         return
     try:
         if wait_seconds is None:
-            session.execute(text(f"SELECT pg_advisory_xact_lock({_AUDIT_CHAIN_LOCK_ID})"))
+            session.execute(_ADVISORY_LOCK_STMT)
             return
 
         deadline = time.monotonic() + wait_seconds
         while True:
-            acquired = session.execute(
-                text(f"SELECT pg_try_advisory_xact_lock({_AUDIT_CHAIN_LOCK_ID})")
-            ).scalar()
+            acquired = session.execute(_TRY_ADVISORY_LOCK_STMT).scalar()
             if acquired:
                 return
             if time.monotonic() >= deadline:

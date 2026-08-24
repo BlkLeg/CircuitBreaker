@@ -51,6 +51,39 @@ def test_audit_chain_lock_is_a_no_op_on_sqlite():
     assert executed == []
 
 
+def test_audit_chain_lock_binds_its_id_instead_of_interpolating_it():
+    """The lock id must stay a bound parameter, not part of the statement text.
+
+    It is a module constant and never user input, so this is not a live
+    injection route — but `text(f"...")` is what Semgrep's avoid-sqlalchemy-text
+    rule blocks on, and these two statements were the only ones in the backend
+    that used it. That failed the Semgrep job and both security gates. Pin the
+    parameterised form so a future edit cannot quietly reintroduce the pattern.
+    """
+    from sqlalchemy.dialects import postgresql
+
+    from app.core.audit_chain import (
+        _ADVISORY_LOCK_STMT,
+        _AUDIT_CHAIN_LOCK_ID,
+        _TRY_ADVISORY_LOCK_STMT,
+    )
+
+    for stmt in (_ADVISORY_LOCK_STMT, _TRY_ADVISORY_LOCK_STMT):
+        compiled = stmt.compile(dialect=postgresql.dialect())
+        assert str(_AUDIT_CHAIN_LOCK_ID) not in str(compiled)
+        assert compiled.params == {"lock_id": _AUDIT_CHAIN_LOCK_ID}
+
+    # Still the same SQL the interpolated form produced.
+    assert (
+        str(
+            _ADVISORY_LOCK_STMT.compile(
+                dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+            )
+        )
+        == f"SELECT pg_advisory_xact_lock({_AUDIT_CHAIN_LOCK_ID})"
+    )
+
+
 # ── OIDC uses the shared outbound validator ──────────────────────────────────
 
 
