@@ -5,7 +5,6 @@ import logging
 import os
 import random
 import time
-from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
 
@@ -89,28 +88,34 @@ async def notify_slack(
 async def notify_email(
     provider_config: dict[str, Any], title: str, message: str, severity: str
 ) -> None:
-    import aiosmtplib
+    """Deliver an alert over the globally configured SMTP server (INC-02).
 
-    msg = EmailMessage()
-    msg.set_content(message)
-    msg["Subject"] = f"[{severity.upper()}] {title}"
-    msg["From"] = provider_config.get("from", "circuitbreaker@localhost")
-    msg["To"] = provider_config.get("to")
+    An email sink carries the recipient and nothing else. Connection details and
+    credentials come from ``AppSettings`` — the same source the sink's *Test*
+    button uses — because the sink form has never collected SMTP fields. Reading
+    ``smtp_host`` out of ``provider_config`` meant connecting to ``""``, so every
+    routed alert was dropped while *Test* reported success.
 
-    hostname = str(provider_config.get("smtp_host", ""))
-    port = int(provider_config.get("smtp_port", 587))
-    user = provider_config.get("user")
-    password = provider_config.get("pass")
+    Both failure modes raise rather than return: ``_dispatch_notification``'s
+    retry loop and the ``notification_delivery_failed`` audit entry key off the
+    exception, and an operator reading that entry needs the real cause in it.
+    """
+    from app.services.settings_service import get_or_create_settings
+    from app.services.smtp_service import SMTP_NOT_CONFIGURED, SmtpService, smtp_is_configured
 
-    await aiosmtplib.send(
-        msg,
-        hostname=hostname,
-        port=port,
-        username=user or None,
-        password=password or None,
-        start_tls=bool(user and password),
-        timeout=30.0,
-    )
+    to_addr = provider_config.get("to") or provider_config.get("to_address")
+    if not to_addr:
+        raise RuntimeError(
+            "Email sink has no recipient — set a 'to' address on the sink before routing to it."
+        )
+
+    with SessionLocal() as db:
+        cfg = get_or_create_settings(db)
+        if not smtp_is_configured(cfg):
+            raise RuntimeError(SMTP_NOT_CONFIGURED)
+        # Inside the session block on purpose: SmtpService reads cfg attributes
+        # lazily during connect, and a detached AppSettings would raise there.
+        await SmtpService(cfg).send_alert(str(to_addr), title, message, severity)
 
 
 async def notify_discord(

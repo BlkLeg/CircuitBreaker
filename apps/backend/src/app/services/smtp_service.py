@@ -12,6 +12,7 @@ import logging
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from html import escape
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
@@ -39,6 +40,23 @@ _DEFAULT_LOGO = Path("/app/default-logo.png")
 # MIME subtypes for supported logo formats.  SVG is excluded intentionally:
 # most email clients cannot render SVG attachments via CID.
 _LOGO_MIME: dict[str, str] = {".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".gif": "gif"}
+
+
+# Shared by the notification API's Test button and the worker's delivery path.
+# One constant so the two cannot drift apart again — them disagreeing is INC-02.
+SMTP_NOT_CONFIGURED = (
+    "SMTP is not configured — set the SMTP server under Settings → SMTP "
+    "before sending email from Circuit Breaker."
+)
+
+
+def smtp_is_configured(cfg: AppSettings) -> bool:
+    """True when there is an SMTP host to connect to.
+
+    Without this the connect goes to ``""``, which surfaces as a DNS error that
+    tells an operator nothing about what they actually have to fix.
+    """
+    return bool(str(getattr(cfg, "smtp_host", "") or "").strip())
 
 
 def _require_aiosmtplib() -> Any:
@@ -180,7 +198,12 @@ class SmtpService:
         return smtp
 
     def _build_message(
-        self, to_email: str, subject: str, html: str, logo_path: Path | None = None
+        self,
+        to_email: str,
+        subject: str,
+        html: str,
+        logo_path: Path | None = None,
+        plain: str | None = None,
     ) -> MIMEMultipart:
         """Build a MIME message.
 
@@ -188,7 +211,20 @@ class SmtpService:
         logo is embedded as an inline CID attachment (``cid:cb-email-logo``).
         This avoids broken-image icons in Gmail and other clients that cannot
         reach private LAN hostnames like ``circuitbreaker.local``.
+
+        *plain* adds a text/plain alternative alongside the HTML. Alert mail
+        wants one: it is read on phones and in terminal clients, and an alert
+        that renders as raw markup is an alert nobody acts on.
         """
+
+        def _body() -> MIMEText | MIMEMultipart:
+            if plain is None:
+                return MIMEText(html, "html", "utf-8")
+            alt = MIMEMultipart("alternative")
+            alt.attach(MIMEText(plain, "plain", "utf-8"))
+            alt.attach(MIMEText(html, "html", "utf-8"))
+            return alt
+
         if logo_path and logo_path.exists():
             ext = logo_path.suffix.lower()
             subtype = _LOGO_MIME.get(ext)
@@ -197,7 +233,7 @@ class SmtpService:
                 outer["Subject"] = subject
                 outer["From"] = f"{self.cfg.smtp_from_name} <{self.cfg.smtp_from_email}>"
                 outer["To"] = to_email
-                outer.attach(MIMEText(html, "html", "utf-8"))
+                outer.attach(_body())
                 img = MIMEImage(logo_path.read_bytes(), _subtype=subtype)
                 img.add_header("Content-ID", "<cb-email-logo>")
                 img.add_header("Content-Disposition", "inline", filename=f"logo{ext}")
@@ -209,6 +245,8 @@ class SmtpService:
         msg["Subject"] = subject
         msg["From"] = f"{self.cfg.smtp_from_name} <{self.cfg.smtp_from_email}>"
         msg["To"] = to_email
+        if plain is not None:
+            msg.attach(MIMEText(plain, "plain", "utf-8"))
         msg.attach(MIMEText(html, "html", "utf-8"))
         return msg
 
@@ -263,6 +301,38 @@ class SmtpService:
                     " (From Docker, use host.docker.internal or the host IP instead of localhost.)"
                 )
             return {"status": "error", "message": error_msg}
+
+    async def send_alert(self, to_email: str, title: str, message: str, severity: str) -> None:
+        """Deliver one notification-sink alert.
+
+        This is the *only* email path a notification sink takes, for both the
+        Test button and real dispatch (INC-02). Keeping them on one method is
+        the point of the fix: they used to disagree, so a green test proved
+        nothing about delivery.
+
+        Raises rather than returning a status dict — the notification worker's
+        retry/backoff and ``notification_delivery_failed`` audit both key off
+        the exception.
+        """
+        app_name, primary_color, logo_path = self._branding()
+        # Collapse whitespace: an alert title is probe- and operator-authored and
+        # may contain newlines, which Python's generator rejects as an embedded
+        # header — the whole alert would fail to send rather than deliver safely.
+        subject = " ".join(f"[{severity.upper()}] {title}".split())
+        smtp = await self._connect()
+        try:
+            msg = self._build_message(
+                to_email,
+                subject,
+                _alert_html(
+                    app_name, primary_color, logo_path is not None, title, message, severity
+                ),
+                logo_path=logo_path,
+                plain=_alert_plain(app_name, title, message, severity),
+            )
+            await smtp.send_message(msg, sender=self.cfg.smtp_from_email)
+        finally:
+            await smtp.quit()
 
     async def send_invite(self, to_email: str, token: str, invited_by: str, base_url: str) -> None:
         """Send an invite email with a clickable accept link."""
@@ -464,4 +534,58 @@ def _test_html(app_name: str, primary_color: str, has_logo: bool) -> str:
         f'  <div style="{_S_FOOT}">{app_name} &mdash; SMTP test</div>'
         f"</div>"
         f"</body></html>"
+    )
+
+
+# Severity accent colours, matching the Slack/Discord/Teams payloads the other
+# sinks build in notification_worker so one alert looks the same everywhere.
+_SEVERITY_COLORS = {"critical": "#FF0000", "warning": "#FFA500", "info": "#36a64f"}
+
+
+def _alert_html(
+    app_name: str,
+    primary_color: str,
+    has_logo: bool,
+    title: str,
+    message: str,
+    severity: str,
+) -> str:
+    header = _header_block(app_name, primary_color, has_logo)
+    accent = _SEVERITY_COLORS.get(severity, "#0076D7")
+    # Alert text is operator- and probe-authored, so it reaches the template as
+    # untrusted input; escape it rather than interpolating markup into the body.
+    safe_title = escape(title)
+    safe_message = escape(message).replace("\n", "<br>")
+    badge = (
+        f"display:inline-block;padding:4px 12px;border-radius:4px;"
+        f"background:{accent};color:#1d2021;font-size:12px;font-weight:700;"
+        f"letter-spacing:.6px;text-transform:uppercase"
+    )
+    return (
+        f'<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"></head>'
+        f'<body style="margin:0;padding:0;background:#1d2021">'
+        f'<div style="{_S_WRAP}">'
+        f"  {header}"
+        f'  <div style="{_S_BODY}">'
+        f'    <p style="margin:0 0 14px"><span style="{badge}">{escape(severity)}</span></p>'
+        f'    <h2 style="margin:0 0 16px;font-size:18px;color:#ebdbb2;'
+        f'font-family:Arial,sans-serif">{safe_title}</h2>'
+        f'    <p style="{_S_P}">{safe_message}</p>'
+        f'    <hr style="{_S_HR}">'
+        f'    <p style="{_S_SMALL}">You are receiving this because an {app_name} '
+        f"notification route matches this severity.</p>"
+        f"  </div>"
+        f'  <div style="{_S_FOOT}">{app_name} &mdash; alert</div>'
+        f"</div>"
+        f"</body></html>"
+    )
+
+
+def _alert_plain(app_name: str, title: str, message: str, severity: str) -> str:
+    return (
+        f"[{severity.upper()}] {title}\n\n"
+        f"{message}\n\n"
+        f"—\n"
+        f"You are receiving this because an {app_name} notification route "
+        f"matches this severity."
     )

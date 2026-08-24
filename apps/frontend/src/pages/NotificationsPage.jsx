@@ -32,6 +32,14 @@ const SEVERITY_COLORS = {
   '*': 'tw-text-gray-400',
 };
 
+// An email sink carries the recipient and nothing else: the server, credentials,
+// and sender address all come from the global SMTP settings, which is the only
+// place they are configured (INC-02).
+const EMAIL_HINT =
+  'Required for Email provider. Email sends through the SMTP server configured in Settings → SMTP.';
+const EMAIL_HINT_NO_SMTP =
+  'Required for Email provider. SMTP is not configured — set the SMTP server in Settings → SMTP or this sink cannot deliver.';
+
 const SINK_FIELDS = [
   { name: 'name', label: 'Name', required: true, placeholder: 'e.g. My Slack Channel' },
   {
@@ -51,7 +59,7 @@ const SINK_FIELDS = [
     label: 'Webhook URL',
     hint: 'Required for Slack, Discord, and Teams. Stored encrypted and shown masked — leave the masked value unchanged to keep the current URL.',
   },
-  { name: 'to', label: 'Recipient Email', hint: 'Required for Email provider.' },
+  { name: 'to', label: 'Recipient Email', hint: EMAIL_HINT },
   { name: 'enabled', label: 'Enabled', type: 'checkbox', defaultValue: true },
 ];
 
@@ -128,6 +136,18 @@ function NotificationsPage() {
       },
     ],
     []
+  );
+
+  // Warn about unconfigured SMTP on the form itself. An email sink whose SMTP
+  // is unset is accepted by the API and then drops every alert routed to it —
+  // the operator should learn that here, not from an audit entry after an
+  // incident.
+  const sinkFields = useMemo(
+    () =>
+      SINK_FIELDS.map((f) =>
+        f.name === 'to' && !settings?.smtp_host ? { ...f, hint: EMAIL_HINT_NO_SMTP } : f
+      ),
+    [settings?.smtp_host]
   );
 
   const handleSinkSubmit = async (values) => {
@@ -463,7 +483,7 @@ function NotificationsPage() {
       <FormModal
         open={showSinkForm}
         title={editTarget ? 'Edit Destination' : 'Add Destination'}
-        fields={SINK_FIELDS}
+        fields={sinkFields}
         initialValues={editTarget || { provider_type: 'slack', enabled: true }}
         onSubmit={handleSinkSubmit}
         onClose={() => {

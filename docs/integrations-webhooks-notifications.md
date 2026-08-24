@@ -24,6 +24,16 @@ Each sink has a Name, a Provider Type, and one destination field.
 | **Microsoft Teams** | Webhook URL | A JSON POST of a MessageCard (`"@type": "MessageCard"`) |
 | **Email** | Recipient Email | An email sent through your configured SMTP settings |
 
+### Email sinks
+
+An email sink holds the recipient address and nothing else. The server, port, credentials, TLS mode,
+and sender address all come from **Settings → SMTP** — the same configuration used for invites — so
+there is no per-sink SMTP setup and no per-sink credential to manage.
+
+This means an email sink cannot deliver until SMTP is configured. The sink form says so when it is
+not, and both **Test** and real delivery return *"SMTP is not configured"* rather than a connection
+error.
+
 ### Webhook URL storage
 
 An incoming-webhook URL is a credential: anyone holding it can post into that channel. Circuit Breaker
@@ -44,8 +54,9 @@ route receives nothing.
 - Verify the destination URL (or recipient address) on the sink.
 - Confirm a route exists for the severity you expect, and that both sink and route are enabled.
 - Use the sink's **Test** action and read the error it returns — this is the only delivery diagnostic; there
-  is no delivery log or history view.
-- For Email sinks, check the SMTP settings, since the sink sends through them.
+  is no delivery log or history view. **Test** sends down the same path as a real alert, so a green
+  test means delivery works.
+- For Email sinks, check **Settings → SMTP**, since the sink sends through it.
 - If a sink starts failing right after a vault key change, re-save its webhook URL — the stored
   ciphertext can no longer be decrypted with the current key.
 - If behind a proxy, ensure outbound network access to target endpoints.

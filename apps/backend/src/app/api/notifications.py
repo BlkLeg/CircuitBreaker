@@ -17,6 +17,32 @@ _SINK_NOT_FOUND = "Notification sink not found"
 _ROUTE_NOT_FOUND = "Notification route not found"
 _WEBHOOK_URL_NOT_CONFIGURED = "webhook_url not configured"
 _TEST_MESSAGE = "Circuit Breaker test notification"
+_TEST_BODY = "If you received this, this sink can deliver alerts. Real alerts take this exact path."
+_EMAIL_NEEDS_RECIPIENT = (
+    "An email sink needs a recipient — set the 'to' address. "
+    "SMTP server, credentials, and sender come from Settings → SMTP."
+)
+
+
+def _email_recipient(config: dict[str, Any]) -> str:
+    """The address an email sink delivers to, or '' if it has none.
+
+    ``to_address`` is accepted alongside ``to`` because sinks created before the
+    form settled on ``to`` still carry it.
+    """
+    return str(config.get("to") or config.get("to_address") or "").strip()
+
+
+def _validate_provider_config(provider_type: str, config: dict[str, Any]) -> None:
+    """Reject a sink that could never deliver, at write time.
+
+    An email sink with no recipient is not a partially-configured sink — it is a
+    sink that silently drops every alert routed to it, discovered at 3am. The
+    webhook providers are deliberately not checked here: their URL is a secret
+    the client may legitimately omit on PATCH to carry the stored one forward.
+    """
+    if provider_type == "email" and not _email_recipient(config):
+        raise HTTPException(status_code=422, detail=_EMAIL_NEEDS_RECIPIENT)
 
 
 class SinkCreate(BaseModel):
@@ -110,6 +136,7 @@ def list_sinks(
 def create_sink(
     sink_in: SinkCreate, db: Session = Depends(get_db), current_user: Any = require_role("editor")
 ) -> SinkOut:
+    _validate_provider_config(sink_in.provider_type, sink_in.provider_config)
     sink = NotificationSink(
         name=sink_in.name,
         provider_type=sink_in.provider_type,
@@ -138,11 +165,13 @@ def update_sink(
         raise HTTPException(status_code=404, detail=_SINK_NOT_FOUND)
     updates = sink_in.model_dump(exclude_unset=True)
     if "provider_config" in updates and updates["provider_config"] is not None:
+        provider_type = updates.get("provider_type") or sink.provider_type
+        _validate_provider_config(provider_type, updates["provider_config"])
         # Carry the stored ciphertext forward when the client sends back the
         # mask it was served, or omits the secret entirely — otherwise editing
         # a sink's name would destroy its webhook URL.
         updates["provider_config"] = encrypt_config(
-            updates.get("provider_type") or sink.provider_type,
+            provider_type,
             updates["provider_config"],
             existing=_provider_config(sink),
         )
@@ -191,21 +220,29 @@ async def _test_webhook_sink(webhook_url: str | None, body: dict[str, Any]) -> d
 
 
 async def _test_email_sink(config: dict[str, Any], db: Session) -> dict[str, Any]:
-    try:
-        from app.services.settings_service import get_or_create_settings
-        from app.services.smtp_service import SmtpService
+    """Send a test alert down the *delivery* path, not a parallel one.
 
-        to_addr = config.get("to") or config.get("to_address")
-        if not to_addr:
-            return {"ok": False, "error": "No 'to' address configured in sink"}
-        cfg = get_or_create_settings(db)
-        result = await SmtpService(cfg).send_test_email(to_addr)
-        return {
-            "ok": result.get("status") == "ok",
-            "error": result.get("message") if result.get("status") != "ok" else None,
-        }
+    This used to call ``send_test_email``, which shares nothing with dispatch
+    beyond the SMTP connection — so a green Test proved only that SMTP worked,
+    while ``notify_email`` read connection details from ``provider_config`` and
+    dropped every real alert (INC-02). Both now go through ``send_alert``.
+    """
+    from app.services.settings_service import get_or_create_settings
+    from app.services.smtp_service import SMTP_NOT_CONFIGURED, SmtpService, smtp_is_configured
+
+    to_addr = _email_recipient(config)
+    if not to_addr:
+        return {"ok": False, "error": _EMAIL_NEEDS_RECIPIENT}
+
+    cfg = get_or_create_settings(db)
+    if not smtp_is_configured(cfg):
+        return {"ok": False, "error": SMTP_NOT_CONFIGURED}
+
+    try:
+        await SmtpService(cfg).send_alert(to_addr, _TEST_MESSAGE, _TEST_BODY, "info")
     except Exception as e:
-        return {"ok": False, "error": f"Use SMTP settings: {e}"}
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "error": None}
 
 
 @router.post("/sinks/{sink_id}/test")
