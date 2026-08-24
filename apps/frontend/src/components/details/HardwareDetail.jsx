@@ -30,6 +30,7 @@ import { useSettings } from '../../context/SettingsContext';
 import { useHardwareRoles } from '../../hooks/useHardwareRoles';
 import TelemetryPanel from '../TelemetryPanel';
 import VulnerabilityPanel from './VulnerabilityPanel';
+import BlastRadiusPanel from './BlastRadiusPanel';
 import PortEditor from './PortEditor';
 import { windscribeApi } from '../../api/client';
 import HardwareThreatProfile from './HardwareThreatProfile';
@@ -768,7 +769,10 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
         )}
 
         {activeTab === 'vulnerabilities' && (
-          <VulnerabilityPanel entityType="hardware" entityId={hardware.id} />
+          <>
+            <BlastRadiusPanel assetType="hardware" assetId={hardware.id} />
+            <VulnerabilityPanel entityType="hardware" entityId={hardware.id} />
+          </>
         )}
 
         {activeTab === 'docs' && <DocsPanel entityType="hardware" entityId={hardware.id} />}

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import PropTypes from 'prop-types';
 import Drawer from '../common/Drawer';
 import DocsPanel from '../common/DocsPanel';
+import BlastRadiusPanel from './BlastRadiusPanel';
 import { hardwareApi } from '../../api/client';
 import { Database, Server } from 'lucide-react';
 import logger from '../../utils/logger';
@@ -189,6 +190,8 @@ function StorageDetail({ storage, isOpen, onClose }) {
                 </div>
               </div>
             )}
+
+            <BlastRadiusPanel assetType="storage" assetId={storage.id} />
           </div>
         )}
 

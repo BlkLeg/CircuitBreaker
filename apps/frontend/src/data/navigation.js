@@ -17,6 +17,7 @@ import {
   Bell,
   Users,
   Satellite,
+  TrendingUp,
 } from 'lucide-react';
 
 /**
@@ -37,6 +38,7 @@ export const NAV_ITEMS = [
       { path: '/storage', icon: HardDrive, label: 'Storage', labelKey: 'header.storage' },
       { path: '/external-nodes', icon: Cloud, label: 'External', labelKey: 'header.external' },
       { path: '/ipam', icon: Globe, label: 'IPAM', labelKey: 'header.ipam', requireEditor: true },
+      { path: '/intel', icon: TrendingUp, label: 'Intel', labelKey: 'header.intel' },
     ],
   },
   {
@@ -116,6 +118,7 @@ export const NAV_MAP = {
   '/logs': { icon: ScrollText, label: 'Logs', labelKey: 'header.logs' },
   '/settings': { icon: Settings, label: 'Settings', labelKey: 'header.settings' },
   '/ipam': { icon: Globe, label: 'IPAM', labelKey: 'header.ipam' },
+  '/intel': { icon: TrendingUp, label: 'Intel', labelKey: 'header.intel' },
 
   '/privacy': { icon: ShieldCheck, label: 'Privacy', labelKey: 'header.privacy' },
   '/certificates': { icon: Shield, label: 'Certificates', labelKey: 'header.certificates' },
@@ -137,6 +140,7 @@ export const DEFAULT_ORDER = [
   '/storage',
   '/external-nodes',
   '/ipam',
+  '/intel',
 
   '/privacy',
   '/certificates',

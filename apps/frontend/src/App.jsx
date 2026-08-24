@@ -67,6 +67,7 @@ const AgentsPage = React.lazy(() => import('./pages/AgentsPage'));
 const AgentDetailPage = React.lazy(() => import('./pages/AgentDetailPage'));
 const PrivacyPage = React.lazy(() => import('./pages/PrivacyPage'));
 const NotificationsPage = React.lazy(() => import('./pages/NotificationsPage'));
+const IntelPage = React.lazy(() => import('./pages/IntelPage'));
 
 function AppInner() {
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -175,6 +176,7 @@ function AppInner() {
                     }
                   />
                   <Route path="/ip-addresses" element={<Navigate to="/ipam" replace />} />
+                  <Route path="/intel" element={<IntelPage />} />
                   <Route
                     path="/logs"
                     element={

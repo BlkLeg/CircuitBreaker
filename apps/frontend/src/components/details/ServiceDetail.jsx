@@ -7,6 +7,7 @@ import logger from '../../utils/logger';
 import { servicesApi, storageApi, miscApi } from '../../api/client';
 import { Database, Box, Trash2, ArrowRight } from 'lucide-react';
 import VulnerabilityPanel from './VulnerabilityPanel';
+import BlastRadiusPanel from './BlastRadiusPanel';
 import MapAssignSection from './MapAssignSection';
 import MonitorPanel from '../monitors/MonitorPanel';
 
@@ -387,7 +388,10 @@ function ServiceDetail({ service, isOpen, onClose }) {
         )}
 
         {activeTab === 'vulnerabilities' && (
-          <VulnerabilityPanel entityType="service" entityId={service.id} />
+          <>
+            <BlastRadiusPanel assetType="service" assetId={service.id} />
+            <VulnerabilityPanel entityType="service" entityId={service.id} />
+          </>
         )}
 
         {activeTab === 'docs' && <DocsPanel entityType="service" entityId={service.id} />}

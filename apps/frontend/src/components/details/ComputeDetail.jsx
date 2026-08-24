@@ -11,6 +11,7 @@ import { IconImg } from '../common/IconPickerModal';
 import { getOsOption } from '../../icons/osOptions';
 import { CPU_BRAND_MAP } from '../../config/cpuBrands';
 import VulnerabilityPanel from './VulnerabilityPanel';
+import BlastRadiusPanel from './BlastRadiusPanel';
 import MapAssignSection from './MapAssignSection';
 import MonitorPanel from '../monitors/MonitorPanel';
 
@@ -469,7 +470,10 @@ function ComputeDetail({ compute = null, isOpen, onClose }) {
         )}
 
         {activeTab === 'vulnerabilities' && (
-          <VulnerabilityPanel entityType="compute_unit" entityId={compute.id} />
+          <>
+            <BlastRadiusPanel assetType="compute_unit" assetId={compute.id} />
+            <VulnerabilityPanel entityType="compute_unit" entityId={compute.id} />
+          </>
         )}
 
         {activeTab === 'docs' && <DocsPanel entityType="compute" entityId={compute.id} />}
