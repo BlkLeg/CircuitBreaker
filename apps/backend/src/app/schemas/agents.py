@@ -270,6 +270,23 @@ class InstallCommandResponse(BaseModel):
     script_sha256: str
 
 
+class ServerKeyFleetAdoption(BaseModel):
+    """How much of the fleet has switched, for an in-progress rotation.
+
+    Derived from `Agent.server_pk_current_pinned_at` /
+    `server_pk_successor_pinned_at`, which exist for exactly this (see the
+    comment at db/models.py:432-450). Those columns record which key an
+    agent's handshakes have USED — the server has no visibility into whether
+    an agent's local state directory holds the successor key. Field names and
+    all UI copy must preserve that distinction.
+    """
+
+    total: int
+    successor: int
+    current: int
+    unseen: int
+
+
 class ServerKeyRotationStatus(BaseModel):
     """Task 28: the server's identity-key rotation state, as surfaced to
     admins. Never carries key material — fingerprints only, same convention
@@ -280,3 +297,4 @@ class ServerKeyRotationStatus(BaseModel):
     successor_key_fingerprint: str | None = None
     started_at: datetime | None = None
     overlap_expires_at: datetime | None = None
+    fleet: ServerKeyFleetAdoption | None = None

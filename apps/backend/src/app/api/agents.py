@@ -9,7 +9,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from slowapi.util import get_remote_address
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
 from app.core import agent_crypto, agent_scope
@@ -50,6 +50,7 @@ from app.schemas.agents import (
     PairingLookupRequest,
     PairingLookupResponse,
     RevokeRequest,
+    ServerKeyFleetAdoption,
     ServerKeyRotationStatus,
     UpdateRequest,
 )
@@ -230,7 +231,50 @@ def get_install_command(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-def _rotation_status(state: agent_crypto.ServerKeyRotationState) -> ServerKeyRotationStatus:
+def _fleet_adoption(db: Session, started_at: datetime) -> ServerKeyFleetAdoption:
+    """Bucket the fleet by which server key each agent last handshaked against.
+
+    ONE aggregate query, not one per agent — same contract as _latest_samples
+    above, pinned by test_rotation_status_adoption_is_one_query_regardless_of_
+    fleet_size. Counting in SQL rather than loading rows keeps it independent
+    of fleet size in memory as well as in round trips.
+
+    A pin recorded before `started_at` belongs to a previous rotation and says
+    nothing about this one, so it falls through to `unseen`. Revoked agents are
+    excluded: they will never handshake again and would inflate `unseen`
+    permanently, making a finished rollout look stuck.
+    """
+    successor_pinned = and_(
+        Agent.server_pk_successor_pinned_at.isnot(None),
+        Agent.server_pk_successor_pinned_at >= started_at,
+    )
+    current_pinned = and_(
+        Agent.server_pk_current_pinned_at.isnot(None),
+        Agent.server_pk_current_pinned_at >= started_at,
+    )
+    row = db.execute(
+        select(
+            func.count().label("total"),
+            func.count().filter(successor_pinned).label("successor"),
+            func.count().filter(and_(~successor_pinned, current_pinned)).label("current"),
+            func.count().filter(and_(~successor_pinned, ~current_pinned)).label("unseen"),
+        ).where(Agent.status != "revoked")
+    ).one()
+    return ServerKeyFleetAdoption(
+        total=row.total,
+        successor=row.successor,
+        current=row.current,
+        unseen=row.unseen,
+    )
+
+
+def _rotation_status(
+    state: agent_crypto.ServerKeyRotationState,
+    db: Session | None = None,
+) -> ServerKeyRotationStatus:
+    fleet = None
+    if state.rotation_active and state.started_at is not None and db is not None:
+        fleet = _fleet_adoption(db, state.started_at)
     return ServerKeyRotationStatus(
         active=state.rotation_active,
         current_key_fingerprint=hashlib.sha256(state.current_pub).hexdigest()[:32],
@@ -241,6 +285,7 @@ def _rotation_status(state: agent_crypto.ServerKeyRotationState) -> ServerKeyRot
         ),
         started_at=state.started_at,
         overlap_expires_at=state.overlap_expires_at,
+        fleet=fleet,
     )
 
 
@@ -252,7 +297,7 @@ def get_server_key_rotation_status(
     """Task 28: current/successor server identity key fingerprints and
     overlap timing — never key material itself, same as `/install-command`
     above never embeds a private key."""
-    return _rotation_status(agent_crypto.load_server_key_rotation_state(db))
+    return _rotation_status(agent_crypto.load_server_key_rotation_state(db), db)
 
 
 @router.post("/server-key/rotate", response_model=ServerKeyRotationStatus, status_code=201)
@@ -278,7 +323,7 @@ async def post_server_key_rotate(
             detail="A server-key rotation is already active (overlap window in progress)",
         )
     await agent_registry.broadcast_server_key_rotate(db, state)
-    return _rotation_status(state)
+    return _rotation_status(state, db)
 
 
 def _latest_samples(db: Session, agent_ids: list[int]) -> dict[int, AgentLatestSample]:

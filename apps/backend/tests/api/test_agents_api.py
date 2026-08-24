@@ -2358,3 +2358,96 @@ async def test_install_command_uses_the_host_the_proxy_was_asked_for(
     )
 
     assert seen["server_url"] == "https://cb.example.com", seen
+
+
+# ── server-key rotation: fleet adoption (INC-13) ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_rotation_status_omits_fleet_when_no_rotation_active(client, auth_headers):
+    resp = await client.get("/api/v1/agents/server-key/status", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["active"] is False
+    assert body["fleet"] is None
+
+
+@pytest.mark.asyncio
+async def test_rotation_status_buckets_the_fleet_by_key_last_handshaked(
+    client, auth_headers, factories, db_session
+):
+    """The three buckets the panel shows, and the boundary that separates them.
+
+    `started_at` is the divider: a pin recorded BEFORE this rotation began says
+    nothing about this rotation, so such an agent is `unseen`, not `current`.
+    """
+    from datetime import timedelta
+
+    from app.core.time import utcnow
+
+    on_successor = factories.agent(status="active")
+    on_current = factories.agent(status="active")
+    factories.agent(status="active")  # never_seen — no pin, counts as unseen
+    stale_pin = factories.agent(status="active")
+    revoked = factories.agent(status="revoked")
+
+    rotate = await client.post("/api/v1/agents/server-key/rotate", headers=auth_headers)
+    assert rotate.status_code == 201
+    started_at = utcnow()
+
+    on_successor.server_pk_successor_pinned_at = started_at + timedelta(minutes=1)
+    on_current.server_pk_current_pinned_at = started_at + timedelta(minutes=1)
+    # Pinned long before this rotation started — tells us nothing about it.
+    stale_pin.server_pk_current_pinned_at = started_at - timedelta(days=30)
+    revoked.server_pk_successor_pinned_at = started_at + timedelta(minutes=1)
+    db_session.flush()
+
+    resp = await client.get("/api/v1/agents/server-key/status", headers=auth_headers)
+    assert resp.status_code == 200
+    fleet = resp.json()["fleet"]
+
+    assert fleet["successor"] == 1
+    assert fleet["current"] == 1
+    assert fleet["unseen"] == 2, "never-handshaked and stale-pin both count as unseen"
+    assert fleet["total"] == 4, "revoked agents are excluded from every bucket"
+
+
+@pytest.mark.asyncio
+async def test_rotation_status_adoption_is_one_query_regardless_of_fleet_size(
+    client, auth_headers, factories
+):
+    """Same contract as test_presence_issues_single_query_regardless_of_fleet_size:
+    the panel must not cost one query per agent. See _latest_samples' docstring
+    at api/agents.py:284 for why this is pinned rather than merely intended."""
+    for _ in range(20):
+        factories.agent(status="active")
+
+    rotate = await client.post("/api/v1/agents/server-key/rotate", headers=auth_headers)
+    assert rotate.status_code == 201
+
+    with _capture_sql() as statements:
+        resp = await client.get("/api/v1/agents/server-key/status", headers=auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json()["fleet"]["total"] == 20
+    agent_selects = [
+        s for s in statements if " agents" in s.lower() and s.lstrip().upper().startswith("SELECT")
+    ]
+    assert len(agent_selects) == 1, agent_selects
+
+
+@pytest.mark.asyncio
+async def test_rotation_status_never_returns_key_material(client, auth_headers):
+    rotate = await client.post("/api/v1/agents/server-key/rotate", headers=auth_headers)
+    assert rotate.status_code == 201
+    body = rotate.json()
+    serialized = json.dumps(body)
+    assert "priv" not in serialized.lower()
+    assert set(body) <= {
+        "active",
+        "current_key_fingerprint",
+        "successor_key_fingerprint",
+        "started_at",
+        "overlap_expires_at",
+        "fleet",
+    }
