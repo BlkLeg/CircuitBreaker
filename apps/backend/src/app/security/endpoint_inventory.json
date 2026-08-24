@@ -7313,6 +7313,7 @@
       "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.windscribe.unignore_privacy_finding",
+        "app.core.rbac.require_role.<locals>._dep",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
         "app.db.session.get_db"
@@ -7325,7 +7326,7 @@
       ],
       "name": "unignore_privacy_finding",
       "path": "/api/v1/privacy-findings/ignore",
-      "rbac_policy": "authenticated-session",
+      "rbac_policy": "declared-role-or-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
@@ -7333,6 +7334,7 @@
       "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.windscribe.ignore_privacy_finding",
+        "app.core.rbac.require_role.<locals>._dep",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
         "app.db.session.get_db"
@@ -7345,7 +7347,7 @@
       ],
       "name": "ignore_privacy_finding",
       "path": "/api/v1/privacy-findings/ignore",
-      "rbac_policy": "authenticated-session",
+      "rbac_policy": "declared-role-or-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },

@@ -3,12 +3,13 @@ on request. Disabled/no-data states return 200 empty shapes, not errors."""
 
 from collections import Counter
 from datetime import timedelta
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.rbac import require_role
 from app.core.security import require_auth
 from app.core.time import utcnow
 from app.db.models import (
@@ -17,6 +18,7 @@ from app.db.models import (
     NetworkPrivacySnapshot,
     PrivacyFindingIgnore,
     ScanResult,
+    User,
 )
 from app.db.session import get_db
 
@@ -221,8 +223,8 @@ async def list_privacy_finding_ignores(
 @router.post("/privacy-findings/ignore", status_code=201)
 async def ignore_privacy_finding(
     payload: PrivacyFindingIgnoreRequest,
-    db: Session = Depends(get_db),
-    user: Any = Depends(require_auth),
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, require_role("admin")],
 ) -> dict[str, Any]:
     exists = (
         db.query(PrivacyFindingIgnore)
@@ -235,7 +237,9 @@ async def ignore_privacy_finding(
     if not exists:
         db.add(
             PrivacyFindingIgnore(
-                rule_id=payload.rule_id, hardware_id=payload.hardware_id, created_by=user
+                rule_id=payload.rule_id,
+                hardware_id=payload.hardware_id,
+                created_by=current_user.id,
             )
         )
         db.commit()
@@ -245,9 +249,9 @@ async def ignore_privacy_finding(
 @router.delete("/privacy-findings/ignore", status_code=204)
 async def unignore_privacy_finding(
     rule_id: str,
+    db: Annotated[Session, Depends(get_db)],
+    _current_user: Annotated[User, require_role("admin")],
     hardware_id: int | None = None,
-    db: Session = Depends(get_db),
-    user: Any = Depends(require_auth),
 ) -> None:
     ignore = (
         db.query(PrivacyFindingIgnore)
