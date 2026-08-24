@@ -86,6 +86,17 @@ not_in_nav: |
   /cross-browser-audit.md
   /mono-db-production-plan.md
 
+# Pages that are not part of the published site at all — not in the sidebar and
+# not reachable by URL, unlike the not_in_nav entries above. `mkdocs build
+# --strict` fails on any page in docs/ that is in neither list, which is what
+# turned the Docs workflow red when this file landed.
+#   - 1.0.0-incomplete-features.md — an action list for dev review of what did
+#     not make 1.0.0. It tracks work in flight rather than describing shipped
+#     behaviour, so it is excluded outright rather than published unlinked the
+#     way the audit/plan records above are.
+exclude_docs: |
+  /1.0.0-incomplete-features.md
+
 markdown_extensions:
   - admonition
   - tables
