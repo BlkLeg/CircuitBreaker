@@ -199,7 +199,7 @@ Five groups, 21 destinations. `require` shown where it applies.
 | Certificates | `/certificates` | admin | no |
 | Notifications | `/notifications` | admin | no |
 | Logs | `/logs` | admin | yes |
-| Audit Log | `/logs/audit` | admin | yes |
+| Audit Log | `/logs/audit` | admin | no |
 
 ### System
 | Item | Path | require | dockDefault |

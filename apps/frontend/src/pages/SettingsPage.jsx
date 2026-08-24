@@ -1757,8 +1757,6 @@ export default function SettingsPage() {
               </div>
             )}
 
-            {/* ── Users Tab ──────────────────────────── */}
-
             {/* ── Knowledge Base Tab ─────────────────── */}
             {activeTab === 'kb' && isAdmin && <KnowledgeBasePage embedded />}
 
