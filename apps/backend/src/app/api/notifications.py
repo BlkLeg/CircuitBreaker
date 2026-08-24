@@ -66,14 +66,17 @@ def _provider_config(sink: NotificationSink) -> dict:
     notification_worker._dispatch — subscripts it as a dict, so those rows raise on
     read. Decode them here rather than leaving installs with unreadable sinks.
     """
-    config = sink.provider_config
+    # Typed ``object`` because the mapped column claims ``dict``: the legacy rows
+    # this function exists for violate that annotation, so the isinstance checks
+    # below would otherwise be narrowed away as unreachable.
+    config: object = sink.provider_config
     if isinstance(config, str):
         try:
             decoded = json.loads(config)
         except ValueError:
             return {}
         return decoded if isinstance(decoded, dict) else {}
-    return config or {}
+    return config if isinstance(config, dict) else {}
 
 
 def _sink_to_out(sink: NotificationSink) -> SinkOut:
