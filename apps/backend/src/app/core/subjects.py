@@ -53,7 +53,7 @@ MONITOR_ALERT_RECOVERED = "alert.monitor.recovered.{item_id}"
 
 AGENT_EVENT = "agents.event"
 
-# ── Topology (map / rack live updates) ───────────────────────────────────────
+# ── Topology (map live updates) ──────────────────────────────────────────────
 
 TOPOLOGY_NODE_MOVED = "topology.node.moved"
 TOPOLOGY_CABLE_ADDED = "topology.cable.added"

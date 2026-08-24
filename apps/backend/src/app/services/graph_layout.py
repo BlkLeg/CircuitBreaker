@@ -69,14 +69,6 @@ LAYOUTS: list[dict] = [
         "docker_optimised": True,
     },
     {
-        "id": "grid_rack",
-        "label": "Rack Grid",
-        "description": "Grid layout respecting rack unit (U) positions. Best when all nodes are racked.",  # noqa: E501
-        "category": "advanced",
-        "icon": "server",
-        "docker_optimised": False,
-    },
-    {
         "id": "concentric",
         "label": "Concentric Rings",
         "description": "Onion-ring layout: external -> hardware -> services -> storage.",

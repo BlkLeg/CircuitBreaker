@@ -505,7 +505,7 @@ class EnhancedBulkMergeNetwork(BaseModel):
 
 
 class EnhancedBulkMergeRequest(BaseModel):
-    """Full-featured bulk merge with cluster, network, rack, and per-node assignments."""
+    """Full-featured bulk merge with cluster, network, and per-node assignments."""
 
     result_ids: list[int]
     cluster: EnhancedBulkMergeCluster | None = None

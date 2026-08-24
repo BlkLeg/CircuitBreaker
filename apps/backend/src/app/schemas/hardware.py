@@ -129,19 +129,13 @@ class HardwareBase(BaseModel):
     # v0.1.2: catalog linkage
     vendor_catalog_key: str | None = None
     model_catalog_key: str | None = None
-    # v0.1.2: rack positioning
-
     # v0.1.2: telemetry configuration
     telemetry_config: TelemetryConfig | None = None
     # v0.1.4: environment registry
     environment_id: int | None = None
     environment: str | None = None
-    # v0.1.4-cortex: rack assignment + discovery lineage
-
+    # v0.1.4-cortex: discovery lineage
     source_scan_result_id: int | None = None
-    # Phase 2: mounting orientation
-    mounting_orientation: str | None = None
-    side_rail: str | None = None
     # v0.1.7: Networking (Router/AP) hardware extensions
     wifi_standards: list[str] | None = None
     wifi_bands: list[str] | None = None
@@ -184,11 +178,6 @@ class HardwareUpdate(BaseModel):
     # v0.1.4: environment registry
     environment_id: int | None = None
     environment: str | None = None
-    # v0.1.4-cortex: rack assignment
-
-    # Phase 2: mounting orientation
-    mounting_orientation: str | None = None
-    side_rail: str | None = None
     # v2: manual status override (clears auto-derivation when set)
     status_override: str | None = None
     # v0.1.7: Networking (Router/AP) hardware extensions

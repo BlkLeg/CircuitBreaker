@@ -223,7 +223,6 @@ def test_enhanced_bulk_merge_batch_loads_scan_results(db_session) -> None:  # ty
     payload.assignments = []
     payload.cluster = None
     payload.network = None
-    payload.rack_id = None
     payload.create_services = False
 
     # Should complete without error — batch load is an optimisation, not a behaviour change

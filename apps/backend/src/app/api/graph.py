@@ -230,7 +230,7 @@ def delete_edge(
 ) -> None:
     """Delete a topology edge (connection join-table row) by its React Flow edge ID.
 
-    Structural edges (hosts, runs, rack_member, cluster_member, etc.) and
+    Structural edges (hosts, runs, cluster_member, etc.) and
     implicit derived edges return 400 — they must be managed via their
     respective entity endpoints.
     """

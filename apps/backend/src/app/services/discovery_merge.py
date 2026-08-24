@@ -576,7 +576,7 @@ def bulk_merge_results(db: Session, result_ids: list[int], action: str, actor: s
 
 def enhanced_bulk_merge(db: Session, payload: Any, actor: str = "api") -> dict:
     """Enhanced bulk merge: accept scan results + optionally create/link cluster,
-    network, rack assignment, per-node overrides, and auto-create services.
+    network, per-node overrides, and auto-create services.
 
     Returns summary dict with created entity counts and hardware IDs.
     """

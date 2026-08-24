@@ -3,7 +3,7 @@ Topology WebSocket stream.
 
 Endpoint: WS /api/v1/topology/stream
 
-Delivers real-time topology events to connected clients (MapPage, rack views).
+Delivers real-time topology events to connected clients (MapPage).
 Events are broadcast by the NATS → WebSocket bridge in main.py when any of the
 following subjects are received:
   - topology.node.moved          → {"type": "node_moved", ...}

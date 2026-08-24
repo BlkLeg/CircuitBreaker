@@ -1,8 +1,8 @@
 """Bulk suggestion intelligence for the enhanced review queue.
 
 Provides smart grouping, network inference, vendor catalog matching,
-rack slot finding, duplicate detection, and service naming suggestions
-for multi-select merge operations.
+duplicate detection, and service naming suggestions for multi-select
+merge operations.
 """
 
 import ipaddress
@@ -208,9 +208,6 @@ def suggest_bulk_actions(db: Session, result_ids: list[int]) -> dict:
             "clusters": [{"name": str, "result_ids": [int], "vendor": str|None}],
             "networks": [{"name": str, "cidr": str, "existing_id": int|None, "result_ids": [int]}],
             "catalog_matches": {result_id: {vendor_key, device_key, label, icon, role, u_height}},
-            "rack_suggestions": [
-                {"rack_id": int, "rack_name": str, "free_slots": [int], "height_u": int}
-            ],
             "duplicates": [
                 {"result_id": int, "ip": str, "existing_hardware_id": int, "existing_name": str}
             ],
@@ -225,7 +222,6 @@ def suggest_bulk_actions(db: Session, result_ids: list[int]) -> dict:
             "clusters": [],
             "networks": [],
             "catalog_matches": {},
-            "rack_suggestions": [],
             "duplicates": [],
             "services": {},
             "role_summary": {},
@@ -242,7 +238,6 @@ def suggest_bulk_actions(db: Session, result_ids: list[int]) -> dict:
         "clusters": clusters,
         "networks": networks,
         "catalog_matches": catalog_matches,
-        "rack_suggestions": [],
         "duplicates": duplicates,
         "services": services,
         "role_summary": role_summary,
