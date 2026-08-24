@@ -160,3 +160,10 @@ Admins can see exactly what the running instance can do with `GET /api/v1/discov
 - [Settings](settings.md)
 - [Topology Map](topology-map.md)
 - [Audit Log](audit-log.md)
+
+## Naming hints
+
+Vendor and device-type identification draws on two operator-editable lookup
+tables in addition to the curated device catalogue. See
+[Knowledge Base](knowledge-base.md) for how learned entries accumulate and how
+to correct them.

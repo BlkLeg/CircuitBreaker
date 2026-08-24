@@ -31,6 +31,7 @@ nav:
       - Networks: networks.md
       - Services: services.md
       - Auto-Discovery (Beta): discovery.md
+      - Knowledge Base: knowledge-base.md
       - cb-agent: agent.md
       - Settings: settings.md
       - Authentication & Access: auth-access.md
