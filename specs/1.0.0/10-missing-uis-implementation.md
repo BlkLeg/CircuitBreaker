@@ -1,15 +1,29 @@
 # Missing UIs — Sprint Implementation Slices
 
 **Companion spec:** [10-missing-uis.md](./10-missing-uis.md)
-**Status:** UI-1 planned in full; UI-2 through UI-5 outlined, plans written on demand
+**Status:** All five slices planned in full and ready to execute
 
 ## Standalone slice plans
 
-- [UI-1 — Knowledge Base](./slices/ui-1-knowledge-base.md) — **written**
-- UI-2 — Agent server-key rotation — not yet written
-- UI-3 — Audit view and chain integrity — not yet written
-- UI-4 — Business Intelligence — not yet written
-- UI-5 — Access tokens and service accounts — not yet written
+- [UI-1 — Knowledge Base](./slices/ui-1-knowledge-base.md)
+- [UI-2 — Agent server-key rotation](./slices/ui-2-server-key-rotation.md)
+- [UI-3 — Audit view and chain integrity](./slices/ui-3-audit-view.md)
+- [UI-4 — Business Intelligence](./slices/ui-4-business-intelligence.md)
+- [UI-5 — Access tokens and service accounts](./slices/ui-5-access-tokens.md)
+
+## Deviations from the spec, recorded during planning
+
+Each was found by reading the code the slice touches. All are argued in the
+slice that makes them and repeated in that slice's register note.
+
+| Slice | Spec said | Plan does | Why |
+|---|---|---|---|
+| UI-2 | Per-agent key-state column on the fleet table (§6.3) | Drill-down inside the rotation panel | `FleetTable.jsx:18-21` declares its column list a contract with `FleetRow`'s hand-counted `colSpan` values; a *conditional* 12th column would make them dynamic in the densest table in the app |
+| UI-3 | auditMode hides inapplicable filters (§5.2) | Hides nothing | Every filter applies to audit entries; hiding any would remove working functionality |
+| UI-3 | — | Also retitles `/logs` to "Logs" | `LogsPage` already titled itself "Audit Log" while sending no `category`; two pages cannot share the title |
+| UI-4 | Empty-state distinguishability as a backend delta (§8.2 B9) | Delivered as copy | The job writes nothing when it finds nothing, so `max(evaluated_at)` is NULL in both cases; precision needs job-run tracking, which is scheduler observability |
+| UI-5 | `[]` means "inherit the creator" (§7.2 B1) | Static tokens only, never service-account JWTs | A service account's "creator" is the synthetic superuser; inheriting there would promote an empty-scoped token to superuser |
+| UI-5 | Full access preset (§7.3) | `*:*`, not `admin:*` | `has_scope` never treats admin as implying read, so `admin:*` alone passes role gates and 403s on every read route |
 
 Slices are numbered by implementation order, not by finding ID — deliberately, since a
 slice named `inc-1-…` would collide with finding INC-01 (racks removal, already closed).
