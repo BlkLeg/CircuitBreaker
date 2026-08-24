@@ -260,6 +260,19 @@ def build_binary(target_os: str, work_dir: Path) -> Path:
             str(build_dir),
             "--specpath",
             str(spec_dir),
+            # `circuit-breaker --version` printed "unknown" from every installed
+            # package. resolve_app_version() looks for a VERSION file beside the
+            # executable (share/VERSION, the tarball bundle layout) or inside the
+            # frozen bundle — but nothing ever put one inside the bundle, and a
+            # packaged install relocates the binary to /usr/local/bin while its
+            # share/ tree goes to /usr/local/share/circuit-breaker, so the
+            # adjacent-share candidate resolves to a path that does not exist.
+            # Shipping the file inside the binary makes the version travel with
+            # the executable regardless of how the package lays the rest out.
+            # It is the same REPO_ROOT/VERSION that stage_bundle() copies to
+            # share/VERSION, so the embedded and shipped copies cannot disagree.
+            "--add-data",
+            f"{VERSION_FILE}{os.pathsep}.",
             "--name",
             binary_name(target_os),
             *[f"--hidden-import={m}" for m in hidden_imports],

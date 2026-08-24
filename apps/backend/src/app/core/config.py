@@ -14,8 +14,17 @@ def _version_candidates() -> list[Path]:
     share_dir = os.environ.get("CB_SHARE_DIR")
     if share_dir:
         candidates.append(Path(share_dir) / "VERSION")
-    executable_share = Path(sys.executable).resolve().parent / "share" / "VERSION"
-    candidates.append(executable_share)
+    executable_dir = Path(sys.executable).resolve().parent
+    # The tarball/AppImage bundle layout: the binary sits next to its own share/.
+    candidates.append(executable_dir / "share" / "VERSION")
+    # The packaged (deb/rpm/apk) layout, which the bundle layout is not: nfpm
+    # installs the binary to <prefix>/bin/circuit-breaker and the share tree to
+    # <prefix>/share/circuit-breaker/, so the adjacent-share candidate above
+    # resolves to /usr/local/bin/share/VERSION and never exists. Without this
+    # entry an installed package had no readable VERSION at all and
+    # `circuit-breaker --version` answered "unknown", which is what the
+    # installed-artifact smoke gate caught.
+    candidates.append(executable_dir.parent / "share" / "circuit-breaker" / "VERSION")
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
         candidates.append(Path(meipass) / "VERSION")
