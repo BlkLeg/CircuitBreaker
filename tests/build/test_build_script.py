@@ -1,4 +1,5 @@
 """Unit tests for build_native_release.py packaging functions."""
+import importlib.util
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -132,3 +133,78 @@ class TestCreateArchPackage:
 
         assert result is not None
         assert result.suffix == ".zst"
+
+
+class TestDynamicImportHiddenImports:
+    """gh#104: proxmoxer reaches its auth backend through
+    ``importlib.import_module(f".backends.{backend}", "proxmoxer")``. PyInstaller
+    builds its bundle from a static import graph, so that string was invisible and
+    ``proxmoxer/backends/*.py`` was dropped from the frozen binary -- every Proxmox
+    VE connection on a native install died with ModuleNotFoundError, while the
+    build itself reported success. The build is the only place this can be caught.
+    """
+
+    @staticmethod
+    def _fake_pyinstaller(monkeypatch, collected):
+        """Install a stub PyInstaller.utils.hooks so the wiring is testable
+        without PyInstaller present (it is a build-time dep, not a test one)."""
+        import types
+
+        hooks = types.ModuleType("PyInstaller.utils.hooks")
+        hooks.collect_submodules = lambda pkg: list(collected.get(pkg, []))
+        utils = types.ModuleType("PyInstaller.utils")
+        utils.hooks = hooks
+        root = types.ModuleType("PyInstaller")
+        root.utils = utils
+        for name, mod in (
+            ("PyInstaller", root),
+            ("PyInstaller.utils", utils),
+            ("PyInstaller.utils.hooks", hooks),
+        ):
+            monkeypatch.setitem(sys.modules, name, mod)
+
+    def test_collects_the_submodules_static_analysis_cannot_see(self, monkeypatch):
+        self._fake_pyinstaller(
+            monkeypatch,
+            {
+                "proxmoxer": ["proxmoxer", "proxmoxer.backends", "proxmoxer.backends.https"],
+                "apscheduler": ["apscheduler", "apscheduler.triggers.cron"],
+            },
+        )
+        collected = br._collect_dynamic_import_hidden_imports()
+        assert "proxmoxer.backends.https" in collected
+        assert "apscheduler.triggers.cron" in collected
+
+    def test_build_passes_them_to_pyinstaller_as_hidden_imports(self, monkeypatch, tmp_path):
+        """The list is only worth collecting if it reaches the command line."""
+        self._fake_pyinstaller(
+            monkeypatch, {"proxmoxer": ["proxmoxer.backends.https"], "apscheduler": ["apscheduler"]}
+        )
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            # PyInstaller's output is asserted to exist by build_binary.
+            out = tmp_path / "pyinstaller-dist" / br.binary_name("linux")
+            out.write_bytes(b"\x7fELF")
+
+        monkeypatch.setattr(br, "run", fake_run)
+        br.build_binary("linux", tmp_path)
+
+        assert "--hidden-import=proxmoxer.backends.https" in captured["cmd"]
+
+    def test_refuses_to_build_when_a_dynamic_package_is_absent(self, monkeypatch):
+        """An empty result means the package is not installed. Failing here is the
+        point: the old behaviour was a green build that broke in production."""
+        self._fake_pyinstaller(monkeypatch, {"proxmoxer": [], "apscheduler": ["apscheduler"]})
+        with pytest.raises(SystemExit, match="proxmoxer"):
+            br._collect_dynamic_import_hidden_imports()
+
+    @pytest.mark.skipif(
+        importlib.util.find_spec("PyInstaller") is None, reason="PyInstaller not installed"
+    )
+    def test_the_real_collector_finds_the_backend_that_broke(self):
+        """Guards the actual claim against the real installed proxmoxer, so a
+        future proxmoxer layout change cannot silently reintroduce gh#104."""
+        collected = br._collect_dynamic_import_hidden_imports()
+        assert "proxmoxer.backends.https" in collected

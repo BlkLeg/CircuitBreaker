@@ -167,6 +167,65 @@ def _collect_migration_hidden_imports() -> list[str]:
     return sorted(found)
 
 
+# Third-party packages that reach part of themselves through a runtime string
+# rather than an `import` statement. PyInstaller builds its bundle from a static
+# import graph, so anything named only by a string is invisible to it and gets
+# dropped -- the frozen binary then raises ModuleNotFoundError on the first call
+# that needs it, with nothing at build time to warn you. Same class of problem
+# `_collect_migration_hidden_imports()` above solves for Alembic's migrations.
+#
+#   proxmoxer  -- ProxmoxAPI.__init__ selects its auth backend with
+#                 `importlib.import_module(f".backends.{backend}", "proxmoxer")`,
+#                 so proxmoxer/backends/*.py never entered the bundle and every
+#                 Proxmox VE integration on a native install died on connect.
+#                 (gh#104)
+#   apscheduler -- resolves triggers, executors and jobstores through
+#                 `importlib.metadata.entry_points()`. We only ever pass trigger
+#                 *objects* (`CronTrigger(...)`, never the "cron" alias) and
+#                 never name a jobstore or executor, so this is pre-emptive: it
+#                 covers a future caller who does. Note that entry-point lookup
+#                 also needs the dist-info metadata, which submodules alone do
+#                 not provide -- a caller who starts using string aliases needs
+#                 `copy_metadata("APScheduler")` here as well.
+#
+# collect_submodules walks the installed package on disk instead of the import
+# graph, so new backends are picked up without editing this list.
+_DYNAMIC_IMPORT_PACKAGES = ("proxmoxer", "apscheduler")
+
+
+def _collect_dynamic_import_hidden_imports() -> list[str]:
+    """Enumerate submodules of packages that import parts of themselves by name.
+
+    Imported inside the function because `ensure_pyinstaller_available()` only
+    guarantees PyInstaller is importable by the time the build runs, not at
+    module import time.
+
+    Fails the build rather than warning: a package listed here is a declared
+    runtime dependency, and silently shipping without it is exactly the failure
+    this function exists to prevent.
+    """
+    from PyInstaller.utils.hooks import collect_submodules
+
+    found: list[str] = []
+    for package in _DYNAMIC_IMPORT_PACKAGES:
+        try:
+            submodules = collect_submodules(package)
+        except Exception as exc:  # noqa: BLE001
+            raise SystemExit(
+                f"Could not enumerate submodules of {package!r}, which loads part of "
+                f"itself dynamically and must be declared as a hidden import: {exc}\n"
+                "Install the backend runtime dependencies into the active environment first."
+            ) from exc
+        if not submodules:
+            raise SystemExit(
+                f"{package!r} resolved to no submodules -- it is almost certainly not "
+                "installed in the active environment. Refusing to build a binary that "
+                "would fail at runtime instead."
+            )
+        found.extend(submodules)
+    return sorted(set(found))
+
+
 def build_binary(target_os: str, work_dir: Path) -> Path:
     dist_dir = work_dir / "pyinstaller-dist"
     build_dir = work_dir / "pyinstaller-build"
@@ -185,6 +244,7 @@ def build_binary(target_os: str, work_dir: Path) -> Path:
         "app.workers.monitor_scheduler",
         "app.workers.monitor_poll_worker",
         *_collect_migration_hidden_imports(),
+        *_collect_dynamic_import_hidden_imports(),
     ]
     hidden_imports = sorted(set(hidden_imports))
     run(
