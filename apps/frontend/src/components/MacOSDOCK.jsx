@@ -4,13 +4,9 @@ import { NavLink, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { useIsMobile } from '../hooks/useIsMobile';
-import { NAV_MAP, canSeeNavItem, resolveDockPaths, NAV_GROUPS } from '../data/navigation';
+import { canSeeNavItem, navGroupOf, navItem, resolveDockPaths } from '../data/navigation';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext';
-
-const GROUP_OF = Object.fromEntries(
-  NAV_GROUPS.flatMap((group) => group.items.map((item) => [item.path, group]))
-);
 
 const MOBILE_DOCK_ITEMS = new Set(['/map', '/hardware', '/settings']);
 const DOCK_TRIGGER_ZONE_PX = 100;
@@ -24,7 +20,10 @@ function getWsStatusClass(status) {
 }
 
 function isActivePath(pathname, itemPath) {
-  return pathname === itemPath || pathname.startsWith(`${itemPath}/`);
+  if (pathname === itemPath) return true;
+  // A parent claims its sub-paths, but never another nav destination: /logs must not
+  // light up alongside /logs/audit now that both can sit on the dock at once.
+  return pathname.startsWith(`${itemPath}/`) && navItem(pathname) === null;
 }
 
 export default function MacOSDOCK({ pendingCount = 0, wsStatus = 'connected' }) {
@@ -84,10 +83,16 @@ export default function MacOSDOCK({ pendingCount = 0, wsStatus = 'connected' }) 
   }, [isMobile, scheduleHideDock, showDock]);
 
   const dockItems = useMemo(() => {
-    return resolveDockPaths(settings)
-      .map((path) => NAV_MAP[path])
-      .filter((item) => item && canSeeNavItem(item, GROUP_OF[item.path], user))
-      .map((item) => ({ ...item, id: item.path.replace(/\//g, '-').slice(1) }));
+    return (
+      resolveDockPaths(settings)
+        // navItem, not a bare NAV_MAP lookup: dock_order is untrusted stored input, and a
+        // stored "constructor" would otherwise resolve to Object and throw on item.path
+        // below — taking the whole app down, since the dock renders outside the inner
+        // ErrorBoundary.
+        .map(navItem)
+        .filter((item) => item && canSeeNavItem(item, navGroupOf(item.path), user))
+        .map((item) => ({ ...item, id: item.path.replace(/\//g, '-').slice(1) }))
+    );
   }, [settings, user]);
 
   const visibleItems = useMemo(

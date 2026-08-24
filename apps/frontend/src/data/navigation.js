@@ -95,7 +95,7 @@ export const NAV_GROUPS = [
         path: '/external-nodes',
         icon: Cloud,
         label: 'External Nodes',
-        labelKey: 'header.external',
+        labelKey: 'header.externalNodes',
       },
       { path: '/ipam', icon: Globe, label: 'IPAM', labelKey: 'header.ipam', require: 'editor' },
       { path: '/misc', icon: Boxes, label: 'Other Assets', labelKey: 'header.otherAssets' },
@@ -200,6 +200,29 @@ export const NAV_ITEMS_FLAT = NAV_GROUPS.flatMap((group) =>
 /** path → item. */
 export const NAV_MAP = Object.fromEntries(NAV_ITEMS_FLAT.map((item) => [item.path, item]));
 
+/** path → the group it belongs to. */
+const NAV_GROUP_OF = Object.fromEntries(
+  NAV_GROUPS.flatMap((group) => group.items.map((item) => [item.path, group]))
+);
+
+/**
+ * NAV_MAP lookup for a path that came from outside the code — a stored `dock_order`, a
+ * URL. Both maps are plain objects, so a bare `NAV_MAP[path]` resolves `constructor` or
+ * `toString` to a truthy function whose `.path` is undefined; the dock used to crash the
+ * whole app on that. Every consumer of an untrusted path goes through here, which is also
+ * why the object-injection suppression exists once rather than at each call site.
+ */
+export function navItem(path) {
+  // eslint-disable-next-line security/detect-object-injection -- own-property checked above
+  return Object.hasOwn(NAV_MAP, path) ? NAV_MAP[path] : null;
+}
+
+/** The group a path belongs to, or null. Same guard, same reason, as navItem. */
+export function navGroupOf(path) {
+  // eslint-disable-next-line security/detect-object-injection -- own-property checked above
+  return Object.hasOwn(NAV_GROUP_OF, path) ? NAV_GROUP_OF[path] : null;
+}
+
 /** A fresh install's dock. */
 export const DEFAULT_DOCK_ITEMS = NAV_ITEMS_FLAT.filter((i) => i.dockDefault).map((i) => i.path);
 
@@ -256,7 +279,10 @@ export function visibleNavGroups(user) {
  */
 export function resolveDockPaths(settings) {
   const order = settings?.dock_order;
-  if (Array.isArray(order)) return order;
+  // Stored verbatim, but de-duplicated: dock_order is admin-writable through the API
+  // with no allowlist, and a repeated path renders the same icon twice under the same
+  // React key. The UI cannot produce one; a hand-written PUT /settings can.
+  if (Array.isArray(order)) return [...new Set(order)];
 
   const legacyHidden = settings?.dock_hidden_items;
   if (Array.isArray(legacyHidden)) {
