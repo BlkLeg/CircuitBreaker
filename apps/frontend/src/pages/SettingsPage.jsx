@@ -27,6 +27,7 @@ import FirstUserDialog from '../components/auth/FirstUserDialog';
 import TimezoneSelect from '../components/TimezoneSelect.jsx';
 import DiscoverySettingsPage from './settings/DiscoverySettingsPage.jsx';
 import AdminUsersPage from './AdminUsersPage.jsx';
+import KnowledgeBasePage from './KnowledgeBasePage.jsx';
 import VaultStatusPanel from '../components/settings/VaultStatusPanel.jsx';
 import DbStatusPanel from '../components/settings/DbStatusPanel.jsx';
 import HostStatsPanel from '../components/settings/HostStatsPanel.jsx';
@@ -1759,6 +1760,9 @@ export default function SettingsPage() {
 
             {/* ── Users Tab ──────────────────────────── */}
             {activeTab === 'users' && isAdmin && <AdminUsersPage embedded />}
+
+            {/* ── Knowledge Base Tab ─────────────────── */}
+            {activeTab === 'kb' && isAdmin && <KnowledgeBasePage embedded />}
 
             {/* ── System Tab ─────────────────────────── */}
             {activeTab === 'system' && (

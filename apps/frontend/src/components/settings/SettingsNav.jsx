@@ -12,6 +12,7 @@ import {
   Plug,
   Users,
   Server,
+  BookOpen,
 } from 'lucide-react';
 
 export const SETTINGS_TABS = [
@@ -50,6 +51,13 @@ export const SETTINGS_TABS = [
     label: 'Integrations',
     icon: Plug,
     description: 'NATS, Docker, and external service controls.',
+  },
+  {
+    id: 'kb',
+    label: 'Knowledge Base',
+    icon: BookOpen,
+    description: 'Vendor and hostname hints that discovery uses for naming.',
+    adminOnly: true,
   },
 
   {
