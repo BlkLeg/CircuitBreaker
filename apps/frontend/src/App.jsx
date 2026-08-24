@@ -53,6 +53,7 @@ const StoragePage = React.lazy(() => import('./pages/StoragePage'));
 const LogsPage = React.lazy(() => import('./pages/LogsPage'));
 const ExternalNodesPage = React.lazy(() => import('./pages/ExternalNodesPage'));
 const AdminUsersPage = React.lazy(() => import('./pages/AdminUsersPage'));
+const AccessTokensPage = React.lazy(() => import('./pages/AccessTokensPage'));
 const UserActionsPage = React.lazy(() => import('./pages/UserActionsPage'));
 const InviteAcceptPage = React.lazy(() => import('./pages/InviteAcceptPage'));
 const ForceChangePasswordPage = React.lazy(() => import('./pages/ForceChangePasswordPage'));
@@ -219,6 +220,14 @@ function AppInner() {
                     element={
                       <RequireAdmin>
                         <UserActionsPage />
+                      </RequireAdmin>
+                    }
+                  />
+                  <Route
+                    path="/admin/tokens"
+                    element={
+                      <RequireAdmin>
+                        <AccessTokensPage />
                       </RequireAdmin>
                     }
                   />
