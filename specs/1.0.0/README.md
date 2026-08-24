@@ -23,6 +23,12 @@ not authorize implementation or change the current **NO-GO** recommendation.
 | [Documentation, repository, and governance](./07-documentation-repository-governance.md) | [Implementation](./07-documentation-repository-governance-implementation.md) | GOV-* | Docs/media, repository hygiene, versions, governance, supply chain |
 | [npm distribution](./08-npm-distribution.md) | [Implementation](./08-npm-distribution-implementation.md) | NPM-* | Package purpose, contents, security, publishing, platform acceptance |
 | [Release execution](./09-release-execution.md) | [Implementation](./09-release-execution-implementation.md) | EXEC-* | Phases, evidence ledger, final gate, sign-off and rollback authority |
+| [Missing UIs](./10-missing-uis.md) | [Implementation](./10-missing-uis-implementation.md) | INC-10 … INC-14 (closes INC-04) | Knowledge Base, audit chain, agent key rotation, token administration, business intelligence |
+
+Specs 01–09 derive from `docs/1.0.0-release-readiness-audit.md`, as the Source line above
+states. Spec 10 is the exception: its `INC-*` requirements come from
+`docs/1.0.0-incomplete-features.md`, the narrower incomplete-feature register, so it does
+not appear in the audit-to-spec traceability table below.
 
 ## Audit-to-spec traceability
 
