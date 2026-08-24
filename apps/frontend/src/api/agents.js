@@ -92,3 +92,13 @@ export const getAgentsMetricsSeries = (params = {}) =>
     // Query()` wants repeated keys (ids=1&ids=2), not axios' default "[]" suffix.
     paramsSerializer: { indexes: null },
   });
+
+// INC-13: server identity-key rotation. `status` and `rotate` both return
+// ServerKeyRotationStatus — fingerprints and timing only, never key material,
+// plus a `fleet` adoption block while a rotation is active. `pending` is the
+// actionable drill-down behind those counts.
+export const getServerKeyStatus = () => client.get('/agents/server-key/status');
+// 201 on success; 409 while a prior rotation's overlap is still running — the
+// server allows exactly one rotation in flight.
+export const rotateServerKey = () => client.post('/agents/server-key/rotate');
+export const getServerKeyPendingAgents = () => client.get('/agents/server-key/pending');
