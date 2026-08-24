@@ -8,9 +8,6 @@ import { NAV_MAP, canSeeNavItem, resolveDockPaths, NAV_GROUPS } from '../data/na
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext';
 
-export { NAV_MAP };
-export { DEFAULT_DOCK_ITEMS as DEFAULT_ORDER } from '../data/navigation';
-
 const GROUP_OF = Object.fromEntries(
   NAV_GROUPS.flatMap((group) => group.items.map((item) => [item.path, group]))
 );

@@ -266,19 +266,3 @@ export function resolveDockPaths(settings) {
 
   return DEFAULT_DOCK_ITEMS;
 }
-
-/* ── Back-compat shims — removed in Task 9 once no consumer remains ─────────── */
-
-/** @deprecated use NAV_GROUPS */
-export const NAV_ITEMS = NAV_GROUPS.map((group) => ({
-  group: group.label,
-  ...(group.require === 'admin' ? { requireAdmin: true } : {}),
-  items: group.items.map((item) => ({
-    ...item,
-    ...(item.require === 'admin' ? { requireAdmin: true } : {}),
-    ...(item.require === 'editor' ? { requireEditor: true } : {}),
-  })),
-}));
-
-/** @deprecated use DEFAULT_DOCK_ITEMS */
-export const DEFAULT_ORDER = DEFAULT_DOCK_ITEMS;
