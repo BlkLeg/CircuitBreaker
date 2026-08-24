@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.security import require_write_auth
 from app.db.models import Topology, TopologyEdge, TopologyNode
 from app.db.session import get_db
 
@@ -127,6 +128,7 @@ def list_topologies(
 def create_topology(
     payload: TopologyCreate,
     db: Session = Depends(get_db),
+    _: int | None = Depends(require_write_auth),
 ) -> dict:
     topology = Topology(
         name=payload.name,
@@ -184,6 +186,7 @@ def update_topology(
     topology_id: int,
     payload: TopologyUpdate,
     db: Session = Depends(get_db),
+    _: int | None = Depends(require_write_auth),
 ) -> dict:
     t = _topology_or_404(topology_id, db)
     if payload.name is not None:
@@ -196,7 +199,11 @@ def update_topology(
 
 
 @router.delete("/{topology_id}", status_code=204)
-def delete_topology(topology_id: int, db: Session = Depends(get_db)) -> None:
+def delete_topology(
+    topology_id: int,
+    db: Session = Depends(get_db),
+    _: int | None = Depends(require_write_auth),
+) -> None:
     t = _topology_or_404(topology_id, db)
     db.delete(t)
     db.commit()
@@ -222,6 +229,7 @@ def bulk_update_nodes(
     topology_id: int,
     payload: BulkNodesRequest,
     db: Session = Depends(get_db),
+    _: int | None = Depends(require_write_auth),
 ) -> dict:
     """Replace all node positions in the topology (bulk upsert by entity_type+entity_id)."""
     t = _topology_or_404(topology_id, db)

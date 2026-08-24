@@ -418,3 +418,107 @@ def test_full_endpoint_inventory_matches_runtime_routes():
     assert inventory["static_surface_count"] == len(expected_static)
     assert inventory["routes"] == expected
     assert inventory["static_surfaces"] == expected_static
+
+
+# (METHOD, path) -> why this write needs no role gate. Follows the exemption shape of
+# `_UNMOUNTED_ROUTERS` (INC-05) and `UNLISTED_ROUTES` (INC-21): a reason is mandatory,
+# and a stale entry fails its own test.
+_SELF_SERVICE = (
+    "self-service: the acting user is the only subject, so a role gate would lock a "
+    "viewer out of their own account"
+)
+_FASTAPI_USERS_SUPERUSER = (
+    "gated by fastapi-users' own current_user(superuser=True) dependency, which this "
+    "gate cannot name because it is not one of ours"
+)
+_READ_SHAPED_POST = "POST-shaped read: validates a candidate IP and writes nothing"
+
+_UNGATED_WRITE_EXEMPTIONS: dict[tuple[str, str], str] = {
+    ("DELETE", "/api/v1/auth/me"): _SELF_SERVICE,
+    ("PUT", "/api/v1/auth/me/avatar"): _SELF_SERVICE,
+    ("POST", "/api/v1/auth/mfa/setup"): _SELF_SERVICE,
+    ("POST", "/api/v1/auth/mfa/activate"): _SELF_SERVICE,
+    ("POST", "/api/v1/auth/mfa/disable"): _SELF_SERVICE,
+    ("POST", "/api/v1/auth/mfa/backup-codes/regenerate"): _SELF_SERVICE,
+    ("PATCH", "/api/v1/users/me"): _SELF_SERVICE,
+    ("PATCH", "/api/v1/users/me/password"): _SELF_SERVICE,
+    ("DELETE", "/api/v1/users/me/sessions"): _SELF_SERVICE,
+    ("DELETE", "/api/v1/users/me/sessions/{session_id}"): _SELF_SERVICE,
+    ("PATCH", "/api/v1/users/{id}"): _FASTAPI_USERS_SUPERUSER,
+    ("DELETE", "/api/v1/users/{id}"): _FASTAPI_USERS_SUPERUSER,
+    ("POST", "/api/v1/ip-check"): _READ_SHAPED_POST,
+    ("POST", "/api/v1/services/check-ip"): _READ_SHAPED_POST,
+    # The legacy tenant surface answers 410 Gone for every method and touches
+    # nothing; it stays mounted so stale clients get an explicit answer (ADR 0003).
+    ("POST", "/api/v1/tenants"): "410 Gone for every method; no behavior to authorize",
+    ("PUT", "/api/v1/tenants"): "410 Gone for every method; no behavior to authorize",
+    ("PATCH", "/api/v1/tenants"): "410 Gone for every method; no behavior to authorize",
+    ("DELETE", "/api/v1/tenants"): "410 Gone for every method; no behavior to authorize",
+    ("POST", "/api/v1/tenants/{legacy_path:path}"): (
+        "410 Gone for every method; no behavior to authorize"
+    ),
+    ("PUT", "/api/v1/tenants/{legacy_path:path}"): (
+        "410 Gone for every method; no behavior to authorize"
+    ),
+    ("PATCH", "/api/v1/tenants/{legacy_path:path}"): (
+        "410 Gone for every method; no behavior to authorize"
+    ),
+    ("DELETE", "/api/v1/tenants/{legacy_path:path}"): (
+        "410 Gone for every method; no behavior to authorize"
+    ),
+}
+
+_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _http_routes() -> Iterator[tuple[str, APIRoute, frozenset[str]]]:
+    for path, route, inherited in _runtime_routes():
+        if isinstance(route, APIRoute):
+            yield path, route, inherited
+
+
+def test_no_write_route_is_merely_authenticated():
+    """A write reachable by any authenticated user is an authorization decision nobody made.
+
+    `POST /api/v1/privacy-findings/ignore` — suppressing a security finding — sat at
+    `authenticated-session` and the inventory recorded it faithfully, because the
+    inventory is generated from the code it describes.
+    """
+    public = _public_policy_by_route_key()
+    offenders: list[str] = []
+
+    for path, route, inherited in _http_routes():
+        methods = set(route.methods or []) & _WRITE_METHODS
+        if not methods:
+            continue
+        if _route_key(path, route) in public:
+            continue
+        calls = _dependency_calls(route.dependant) | inherited
+        if calls & _READ_DEPENDENCIES:
+            continue
+        if "app.core.security.require_write_auth" in calls:
+            continue
+        for method in sorted(methods):
+            if (method, path) in _UNGATED_WRITE_EXEMPTIONS:
+                continue
+            offenders.append(f"{method} {path}")
+
+    assert not offenders, (
+        "these write routes declare no role or write scope, so any authenticated user "
+        "may call them. Add a require_role/require_scope dependency, or add an entry to "
+        "_UNGATED_WRITE_EXEMPTIONS with a reason: " + ", ".join(sorted(offenders))
+    )
+
+
+def test_ungated_write_exemptions_still_exist():
+    """An exemption for a route that is gone hides the next real one."""
+    live = {(method, path) for path, route, _ in _http_routes() for method in (route.methods or [])}
+    stale = sorted(
+        f"{method} {path}"
+        for (method, path) in _UNGATED_WRITE_EXEMPTIONS
+        if (method, path) not in live
+    )
+
+    assert not stale, "_UNGATED_WRITE_EXEMPTIONS names routes that no longer exist: " + ", ".join(
+        stale
+    )

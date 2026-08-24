@@ -8538,6 +8538,7 @@
         "app.api.topologies.create_topology",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
+        "app.core.security.require_write_auth",
         "app.db.session.get_db"
       ],
       "disclosure": "authenticated response; see route response model/schema",
@@ -8548,7 +8549,7 @@
       ],
       "name": "create_topology",
       "path": "/api/v1/topologies",
-      "rbac_policy": "authenticated-session",
+      "rbac_policy": "editor-or-admin-or-write-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
@@ -8558,6 +8559,7 @@
         "app.api.topologies.delete_topology",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
+        "app.core.security.require_write_auth",
         "app.db.session.get_db"
       ],
       "disclosure": "authenticated response; see route response model/schema",
@@ -8568,7 +8570,7 @@
       ],
       "name": "delete_topology",
       "path": "/api/v1/topologies/{topology_id}",
-      "rbac_policy": "authenticated-session",
+      "rbac_policy": "editor-or-admin-or-write-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
@@ -8598,6 +8600,7 @@
         "app.api.topologies.update_topology",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
+        "app.core.security.require_write_auth",
         "app.db.session.get_db"
       ],
       "disclosure": "authenticated response; see route response model/schema",
@@ -8608,7 +8611,7 @@
       ],
       "name": "update_topology",
       "path": "/api/v1/topologies/{topology_id}",
-      "rbac_policy": "authenticated-session",
+      "rbac_policy": "editor-or-admin-or-write-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
@@ -8638,6 +8641,7 @@
         "app.api.topologies.bulk_update_nodes",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
+        "app.core.security.require_write_auth",
         "app.db.session.get_db"
       ],
       "disclosure": "authenticated response; see route response model/schema",
@@ -8648,7 +8652,7 @@
       ],
       "name": "bulk_update_nodes",
       "path": "/api/v1/topologies/{topology_id}/nodes",
-      "rbac_policy": "authenticated-session",
+      "rbac_policy": "editor-or-admin-or-write-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
