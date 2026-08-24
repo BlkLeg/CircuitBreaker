@@ -1,155 +1,263 @@
 import {
   Activity,
+  Bell,
   BookOpen,
+  Boxes,
   Cloud,
   Cpu,
-  GripHorizontal,
+  FileClock,
+  Globe,
   HardDrive,
+  KeyRound,
   Layers,
+  Map,
+  Satellite,
+  ScanSearch,
   ScrollText,
   Server,
   Settings,
-  Map,
-  ScanSearch,
-  Globe,
   Shield,
   ShieldCheck,
-  Bell,
-  Users,
-  Satellite,
   TrendingUp,
+  Users,
 } from 'lucide-react';
+import { canEdit, isAdmin } from '../utils/rbac';
 
 /**
- * Grouped navigation items — used by MenuBar dropdowns and CollapsibleSidebar.
- * Each group has a label and an array of route items with RBAC flags.
+ * The single source of navigation truth.
+ *
+ * Consumers: components/Header.jsx (the menu), components/MacOSDOCK.jsx (the dock),
+ * components/settings/DockSettings.jsx (dock preferences), components/CommandPalette.jsx.
+ * None of them may keep its own list or its own role filter — see
+ * specs/2026-08-24-navigation-ia-rework-design.md.
+ *
+ * Groups follow the lifecycle of a tracked thing: it is acquired, it becomes
+ * inventory, it is observed, access to it is governed. System is the app itself.
+ *
+ * Item fields:
+ *   path        route path; must match a <Route path> in App.jsx
+ *   icon        lucide-react component
+ *   label       English default
+ *   labelKey    i18n key
+ *   require     'admin' | 'editor' — omit for no gate
+ *   dockDefault in a fresh install's dock
  */
-export const NAV_ITEMS = [
+export const NAV_GROUPS = [
   {
-    group: 'Infrastructure',
+    id: 'acquire',
+    label: 'Acquire',
+    labelKey: 'header.groupAcquire',
     items: [
-      { path: '/map', icon: Map, label: 'Map', labelKey: 'header.map' },
-      { path: '/discovery', icon: ScanSearch, label: 'Discovery', labelKey: 'header.discovery' },
-      { path: '/agents', icon: Satellite, label: 'Agents', labelKey: 'header.agents' },
-      { path: '/hardware', icon: Cpu, label: 'Hardware', labelKey: 'header.hardware' },
-      { path: '/compute-units', icon: Server, label: 'Compute', labelKey: 'header.compute' },
-      { path: '/services', icon: Layers, label: 'Services', labelKey: 'header.services' },
-      { path: '/monitors', icon: Activity, label: 'Monitors', labelKey: 'header.monitors' },
-      { path: '/storage', icon: HardDrive, label: 'Storage', labelKey: 'header.storage' },
-      { path: '/external-nodes', icon: Cloud, label: 'External', labelKey: 'header.external' },
-      { path: '/ipam', icon: Globe, label: 'IPAM', labelKey: 'header.ipam', requireEditor: true },
-      { path: '/intel', icon: TrendingUp, label: 'Intel', labelKey: 'header.intel' },
+      {
+        path: '/discovery',
+        icon: ScanSearch,
+        label: 'Discovery',
+        labelKey: 'header.discovery',
+        dockDefault: true,
+      },
+      {
+        path: '/agents',
+        icon: Satellite,
+        label: 'Agents',
+        labelKey: 'header.agents',
+        dockDefault: true,
+      },
     ],
   },
   {
-    group: 'Security',
-    requireAdmin: true,
+    id: 'inventory',
+    label: 'Inventory',
+    labelKey: 'header.groupInventory',
     items: [
+      {
+        path: '/hardware',
+        icon: Cpu,
+        label: 'Hardware',
+        labelKey: 'header.hardware',
+        dockDefault: true,
+      },
+      {
+        path: '/compute-units',
+        icon: Server,
+        label: 'Compute',
+        labelKey: 'header.compute',
+        dockDefault: true,
+      },
+      {
+        path: '/services',
+        icon: Layers,
+        label: 'Services',
+        labelKey: 'header.services',
+        dockDefault: true,
+      },
+      { path: '/storage', icon: HardDrive, label: 'Storage', labelKey: 'header.storage' },
+      {
+        path: '/external-nodes',
+        icon: Cloud,
+        label: 'External Nodes',
+        labelKey: 'header.external',
+      },
+      { path: '/ipam', icon: Globe, label: 'IPAM', labelKey: 'header.ipam', require: 'editor' },
+      { path: '/misc', icon: Boxes, label: 'Other Assets', labelKey: 'header.otherAssets' },
+    ],
+  },
+  {
+    id: 'observe',
+    label: 'Observe',
+    labelKey: 'header.groupObserve',
+    items: [
+      { path: '/map', icon: Map, label: 'Map', labelKey: 'header.map', dockDefault: true },
+      {
+        path: '/monitors',
+        icon: Activity,
+        label: 'Monitors',
+        labelKey: 'header.monitors',
+        dockDefault: true,
+      },
+      { path: '/intel', icon: TrendingUp, label: 'Intel', labelKey: 'header.intel' },
       {
         path: '/privacy',
         icon: ShieldCheck,
         label: 'Privacy',
         labelKey: 'header.privacy',
-      },
-      {
-        path: '/certificates',
-        icon: Shield,
-        label: 'Certificates',
-        labelKey: 'header.certificates',
-      },
-      {
-        path: '/notifications',
-        icon: Bell,
-        label: 'Notifications',
-        labelKey: 'header.notifications',
+        require: 'admin',
       },
     ],
   },
   {
-    group: 'Administration',
+    id: 'govern',
+    label: 'Govern',
+    labelKey: 'header.groupGovern',
     items: [
       {
         path: '/admin/users',
         icon: Users,
         label: 'Users',
         labelKey: 'header.users',
-        requireAdmin: true,
+        require: 'admin',
+      },
+      {
+        path: '/admin/tokens',
+        icon: KeyRound,
+        label: 'Access Tokens',
+        labelKey: 'header.accessTokens',
+        require: 'admin',
+      },
+      {
+        path: '/certificates',
+        icon: Shield,
+        label: 'Certificates',
+        labelKey: 'header.certificates',
+        require: 'admin',
+      },
+      {
+        path: '/notifications',
+        icon: Bell,
+        label: 'Notifications',
+        labelKey: 'header.notifications',
+        require: 'admin',
       },
       {
         path: '/logs',
         icon: ScrollText,
         label: 'Logs',
         labelKey: 'header.logs',
-        requireAdmin: true,
+        require: 'admin',
+        dockDefault: true,
       },
       {
         path: '/logs/audit',
-        icon: ShieldCheck,
+        icon: FileClock,
         label: 'Audit Log',
         labelKey: 'header.auditLog',
-        requireAdmin: true,
+        require: 'admin',
       },
+    ],
+  },
+  {
+    id: 'system',
+    label: 'System',
+    labelKey: 'header.groupSystem',
+    items: [
       {
         path: '/settings',
         icon: Settings,
         label: 'Settings',
         labelKey: 'header.settings',
-        requireEditor: true,
+        require: 'editor',
+        dockDefault: true,
       },
       { path: '/docs', icon: BookOpen, label: 'Docs', labelKey: 'header.docs' },
     ],
   },
 ];
 
-/**
- * Flat map of path → { icon, label, labelKey } — used by Dock for icon rendering.
- */
-export const NAV_MAP = {
-  '/hardware': { icon: Cpu, label: 'Hardware', labelKey: 'header.hardware' },
-  '/compute-units': { icon: Server, label: 'Compute', labelKey: 'header.compute' },
-  '/services': { icon: Layers, label: 'Services', labelKey: 'header.services' },
-  '/monitors': { icon: Activity, label: 'Monitors', labelKey: 'header.monitors' },
-  '/external-nodes': { icon: Cloud, label: 'External', labelKey: 'header.external' },
-  '/storage': { icon: HardDrive, label: 'Storage', labelKey: 'header.storage' },
-  '/map': { icon: Map, label: 'Map', labelKey: 'header.map' },
-  '/discovery': { icon: ScanSearch, label: 'Discovery', labelKey: 'header.discovery' },
-  '/agents': { icon: Satellite, label: 'Agents', labelKey: 'header.agents' },
-  '/docs': { icon: BookOpen, label: 'Docs', labelKey: 'header.docs' },
-  '/logs': { icon: ScrollText, label: 'Logs', labelKey: 'header.logs' },
-  '/settings': { icon: Settings, label: 'Settings', labelKey: 'header.settings' },
-  '/ipam': { icon: Globe, label: 'IPAM', labelKey: 'header.ipam' },
-  '/intel': { icon: TrendingUp, label: 'Intel', labelKey: 'header.intel' },
+/** Every item, declaration order preserved, tagged with its group id. */
+export const NAV_ITEMS_FLAT = NAV_GROUPS.flatMap((group) =>
+  group.items.map((item) => ({ ...item, groupId: group.id }))
+);
 
-  '/privacy': { icon: ShieldCheck, label: 'Privacy', labelKey: 'header.privacy' },
-  '/certificates': { icon: Shield, label: 'Certificates', labelKey: 'header.certificates' },
-  '/notifications': { icon: Bell, label: 'Notifications', labelKey: 'header.notifications' },
-  '/admin/users': { icon: Users, label: 'Users', labelKey: 'header.users' },
-};
+/** path → item. */
+export const NAV_MAP = Object.fromEntries(NAV_ITEMS_FLAT.map((item) => [item.path, item]));
+
+/** A fresh install's dock. */
+export const DEFAULT_DOCK_ITEMS = NAV_ITEMS_FLAT.filter((i) => i.dockDefault).map((i) => i.path);
 
 /**
- * Default dock item order — used when user has no saved preference.
+ * The dock as it shipped before this rework — the old ORIGINAL_DOCK_ORDER minus the
+ * dead /networks entry. Migration input only: it is what an install that predates
+ * `dock_order` gets, so upgrading never silently removes icons. Delete this once
+ * every install has written `dock_order` at least once.
  */
-export const DEFAULT_ORDER = [
+export const LEGACY_DOCK_DEFAULTS = [
   '/discovery',
-  '/agents',
   '/map',
   '/hardware',
   '/compute-units',
   '/services',
-  '/monitors',
   '/storage',
   '/external-nodes',
   '/ipam',
-  '/intel',
-
-  '/privacy',
+  '/monitors',
   '/certificates',
-  '/notifications',
-
   '/docs',
   '/logs',
   '/settings',
 ];
 
-// Re-export the grip icon for Dock's reorder button
-export { GripHorizontal };
+/**
+ * The only place navigation RBAC is decided. Header and the dock disagreeing about
+ * Certificates is what this exists to make impossible.
+ */
+export function canSeeNavItem(item, group, user) {
+  const gates = [group?.require, item?.require];
+  for (const gate of gates) {
+    if (gate === 'admin' && !isAdmin(user)) return false;
+    if (gate === 'editor' && !canEdit(user)) return false;
+  }
+  return true;
+}
+
+/** NAV_GROUPS filtered for a user; groups left empty are dropped. */
+export function visibleNavGroups(user) {
+  return NAV_GROUPS.map((group) => {
+    const items = group.items.filter((item) => canSeeNavItem(item, group, user));
+    return items.length > 0 ? { ...group, items } : null;
+  }).filter(Boolean);
+}
+
+/* ── Back-compat shims — removed in Task 9 once no consumer remains ─────────── */
+
+/** @deprecated use NAV_GROUPS */
+export const NAV_ITEMS = NAV_GROUPS.map((group) => ({
+  group: group.label,
+  ...(group.require === 'admin' ? { requireAdmin: true } : {}),
+  items: group.items.map((item) => ({
+    ...item,
+    ...(item.require === 'admin' ? { requireAdmin: true } : {}),
+    ...(item.require === 'editor' ? { requireEditor: true } : {}),
+  })),
+}));
+
+/** @deprecated use DEFAULT_DOCK_ITEMS */
+export const DEFAULT_ORDER = DEFAULT_DOCK_ITEMS;
