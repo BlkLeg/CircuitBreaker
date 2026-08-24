@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import PropTypes from 'prop-types';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { I18nextProvider } from 'react-i18next';
@@ -25,7 +24,7 @@ import ConnectionStatus from './components/ConnectionStatus.jsx';
 import MasqueradeBanner from './components/MasqueradeBanner.jsx';
 import ServerLifecycleBanner from './components/ServerLifecycleBanner.jsx';
 import LoadingScreen from './components/common/LoadingScreen.jsx';
-import { canEdit, isAdmin } from './utils/rbac';
+import Guarded from './components/common/Guarded';
 
 /**
  * `/discovery/history` folded into `/discovery` — carrying the query string.
@@ -158,11 +157,25 @@ function AppInner() {
                   <Route path="/services" element={<ServicesPage />} />
                   <Route path="/storage" element={<StoragePage />} />
                   <Route path="/networks" element={<Navigate to="/ipam" replace />} />
-                  <Route path="/certificates" element={<CertificatesPage />} />
+                  <Route
+                    path="/certificates"
+                    element={
+                      <Guarded path="/certificates">
+                        <CertificatesPage />
+                      </Guarded>
+                    }
+                  />
                   <Route path="/monitors" element={<MonitorsPage />} />
                   <Route path="/monitors/:id" element={<MonitorDetailPage />} />
                   <Route path="/privacy" element={<PrivacyPage />} />
-                  <Route path="/notifications" element={<NotificationsPage />} />
+                  <Route
+                    path="/notifications"
+                    element={
+                      <Guarded path="/notifications">
+                        <NotificationsPage />
+                      </Guarded>
+                    }
+                  />
                   <Route path="/tenants" element={<Navigate to="/map" replace />} />
                   <Route path="/external-nodes" element={<ExternalNodesPage />} />
                   <Route path="/misc" element={<MiscPage />} />
@@ -171,9 +184,9 @@ function AppInner() {
                   <Route
                     path="/ipam"
                     element={
-                      <RequireEditor>
+                      <Guarded path="/ipam">
                         <IPAMPage />
-                      </RequireEditor>
+                      </Guarded>
                     }
                   />
                   <Route path="/ip-addresses" element={<Navigate to="/ipam" replace />} />
@@ -181,25 +194,25 @@ function AppInner() {
                   <Route
                     path="/logs"
                     element={
-                      <RequireAdmin>
+                      <Guarded path="/logs">
                         <LogsPage />
-                      </RequireAdmin>
+                      </Guarded>
                     }
                   />
                   <Route
                     path="/logs/audit"
                     element={
-                      <RequireAdmin>
+                      <Guarded path="/logs/audit">
                         <LogsPage auditMode />
-                      </RequireAdmin>
+                      </Guarded>
                     }
                   />
                   <Route
                     path="/settings"
                     element={
-                      <RequireEditor>
+                      <Guarded path="/settings">
                         <SettingsPage />
-                      </RequireEditor>
+                      </Guarded>
                     }
                   />
                   <Route path="/discovery" element={<DiscoveryPage />} />
@@ -210,25 +223,25 @@ function AppInner() {
                   <Route
                     path="/admin/users"
                     element={
-                      <RequireAdmin>
+                      <Guarded path="/admin/users">
                         <AdminUsersPage />
-                      </RequireAdmin>
+                      </Guarded>
                     }
                   />
                   <Route
                     path="/admin/users/:id/actions"
                     element={
-                      <RequireAdmin>
+                      <Guarded path="/admin/users/:id/actions">
                         <UserActionsPage />
-                      </RequireAdmin>
+                      </Guarded>
                     }
                   />
                   <Route
                     path="/admin/tokens"
                     element={
-                      <RequireAdmin>
+                      <Guarded path="/admin/tokens">
                         <AccessTokensPage />
-                      </RequireAdmin>
+                      </Guarded>
                     }
                   />
                   <Route path="/invite/accept" element={<InviteAcceptPage />} />
@@ -246,24 +259,6 @@ function AppInner() {
     </div>
   );
 }
-
-function RequireEditor({ children }) {
-  const { user } = useAuth();
-  return canEdit(user) ? children : <Navigate to="/map" replace />;
-}
-
-function RequireAdmin({ children }) {
-  const { user } = useAuth();
-  return isAdmin(user) ? children : <Navigate to="/map" replace />;
-}
-
-RequireEditor.propTypes = {
-  children: PropTypes.node.isRequired,
-};
-
-RequireAdmin.propTypes = {
-  children: PropTypes.node.isRequired,
-};
 
 // Preserves query-string (e.g. ?cb_auth_code= for OAuth exchange) when redirecting to /login
 function NavigateToLogin() {
