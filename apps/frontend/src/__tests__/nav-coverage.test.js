@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { NAV_GROUPS, NAV_MAP, canSeeNavItem, visibleNavGroups } from '../data/navigation';
+import { guardFor } from '../data/routeGuards';
 
 // Vitest serves modules through Vite, so import.meta.url is not a file: URL and
 // new URL(rel, import.meta.url) cannot be handed to readFileSync. process.cwd()
@@ -159,4 +160,40 @@ describe('one destination, one name', () => {
       ).toBe(item.label);
     }
   );
+});
+
+describe('navigation derives its role gate from routeGuards', () => {
+  it('every nav item requires exactly what its route requires', () => {
+    for (const item of Object.values(NAV_MAP)) {
+      expect(
+        item.require ?? null,
+        `${item.path}: nav requires "${item.require}" but the route requires ` +
+          `"${guardFor(item.path)}". A menu entry must not be more permissive than its route.`
+      ).toBe(guardFor(item.path));
+    }
+  });
+
+  it('declares no require of its own', () => {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- reads a source file in this repo
+    const src = readFileSync(srcFile('data/navigation.js'), 'utf8');
+    const groups = src.slice(src.indexOf('export const NAV_GROUPS'), src.indexOf('NAV_ITEMS_FLAT'));
+    expect(
+      groups,
+      'NAV_GROUPS still hard-codes a require — it must come from guardFor(item.path)'
+    ).not.toMatch(/require:\s*['"]/);
+  });
+
+  it('shows Privacy to a viewer now that its reads are open', () => {
+    // Deliberate widening: the privacy dashboard is situational awareness; only the
+    // suppress-a-finding writes are governance, and those are gated server-side.
+    expect(
+      visibleNavGroups({ role: 'viewer' }).flatMap((g) => g.items.map((i) => i.path))
+    ).toContain('/privacy');
+  });
+
+  it('still withholds Notifications from a viewer', () => {
+    expect(
+      visibleNavGroups({ role: 'viewer' }).flatMap((g) => g.items.map((i) => i.path))
+    ).not.toContain('/notifications');
+  });
 });

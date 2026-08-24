@@ -7,7 +7,9 @@ describe('intelligence navigation', () => {
   });
 
   it('is not role-gated — the routes are readable by any authenticated user', () => {
-    expect(NAV_MAP['/intel'].require).toBeUndefined();
+    // null, not undefined: require is derived from routeGuards, where "no gate" is a
+    // recorded decision rather than an omission.
+    expect(NAV_MAP['/intel'].require).toBeNull();
   });
 
   it('sits with the other observation surfaces', () => {

@@ -22,6 +22,7 @@ import {
   Users,
 } from 'lucide-react';
 import { canEdit, isAdmin } from '../utils/rbac';
+import { guardFor } from './routeGuards';
 
 /**
  * The single source of navigation truth.
@@ -39,7 +40,7 @@ import { canEdit, isAdmin } from '../utils/rbac';
  *   icon        lucide-react component
  *   label       English default
  *   labelKey    i18n key
- *   require     'admin' | 'editor' — omit for no gate
+ *   require     derived from data/routeGuards.js — never declared here
  *   dockDefault in a fresh install's dock
  */
 export const NAV_GROUPS = [
@@ -97,7 +98,7 @@ export const NAV_GROUPS = [
         label: 'External Nodes',
         labelKey: 'header.externalNodes',
       },
-      { path: '/ipam', icon: Globe, label: 'IPAM', labelKey: 'header.ipam', require: 'editor' },
+      { path: '/ipam', icon: Globe, label: 'IPAM', labelKey: 'header.ipam' },
       { path: '/misc', icon: Boxes, label: 'Other Assets', labelKey: 'header.otherAssets' },
     ],
   },
@@ -120,7 +121,6 @@ export const NAV_GROUPS = [
         icon: ShieldCheck,
         label: 'Privacy',
         labelKey: 'header.privacy',
-        require: 'admin',
       },
     ],
   },
@@ -134,35 +134,30 @@ export const NAV_GROUPS = [
         icon: Users,
         label: 'Users',
         labelKey: 'header.users',
-        require: 'admin',
       },
       {
         path: '/admin/tokens',
         icon: KeyRound,
         label: 'Access Tokens',
         labelKey: 'header.accessTokens',
-        require: 'admin',
       },
       {
         path: '/certificates',
         icon: Shield,
         label: 'Certificates',
         labelKey: 'header.certificates',
-        require: 'admin',
       },
       {
         path: '/notifications',
         icon: Bell,
         label: 'Notifications',
         labelKey: 'header.notifications',
-        require: 'admin',
       },
       {
         path: '/logs',
         icon: ScrollText,
         label: 'Logs',
         labelKey: 'header.logs',
-        require: 'admin',
         dockDefault: true,
       },
       {
@@ -170,7 +165,6 @@ export const NAV_GROUPS = [
         icon: FileClock,
         label: 'Audit Log',
         labelKey: 'header.auditLog',
-        require: 'admin',
       },
     ],
   },
@@ -184,7 +178,6 @@ export const NAV_GROUPS = [
         icon: Settings,
         label: 'Settings',
         labelKey: 'header.settings',
-        require: 'editor',
         dockDefault: true,
       },
       { path: '/docs', icon: BookOpen, label: 'Docs', labelKey: 'header.docs' },
@@ -192,9 +185,9 @@ export const NAV_GROUPS = [
   },
 ];
 
-/** Every item, declaration order preserved, tagged with its group id. */
+/** Every item, declaration order preserved, tagged with its group id and route guard. */
 export const NAV_ITEMS_FLAT = NAV_GROUPS.flatMap((group) =>
-  group.items.map((item) => ({ ...item, groupId: group.id }))
+  group.items.map((item) => ({ ...item, groupId: group.id, require: guardFor(item.path) }))
 );
 
 /** path → item. */
@@ -251,9 +244,14 @@ export const LEGACY_DOCK_DEFAULTS = [
 /**
  * The only place navigation RBAC is decided. Header and the dock disagreeing about
  * Certificates is what this exists to make impossible.
+ *
+ * The item's gate is read from its path, not from the object handed in: callers pass
+ * raw NAV_GROUPS items (the palette, the dock picker) as readily as derived ones, and
+ * a shape that had lost `require` on the way here would silently open the entry to
+ * everyone. guardFor is the same answer the router gives that path.
  */
 export function canSeeNavItem(item, group, user) {
-  const gates = [group?.require, item?.require];
+  const gates = [group?.require, item?.path ? guardFor(item.path) : item?.require];
   for (const gate of gates) {
     if (gate === 'admin' && !isAdmin(user)) return false;
     if (gate === 'editor' && !canEdit(user)) return false;
@@ -264,7 +262,9 @@ export function canSeeNavItem(item, group, user) {
 /** NAV_GROUPS filtered for a user; groups left empty are dropped. */
 export function visibleNavGroups(user) {
   return NAV_GROUPS.map((group) => {
-    const items = group.items.filter((item) => canSeeNavItem(item, group, user));
+    const items = group.items
+      .map((item) => ({ ...item, require: guardFor(item.path) }))
+      .filter((item) => canSeeNavItem(item, group, user));
     return items.length > 0 ? { ...group, items } : null;
   }).filter(Boolean);
 }

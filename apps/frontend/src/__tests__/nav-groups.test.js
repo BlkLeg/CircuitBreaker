@@ -45,9 +45,8 @@ describe('NAV_GROUPS structure', () => {
 
   it('uses only the string require values', () => {
     for (const item of NAV_ITEMS_FLAT) {
-      if (item.require !== undefined) {
-        expect(['admin', 'editor']).toContain(item.require);
-      }
+      // require is derived from routeGuards, so an ungated item carries null, not undefined.
+      expect([null, 'admin', 'editor']).toContain(item.require);
       expect(item.requireAdmin).toBeUndefined();
       expect(item.requireEditor).toBeUndefined();
     }
