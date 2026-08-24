@@ -8,10 +8,12 @@ public/protocol allowlist.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Iterator
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
+from fastapi.dependencies.utils import get_dependant
 from fastapi.routing import APIRoute, APIWebSocketRoute
 from fastapi.staticfiles import StaticFiles
 from starlette.routing import Mount, Route
@@ -61,14 +63,66 @@ def _dependency_calls(dependant: Any) -> set[str]:
     return calls
 
 
-def _route_key(route: APIRoute | APIWebSocketRoute) -> tuple[str, tuple[str, ...], str]:
+def _inherited_dependency_calls(dependencies: Iterable[Any], path: str) -> frozenset[str]:
+    """Qualified names contributed by router-level `dependencies=[...]`.
+
+    Old FastAPI merged these into every route's own dependant when
+    include_router() copied the route. Lazy inclusion leaves them on the
+    wrapper, so the auth check and the inventory have to fold them back in or
+    every router that enforces auth at mount time looks unauthenticated.
+    """
+    calls: set[str] = set()
+    for dependency in dependencies:
+        call = getattr(dependency, "dependency", None)
+        if call is None:
+            continue
+        calls.update(_dependency_calls(get_dependant(path=path, call=call)))
+    return frozenset(calls)
+
+
+def _iter_runtime_routes(
+    routes: Iterable[Any], prefix: str = "", inherited: frozenset[str] = frozenset()
+) -> Iterator[tuple[str, APIRoute | APIWebSocketRoute, frozenset[str]]]:
+    """Yield (full path, route) for every API route reachable from the app.
+
+    FastAPI 0.138 stopped copying `include_router()` routes into `app.routes`.
+    Each call now leaves a `fastapi.routing._IncludedRouter` holding the real
+    router on `.original_router` and the mount prefix on
+    `.include_context.prefix`, so the flat paths this gate reconciles against
+    have to be rebuilt by walking the wrapper and concatenating prefixes. A
+    router included twice under different prefixes is two real URL surfaces and
+    is yielded twice, which is what the inventory must record.
+    """
+    for route in routes:
+        if isinstance(route, (APIRoute, APIWebSocketRoute)):
+            yield f"{prefix}{route.path}", route, inherited
+            continue
+        nested = getattr(route, "original_router", None)
+        if nested is None:
+            continue
+        context = getattr(route, "include_context", None)
+        nested_prefix = getattr(context, "prefix", "") or ""
+        full_prefix = f"{prefix}{nested_prefix}"
+        contributed = _inherited_dependency_calls(
+            getattr(context, "dependencies", None) or [], full_prefix
+        )
+        yield from _iter_runtime_routes(nested.routes, full_prefix, inherited | contributed)
+
+
+def _runtime_routes() -> list[tuple[str, APIRoute | APIWebSocketRoute, frozenset[str]]]:
+    return list(_iter_runtime_routes(app.routes))
+
+
+def _route_key(path: str, route: APIRoute | APIWebSocketRoute) -> tuple[str, tuple[str, ...], str]:
     if isinstance(route, APIRoute):
-        return ("http", tuple(sorted(route.methods or [])), route.path)
-    return ("websocket", ("WEBSOCKET",), route.path)
+        return ("http", tuple(sorted(route.methods or [])), path)
+    return ("websocket", ("WEBSOCKET",), path)
 
 
-def _is_auth_enforced(route: APIRoute | APIWebSocketRoute) -> bool:
-    return bool(_dependency_calls(route.dependant) & _AUTH_DEPENDENCIES)
+def _is_auth_enforced(
+    route: APIRoute | APIWebSocketRoute, inherited: frozenset[str] = frozenset()
+) -> bool:
+    return bool((_dependency_calls(route.dependant) | inherited) & _AUTH_DEPENDENCIES)
 
 
 def _load_policy() -> dict[str, Any]:
@@ -211,21 +265,31 @@ def test_every_runtime_route_is_a_kind_this_gate_understands():
     }
 
     unrecognized: list[str] = []
-    for route in app.routes:
-        if isinstance(route, (APIRoute, APIWebSocketRoute)):
-            continue
-        if isinstance(route, Mount):
-            if isinstance(route.app, StaticFiles):
+
+    def classify(routes: Iterable[Any]) -> None:
+        for route in routes:
+            if isinstance(route, (APIRoute, APIWebSocketRoute)):
                 continue
-            unrecognized.append(f"{type(route).__name__} mount at {route.path}")
-            continue
-        if isinstance(route, Route):
-            key = ("http", tuple(sorted(route.methods or [])), route.path)
-            if key in declared_framework:
+            if isinstance(route, Mount):
+                if isinstance(route.app, StaticFiles):
+                    continue
+                unrecognized.append(f"{type(route).__name__} mount at {route.path}")
                 continue
-            unrecognized.append(f"undeclared framework route {route.path}")
-            continue
-        unrecognized.append(f"{type(route).__module__}.{type(route).__name__}")
+            if isinstance(route, Route):
+                key = ("http", tuple(sorted(route.methods or [])), route.path)
+                if key in declared_framework:
+                    continue
+                unrecognized.append(f"undeclared framework route {route.path}")
+                continue
+            # A router wrapper is understood, but only because the traversal
+            # above follows it — descend so nothing inside escapes classification.
+            nested = getattr(route, "original_router", None)
+            if nested is not None:
+                classify(nested.routes)
+                continue
+            unrecognized.append(f"{type(route).__module__}.{type(route).__name__}")
+
+    classify(app.routes)
 
     assert not unrecognized, (
         "app.routes contains entries this gate cannot classify, so the endpoint "
@@ -235,10 +299,8 @@ def test_every_runtime_route_is_a_kind_this_gate_understands():
 
 def test_runtime_routes_reconcile_with_public_endpoint_policy():
     reviewed_public = set(_public_policy_by_route_key())
-    runtime_routes = [
-        route for route in app.routes if isinstance(route, (APIRoute, APIWebSocketRoute))
-    ]
-    runtime_keys = {_route_key(route) for route in runtime_routes}
+    runtime_routes = _runtime_routes()
+    runtime_keys = {_route_key(path, route) for path, route, _ in runtime_routes}
 
     stale_policy = reviewed_public - runtime_keys
 
@@ -260,9 +322,10 @@ def test_runtime_routes_reconcile_with_public_endpoint_policy():
     )
 
     unclassified = [
-        _route_key(route)
-        for route in runtime_routes
-        if not _is_auth_enforced(route) and _route_key(route) not in reviewed_public
+        _route_key(path, route)
+        for path, route, inherited in runtime_routes
+        if not _is_auth_enforced(route, inherited)
+        and _route_key(path, route) not in reviewed_public
     ]
     assert not unclassified, "runtime routes lack auth dependency and policy entry: " + ", ".join(
         f"{transport} {','.join(methods)} {path}"
@@ -299,16 +362,14 @@ def test_static_file_surfaces_reconcile_with_public_endpoint_policy():
 def test_full_endpoint_inventory_matches_runtime_routes():
     public_policy = _public_policy_by_route_key()
     static_policy = _static_policy_by_route_key()
-    runtime_routes = [
-        route for route in app.routes if isinstance(route, (APIRoute, APIWebSocketRoute))
-    ]
+    runtime_routes = _runtime_routes()
     runtime_static = _static_file_mounts()
     expected: list[dict[str, Any]] = []
     expected_static: list[dict[str, Any]] = []
-    for route in runtime_routes:
-        key = _route_key(route)
+    for path, route, inherited in runtime_routes:
+        key = _route_key(path, route)
         public_entry = public_policy.get(key)
-        calls = sorted(_dependency_calls(route.dependant))
+        calls = sorted(_dependency_calls(route.dependant) | inherited)
         endpoint = getattr(route, "endpoint", None)
         expected.append(
             {

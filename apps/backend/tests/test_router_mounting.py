@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+from collections.abc import Iterable
 
 from fastapi import APIRouter
 from fastapi.routing import APIRoute, APIWebSocketRoute
@@ -38,11 +39,32 @@ def _api_routers() -> dict[str, APIRouter]:
 
 
 def _mounted_endpoints() -> set[object]:
-    return {
-        route.endpoint
-        for route in fastapi_app.routes
-        if isinstance(route, (APIRoute, APIWebSocketRoute))
-    }
+    """Every endpoint reachable from the mounted app, at any depth.
+
+    FastAPI 0.138 stopped flattening `include_router()` into `app.routes`: each
+    call now leaves a `fastapi.routing._IncludedRouter` wrapper that keeps the
+    real router behind `.original_router`, and a router that includes another
+    router nests the same way. Looking only at the top level finds 7 of this
+    app's 431 endpoints, which reports every router as unmounted.
+    """
+    endpoints: set[object] = set()
+    visited: set[int] = set()
+
+    def collect(routes: Iterable[object]) -> None:
+        for route in routes:
+            if isinstance(route, (APIRoute, APIWebSocketRoute)):
+                endpoints.add(route.endpoint)
+                continue
+            # _IncludedRouter and anything else that wraps a router rather than
+            # copying its routes. Guarded by identity: a router included twice
+            # under different prefixes contributes the same endpoints once.
+            nested = getattr(route, "original_router", None)
+            if nested is not None and id(nested) not in visited:
+                visited.add(id(nested))
+                collect(nested.routes)
+
+    collect(fastapi_app.routes)
+    return endpoints
 
 
 def test_every_api_router_is_mounted():

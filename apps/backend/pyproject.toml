@@ -279,6 +279,11 @@ filterwarnings = [
     # in 3.14 and slated for removal in 3.16. Does not fire on CI's 3.12.
     # Remove when slowapi moves to inspect.iscoroutinefunction.
     "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning:slowapi.extension",
+    # shawnji (backend): botocore signs every request with datetime.utcnow(),
+    # deprecated in 3.12. Fires only on a 3.14 venv, not CI's 3.12, and turns
+    # all of tests/services/test_s3_client.py into setup errors. Remove when
+    # botocore moves to datetime.now(datetime.UTC).
+    "ignore:datetime.datetime.utcnow\\(\\) is deprecated:DeprecationWarning:botocore.auth",
 ]
 markers = [
     "security: security regression tests (from audit report)",
