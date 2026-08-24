@@ -46,10 +46,21 @@ const SINK_FIELDS = [
     ],
     required: true,
   },
-  { name: 'webhook_url', label: 'Webhook URL', hint: 'Required for Slack, Discord, and Teams.' },
+  {
+    name: 'webhook_url',
+    label: 'Webhook URL',
+    hint: 'Required for Slack, Discord, and Teams. Stored encrypted and shown masked — leave the masked value unchanged to keep the current URL.',
+  },
   { name: 'to', label: 'Recipient Email', hint: 'Required for Email provider.' },
   { name: 'enabled', label: 'Enabled', type: 'checkbox', defaultValue: true },
 ];
+
+// Everything on the sink form that belongs inside provider_config. Derived from
+// SINK_FIELDS so a new provider field cannot be forgotten here.
+const SINK_ENVELOPE_FIELDS = new Set(['name', 'provider_type', 'enabled']);
+const SINK_CONFIG_FIELDS = SINK_FIELDS.map((f) => f.name).filter(
+  (n) => !SINK_ENVELOPE_FIELDS.has(n)
+);
 
 function NotificationsPage() {
   const { settings } = useSettings();
@@ -120,7 +131,19 @@ function NotificationsPage() {
   );
 
   const handleSinkSubmit = async (values) => {
-    const { name, provider_type, enabled, ...config } = values;
+    const { name, provider_type, enabled } = values;
+    // Pick the config keys explicitly. The edit form is seeded with the whole
+    // row spread over its config (`{ ...row, ...row.provider_config }`), so
+    // taking the rest of `values` would write the row envelope — id, a nested
+    // provider_config, and read-only flags like webhook_url_set — back into
+    // the stored blob.
+    const config = {};
+    for (const key of SINK_CONFIG_FIELDS) {
+      // eslint-disable-next-line security/detect-object-injection -- key comes from the static SINK_FIELDS list
+      const value = values[key];
+      // eslint-disable-next-line security/detect-object-injection -- same
+      if (value !== undefined && value !== null && value !== '') config[key] = value;
+    }
     const payload = {
       name,
       provider_type,

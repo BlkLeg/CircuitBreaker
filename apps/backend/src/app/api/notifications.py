@@ -9,6 +9,7 @@ from app.core.rbac import require_role
 from app.core.url_validation import outbound_async_client, safe_async_request
 from app.db.models import NotificationRoute, NotificationSink
 from app.db.session import get_db
+from app.services.notification_secrets import decrypt_config, encrypt_config, redact_config
 
 router = APIRouter(tags=["notifications"])
 
@@ -80,11 +81,16 @@ def _provider_config(sink: NotificationSink) -> dict:
 
 
 def _sink_to_out(sink: NotificationSink) -> SinkOut:
+    """Serialise a sink for the API — never with a usable credential in it.
+
+    ``GET /sinks`` is viewer-readable and a webhook URL is a bearer credential,
+    so ``provider_config`` is masked on the way out (INC-06).
+    """
     return SinkOut(
         id=sink.id,
         name=sink.name,
         provider_type=sink.provider_type,
-        provider_config=_provider_config(sink),
+        provider_config=redact_config(sink.provider_type, _provider_config(sink)),
         enabled=sink.enabled,
     )
 
@@ -110,7 +116,8 @@ def create_sink(
         # provider_config is JSONB — hand SQLAlchemy the dict. Serialising it here
         # stored a JSON string inside the JSONB column, which every reader then
         # choked on (SinkOut wants a dict, and the worker subscripts it).
-        provider_config=sink_in.provider_config,
+        # Credentials inside it are encrypted first (INC-06).
+        provider_config=encrypt_config(sink_in.provider_type, sink_in.provider_config),
         enabled=sink_in.enabled,
     )
     db.add(sink)
@@ -130,6 +137,15 @@ def update_sink(
     if not sink:
         raise HTTPException(status_code=404, detail=_SINK_NOT_FOUND)
     updates = sink_in.model_dump(exclude_unset=True)
+    if "provider_config" in updates and updates["provider_config"] is not None:
+        # Carry the stored ciphertext forward when the client sends back the
+        # mask it was served, or omits the secret entirely — otherwise editing
+        # a sink's name would destroy its webhook URL.
+        updates["provider_config"] = encrypt_config(
+            updates.get("provider_type") or sink.provider_type,
+            updates["provider_config"],
+            existing=_provider_config(sink),
+        )
     for field, value in updates.items():
         setattr(sink, field, value)
     db.commit()
@@ -200,7 +216,8 @@ async def test_sink(
     if not sink:
         raise HTTPException(status_code=404, detail=_SINK_NOT_FOUND)
 
-    config = _provider_config(sink)
+    # Delivery needs the real credential, not the masked view SinkOut serves.
+    config = decrypt_config(_provider_config(sink))
     provider_type = sink.provider_type
     webhook_url = config.get("webhook_url")
 

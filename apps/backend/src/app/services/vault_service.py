@@ -259,11 +259,12 @@ def rotate_vault_key(db: Session) -> None:
       - AppSettings.smtp_password_enc
       - DiscoveryProfile.snmp_community_encrypted
       - credentials table (encrypted_value)
+      - NotificationSink.provider_config (any ``*_enc`` key)
 
     After rotation the in-memory vault singleton is reinitialized with the new
     key so subsequent encrypt/decrypt calls use it immediately.
     """
-    from app.db.models import AppSettings, Credential, DiscoveryProfile
+    from app.db.models import AppSettings, Credential, DiscoveryProfile, NotificationSink
     from app.services.log_service import write_log
 
     vault = get_vault()
@@ -385,6 +386,30 @@ def rotate_vault_key(db: Session) -> None:
                 type(exc).__name__,
             )
 
+    # Re-encrypt NotificationSink.provider_config secrets (webhook URLs).
+    # Stored as ``<key>_enc`` inside the JSONB blob — see
+    # services/notification_secrets.py. The dict is reassigned rather than
+    # mutated in place so SQLAlchemy sees the change on a plain JSONB column.
+    for sink in db.query(NotificationSink).all():
+        config = sink.provider_config
+        if not isinstance(config, dict):
+            continue
+        enc_keys = [k for k in config if k.endswith("_enc") and config[k]]
+        if not enc_keys:
+            continue
+        rotated = dict(config)
+        for key in enc_keys:
+            try:
+                rotated[key] = _reencrypt(str(config[key]))
+            except Exception as exc:
+                _logger.warning(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
+                    # Logs only type(exc).__name__ — exception class name, not any credential value
+                    "Could not re-encrypt notification sink %d during rotation (reason: %s)",
+                    sink.id,
+                    type(exc).__name__,
+                )
+        sink.provider_config = rotated
+
     db.flush()
 
     # Persist new key to file and DB
@@ -476,7 +501,7 @@ def initialize_vault_key(db: Session) -> None:
 
 
 def _count_encrypted_secrets(db: Session) -> int:
-    from app.db.models import AppSettings, Credential, DiscoveryProfile
+    from app.db.models import AppSettings, Credential, DiscoveryProfile, NotificationSink
 
     count = 0
     try:
@@ -495,6 +520,15 @@ def _count_encrypted_secrets(db: Session) -> int:
         pass
     try:
         count += db.query(Credential).count()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        # Sink webhook URLs live as ``<key>_enc`` inside a JSONB blob. A legacy
+        # plaintext sink is not at risk from a new key, so it does not count.
+        for sink in db.query(NotificationSink).all():
+            config = sink.provider_config
+            if isinstance(config, dict) and any(k.endswith("_enc") and config[k] for k in config):
+                count += 1
     except Exception:  # noqa: BLE001
         pass
     return count

@@ -15,6 +15,8 @@ from app.core.url_validation import outbound_async_client, safe_async_request
 from app.core.worker_audit import log_worker_audit
 from app.db.models import NotificationRoute
 from app.db.session import SessionLocal
+from app.services.credential_vault import get_vault
+from app.services.notification_secrets import decrypt_config
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,29 @@ _JS_CONSUMER_DURABLE = "notification_dispatch"
 _JS_SUBJECT_FILTER = "alert.>"
 _JS_BATCH_SIZE = 5
 _JS_FETCH_TIMEOUT_S = 1.0
+
+
+def _init_vault() -> None:
+    """Load the vault key into this process.
+
+    Sink credentials are stored Fernet-encrypted (INC-06), and the workers run
+    as their own process — ``workers/main.py`` never initializes the vault the
+    way ``main.py``'s lifespan does. Without this every dispatch would fail to
+    decrypt and no alert would ever be delivered.
+    """
+    from app.db.session import get_session_context
+    from app.services.vault_service import load_vault_key
+
+    with get_session_context() as db:
+        key = load_vault_key(db)
+    if key:
+        get_vault().reinitialize(key)
+        logger.info("Notification worker vault initialized.")
+    else:
+        logger.warning(
+            "Notification worker could not load CB_VAULT_KEY from env/file/db; "
+            "sinks with encrypted credentials cannot be delivered."
+        )
 
 
 def _touch_healthy() -> None:
@@ -223,13 +248,32 @@ async def process_alert(msg: Any) -> None:
         routes = db.query(NotificationRoute).filter(NotificationRoute.enabled).all()
         for route in routes:
             if route.alert_severity == severity or route.alert_severity == "*":
-                dispatch_tasks.append(
-                    (
-                        route.sink.provider_type,
-                        route.sink.provider_config,
-                        getattr(route.sink, "id", None),
+                sink_id = getattr(route.sink, "id", None)
+                try:
+                    # Sink credentials are stored encrypted; delivery needs the
+                    # plaintext. A sink whose secret cannot be decrypted is
+                    # skipped loudly rather than posted nowhere.
+                    config = decrypt_config(route.sink.provider_config)
+                except Exception as exc:
+                    logger.error(
+                        "Sink %s: cannot decrypt credentials (CB_VAULT_KEY may have "
+                        "changed since the sink was saved — re-save it): %s",
+                        sink_id,
+                        type(exc).__name__,
                     )
-                )
+                    log_worker_audit(
+                        action="notification_delivery_failed",
+                        entity_type="notification_sink",
+                        entity_id=sink_id,
+                        details=(
+                            f"provider={route.sink.provider_type} severity={severity} "
+                            f"error=credentials could not be decrypted ({type(exc).__name__})"
+                        ),
+                        severity="error",
+                        worker_name="notification_worker",
+                    )
+                    continue
+                dispatch_tasks.append((route.sink.provider_type, config, sink_id))
 
     if not dispatch_tasks:
         return
@@ -254,6 +298,8 @@ async def process_alert(msg: Any) -> None:
 
 
 async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
+    _init_vault()
+
     if not nats_client.is_connected:
         backoff = 1
         while not nats_client.is_connected:

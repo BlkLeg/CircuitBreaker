@@ -2266,9 +2266,11 @@ class NotificationSink(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     provider_type: Mapped[str] = mapped_column(String, nullable=False)  # 'slack', 'email', 'teams'
-    provider_config: Mapped[dict] = mapped_column(
-        JSONB, nullable=False
-    )  # JSONB (encrypted if needed) — v0.2.0
+    provider_config: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # Routing config plus credentials. Secret keys are stored Fernet-encrypted
+    # under an "<key>_enc" sibling (e.g. webhook_url_enc) — see
+    # services/notification_secrets.py, which is also the only place that
+    # decides which keys count as secret.
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 

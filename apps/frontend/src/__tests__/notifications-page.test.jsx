@@ -56,13 +56,15 @@ vi.mock('../components/EntityTable', () => ({
 }));
 
 vi.mock('../components/common/FormModal', () => ({
-  default: ({ open, title, onSubmit, onClose }) =>
+  default: ({ open, title, initialValues, onSubmit, onClose }) =>
     open ? (
       <div data-testid="form-modal">
         <h3>{title}</h3>
         <button onClick={() => onSubmit({ name: 'new.destination', provider_type: 'slack' })}>
           Submit
         </button>
+        {/* Mirrors EntityForm, which submits every value it was seeded with. */}
+        <button onClick={() => onSubmit({ ...initialValues })}>Save As Seeded</button>
         <button onClick={onClose}>Cancel</button>
       </div>
     ) : null,
@@ -129,5 +131,50 @@ describe('NotificationsPage', () => {
 
     await waitFor(() => expect(notificationsApi.createSink).toHaveBeenCalled());
     expect(mockToast.success).toHaveBeenCalledWith('Sink created.');
+  });
+});
+
+describe('NotificationsPage sink editing', () => {
+  // A sink as the API now serves it: the webhook URL is masked and carries a
+  // read-only set-flag alongside it (INC-06).
+  const MASK = 'https://hooks.slack.com/services/•••';
+  const maskedSink = {
+    id: 7,
+    name: 'Ops Slack',
+    provider_type: 'slack',
+    enabled: true,
+    provider_config: { webhook_url: MASK, webhook_url_set: true },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    notificationsApi.listSinks.mockResolvedValue({ data: [maskedSink] });
+    notificationsApi.listRoutes.mockResolvedValue({ data: [] });
+    notificationsApi.updateSink.mockResolvedValue({ data: maskedSink });
+  });
+
+  async function editAndSave() {
+    render(<NotificationsPage />);
+    await waitFor(() => screen.getByText('Ops Slack'));
+    fireEvent.click(screen.getAllByText('Edit')[0]);
+    fireEvent.click(screen.getByText('Save As Seeded'));
+    await waitFor(() => expect(notificationsApi.updateSink).toHaveBeenCalled());
+    return notificationsApi.updateSink.mock.calls[0][1].provider_config;
+  }
+
+  it('sends back only the sink config fields, not the row envelope', async () => {
+    const config = await editAndSave();
+    expect(config).not.toHaveProperty('id');
+    expect(config).not.toHaveProperty('provider_config');
+  });
+
+  it('does not write the read-only webhook_url_set flag into the config', async () => {
+    const config = await editAndSave();
+    expect(config).not.toHaveProperty('webhook_url_set');
+  });
+
+  it('round-trips the masked webhook URL so the backend keeps the stored secret', async () => {
+    const config = await editAndSave();
+    expect(config.webhook_url).toBe(MASK);
   });
 });
