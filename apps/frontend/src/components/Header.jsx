@@ -9,8 +9,7 @@ import HeaderWidgets from './HeaderWidgets.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext';
 import { settingsApi } from '../api/client';
-import { NAV_ITEMS } from '../data/navigation';
-import { canEdit, isAdmin } from '../utils/rbac';
+import { visibleNavGroups } from '../data/navigation';
 
 function Header({ onOpenPalette }) {
   const navigate = useNavigate();
@@ -34,20 +33,7 @@ function Header({ onOpenPalette }) {
     return () => document.removeEventListener('mousedown', onOutsideClick);
   }, []);
 
-  const groupedNavItems = useMemo(
-    () =>
-      NAV_ITEMS.map((group) => {
-        if (group.requireAdmin && !isAdmin(user)) return null;
-        const filteredItems = group.items.filter((item) => {
-          if (item.requireAdmin && !isAdmin(user)) return false;
-          if (item.requireEditor && !canEdit(user)) return false;
-          return true;
-        });
-        if (filteredItems.length === 0) return null;
-        return { ...group, items: filteredItems };
-      }).filter(Boolean),
-    [user]
-  );
+  const groupedNavItems = useMemo(() => visibleNavGroups(user), [user]);
 
   const handleToggleTheme = async () => {
     if (themeSaving) return;
@@ -151,7 +137,7 @@ function Header({ onOpenPalette }) {
               }}
             >
               {groupedNavItems.map((group) => (
-                <div key={group.group} style={{ marginBottom: 10 }}>
+                <div key={group.id} style={{ marginBottom: 10 }}>
                   <div
                     style={{
                       color: 'var(--color-text-muted)',
@@ -162,7 +148,7 @@ function Header({ onOpenPalette }) {
                       padding: '4px 8px',
                     }}
                   >
-                    {group.group}
+                    {group.label}
                   </div>
                   <div style={{ display: 'grid', gap: 4 }}>
                     {group.items.map((item) => {
