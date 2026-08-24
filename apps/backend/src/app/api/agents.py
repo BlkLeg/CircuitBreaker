@@ -9,7 +9,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from slowapi.util import get_remote_address
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.orm import Session
 
 from app.core import agent_crypto, agent_scope
@@ -51,6 +51,7 @@ from app.schemas.agents import (
     PairingLookupResponse,
     RevokeRequest,
     ServerKeyFleetAdoption,
+    ServerKeyPendingAgent,
     ServerKeyRotationStatus,
     UpdateRequest,
 )
@@ -324,6 +325,60 @@ async def post_server_key_rotate(
         )
     await agent_registry.broadcast_server_key_rotate(db, state)
     return _rotation_status(state, db)
+
+
+# Cap borrowed from the fleet-listing routes: a drill-down exists to be acted
+# on, and a list longer than this is a rollout problem, not a UI problem.
+_PENDING_AGENT_LIMIT = 200
+
+
+@router.get("/server-key/pending", response_model=list[ServerKeyPendingAgent])
+def get_server_key_pending_agents(
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("admin")],
+) -> Any:
+    """Agents that have not yet authenticated with the successor server key.
+
+    The actionable half of `/server-key/status`'s counts: an admin deciding
+    whether to let an overlap window close needs the names, not just the
+    number. Empty (not an error) when no rotation is in progress — "nothing to
+    chase" is the same answer either way.
+    """
+    state = agent_crypto.load_server_key_rotation_state(db)
+    if not state.rotation_active or state.started_at is None:
+        return []
+
+    started_at = state.started_at
+    successor_pinned = and_(
+        Agent.server_pk_successor_pinned_at.isnot(None),
+        Agent.server_pk_successor_pinned_at >= started_at,
+    )
+    current_pinned = and_(
+        Agent.server_pk_current_pinned_at.isnot(None),
+        Agent.server_pk_current_pinned_at >= started_at,
+    )
+    rows = db.execute(
+        select(
+            Agent.id,
+            Agent.hostname,
+            Agent.name,
+            Agent.last_seen_at,
+            case((current_pinned, "current"), else_="unseen").label("bucket"),
+        )
+        .where(Agent.status != "revoked", ~successor_pinned)
+        .order_by(Agent.last_seen_at.desc().nulls_last())
+        .limit(_PENDING_AGENT_LIMIT)
+    ).all()
+    return [
+        ServerKeyPendingAgent(
+            id=r.id,
+            hostname=r.hostname,
+            name=r.name,
+            last_seen_at=r.last_seen_at,
+            bucket=r.bucket,
+        )
+        for r in rows
+    ]
 
 
 def _latest_samples(db: Session, agent_ids: list[int]) -> dict[int, AgentLatestSample]:

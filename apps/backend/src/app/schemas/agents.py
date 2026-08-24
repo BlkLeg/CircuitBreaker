@@ -287,6 +287,24 @@ class ServerKeyFleetAdoption(BaseModel):
     unseen: int
 
 
+class ServerKeyPendingAgent(BaseModel):
+    """One agent that has not yet handshaked against the successor key.
+
+    `bucket` mirrors ServerKeyFleetAdoption's naming: "current" means it has
+    handshaked since the rotation began but against the outgoing key; "unseen"
+    means it has not handshaked at all since the rotation began. Neither states
+    anything about what the agent holds locally.
+    """
+
+    id: int
+    hostname: str | None
+    name: str | None
+    last_seen_at: datetime | None
+    bucket: str
+
+    model_config = {"from_attributes": True}
+
+
 class ServerKeyRotationStatus(BaseModel):
     """Task 28: the server's identity-key rotation state, as surfaced to
     admins. Never carries key material — fingerprints only, same convention

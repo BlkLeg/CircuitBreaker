@@ -2451,3 +2451,48 @@ async def test_rotation_status_never_returns_key_material(client, auth_headers):
         "overlap_expires_at",
         "fleet",
     }
+
+
+@pytest.mark.asyncio
+async def test_pending_agents_is_empty_without_an_active_rotation(client, auth_headers, factories):
+    factories.agent(status="active")
+    resp = await client.get("/api/v1/agents/server-key/pending", headers=auth_headers)
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_pending_agents_lists_only_agents_not_on_the_successor(
+    client, auth_headers, factories, db_session
+):
+    from datetime import timedelta
+
+    from app.core.time import utcnow
+
+    switched = factories.agent(status="active", hostname="switched-01")
+    lagging = factories.agent(status="active", hostname="lagging-01")
+    factories.agent(status="active", hostname="never-01")
+
+    assert (
+        await client.post("/api/v1/agents/server-key/rotate", headers=auth_headers)
+    ).status_code == 201
+    started_at = utcnow()
+
+    switched.server_pk_successor_pinned_at = started_at + timedelta(minutes=1)
+    lagging.server_pk_current_pinned_at = started_at + timedelta(minutes=1)
+    db_session.flush()
+
+    resp = await client.get("/api/v1/agents/server-key/pending", headers=auth_headers)
+    assert resp.status_code == 200
+    rows = resp.json()
+
+    by_host = {r["hostname"]: r for r in rows}
+    assert set(by_host) == {"lagging-01", "never-01"}
+    assert by_host["lagging-01"]["bucket"] == "current"
+    assert by_host["never-01"]["bucket"] == "unseen"
+
+
+@pytest.mark.asyncio
+async def test_pending_agents_requires_admin(client, viewer_headers):
+    resp = await client.get("/api/v1/agents/server-key/pending", headers=viewer_headers)
+    assert resp.status_code == 403
