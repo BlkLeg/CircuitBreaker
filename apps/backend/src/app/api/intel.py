@@ -6,7 +6,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.db.models import CapacityForecast, ResourceEfficiencyRecommendation
 from app.db.session import get_db
@@ -37,6 +37,7 @@ class BlastRadiusOut(BaseModel):
 class CapacityForecastOut(BaseModel):
     id: int
     hardware_id: int
+    hardware_name: str | None = None
     metric: str
     slope_per_day: float
     current_value: float
@@ -51,6 +52,7 @@ class ResourceEfficiencyOut(BaseModel):
     id: int
     asset_type: str
     asset_id: int
+    asset_name: str | None = None
     classification: str
     cpu_avg_pct: float | None
     cpu_peak_pct: float | None
@@ -92,22 +94,61 @@ def get_blast_radius(
 
 
 @router.get("/capacity-forecasts", response_model=list[CapacityForecastOut])
-def list_capacity_forecasts(db: Session = Depends(get_db)) -> list[CapacityForecast]:
-    """Return all capacity forecasts ordered by projected saturation date."""
-    return (
+def list_capacity_forecasts(db: Session = Depends(get_db)) -> list[CapacityForecastOut]:
+    """Return all capacity forecasts ordered by projected saturation date.
+
+    The hardware name is joined in rather than left to the caller.
+    """
+    rows = (
         db.query(CapacityForecast)
+        .options(joinedload(CapacityForecast.hardware))
         .order_by(CapacityForecast.projected_full_at.asc().nulls_last())
         .all()
     )
+    out: list[CapacityForecastOut] = []
+    for row in rows:
+        item = CapacityForecastOut.model_validate(row)
+        item.hardware_name = getattr(row.hardware, "name", None)
+        out.append(item)
+    return out
+
+
+def _resolve_asset_names(
+    db: Session, rows: list[ResourceEfficiencyRecommendation]
+) -> dict[tuple[str, int], str]:
+    """id -> name for every asset referenced by `rows`, in one query per
+    asset TYPE present (at most four), never one per row.
+    """
+    from app.services.intelligence.dependency_graph import _MODEL_MAP
+
+    by_type: dict[str, set[int]] = {}
+    for row in rows:
+        by_type.setdefault(row.asset_type, set()).add(row.asset_id)
+
+    names: dict[tuple[str, int], str] = {}
+    for asset_type, ids in by_type.items():
+        model = _MODEL_MAP.get(asset_type)
+        if model is None:
+            continue
+        for obj_id, name in db.query(model.id, model.name).filter(model.id.in_(ids)).all():
+            names[(asset_type, obj_id)] = name
+    return names
 
 
 @router.get("/resource-efficiency", response_model=list[ResourceEfficiencyOut])
 def list_resource_efficiency(
     db: Session = Depends(get_db),
-) -> list[ResourceEfficiencyRecommendation]:
+) -> list[ResourceEfficiencyOut]:
     """Return right-sizing recommendations for all assessed assets."""
-    return (
+    rows = (
         db.query(ResourceEfficiencyRecommendation)
         .order_by(ResourceEfficiencyRecommendation.evaluated_at.desc())
         .all()
     )
+    names = _resolve_asset_names(db, rows)
+    out: list[ResourceEfficiencyOut] = []
+    for row in rows:
+        item = ResourceEfficiencyOut.model_validate(row)
+        item.asset_name = names.get((row.asset_type, row.asset_id))
+        out.append(item)
+    return out
