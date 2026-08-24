@@ -81,6 +81,13 @@ export const NAV_ITEMS = [
         requireAdmin: true,
       },
       {
+        path: '/logs/audit',
+        icon: ShieldCheck,
+        label: 'Audit Log',
+        labelKey: 'header.auditLog',
+        requireAdmin: true,
+      },
+      {
         path: '/settings',
         icon: Settings,
         label: 'Settings',

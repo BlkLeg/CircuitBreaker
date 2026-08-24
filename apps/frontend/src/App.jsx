@@ -184,6 +184,14 @@ function AppInner() {
                     }
                   />
                   <Route
+                    path="/logs/audit"
+                    element={
+                      <RequireAdmin>
+                        <LogsPage auditMode />
+                      </RequireAdmin>
+                    }
+                  />
+                  <Route
                     path="/settings"
                     element={
                       <RequireEditor>
