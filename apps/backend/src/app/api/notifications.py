@@ -114,8 +114,8 @@ def _provider_config(sink: NotificationSink) -> dict:
 def _sink_to_out(sink: NotificationSink) -> SinkOut:
     """Serialise a sink for the API — never with a usable credential in it.
 
-    ``GET /sinks`` is viewer-readable and a webhook URL is a bearer credential,
-    so ``provider_config`` is masked on the way out (INC-06).
+    ``GET /sinks`` is admin-only and a webhook URL is a bearer credential, so
+    ``provider_config`` is masked on the way out (INC-06) regardless.
     """
     return SinkOut(
         id=sink.id,
@@ -131,7 +131,7 @@ def _sink_to_out(sink: NotificationSink) -> SinkOut:
 
 @router.get("/sinks", response_model=list[SinkOut])
 def list_sinks(
-    db: Session = Depends(get_db), current_user: Any = require_role("viewer")
+    db: Session = Depends(get_db), current_user: Any = require_role("admin")
 ) -> list[SinkOut]:
     sinks = db.query(NotificationSink).all()
     return [_sink_to_out(s) for s in sinks]
@@ -139,7 +139,7 @@ def list_sinks(
 
 @router.post("/sinks", response_model=SinkOut)
 def create_sink(
-    sink_in: SinkCreate, db: Session = Depends(get_db), current_user: Any = require_role("editor")
+    sink_in: SinkCreate, db: Session = Depends(get_db), current_user: Any = require_role("admin")
 ) -> SinkOut:
     _validate_provider_config(sink_in.provider_type, sink_in.provider_config)
     sink = NotificationSink(
@@ -163,7 +163,7 @@ def update_sink(
     sink_id: int,
     sink_in: SinkUpdate,
     db: Session = Depends(get_db),
-    current_user: Any = require_role("editor"),
+    current_user: Any = require_role("admin"),
 ) -> SinkOut:
     sink = db.query(NotificationSink).filter(NotificationSink.id == sink_id).first()
     if not sink:
@@ -189,7 +189,7 @@ def update_sink(
 
 @router.delete("/sinks/{sink_id}")
 def delete_sink(
-    sink_id: int, db: Session = Depends(get_db), current_user: Any = require_role("editor")
+    sink_id: int, db: Session = Depends(get_db), current_user: Any = require_role("admin")
 ) -> dict[str, str]:
     sink = db.query(NotificationSink).filter(NotificationSink.id == sink_id).first()
     if not sink:
@@ -201,7 +201,7 @@ def delete_sink(
 
 @router.put("/sinks/{sink_id}/toggle", response_model=SinkOut)
 def toggle_sink(
-    sink_id: int, db: Session = Depends(get_db), current_user: Any = require_role("editor")
+    sink_id: int, db: Session = Depends(get_db), current_user: Any = require_role("admin")
 ) -> SinkOut:
     sink = db.query(NotificationSink).filter(NotificationSink.id == sink_id).first()
     if not sink:
@@ -252,7 +252,7 @@ async def _test_email_sink(config: dict[str, Any], db: Session) -> dict[str, Any
 
 @router.post("/sinks/{sink_id}/test")
 async def test_sink(
-    sink_id: int, db: Session = Depends(get_db), current_user: Any = require_role("editor")
+    sink_id: int, db: Session = Depends(get_db), current_user: Any = require_role("admin")
 ) -> dict[str, Any]:
     sink = db.query(NotificationSink).filter(NotificationSink.id == sink_id).first()
     if not sink:
@@ -286,13 +286,13 @@ async def test_sink(
 
 
 @router.get("/routes", response_model=list[RouteOut])
-def list_routes(db: Session = Depends(get_db), current_user: Any = require_role("viewer")) -> Any:
+def list_routes(db: Session = Depends(get_db), current_user: Any = require_role("admin")) -> Any:
     return db.query(NotificationRoute).all()
 
 
 @router.post("/routes", response_model=RouteOut)
 def create_route(
-    route_in: RouteCreate, db: Session = Depends(get_db), current_user: Any = require_role("editor")
+    route_in: RouteCreate, db: Session = Depends(get_db), current_user: Any = require_role("admin")
 ) -> Any:
     sink = db.query(NotificationSink).filter(NotificationSink.id == route_in.sink_id).first()
     if not sink:
@@ -312,7 +312,7 @@ def create_route(
 def delete_route(
     route_id: int,
     db: Session = Depends(get_db),
-    current_user: Any = require_role("editor"),
+    current_user: Any = require_role("admin"),
 ) -> dict[str, str]:
     route = db.query(NotificationRoute).filter(NotificationRoute.id == route_id).first()
     if not route:

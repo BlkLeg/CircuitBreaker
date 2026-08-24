@@ -413,6 +413,29 @@ def viewer_headers(viewer_login):
     return {"Authorization": f"Bearer {token}", "X-CSRF-Token": csrf}
 
 
+@pytest.fixture
+def editor_user(factories):
+    return factories.user(role="editor")
+
+
+@pytest_asyncio.fixture
+async def editor_login(client, editor_user):
+    resp = await client.post(
+        "/api/v1/auth/login",
+        json={"email": editor_user.email, "password": "TestPassword123!"},
+    )
+    assert resp.status_code == 200, f"Editor login failed: {resp.text}"
+    token = resp.json()["token"]
+    csrf = resp.cookies.get("cb_csrf", "test-csrf-token")
+    return token, csrf
+
+
+@pytest.fixture
+def editor_headers(editor_login):
+    token, csrf = editor_login
+    return {"Authorization": f"Bearer {token}", "X-CSRF-Token": csrf}
+
+
 # ── Pytest markers ────────────────────────────────────────────────────────────
 
 

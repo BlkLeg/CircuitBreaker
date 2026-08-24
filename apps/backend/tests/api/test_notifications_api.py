@@ -1,9 +1,11 @@
 """Notification sink API — secret handling at the HTTP boundary (INC-06).
 
-The finding this file exists for: ``GET /notifications/sinks`` requires only
-``require_role("viewer")`` and used to return ``provider_config`` verbatim, so
-any viewer could read every Slack/Discord/Teams webhook URL — each of which is
-a bearer credential for posting into that channel.
+The finding this file exists for: ``GET /notifications/sinks`` used to return
+``provider_config`` verbatim, so anyone who could reach the surface read every
+Slack/Discord/Teams webhook URL — each of which is a bearer credential for
+posting into that channel. The surface is admin-only now, but redaction is the
+guarantee that does not depend on the role gate holding, so it is asserted
+against the role the endpoint actually serves.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -51,12 +53,12 @@ def _seed_encrypted_sink(db_session, name: str = "Ops Slack") -> NotificationSin
 
 
 @pytest.mark.asyncio
-async def test_a_viewer_cannot_read_a_usable_webhook_url(
-    client, viewer_headers, db_session
+async def test_listing_sinks_never_returns_a_usable_webhook_url(
+    client, auth_headers, db_session
 ) -> None:
     _seed_encrypted_sink(db_session)
 
-    resp = await client.get(_SINKS, headers=viewer_headers)
+    resp = await client.get(_SINKS, headers=auth_headers)
 
     assert resp.status_code == 200, resp.text
     assert _SECRET_PART not in resp.text
