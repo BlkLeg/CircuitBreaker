@@ -424,7 +424,7 @@ class CreateAPITokenRequest(BaseModel):
 
     @field_validator("scopes")
     @classmethod
-    def _check_scopes(cls, v):
+    def _check_scopes(cls, v: list[str] | None) -> list[str] | None:
         if v is None:
             return v
         from app.core.token_scopes import validate_scopes
@@ -461,7 +461,7 @@ class CreateServiceAccountRequest(BaseModel):
 
     @field_validator("scopes")
     @classmethod
-    def _check_scopes(cls, v):
+    def _check_scopes(cls, v: list[str]) -> list[str]:
         from app.core.token_scopes import validate_scopes
 
         return validate_scopes(v)

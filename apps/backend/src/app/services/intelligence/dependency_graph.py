@@ -30,7 +30,13 @@ from app.db.models import (
 _logger = logging.getLogger(__name__)
 
 VALID_ASSET_TYPES = frozenset({"hardware", "compute_unit", "service", "storage"})
-_MODEL_MAP = {
+
+# Annotated as the union rather than left to inference: without this the dict infers
+# dict[str, type[Base]], and Base declares no columns, so callers cannot reach .id or
+# .name on a looked-up model.
+_AssetModel = type[Hardware] | type[ComputeUnit] | type[Service] | type[Storage]
+
+_MODEL_MAP: dict[str, _AssetModel] = {
     "hardware": Hardware,
     "compute_unit": ComputeUnit,
     "service": Service,

@@ -391,7 +391,10 @@ def rotate_vault_key(db: Session) -> None:
     # services/notification_secrets.py. The dict is reassigned rather than
     # mutated in place so SQLAlchemy sees the change on a plain JSONB column.
     for sink in db.query(NotificationSink).all():
-        config = sink.provider_config
+        # Typed as object, not dict: the column is Mapped[dict], but JSONB accepts any
+        # shape and rows written outside the ORM may not hold one. Widening keeps the
+        # guard meaningful instead of provably dead.
+        config: object = sink.provider_config
         if not isinstance(config, dict):
             continue
         enc_keys = [k for k in config if k.endswith("_enc") and config[k]]
