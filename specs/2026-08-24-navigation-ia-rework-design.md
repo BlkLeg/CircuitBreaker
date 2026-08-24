@@ -89,7 +89,7 @@ Applied mechanically, this answers INC-14 (API tokens are subjects of work → p
 a judgment call, and confirms INC-11's placement (OUI/hostname hints shape discovery
 naming → tab).
 
-**D3 — Taxonomy.** Six groups keyed to the lifecycle of a tracked thing: it is acquired,
+**D3 — Taxonomy.** Five groups. Four are keyed to the lifecycle of a tracked thing: it is acquired,
 it becomes inventory, it is observed, access to it is governed. Plus a System group for
 the app itself.
 
@@ -164,7 +164,7 @@ stored data references these names.
 
 ## 4. The taxonomy
 
-Six groups, 21 destinations. `require` shown where it applies.
+Five groups, 21 destinations. `require` shown where it applies.
 
 ### Acquire
 | Item | Path | require | dockDefault |
@@ -278,7 +278,7 @@ RBAC, and preference storage change.
 
 Dock candidates are `NAV_ITEMS_FLAT` filtered by `canSeeNavItem`. Order follows group
 declaration order, so the dock and the hamburger present items in the same sequence.
-`DockSettings` renders its checkbox list under the same six group headings, so the two
+`DockSettings` renders its checkbox list under the same five group headings, so the two
 surfaces are visibly the same list rather than two lists that happen to overlap.
 
 ### 5.2 Preference storage and migration
