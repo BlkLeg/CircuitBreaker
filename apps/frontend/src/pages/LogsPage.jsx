@@ -10,6 +10,7 @@ import ConfirmDialog from '../components/common/ConfirmDialog';
 import TimestampCell from '../components/TimestampCell.jsx';
 import { formatAbsolute } from '../lib/time.js';
 import { useAuth } from '../context/AuthContext.jsx';
+import AuditChainPanel from '../components/logs/AuditChainPanel';
 import { sanitizeImageSrc } from '../utils/validation.js';
 
 // ── Actor avatar ──────────────────────────────────────────────────────────────────────────────
@@ -851,7 +852,7 @@ LogsVirtualTable.propTypes = {
 };
 // ── Main Page ───────────────────────────────────────────────────────────────────────────────
 
-function LogsPage() {
+function LogsPage({ auditMode = false }) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
@@ -955,6 +956,10 @@ function LogsPage() {
     setError(null);
     try {
       const params = { limit, offset, sort: timestampSort };
+      // INC-12: the audit view is GET /logs?category=audit. The dedicated
+      // GET /logs/audit route is a strict subset of this one — it drops
+      // entity_type, level, severity and search — so it is not used.
+      if (auditMode) params.category = 'audit';
       if (entityType) params.entity_type = entityType;
       if (actionFilter) params.action = actionFilter;
       if (actorFilter) params.actor = actorFilter;
@@ -982,6 +987,7 @@ function LogsPage() {
     debouncedSearch,
     timePreset,
     timestampSort,
+    auditMode,
   ]);
 
   useEffect(() => {
@@ -1051,7 +1057,8 @@ function LogsPage() {
     const blob = new Blob([header + rows], { type: 'text/csv' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `circuit-breaker-audit-${new Date().toISOString().slice(0, 10)}.csv`;
+    const scope = auditMode ? 'audit' : 'logs';
+    a.download = `circuit-breaker-${scope}-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
   };
@@ -1117,7 +1124,7 @@ function LogsPage() {
           gap: 8,
         }}
       >
-        <h2>Audit Log</h2>
+        <h2>{auditMode ? 'Audit Log' : 'Logs'}</h2>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', flex: 1 }}>
           {/* Time presets */}
           <div style={{ display: 'flex', gap: 4 }}>
@@ -1351,6 +1358,8 @@ function LogsPage() {
         </div>
       )}
 
+      {auditMode && <AuditChainPanel onRepaired={fetchLogs} />}
+
       {/* Table */}
       <LogsVirtualTable
         logs={logs}
@@ -1433,5 +1442,12 @@ function LogsPage() {
     </div>
   );
 }
+
+LogsPage.propTypes = {
+  // /logs/audit renders this same page pinned to category=audit. It hides no
+  // filters: entity type, action, actor, severity, search and the time presets
+  // are all meaningful for audit entries too.
+  auditMode: PropTypes.bool,
+};
 
 export default LogsPage;
