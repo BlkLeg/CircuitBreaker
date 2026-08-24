@@ -2,8 +2,29 @@
 
 Circuit Breaker's intelligence layer provides automated blast-radius analysis, predictive capacity forecasting, right-sizing recommendations, flap detection, and configurable telemetry retention — all derived from the same asset graph and live-metric data already collected by the platform.
 
-In 1.0 these are API-only capabilities: the jobs run on schedule and the `/api/v1/intel/` endpoints answer, but
-no screen in the app calls them. Read this as an API reference, not as a tour of a page you can open.
+## Where these appear
+
+| Capability | Surface |
+|---|---|
+| Capacity forecasts | **Intel** page (`/intel`) |
+| Resource efficiency | **Intel** page (`/intel`) |
+| Blast radius | **Impact** panel on a hardware, compute unit, service, or storage detail view |
+
+All three are readable by any signed-in user; they carry no role restriction.
+
+## When the data appears
+
+Capacity forecasts and right-sizing recommendations are written by the
+`analytics_job` scheduled job, which runs nightly at 02:30. Both tables are
+empty until it has run at least once, and stay empty for anything it has no
+recommendation about — a host without enough telemetry history has no forecast,
+and an asset sitting comfortably within its allocation has no recommendation.
+The page states both possibilities, because the stored data cannot distinguish
+them: the job writes nothing when it finds nothing.
+
+Blast radius is computed on demand when you expand the **Impact** panel, not on
+a schedule, because it reflects the dependency graph as it stands right now.
+"Nothing depends on this" is a real answer and is displayed as one.
 
 ---
 
