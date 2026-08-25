@@ -6,15 +6,16 @@ again. `certificate_service.py` never wrote there at all — so creating, import
 or auto-renewing a certificate changed a database row and nothing else.
 
 The reload is part of activation rather than a step an operator can forget: a certificate
-written and not reloaded is the old certificate still being served.
+written and not reloaded is the old certificate still being served. In the mono image that
+means SIGHUP straight to nginx's master pid — see `_reload_tls` for why going through
+supervisorctl could never work there.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import shutil
-import subprocess
+import signal
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +27,10 @@ _logger = logging.getLogger(__name__)
 
 _CHAIN_NAME = "fullchain.pem"
 _KEY_NAME = "privkey.pem"
+
+# nginx.mono.conf:5 — `pid /tmp/nginx.pid;`. The container root filesystem is read-only,
+# so the pidfile lives on the /tmp tmpfs, and nginx's master writes it as `breaker`.
+_DEFAULT_NGINX_PID_FILE = "/tmp/nginx.pid"
 
 
 @dataclass
@@ -58,8 +63,26 @@ def _write_atomic(path: Path, content: str, mode: int) -> None:
     os.replace(tmp, path)
 
 
-def _supervisorctl_available() -> bool:
-    return shutil.which("supervisorctl") is not None
+def _nginx_pid_file() -> Path:
+    return Path(os.environ.get("CB_NGINX_PID_FILE", _DEFAULT_NGINX_PID_FILE))
+
+
+def _nginx_pid() -> int | None:
+    """The pid of the local nginx master, or None if this build is not running one.
+
+    Absent pidfile, unreadable pidfile and garbage contents are all the same answer —
+    "there is no nginx here I can address" — and each falls through to the next branch
+    rather than being reported as a failed reload.
+    """
+    try:
+        raw = _nginx_pid_file().read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    try:
+        pid = int(raw)
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
 
 
 def _helper_available() -> bool:
@@ -71,20 +94,33 @@ def _helper_available() -> bool:
 def _reload_tls() -> tuple[bool, str]:
     """Reload whatever is terminating TLS, if anything here can.
 
-    Mono: nginx runs under supervisord as `breaker` (supervisord.mono.conf) and so does this
-    process, so signalling it needs no privilege. Native: cb_helperd already reloads nginx.
+    Mono: signal nginx's master directly. It runs as `breaker` (supervisord.mono.conf
+    `[program:nginx]`) and so does this process (`[program:backend-api]`), so a plain
+    SIGHUP needs no privilege. What does NOT work — and what this replaced — is
+    `supervisorctl signal HUP nginx`: supervisorctl speaks to supervisord's control
+    socket, not to nginx, and that socket is root-owned `chmod=0700` with supervisord
+    itself running as root. A breaker-uid caller gets EACCES on every invocation, so
+    activation reported reloaded=false forever and kept serving the old certificate.
+    Native: cb_helperd already reloads nginx.
     Plain image: no nginx — the operator's own proxy reads the files we just wrote.
     """
-    if _supervisorctl_available():
-        result = subprocess.run(
-            ["supervisorctl", "signal", "HUP", "nginx"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode == 0:
-            return True, "nginx reloaded via supervisorctl"
-        return False, f"supervisorctl could not reload nginx: {result.stderr.strip()[:200]}"
+    pid = _nginx_pid()
+    if pid is not None:
+        try:
+            os.kill(pid, signal.SIGHUP)
+        except ProcessLookupError:
+            return False, (
+                f"nginx pid {pid} is not running (stale pidfile at {_nginx_pid_file()}); "
+                "the certificate is on disk but nothing was reloaded"
+            )
+        except PermissionError:
+            return False, (
+                f"not permitted to signal nginx (pid {pid}); the certificate is on disk "
+                "but nothing was reloaded"
+            )
+        except OSError as exc:
+            return False, f"could not signal nginx (pid {pid}): {exc}"
+        return True, f"nginx reloaded (SIGHUP to pid {pid})"
 
     if _helper_available():
         from app.services.helper_client import call_helper
