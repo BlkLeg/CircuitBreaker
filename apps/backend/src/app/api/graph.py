@@ -345,17 +345,6 @@ def build_topology_graph(
     # Bulk-compute IP conflict flags once per request to avoid N individual queries
     conflict_map = bulk_conflict_map(db)  # (etype, eid) -> bool
 
-    # Helper to fetch tags for a set of entities
-    # Optimization: Loading tags for all entities can be N+1 if not careful.
-    # For v1 homelab scale, we can just fetch them or rely on lazy loading if eager is set.
-    # Let's do a simple bulk fetch approach if performance matters, but for now simple
-    # attribute access (relying on SQLAlchemy lazy/eager loading) is fine.
-    # But wait, our models don't have `tags` relationship explicitly defined in
-    # `models.py` snippet I saw?
-    # Checking models.py... EntityTag exists.
-    # Let's add a helper to get tags or simple ignore them for now if relation isn't easy.
-    # Actually, `EntityTag` is there. Let's pre-fetch all entity tags to avoid N+1.
-
     entity_tags_map: dict[Any, Any] = {}
     # Bulk-fetch all (entity_type, entity_id, tag_name) rows in a single query
     # to avoid N+1 per entity.

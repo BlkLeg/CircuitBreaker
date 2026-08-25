@@ -6,7 +6,6 @@ import i18n from './i18n';
 import { SettingsProvider, useSettings } from './context/SettingsContext';
 import { TimezoneProvider } from './context/TimezoneContext.jsx';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
-import { TenantProvider } from './context/TenantContext';
 import { ToastProvider, useToast } from './components/common/Toast';
 import { authApi } from './api/auth.js';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -315,6 +314,16 @@ function AppRoutes() {
     fetchBootstrapStatus();
   }, [fetchBootstrapStatus]);
 
+  // ADR-0003 removed multi-tenancy. This clears the key left in browsers that used it;
+  // it replaces a whole context provider that wrapped the app to do only this.
+  useEffect(() => {
+    try {
+      window.localStorage.removeItem('cb_active_tenant_id');
+    } catch {
+      // Private mode and blocked site data both throw on access; nothing to clean up then.
+    }
+  }, []);
+
   useEffect(() => {
     if (!bootstrapError) {
       setRetryCountdown(BOOTSTRAP_RETRY_SECONDS);
@@ -426,9 +435,7 @@ function App() {
             <AuthProvider>
               <ToastProvider>
                 <ServerLifecycleBanner>
-                  <TenantProvider>
-                    <AppRoutes />
-                  </TenantProvider>
+                  <AppRoutes />
                 </ServerLifecycleBanner>
               </ToastProvider>
             </AuthProvider>
