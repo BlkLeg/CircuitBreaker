@@ -35,10 +35,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir --upgrade "pip>=26.0"
 
 # Dependency layer from pinned requirements.txt + PostgreSQL drivers (mono image uses Postgres)
-COPY apps/backend/requirements.txt apps/backend/requirements-pg.txt ./
+COPY apps/backend/requirements.txt apps/backend/requirements-pg.txt apps/backend/requirements-acme.txt ./
+# certbot and its two DNS-01 plugins ship in the image because INC-07's first cause was
+# that they did not: certificate_service shelled out to a `certbot` no image contained.
 # hadolint ignore=DL3042
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --timeout 120 --retries 5 -r requirements.txt -r requirements-pg.txt \
+    -r requirements-acme.txt \
     && find /usr/local/lib/python3.12 -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib/python3.12 -name '*.so' -exec strip --strip-unneeded {} + 2>/dev/null || true
 

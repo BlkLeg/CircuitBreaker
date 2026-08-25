@@ -44,6 +44,10 @@ CB_RATE_LIMIT_STORAGE_URL=${CB_RATE_LIMIT_STORAGE_URL}
 CB_TRUSTED_PROXY_CIDRS=${CB_TRUSTED_PROXY_CIDRS}
 CB_ALLOW_DEGRADED_DEPENDENCIES=${CB_ALLOW_DEGRADED_DEPENDENCIES}
 
+# ===== TLS / ACME =====
+# Let's Encrypt account email, read by services/acme_service.py. Set by install.sh --email.
+CB_TLS_EMAIL=${CB_EMAIL}
+
 # ===== Paths =====
 CB_DATA_DIR=${CB_DATA_DIR}
 CB_UPLOADS_DIR=${CB_DATA_DIR}/uploads
@@ -121,6 +125,14 @@ stage1_bootstrap() {
     ["${CB_DATA_DIR}/uploads/icons"]="breaker:breaker:755"
     ["${CB_DATA_DIR}/uploads/branding"]="breaker:breaker:755"
     ["${CB_DATA_DIR}/tls"]="breaker:breaker:755"
+    # ACME HTTP-01 webroot: breaker (certbot) writes the token, nginx reads it, so it is
+    # world-readable on purpose. The tokens are single-use and carry no application data.
+    ["${CB_DATA_DIR}/acme-challenge"]="breaker:breaker:755"
+    # certbot's account key, config and logs. Kept under the data directory because the
+    # default /etc/letsencrypt is not writable by a non-root process -- one of INC-07's
+    # four independent reasons the old implementation could not work.
+    ["${CB_DATA_DIR}/letsencrypt"]="breaker:breaker:700"
+    ["${CB_DATA_DIR}/tmp"]="breaker:breaker:700"
     ["${CB_DATA_DIR}/logs"]="breaker:breaker:755"
     ["${CB_DATA_DIR}/backups"]="breaker:breaker:755"
     ["/etc/circuitbreaker"]="root:breaker:750"
@@ -253,6 +265,10 @@ stage1_bootstrap() {
     export CB_ALLOW_DEGRADED_DEPENDENCIES="${CB_ALLOW_DEGRADED_DEPENDENCIES:-false}"
     
     export CB_DETECTED_IP=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[^ ]+' || echo "localhost")
+    # The installer collects an ACME address as --email; the application reads it as
+    # CB_TLS_EMAIL. Exporting it here is what connects the two -- without it an operator
+    # who passed --email is still told the email is unset when they request a certificate.
+    export CB_EMAIL="${CB_EMAIL:-}"
 
     local env_template_path
     if ! env_template_path="$(cb_resolve_env_template)"; then

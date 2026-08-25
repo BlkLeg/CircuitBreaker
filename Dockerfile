@@ -31,9 +31,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # requirements.txt is generated from poetry.lock via: python3 scripts/gen_requirements.py
 # Using a pinned file instead of resolving from pyproject.toml avoids PyPI read timeouts
 # and makes the build fully deterministic.
-COPY apps/backend/requirements.txt ./requirements.txt
+COPY apps/backend/requirements.txt apps/backend/requirements-acme.txt ./
+# certbot and its two DNS-01 plugins ship in the image because INC-07's first cause was
+# that they did not: certificate_service shelled out to a `certbot` no image contained.
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --timeout 120 --retries 5 -r requirements.txt
+    pip install --timeout 120 --retries 5 -r requirements.txt -r requirements-acme.txt
 
 # --- App layer (invalidated only when source changes) ---
 COPY VERSION /VERSION

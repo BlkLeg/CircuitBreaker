@@ -76,6 +76,10 @@ services:
       - CB_ALLOW_DEGRADED_DEPENDENCIES=${CB_ALLOW_DEGRADED_DEPENDENCIES:-false}
       - CB_AIRGAP=${CB_AIRGAP:-false}
       - CB_DOCKER_HOST=${CB_DOCKER_HOST:-}
+      # Read by services/acme_service.py as the ACME account email. .env.example has
+      # advertised it since before anything read it (INC-07); without this line it
+      # never reaches the process and every issuance refuses for want of it.
+      - CB_TLS_EMAIL=${CB_TLS_EMAIL:-}
     healthcheck:
       # Must stay identical to the HEALTHCHECK in Dockerfile.mono — a compose
       # healthcheck overrides the image's, so diverging here silently undoes it.

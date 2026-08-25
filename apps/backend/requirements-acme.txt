@@ -1,0 +1,15 @@
+# certbot and the two DNS-01 plugins Circuit Breaker supports (INC-07).
+# pip install -r requirements.txt -r requirements-acme.txt
+#
+# Kept out of poetry.lock deliberately: nothing in the application imports certbot. It is
+# a command-line tool this image shells out to, and services/acme_service.py is the only
+# thing that knows it exists. Adding it to the app's dependency graph would put an ACME
+# client in every developer venv to gain nothing.
+#
+# Two plugins and no more. A provider nobody has exercised is worse than a provider that
+# is absent — the same argument INC-16 makes about the integration connection test.
+# Adding a third means adding it here *and* to services/acme_secrets.py's SECRET_KEYS
+# *and* to acme_service._dns_argv; the tests fail if only some of those happen.
+certbot==5.7.0
+certbot-dns-cloudflare==5.7.0
+certbot-dns-rfc2136==5.7.0

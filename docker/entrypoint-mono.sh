@@ -64,7 +64,11 @@ fi
 PG_BIN="/usr/lib/postgresql/15/bin"
 
 ensure_data_dirs() {
-  mkdir -p "${CB_DATA_DIR:-/data}/pgdata" "${CB_DATA_DIR:-/data}/uploads" "${CB_DATA_DIR:-/data}/nats" "${CB_DATA_DIR:-/data}/tls" "${CB_DATA_DIR:-/data}/certs" "${CB_DATA_DIR:-/data}/redis"
+  # acme-challenge / letsencrypt / tmp are certbot's (INC-07). Without letsencrypt/
+  # certbot falls back to /etc/letsencrypt, which a non-root process cannot create --
+  # the original defect reappearing one directory over. Without tmp/, the credentials
+  # TemporaryDirectory issuance writes into has nowhere to live.
+  mkdir -p "${CB_DATA_DIR:-/data}/pgdata" "${CB_DATA_DIR:-/data}/uploads" "${CB_DATA_DIR:-/data}/nats" "${CB_DATA_DIR:-/data}/tls" "${CB_DATA_DIR:-/data}/certs" "${CB_DATA_DIR:-/data}/redis" "${CB_DATA_DIR:-/data}/acme-challenge" "${CB_DATA_DIR:-/data}/letsencrypt" "${CB_DATA_DIR:-/data}/tmp"
   if [ "$(id -u)" -eq 0 ]; then
     mkdir -p /var/log/nginx /var/log/circuitbreaker
     # /var/log is tmpfs (fresh every boot); nginx runs as breaker and writes
@@ -126,7 +130,7 @@ if [ "$USE_EXTERNAL_DB" -eq 1 ]; then
   run_as_breaker "[ -x /docker/30-oobe.sh ] && /docker/30-oobe.sh"
 else
   # Embedded Postgres: init cluster, start temp postgres, migrate, then stop and remove pid so supervisord can start it.
-  run_as_breaker 'mkdir -p "${CB_DATA_DIR:-/data}/pgdata" "${CB_DATA_DIR:-/data}/uploads" "${CB_DATA_DIR:-/data}/nats" "${CB_DATA_DIR:-/data}/tls" "${CB_DATA_DIR:-/data}/run/postgresql"; chmod 1777 "${CB_DATA_DIR:-/data}/run/postgresql" 2>/dev/null || true; [ -x /docker/10-init-postgres.sh ] && /docker/10-init-postgres.sh'
+  run_as_breaker 'mkdir -p "${CB_DATA_DIR:-/data}/pgdata" "${CB_DATA_DIR:-/data}/uploads" "${CB_DATA_DIR:-/data}/nats" "${CB_DATA_DIR:-/data}/tls" "${CB_DATA_DIR:-/data}/acme-challenge" "${CB_DATA_DIR:-/data}/letsencrypt" "${CB_DATA_DIR:-/data}/tmp" "${CB_DATA_DIR:-/data}/run/postgresql"; chmod 1777 "${CB_DATA_DIR:-/data}/run/postgresql" 2>/dev/null || true; [ -x /docker/10-init-postgres.sh ] && /docker/10-init-postgres.sh'
 
   # shared_preload_libraries must match run-postgres-if-embedded.sh — migrations
   # run CREATE EXTENSION timescaledb, which fails unless it is preloaded.
