@@ -36,6 +36,11 @@ class SnapshotInfo(BaseModel):
 
 class SnapshotListResponse(BaseModel):
     snapshots: list[SnapshotInfo]
+    restore_command: str = "cb restore <archive>"
+    restore_note: str = (
+        "Restore is an offline operation: the application cannot replace the database it is "
+        "running on. Run `cb restore` on the host."
+    )
 
 
 class BackupSettingsResponse(BaseModel):

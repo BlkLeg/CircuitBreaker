@@ -111,6 +111,26 @@ async def test_list_snapshots_returns_files(client, auth_headers, tmp_path, monk
     assert "cb-snapshot-20260322-010000.tar.gz" in filenames
 
 
+async def test_list_snapshots_names_its_restore_path(client, auth_headers, monkeypatch):
+    """The listing states how a snapshot is restored, and that it is offline."""
+    from pathlib import Path
+
+    monkeypatch.setattr(
+        "app.services.db_backup.BACKUP_DIR",
+        Path("/nonexistent"),
+    )
+
+    resp = await client.get(
+        f"{_BASE}/db/snapshots",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["restore_command"] == "cb restore <archive>"
+    assert "offline operation" in body["restore_note"]
+    assert "cb restore" in body["restore_note"]
+
+
 async def test_list_snapshots_unauthenticated_returns_401(client):
     resp = await client.get(f"{_BASE}/db/snapshots")
     assert resp.status_code == 401
