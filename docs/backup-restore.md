@@ -203,9 +203,12 @@ is run on.
 ### The order, and why it is the order
 
 1. **Verify.** The archive is checked by the backend's own verifier — required members present,
-   `vault.key` non-empty, `manifest.json` parseable, the `db.sql.gz` SHA-256 matching the manifest,
-   and the snapshot not newer than the installed build. **Nothing is stopped until this passes**, so
-   a bad archive costs you a failed command, not an outage.
+   `vault.key` non-empty **and matching the `app_settings.vault_key_hash` recorded in the archive's
+   own dump**, `manifest.json` parseable, the `db.sql.gz` SHA-256 matching the manifest, and the
+   snapshot not newer than the installed build. **Nothing is stopped until this passes**, so a bad
+   archive costs you a failed command, not an outage. The key/database pairing has no `--force`:
+   the two halves of such an archive contradict each other, and applying it would write the wrong
+   key over the one that can still open the database.
 2. **Confirm.** The manifest is printed and you type `RESTORE`. Declining changes nothing. The
    confirmation is against the archive's own identity, not its filename.
 3. **Safety snapshot.** A fresh `cb backup` of the current state is taken before anything is
@@ -224,8 +227,8 @@ are the two properties that make the command safe to run under pressure.
 
 | Mode | How the restore is carried out |
 |---|---|
-| `docker`, `compose` | The archive is copied into the backend container, verified there, and replayed with `psql` inside it. Postgres stays up — it is what is being restored into; only `backend` and `workers` are stopped. The container is restarted at the end |
-| `binary` | `cb restore` drives `deploy/scripts/restore.sh`, which is the native/binary implementation. `cb` verifies, confirms, and takes the safety snapshot first, then hands the archive over |
+| `docker`, `compose` | The archive is copied into the backend container, verified there, and replayed with `psql` inside it. Postgres stays up — it is what is being restored into. `supervisorctl` stops `backend-api` and every `worker-*` program (`docker/supervisord.mono.conf`); `postgres`, `pgbouncer`, `nats`, `redis` and `nginx` stay up. A stop that fails aborts the restore — replaying a dump under live writers is not a restore. The container is restarted at the end |
+| `binary` | `cb restore` drives `deploy/scripts/restore.sh`, which is the native/binary implementation. `binary` mode is the **deb/rpm/apk layout**, so `cb` passes that layout's env file, unit and database roles into the script rather than letting it assume the `install.sh` one. `cb` verifies, confirms, and takes the safety snapshot first, then hands the archive over |
 
 `deploy/scripts/restore.sh` remains directly callable:
 
@@ -234,11 +237,19 @@ sudo deploy/scripts/restore.sh /path/to/cb-snapshot-20260814-020000.tar.gz
 ```
 
 Use it directly when `cb` or its `install.conf` is part of what was lost. It requires `tar`, `gzip`,
-`psql`, `rsync`, `jq`, `sed`, and `sha256sum` on the host. It stops `circuitbreaker.target`, drops
-and recreates the `circuitbreaker` database and loads the dump, syncs `uploads/` with
-`rsync --delete`, writes `CB_VAULT_KEY` back into `/etc/circuitbreaker/.env`, and restores the nginx
-site config — validating it with `nginx -t` before reloading, so a config that fails validation
-cannot take the site down at the end of a recovery.
+`psql`, `rsync`, `jq`, `sed`, and `sha256sum` on the host. By default it stops `circuitbreaker.target`,
+drops and recreates the `circuitbreaker` database owned by `breaker` and loads the dump, syncs
+`uploads/` with `rsync --delete`, writes `CB_VAULT_KEY` back into `/etc/circuitbreaker/.env`, and
+restores the nginx site config — validating it with `nginx -t` before reloading, so a config that
+fails validation cannot take the site down at the end of a recovery.
+
+Those defaults are the **`install.sh` native layout**. The distro packages use different paths, a
+different unit and a different database role ([packaging/README.md](https://github.com/BlkLeg/circuitbreaker/blob/main/packaging/README.md)),
+so the script takes each of them from the environment — `CB_ENV_FILE`, `CB_SERVICE_UNIT`,
+`CB_DB_NAME`, `CB_DB_OWNER`, `CB_DB_SUPERUSER` — and `cb restore` in `binary` mode sets them to the
+packaged layout. If the named unit does not exist on the host the script **refuses before dropping
+anything** and says which layout it thinks it is on; it used to stop it with `|| true` and drop the
+database under a service that never stopped.
 
 If `cb` cannot find the script it says where to get it; `CB_RESTORE_SCRIPT` in `install.conf`
 overrides the search.

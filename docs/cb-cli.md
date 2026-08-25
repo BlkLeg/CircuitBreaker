@@ -246,7 +246,7 @@ containing:
 | `db.sql.gz` | `pg_dump` of the whole database, gzip-compressed, with a recorded sha256 |
 | `uploads/` | The uploads directory |
 | `config/` | Native-install config files, when there are any |
-| `vault.key` | The vault key **in plaintext** — without it the dump's encrypted columns are unreadable |
+| `vault.key` | The vault key **in plaintext** — without it the dump's encrypted columns are unreadable. Resolved through the same chain the server uses (`CB_VAULT_KEY` cross-checked against `app_settings.vault_key_hash`, then `$CB_DATA_DIR/.env`, then the database), never straight from the environment: `cb backup` runs the builder in a fresh `docker exec` process, whose environment can still hold the key the container was *created* with rather than the one the database is encrypted with |
 | `manifest.json` | Format version, install mode, `cb` version, timestamp, database name, the uploads count, the `db.sql.gz` sha256 and the config files captured |
 
 The archive is written mode `0600` because it contains secrets — treat the file itself as one.
@@ -279,9 +279,13 @@ unrestorable archive costs a failed command rather than an outage, and a fresh `
 current state is taken before anything is destroyed. Declining the confirmation changes nothing.
 
 On `docker` and `compose` the archive is replayed inside the backend container (Postgres stays up —
-it is what is being restored into). On `binary` it drives `deploy/scripts/restore.sh`, the native
-implementation, rather than growing a second one beside it; `CB_RESTORE_SCRIPT` in `install.conf`
-overrides where `cb` looks for that script.
+it is what is being restored into). `supervisorctl` stops `backend-api` and every `worker-*` program
+by its real name from `docker/supervisord.mono.conf`, and a stop that fails aborts the restore
+instead of warning. On `binary` it drives `deploy/scripts/restore.sh`, the native implementation,
+rather than growing a second one beside it — passing it the deb/rpm/apk layout's env file, systemd
+unit and database roles, because that script's own defaults are the `install.sh` layout, which
+`binary` mode is not. `CB_RESTORE_SCRIPT` in `install.conf` overrides where `cb` looks for that
+script.
 
 Full procedure, per-mode mechanics, and what each archive member replaces:
 [Backup & Restore](backup-restore.md#full-restore-disaster-recovery).

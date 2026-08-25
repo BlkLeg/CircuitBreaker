@@ -112,7 +112,7 @@ async def run_full_snapshot(db: Session) -> Path:
     """Orchestrate a full-state backup snapshot.
 
     Steps:
-    1. Read vault_key from os.environ["CB_VAULT_KEY"]
+    1. Resolve the vault key through vault_service.load_vault_key(db)
     2. Read AppSettings from DB (backup dirs, S3 config, retention counts)
     3. Build snapshot tarball via backup.snapshot.build_snapshot()
     4. Prune local snapshots via backup.pruner.prune_local()
@@ -126,7 +126,7 @@ async def run_full_snapshot(db: Session) -> Path:
 
     Raises:
         BackupError: If snapshot creation fails.
-        RuntimeError: If CB_VAULT_KEY is not set.
+        RuntimeError: If no vault key can be resolved.
     """
     import os
 
@@ -134,10 +134,26 @@ async def run_full_snapshot(db: Session) -> Path:
     from app.services.backup.pruner import prune_local, prune_remote
     from app.services.backup.s3_client import BackupS3Settings, S3Client
     from app.services.backup.snapshot import BackupError, build_snapshot  # noqa: F401
+    from app.services.vault_service import load_vault_key
 
-    vault_key = os.environ.get("CB_VAULT_KEY", "")
+    # Not os.environ["CB_VAULT_KEY"]. Two of this function's three callers — the daily
+    # scheduler job and the admin endpoint — run inside the server process, which resolved
+    # the key at boot and exported it. The third does not: `cb backup` reaches this through
+    # `docker exec ... python -m app.cli snapshot create`, a fresh process that sees the
+    # container's *creation* environment rather than the entrypoint's exports or the key
+    # the server settled on. On a standard install those differ — the installer generates
+    # one key into the container environment, OOBE generates another, writes it to
+    # $CB_DATA_DIR/.env and encrypts every credential with it — so reading the environment
+    # archived a key that decrypts nothing, and the restore then wrote it over the only
+    # copy of the real one. load_vault_key() is the same chain main.py's phase 7 runs:
+    # environment cross-checked against AppSettings.vault_key_hash, then $CB_DATA_DIR/.env,
+    # then the legacy database column.
+    vault_key = (load_vault_key(db) or "").strip()
     if not vault_key:
-        raise RuntimeError("CB_VAULT_KEY environment variable is not set")
+        raise RuntimeError(
+            "No vault key could be resolved (checked CB_VAULT_KEY, $CB_DATA_DIR/.env and "
+            "the database) — a snapshot without it cannot restore a single encrypted column"
+        )
 
     settings = db.query(AppSettings).first()
     if settings is None:

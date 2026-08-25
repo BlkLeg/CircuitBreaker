@@ -12,7 +12,25 @@
 # Restores a full Circuit Breaker state from a snapshot tarball:
 #   - PostgreSQL database
 #   - Uploads directory
-#   - Vault key (CB_VAULT_KEY in /etc/circuitbreaker/.env)
+#   - Vault key (CB_VAULT_KEY in the environment file the service actually reads)
+#
+# There are two native layouts and they share no paths (packaging/README.md). This
+# script's defaults are the `install.sh` one it was written for; every path, unit and
+# role it needs is an overridable variable so the distro-package layout can be restored
+# with the same tool instead of a second copy of it. `cb restore` on a `binary` install
+# sets them. Getting this wrong is silent: the old version stopped a unit that does not
+# exist on a package host (`|| true`), dropped the database as roles that do not exist
+# there, and wrote the vault key into a file the packaged unit never reads — then
+# reported success over an install whose every encrypted column had become unreadable.
+#
+#   CB_ENV_FILE       environment file to source and to write CB_VAULT_KEY back into
+#   CB_SERVICE_UNIT   systemd unit stopped for the restore and started again after it
+#   CB_DB_NAME        database dropped, recreated and loaded
+#   CB_DB_OWNER       role that owns it, and that the dump is replayed as
+#   CB_DB_SUPERUSER   role used to drop and create it
+#   CB_DATA_DIR       uploads root — a value in the sourced env file wins over one
+#                     passed in, and /var/lib/circuitbreaker is the fallback both
+#                     layouts land on when nothing names it (db_backup.py's default)
 #
 # ⚠  WARNING: The snapshot contains the vault key in plaintext.
 #    Treat this machine and the snapshot file as sensitive after restore.
@@ -53,7 +71,14 @@ fi
 
 # ── 3. Source environment ──────────────────────────────────────────────────
 
-ENV_FILE="/etc/circuitbreaker/.env"
+# The install.sh-native layout, which is what this script defaults to. `cb restore` on a
+# `binary` (deb/rpm/apk) install overrides all five — see the header.
+ENV_FILE="${CB_ENV_FILE:-/etc/circuitbreaker/.env}"
+CB_SERVICE_UNIT="${CB_SERVICE_UNIT:-circuitbreaker.target}"
+CB_DB_NAME="${CB_DB_NAME:-circuitbreaker}"
+CB_DB_OWNER="${CB_DB_OWNER:-breaker}"
+CB_DB_SUPERUSER="${CB_DB_SUPERUSER:-postgres}"
+
 if [[ -f "$ENV_FILE" ]]; then
     # shellcheck source=/dev/null
     set +u
@@ -134,8 +159,25 @@ fi
 
 # ── 8. Stop service ────────────────────────────────────────────────────────
 
-echo "==> Stopping circuitbreaker.target..."
-systemctl stop circuitbreaker.target || true
+# `|| true` used to stand here. On a host without this unit that is not resilience: it
+# is the database being dropped out from under a service that never stopped, and the
+# only clue is a line of output nobody is reading. Nothing has been destroyed yet, so a
+# stop that did not happen is a refusal.
+echo "==> Stopping ${CB_SERVICE_UNIT}..."
+if ! systemctl cat "$CB_SERVICE_UNIT" >/dev/null 2>&1; then
+    echo "ERROR: systemd unit '${CB_SERVICE_UNIT}' does not exist on this host." >&2
+    echo "       This snapshot is being restored onto a layout it does not match." >&2
+    echo "       install.sh installs circuitbreaker.target; the deb/rpm/apk packages" >&2
+    echo "       install circuit-breaker.service. Set CB_SERVICE_UNIT (and CB_ENV_FILE," >&2
+    echo "       CB_DB_OWNER, CB_DB_SUPERUSER) to this host's layout and re-run." >&2
+    echo "       Nothing has been changed." >&2
+    exit 1
+fi
+if ! systemctl stop "$CB_SERVICE_UNIT"; then
+    echo "ERROR: could not stop ${CB_SERVICE_UNIT} — refusing to restore under a live" >&2
+    echo "       service. Nothing has been changed." >&2
+    exit 1
+fi
 
 # ── 9. Extract full tarball ────────────────────────────────────────────────
 
@@ -152,9 +194,9 @@ fi
 # ── 10. Restore database ───────────────────────────────────────────────────
 
 echo "==> Restoring database..."
-dropdb -h 127.0.0.1 -U postgres circuitbreaker 2>/dev/null || true
-createdb -h 127.0.0.1 -U postgres -O breaker circuitbreaker
-zcat "$SNAP_DIR/db.sql.gz" | psql -h 127.0.0.1 -U breaker circuitbreaker
+dropdb -h 127.0.0.1 -U "$CB_DB_SUPERUSER" "$CB_DB_NAME" 2>/dev/null || true
+createdb -h 127.0.0.1 -U "$CB_DB_SUPERUSER" -O "$CB_DB_OWNER" "$CB_DB_NAME"
+zcat "$SNAP_DIR/db.sql.gz" | psql -h 127.0.0.1 -U "$CB_DB_OWNER" "$CB_DB_NAME"
 
 # ── 11. Restore uploads ────────────────────────────────────────────────────
 
@@ -190,9 +232,18 @@ if echo "$TARBALL_CONTENTS" | grep -q "config/"; then
             echo "    WARNING: restored nginx config failed validation; not reloading." >&2
         fi
     fi
+    # config/.env is captured from /etc/circuitbreaker/.env, which is the install.sh
+    # layout's file. Copying it onto a package host would replace that host's env file
+    # with one full of paths and roles it does not have — and step 12 has already put
+    # the vault key where this host's unit reads it.
     if [[ -f "$SNAP_DIR/config/.env" ]]; then
-        cp "$SNAP_DIR/config/.env" /etc/circuitbreaker/.env
-        echo "    Restored full .env (includes vault key)"
+        if [[ "$ENV_FILE" == "/etc/circuitbreaker/.env" ]]; then
+            cp "$SNAP_DIR/config/.env" /etc/circuitbreaker/.env
+            echo "    Restored full .env (includes vault key)"
+        else
+            echo "    Skipped config/.env: it belongs to the install.sh layout, and this"
+            echo "    host reads ${ENV_FILE}. The vault key was written there in step 12."
+        fi
     fi
 else
     echo "    No config/ dir in snapshot — vault key already restored in step 12"
@@ -200,8 +251,8 @@ fi
 
 # ── 14. Start service ──────────────────────────────────────────────────────
 
-echo "==> Starting circuitbreaker.target..."
-systemctl start circuitbreaker.target
+echo "==> Starting ${CB_SERVICE_UNIT}..."
+systemctl start "$CB_SERVICE_UNIT"
 
 # ── 15. Done ───────────────────────────────────────────────────────────────
 

@@ -2,7 +2,7 @@
 
 Creates a gzip-compressed tarball containing:
   - db.sql.gz       (pg_dump output, gzip-compressed)
-  - vault.key       (CB_VAULT_KEY plaintext — the tarball IS the security boundary)
+  - vault.key       (the vault key in plaintext — the tarball IS the security boundary)
   - uploads/        (recursive copy of the uploads directory)
   - config/         (native-install config files — absent on Docker/dev, skipped gracefully)
       nginx/        (/etc/nginx/conf.d/circuitbreaker.conf — the reverse proxy the
@@ -167,7 +167,9 @@ async def build_snapshot(
     Args:
         backup_dir: Directory to write the tarball into.
         db_url: PostgreSQL connection URL (postgresql://...).
-        vault_key: Raw value of CB_VAULT_KEY — stored verbatim in the tarball.
+        vault_key: The vault key the database is encrypted with, as resolved by the
+            caller through ``vault_service.load_vault_key`` — stored verbatim in the
+            tarball. Not read from the environment here: see ``db_backup.run_full_snapshot``.
         uploads_dir: Path to the uploads directory to archive.
         cb_version: Application version string for manifest.
 

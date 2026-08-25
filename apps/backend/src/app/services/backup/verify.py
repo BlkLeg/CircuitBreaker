@@ -10,8 +10,11 @@ No function in this module writes, extracts to a persistent location, or mutates
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import re
 import tarfile
+import zlib
 from pathlib import Path
 from typing import IO
 
@@ -20,6 +23,73 @@ _REQUIRED_MEMBERS = ("db.sql.gz", "vault.key", "manifest.json")
 # The shape `cb backup` produced before this batch. Named specifically so an operator
 # holding one is told it never was restorable, rather than that db.sql.gz is missing.
 _LEGACY_CB_BACKUP_MEMBERS = ("database.sql", "manifest.txt")
+
+# pg_dump's default output writes table data as a COPY block: a header naming the
+# columns in order, then one tab-separated row per line, terminated by a lone `\.`.
+_APP_SETTINGS_COPY = re.compile(
+    r'^COPY\s+(?:[\w"]+\.)?"?app_settings"?\s*\((?P<columns>[^)]*)\)\s+FROM\s+stdin;',
+    re.IGNORECASE,
+)
+
+
+class _VaultKeyHashScanner:
+    """Recover ``app_settings.vault_key_hash`` from a plain dump as it streams past.
+
+    The archive pairs one ``vault.key`` with one database, and the database records the
+    SHA-256 of the key it was encrypted with.  Reading that hash back out is what turns
+    "vault.key is non-empty" — which a snapshot holding the wrong key passes — into
+    "vault.key is *this* database's key".
+
+    Fed the same blocks the checksum pass already reads, so nothing is decompressed
+    twice.  A dump this cannot parse (``pg_dump --inserts``, a custom-format dump, a
+    truncated stream) yields no hash at all and the cross-check is skipped rather than
+    guessed at: refusing an archive because the verifier could not read its dump would
+    turn an unfamiliar format into a failed recovery.
+    """
+
+    def __init__(self) -> None:
+        self._inflate = zlib.decompressobj(31)  # 31 = expect a gzip wrapper
+        self._pending = b""
+        self._columns: list[str] | None = None
+        self._done = False
+        self.vault_key_hash: str | None = None
+
+    def feed(self, block: bytes) -> None:
+        if self._done:
+            return
+        try:
+            text = self._inflate.decompress(block)
+        except zlib.error:
+            self._done = True
+            return
+        self._pending += text
+        *lines, self._pending = self._pending.split(b"\n")
+        for line in lines:
+            if self._consume(line.decode("utf-8", "replace")):
+                self._done = True
+                return
+
+    def _consume(self, line: str) -> bool:
+        """Read one dump line; True once there is nothing further worth looking for."""
+        if self._columns is None:
+            match = _APP_SETTINGS_COPY.match(line)
+            if match:
+                self._columns = [
+                    column.strip().strip('"') for column in match.group("columns").split(",")
+                ]
+            return False
+        if line == "\\.":  # the COPY block ended; the table held no rows
+            return True
+        try:
+            index = self._columns.index("vault_key_hash")
+        except ValueError:
+            # A schema without the column — nothing to cross-check against.
+            return True
+        fields = line.split("\t")
+        if index < len(fields) and fields[index] != "\\N":
+            self.vault_key_hash = fields[index]
+        # app_settings is a singleton row; one is all there is to read.
+        return True
 
 
 class SnapshotProblem(Exception):
@@ -99,16 +169,41 @@ def verify_archive(path: Path, installed_version: str | None = None) -> dict:
             raise SnapshotProblem("manifest.json carries no db_checksum_sha256")
 
         digest = hashlib.sha256()
+        scanner = _VaultKeyHashScanner()
         stream = _open_member(tf, "db.sql.gz")
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
+            scanner.feed(block)
         actual = digest.hexdigest()
+        recorded_key_hash = scanner.vault_key_hash
 
     if actual != expected:
         raise SnapshotProblem(
             f"db.sql.gz checksum mismatch in {path.name}: manifest says {expected[:12]}…, "
             f"archive contains {actual[:12]}…. The archive is corrupt or was modified."
         )
+
+    # The pairing check.  A snapshot can carry a syntactically perfect vault.key that
+    # belongs to a different install — `cb backup` archived the container's creation-time
+    # key while the database was encrypted with the one OOBE generated — and a restore
+    # that accepted it wrote that key over the only surviving copy of the real one.
+    # There is no --force for this: the two halves of the archive contradict each other,
+    # and applying it destroys the key that could still open the database.
+    if recorded_key_hash:
+        archived_key = vault_bytes.decode("utf-8", errors="replace").strip()
+        # compare_digest rather than !=, for the same reason vault_service uses it on
+        # this same column: it is the one comparison in the file that decides whether a
+        # secret is the right one.
+        if not hmac.compare_digest(
+            hashlib.sha256(archived_key.encode()).hexdigest(), recorded_key_hash
+        ):
+            raise SnapshotProblem(
+                f"vault.key inside {path.name} does not match the database it was taken "
+                f"with: app_settings.vault_key_hash in the dump is {recorded_key_hash[:12]}…, "
+                "and the archived key hashes to something else. Restoring this would write "
+                "the wrong key over the working one and leave every encrypted column "
+                "unreadable. Take a fresh snapshot on the source install."
+            )
 
     if installed_version:
         archive_version = str(manifest.get("cb_version", ""))

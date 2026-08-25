@@ -140,6 +140,31 @@ _gen_fernet_key() {
 # CB_DB_PASSWORD and the connection has to be rebuilt from it.
 _DB_CONN_SH='if [ -n "${CB_DB_URL:-}" ]; then set -- "$CB_DB_URL"; else export PGPASSWORD="${CB_DB_PASSWORD:-}"; set -- -h 127.0.0.1 -p 5432 -U breaker circuitbreaker; fi'
 
+# Every application program docker/supervisord.mono.conf defines, by the name it
+# actually defines — the whole list, because anything left out keeps writing to the
+# database while the schema is being replaced. `backend workers` used to stand here and
+# named nothing at all; supervisorctl said so and `2>/dev/null` ate the sentence.
+# `worker-monitor-poll` runs numprocs=2, which makes the bare name a *group*: a bare
+# `stop worker-monitor-poll` is an error, `worker-monitor-poll:*` is the two processes.
+# The datastores (postgres, pgbouncer, nats, redis) and nginx are deliberately absent —
+# Postgres is what is being restored into.
+# tests/services/test_restore_targets.py fails if this drifts from the config again.
+#
+# `-c` is not optional. entrypoint-mono.sh launches supervisord with
+# `-c /etc/supervisor/conf.d/supervisord.conf`, while a bare `supervisorctl` searches its
+# own path and finds Debian's /etc/supervisor/supervisord.conf first — a different file,
+# pointing at a socket nothing is listening on.
+_CB_SUPERVISORCTL=(supervisorctl -c /etc/supervisor/conf.d/supervisord.conf)
+_CB_APP_PROGRAMS=(
+  backend-api
+  worker-discovery
+  worker-notification
+  worker-telemetry
+  worker-monitor-scheduler
+  'worker-monitor-poll:*'
+  worker-monitor-probe-dispatch
+)
+
 ###############################################################################
 # COMMANDS
 ###############################################################################
@@ -560,7 +585,7 @@ cmd_restore() {
       # No `python -m app.cli` on a packaged install; the frozen binary is the
       # whole of Python there, exactly as in cmd_config and cmd_backup.
       _require_binary "$CB_BINARY" \
-        "the snapshot verifier ships with the Circuit Breaker binary. Install the package, or set CB_MODE in ${_CONF} to the mode this host actually runs."
+        "the snapshot verifier ships with the Circuit Breaker binary. \`binary\` mode is the deb/rpm/apk layout; an install.sh-native host keeps its binary at /opt/circuitbreaker/bin/circuit-breaker and has its own cb. Install the package, or set CB_MODE in ${_CONF} to the mode this host actually runs."
       if [[ -n "$force" ]]; then
         manifest=$(CB_VERSION= "$CB_BINARY" --snapshot-verify "$archive") \
           || _fail "This archive cannot be restored — see the reason above."
@@ -622,9 +647,35 @@ cmd_restore() {
 _restore_container() {
   local archive="$1"
 
+  # A restore that runs under live writers is not a restore. Nothing has been destroyed
+  # at this point — the archive is verified and the safety snapshot is taken — so a stop
+  # that did not happen is a reason to abort, not a reason to warn.
   _info "Stopping application processes (database stays up)…"
-  docker exec "$CB_BACKEND_CONTAINER" supervisorctl stop backend workers 2>/dev/null \
-    || _warn "supervisorctl stop reported an error; continuing — the restore itself is what matters."
+  local stop_out=""
+  stop_out=$(docker exec "$CB_BACKEND_CONTAINER" \
+               "${_CB_SUPERVISORCTL[@]}" stop "${_CB_APP_PROGRAMS[@]}" 2>&1) || true
+  printf '%s\n' "$stop_out" | sed 's/^/    /'
+
+  # The verdict is the resulting state, not the exit code: `supervisorctl stop` exits
+  # non-zero for "ERROR (not running)" as well, which is the state this step is trying to
+  # reach. Reading the state back also catches the two failures that hid here before — a
+  # program name nothing defines, and a supervisord with no control socket to answer on —
+  # because neither can produce a status line for a stopped program.
+  local status_out="" unstopped=""
+  status_out=$(docker exec "$CB_BACKEND_CONTAINER" \
+                 "${_CB_SUPERVISORCTL[@]}" status "${_CB_APP_PROGRAMS[@]}" 2>&1) || true
+  unstopped=$(printf '%s\n' "$status_out" \
+              | grep -Ev 'STOPPED|EXITED|FATAL|BACKOFF|not running' \
+              | grep -v '^[[:space:]]*$' || true)
+  if [[ -z "$status_out" || -n "$unstopped" ]]; then
+    printf '%s\n' "${unstopped:-supervisorctl produced no status output at all}" \
+      | sed 's/^/    /' >&2
+    _fail "$(printf '%s\n' \
+      "Could not confirm the application is stopped inside '${CB_BACKEND_CONTAINER}' — refusing to restore." \
+      "  Replaying a dump while the API and the workers hold connections corrupts the result." \
+      "  The database has not been touched. Check the lines above, then retry." \
+      "  Inspect by hand:  docker exec ${CB_BACKEND_CONTAINER} ${_CB_SUPERVISORCTL[*]} status")"
+  fi
 
   _info "Restoring the database…"
   # The archive is already inside the container: step 1 copied it there to verify it.
@@ -681,6 +732,23 @@ _restore_container() {
 # deploy/scripts/restore.sh already restores a native install correctly — database,
 # uploads, vault key, nginx site config — so the binary branch drives it rather than
 # growing a second implementation beside it.
+#
+# It is written for the `install.sh` native layout, and this `cb`'s `binary` mode is the
+# other one: the distro package (packaging/README.md). Those two layouts share no paths,
+# so the script is *told* which one it is on rather than left to assume. Without that it
+# stopped circuitbreaker.target (absent here, and `|| true`, so nothing stopped while the
+# database was dropped), recreated the database as roles a package host does not have,
+# and wrote CB_VAULT_KEY into /etc/circuitbreaker/.env — which packaging/circuit-breaker.
+# service does not read — so a restore reported success and left every encrypted column
+# unreadable.
+#
+# The values below are the packaged layout, from one source each:
+#   CB_ENV_FILE      $CB_BINARY_ENV_FILE, the file the unit's EnvironmentFile= names
+#   CB_SERVICE_UNIT  packaging/circuit-breaker.service
+#   CB_DB_OWNER      the role in the CB_DB_URL packaging/postinstall.sh generates
+# An install.sh-native host is not this mode: it has its own `cb` (deploy/cli/cb) and its
+# own paths, and `cb restore` there refuses at the verify step because
+# /usr/local/bin/circuit-breaker does not exist on it.
 _restore_binary() {
   local archive="$1" script="" candidate here
   here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
@@ -706,7 +774,14 @@ _restore_binary() {
   # cb has already verified the archive and taken the operator's confirmation;
   # restore.sh asks for its own. Answering it here keeps `cb restore --yes`
   # non-interactive instead of blocking on a prompt nobody is watching.
-  printf 'y\n' | "$script" "$archive" || _fail "Restore failed — see the output above."
+  printf 'y\n' | \
+    CB_ENV_FILE="$CB_BINARY_ENV_FILE" \
+    CB_SERVICE_UNIT="${CB_SERVICE_UNIT:-circuit-breaker.service}" \
+    CB_DB_NAME="${CB_DB_NAME:-circuitbreaker}" \
+    CB_DB_OWNER="${CB_DB_OWNER:-circuitbreaker}" \
+    CB_DB_SUPERUSER="${CB_DB_SUPERUSER:-postgres}" \
+    "$script" "$archive" \
+    || _fail "Restore failed — see the output above."
 }
 
 # ── config ────────────────────────────────────────────────────────────────────
