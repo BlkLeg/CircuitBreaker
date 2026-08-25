@@ -99,7 +99,6 @@ Categories are not managed here — they are created inline while editing hardwa
 - Clear lab data
 - Database and host diagnostics (admins only)
 - Backup & Recovery — S3 target configuration and test upload (admins only)
-- Experimental features toggle
 - Factory reset (Reset to Defaults)
 
 Restoring a backup is an API operation, not a Settings control. See [Backup & Restore](backup-restore.md).

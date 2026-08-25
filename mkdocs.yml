@@ -46,6 +46,7 @@ nav:
       - cb CLI Tool: cb-cli.md
       - Visual Test Baselines: testing-visual-baselines.md
       - Backup & Restore: backup-restore.md
+      - TLS Certificates: tls-certificates.md
   - Reference:
       - Product Overview: overview.md
       - Architecture Walkthrough: architecture.html

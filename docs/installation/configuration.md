@@ -32,6 +32,7 @@ Circuit Breaker is configured via environment variables. All variables can be pa
 |---|---|---|
 | `CB_PORT` | `80` | Host port published for the container's HTTP listener (container port `8080`). The native installer uses `8088` unless `--port` is given. |
 | `CB_PORT_HTTPS` | `443` | Host port published for the container's HTTPS listener (container port `8443`). |
+| `CB_TLS_EMAIL` | _(empty)_ | Let's Encrypt account address. Required to request or renew a certificate from the **Certificates** page — the CA uses it for expiry notices, and issuance refuses without it rather than inventing one. Not needed for a self-signed certificate. The native installer writes it from `--email`. See [TLS Certificates](../tls-certificates.md). |
 | `CB_IMAGE` | `ghcr.io/blkleg/circuitbreaker:${CB_TAG}` | Full image reference. Override to run a locally built image. |
 | `CB_TAG` | `latest` | Image tag used when `CB_IMAGE` is not set. |
 
@@ -269,7 +270,11 @@ ${CB_DATA_DIR}/tls/fullchain.pem
 ${CB_DATA_DIR}/tls/privkey.pem
 ```
 
-and restart. For a public FQDN, point certbot (or another ACME client) at those paths and reload after each renewal. A native install run with both `--fqdn` and `--email` validates that the FQDN resolves to this server and expects Let's Encrypt certificates at those same paths; if DNS validation fails it falls back to a self-signed certificate.
+and restart. A native install run with both `--fqdn` and `--email` validates that the FQDN resolves to this server and expects Let's Encrypt certificates at those same paths; if DNS validation fails it falls back to a self-signed certificate.
+
+### Let's Encrypt from the application
+
+You do not have to run certbot yourself. With `CB_TLS_EMAIL` set and a publicly-resolvable domain, the **Certificates** page issues and renews Let's Encrypt certificates over HTTP-01 or DNS-01, and **Activate** writes the pair to the paths above and reloads nginx. Renewal of the active certificate re-activates it automatically. See [TLS Certificates](../tls-certificates.md) for the requirements of each challenge type and for why a LAN-only install cannot use this at all.
 
 ### Certificate warnings
 
@@ -286,3 +291,4 @@ Because the generated certificate is self-signed, browsers warn on first visit. 
 - [Deployment & Security](../deployment-security.md) — hardening, vault best practices
 - [Remote Access & Tunnels](../remote-access.md)
 - [Backup & Restore](../backup-restore.md)
+- [TLS Certificates](../tls-certificates.md) — issuing, renewing and activating certificates

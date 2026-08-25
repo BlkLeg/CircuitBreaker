@@ -79,14 +79,22 @@ installer takes one of three paths:
 - **Let's Encrypt (`--cert-type letsencrypt --fqdn ... --email ...`).** The installer validates that
   the FQDN resolves to this server's IP and then expects certbot-issued certificates to already be
   at the TLS path. If DNS does not check out, or `--fqdn`/`--email` are missing, it warns and falls
-  back to self-signed.
+  back to self-signed. `--email` is also written to the environment file as `CB_TLS_EMAIL`, which
+  is what the application uses as its ACME account address — so you can obtain and renew a
+  certificate from the **Certificates** page afterwards without editing anything. See
+  [TLS Certificates](tls-certificates.md).
 
 Certificates live in `${CB_DATA_DIR}/tls` (default `/var/lib/circuitbreaker/tls`), owned by root
 and the nginx group (`nginx` or `www-data`), with mode `750` on the directory and `640` on the
 `.pem` files.
 
+The **Certificates** page writes to this same directory: activating a certificate replaces
+`fullchain.pem` and `privkey.pem` and reloads nginx. That is the only thing that changes what the
+server presents — creating or renewing a certificate stores it and nothing more.
+
 Pass `--no-tls` to the installer to skip HTTPS entirely and serve plain HTTP on `CB_PORT`. Only do
-this behind another proxy that terminates TLS.
+this behind another proxy that terminates TLS. Note that HTTP-01 certificate validation is served
+from the plain-HTTP listener, so it keeps working in either mode.
 
 Configuration is an environment file at `/etc/circuitbreaker/.env`. There is no `config.yaml`.
 
