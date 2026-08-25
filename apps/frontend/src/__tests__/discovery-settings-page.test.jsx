@@ -237,3 +237,62 @@ describe('DiscoverySettingsPage — Readiness panel', () => {
     expect(mockToastSuccess).toHaveBeenCalled();
   });
 });
+
+describe('DiscoverySettingsPage — self-cluster toggle', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUpdate.mockResolvedValue({ data: {} });
+    mockReloadSettings.mockResolvedValue();
+    mockGet.mockResolvedValue({
+      data: { ...baseSettings, docker_discovery_enabled: true },
+    });
+    mockUseDiscoveryReadiness.mockReturnValue({
+      loading: false,
+      readiness: {
+        helper_installed: true,
+        capabilities: fourCapabilities(),
+      },
+    });
+  });
+
+  it('offers the self-cluster toggle once Docker discovery is on', async () => {
+    render(<DiscoverySettingsPage />);
+
+    const toggle = await screen.findByRole('switch', { name: 'Auto-Cluster Self' });
+    expect(toggle).toBeInTheDocument();
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('hides the self-cluster toggle while Docker discovery is off', async () => {
+    mockGet.mockResolvedValue({ data: { ...baseSettings, docker_discovery_enabled: false } });
+
+    render(<DiscoverySettingsPage />);
+
+    await screen.findByText('Docker Container Discovery');
+
+    expect(screen.queryByRole('switch', { name: 'Auto-Cluster Self' })).toBeNull();
+    expect(screen.queryByText('Docker Socket Path')).toBeNull();
+  });
+
+  it('saves self_cluster_enabled through the page save button', async () => {
+    render(<DiscoverySettingsPage />);
+
+    const toggle = await screen.findByRole('switch', { name: 'Auto-Cluster Self' });
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(screen.getByRole('switch', { name: 'Auto-Cluster Self' })).toHaveAttribute(
+        'aria-checked',
+        'true'
+      );
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await waitFor(() => {
+      expect(mockUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ self_cluster_enabled: true })
+      );
+    });
+  });
+});

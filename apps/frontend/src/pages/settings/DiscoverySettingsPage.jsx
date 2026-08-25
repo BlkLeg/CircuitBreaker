@@ -278,6 +278,7 @@ export default function DiscoverySettingsPage() {
               <Toggle
                 checked={form.self_cluster_enabled}
                 onChange={(v) => set('self_cluster_enabled', v)}
+                ariaLabel="Auto-Cluster Self"
               />
             </SettingRow>
           </>

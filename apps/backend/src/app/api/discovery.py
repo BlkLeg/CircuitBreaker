@@ -1440,38 +1440,3 @@ def get_listener_events(
         }
         for e in events
     ]
-
-
-# ── v0.2.0: Self-Aware Cluster Topology ─────────────────────────────────────
-
-
-@router.post("/self-cluster")
-def trigger_self_cluster(db: Session = Depends(get_db), user: User = require_role("admin")):
-    """Detect Circuit Breaker containers and group them into a cluster node."""
-    from app.services.self_discovery import autocreate_self_cluster
-
-    return autocreate_self_cluster(db)
-
-
-@router.get("/self-cluster/status")
-def get_self_cluster_status(db: Session = Depends(get_db), user: User = require_role("admin")):
-    """Return the current Circuit Breaker self-cluster state."""
-    from app.db.models import HardwareCluster, HardwareClusterMember
-
-    cluster = db.query(HardwareCluster).filter_by(name="Circuit Breaker").first()
-    if not cluster:
-        return {"cluster_id": None, "member_count": 0, "members": []}
-    members = db.query(HardwareClusterMember).filter_by(cluster_id=cluster.id).all()
-    return {
-        "cluster_id": cluster.id,
-        "member_count": len(members),
-        "members": [
-            {
-                "id": m.id,
-                "member_type": m.member_type,
-                "service_id": m.service_id,
-                "hardware_id": m.hardware_id,
-            }
-            for m in members
-        ],
-    }
