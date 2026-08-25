@@ -261,3 +261,18 @@ async def test_manifest_install_mode_is_unknown_when_unset(
     manifest = _read_manifest(tarball)
 
     assert manifest["install_mode"] == "unknown"
+
+
+def test_cb_backup_invokes_the_snapshot_cli_and_nothing_else() -> None:
+    """INC-15: `cb backup` built its own archive — database.sql, manifest.txt, no vault key —
+    which `deploy/scripts/restore.sh` structurally rejected. There must be one builder."""
+    cb_src = (Path(__file__).resolve().parents[4] / "cb").read_text(encoding="utf-8")
+    start = cb_src.index("cmd_backup()")
+    body = cb_src[start : cb_src.index("\ncmd_", start + 1)]
+
+    assert "app.cli snapshot create" in body, (
+        "cb backup no longer reaches the snapshot CLI — a second backup implementation is "
+        "how the two formats diverged."
+    )
+    for legacy in ("pg_dump", "database.sql", "manifest.txt"):
+        assert legacy not in body, f"cb backup still builds its own archive ({legacy})"
