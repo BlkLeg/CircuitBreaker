@@ -6,7 +6,11 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-VALID_PROVIDERS = {"proxmox", "docker", "truenas", "unifi"}
+# Exactly the providers with both a sync implementation and a test_config branch.
+# INC-16: truenas and unifi were accepted here with neither, so an operator could store
+# credentials in a configuration nothing in the product would ever use — and the only
+# feedback was a Test button reporting our gap rather than their mistake.
+VALID_PROVIDERS = {"proxmox", "docker"}
 
 
 class IntegrationProviderCreate(BaseModel):

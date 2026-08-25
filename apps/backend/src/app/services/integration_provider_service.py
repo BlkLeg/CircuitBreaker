@@ -2,8 +2,10 @@
 
 Wraps existing ``IntegrationConfig`` + ``Credential`` models and
 ``CredentialVault`` to provide a single-entry-point for managing
-integration configurations across all provider types (proxmox, docker,
-truenas, unifi, etc.).
+integration configurations for the providers this product integrates with,
+which is proxmox and docker and no others. INC-16: this docstring used to end
+"truenas, unifi, etc." and ``VALID_PROVIDERS`` agreed with it, while neither
+had a sync path or a test branch.
 """
 
 from __future__ import annotations
@@ -159,9 +161,12 @@ async def test_config(db: Session, provider: str, config_id: int) -> dict:
         elif provider == "docker":
             result = _test_docker(cfg)
         else:
+            # Unreachable for a valid provider: VALID_PROVIDERS is exactly the two branches
+            # above (INC-16). Kept as a guard, and worded as the caller's error rather than
+            # our unfinished work, because that is now what reaching it means.
             result = {
                 "status": "error",
-                "message": f"Test not implemented for provider '{provider}'",
+                "message": f"'{provider}' is not a supported integration provider.",
             }
     except Exception as exc:
         _logger.warning("Integration test failed for %s config %d: %s", provider, config_id, exc)
