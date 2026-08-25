@@ -9,13 +9,13 @@ from pydantic import BaseModel, Field
 
 class CertificateCreate(BaseModel):
     domain: str = Field(..., min_length=1, max_length=253)
-    type: str = Field(default="selfsigned", pattern="^(letsencrypt|selfsigned)$")
+    type: str = Field(default="selfsigned", pattern="^(letsencrypt|selfsigned|imported)$")
     auto_renew: bool = True
     cert_pem: str | None = Field(
-        default=None, description="PEM cert — omit for auto-generated self-signed"
+        default=None, description="PEM cert — required for type=imported, ignored otherwise"
     )
     key_pem: str | None = Field(
-        default=None, description="PEM key — omit for auto-generated self-signed"
+        default=None, description="PEM key — required for type=imported, ignored otherwise"
     )
 
 

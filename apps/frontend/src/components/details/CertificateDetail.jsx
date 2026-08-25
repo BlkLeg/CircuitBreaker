@@ -4,6 +4,7 @@ import Drawer from '../common/Drawer';
 import { certificatesApi } from '../../api/client';
 import { Shield, Clock, RefreshCw, FileText, Copy, Check } from 'lucide-react';
 import { useToast } from '../common/Toast';
+import { certificateTypeLabel } from '../../utils/certificateTypes';
 
 function CertificateDetail({ certificate, isOpen, onClose, onUpdate }) {
   const toast = useToast();
@@ -70,7 +71,7 @@ function CertificateDetail({ certificate, isOpen, onClose, onUpdate }) {
               <label className="tw-text-xs tw-text-cb-text-muted tw-uppercase tw-font-bold">
                 Type
               </label>
-              <div>{certificate.type === 'letsencrypt' ? "Let's Encrypt" : 'Self-Signed'}</div>
+              <div>{certificateTypeLabel(certificate.type)}</div>
             </div>
             <div>
               <label className="tw-text-xs tw-text-cb-text-muted tw-uppercase tw-font-bold">

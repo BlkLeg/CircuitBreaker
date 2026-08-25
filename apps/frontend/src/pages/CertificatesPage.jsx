@@ -9,6 +9,7 @@ import ConfirmDialog from '../components/common/ConfirmDialog';
 import { useToast } from '../components/common/Toast';
 import { useSettings } from '../context/SettingsContext';
 import CertificateDetail from '../components/details/CertificateDetail';
+import { CERTIFICATE_TYPE_OPTIONS, certificateTypeLabel } from '../utils/certificateTypes';
 
 const STATUS_COLORS = {
   healthy: 'tw-text-green-500',
@@ -47,32 +48,29 @@ const StatusBadge = ({ expiryDate }) => {
   );
 };
 
-const CERTIFICATE_FIELDS = [
+export const CERTIFICATE_FIELDS = [
   { name: 'domain', label: 'Domain Name', required: true, placeholder: 'e.g. git.local' },
   {
     name: 'type',
     label: 'Type',
     type: 'select',
-    options: [
-      { value: 'selfsigned', label: 'Self-Signed' },
-      { value: 'letsencrypt', label: "Let's Encrypt" },
-    ],
+    options: CERTIFICATE_TYPE_OPTIONS,
     defaultValue: 'selfsigned',
   },
   { name: 'auto_renew', label: 'Auto Renew', type: 'checkbox', defaultValue: true },
   {
     name: 'cert_pem',
-    label: 'Certificate PEM (Optional)',
+    label: 'Certificate PEM',
     type: 'textarea',
     placeholder: '-----BEGIN CERTIFICATE-----...',
-    hint: 'Leave blank to auto-generate a self-signed certificate.',
+    hint: 'Required for the Imported type; ignored for the others.',
   },
   {
     name: 'key_pem',
-    label: 'Private Key PEM (Optional)',
+    label: 'Private Key PEM',
     type: 'textarea',
     placeholder: '-----BEGIN PRIVATE KEY-----...',
-    hint: 'Leave blank to auto-generate a self-signed private key.',
+    hint: 'Required for the Imported type; ignored for the others.',
   },
 ];
 
@@ -116,7 +114,7 @@ function CertificatesPage() {
       {
         key: 'type',
         label: 'Type',
-        render: (v) => (v === 'letsencrypt' ? "Let's Encrypt" : 'Self-Signed'),
+        render: (v) => certificateTypeLabel(v),
       },
       {
         key: 'expires_at',

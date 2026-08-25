@@ -2,7 +2,7 @@
 
 Routes:
   GET    /api/v1/certificates           — list all certs (summary)
-  POST   /api/v1/certificates           — create (auto-generate self-signed if no PEM provided)
+  POST   /api/v1/certificates           — create (selfsigned | letsencrypt | imported)
   GET    /api/v1/certificates/{id}      — detail (includes cert_pem)
   PUT    /api/v1/certificates/{id}      — update
   DELETE /api/v1/certificates/{id}      — delete
@@ -48,7 +48,37 @@ def create_certificate(
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, require_role("admin")],
 ) -> Any:
-    cert = svc.create_certificate(db, body)
+    try:
+        cert = svc.create_certificate(db, body)
+    except svc.CertificateCreationError as exc:
+        # 422: the request asked for something this payload cannot produce — an imported
+        # certificate with no PEM, or a PEM that will not parse.
+        log_audit(
+            db,
+            request,
+            user_id=current_user.id,
+            action="certificate_created",
+            resource=f"certificate:{body.domain}",
+            status="error",
+            details=str(exc),
+        )
+        db.commit()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except svc.CertificateRenewalError as exc:
+        # Let's Encrypt issuance refused. 502 for the same reason renewal does: the failure
+        # is upstream, and no row is written for a certificate that was never issued.
+        log_audit(
+            db,
+            request,
+            user_id=current_user.id,
+            action="certificate_created",
+            resource=f"certificate:{body.domain}",
+            status="error",
+            details=str(exc),
+        )
+        db.commit()
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
     log_audit(
         db,
         request,

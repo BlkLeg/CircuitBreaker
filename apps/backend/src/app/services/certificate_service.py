@@ -13,7 +13,9 @@ import os
 import subprocess
 import tempfile
 from datetime import UTC, datetime, timedelta
+from importlib import import_module
 from pathlib import Path
+from typing import Any
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -38,6 +40,10 @@ _CERTBOT_TIMEOUT_SECONDS = 120
 
 class CertificateRenewalError(RuntimeError):
     """A renewal did not happen. The message is shown to the operator verbatim."""
+
+
+class CertificateCreationError(ValueError):
+    """A certificate could not be created. Shown to the operator verbatim."""
 
 
 def _run_certbot(
@@ -110,15 +116,51 @@ def get_certificate(db: Session, cert_id: int) -> Certificate | None:
     return db.get(Certificate, cert_id)
 
 
+def _acme_issuer() -> Any:
+    """Resolve ACME issuance at call time (INC-07).
+
+    A module-level ``issue_acme_certificate`` wins when one is bound; otherwise
+    ``services/acme_service`` is imported dynamically and its ImportError surfaces. There is
+    deliberately no stub and no fallback: a fallback is how "silently self-sign instead" gets
+    reintroduced.
+    """
+    override = globals().get("issue_acme_certificate")
+    if override is not None:
+        return override
+    return import_module("app.services.acme_service").issue_acme_certificate
+
+
 def create_certificate(db: Session, data: CertificateCreate) -> Certificate:
+    """Create the type that was asked for, or refuse.
+
+    The decision is ``data.type`` and never "was a PEM pasted". Branching on the pasted PEM
+    is what stored a generated self-signed certificate under ``type="letsencrypt"``, which the
+    page then rendered as a CA-issued certificate.
+    """
     vault = get_vault()
 
-    if data.cert_pem and data.key_pem:
+    if data.type == "imported":
+        if not (data.cert_pem and data.key_pem):
+            raise CertificateCreationError(
+                "An imported certificate needs both cert_pem and key_pem."
+            )
         cert_pem = data.cert_pem
         key_pem_encrypted = vault.encrypt(data.key_pem)
-        parsed = x509.load_pem_x509_certificate(cert_pem.encode())
+        try:
+            parsed = x509.load_pem_x509_certificate(cert_pem.encode())
+        except ValueError as exc:
+            raise CertificateCreationError(
+                f"cert_pem is not a readable PEM certificate: {exc}"
+            ) from exc
         expires_at = parsed.not_valid_after_utc
-    else:
+
+    elif data.type == "letsencrypt":
+        # Raises rather than falling back. Storing a self-signed certificate under this
+        # type is the defect this branch exists to prevent.
+        cert_pem, raw_key_pem, expires_at = _acme_issuer()(data.domain)
+        key_pem_encrypted = vault.encrypt(raw_key_pem)
+
+    else:  # selfsigned
         cert_pem, raw_key_pem, expires_at = generate_selfsigned(data.domain)
         key_pem_encrypted = vault.encrypt(raw_key_pem)
 
