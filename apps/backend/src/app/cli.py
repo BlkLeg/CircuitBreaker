@@ -1,7 +1,8 @@
 """Headless administration entrypoint (SRV-05).
 
 ``cb config validate`` and the packaged binary's ``--config-validate`` flag
-both land here.  Every rule this reports is *called*, not restated:
+both land here, as does the ``cb snapshot`` group the ``cb`` shell's backup and
+restore paths shell out to.  Every rule this reports is *called*, not restated:
 ``app.core.startup_validation`` owns what a valid configuration is, and a
 second copy of those rules is how a validator ends up passing a config the
 server then refuses to boot with.
@@ -13,9 +14,12 @@ than re-implementing it, because a validator reading a different configuration
 than the server is worse than no validator at all.  ``ConfigReport.sources``
 names the tier each setting was resolved from.
 
-Everything runs offline, and that is enforced rather than promised: a pass
-refuses DNS resolution outright (see ``_refuse_dns``), so nothing here can
-reach Postgres, Redis, NATS or a name server.  Two tiers are therefore out of
+A ``config validate`` pass runs offline, and that is enforced rather than
+promised: the pass refuses DNS resolution outright (see ``_refuse_dns``), so
+nothing in it can reach Postgres, Redis, NATS or a name server.  The refusal is
+scoped to that pass, not to the module — ``cb snapshot create`` below is the
+third caller of ``services.db_backup.run_full_snapshot`` and must reach the
+database.  Two tiers are therefore out of
 reach, and the report says so instead of guessing:
 
 * The JWT signing secret and the vault key both have a database tier
@@ -43,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import re
 import socket
@@ -58,6 +63,7 @@ from app.core.startup_validation import (
     validate_core_dependencies,
     validate_secret_value,
 )
+from app.services.backup.verify import SnapshotProblem, verify_archive
 
 _REDACTED = "…redacted…"
 
@@ -492,6 +498,56 @@ def _cmd_config_validate(config_path: str | None = None) -> int:
     return 1
 
 
+def _cli_session() -> Any:
+    """A synchronous session for CLI use.
+
+    Imported lazily on purpose: ``cb config validate`` must stay offline, and importing
+    the session module builds the engine.
+    """
+    from app.db.session import SessionLocal
+
+    return SessionLocal()
+
+
+async def _run_full_snapshot(db: Any) -> Path:
+    """The third caller of the one orchestrator, never a second implementation.
+
+    Lazy for the same reason as ``_cli_session``, and for one more: ``services.db_backup``
+    reads ``BACKUP_DIR`` from the environment at import time, so ``--out`` can only take
+    effect if the import happens after this module has set it.
+    """
+    from app.services.db_backup import run_full_snapshot
+
+    return await run_full_snapshot(db)
+
+
+def _cmd_snapshot_create(out: str | None) -> int:
+    if out:
+        os.environ["BACKUP_DIR"] = out
+
+    try:
+        with _cli_session() as db:
+            path = asyncio.run(_run_full_snapshot(db))
+    except Exception as exc:  # noqa: BLE001 - the CLI is the boundary; report, do not raise
+        print(f"snapshot failed: {exc}", file=sys.stderr)
+        return 1
+
+    # The path alone on stdout: `cb backup` captures this.
+    print(path)
+    return 0
+
+
+def _cmd_snapshot_verify(archive: str) -> int:
+    try:
+        manifest = verify_archive(Path(archive), installed_version=os.environ.get("CB_VERSION"))
+    except SnapshotProblem as problem:
+        print(str(problem), file=sys.stderr)
+        return 1
+
+    print(json.dumps(manifest, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cb", description="Circuit Breaker administration CLI")
     group = parser.add_subparsers(dest="group", required=True)
@@ -510,6 +566,22 @@ def build_parser() -> argparse.ArgumentParser:
             "~/.config/circuitbreaker/config.toml, ./config.toml"
         ),
     )
+
+    snapshot = group.add_parser("snapshot", help="Full-state backup snapshots")
+    snapshot_actions = snapshot.add_subparsers(dest="action", required=True)
+    create = snapshot_actions.add_parser(
+        "create", help="Build a full-state snapshot and print its path"
+    )
+    create.add_argument(
+        "--out",
+        dest="out",
+        default=None,
+        help="Directory to write the snapshot into. Defaults to the configured BACKUP_DIR.",
+    )
+    verify = snapshot_actions.add_parser(
+        "verify", help="Validate a snapshot archive; exit non-zero if it cannot be restored"
+    )
+    verify.add_argument("archive", help="Path to the snapshot .tar.gz")
     return parser
 
 
@@ -518,6 +590,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.group == "config" and args.action == "validate":
         return _cmd_config_validate(args.config_path)
+    if args.group == "snapshot" and args.action == "create":
+        return _cmd_snapshot_create(args.out)
+    if args.group == "snapshot" and args.action == "verify":
+        return _cmd_snapshot_verify(args.archive)
     # argparse's required subparsers make this unreachable in practice; keep it
     # so a future top-level command cannot silently fall through to exit 0.
     parser.error(f"unknown command: {args.group} {args.action}")
