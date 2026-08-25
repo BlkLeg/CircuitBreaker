@@ -31,6 +31,7 @@ class CertificateRead(BaseModel):
     type: str
     expires_at: datetime
     auto_renew: bool
+    is_active: bool = False
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -41,3 +42,16 @@ class CertificateDetailRead(CertificateRead):
     """Includes the PEM bodies — only returned on explicit single-cert GET."""
 
     cert_pem: str
+
+
+class CertificateActivateResponse(BaseModel):
+    """Three outcomes, reported separately.
+
+    `written` without `reloaded` is a real state — the bytes are on disk and the running TLS
+    server has not picked them up — and must not be collapsed into either success or error.
+    """
+
+    certificate: CertificateRead
+    written: bool
+    reloaded: bool
+    detail: str

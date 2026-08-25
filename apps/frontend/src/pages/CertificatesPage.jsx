@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Shield, ShieldAlert, ShieldCheck, ShieldOff } from 'lucide-react';
+import { CheckCircle2, Shield, ShieldAlert, ShieldCheck, ShieldOff } from 'lucide-react';
 import { certificatesApi } from '../api/client';
 import EntityTable from '../components/EntityTable';
 import SearchBox from '../components/SearchBox';
@@ -129,8 +129,43 @@ function CertificatesPage() {
         render: (v) =>
           v ? <span className="tw-text-cb-primary tw-text-xs tw-font-bold">YES</span> : 'No',
       },
+      {
+        // Which certificate this install actually serves. At most one row shows it —
+        // the database enforces that, not this table.
+        key: 'is_active',
+        label: 'Active',
+        render: (v) =>
+          v ? (
+            <span className="tw-inline-flex tw-items-center tw-gap-1 tw-text-green-500 tw-text-xs tw-font-bold">
+              <CheckCircle2 size={14} aria-hidden="true" />
+              SERVED
+            </span>
+          ) : (
+            <span className="tw-text-cb-text-muted">—</span>
+          ),
+      },
     ],
     []
+  );
+
+  // Three outcomes, kept distinct. "Written but not reloaded" is neither success nor
+  // failure: the bytes are on disk and the running server has not picked them up.
+  const handleActivate = useCallback(
+    async (row) => {
+      try {
+        const res = await certificatesApi.activate(row.id);
+        const { reloaded, detail } = res.data;
+        if (reloaded) {
+          toast.success(`Now serving the certificate for ${row.domain}.`);
+        } else {
+          toast.warn(detail);
+        }
+        fetchData();
+      } catch (err) {
+        toast.error(err.message);
+      }
+    },
+    [fetchData, toast]
   );
 
   const handleSubmit = async (values) => {
@@ -229,7 +264,7 @@ function CertificatesPage() {
       )}
 
       {loading ? (
-        <SkeletonTable cols={5} />
+        <SkeletonTable cols={6} />
       ) : (
         <EntityTable
           columns={columns}
@@ -239,6 +274,18 @@ function CertificatesPage() {
             setShowForm(true);
           }}
           onDelete={handleDelete}
+          renderMonitorAction={(row) =>
+            row.is_active ? null : (
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => handleActivate(row)}
+                title="Write this certificate to disk and reload TLS"
+              >
+                Activate
+              </button>
+            )
+          }
           selectable
           selectedIds={selectedIds}
           onSelectionChange={setSelectedIds}

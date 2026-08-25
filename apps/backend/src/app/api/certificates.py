@@ -7,6 +7,7 @@ Routes:
   PUT    /api/v1/certificates/{id}      — update
   DELETE /api/v1/certificates/{id}      — delete
   POST   /api/v1/certificates/{id}/renew — manual renewal trigger
+  POST   /api/v1/certificates/{id}/activate — write it to $CB_DATA_DIR/tls and reload TLS
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from app.core.rbac import require_role
 from app.db.models import User
 from app.db.session import get_db
 from app.schemas.certificate import (
+    CertificateActivateResponse,
     CertificateCreate,
     CertificateDetailRead,
     CertificateRead,
@@ -132,3 +134,39 @@ def renew_certificate(
         status="ok",
     )
     return renewed
+
+
+@router.post("/{cert_id}/activate", response_model=CertificateActivateResponse)
+def activate_certificate_route(
+    cert_id: int,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, require_role("admin")],
+) -> Any:
+    """Make this certificate the one the install serves.
+
+    A reload that did not happen is audited as "partial" and returned as `reloaded: false`,
+    not raised: the files are on disk either way and the operator needs both facts.
+    """
+    cert = svc.get_certificate(db, cert_id)
+    if cert is None:
+        raise HTTPException(status_code=404, detail="Certificate not found")
+
+    from app.services import certificate_activation
+
+    result = certificate_activation.activate_certificate(db, cert)
+    log_audit(
+        db,
+        request,
+        user_id=current_user.id,
+        action="certificate_activated",
+        resource=f"certificate:{cert_id}",
+        status="ok" if result.reloaded else "partial",
+        details=result.detail,
+    )
+    return {
+        "certificate": cert,
+        "written": result.written,
+        "reloaded": result.reloaded,
+        "detail": result.detail,
+    }

@@ -563,6 +563,7 @@ export const certificatesApi = {
   update: (id, data) => client.put(`/certificates/${id}`, data),
   delete: (id) => client.delete(`/certificates/${id}`),
   renew: (id) => client.post(`/certificates/${id}/renew`),
+  activate: (id) => client.post(`/certificates/${id}/activate`),
 };
 
 export const notificationsApi = {
