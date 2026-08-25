@@ -214,8 +214,39 @@ def delete_certificate(db: Session, cert_id: int) -> bool:
     return True
 
 
+def _activate_if_served(db: Session, cert: Certificate) -> None:
+    """Re-write the TLS directory when *cert* is the one this install serves.
+
+    Guarded on ``is_active`` in both directions. A renewed certificate that is not
+    activated sits in the database while nginx keeps presenting the expired bytes — the
+    row says renewed and the browser says expired. Activating one that was *not* active
+    would change what the server presents without anyone asking for it.
+
+    A failure here does not undo the renewal. Written-but-not-served is a real state, and
+    losing the renewal on top of it would make the next attempt re-issue a certificate the
+    CA has already handed out — straight into a rate limit.
+    """
+    if not cert.is_active:
+        return
+    from app.services.certificate_activation import activate_certificate
+
+    try:
+        result = activate_certificate(db, cert)
+        if not result.reloaded:
+            _logger.warning("Renewed %s but TLS did not reload: %s", cert.domain, result.detail)
+    except Exception as exc:  # noqa: BLE001 — the renewal succeeded; say so and keep it
+        _logger.error(
+            "Renewed %s but could not write it to the TLS directory: %s", cert.domain, exc
+        )
+
+
 def renew_certificate(db: Session, cert: Certificate) -> Certificate:
-    """Renew a certificate — self-signed generates a new pair, LE calls certbot."""
+    """Renew a certificate — self-signed generates a new pair, Let's Encrypt re-issues.
+
+    Both paths raise rather than returning the unchanged certificate: reporting a renewal
+    that did not happen as a 200 with the old expiry is what made INC-07 dangerous rather
+    than merely incomplete.
+    """
     vault = get_vault()
 
     if cert.type == "selfsigned":
@@ -227,62 +258,36 @@ def renew_certificate(db: Session, cert: Certificate) -> Certificate:
         db.refresh(cert)
         _logger.info("Self-signed cert renewed for %s (expires %s)", cert.domain, expires_at)
         _publish_renewal(cert)
+        _activate_if_served(db, cert)
         return cert
 
     if cert.type == "letsencrypt":
-        with tempfile.TemporaryDirectory(dir=str(_certbot_tmp_root())) as tmp_dir:
-            cert_path = Path(tmp_dir) / "cb_cert.pem"
-            key_path = Path(tmp_dir) / "cb_key.pem"
-
-            argv = [
-                "certbot",
-                "certonly",
-                "--standalone",
-                "--non-interactive",
-                "--agree-tos",
-                "--email",
-                "admin@localhost",
-                "-d",
-                cert.domain,
-                "--cert-path",
-                str(cert_path),
-                "--key-path",
-                str(key_path),
-            ]
-
-            # Every failure below raises. The code this replaced logged and returned the
-            # unchanged certificate, so a renewal that never happened reached the operator
-            # as a 200 with the old expiry (INC-07).
-            try:
-                result = _run_certbot(argv)
-            except FileNotFoundError as exc:
-                raise CertificateRenewalError(
-                    "certbot is not available in this image, so a Let's Encrypt certificate "
-                    "cannot be renewed here."
-                ) from exc
-            except subprocess.TimeoutExpired as exc:
-                raise CertificateRenewalError(
-                    f"certbot timed out after {exc.timeout}s renewing {cert.domain}."
-                ) from exc
-
-            if result.returncode != 0:
-                raise CertificateRenewalError(
-                    f"certbot failed for {cert.domain}: {(result.stderr or '').strip()[:500]}"
-                )
-
-            new_cert_pem = cert_path.read_text(encoding="utf-8")
-            new_key_pem = key_path.read_text(encoding="utf-8")
-
-        parsed = x509.load_pem_x509_certificate(new_cert_pem.encode())
-        cert.cert_pem = new_cert_pem
-        cert.key_pem = vault.encrypt(new_key_pem)
-        cert.expires_at = parsed.not_valid_after_utc
+        # The same call issuance makes. Renewal *is* issuance to a CA — there is no
+        # separate operation — and the code this replaced was a second, older invocation
+        # that could not work: `--standalone` binds port 80 as a process that runs as
+        # breaker:1000, and the account email was the hardcoded admin@localhost that
+        # INC-07 recorded as its third cause. Keeping two invocations would have left the
+        # working path reachable only from creation.
+        cert_pem, raw_key_pem, expires_at = _acme_issuer()(
+            cert.domain,
+            # NULL on rows written before the column existed; the default lives here
+            # rather than in the schema so those rows read as "not recorded".
+            challenge=cert.acme_challenge or "http-01",
+            staging=bool(cert.acme_staging),
+        )
+        cert.cert_pem = cert_pem
+        cert.key_pem = vault.encrypt(raw_key_pem)
+        cert.expires_at = expires_at
         db.commit()
         db.refresh(cert)
         _logger.info("Let's Encrypt cert renewed for %s (expires %s)", cert.domain, cert.expires_at)
         _publish_renewal(cert)
+        _activate_if_served(db, cert)
         return cert
 
+    # An imported certificate has no renewal path: the operator holds the private key and
+    # whatever issued it. Returning it unchanged is honest here in a way it never was for
+    # the two types above, which is why it is not an error.
     return cert
 
 
