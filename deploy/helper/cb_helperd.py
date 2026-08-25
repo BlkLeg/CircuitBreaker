@@ -35,6 +35,7 @@ ALLOWED_ACTIONS = {
     "enable_lan_discovery",
     "disable_lan_discovery",
     "configure_domain",
+    "reload_nginx",
 }
 
 logger = logging.getLogger("cb_helperd")
@@ -444,6 +445,16 @@ def action_configure_domain(params: dict) -> dict:
         raise
 
 
+def action_reload_nginx(_params: dict) -> dict:
+    """Reload nginx so a newly activated certificate is served. Takes no parameters."""
+    result = subprocess.run(
+        ["systemctl", "reload", "nginx"], capture_output=True, text=True, timeout=15
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"nginx reload failed: {result.stderr.strip()[:500]}")
+    return {"reloaded": True}
+
+
 def detect_pkg_manager() -> str | None:
     for mgr in ("apt-get", "dnf", "pacman"):
         if shutil.which(mgr):
@@ -508,6 +519,7 @@ _ACTIONS["get_host_readiness"] = action_get_host_readiness
 _ACTIONS["enable_lan_discovery"] = action_enable_lan_discovery
 _ACTIONS["disable_lan_discovery"] = action_disable_lan_discovery
 _ACTIONS["configure_domain"] = action_configure_domain
+_ACTIONS["reload_nginx"] = action_reload_nginx
 
 
 if __name__ == "__main__":
