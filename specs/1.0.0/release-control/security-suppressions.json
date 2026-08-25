@@ -199,6 +199,17 @@
       "compensating_control": "The allowlist matches on the constant's name rather than on a path, so every other line of cli.py — including the ones either side of these calls — is still scanned, and a real secret there fails the gate.",
       "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
+    },
+    {
+      "id": "GITLEAKS-CONFIG-008",
+      "tool": "gitleaks-config",
+      "selector": "server-key-fingerprints",
+      "owner": "security-owner",
+      "reviewer": "release-owner",
+      "reason": "GET /agents/server-key/status returns current_key_fingerprint and successor_key_fingerprint — SHA digests of the agent server's public key, rendered on the Agents page and quoted verbatim in the frontend test fixture and the slice spec. A 32-character hex value beside a field name containing `key` is what generic-api-key matches; a digest of a public key is not a credential and discloses nothing that the admin API does not already return.",
+      "compensating_control": "The allowlist matches the field name on the finding's line rather than allowlisting the two files, so every other line of those files is still scanned and a real secret in them fails the gate.",
+      "expiry": "2026-11-13",
+      "requirements": ["SEC-18", "RC-08"]
     }
   ]
 }

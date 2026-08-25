@@ -153,6 +153,20 @@ jobs:
           # Config only ever adds allowlists, so this cannot mask a new finding
           # that the local gate would not also allow.
           GITLEAKS_CONFIG: ${{ github.workspace }}/.gitleaks.toml
+          # …and loading that config was still not enough, because the action
+          # defaults to gitleaks 8.24.3, which predates support for the plural
+          # `[[allowlists]]` array-of-tables (added in 8.25.0). Every allowlist
+          # in .gitleaks.toml uses that form, so 8.24.3 parsed the file, logged
+          # that it had loaded it, and then applied none of it. Measured on this
+          # tree, same config, same commits: 8.24.3 reports 21 findings over full
+          # history and 8.30.1 reports none — which is why the scheduled run on
+          # main kept failing on paths the config demonstrably allows.
+          #
+          # Pinned to the version scripts/security_scan.sh runs
+          # (ghcr.io/gitleaks/gitleaks:v8.30.1). The two gates must run the same
+          # scanner or "the local gate is clean" stops meaning anything about CI.
+          # Bump both together.
+          GITLEAKS_VERSION: 8.30.1
 
   checkov:
     name: Checkov (GitHub Actions / IaC)
