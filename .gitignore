@@ -151,6 +151,11 @@ docs/superpowers/
 *.pfx
 certs/
 certificates/
+# ...but `certificates/` is a bare directory pattern, so it also matches source
+# directories that happen to be named that. This one holds React components, and
+# without the negation a new file there is ignored silently rather than refused.
+# The *.pem / *.key rules above still apply inside it.
+!apps/frontend/src/components/certificates/
 caddy/data/
 caddy/config/
 docker/caddy_data/

@@ -9,6 +9,7 @@ import ConfirmDialog from '../components/common/ConfirmDialog';
 import { useToast } from '../components/common/Toast';
 import { useSettings } from '../context/SettingsContext';
 import CertificateDetail from '../components/details/CertificateDetail';
+import AcmeDnsPanel from '../components/certificates/AcmeDnsPanel';
 import { CERTIFICATE_TYPE_OPTIONS, certificateTypeLabel } from '../utils/certificateTypes';
 
 const STATUS_COLORS = {
@@ -59,6 +60,24 @@ export const CERTIFICATE_FIELDS = [
   },
   { name: 'auto_renew', label: 'Auto Renew', type: 'checkbox', defaultValue: true },
   {
+    name: 'challenge',
+    label: "Let's Encrypt Challenge",
+    type: 'select',
+    options: [
+      { value: 'http-01', label: 'HTTP-01 — port 80 must reach this host' },
+      { value: 'dns-01', label: 'DNS-01 — needs DNS provider credentials' },
+    ],
+    defaultValue: 'http-01',
+    hint: 'Used only for the Let\u2019s Encrypt type. DNS-01 requires the provider configured above.',
+  },
+  {
+    name: 'use_staging',
+    label: "Use Let's Encrypt Staging",
+    type: 'checkbox',
+    defaultValue: false,
+    hint: 'Issues an untrusted test certificate against the staging directory. Use it to check credentials without spending production rate limits, which are five failed validations per hostname per hour.',
+  },
+  {
     name: 'cert_pem',
     label: 'Certificate PEM',
     type: 'textarea',
@@ -75,7 +94,7 @@ export const CERTIFICATE_FIELDS = [
 ];
 
 function CertificatesPage() {
-  const { settings } = useSettings();
+  const { settings, reloadSettings } = useSettings();
   const toast = useToast();
 
   const [items, setItems] = useState([]);
@@ -249,15 +268,17 @@ function CertificatesPage() {
         </button>
       </div>
 
+      <AcmeDnsPanel acmeDns={settings?.acme_dns} onSaved={reloadSettings} />
+
       <div className="filter-bar">
         <SearchBox value={q} onChange={setQ} placeholder="Search certificates by domain..." />
       </div>
 
       {!loading && items.length === 0 && settings?.show_page_hints && (
         <div className="info-tip" style={{ marginBottom: 12 }}>
-          💡 <strong>Tip:</strong> Track your homelab SSL/TLS certificates here. Managed
-          certificates (via Caddy) are tracked automatically, but you can also add manual ones for
-          external monitoring.
+          💡 <strong>Tip:</strong> Track your homelab SSL/TLS certificates here. Activating a
+          certificate writes it to this install&apos;s TLS directory and reloads nginx; only one
+          certificate can be active at a time.
         </div>
       )}
 
@@ -303,7 +324,14 @@ function CertificatesPage() {
         open={showForm}
         title={editTarget ? 'Edit Certificate' : 'Add Certificate'}
         fields={CERTIFICATE_FIELDS}
-        initialValues={editTarget || { type: 'selfsigned', auto_renew: true }}
+        initialValues={
+          editTarget || {
+            type: 'selfsigned',
+            auto_renew: true,
+            challenge: 'http-01',
+            use_staging: false,
+          }
+        }
         onSubmit={handleSubmit}
         onClose={() => {
           setShowForm(false);

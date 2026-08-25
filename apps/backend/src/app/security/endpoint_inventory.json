@@ -1,6 +1,6 @@
 {
   "generated_by": "apps/backend/scripts/generate_endpoint_inventory.py",
-  "route_count": 431,
+  "route_count": 432,
   "routes": [
     {
       "auth_policy": "authenticated",
@@ -7605,6 +7605,27 @@
       ],
       "name": "put_settings",
       "path": "/api/v1/settings",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.settings.patch_acme_dns",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.settings",
+      "endpoint_name": "patch_acme_dns",
+      "methods": [
+        "PATCH"
+      ],
+      "name": "patch_acme_dns",
+      "path": "/api/v1/settings/acme-dns",
       "rbac_policy": "declared-role-or-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"

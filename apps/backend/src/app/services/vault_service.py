@@ -257,6 +257,8 @@ def rotate_vault_key(db: Session) -> None:
 
     Covers:
       - AppSettings.smtp_password_enc
+      - AppSettings.dhcp_router_user_enc / dhcp_router_pass_enc
+      - AppSettings.acme_dns_config (any ``*_enc`` key)
       - DiscoveryProfile.snmp_community_encrypted
       - credentials table (encrypted_value)
       - NotificationSink.provider_config (any ``*_enc`` key)
@@ -357,6 +359,41 @@ def rotate_vault_key(db: Session) -> None:
                 type(exc).__name__,
             )
 
+    def _reencrypt_blob(config: object, label: str) -> object:
+        """Re-encrypt every ``<key>_enc`` value in a JSONB credential blob.
+
+        Typed as object, not dict: the columns are Mapped[dict], but JSONB accepts any
+        shape and rows written outside the ORM may not hold one. A new dict is returned
+        rather than the original mutated, because SQLAlchemy does not see an in-place
+        mutation of a plain JSONB column.
+        """
+        if not isinstance(config, dict):
+            return config
+        enc_keys = [k for k in config if k.endswith("_enc") and config[k]]
+        if not enc_keys:
+            return config
+        rotated = dict(config)
+        for key in enc_keys:
+            try:
+                rotated[key] = _reencrypt(str(config[key]))
+            except Exception as exc:
+                _logger.warning(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
+                    # Logs only type(exc).__name__ — exception class name, not any credential value
+                    "Could not re-encrypt %s during rotation (reason: %s)",
+                    label,
+                    type(exc).__name__,
+                )
+        return rotated
+
+    # Re-encrypt AppSettings.acme_dns_config (DNS-01 provider credential, INC-07).
+    # Same ``<key>_enc`` convention as a notification sink — see services/acme_secrets.py.
+    # Omitting this is how a key rotation silently orphans the credential, and the install
+    # finds out at the next renewal instead of at the rotation.
+    if cfg is not None:
+        cfg.acme_dns_config = _reencrypt_blob(  # type: ignore[assignment]
+            cfg.acme_dns_config, "ACME DNS credentials"
+        )
+
     # Re-encrypt DiscoveryProfile.snmp_community_encrypted
     profiles = (
         db.query(DiscoveryProfile)
@@ -388,30 +425,11 @@ def rotate_vault_key(db: Session) -> None:
 
     # Re-encrypt NotificationSink.provider_config secrets (webhook URLs).
     # Stored as ``<key>_enc`` inside the JSONB blob — see
-    # services/notification_secrets.py. The dict is reassigned rather than
-    # mutated in place so SQLAlchemy sees the change on a plain JSONB column.
+    # services/notification_secrets.py.
     for sink in db.query(NotificationSink).all():
-        # Typed as object, not dict: the column is Mapped[dict], but JSONB accepts any
-        # shape and rows written outside the ORM may not hold one. Widening keeps the
-        # guard meaningful instead of provably dead.
-        config: object = sink.provider_config
-        if not isinstance(config, dict):
-            continue
-        enc_keys = [k for k in config if k.endswith("_enc") and config[k]]
-        if not enc_keys:
-            continue
-        rotated = dict(config)
-        for key in enc_keys:
-            try:
-                rotated[key] = _reencrypt(str(config[key]))
-            except Exception as exc:
-                _logger.warning(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
-                    # Logs only type(exc).__name__ — exception class name, not any credential value
-                    "Could not re-encrypt notification sink %d during rotation (reason: %s)",
-                    sink.id,
-                    type(exc).__name__,
-                )
-        sink.provider_config = rotated
+        sink.provider_config = _reencrypt_blob(  # type: ignore[assignment]
+            sink.provider_config, f"notification sink {sink.id}"
+        )
 
     db.flush()
 
@@ -510,6 +528,11 @@ def _count_encrypted_secrets(db: Session) -> int:
     try:
         cfg = db.get(AppSettings, 1)
         if cfg and cfg.smtp_password_enc:
+            count += 1
+        # The DNS-01 provider credential lives as ``<key>_enc`` inside a JSONB blob, the
+        # same shape a notification sink uses (services/acme_secrets.py).
+        acme: object = cfg.acme_dns_config if cfg else None
+        if isinstance(acme, dict) and any(k.endswith("_enc") and acme[k] for k in acme):
             count += 1
     except Exception:  # noqa: BLE001
         pass

@@ -10,6 +10,44 @@ _logger = logging.getLogger(__name__)
 
 _HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
+# The DNS-01 providers this build ships plugins for. Two and no more: an untested provider
+# is worse than an absent one, which is the finding (INC-16) shipped alongside this.
+AcmeDnsProvider = Literal["cloudflare", "rfc2136"]
+
+
+class AcmeDnsRead(BaseModel):
+    """What the DNS-01 configuration looks like from outside.
+
+    Credentials never appear here in any form, masked or otherwise — the ``*_set`` flags are
+    the whole answer to "is it configured", which is the contract INC-06 established for
+    notification sinks. The non-secret RFC2136 fields are returned so an operator can see
+    and correct what they entered.
+    """
+
+    provider: AcmeDnsProvider | None = None
+    api_token_set: bool = False
+    tsig_secret_set: bool = False
+    server: str | None = None
+    port: int | None = None
+    tsig_name: str | None = None
+    tsig_algorithm: str | None = None
+
+
+class AcmeDnsUpdate(BaseModel):
+    """DNS-01 provider configuration. ``provider=None`` turns DNS-01 off and erases the
+    stored credential — leaving a zone credential behind for a disabled feature is the
+    kind of residue this release has been removing."""
+
+    provider: AcmeDnsProvider | None = None
+    # Cloudflare
+    api_token: str | None = None
+    # RFC2136
+    server: str | None = None
+    port: int | None = None
+    tsig_name: str | None = None
+    tsig_secret: str | None = None
+    tsig_algorithm: str | None = None
+
 
 class BrandingConfig(BaseModel):
     app_name: str = "Circuit Breaker"
@@ -205,6 +243,11 @@ class AppSettingsRead(BaseModel):
     smtp_tls: bool = True
     smtp_last_test_at: str | None = None
     smtp_last_test_status: str | None = None
+    # ACME DNS-01 (INC-07). The raw columns are read from the ORM and excluded from the
+    # response; `acme_dns` below is what callers see, and it never carries a credential.
+    acme_dns_provider: str | None = Field(default=None, exclude=True)
+    acme_dns_config: dict | None = Field(default=None, exclude=True)
+    acme_dns: AcmeDnsRead = AcmeDnsRead()
     # Advanced Theming
     theme_preset: str = "gruvbox-dark"
     custom_colors: dict | str | None = Field(default=None, exclude=True)  # raw JSON from ORM
@@ -229,6 +272,30 @@ class AppSettingsRead(BaseModel):
         )
         self.opnsense_credentials_set = bool(
             self.opnsense_api_key_enc or self.opnsense_api_secret_enc
+        )
+        return self
+
+    @model_validator(mode="after")
+    def build_acme_dns(self) -> "AppSettingsRead":
+        """Redact through the one module that decides which ACME keys are secret.
+
+        Reusing ``acme_secrets.redact_config`` rather than listing the fields here is the
+        point: two places deciding what counts as a credential is how one of them ends up
+        wrong, which is INC-06 in miniature.
+        """
+        from app.services.acme_secrets import redact_config
+
+        provider = self.acme_dns_provider or None
+        stored = self.acme_dns_config if isinstance(self.acme_dns_config, dict) else {}
+        redacted = redact_config(provider or "", stored)
+        self.acme_dns = AcmeDnsRead(
+            provider=provider,  # type: ignore[arg-type]
+            api_token_set=bool(redacted.get("api_token_set")),
+            tsig_secret_set=bool(redacted.get("tsig_secret_set")),
+            server=redacted.get("server"),
+            port=redacted.get("port"),
+            tsig_name=redacted.get("tsig_name"),
+            tsig_algorithm=redacted.get("tsig_algorithm"),
         )
         return self
 

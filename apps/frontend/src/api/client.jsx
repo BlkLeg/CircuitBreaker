@@ -322,6 +322,9 @@ export const settingsApi = {
   smtpTest: (send_to) =>
     client.post('/settings/smtp/test', null, { params: send_to ? { send_to } : {} }),
   opnsenseTest: () => client.get('/settings/opnsense/test'),
+  // DNS-01 provider for Let's Encrypt. A null provider turns it off and erases the
+  // stored credential; the read comes back on GET /settings as `acme_dns`.
+  acmeDnsUpdate: (data) => client.patch('/settings/acme-dns', data),
 };
 
 export const securityApi = {

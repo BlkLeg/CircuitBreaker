@@ -119,17 +119,75 @@ def _self_check_http01(domain: str) -> tuple[bool, str]:
 
 
 def _dns_credentials() -> Any:
-    """Seam. Returns the decrypted DNS-01 credentials, or None. Implemented in Task 8."""
+    """Seam. Returns the decrypted DNS-01 credentials, or None."""
     return import_module("app.services.acme_secrets").load_dns_credentials()
 
 
-def _dns_argv(tmp_dir: str) -> list[str]:
-    """The provider-specific certbot arguments for DNS-01. Implemented in Task 8.
+def _write_credentials(path: Path, body: str) -> None:
+    """Write certbot's credentials file so no other user on the host can read it.
 
-    Unreachable until then: the DNS-01 preflight refuses without credentials, and there is
-    no code path that stores any.
+    The mode is set before the secret is written rather than after: between a 0644 create
+    and a chmod there is a window in which the zone credential is world-readable, and on a
+    native install /data is shared with the operator's own account.
     """
-    raise NotImplementedError("DNS-01 provider support has not landed yet.")
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as handle:
+        handle.write(body)
+
+
+def _require(creds: dict[str, Any], key: str, provider: str) -> str:
+    value = str(creds.get(key) or "").strip()
+    if not value:
+        raise CertificateRenewalError(
+            f"The {provider} DNS-01 configuration is missing '{key}'. Complete it on the "
+            "Certificates page before requesting a certificate."
+        )
+    return value
+
+
+def _dns_argv(tmp_dir: str) -> list[str]:
+    """The provider-specific certbot arguments for DNS-01.
+
+    certbot takes provider credentials as a file rather than as arguments, which is the
+    safer shape — an argv is readable out of /proc by anything on the host. The file is
+    written 0600 into the caller's TemporaryDirectory and goes away with it, so the
+    plaintext credential exists for the duration of the issuance and no longer.
+    """
+    creds = _dns_credentials()
+    if not creds:
+        raise CertificateRenewalError(
+            "DNS-01 credentials are not configured. Add a Cloudflare API token or RFC2136 "
+            "TSIG key in the Let's Encrypt DNS-01 panel on the Certificates page."
+        )
+
+    creds = dict(creds)
+    provider = str(creds.pop("_provider", "") or "")
+    path = Path(tmp_dir) / "dns.ini"
+
+    if provider == "cloudflare":
+        token = _require(creds, "api_token", "Cloudflare")
+        _write_credentials(path, f"dns_cloudflare_api_token = {token}\n")
+        return ["--dns-cloudflare", "--dns-cloudflare-credentials", str(path)]
+
+    if provider == "rfc2136":
+        _write_credentials(
+            path,
+            "\n".join(
+                [
+                    f"dns_rfc2136_server = {_require(creds, 'server', 'RFC2136')}",
+                    f"dns_rfc2136_port = {creds.get('port') or 53}",
+                    f"dns_rfc2136_name = {_require(creds, 'tsig_name', 'RFC2136')}",
+                    f"dns_rfc2136_secret = {_require(creds, 'tsig_secret', 'RFC2136')}",
+                    f"dns_rfc2136_algorithm = {creds.get('tsig_algorithm') or 'HMAC-SHA512'}",
+                ]
+            )
+            + "\n",
+        )
+        return ["--dns-rfc2136", "--dns-rfc2136-credentials", str(path)]
+
+    raise CertificateRenewalError(
+        f"Unsupported DNS-01 provider '{provider}'. Circuit Breaker supports Cloudflare "
+        "and RFC2136."
+    )
 
 
 def preflight(domain: str, challenge: str = "http-01") -> None:
@@ -160,7 +218,8 @@ def preflight(domain: str, challenge: str = "http-01") -> None:
         if not _dns_credentials():
             raise CertificateRenewalError(
                 "DNS-01 needs provider credentials. Configure Cloudflare or RFC2136 "
-                "credentials in Settings before requesting a certificate."
+                "credentials in the Let's Encrypt DNS-01 panel on the Certificates page "
+                "before requesting a certificate."
             )
     else:
         raise CertificateRenewalError(f"Unknown ACME challenge type '{challenge}'.")

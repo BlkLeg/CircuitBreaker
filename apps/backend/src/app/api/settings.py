@@ -10,7 +10,12 @@ from app.core.rbac import require_role
 from app.core.security import get_optional_user
 from app.db.session import get_db
 from app.schemas.device_roles import DeviceRoleCreate, DeviceRoleOut, DeviceRoleUpdate
-from app.schemas.settings import AppSettingsRead, AppSettingsUpdate, SmtpUpdate
+from app.schemas.settings import (
+    AcmeDnsUpdate,
+    AppSettingsRead,
+    AppSettingsUpdate,
+    SmtpUpdate,
+)
 from app.services import device_role_service, settings_service
 from app.services.settings_service import get_or_create_settings
 
@@ -96,6 +101,57 @@ def patch_smtp(
         status="ok",
     )
     return result
+
+
+@router.patch("/acme-dns", response_model=AppSettingsRead)
+def patch_acme_dns(
+    payload: AcmeDnsUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: Any = require_role("admin"),
+) -> Any:
+    """Configure the DNS-01 provider used for Let's Encrypt issuance (INC-07).
+
+    Admin-only, unlike the settings read: the value being written is a credential that can
+    publish records in the install's DNS zone.
+
+    Two rules the tests pin, both about not silently destroying or misfiling a secret:
+
+    - The stored credential is carried forward when the client does not send one, so
+      correcting the RFC2136 server address does not blank the TSIG key. The read path
+      hands out a mask, and a form that submits it back must be a no-op.
+    - Switching providers drops the previous provider's config entirely. A Cloudflare token
+      is not an RFC2136 key; carrying it across would store a credential the new provider
+      cannot use while reporting it as configured.
+    """
+    from app.services.acme_secrets import encrypt_config
+
+    cfg = get_or_create_settings(db)
+    provider = payload.provider
+
+    if provider is None:
+        # Turning DNS-01 off erases the credential rather than orphaning it.
+        cfg.acme_dns_provider = None
+        cfg.acme_dns_config = None
+    else:
+        incoming = payload.model_dump(exclude_unset=True, exclude_none=True)
+        incoming.pop("provider", None)
+        existing = cfg.acme_dns_config if cfg.acme_dns_provider == provider else None
+        cfg.acme_dns_provider = provider
+        cfg.acme_dns_config = encrypt_config(provider, incoming, existing=existing)
+
+    db.commit()
+    db.refresh(cfg)
+    log_audit(
+        db,
+        request,
+        user_id=user.id,
+        action="acme_dns_settings_updated",
+        resource="settings",
+        status="ok",
+        details=f"provider={provider or 'none'}",
+    )
+    return cfg
 
 
 @router.post("/smtp/test")

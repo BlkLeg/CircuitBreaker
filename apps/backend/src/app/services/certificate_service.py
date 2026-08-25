@@ -157,7 +157,9 @@ def create_certificate(db: Session, data: CertificateCreate) -> Certificate:
     elif data.type == "letsencrypt":
         # Raises rather than falling back. Storing a self-signed certificate under this
         # type is the defect this branch exists to prevent.
-        cert_pem, raw_key_pem, expires_at = _acme_issuer()(data.domain)
+        cert_pem, raw_key_pem, expires_at = _acme_issuer()(
+            data.domain, challenge=data.challenge, staging=data.use_staging
+        )
         key_pem_encrypted = vault.encrypt(raw_key_pem)
 
     else:  # selfsigned
@@ -171,6 +173,10 @@ def create_certificate(db: Session, data: CertificateCreate) -> Certificate:
         key_pem=key_pem_encrypted,
         expires_at=expires_at,
         auto_renew=data.auto_renew,
+        # Recorded only for the type they describe: renewal reads them back, and a
+        # self-signed row carrying "http-01" would claim an issuance path it never used.
+        acme_challenge=data.challenge if data.type == "letsencrypt" else None,
+        acme_staging=data.use_staging if data.type == "letsencrypt" else False,
     )
     db.add(cert)
     db.commit()

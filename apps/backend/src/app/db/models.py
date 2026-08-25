@@ -1464,6 +1464,12 @@ class AppSettings(Base):
     smtp_tls: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     smtp_last_test_at: Mapped[str | None] = mapped_column(String)
     smtp_last_test_status: Mapped[str | None] = mapped_column(String)
+    # ACME DNS-01 (INC-07). One provider per install: "cloudflare" or "rfc2136".
+    # The config blob holds the provider's non-secret fields plus its credential as an
+    # ``<key>_enc`` sibling — see services/acme_secrets.py. Nullable because DNS-01 is
+    # opt-in; HTTP-01 needs nothing here.
+    acme_dns_provider: Mapped[str | None] = mapped_column(String(32))
+    acme_dns_config: Mapped[dict | None] = mapped_column(JSONB)
     # Phase 7: Vault encryption
     vault_key: Mapped[str | None] = mapped_column(
         Text
@@ -2435,6 +2441,13 @@ class Certificate(Base):
     # not application code — two active certificates is a state with no answer.
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="0"
+    )
+    # INC-07: how this certificate was issued, so the unattended renewal can make the same
+    # choice months later. Null for anything ACME did not issue — a stored "http-01" on a
+    # self-signed row would read as if ACME applied to it.
+    acme_challenge: Mapped[str | None] = mapped_column(String(16))
+    acme_staging: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
