@@ -182,3 +182,82 @@ async def test_build_snapshot_raises_on_pg_dump_failure(
 
     # No partial tarball left
     assert list(backup_dir.glob("cb-snapshot-*.tar.gz")) == []
+
+
+def _fake_pg_dump(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stand in for the pg_dump binary.
+
+    The manifest fields under test are independent of the dump's contents, so these
+    tests run everywhere instead of skipping on hosts without postgresql-client.
+    """
+    import subprocess
+
+    original_run = subprocess.run
+
+    def fake_run(cmd: list, **kwargs):  # type: ignore[no-untyped-def]
+        if cmd and "pg_dump" in cmd[0]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"-- fake dump\n", stderr=b"")
+        return original_run(cmd, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+
+async def _build(tmp_path: Path, uploads_dir: Path) -> Path:
+    """Build a snapshot into tmp_path/backups and return the tarball path."""
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir(exist_ok=True)
+    return await build_snapshot(
+        backup_dir=backup_dir,
+        db_url=db_url,
+        vault_key=os.environ["CB_VAULT_KEY"],
+        uploads_dir=uploads_dir,
+        cb_version="0.1.2",
+    )
+
+
+def _read_manifest(tarball: Path) -> dict:
+    """Read manifest.json out of a snapshot tarball."""
+    with tarfile.open(tarball, "r:gz") as tf:
+        member = next(m for m in tf.getmembers() if "manifest.json" in m.name)
+        payload = tf.extractfile(member)
+        assert payload is not None
+        return json.loads(payload.read())
+
+
+@pytest.mark.asyncio
+async def test_manifest_declares_a_format_version(
+    tmp_path: Path, uploads_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A restore that half-understands an archive is the failure this batch exists to end."""
+    _fake_pg_dump(monkeypatch)
+
+    tarball = await _build(tmp_path, uploads_dir)
+    manifest = _read_manifest(tarball)
+
+    assert manifest["format_version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_manifest_records_the_install_mode(
+    tmp_path: Path, uploads_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_pg_dump(monkeypatch)
+    monkeypatch.setenv("CB_INSTALL_MODE", "compose")
+
+    tarball = await _build(tmp_path, uploads_dir)
+    manifest = _read_manifest(tarball)
+
+    assert manifest["install_mode"] == "compose"
+
+
+@pytest.mark.asyncio
+async def test_manifest_install_mode_is_unknown_when_unset(
+    tmp_path: Path, uploads_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_pg_dump(monkeypatch)
+    monkeypatch.delenv("CB_INSTALL_MODE", raising=False)
+
+    tarball = await _build(tmp_path, uploads_dir)
+    manifest = _read_manifest(tarball)
+
+    assert manifest["install_mode"] == "unknown"

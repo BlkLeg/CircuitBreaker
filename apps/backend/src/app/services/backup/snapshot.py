@@ -8,7 +8,8 @@ Creates a gzip-compressed tarball containing:
       Caddyfile     (/etc/caddy/Caddyfile)
       certs/        (/etc/caddy/certs/cert.pem + key.pem)
       .env          (/etc/circuitbreaker/.env — full env, not just vault key)
-  - manifest.json   (metadata + db checksum + captured config file list)
+  - manifest.json   (format version, install mode, metadata + db checksum + captured
+                     config file list)
 
 The tarball is set to mode 0600 immediately after creation.
 """
@@ -33,6 +34,8 @@ import anyio
 _logger = logging.getLogger(__name__)
 
 CB_VERSION = os.environ.get("CB_VERSION", "unknown")
+
+SNAPSHOT_FORMAT_VERSION = 1
 
 
 class BackupError(RuntimeError):
@@ -113,6 +116,8 @@ def _build_snapshot_sync(
 
         # 5. manifest.json
         manifest = {
+            "format_version": SNAPSHOT_FORMAT_VERSION,
+            "install_mode": os.environ.get("CB_INSTALL_MODE", "unknown"),
             "cb_version": cb_version,
             "created_at": datetime.now(tz=UTC).isoformat(),
             "db_name": _pg_env_from_url(db_url).get("PGDATABASE", "circuitbreaker"),
