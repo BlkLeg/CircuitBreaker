@@ -40,13 +40,6 @@ vi.mock('react-router-dom', () => ({
   Link: ({ children, ...props }) => React.createElement('a', props, children),
 }));
 
-vi.mock('react-i18next', () => ({
-  useTranslation: () => ({
-    t: (key, opts) => opts?.defaultValue || key,
-    i18n: { language: 'en', changeLanguage: vi.fn() },
-  }),
-}));
-
 vi.mock('../context/AuthContext.jsx', () => ({
   useAuth: () => ({
     user: null,
@@ -133,6 +126,37 @@ describe('OOBEWizardPage', () => {
     });
     await act(async () => {
       fireEvent.click(screen.getByText('Skip'));
+    });
+  };
+
+  const advanceToRegionalStep = async () => {
+    await getStartedAndSkipDomain();
+
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('Setup token'), {
+        target: { value: 'sec4-setup-token-at-least-16-chars' },
+      });
+      fireEvent.change(screen.getByLabelText('Email'), {
+        target: { value: 'admin@example.com' },
+      });
+      fireEvent.change(screen.getByLabelText('Password'), {
+        target: { value: 'StrongP@ss1' },
+      });
+      fireEvent.change(screen.getByLabelText('Confirm Password'), {
+        target: { value: 'StrongP@ss1' },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Next'));
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Choose your theme/)).toBeInTheDocument();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Next'));
+    });
+    await waitFor(() => {
+      expect(screen.getByText('Regional Preferences')).toBeInTheDocument();
     });
   };
 
@@ -307,5 +331,15 @@ describe('OOBEWizardPage', () => {
     });
     expect(screen.getByLabelText('Domain (FQDN)')).toBeInTheDocument();
     expect(screen.getByText('Skip')).toBeInTheDocument();
+  });
+
+  it('offers no language step — 1.0.0 ships English only', async () => {
+    render(<OOBEWizardPage onCompleted={vi.fn()} />);
+    await advanceToRegionalStep();
+
+    // Regional Preferences is where the "Preferred Language" select lived.
+    expect(screen.queryByLabelText(/preferred language/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('Español')).not.toBeInTheDocument();
+    expect(screen.queryByText('日本語')).not.toBeInTheDocument();
   });
 });

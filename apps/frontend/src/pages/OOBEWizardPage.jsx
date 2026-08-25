@@ -28,7 +28,6 @@ import { gravatarHash } from '../utils/md5.js';
 import { sanitizeImageSrc } from '../utils/validation.js';
 import TimezoneSelect from '../components/TimezoneSelect.jsx';
 import OAuthProviderIcon from '../components/auth/OAuthProviderIcon.jsx';
-import { useTranslation } from 'react-i18next';
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
@@ -50,7 +49,6 @@ function timezoneToCity(tz) {
 }
 
 function OOBEWizardPage({ onCompleted }) {
-  const { i18n } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const { login } = useAuth();
@@ -75,7 +73,6 @@ function OOBEWizardPage({ onCompleted }) {
   const [selectedThemeMode, setSelectedThemeMode] = useState('dark');
   const [selectedFont, setSelectedFont] = useState(settings?.ui_font ?? 'inter');
   const [selectedFontSize, setSelectedFontSize] = useState(settings?.ui_font_size ?? 'medium');
-  const [language, setLanguage] = useState(settings?.language ?? 'en');
   const [timezone, setTimezone] = useState(
     () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
   );
@@ -144,15 +141,6 @@ function OOBEWizardPage({ onCompleted }) {
       cancelled = true;
     };
   }, []);
-
-  const languages = [
-    { value: 'en', label: 'English' },
-    { value: 'es', label: 'Español' },
-    { value: 'fr', label: 'Français' },
-    { value: 'de', label: 'Deutsch' },
-    { value: 'zh', label: '中文 (简体)' },
-    { value: 'ja', label: '日本語' },
-  ];
 
   // ── Caddy HTTPS detection ────────────────────────────────────────────────
   // Detect when the user is behind Caddy (HTTPS on a non-dev host).
@@ -260,7 +248,6 @@ function OOBEWizardPage({ onCompleted }) {
       if (saved.selectedPreset) setSelectedPreset(saved.selectedPreset);
       if (saved.selectedThemeMode) setSelectedThemeMode(saved.selectedThemeMode);
       if (saved.timezone) setTimezone(saved.timezone);
-      if (saved.language) setLanguage(saved.language);
       if (saved.selectedFont) setSelectedFont(saved.selectedFont);
       if (saved.selectedFontSize) setSelectedFontSize(saved.selectedFontSize);
       if (saved.weatherLocation) setWeatherLocation(saved.weatherLocation);
@@ -560,7 +547,6 @@ function OOBEWizardPage({ onCompleted }) {
         selectedPreset,
         selectedThemeMode,
         timezone,
-        language,
         selectedFont,
         selectedFontSize,
         weatherLocation,
@@ -597,7 +583,6 @@ function OOBEWizardPage({ onCompleted }) {
         api_base_url: externalAppUrl.trim() || undefined,
         theme: selectedThemeMode,
         timezone,
-        language,
         ui_font: selectedFont,
         ui_font_size: selectedFontSize,
         weather_location: weatherLocation || timezoneToCity(timezone) || undefined,
@@ -651,7 +636,6 @@ function OOBEWizardPage({ onCompleted }) {
       if (THEME_PRESETS[preset]) {
         applyTheme(THEME_PRESETS[preset], preset);
       }
-      await i18n.changeLanguage(language);
 
       login(token, user);
       await reloadSettings();
@@ -1793,24 +1777,6 @@ function OOBEWizardPage({ onCompleted }) {
                   )}
                 </div>
 
-                <div style={{ margin: '16px 0 12px' }}>
-                  <label className="login-label" htmlFor="oobe-language">
-                    Preferred Language
-                  </label>
-                  <select
-                    id="oobe-language"
-                    className="form-control"
-                    value={language}
-                    onChange={(e) => setLanguage(e.target.value)}
-                  >
-                    {languages.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
                 <div style={{ margin: '0 0 8px' }}>
                   <TimezoneSelect value={timezone} onChange={handleTimezoneChange} />
                 </div>
@@ -2156,10 +2122,6 @@ function OOBEWizardPage({ onCompleted }) {
                       ·{' '}
                       {FONT_SIZE_OPTIONS.find((entry) => entry.id === selectedFontSize)?.label ??
                         selectedFontSize}
-                    </div>
-                    <div>
-                      <strong>Language:</strong>{' '}
-                      {languages.find((entry) => entry.value === language)?.label ?? language}
                     </div>
                     <div>
                       <strong>Timezone:</strong> {timezone}
