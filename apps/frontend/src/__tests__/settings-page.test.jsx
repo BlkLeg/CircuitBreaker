@@ -73,7 +73,6 @@ const mockSettings = {
   theme: 'dark',
   default_environment: '',
   vendor_icon_mode: 'custom_files',
-  show_experimental_features: false,
   show_page_hints: true,
   api_base_url: '',
   environments: ['prod', 'staging', 'dev'],

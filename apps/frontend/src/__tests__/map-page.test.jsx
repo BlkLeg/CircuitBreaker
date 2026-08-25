@@ -118,7 +118,6 @@ vi.mock('../context/SettingsContext', () => ({
       show_external_nodes_on_map: true,
       vendor_icon_mode: 'custom_files',
       map_default_filters: '{}',
-      show_experimental_features: false,
     },
     reloadSettings: vi.fn(),
   }),

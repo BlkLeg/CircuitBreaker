@@ -288,7 +288,6 @@ export default function SettingsPage() {
       theme: ctxSettings.theme ?? 'dark',
       default_environment: ctxSettings.default_environment ?? '',
       vendor_icon_mode: ctxSettings.vendor_icon_mode ?? 'custom_files',
-      show_experimental_features: ctxSettings.show_experimental_features ?? false,
       show_page_hints: ctxSettings.show_page_hints ?? true,
       api_base_url: ctxSettings.api_base_url ?? '',
       environments: ctxSettings.environments ?? ['prod', 'staging', 'dev'],
@@ -1786,21 +1785,6 @@ export default function SettingsPage() {
                 )}
 
                 <SettingSection title="Advanced">
-                  <SettingField
-                    label="Experimental Features"
-                    hint="Enable features still in beta. May be unstable."
-                  >
-                    <label className="toggle-switch">
-                      <span className="sr-only">Experimental Features</span>
-                      <input
-                        type="checkbox"
-                        checked={form.show_experimental_features}
-                        onChange={(e) => set('show_experimental_features', e.target.checked)}
-                      />
-                      <span className="toggle-switch-track" />
-                    </label>
-                  </SettingField>
-
                   <SettingField
                     label="Factory Reset"
                     hint="Instantly reset all application settings to defaults."

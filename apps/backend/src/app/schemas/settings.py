@@ -133,7 +133,6 @@ class AppSettingsRead(BaseModel):
     id: int
     theme: str
     default_environment: str | None = None
-    show_experimental_features: bool
     api_base_url: str | None = None
     map_default_filters: dict | None = None  # JSONB; may arrive as string from legacy writes
     vendor_icon_mode: str
@@ -432,7 +431,6 @@ class AppSettingsRead(BaseModel):
 class AppSettingsUpdate(BaseModel):
     theme: Literal["auto", "dark", "light"] | None = None
     default_environment: str | None = None
-    show_experimental_features: bool | None = None
     api_base_url: str | None = None
     map_default_filters: Any | None = None  # accepts dict or None; serialized to JSON string
     vendor_icon_mode: Literal["none", "built_in", "custom_files"] | None = None

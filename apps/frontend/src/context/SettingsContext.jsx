@@ -21,7 +21,6 @@ const DEFAULTS = {
   theme: 'dark',
   theme_preset: DEFAULT_PRESET,
   default_environment: '',
-  show_experimental_features: false,
   api_base_url: '',
   map_default_filters: null,
   vendor_icon_mode: 'custom_files',
