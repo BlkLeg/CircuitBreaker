@@ -6,6 +6,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import PropTypes from 'prop-types';
 import { topologiesApi } from '../../api/client';
+import { useAuth } from '../../context/AuthContext.jsx';
+import { canEdit } from '../../utils/rbac';
 import { useToast } from '../common/Toast';
 import ConfirmDialog from '../common/ConfirmDialog';
 import FormModal from '../common/FormModal';
@@ -13,7 +15,7 @@ import { X } from 'lucide-react';
 
 const FIELDS = [{ name: 'name', label: 'Name', required: true }];
 
-function TopologyRow({ topo, onSetDefault, onDelete }) {
+function TopologyRow({ topo, canWrite, onSetDefault, onDelete }) {
   return (
     <div
       style={{
@@ -36,7 +38,7 @@ function TopologyRow({ topo, onSetDefault, onDelete }) {
       <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
         {topo.node_count}N · {topo.edge_count}E
       </span>
-      {!topo.is_default && (
+      {canWrite && !topo.is_default && (
         <button
           className="btn"
           style={{ fontSize: 11, padding: '2px 8px' }}
@@ -45,7 +47,7 @@ function TopologyRow({ topo, onSetDefault, onDelete }) {
           Set default
         </button>
       )}
-      {!topo.is_default && (
+      {canWrite && !topo.is_default && (
         <button
           className="btn btn-danger"
           style={{ fontSize: 11, padding: '2px 8px' }}
@@ -60,12 +62,17 @@ function TopologyRow({ topo, onSetDefault, onDelete }) {
 
 TopologyRow.propTypes = {
   topo: PropTypes.object.isRequired,
+  canWrite: PropTypes.bool.isRequired,
   onSetDefault: PropTypes.func.isRequired,
   onDelete: PropTypes.func.isRequired,
 };
 
 export default function TopologyManagerPanel({ onClose }) {
   const toast = useToast();
+  const { user } = useAuth();
+  // Topology create/update/delete are write-gated on the API; a viewer offered these
+  // buttons would only ever collect a 403.
+  const canWrite = canEdit(user);
   const [topologies, setTopologies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -132,9 +139,11 @@ export default function TopologyManagerPanel({ onClose }) {
         }}
       >
         <span style={{ fontWeight: 600, flex: 1 }}>Topologies</span>
-        <button className="btn" style={{ padding: '2px 6px' }} onClick={() => setShowForm(true)}>
-          + New
-        </button>
+        {canWrite && (
+          <button className="btn" style={{ padding: '2px 6px' }} onClick={() => setShowForm(true)}>
+            + New
+          </button>
+        )}
         <button
           style={{ background: 'none', border: 'none', cursor: 'pointer', marginLeft: 8 }}
           onClick={onClose}
@@ -153,6 +162,7 @@ export default function TopologyManagerPanel({ onClose }) {
           <TopologyRow
             key={t.id}
             topo={t}
+            canWrite={canWrite}
             onSetDefault={handleSetDefault}
             onDelete={setConfirmDelete}
           />
