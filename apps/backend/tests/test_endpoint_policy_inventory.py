@@ -477,6 +477,15 @@ def _http_routes() -> Iterator[tuple[str, APIRoute, frozenset[str]]]:
             yield path, route, inherited
 
 
+def _has_write_gate(calls: set[str]) -> bool:
+    """True when a write route names a role, a scope, or the write-auth dependency.
+
+    The one definition of "this write is authorized by something", shared by the
+    test that demands it and the test that retires exemptions once it appears.
+    """
+    return bool(calls & _READ_DEPENDENCIES) or "app.core.security.require_write_auth" in calls
+
+
 def test_no_write_route_is_merely_authenticated():
     """A write reachable by any authenticated user is an authorization decision nobody made.
 
@@ -494,9 +503,7 @@ def test_no_write_route_is_merely_authenticated():
         if _route_key(path, route) in public:
             continue
         calls = _dependency_calls(route.dependant) | inherited
-        if calls & _READ_DEPENDENCIES:
-            continue
-        if "app.core.security.require_write_auth" in calls:
+        if _has_write_gate(calls):
             continue
         for method in sorted(methods):
             if (method, path) in _UNGATED_WRITE_EXEMPTIONS:
@@ -511,14 +518,35 @@ def test_no_write_route_is_merely_authenticated():
 
 
 def test_ungated_write_exemptions_still_exist():
-    """An exemption for a route that is gone hides the next real one."""
-    live = {(method, path) for path, route, _ in _http_routes() for method in (route.methods or [])}
+    """An exemption rots two ways, and both hide the next real ungated write.
+
+    The route disappears, and the entry documents nothing. Or the route acquires a
+    require_role/require_scope/require_write_auth gate and the entry keeps asserting
+    the write is ungated when the code says otherwise — a false record of the ungated
+    surface that would silently re-excuse the route if the gate were ever removed.
+    """
+    gates: dict[tuple[str, str], set[str]] = {}
+    for path, route, inherited in _http_routes():
+        calls = _dependency_calls(route.dependant) | inherited
+        for method in route.methods or []:
+            gates[(method, path)] = calls
+
     stale = sorted(
         f"{method} {path}"
         for (method, path) in _UNGATED_WRITE_EXEMPTIONS
-        if (method, path) not in live
+        if (method, path) not in gates
     )
-
     assert not stale, "_UNGATED_WRITE_EXEMPTIONS names routes that no longer exist: " + ", ".join(
         stale
+    )
+
+    now_gated = sorted(
+        f"{method} {path}"
+        for (method, path) in _UNGATED_WRITE_EXEMPTIONS
+        if _has_write_gate(gates[(method, path)])
+    )
+    assert not now_gated, (
+        "_UNGATED_WRITE_EXEMPTIONS excuses writes that now declare a role or write "
+        "scope, so the exemption no longer describes the code. Delete these entries: "
+        + ", ".join(now_gated)
     )

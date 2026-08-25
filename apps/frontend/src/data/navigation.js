@@ -245,13 +245,16 @@ export const LEGACY_DOCK_DEFAULTS = [
  * The only place navigation RBAC is decided. Header and the dock disagreeing about
  * Certificates is what this exists to make impossible.
  *
- * The item's gate is read from its path, not from the object handed in: callers pass
- * raw NAV_GROUPS items (the palette, the dock picker) as readily as derived ones, and
- * a shape that had lost `require` on the way here would silently open the entry to
- * everyone. guardFor is the same answer the router gives that path.
+ * The item's gate is read from its path and from nothing else: callers pass raw
+ * NAV_GROUPS items (the palette, the dock picker) as readily as derived ones, and a
+ * shape that had lost `require` on the way here would silently open the entry to
+ * everyone. guardFor is the same answer the router gives that path, and it answers
+ * for a path it does not know too — so an item without a resolvable path goes through
+ * the same lookup as every other item rather than falling back to a `require` the
+ * caller supplied, which is the one input that could be more permissive than the route.
  */
 export function canSeeNavItem(item, group, user) {
-  const gates = [group?.require, item?.path ? guardFor(item.path) : item?.require];
+  const gates = [group?.require, guardFor(item?.path)];
   for (const gate of gates) {
     if (gate === 'admin' && !isAdmin(user)) return false;
     if (gate === 'editor' && !canEdit(user)) return false;

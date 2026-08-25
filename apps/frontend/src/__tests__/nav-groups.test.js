@@ -123,6 +123,16 @@ describe('canSeeNavItem', () => {
     expect(canSeeNavItem(item, group, null)).toBe(true);
   });
 
+  it('never reads a require the caller put on the item — the path lookup is the only gate', () => {
+    // canSeeNavItem's job is to give the same answer the router gives. A `require`
+    // sitting on the object handed in did not come from routeGuards, so it is not
+    // authorization; an item whose path resolves to nothing is ungated, exactly as
+    // guardFor() answers for any path it does not know.
+    const [, group] = find('/map');
+    expect(canSeeNavItem({ path: '/map', require: 'admin' }, group, viewer)).toBe(true);
+    expect(canSeeNavItem({ require: 'admin' }, group, viewer)).toBe(true);
+  });
+
   it('hides Certificates from viewers — the dock used to show it', () => {
     const [item, group] = find('/certificates');
     expect(canSeeNavItem(item, group, viewer)).toBe(false);
