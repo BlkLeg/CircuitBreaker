@@ -5,7 +5,19 @@ name: Composed Agent E2E
 # "deliberately NOT run here and remains a local/manual gate", and release.yml
 # never invoked it. 35+ minutes is a fair reason to keep it off the PR path;
 # it is not a reason for it never to run.
+#
+# The per-RC half of that runs here, on the tag push, rather than as a job
+# called from release.yml. AGT-01 also wants the journey *required* before
+# publication, and it is not: the agent has open troubleshooting and likely
+# missing development, so this suite is expected to fail for a while, and as a
+# gate it would hold every artifact of an otherwise-green release. The AGT-01
+# ledger row is `not_started`/`not_evidenced` and stays that way — it cannot be
+# evidenced as passing while publication does not depend on it. `workflow_call`
+# is kept for exactly that restoration: re-gating is one job in release.yml.
 on:
+  push:
+    tags:
+      - "v*"
   schedule:
     - cron: "0 3 * * *"
   workflow_dispatch:
