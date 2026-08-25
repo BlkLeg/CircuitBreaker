@@ -97,3 +97,42 @@ def test_create_out_directory_becomes_the_backup_dir(monkeypatch, tmp_path):
 
     assert main(["snapshot", "create", "--out", str(tmp_path)]) == 0
     assert seen["backup_dir"] == str(tmp_path)
+
+
+def test_entrypoint_routes_snapshot_create_to_the_cli(monkeypatch):
+    """Binary installs have no `python -m app.cli`.
+
+    `cb backup` in binary mode runs the frozen entrypoint built from `start.py`
+    (scripts/build_native_release.py:BACKEND_ENTRYPOINT), so the only way in is a
+    flag that entrypoint understands — the same route `--config-validate` takes.
+    """
+    import app.cli
+    from app import start
+
+    seen: dict[str, list[str]] = {}
+
+    def _fake_cli_main(argv: list[str]) -> int:
+        seen["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(app.cli, "main", _fake_cli_main)
+
+    assert start.main(["--snapshot-create", "--out", "/var/backups"]) == 0
+    assert seen["argv"] == ["snapshot", "create", "--out", "/var/backups"]
+
+
+def test_entrypoint_snapshot_create_without_an_out_directory(monkeypatch):
+    """No --out means the configured BACKUP_DIR, exactly as the CLI defaults."""
+    import app.cli
+    from app import start
+
+    seen: dict[str, list[str]] = {}
+
+    def _fake_cli_main(argv: list[str]) -> int:
+        seen["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(app.cli, "main", _fake_cli_main)
+
+    assert start.main(["--snapshot-create"]) == 0
+    assert seen["argv"] == ["snapshot", "create"]

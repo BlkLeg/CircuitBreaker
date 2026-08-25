@@ -12,7 +12,7 @@
 #   logs [-f]     Show (or follow) logs
 #   restart       Restart Circuit Breaker
 #   update        Pull latest image and restart  (docker mode only)
-#   backup        Dump the database and config to a timestamped archive
+#   backup        Full-state snapshot: database, uploads, config, vault key
 #   config        Validate the configuration  (cb config validate)
 #   vault-recover Recover from an uninitialized vault  (after-crash / headless deploy)
 #   version       Show installed version
@@ -108,6 +108,16 @@ _require_binary() {
   local path="$1" why="${2:-}"
   [[ -e "$path" ]] || _fail "${path} not found${why:+ — $why}"
   [[ -x "$path" ]] || _fail "${path} is not executable${why:+ — $why}"
+}
+
+# Preflight for binary mode: the snapshot builder shells out to pg_dump, which
+# a package install does not pull in. Without this the operator gets a Python
+# traceback ending in FileNotFoundError instead of the one sentence that names
+# the package to install. The container images already ship the client, so the
+# docker/compose paths do not need it.
+_require_postgres_client() {
+  command -v pg_dump >/dev/null 2>&1 \
+    || _fail "pg_dump is not installed on this host — install the PostgreSQL client package (postgresql-client) and retry."
 }
 
 _container_running() {
@@ -429,91 +439,75 @@ cmd_update() {
 }
 
 # ── backup ────────────────────────────────────────────────────────────────────
-# Database dump plus the config/vault material needed to read it again, in one
-# timestamped archive.  Uploads are deliberately not included — they are large
-# and are covered by the full-state snapshot (see docs/backup-restore.md).
+# One artifact, one builder.  `cb backup` produces the full-state snapshot —
+# db.sql.gz, uploads/, config/, vault.key and manifest.json — which is exactly
+# what POST /admin/db/snapshot and the nightly scheduled job produce, because
+# all three call services/backup/snapshot.py through the same CLI.
+#
+# It used to build its own archive here in bash (database.sql + manifest.txt, no
+# uploads, no vault key).  deploy/scripts/restore.sh structurally rejected that
+# shape, so every `cb backup` archive was unrestorable by the tool documented to
+# restore it (INC-15).  Do not reintroduce a second builder: extend
+# services/backup/snapshot.py and every caller gets it.
 cmd_backup() {
-  local ts backup_dir stage archive
-  ts=$(date +%Y%m%d-%H%M%S)
+  local backup_dir out
   backup_dir="${CB_BACKUP_DIR:-$CB_CONFIG_DIR/backups}"
-  archive="$backup_dir/cb-backup-${ts}.tar.gz"
-
   mkdir -p "$backup_dir" || _fail "Cannot create backup directory $backup_dir."
-  stage=$(mktemp -d) || _fail "Cannot create a staging directory."
-  # shellcheck disable=SC2064  # $stage is fixed at trap time, deliberately
-  trap "rm -rf '$stage'" EXIT
-
-  _info "Backing up to ${archive}..."
 
   case "$CB_MODE" in
     docker|compose)
       _require_docker
       _container_running "$CB_BACKEND_CONTAINER" \
-        || _fail "Container '${CB_BACKEND_CONTAINER}' must be running to dump the database. Start it first."
+        || _fail "Container '${CB_BACKEND_CONTAINER}' must be running to take a snapshot. Start it first."
 
-      # pg_dump runs inside the container, against the connection the app
-      # itself uses; the dump streams out to the host so a read-only container
-      # filesystem (and a full data volume) cannot break the backup.
-      docker exec "$CB_BACKEND_CONTAINER" \
-        sh -c "${_DB_CONN_SH}; exec pg_dump \"\$@\"" > "$stage/database.sql" \
-        || _fail "pg_dump failed — see the output above."
-      [[ -s "$stage/database.sql" ]] || _fail "pg_dump produced an empty file; refusing to write a useless backup."
+      _info "Building a full-state snapshot inside '${CB_BACKEND_CONTAINER}'…"
+      # The snapshot is written inside the container, where the database, the
+      # uploads directory and the vault key all are; only the finished archive
+      # crosses to the host.
+      out=$(docker exec -e "CB_INSTALL_MODE=${CB_MODE}" "$CB_BACKEND_CONTAINER" \
+              python -m app.cli snapshot create) \
+        || _fail "Snapshot failed — see the output above."
+      # The path is the last line: anything the builder logs comes before it.
+      out=$(printf '%s\n' "$out" | tail -n1)
+      [[ -n "$out" ]] || _fail "Snapshot reported success but printed no path."
 
-      # Without the vault key the dump's encrypted columns are unreadable, so
-      # the key travels with it — which is also why the archive is 0600.
-      if docker exec "$CB_BACKEND_CONTAINER" cat "${CB_DATA_DIR}/.env" > "$stage/data.env" 2>/dev/null \
-         && [[ -s "$stage/data.env" ]]; then
-        _ok "Captured ${CB_DATA_DIR}/.env (vault key and data-dir config)."
-      else
-        rm -f "$stage/data.env"
-        _warn "No ${CB_DATA_DIR}/.env in the container — the vault key is supplied through the environment. Keep CB_VAULT_KEY safe separately."
-      fi
-      # The host-side install config records the image, ports and volume the
-      # stack was created with — a restore without it is guesswork.
-      if [[ -f "$CB_CONFIG_DIR/env" ]]; then cp "$CB_CONFIG_DIR/env" "$stage/install.env"; fi
-      if [[ -f "$_CONF" ]]; then cp "$_CONF" "$stage/install.conf"; fi
-
-      {
-        echo "mode=$CB_MODE"
-        echo "created=$ts"
-        echo "container=$CB_BACKEND_CONTAINER"
-        echo "image=$(docker inspect -f '{{.Config.Image}}' "$CB_BACKEND_CONTAINER" 2>/dev/null)"
-      } > "$stage/manifest.txt"
+      docker cp "${CB_BACKEND_CONTAINER}:${out}" "$backup_dir/" \
+        || _fail "Snapshot was created in the container at ${out} but could not be copied to ${backup_dir}."
+      docker exec "$CB_BACKEND_CONTAINER" rm -f "$out" 2>/dev/null || true
+      out="$backup_dir/$(basename "$out")"
       ;;
 
     binary)
-      command -v pg_dump >/dev/null 2>&1 \
-        || _fail "pg_dump is not installed on this host — install the PostgreSQL client package (postgresql-client) and retry."
+      _require_postgres_client
 
       local env_file="$CB_BINARY_ENV_FILE"
       [[ -r "$env_file" ]] \
-        || _fail "Cannot read ${env_file} — the database credentials live there. Try: sudo cb backup"
+        || _fail "Cannot read ${env_file} — the database credentials and the vault key live there. Try: sudo cb backup"
+      _require_binary "$CB_BINARY" \
+        "the snapshot builder ships with the Circuit Breaker binary. Install the package, or set CB_MODE in ${_CONF} to the mode this host actually runs."
 
-      # Read the credentials the same way the unit does, in a subshell so the
-      # secrets never leak into the rest of this process's environment.
-      local db_url
-      db_url=$(set -a; . "$env_file"; set +a; printf '%s' "${CB_DB_URL:-}")
-      [[ -n "$db_url" ]] || _fail "CB_DB_URL is not set in ${env_file}; cannot dump the database."
-
-      pg_dump "$db_url" > "$stage/database.sql" || _fail "pg_dump failed — see the output above."
-      [[ -s "$stage/database.sql" ]] || _fail "pg_dump produced an empty file; refusing to write a useless backup."
-
-      cp "$env_file" "$stage/service.env"
-      {
-        echo "mode=$CB_MODE"
-        echo "created=$ts"
-        echo "version=$("$CB_BINARY" --version 2>/dev/null || echo unknown)"
-      } > "$stage/manifest.txt"
+      _info "Building a full-state snapshot…"
+      # The unit's environment is loaded in a subshell, so CB_VAULT_KEY and the
+      # database credentials reach the builder without leaking into the rest of
+      # this process.
+      # shellcheck source=/dev/null
+      out=$(set -a; . "$env_file"; set +a
+            CB_INSTALL_MODE=binary "$CB_BINARY" --snapshot-create --out "$backup_dir") \
+        || _fail "Snapshot failed — see the output above."
+      out=$(printf '%s\n' "$out" | tail -n1)
+      [[ -n "$out" ]] || _fail "Snapshot reported success but printed no path."
       ;;
+
+    *) _fail "Unknown mode '${CB_MODE}'." ;;
   esac
 
-  tar -czf "$archive" -C "$stage" . || _fail "Failed to write $archive."
-  chmod 600 "$archive"
+  [[ -s "$out" ]] || _fail "Expected a snapshot at ${out}, but nothing usable is there."
+  chmod 600 "$out" 2>/dev/null || true
 
-  _ok "Backup written: ${archive}"
-  echo -e "  ${GR}Contents: database.sql, config/vault material, manifest.txt${R}"
-  echo -e "  ${Y}This archive contains secrets — it is mode 0600. Store it somewhere equally protected.${R}"
-  echo -e "  ${GR}Uploads are not included; see docs/backup-restore.md for a full-state snapshot.${R}"
+  _ok "Backup written to ${out}"
+  echo -e "  ${GR}Contains the database, uploads, config and the vault key.${R}"
+  echo -e "  ${Y}The vault key is stored in plaintext — this file is mode 0600, treat it as a secret.${R}"
+  echo -e "  ${GR}Restore with: cb restore ${out}${R}"
 }
 
 # ── config ────────────────────────────────────────────────────────────────────
@@ -724,7 +718,7 @@ usage() {
   echo -e "    logs [-f]           Show logs  (${GR}-f${R} to follow in real-time)"
   echo -e "    restart             Restart Circuit Breaker"
   echo -e "    update              Pull latest image and restart  ${GR}(docker mode)${R}"
-  echo -e "    backup              Dump database + config to a timestamped archive"
+  echo -e "    backup              Full-state snapshot (database, uploads, config, vault key)"
   echo -e "    config validate     Validate the configuration before it is used"
   echo -e "    vault-recover       Recover an uninitialized vault  ${GR}(recovery path only)${R}"
   echo -e "    version             Show installed version"

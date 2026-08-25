@@ -84,9 +84,9 @@ CB_PORT=8080
 # CB_BINARY_ENV_FILE=/etc/circuit-breaker/circuit-breaker.env
 ```
 
-`cb update` (docker mode) and `cb backup` also read an optional `~/.circuit-breaker/env` and pass
-it to `docker run --env-file`. That file is operator-supplied too; nothing creates it, and both
-commands work without it.
+`cb update` (docker mode) also reads an optional `~/.circuit-breaker/env` and passes it to
+`docker run --env-file`. That file is operator-supplied too; nothing creates it, and the command
+works without it.
 
 ---
 
@@ -230,18 +230,26 @@ cb backup
 Output path: `${CB_DATA_DIR}/backups/cb-backup-<YYYYmmdd-HHMMSS>.sql`. This is a database dump
 only — it does not capture uploads, the vault key, or config files.
 
-On docker/compose/binary installs it writes a timestamped `.tar.gz` to
-`${CB_BACKUP_DIR:-~/.circuit-breaker/backups}` containing:
+On docker/compose/binary installs it writes the **full-state snapshot** — the same artifact
+`POST /admin/db/snapshot` and the nightly scheduled job produce, because all three call the one
+builder (`services/backup/snapshot.py`) through `python -m app.cli snapshot create`. It lands in
+`${CB_BACKUP_DIR:-~/.circuit-breaker/backups}` as `cb-snapshot-<YYYYmmdd-HHMMSS>.tar.gz`
+containing:
 
 | Member | What it is |
 |---|---|
-| `database.sql` | `pg_dump` run inside the backend container (or on the host, for `binary`), streamed out so a read-only or full container filesystem cannot break the backup |
-| `data.env` / `service.env` | The deployment's env file — **including the vault key**, without which the dump's encrypted columns are unreadable |
-| `install.env`, `install.conf` | The host-side installer config: image, ports, volume, mode |
-| `manifest.txt` | Mode, timestamp, and the image or version the dump came from |
+| `db.sql.gz` | `pg_dump` of the whole database, gzip-compressed, with a recorded sha256 |
+| `uploads/` | The uploads directory |
+| `config/` | Native-install config files, when there are any |
+| `vault.key` | The vault key **in plaintext** — without it the dump's encrypted columns are unreadable |
+| `manifest.json` | Format version, install mode, `cb` version, timestamp and the member checksums |
 
-The archive is written mode `0600` because it contains secrets. Uploads are excluded there too —
-for the full-state snapshot that covers them, see [Backup & Restore](backup-restore.md).
+The archive is written mode `0600` because it contains secrets — treat the file itself as one.
+Verify one with `python -m app.cli snapshot verify <archive>`; restore it with `cb restore`. See
+[Backup & Restore](backup-restore.md).
+
+An archive produced by `cb backup` **before** this change (`database.sql` + `manifest.txt`) is a
+different, older format: it carried no vault key and no uploads, and nothing restores it.
 
 ---
 

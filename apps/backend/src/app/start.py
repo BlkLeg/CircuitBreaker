@@ -258,6 +258,26 @@ def main(argv: list[str] | None = None) -> int:
             cli_args += ["--config", toml_override]
         return cli_main(cli_args)
 
+    # `cb backup` on a binary install reaches the snapshot builder through this
+    # flag.  A packaged install has no `python -m app.cli` — the frozen binary
+    # built from this file is the whole of Python on that host — so the flag is
+    # the only route in, and it is handled here beside --config-validate for the
+    # same reason: before argument parsing, and before anything binds a port or
+    # starts a scheduler that a one-shot snapshot has no use for.
+    if "--snapshot-create" in arguments:
+        from app.cli import main as cli_main
+
+        snapshot_args = ["snapshot", "create"]
+        out_override: str | None = None
+        for index, item in enumerate(arguments):
+            if item == "--out" and index + 1 < len(arguments):
+                out_override = arguments[index + 1]
+            elif item.startswith("--out="):
+                out_override = item.split("=", 1)[1]
+        if out_override:
+            snapshot_args += ["--out", out_override]
+        return cli_main(snapshot_args)
+
     args = build_parser().parse_args(argv)
     if args.version:
         print(resolve_app_version())
