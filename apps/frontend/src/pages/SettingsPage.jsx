@@ -34,7 +34,6 @@ import BackupSettings from '../components/settings/BackupSettings.jsx';
 import IntegrationsManager from '../components/settings/IntegrationsManager';
 import OpnsenseIntegrationSection from '../components/opnsense/OpnsenseIntegrationSection.jsx';
 import DeviceRolesSection from './settings/DeviceRolesSection.jsx';
-import { useTranslation } from 'react-i18next';
 
 const ENTITY_TYPES = ['hardware', 'compute', 'services', 'storage', 'networks', 'misc', 'external'];
 
@@ -245,7 +244,6 @@ import NotificationsManager from '../components/settings/NotificationsManager';
 import OAuthProvidersManager from '../components/settings/OAuthProvidersManager';
 
 export default function SettingsPage() {
-  const { i18n, t } = useTranslation();
   const { settings: ctxSettings, reloadSettings } = useSettings();
   const { user } = useAuth();
   const isAdmin = !!(user?.role === 'admin' || user?.is_admin || user?.is_superuser);
@@ -305,7 +303,6 @@ export default function SettingsPage() {
       show_weather_widget: ctxSettings.show_weather_widget ?? true,
       weather_location: ctxSettings.weather_location ?? 'Phoenix, AZ',
       timezone: ctxSettings.timezone ?? 'UTC',
-      language: ctxSettings.language ?? 'en',
       // Phase 4: Discovery Engine v2
       listener_enabled: ctxSettings.listener_enabled ?? false,
       mdns_enabled: ctxSettings.mdns_enabled ?? true,
@@ -394,10 +391,6 @@ export default function SettingsPage() {
 
       if (form.timezone !== ctxTimezone) {
         setTimezone(form.timezone);
-      }
-
-      if ((form.language || 'en') !== (i18n.language || 'en')) {
-        await i18n.changeLanguage(form.language || 'en');
       }
 
       await reloadSettings();
@@ -607,24 +600,6 @@ export default function SettingsPage() {
             {activeTab === 'general' && (
               <div className="settings-sections-grid">
                 <SettingSection title="Regional">
-                  <SettingField
-                    label={t('language', { ns: 'settings', defaultValue: 'Language' })}
-                    hint="Application language used across labels and UI text."
-                  >
-                    <select
-                      className="form-control"
-                      value={form.language}
-                      onChange={(e) => set('language', e.target.value)}
-                    >
-                      <option value="en">English</option>
-                      <option value="es">Español</option>
-                      <option value="fr">Français</option>
-                      <option value="de">Deutsch</option>
-                      <option value="zh">中文 (简体)</option>
-                      <option value="ja">日本語</option>
-                    </select>
-                  </SettingField>
-
                   <SettingField
                     label="Timezone"
                     hint="Your local timezone for displaying timestamps across the app."

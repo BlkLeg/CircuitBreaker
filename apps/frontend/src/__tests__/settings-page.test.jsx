@@ -69,13 +69,6 @@ vi.mock('react-router-dom', () => ({
   Link: ({ children, ...props }) => React.createElement('a', props, children),
 }));
 
-vi.mock('react-i18next', () => ({
-  useTranslation: () => ({
-    t: (key, opts) => opts?.defaultValue || key,
-    i18n: { language: 'en', changeLanguage: vi.fn() },
-  }),
-}));
-
 const mockSettings = {
   theme: 'dark',
   default_environment: '',
@@ -273,14 +266,14 @@ describe('SettingsPage', () => {
     });
   });
 
-  it('renders Regional section with Language field on general tab', async () => {
+  it('offers no language selector — 1.0.0 ships English only', async () => {
     render(<SettingsPage />);
 
     await waitFor(() => {
       expect(screen.getByText('Regional')).toBeInTheDocument();
     });
 
-    // Language field with dropdown
-    expect(screen.getByText('Language')).toBeInTheDocument();
+    expect(screen.queryByText('Language')).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: /language/i })).not.toBeInTheDocument();
   });
 });
