@@ -124,7 +124,24 @@ def renew_certificate(
     cert = svc.get_certificate(db, cert_id)
     if cert is None:
         raise HTTPException(status_code=404, detail="Certificate not found")
-    renewed = svc.renew_certificate(db, cert)
+    try:
+        renewed = svc.renew_certificate(db, cert)
+    except svc.CertificateRenewalError as exc:
+        # The audit entry used to say "ok" unconditionally, recording renewals that never
+        # happened. 502 rather than 500: the failure is in an upstream certificate authority
+        # or a missing external tool, not in this application.
+        log_audit(
+            db,
+            request,
+            user_id=current_user.id,
+            action="certificate_renewed",
+            resource=f"certificate:{cert_id}",
+            status="error",
+            details=str(exc),
+        )
+        db.commit()
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
     log_audit(
         db,
         request,

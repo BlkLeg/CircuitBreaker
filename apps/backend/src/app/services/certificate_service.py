@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import subprocess
 import tempfile
 from datetime import UTC, datetime, timedelta
@@ -32,6 +33,33 @@ _logger = logging.getLogger(__name__)
 _SELFSIGNED_DAYS = 90
 _RSA_KEY_SIZE = 4096
 _RENEWAL_THRESHOLD_DAYS = 30
+_CERTBOT_TIMEOUT_SECONDS = 120
+
+
+class CertificateRenewalError(RuntimeError):
+    """A renewal did not happen. The message is shown to the operator verbatim."""
+
+
+def _run_certbot(
+    argv: list[str], timeout: int = _CERTBOT_TIMEOUT_SECONDS
+) -> subprocess.CompletedProcess[str]:
+    """The single seam where this codebase meets certbot. Tests replace this."""
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+
+
+def _certbot_tmp_root() -> Path:
+    """Scratch space for certbot's output.
+
+    The container root filesystem is read-only, so this lives under $CB_DATA_DIR rather than
+    the system temp dir. Where that is not writable we fall back instead of turning a renewal
+    into an unrelated OSError.
+    """
+    root = Path(os.environ.get("CB_DATA_DIR", "/data")) / "tmp"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return Path(tempfile.gettempdir())
+    return root
 
 
 def generate_selfsigned(domain: str) -> tuple[str, str, datetime]:
@@ -154,57 +182,57 @@ def renew_certificate(db: Session, cert: Certificate) -> Certificate:
         return cert
 
     if cert.type == "letsencrypt":
-        try:
-            tmp_root = Path("/data/tmp")
-            tmp_root.mkdir(parents=True, exist_ok=True)
-            with tempfile.TemporaryDirectory(dir=str(tmp_root)) as tmp_dir:
-                cert_path = Path(tmp_dir) / "cb_cert.pem"
-                key_path = Path(tmp_dir) / "cb_key.pem"
+        with tempfile.TemporaryDirectory(dir=str(_certbot_tmp_root())) as tmp_dir:
+            cert_path = Path(tmp_dir) / "cb_cert.pem"
+            key_path = Path(tmp_dir) / "cb_key.pem"
 
-                result = subprocess.run(
-                    [
-                        "certbot",
-                        "certonly",
-                        "--standalone",
-                        "--non-interactive",
-                        "--agree-tos",
-                        "--email",
-                        "admin@localhost",
-                        "-d",
-                        cert.domain,
-                        "--cert-path",
-                        str(cert_path),
-                        "--key-path",
-                        str(key_path),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
+            argv = [
+                "certbot",
+                "certonly",
+                "--standalone",
+                "--non-interactive",
+                "--agree-tos",
+                "--email",
+                "admin@localhost",
+                "-d",
+                cert.domain,
+                "--cert-path",
+                str(cert_path),
+                "--key-path",
+                str(key_path),
+            ]
+
+            # Every failure below raises. The code this replaced logged and returned the
+            # unchanged certificate, so a renewal that never happened reached the operator
+            # as a 200 with the old expiry (INC-07).
+            try:
+                result = _run_certbot(argv)
+            except FileNotFoundError as exc:
+                raise CertificateRenewalError(
+                    "certbot is not available in this image, so a Let's Encrypt certificate "
+                    "cannot be renewed here."
+                ) from exc
+            except subprocess.TimeoutExpired as exc:
+                raise CertificateRenewalError(
+                    f"certbot timed out after {exc.timeout}s renewing {cert.domain}."
+                ) from exc
+
+            if result.returncode != 0:
+                raise CertificateRenewalError(
+                    f"certbot failed for {cert.domain}: {(result.stderr or '').strip()[:500]}"
                 )
-                if result.returncode != 0:
-                    _logger.error("certbot renewal failed for %s: %s", cert.domain, result.stderr)
-                    return cert
 
-                new_cert_pem = cert_path.read_text(encoding="utf-8")
-                new_key_pem = key_path.read_text(encoding="utf-8")
+            new_cert_pem = cert_path.read_text(encoding="utf-8")
+            new_key_pem = key_path.read_text(encoding="utf-8")
 
-            parsed = x509.load_pem_x509_certificate(new_cert_pem.encode())
-            cert.cert_pem = new_cert_pem
-            cert.key_pem = vault.encrypt(new_key_pem)
-            cert.expires_at = parsed.not_valid_after_utc
-            db.commit()
-            db.refresh(cert)
-            _logger.info(
-                "Let's Encrypt cert renewed for %s (expires %s)", cert.domain, cert.expires_at
-            )
-            _publish_renewal(cert)
-        except FileNotFoundError:
-            _logger.warning(
-                "certbot not found — cannot renew Let's Encrypt cert for %s", cert.domain
-            )
-        except subprocess.TimeoutExpired:
-            _logger.error("certbot timed out renewing %s", cert.domain)
-
+        parsed = x509.load_pem_x509_certificate(new_cert_pem.encode())
+        cert.cert_pem = new_cert_pem
+        cert.key_pem = vault.encrypt(new_key_pem)
+        cert.expires_at = parsed.not_valid_after_utc
+        db.commit()
+        db.refresh(cert)
+        _logger.info("Let's Encrypt cert renewed for %s (expires %s)", cert.domain, cert.expires_at)
+        _publish_renewal(cert)
         return cert
 
     return cert

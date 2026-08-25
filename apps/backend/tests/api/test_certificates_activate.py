@@ -73,3 +73,30 @@ async def test_activate_unknown_certificate_is_404(client, auth_headers):
     resp = await client.post("/api/v1/certificates/999999/activate", headers=auth_headers)
 
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_failed_renewal_is_not_a_200(client, auth_headers, monkeypatch):
+    """The pre-fix code answered 200 with an unchanged expires_at."""
+    from app.services import certificate_service as svc
+
+    created = await client.post(
+        "/api/v1/certificates",
+        json={"domain": "c.example.com", "type": "selfsigned", "auto_renew": True},
+        headers=auth_headers,
+    )
+    cert_id = created.json()["id"]
+    before = created.json()["expires_at"]
+
+    def _fail(db, cert):
+        raise svc.CertificateRenewalError("certbot is not installed in this image")
+
+    monkeypatch.setattr(svc, "renew_certificate", _fail)
+
+    resp = await client.post(f"/api/v1/certificates/{cert_id}/renew", headers=auth_headers)
+
+    assert resp.status_code != 200
+    assert "certbot" in resp.text
+
+    after = await client.get(f"/api/v1/certificates/{cert_id}", headers=auth_headers)
+    assert after.json()["expires_at"] == before
