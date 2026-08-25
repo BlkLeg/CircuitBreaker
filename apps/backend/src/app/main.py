@@ -2143,6 +2143,37 @@ app.mount("/user-icons", StaticFiles(directory=str(_user_icons_dir)), name="user
 app.mount("/branding", StaticFiles(directory=str(_branding_dir_data)), name="branding")
 
 
+# ── ACME HTTP-01 challenge ─────────────────────────────────────────────────
+# The CA fetches this path with no credentials, before any certificate exists. nginx serves
+# it directly in the mono image and on a native install; the plain image has no nginx, so the
+# application serves the same webroot certbot writes into. One directory, two servers.
+#
+# This mounts *above* the SPA fallback (`GET /{full_path:path}`), which matches every GET
+# path — anything registered after it is unreachable — and it resolves the webroot per
+# request rather than at import: CB_DATA_DIR is what names it, the directory does not exist
+# until the first issuance, and a `/data` that this process cannot create must not be able to
+# stop the application from importing.
+from app.services.acme_service import webroot as _acme_webroot  # noqa: E402
+
+
+class _AcmeChallengeFiles(StaticFiles):
+    """StaticFiles pinned to `acme_service.webroot()` as it is at request time."""
+
+    def __init__(self) -> None:
+        super().__init__(directory=None, check_dir=False)
+
+    def lookup_path(self, path: str) -> tuple[str, os.stat_result | None]:
+        self.all_directories = [str(_acme_webroot() / ".well-known" / "acme-challenge")]
+        return super().lookup_path(path)
+
+
+app.mount(
+    "/.well-known/acme-challenge",
+    _AcmeChallengeFiles(),
+    name="acme-challenge",
+)
+
+
 async def _static_cache_middleware(request: Request, call_next):
     """Add Cache-Control for static uploads so browsers cache icons and branding."""
     response = await call_next(request)

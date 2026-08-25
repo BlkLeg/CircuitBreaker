@@ -550,3 +550,14 @@ def test_ungated_write_exemptions_still_exist():
         "scope, so the exemption no longer describes the code. Delete these entries: "
         + ", ".join(now_gated)
     )
+
+
+def test_acme_challenge_is_a_declared_public_surface():
+    """HTTP-01 validation is fetched by the CA with no credentials, so the mount is public
+    and must say so in the policy — an unclassified public mount fails the SEC-06 gate."""
+    policy = json.loads(
+        files("app.security").joinpath("endpoint_policy.json").read_text(encoding="utf-8")
+    )
+    paths = {entry["path"] for entry in policy.get("static_surfaces", [])}
+
+    assert "/.well-known/acme-challenge/{path:path}" in paths

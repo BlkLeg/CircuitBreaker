@@ -8926,8 +8926,23 @@
       "transport": "websocket"
     }
   ],
-  "static_surface_count": 5,
+  "static_surface_count": 6,
   "static_surfaces": [
+    {
+      "auth_policy": "public-acme-challenge",
+      "disclosure": "single-use ACME challenge tokens written by certbot; no application data",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "mount_class": "app.main._AcmeChallengeFiles",
+      "name": "acme-challenge",
+      "path": "/.well-known/acme-challenge/{path:path}",
+      "public_reason": "ACME HTTP-01 validation must be readable by the certificate authority before any certificate exists.",
+      "rbac_policy": "none",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
     {
       "auth_policy": "public-ui-asset",
       "disclosure": "frontend asset bytes only",

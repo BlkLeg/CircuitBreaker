@@ -319,6 +319,14 @@
     {
       "transport": "http",
       "methods": ["GET", "HEAD"],
+      "path": "/.well-known/acme-challenge/{path:path}",
+      "policy": "public-acme-challenge",
+      "public_reason": "ACME HTTP-01 validation must be readable by the certificate authority before any certificate exists.",
+      "disclosure": "single-use ACME challenge tokens written by certbot; no application data"
+    },
+    {
+      "transport": "http",
+      "methods": ["GET", "HEAD"],
       "path": "/uploads/{path:path}",
       "policy": "public-upload-media",
       "public_reason": "Uploaded media is user-facing browser content and is served only under the upload safety policy.",
