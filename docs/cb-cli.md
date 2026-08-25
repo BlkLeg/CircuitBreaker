@@ -242,7 +242,7 @@ containing:
 | `uploads/` | The uploads directory |
 | `config/` | Native-install config files, when there are any |
 | `vault.key` | The vault key **in plaintext** — without it the dump's encrypted columns are unreadable |
-| `manifest.json` | Format version, install mode, `cb` version, timestamp and the member checksums |
+| `manifest.json` | Format version, install mode, `cb` version, timestamp, database name, the uploads count, the `db.sql.gz` sha256 and the config files captured |
 
 The archive is written mode `0600` because it contains secrets — treat the file itself as one.
 Verify one with `python -m app.cli snapshot verify <archive>`; restore it with `cb restore`. See
