@@ -37,12 +37,17 @@ Running `cb` with no arguments prints the command list.
 | Command | Native | Docker | Compose | Binary |
 |---|---|---|---|---|
 | `status`, `doctor`, `logs`, `restart`, `update`, `backup`, `config validate`, `version`, `uninstall` | ✅ | ✅ | ✅ | ✅ |
+| `restore` | — | ✅ | ✅ | ✅ |
 | `vault-recover` | — | ✅ | ✅ | ✅ |
 
 `vault-recover` writes a vault key into the deployment's env file for installs made by the
 container/binary installer path. Native installs keep that key in `/etc/circuitbreaker/.env`,
 which the systemd units and `deploy/setup.sh` own, so the native `cb` does not ship the command —
 edit that file and restart `circuitbreaker.target` instead.
+
+`restore` is likewise absent from the native `cb` (`deploy/cli/cb`). A native install restores with
+`deploy/scripts/restore.sh`, which `cb restore` drives in `binary` mode and which stays directly
+callable — see [Backup & Restore](backup-restore.md#full-restore-disaster-recovery).
 
 Everything else behaves the same way from the outside; where the mechanics differ (which port is
 probed, what a backup contains) it is noted in the command's own section below.
@@ -250,6 +255,36 @@ Verify one with `python -m app.cli snapshot verify <archive>`; restore it with `
 
 An archive produced by `cb backup` **before** this change (`database.sql` + `manifest.txt`) is a
 different, older format: it carried no vault key and no uploads, and nothing restores it.
+
+---
+
+### `cb restore`
+
+Restores a full-state snapshot. **Destructive** — it replaces the database, the uploads, and the
+vault key of the install it is run on.
+
+```
+cb restore <archive.tar.gz> [--yes] [--force] [--no-safety-snapshot]
+```
+
+| Flag | Effect |
+|---|---|
+| `--yes` | Skip the interactive `RESTORE` confirmation |
+| `--force` | Proceed even though the snapshot is from a newer Circuit Breaker version |
+| `--no-safety-snapshot` | Do not take a snapshot of the current state first |
+
+The order is the safety property: **verify → confirm → safety snapshot → stop → restore → start →
+verify**. The archive is checked by the backend's own verifier before anything is stopped, so an
+unrestorable archive costs a failed command rather than an outage, and a fresh `cb backup` of the
+current state is taken before anything is destroyed. Declining the confirmation changes nothing.
+
+On `docker` and `compose` the archive is replayed inside the backend container (Postgres stays up —
+it is what is being restored into). On `binary` it drives `deploy/scripts/restore.sh`, the native
+implementation, rather than growing a second one beside it; `CB_RESTORE_SCRIPT` in `install.conf`
+overrides where `cb` looks for that script.
+
+Full procedure, per-mode mechanics, and what each archive member replaces:
+[Backup & Restore](backup-restore.md#full-restore-disaster-recovery).
 
 ---
 
