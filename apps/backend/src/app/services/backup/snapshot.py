@@ -8,14 +8,14 @@ Creates a gzip-compressed tarball containing:
       nginx/        (/etc/nginx/conf.d/circuitbreaker.conf — the reverse proxy the
                      installer configures; see deploy/setup.sh:841)
       .env          (/etc/circuitbreaker/.env — full env, not just vault key)
+  - manifest.json   (format version, install mode, metadata + db checksum + captured
+                     config file list)
 
 TLS material is deliberately NOT captured here. The installer places it under
 ``${CB_DATA_DIR}/tls`` (deploy/setup.sh:812) and certificate activation writes those same
 two files from the database, so the certificates already travel in the database dump.
 Copying the plaintext private key a second time would widen the blast radius of an archive
 that is already a secret, for no recovery benefit.
-  - manifest.json   (format version, install mode, metadata + db checksum + captured
-                     config file list)
 
 The tarball is set to mode 0600 immediately after creation.
 """
