@@ -13,6 +13,7 @@
 #   restart       Restart Circuit Breaker
 #   update        Pull latest image and restart  (docker mode only)
 #   backup        Full-state snapshot: database, uploads, config, vault key
+#   restore       Restore a full-state snapshot  (destructive)
 #   config        Validate the configuration  (cb config validate)
 #   vault-recover Recover from an uninitialized vault  (after-crash / headless deploy)
 #   version       Show installed version
@@ -510,6 +511,204 @@ cmd_backup() {
   echo -e "  ${GR}Restore with: cb restore ${out}${R}"
 }
 
+# ── restore ───────────────────────────────────────────────────────────────────
+# Destructive. Replaces the database, the uploads and the vault key.
+#
+# The ordering below is the safety property, not a style choice:
+#   verify → confirm → safety snapshot → stop → restore → start → verify
+# Nothing is stopped until the archive has been verified, and nothing is
+# destroyed until a safety snapshot of the current state exists. INC-15 was an
+# archive that could not be restored by the tool documented to restore it; an
+# operator who discovers that *after* the service is down has an outage instead
+# of a failed command.
+cmd_restore() {
+  local archive="${1:-}" force="" assume_yes="" safety="1" arg
+  [[ -n "$archive" && "$archive" != -* ]] \
+    || _fail "Usage: cb restore <archive.tar.gz> [--yes] [--force] [--no-safety-snapshot]"
+  [[ -f "$archive" ]] || _fail "Snapshot file not found: $archive"
+
+  for arg in "$@"; do
+    case "$arg" in
+      --yes) assume_yes=1 ;;
+      --force) force=1 ;;
+      --no-safety-snapshot) safety="" ;;
+    esac
+  done
+
+  # ── 1. Verify before touching anything ──────────────────────────────────
+  # The verifier is services/backup/verify.py, reached through the same CLI in
+  # every mode, so all three refuse an unrestorable archive with one sentence.
+  # --force clears CB_VERSION for that call: the only guard it can bypass is
+  # the "this snapshot is newer than the installed build" refusal, which is
+  # exactly what the verifier's own message offers --force for.
+  _info "Verifying ${archive}…"
+  local manifest
+  case "$CB_MODE" in
+    docker|compose)
+      _require_docker
+      _container_running "$CB_BACKEND_CONTAINER" \
+        || _fail "Container '${CB_BACKEND_CONTAINER}' must be running to verify the archive. Start it first."
+      docker cp "$archive" "${CB_BACKEND_CONTAINER}:/tmp/cb-restore.tar.gz" \
+        || _fail "Could not copy the archive into '${CB_BACKEND_CONTAINER}'."
+      local -a vopts=()
+      [[ -n "$force" ]] && vopts+=(-e "CB_VERSION=")
+      manifest=$(docker exec "${vopts[@]}" "$CB_BACKEND_CONTAINER" \
+                   python -m app.cli snapshot verify /tmp/cb-restore.tar.gz) \
+        || _fail "This archive cannot be restored — see the reason above."
+      ;;
+    binary)
+      # No `python -m app.cli` on a packaged install; the frozen binary is the
+      # whole of Python there, exactly as in cmd_config and cmd_backup.
+      _require_binary "$CB_BINARY" \
+        "the snapshot verifier ships with the Circuit Breaker binary. Install the package, or set CB_MODE in ${_CONF} to the mode this host actually runs."
+      if [[ -n "$force" ]]; then
+        manifest=$(CB_VERSION= "$CB_BINARY" --snapshot-verify "$archive") \
+          || _fail "This archive cannot be restored — see the reason above."
+      else
+        manifest=$("$CB_BINARY" --snapshot-verify "$archive") \
+          || _fail "This archive cannot be restored — see the reason above."
+      fi
+      ;;
+    *) _fail "Unknown mode '${CB_MODE}'." ;;
+  esac
+
+  # ── 2. Confirm against the archive's identity, not its filename ─────────
+  echo ""
+  echo -e "  ${B}This will REPLACE the database, uploads and vault key of this install.${R}"
+  echo "$manifest" | sed 's/^/  /'
+  echo ""
+  if [[ -z "$assume_yes" ]]; then
+    echo -en "  Type ${B}RESTORE${R} to proceed: "
+    local reply; read -r reply < /dev/tty
+    [[ "$reply" == "RESTORE" ]] || _fail "Aborted — nothing was changed."
+  fi
+
+  # ── 3. Safety snapshot ──────────────────────────────────────────────────
+  if [[ -n "$safety" ]]; then
+    _info "Taking a safety snapshot of the current state first…"
+    cmd_backup || _fail "Safety snapshot failed — refusing to restore. Re-run with --no-safety-snapshot to skip."
+  fi
+
+  # ── 4-8. Mode-specific restore ──────────────────────────────────────────
+  case "$CB_MODE" in
+    docker|compose) _restore_container "$archive" ;;
+    binary)         _restore_binary "$archive" ;;
+  esac
+
+  # ── 9. Verify the result ────────────────────────────────────────────────
+  # Without curl the loop below would spin for two minutes and then report a
+  # healthy restore as a failure, which is the worst of both.
+  if ! command -v curl >/dev/null 2>&1; then
+    _ok "Restore complete."
+    _warn "curl is not installed, so the health check was skipped — verify with: cb status"
+    return 0
+  fi
+
+  _info "Waiting for the application to come back…"
+  local tries=0
+  until curl -fsS "http://127.0.0.1:${CB_PORT:-8080}/api/v1/livez" >/dev/null 2>&1; do
+    tries=$((tries + 1))
+    [[ $tries -gt 60 ]] && _fail "Restored, but the application did not become healthy. Check: cb logs"
+    sleep 2
+  done
+
+  _ok "Restore complete and the application is healthy."
+  echo -e "  ${GR}Confirm the vault decrypts by opening a page with stored credentials (Settings → SMTP).${R}"
+}
+
+# Postgres runs inside the mono container under supervisord, so the application
+# programs are stopped and the database is left up — it is the thing being
+# restored into.
+_restore_container() {
+  local archive="$1"
+
+  _info "Stopping application processes (database stays up)…"
+  docker exec "$CB_BACKEND_CONTAINER" supervisorctl stop backend workers 2>/dev/null \
+    || _warn "supervisorctl stop reported an error; continuing — the restore itself is what matters."
+
+  _info "Restoring the database…"
+  # The archive is already inside the container: step 1 copied it there to verify it.
+  docker exec "$CB_BACKEND_CONTAINER" sh -c '
+    set -e
+    rm -rf /tmp/cb-restore && mkdir -p /tmp/cb-restore
+    tar -xzf /tmp/cb-restore.tar.gz -C /tmp/cb-restore --strip-components=1
+    gunzip -c /tmp/cb-restore/db.sql.gz > /tmp/cb-restore/db.sql
+  ' || _fail "Could not unpack the archive inside the container."
+
+  docker exec "$CB_BACKEND_CONTAINER" sh -c "${_DB_CONN_SH}; exec psql \"\$@\" -v ON_ERROR_STOP=1 -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'" \
+    || _fail "Could not reset the database schema. The safety snapshot is in your backup directory."
+
+  docker exec "$CB_BACKEND_CONTAINER" sh -c "${_DB_CONN_SH}; exec psql \"\$@\" -v ON_ERROR_STOP=1 -f /tmp/cb-restore/db.sql" \
+    || _fail "Database restore failed. The safety snapshot is in your backup directory."
+
+  _info "Restoring uploads…"
+  docker exec -e "CB_DATA_DIR=${CB_DATA_DIR}" "$CB_BACKEND_CONTAINER" sh -c '
+    set -e
+    if [ -d /tmp/cb-restore/uploads ]; then
+      mkdir -p "${CB_DATA_DIR}/uploads"
+      rm -rf "${CB_DATA_DIR}/uploads.old"
+      cp -a "${CB_DATA_DIR}/uploads" "${CB_DATA_DIR}/uploads.old" 2>/dev/null || true
+      rm -rf "${CB_DATA_DIR}/uploads"/*
+      cp -a /tmp/cb-restore/uploads/. "${CB_DATA_DIR}/uploads/"
+    fi
+  ' || _fail "Uploads restore failed."
+
+  _info "Restoring the vault key…"
+  docker exec -e "CB_DATA_DIR=${CB_DATA_DIR}" "$CB_BACKEND_CONTAINER" sh -c '
+    set -e
+    key=$(cat /tmp/cb-restore/vault.key)
+    [ -n "$key" ] || { echo "vault.key in the archive is empty" >&2; exit 1; }
+    env_file="${CB_DATA_DIR}/.env"
+    mkdir -p "${CB_DATA_DIR}"
+    touch "$env_file"
+    if grep -q "^CB_VAULT_KEY=" "$env_file"; then
+      sed -i "s|^CB_VAULT_KEY=.*|CB_VAULT_KEY=${key}|" "$env_file"
+    else
+      echo "CB_VAULT_KEY=${key}" >> "$env_file"
+    fi
+    chmod 600 "$env_file"
+  ' || _fail "Vault key restore failed — the database is restored but credentials will not decrypt."
+
+  docker exec "$CB_BACKEND_CONTAINER" sh -c 'rm -rf /tmp/cb-restore /tmp/cb-restore.tar.gz' 2>/dev/null || true
+
+  # Restarted rather than `supervisorctl start`ed: the vault key changed in the
+  # environment file, and the application reads it at process start.
+  _info "Restarting…"
+  docker restart "$CB_BACKEND_CONTAINER" >/dev/null \
+    || _fail "Restore finished but the container did not restart. Start it manually: docker start ${CB_BACKEND_CONTAINER}"
+}
+
+# deploy/scripts/restore.sh already restores a native install correctly — database,
+# uploads, vault key, nginx site config — so the binary branch drives it rather than
+# growing a second implementation beside it.
+_restore_binary() {
+  local archive="$1" script="" candidate here
+  here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
+
+  # No installer copies restore.sh onto the host today (nfpm.yaml ships the binary,
+  # not deploy/), so the checkout next to this script is the case that actually
+  # happens. CB_RESTORE_SCRIPT in install.conf overrides all of it.
+  for candidate in \
+    "${CB_RESTORE_SCRIPT:-}" \
+    "${CB_INSTALL_DIR:+${CB_INSTALL_DIR}/deploy/scripts/restore.sh}" \
+    "${here}/deploy/scripts/restore.sh" \
+    "/opt/circuitbreaker/deploy/scripts/restore.sh"
+  do
+    [[ -n "$candidate" && -f "$candidate" ]] && { script="$candidate"; break; }
+  done
+
+  [[ -n "$script" ]] || _fail "$(printf '%s\n' \
+    "Restore script not found. It ships in the repository, not in the package." \
+    "  Get it:  git clone https://github.com/BlkLeg/circuitbreaker" \
+    "  Then:    CB_RESTORE_SCRIPT=<checkout>/deploy/scripts/restore.sh cb restore ${archive}")"
+  [[ -x "$script" ]] || _fail "${script} is not executable — chmod +x it and retry."
+
+  # cb has already verified the archive and taken the operator's confirmation;
+  # restore.sh asks for its own. Answering it here keeps `cb restore --yes`
+  # non-interactive instead of blocking on a prompt nobody is watching.
+  printf 'y\n' | "$script" "$archive" || _fail "Restore failed — see the output above."
+}
+
 # ── config ────────────────────────────────────────────────────────────────────
 # Runs the backend's own configuration validator, so `cb` never has a second,
 # drifting opinion about what a valid configuration is.
@@ -719,6 +918,7 @@ usage() {
   echo -e "    restart             Restart Circuit Breaker"
   echo -e "    update              Pull latest image and restart  ${GR}(docker mode)${R}"
   echo -e "    backup              Full-state snapshot (database, uploads, config, vault key)"
+  echo -e "    restore <archive>   Restore a snapshot  ${GR}(destructive; --yes --force --no-safety-snapshot)${R}"
   echo -e "    config validate     Validate the configuration before it is used"
   echo -e "    vault-recover       Recover an uninitialized vault  ${GR}(recovery path only)${R}"
   echo -e "    version             Show installed version"
@@ -741,6 +941,7 @@ case "${1:-help}" in
   restart)         cmd_restart ;;
   update)          cmd_update ;;
   backup)          cmd_backup ;;
+  restore)         cmd_restore "${@:2}" ;;
   config)          cmd_config "${2:-}" ;;
   vault-recover)   cmd_vault_recover ;;
   version)         cmd_version ;;

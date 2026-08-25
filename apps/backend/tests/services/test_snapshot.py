@@ -290,3 +290,44 @@ def test_snapshot_captures_the_reverse_proxy_the_installer_configures() -> None:
         "the snapshot does not capture the nginx config the installer writes"
     )
     assert "/etc/caddy" not in source, "the snapshot still captures Caddy paths that never exist"
+
+
+def _cb_function_body(name: str) -> str:
+    """The text of one `cb` shell function, up to the next top-level `cmd_`."""
+    cb_src = (Path(__file__).resolve().parents[4] / "cb").read_text(encoding="utf-8")
+    start = cb_src.index(f"{name}()")
+    return cb_src[start : cb_src.index("\ncmd_", start + 1)]
+
+
+def test_cb_restore_is_dispatched_and_documented() -> None:
+    """A restore command nobody can reach is what INC-15 already looked like from outside."""
+    cb_src = (Path(__file__).resolve().parents[4] / "cb").read_text(encoding="utf-8")
+
+    assert "  restore)" in cb_src, "cb has no `restore` dispatch entry"
+    assert "cmd_restore" in cb_src
+    assert "restore " in cb_src[cb_src.index("usage()") :], "cb help does not list restore"
+
+
+def test_cb_restore_verifies_before_it_destroys_anything() -> None:
+    """The ordering is the whole safety property.
+
+    verify -> confirm -> safety snapshot -> stop -> restore. Verifying after the service is
+    stopped turns an unrestorable archive into an outage, and dropping the schema before the
+    safety snapshot exists makes the mistake permanent.
+    """
+    body = _cb_function_body("cmd_restore")
+
+    verify = body.index("snapshot verify")
+    confirm = body.index("${B}RESTORE${R} to proceed")
+    safety = body.index("cmd_backup ||")  # the call, not a mention of it in a comment
+    hand_off = body.index('_restore_container "$archive"')
+
+    assert verify < confirm < safety < hand_off, (
+        "cb restore's sequence was rearranged: it must verify the archive, confirm with the "
+        "operator, take a safety snapshot, and only then restore."
+    )
+
+    container = _cb_function_body("_restore_container")
+    assert container.index("supervisorctl stop") < container.index("DROP SCHEMA"), (
+        "the application must be stopped before the schema is dropped"
+    )

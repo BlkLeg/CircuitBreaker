@@ -136,3 +136,25 @@ def test_entrypoint_snapshot_create_without_an_out_directory(monkeypatch):
 
     assert start.main(["--snapshot-create"]) == 0
     assert seen["argv"] == ["snapshot", "create"]
+
+
+def test_entrypoint_routes_snapshot_verify_to_the_cli(monkeypatch):
+    """`cb restore` verifies before it stops anything — in binary mode too.
+
+    There is no `python -m app.cli` on a packaged install, and `cb`'s binary branches run
+    `$CB_BINARY --config-validate` / `--snapshot-create`. Verification takes the same route,
+    so all three modes refuse an unrestorable archive with the same sentence.
+    """
+    import app.cli
+    from app import start
+
+    seen: dict[str, list[str]] = {}
+
+    def _fake_cli_main(argv: list[str]) -> int:
+        seen["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(app.cli, "main", _fake_cli_main)
+
+    assert start.main(["--snapshot-verify", "/var/backups/snap.tar.gz"]) == 0
+    assert seen["argv"] == ["snapshot", "verify", "/var/backups/snap.tar.gz"]

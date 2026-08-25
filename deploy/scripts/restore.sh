@@ -3,6 +3,12 @@
 #
 # Usage: restore.sh <path-to-snapshot.tar.gz>
 #
+# `cb restore <archive>` is the supported entry point on every install mode, and on a
+# native install it drives this script — verifying the archive with the backend's own
+# verifier, confirming with the operator and taking a safety snapshot before calling in
+# here. This script stays directly callable for disaster recovery, when `cb` or its
+# install.conf is part of what was lost.
+#
 # Restores a full Circuit Breaker state from a snapshot tarball:
 #   - PostgreSQL database
 #   - Uploads directory

@@ -278,6 +278,20 @@ def main(argv: list[str] | None = None) -> int:
             snapshot_args += ["--out", out_override]
         return cli_main(snapshot_args)
 
+    # `cb restore` verifies the archive before it stops anything, in every mode. The
+    # binary install reaches the same verifier the containers do through this flag, so
+    # an operator holding an old `cb backup` archive is told exactly that, rather than
+    # being handed a weaker shell-side structure check.
+    if "--snapshot-verify" in arguments:
+        from app.cli import main as cli_main
+
+        index = arguments.index("--snapshot-verify")
+        archive = arguments[index + 1] if index + 1 < len(arguments) else None
+        if not archive:
+            print("--snapshot-verify requires the path to a snapshot archive", file=sys.stderr)
+            return 2
+        return cli_main(["snapshot", "verify", archive])
+
     args = build_parser().parse_args(argv)
     if args.version:
         print(resolve_app_version())
