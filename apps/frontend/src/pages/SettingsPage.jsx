@@ -1334,13 +1334,15 @@ export default function SettingsPage() {
 
                 <CveSecuritySection form={form} set={set} />
 
-                <SettingSection title="Notifications">
-                  <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: 0 }}>
-                    Configure notification sinks (Slack, Discord, Teams, Email) for system alerts.
-                    Use routes to control which severities each sink receives.
-                  </p>
-                  <NotificationsManager />
-                </SettingSection>
+                {isAdmin && (
+                  <SettingSection title="Notifications">
+                    <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: 0 }}>
+                      Configure notification sinks (Slack, Discord, Teams, Email) for system alerts.
+                      Use routes to control which severities each sink receives.
+                    </p>
+                    <NotificationsManager />
+                  </SettingSection>
+                )}
 
                 <SettingSection title="Proxmox VE">
                   <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: 0 }}>

@@ -285,6 +285,8 @@ export default function NotificationsManager() {
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  // An empty list and a list we are not allowed to read must never look alike.
+  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -294,8 +296,16 @@ export default function NotificationsManager() {
       ]);
       setSinks(sinksRes.data);
       setRoutes(routesRes.data);
-    } catch {
-      /* silent */
+      setLoadError('');
+    } catch (err) {
+      const status = err?.response?.status;
+      setSinks([]);
+      setRoutes([]);
+      setLoadError(
+        status === 403 || status === 401
+          ? 'Notification settings require administrator access.'
+          : 'Failed to load notification settings. Try again.'
+      );
     }
   }, []);
 
@@ -338,6 +348,16 @@ export default function NotificationsManager() {
       setSaving(false);
     }
   };
+
+  if (loadError) {
+    return (
+      <div style={{ marginTop: '1rem' }}>
+        <p style={{ fontSize: 13, color: 'var(--color-warning, #f59e0b)', margin: 0 }}>
+          {loadError}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div style={{ marginTop: '1rem' }}>
