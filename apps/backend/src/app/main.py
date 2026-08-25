@@ -2157,7 +2157,14 @@ from app.services.acme_service import webroot as _acme_webroot  # noqa: E402
 
 
 class _AcmeChallengeFiles(StaticFiles):
-    """StaticFiles pinned to `acme_service.webroot()` as it is at request time."""
+    """StaticFiles pinned to `acme_service.webroot()` as it is at request time.
+
+    The assignment below writes shared instance state from a request handler, which is safe
+    here for one reason and only one: `webroot()` reads CB_DATA_DIR, which is fixed for the
+    life of the process, so every request writes the identical value. Starlette's own
+    traversal guard still runs in `super().lookup_path`, so a token containing `..` cannot
+    escape the directory this names.
+    """
 
     def __init__(self) -> None:
         super().__init__(directory=None, check_dir=False)
