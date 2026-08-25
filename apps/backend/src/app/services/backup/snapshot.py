@@ -5,9 +5,15 @@ Creates a gzip-compressed tarball containing:
   - vault.key       (CB_VAULT_KEY plaintext — the tarball IS the security boundary)
   - uploads/        (recursive copy of the uploads directory)
   - config/         (native-install config files — absent on Docker/dev, skipped gracefully)
-      Caddyfile     (/etc/caddy/Caddyfile)
-      certs/        (/etc/caddy/certs/cert.pem + key.pem)
+      nginx/        (/etc/nginx/conf.d/circuitbreaker.conf — the reverse proxy the
+                     installer configures; see deploy/setup.sh:841)
       .env          (/etc/circuitbreaker/.env — full env, not just vault key)
+
+TLS material is deliberately NOT captured here. The installer places it under
+``${CB_DATA_DIR}/tls`` (deploy/setup.sh:812) and certificate activation writes those same
+two files from the database, so the certificates already travel in the database dump.
+Copying the plaintext private key a second time would widen the blast radius of an archive
+that is already a secret, for no recovery benefit.
   - manifest.json   (format version, install mode, metadata + db checksum + captured
                      config file list)
 
@@ -101,9 +107,7 @@ def _build_snapshot_sync(
 
         # 4. Config files (native install only — skip gracefully if absent)
         _CONFIG_PATHS: dict[str, Path] = {
-            "config/Caddyfile": Path("/etc/caddy/Caddyfile"),
-            "config/certs/cert.pem": Path("/etc/caddy/certs/cert.pem"),
-            "config/certs/key.pem": Path("/etc/caddy/certs/key.pem"),
+            "config/nginx/circuitbreaker.conf": Path("/etc/nginx/conf.d/circuitbreaker.conf"),
             "config/.env": Path("/etc/circuitbreaker/.env"),
         }
         config_files: dict[str, Path] = {

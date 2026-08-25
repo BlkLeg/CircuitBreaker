@@ -276,3 +276,17 @@ def test_cb_backup_invokes_the_snapshot_cli_and_nothing_else() -> None:
     )
     for legacy in ("pg_dump", "database.sql", "manifest.txt"):
         assert legacy not in body, f"cb backup still builds its own archive ({legacy})"
+
+
+def test_snapshot_captures_the_reverse_proxy_the_installer_configures() -> None:
+    """The installer configures nginx (deploy/setup.sh:841). Capturing /etc/caddy meant the
+    config/ section was silently empty on every real install."""
+    import inspect
+
+    from app.services.backup import snapshot
+
+    source = inspect.getsource(snapshot)
+    assert "/etc/nginx/conf.d/circuitbreaker.conf" in source, (
+        "the snapshot does not capture the nginx config the installer writes"
+    )
+    assert "/etc/caddy" not in source, "the snapshot still captures Caddy paths that never exist"

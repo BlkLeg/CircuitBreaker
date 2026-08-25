@@ -171,19 +171,18 @@ else
     echo "CB_VAULT_KEY=${NEW_VAULT_KEY}" >> "$ENV_FILE"
 fi
 
-# ── 13. Restore config files (Caddyfile, TLS certs, full .env) ────────────
+# ── 13. Restore config files (nginx site config, full .env) ───────────────
 
 echo "==> Restoring config files (if present in snapshot)..."
 if echo "$TARBALL_CONTENTS" | grep -q "config/"; then
-    if [[ -f "$SNAP_DIR/config/Caddyfile" ]]; then
-        cp "$SNAP_DIR/config/Caddyfile" /etc/caddy/Caddyfile
-        echo "    Restored Caddyfile"
-    fi
-    if [[ -f "$SNAP_DIR/config/certs/cert.pem" ]]; then
-        mkdir -p /etc/caddy/certs
-        cp "$SNAP_DIR/config/certs/cert.pem" /etc/caddy/certs/cert.pem
-        cp "$SNAP_DIR/config/certs/key.pem"  /etc/caddy/certs/key.pem
-        echo "    Restored TLS certificates"
+    if [[ -f "$SNAP_DIR/config/nginx/circuitbreaker.conf" ]]; then
+        cp "$SNAP_DIR/config/nginx/circuitbreaker.conf" /etc/nginx/conf.d/circuitbreaker.conf
+        echo "    Restored nginx site config"
+        if nginx -t >/dev/null 2>&1; then
+            systemctl reload nginx || true
+        else
+            echo "    WARNING: restored nginx config failed validation; not reloading." >&2
+        fi
     fi
     if [[ -f "$SNAP_DIR/config/.env" ]]; then
         cp "$SNAP_DIR/config/.env" /etc/circuitbreaker/.env
