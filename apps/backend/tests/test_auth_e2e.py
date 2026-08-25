@@ -17,10 +17,11 @@ def _assert_endpoint_not_exposed(resp, path: str) -> None:
     """Assert `path` is not served by the API, independently of the frontend build.
 
     Both of the endpoint families below (magic link, invite resend) were
-    specified but never wired into a router — `magic_link_service.py` exists
-    with no caller, and nothing in apps/frontend/src requests either path.
-    These tests therefore pin "not exposed", and used to do it by asserting an
-    exact `404`.
+    specified but never wired into a router. `magic_link_service.py` was the
+    implementation with no caller; INC-08 deleted it along with
+    `password_reset_service.py`. The endpoints stay unexposed, so these tests
+    keep pinning "not exposed" — they used to do it by asserting an exact
+    `404`.
 
     That assertion is not environment-independent. main.py registers the SPA
     fallback `@app.get("/{full_path:path}")` *only* when a frontend build
@@ -61,7 +62,7 @@ def _assert_endpoint_not_exposed(resp, path: str) -> None:
 
 class TestForgotPassword:
     @pytest.mark.asyncio
-    async def test_forgot_password_returns_200_for_existing_email(
+    async def test_forgot_password_is_gone_for_an_existing_email(
         self, client, factories, db_session, redis_mock
     ):
         user = factories.user(role="viewer")
@@ -70,10 +71,10 @@ class TestForgotPassword:
             json={"email": user.email},
         )
         assert resp.status_code == 410
-        assert "disabled" in resp.json()["detail"].lower()
+        assert "administrator" in resp.json()["detail"].lower()
 
     @pytest.mark.asyncio
-    async def test_forgot_password_returns_200_for_nonexistent_email(self, client):
+    async def test_forgot_password_is_gone_for_a_nonexistent_email(self, client):
         resp = await client.post(
             "/api/v1/auth/forgot-password",
             json={"email": "nobody@nowhere.invalid"},
@@ -96,6 +97,23 @@ class TestForgotPassword:
         assert real.status_code == fake.status_code == 410
         assert real.json()["detail"] == fake.json()["detail"]
 
+    @pytest.mark.asyncio
+    async def test_the_410_names_the_supported_recovery_path(self, client):
+        """INC-08. "Temporarily disabled" told a locked-out user nothing they could act
+        on, and the word "temporarily" promised a return that is not planned for 1.0.0.
+        The two paths named here are real: POST /admin/users/{id}/reset-password issues a
+        one-time password and forces a change at next login, and Reset With Vault Key is
+        on the login page for the case where no administrator can sign in either."""
+        resp = await client.post(
+            "/api/v1/auth/forgot-password", json={"email": "someone@example.com"}
+        )
+
+        assert resp.status_code == 410
+        detail = resp.json()["detail"]
+        assert "administrator" in detail.lower()
+        assert "vault key" in detail.lower()
+        assert "temporarily" not in detail.lower()
+
 
 # ---------------------------------------------------------------------------
 # Reset Password (token-based)
@@ -112,7 +130,7 @@ class TestResetPassword:
             json={"token": "valid-token-123", "password": "NewSecure@Pass1"},
         )
         assert resp.status_code == 410
-        assert "disabled" in resp.json()["detail"].lower()
+        assert "administrator" in resp.json()["detail"].lower()
 
     @pytest.mark.asyncio
     async def test_reset_password_with_expired_token(self, client, redis_mock):
@@ -146,10 +164,10 @@ class TestResetPassword:
 
 
 class TestMagicLink:
-    """The magic-link endpoints are not exposed. `magic_link_service.py` is
-    implemented but no router ever mounts it, and no frontend code calls it.
-    See `_assert_endpoint_not_exposed` for why these assert absence rather
-    than a literal status code."""
+    """The magic-link endpoints are not exposed. No router ever mounted them and
+    no frontend code called them; `magic_link_service.py`, the implementation
+    behind them, was deleted by INC-08. See `_assert_endpoint_not_exposed` for
+    why these assert absence rather than a literal status code."""
 
     REQUEST_URL = "/api/v1/auth/magic-link/request"
     VERIFY_URL = "/api/v1/auth/magic-link/verify"

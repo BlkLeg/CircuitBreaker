@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react';
 import PropTypes from 'prop-types';
 import { useNavigate } from 'react-router-dom';
+import { PASSWORD_RECOVERY_MESSAGE } from '../../api/auth';
 
 function ForgotPasswordModal({ isOpen, onClose, initialEmail = '' }) {
   const navigate = useNavigate();
@@ -28,7 +29,7 @@ function ForgotPasswordModal({ isOpen, onClose, initialEmail = '' }) {
       <div className="modal" style={{ width: 360 }}>
         <h3 style={{ marginBottom: 12, textAlign: 'center' }}>Reset Password</h3>
         <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginBottom: 16 }}>
-          Email-based password reset is temporarily disabled. Use your vault key to recover access.
+          {PASSWORD_RECOVERY_MESSAGE}
         </p>
         {initialEmail ? (
           <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 14 }}>

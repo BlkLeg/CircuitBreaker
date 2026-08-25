@@ -177,8 +177,16 @@ class ResetPasswordRequest(BaseModel):
         return self
 
 
+# INC-08. "Temporarily disabled" told a locked-out user nothing they could act on, and
+# "temporarily" promised a return that is not planned. Both paths named here are real:
+# POST /admin/users/{id}/reset-password issues a one-time password and forces a change at
+# the next login, and Reset With Vault Key is on the login page for the case where no
+# administrator can sign in either.
 _EMAIL_RESET_DISABLED_DETAIL = (
-    "Email password reset is temporarily disabled. Use Reset With Vault Key from the login page."
+    "Self-service password reset is not available. Ask an administrator to reset your "
+    "password from Users → Reset Password; they will give you a one-time temporary "
+    "password and you will be asked to choose a new one at your next login. If no "
+    "administrator can sign in, use Reset With Vault Key from the login page."
 )
 
 

@@ -1,6 +1,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertTriangle } from 'lucide-react';
+import { PASSWORD_RECOVERY_MESSAGE } from '../api/auth';
 
 export default function ResetPasswordPage() {
   const navigate = useNavigate();
@@ -31,12 +32,9 @@ export default function ResetPasswordPage() {
           size={32}
           style={{ color: 'var(--color-warning, #fabd2f)', marginBottom: 12 }}
         />
-        <h1 style={{ margin: '0 0 8px', fontSize: 20, fontWeight: 600 }}>
-          Email Reset Is Disabled
-        </h1>
+        <h1 style={{ margin: '0 0 8px', fontSize: 20, fontWeight: 600 }}>Password Reset</h1>
         <p style={{ color: 'var(--color-text-muted)', fontSize: 14, marginBottom: 20 }}>
-          Password reset by email is temporarily unavailable. Use your vault key to reset your
-          password.
+          {PASSWORD_RECOVERY_MESSAGE}
         </p>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
           <button

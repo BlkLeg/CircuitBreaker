@@ -110,3 +110,18 @@ export const authApi = {
   /** Revoke an API token by id (admin). */
   revokeApiToken: (id) => client.delete(`/auth/api-tokens/${id}`),
 };
+
+/**
+ * What a locked-out user is told, on both surfaces that tell them (INC-08).
+ *
+ * Exported from one module because the two surfaces saying it differently is the failure
+ * mode that produced INC-02 and INC-03. It is deliberately shorter than the API's own 410
+ * detail: the modal and the page both put a "Reset With Vault Key" button underneath it,
+ * so repeating the instruction in prose would be telling the reader to find something
+ * they are looking at.
+ */
+export const PASSWORD_RECOVERY_MESSAGE =
+  'Self-service password reset is not available. Ask an administrator to reset your ' +
+  'password from Users → Reset Password — they will give you a one-time password and ' +
+  'you will choose a new one at your next login. If no administrator can sign in, use ' +
+  'your vault key.';
