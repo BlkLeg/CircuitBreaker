@@ -5,7 +5,6 @@ from fastapi import APIRouter
 from app.services.catalog_service import (
     fuzzy_search_catalog,
     get_all_vendors,
-    get_device_spec,
     get_vendor_devices,
 )
 
@@ -20,14 +19,6 @@ def list_vendors() -> list[Any]:
 @router.get("/vendors/{vendor_key}/devices")
 def list_devices(vendor_key: str) -> list[Any]:
     return get_vendor_devices(vendor_key)
-
-
-@router.get("/vendors/{vendor_key}/devices/{model_key}")
-def get_device(vendor_key: str, model_key: str) -> dict[str, Any]:
-    spec = get_device_spec(vendor_key, model_key)
-    if not spec:
-        return {}
-    return spec
 
 
 @router.get("/search")

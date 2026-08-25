@@ -18,8 +18,6 @@ from app.schemas.ipam import (
     IPAddressCreate,
     IPAddressRead,
     IPAddressUpdate,
-    NodeRelationCreate,
-    NodeRelationRead,
     SiteCreate,
     SiteRead,
     SiteUpdate,
@@ -414,81 +412,6 @@ def delete_site(
         user_id=user_id,
         action="site_deleted",
         resource=f"site:{site_id}",
-        status="ok",
-        severity="warn",
-    )
-
-
-# ── Node Relations ────────────────────────────────────────────────────────────
-
-from app.db.models import NodeRelation  # noqa: E402
-
-node_relations_router = APIRouter(tags=["node-relations"])
-
-
-@node_relations_router.get("", response_model=list[NodeRelationRead])
-def list_node_relations(
-    source_type: str | None = Query(None),
-    source_id: int | None = Query(None),
-    target_type: str | None = Query(None),
-    target_id: int | None = Query(None),
-    relation_type: str | None = Query(None),
-    db: Session = Depends(get_db),
-) -> Any:
-    q = select(NodeRelation)
-    if source_type:
-        q = q.where(NodeRelation.source_type == source_type)
-    if source_id is not None:
-        q = q.where(NodeRelation.source_id == source_id)
-    if target_type:
-        q = q.where(NodeRelation.target_type == target_type)
-    if target_id is not None:
-        q = q.where(NodeRelation.target_id == target_id)
-    if relation_type:
-        q = q.where(NodeRelation.relation_type == relation_type)
-    return db.execute(q.order_by(NodeRelation.id.desc())).scalars().all()
-
-
-@node_relations_router.post("", response_model=NodeRelationRead, status_code=201)
-def create_node_relation(
-    payload: NodeRelationCreate,
-    request: Request,
-    db: Session = Depends(get_db),
-    user_id: int | None = Depends(require_write_auth),
-) -> Any:
-    row = NodeRelation(**payload.model_dump())
-    db.add(row)
-    db.commit()
-    db.refresh(row)
-    log_audit(
-        db,
-        request,
-        user_id=user_id,
-        action="node_relation_created",
-        resource=f"node_relation:{row.id}",
-        status="ok",
-    )
-    return row
-
-
-@node_relations_router.delete("/{rel_id}", status_code=204)
-def delete_node_relation(
-    rel_id: int,
-    request: Request,
-    db: Session = Depends(get_db),
-    user_id: int | None = Depends(require_write_auth),
-) -> None:
-    row = db.get(NodeRelation, rel_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="Relation not found")
-    db.delete(row)
-    db.commit()
-    log_audit(
-        db,
-        request,
-        user_id=user_id,
-        action="node_relation_deleted",
-        resource=f"node_relation:{rel_id}",
         status="ok",
         severity="warn",
     )

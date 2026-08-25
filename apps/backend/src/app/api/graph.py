@@ -1242,11 +1242,3 @@ def place_node(
 
     safe_pos = place_node_safe(db, data.node_id, environment=data.environment)
     return {"x": safe_pos.get("x"), "y": safe_pos.get("y"), "layout": "auto"}
-
-
-@router.get("/layouts")
-def get_layouts() -> Any:
-    """Return the registry of all available layout engines and presets."""
-    from app.services.graph_layout import get_layouts as _get_layouts
-
-    return _get_layouts()

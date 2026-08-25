@@ -2,7 +2,7 @@
 
 Writes structured entries to the existing ``Log`` table using
 ``category="audit"`` so they surface in the existing /logs endpoint with
-the ``?category=audit`` filter (or the dedicated /logs/audit alias).
+the ``?category=audit`` filter.
 
 Usage::
 

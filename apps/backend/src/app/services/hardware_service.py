@@ -477,35 +477,6 @@ def delete_hardware(db: Session, hardware_id: int) -> None:
     db.commit()
 
 
-def find_orphans(db: Session) -> list[dict]:
-    """CB-PATTERN-003: Find hardware with no compute_units, services, or storage attached."""
-    all_hw = db.execute(select(Hardware)).scalars().all()
-    orphans = []
-    for hw in all_hw:
-        has_cu = db.execute(
-            select(ComputeUnit.id).where(ComputeUnit.hardware_id == hw.id).limit(1)
-        ).first()
-        has_svc = db.execute(
-            select(Service.id).where(Service.hardware_id == hw.id).limit(1)
-        ).first()
-        has_st = db.execute(select(Storage.id).where(Storage.hardware_id == hw.id).limit(1)).first()
-        if not has_cu and not has_svc and not has_st:
-            orphans.append(_to_dict(db, hw))
-    return orphans
-
-
-def list_hardware_groups(db: Session) -> list[dict]:
-    """CB-PATTERN-004: Group hardware by vendor+model with counts."""
-    rows = db.execute(
-        select(
-            Hardware.vendor,
-            Hardware.model,
-            func.count(Hardware.id).label("count"),
-        ).group_by(Hardware.vendor, Hardware.model)
-    ).all()
-    return [{"vendor": r.vendor, "model": r.model, "count": r.count} for r in rows]
-
-
 def add_hardware_connection(
     db: Session, source_id: int, target_id: int, connection_type: str | None = None
 ) -> dict:

@@ -1,5 +1,5 @@
 import logging
-from typing import Annotated, Any, cast
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -10,7 +10,7 @@ from app.core.audit import log_audit
 from app.core.rbac import require_scope
 from app.core.security import require_write_auth
 from app.db.session import get_db
-from app.schemas.hardware import Hardware, HardwareCreate, HardwareUpdate, PortEntry
+from app.schemas.hardware import Hardware, HardwareCreate, HardwareUpdate
 from app.services import clusters_service, hardware_service
 
 _logger = logging.getLogger(__name__)
@@ -56,18 +56,6 @@ def create_hardware(
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=DUPLICATE_IDENTIFIER_ERROR) from exc
-
-
-@router.get("/orphans")
-def get_orphans(db: Annotated[Session, Depends(get_db)]) -> list[Any]:
-    """CB-PATTERN-003: Hardware with no compute_units, services, or storage."""
-    return hardware_service.find_orphans(db)
-
-
-@router.get("/groups")
-def get_groups(db: Annotated[Session, Depends(get_db)]) -> list[Any]:
-    """CB-PATTERN-004: Hardware grouped by vendor+model with counts."""
-    return hardware_service.list_hardware_groups(db)
 
 
 @router.get(
@@ -181,62 +169,6 @@ def get_clusters_for_hardware(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return clusters_service.list_for_hardware(db, hardware_id)
-
-
-@router.get("/{hardware_id}/ports")
-def get_hardware_ports(hardware_id: int, db: Annotated[Session, Depends(get_db)]) -> list[dict]:
-    try:
-        hw = hardware_service.get_hardware(db, hardware_id)
-        return cast(list[dict], hw.get("port_map", []))
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@router.put("/{hardware_id}/ports")
-def update_hardware_ports(
-    hardware_id: int,
-    payload: list[PortEntry],  # Expects a list of PortEntry objects
-    db: Annotated[Session, Depends(get_db)],
-    _: Annotated[None, Depends(require_write_auth)] = None,
-) -> list[dict]:
-    # Validate uniqueness of port_id within the payload
-    port_ids = [p.port_id for p in payload if p.port_id is not None]
-    if len(port_ids) != len(set(port_ids)):
-        raise HTTPException(status_code=422, detail="Port IDs must be unique within the port map.")
-
-    # Ensure connected_hardware_id / connected_compute_id actually exist if set
-    for p in payload:
-        if p.connected_hardware_id:
-            try:
-                hardware_service.get_hardware(db, p.connected_hardware_id)
-            except ValueError as exc:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Connected hardware {p.connected_hardware_id} not found.",
-                ) from exc
-        if p.connected_compute_id:
-            from app.services.compute_units_service import get_compute_unit  # avoid circular import
-
-            try:
-                get_compute_unit(db, p.connected_compute_id)
-            except ValueError as exc:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Connected compute unit {p.connected_compute_id} not found.",
-                ) from exc
-
-    # Update the hardware with the new port map. The hardware_service.update_hardware
-    # function will handle the serialization to JSON and the graph edge syncing.
-    try:
-        updated_hw = hardware_service.update_hardware(
-            db, hardware_id, HardwareUpdate(port_map=payload)
-        )
-        return cast(list[dict], updated_hw.get("port_map", []))
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except IntegrityError as exc:
-        db.rollback()
-        raise HTTPException(status_code=409, detail=DUPLICATE_IDENTIFIER_ERROR) from exc
 
 
 # ── Hardware-to-Hardware connections ─────────────────────────────────────────

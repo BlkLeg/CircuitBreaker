@@ -1,4 +1,4 @@
-"""Branding endpoints: favicon upload, login logo upload, login BG upload,
+"""Branding endpoints: login logo upload, login BG upload,
 asset deletion, dynamic manifest, Theme Park export/import."""
 
 import json
@@ -28,10 +28,8 @@ public_router = APIRouter(tags=["branding"])
 _logger = logging.getLogger(__name__)
 
 _BRANDING_DIR = Path(settings.uploads_dir) / "branding"
-_MAX_FAVICON_BYTES = 512 * 1024  # 512 KB
 _MAX_LOGO_BYTES = 2 * 1024 * 1024  # 2 MB
 _MAX_BG_BYTES = 5 * 1024 * 1024  # 5 MB
-_FAVICON_ALLOWED = {".ico", ".png"}
 _LOGO_ALLOWED = {".png", ".jpg", ".jpeg"}
 _BG_ALLOWED = {".jpg", ".jpeg", ".png"}
 _MIME_PNG = "image/png"
@@ -56,44 +54,6 @@ def _build_branding(row: Any) -> BrandingConfig:
         primary_color=row.primary_color or "#fe8019",
         accent_colors=accent_colors,
     )
-
-
-@router.post(
-    "/upload-favicon",
-    response_model=BrandingConfig,
-    responses={400: {"description": "Invalid favicon format or size"}},
-)
-async def upload_favicon(
-    file: Annotated[UploadFile, File()],
-    db: Annotated[Session, Depends(get_db)],
-    _: Annotated[None, require_role("admin")] = None,
-) -> BrandingConfig:
-    """Upload a custom favicon (.ico or .png, max 512 KB)."""
-    suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in _FAVICON_ALLOWED:
-        raise HTTPException(status_code=400, detail=f"Favicon must be .ico or .png, got {suffix!r}")
-
-    data = await file.read()
-    if len(data) > _MAX_FAVICON_BYTES:
-        raise HTTPException(status_code=400, detail="Favicon must be ≤ 512 KB")
-    mime = SUFFIX_TO_MIME.get(suffix, "image/x-icon" if suffix == ".ico" else "image/png")
-    if not verify_image_magic_bytes(data, mime):
-        raise HTTPException(status_code=400, detail="Favicon content does not match file type.")
-
-    _BRANDING_DIR.mkdir(parents=True, exist_ok=True)
-    dest = _BRANDING_DIR / "favicon.ico"
-    dest.write_bytes(data)
-
-    row = get_or_create_settings(db)
-    row.favicon_path = "/branding/favicon.ico"
-    row.updated_at = utcnow()
-    try:
-        db.commit()
-    except Exception:
-        dest.unlink(missing_ok=True)
-        raise
-    db.refresh(row)
-    return _build_branding(row)
 
 
 @router.post(

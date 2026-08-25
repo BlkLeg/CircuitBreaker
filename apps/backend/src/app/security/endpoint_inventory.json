@@ -1,6 +1,6 @@
 {
   "generated_by": "apps/backend/scripts/generate_endpoint_inventory.py",
-  "route_count": 443,
+  "route_count": 432,
   "routes": [
     {
       "auth_policy": "authenticated",
@@ -2014,27 +2014,6 @@
     {
       "auth_policy": "authenticated",
       "dependency_calls": [
-        "app.api.branding.upload_favicon",
-        "app.core.rbac.require_role.<locals>._dep",
-        "app.core.security.get_optional_user",
-        "app.core.security.require_auth_always",
-        "app.db.session.get_db"
-      ],
-      "disclosure": "authenticated response; see route response model/schema",
-      "endpoint_module": "app.api.branding",
-      "endpoint_name": "upload_favicon",
-      "methods": [
-        "POST"
-      ],
-      "name": "upload_favicon",
-      "path": "/api/v1/branding/upload-favicon",
-      "rbac_policy": "declared-role-or-scope",
-      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
-      "transport": "http"
-    },
-    {
-      "auth_policy": "authenticated",
-      "dependency_calls": [
         "app.api.branding.upload_login_bg",
         "app.core.rbac.require_role.<locals>._dep",
         "app.core.security.get_optional_user",
@@ -2171,26 +2150,6 @@
       ],
       "name": "list_devices",
       "path": "/api/v1/catalog/vendors/{vendor_key}/devices",
-      "rbac_policy": "authenticated-session",
-      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
-      "transport": "http"
-    },
-    {
-      "auth_policy": "authenticated",
-      "dependency_calls": [
-        "app.api.catalog.get_device",
-        "app.core.security.get_optional_user",
-        "app.core.security.require_auth_always",
-        "app.db.session.get_db"
-      ],
-      "disclosure": "authenticated response; see route response model/schema",
-      "endpoint_module": "app.api.catalog",
-      "endpoint_name": "get_device",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_device",
-      "path": "/api/v1/catalog/vendors/{vendor_key}/devices/{model_key}",
       "rbac_policy": "authenticated-session",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
@@ -4198,27 +4157,6 @@
     {
       "auth_policy": "authenticated",
       "dependency_calls": [
-        "app.api.graph.get_layouts",
-        "app.core.rbac.require_scope.<locals>._dep",
-        "app.core.security.get_optional_user",
-        "app.core.security.require_auth_always",
-        "app.db.session.get_db"
-      ],
-      "disclosure": "authenticated response; see route response model/schema",
-      "endpoint_module": "app.api.graph",
-      "endpoint_name": "get_layouts",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_layouts",
-      "path": "/api/v1/graph/layouts",
-      "rbac_policy": "declared-role-or-scope",
-      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
-      "transport": "http"
-    },
-    {
-      "auth_policy": "authenticated",
-      "dependency_calls": [
         "app.api.graph.place_node",
         "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
@@ -4542,48 +4480,6 @@
     {
       "auth_policy": "authenticated",
       "dependency_calls": [
-        "app.api.hardware.get_groups",
-        "app.core.rbac.require_scope.<locals>._dep",
-        "app.core.security.get_optional_user",
-        "app.core.security.require_auth_always",
-        "app.db.session.get_db"
-      ],
-      "disclosure": "authenticated response; see route response model/schema",
-      "endpoint_module": "app.api.hardware",
-      "endpoint_name": "get_groups",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_groups",
-      "path": "/api/v1/hardware/groups",
-      "rbac_policy": "declared-role-or-scope",
-      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
-      "transport": "http"
-    },
-    {
-      "auth_policy": "authenticated",
-      "dependency_calls": [
-        "app.api.hardware.get_orphans",
-        "app.core.rbac.require_scope.<locals>._dep",
-        "app.core.security.get_optional_user",
-        "app.core.security.require_auth_always",
-        "app.db.session.get_db"
-      ],
-      "disclosure": "authenticated response; see route response model/schema",
-      "endpoint_module": "app.api.hardware",
-      "endpoint_name": "get_orphans",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_orphans",
-      "path": "/api/v1/hardware/orphans",
-      "rbac_policy": "declared-role-or-scope",
-      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
-      "transport": "http"
-    },
-    {
-      "auth_policy": "authenticated",
-      "dependency_calls": [
         "app.api.hardware.delete_hardware",
         "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
@@ -4729,49 +4625,6 @@
       "name": "get_network_memberships",
       "path": "/api/v1/hardware/{hardware_id}/network-memberships",
       "rbac_policy": "declared-role-or-scope",
-      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
-      "transport": "http"
-    },
-    {
-      "auth_policy": "authenticated",
-      "dependency_calls": [
-        "app.api.hardware.get_hardware_ports",
-        "app.core.rbac.require_scope.<locals>._dep",
-        "app.core.security.get_optional_user",
-        "app.core.security.require_auth_always",
-        "app.db.session.get_db"
-      ],
-      "disclosure": "authenticated response; see route response model/schema",
-      "endpoint_module": "app.api.hardware",
-      "endpoint_name": "get_hardware_ports",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_hardware_ports",
-      "path": "/api/v1/hardware/{hardware_id}/ports",
-      "rbac_policy": "declared-role-or-scope",
-      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
-      "transport": "http"
-    },
-    {
-      "auth_policy": "authenticated",
-      "dependency_calls": [
-        "app.api.hardware.update_hardware_ports",
-        "app.core.rbac.require_scope.<locals>._dep",
-        "app.core.security.get_optional_user",
-        "app.core.security.require_auth_always",
-        "app.core.security.require_write_auth",
-        "app.db.session.get_db"
-      ],
-      "disclosure": "authenticated response; see route response model/schema",
-      "endpoint_module": "app.api.hardware",
-      "endpoint_name": "update_hardware_ports",
-      "methods": [
-        "PUT"
-      ],
-      "name": "update_hardware_ports",
-      "path": "/api/v1/hardware/{hardware_id}/ports",
-      "rbac_policy": "editor-or-admin-or-write-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
@@ -5982,27 +5835,6 @@
     {
       "auth_policy": "authenticated",
       "dependency_calls": [
-        "app.api.logs.list_audit_logs",
-        "app.core.rbac.require_role.<locals>._dep",
-        "app.core.security.get_optional_user",
-        "app.core.security.require_auth_always",
-        "app.db.session.get_db"
-      ],
-      "disclosure": "authenticated response; see route response model/schema",
-      "endpoint_module": "app.api.logs",
-      "endpoint_name": "list_audit_logs",
-      "methods": [
-        "GET"
-      ],
-      "name": "list_audit_logs",
-      "path": "/api/v1/logs/audit",
-      "rbac_policy": "declared-role-or-scope",
-      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
-      "transport": "http"
-    },
-    {
-      "auth_policy": "authenticated",
-      "dependency_calls": [
         "app.api.logs.stream_logs",
         "app.core.rbac.require_role.<locals>._dep",
         "app.core.security.get_optional_user",
@@ -7055,68 +6887,6 @@
       ],
       "name": "remove_peer",
       "path": "/api/v1/networks/{network_id}/peers/{peer_network_id}",
-      "rbac_policy": "editor-or-admin-or-write-scope",
-      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
-      "transport": "http"
-    },
-    {
-      "auth_policy": "authenticated",
-      "dependency_calls": [
-        "app.api.ipam.list_node_relations",
-        "app.core.security.get_optional_user",
-        "app.core.security.require_auth_always",
-        "app.db.session.get_db"
-      ],
-      "disclosure": "authenticated response; see route response model/schema",
-      "endpoint_module": "app.api.ipam",
-      "endpoint_name": "list_node_relations",
-      "methods": [
-        "GET"
-      ],
-      "name": "list_node_relations",
-      "path": "/api/v1/node-relations",
-      "rbac_policy": "authenticated-session",
-      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
-      "transport": "http"
-    },
-    {
-      "auth_policy": "authenticated",
-      "dependency_calls": [
-        "app.api.ipam.create_node_relation",
-        "app.core.security.get_optional_user",
-        "app.core.security.require_auth_always",
-        "app.core.security.require_write_auth",
-        "app.db.session.get_db"
-      ],
-      "disclosure": "authenticated response; see route response model/schema",
-      "endpoint_module": "app.api.ipam",
-      "endpoint_name": "create_node_relation",
-      "methods": [
-        "POST"
-      ],
-      "name": "create_node_relation",
-      "path": "/api/v1/node-relations",
-      "rbac_policy": "editor-or-admin-or-write-scope",
-      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
-      "transport": "http"
-    },
-    {
-      "auth_policy": "authenticated",
-      "dependency_calls": [
-        "app.api.ipam.delete_node_relation",
-        "app.core.security.get_optional_user",
-        "app.core.security.require_auth_always",
-        "app.core.security.require_write_auth",
-        "app.db.session.get_db"
-      ],
-      "disclosure": "authenticated response; see route response model/schema",
-      "endpoint_module": "app.api.ipam",
-      "endpoint_name": "delete_node_relation",
-      "methods": [
-        "DELETE"
-      ],
-      "name": "delete_node_relation",
-      "path": "/api/v1/node-relations/{rel_id}",
       "rbac_policy": "editor-or-admin-or-write-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"

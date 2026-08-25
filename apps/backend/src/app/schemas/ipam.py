@@ -93,24 +93,3 @@ class SiteRead(SiteBase):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
-
-
-class NodeRelationBase(BaseModel):
-    source_type: str
-    source_id: int
-    target_type: str
-    target_id: int
-    relation_type: str
-    metadata_json: dict | None = None
-
-
-class NodeRelationCreate(NodeRelationBase):
-    pass
-
-
-class NodeRelationRead(NodeRelationBase):
-    id: int
-    tenant_id: int | None = None
-    created_at: datetime
-
-    model_config = {"from_attributes": True}

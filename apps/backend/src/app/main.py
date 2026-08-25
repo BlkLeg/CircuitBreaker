@@ -64,7 +64,7 @@ from app.api.discovery import router as discovery_router
 from app.api.events import router as events_router
 from app.api.integration_provider import router as integration_provider_router
 from app.api.ip_check import router as ip_check_router
-from app.api.ipam import ipam_router, node_relations_router, site_router, vlan_router
+from app.api.ipam import ipam_router, site_router, vlan_router
 from app.api.kb import router as kb_router
 from app.api.metrics import router as metrics_router
 from app.api.monitor import router as monitor_router
@@ -1912,12 +1912,6 @@ app.include_router(
     site_router,
     prefix=f"{_V1}/sites",
     tags=["sites"],
-    dependencies=[Depends(require_auth)],
-)
-app.include_router(
-    node_relations_router,
-    prefix=f"{_V1}/node-relations",
-    tags=["node-relations"],
     dependencies=[Depends(require_auth)],
 )
 app.include_router(
