@@ -107,7 +107,12 @@ async def test_snapshot_restores_into_a_scratch_database(setup_db: None, tmp_pat
 
         extracted = tmp_path / "x"
         with tarfile.open(archive) as tf:
-            tf.extractall(extracted)  # noqa: S202 — archive this test just built
+            # filter="data" is required, not decorative. pyproject turns
+            # DeprecationWarning into an error, and on 3.12/3.13 an extractall with no
+            # filter emits one — "Python 3.14 will, by default, filter extracted tar
+            # archives". "data" is also the correct filter for this archive: a snapshot
+            # holds regular files only, so nothing it carries is filtered out.
+            tf.extractall(extracted, filter="data")  # noqa: S202 — archive this test just built
         inner = next(extracted.iterdir())
 
         sql = gzip.decompress((inner / "db.sql.gz").read_bytes()).decode()

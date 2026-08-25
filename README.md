@@ -5,7 +5,7 @@
 **Circuit Breaker** is a self-hosted homelab visualization platform that maps your infrastructure—hardware, services, networks, and clusters—with interactive topology, live telemetry, and auto-discovery.
 
 > **⚠️ Release Candidate Security Notice**
-> 1.0.0-rc.3. Not fully audited; several 1.0 security acceptance rows are still unevidenced. Run on a
+> 1.0.0-rc.4. Not fully audited; several 1.0 security acceptance rows are still unevidenced. Run on a
 > trusted LAN or behind a VPN — internet-exposed direct deployment is outside the 1.0.0 support
 > boundary, which is tracked in
 > [docs/release/1.0.0-support-contract.md](docs/release/1.0.0-support-contract.md).

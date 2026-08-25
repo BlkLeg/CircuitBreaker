@@ -136,7 +136,7 @@ deps-native-down:  ## Stop native systemd deps
 # ==============================================================================
 DIST_NATIVE ?= dist/native
 
-.PHONY: build build-deps build-release build-from-source release-local release-tag release-retag docker-build docker-push sign sbom
+.PHONY: build build-deps build-release build-from-source release-local release-tag release-retag release-untag docker-build docker-push sign sbom
 
 build: ## Build native app (tarball + deb + rpm + apk + AppImage + .pkg.tar.zst)
 	cd $(FRONTEND_DIR) && npm ci && npm run build
@@ -170,6 +170,18 @@ release-retag: ## Move an existing vVERSION tag to current HEAD (re-trigger a fa
 	@echo "Push with:"
 	@echo "  git push origin :refs/tags/v$$(cat VERSION)"
 	@echo "  git push origin v$$(cat VERSION)"
+
+# Deletes on origin first: that is the copy that matters, and if it is already
+# gone this stops before touching the local tag, so nothing claims to have
+# removed something it did not. release-retag is the better move when the
+# intent is to re-run Release against a new HEAD; this one is for withdrawing
+# a tag outright.
+release-untag: ## Delete the vVERSION tag on origin and locally (fails if origin has no such tag)
+	git push origin ":refs/tags/v$$(cat VERSION)"
+	git tag -d "v$$(cat VERSION)" || echo "no local tag v$$(cat VERSION); origin's is gone"
+	@echo "Deleted v$$(cat VERSION) on origin."
+	@echo "A Release run the tag already started is NOT cancelled, and a published"
+	@echo "GitHub Release survives its tag: gh release delete v$$(cat VERSION)"
 
 docker-build: ## Build the mono Docker image locally
 	docker build -f Dockerfile.mono -t $(DOCKER_REGISTRY):$$(cat VERSION) .

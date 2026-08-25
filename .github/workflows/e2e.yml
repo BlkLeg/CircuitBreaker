@@ -31,10 +31,17 @@ jobs:
       # installed here but imported by nothing. Collection therefore died on
       # `ModuleNotFoundError: No module named 'httpx'` before a single container
       # started, so this job has never got past collection since it was added.
+      #
+      # websockets for the same reason: _PresenceStream (test_agent_e2e.py:532)
+      # and the discovery stream (:3564) both open a websocket with
+      # `websockets.sync.client.connect`, and it was never installed here, so
+      # every test that asserts against a push stream died on
+      # `ModuleNotFoundError: No module named 'websockets'` — 11 of 12, after
+      # each had already built and run its containers.
       - name: Install test deps
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-timeout httpx
+          pip install pytest pytest-timeout httpx websockets
 
       # BLOCKING-2/6: GOV-12 untracked apps/agent/e2e/.env and replaced it
       # with .env.example, but nothing recreated it. Every test in the suite
