@@ -397,7 +397,7 @@ class AppSettingsUpdate(BaseModel):
     theme_preset: str | None = None
     show_external_nodes_on_map: bool | None = None
     timezone: str | None = None
-    language: Literal["en", "es", "fr", "de", "zh", "ja"] | None = None
+    language: Literal["en"] | None = None
     # Auto-Discovery
     discovery_enabled: bool | None = None
     discovery_auto_merge: bool | None = None
