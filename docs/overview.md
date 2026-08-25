@@ -72,7 +72,7 @@ See [Auto-Discovery (Beta)](discovery.md).
 
 ## Configuration and Operations
 
-- **Settings:** Language, timezone, visuals, map defaults, and system behavior.
+- **Settings:** Timezone, visuals, map defaults, and system behavior.
 - **Backup & Restore:** Export and restore inventory snapshots.
 - **Deployment & Security:** Start quickly for lab use, then harden as needed.
 

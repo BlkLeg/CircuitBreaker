@@ -8,10 +8,12 @@ The Settings area lets you control how Circuit Breaker looks, behaves, and prote
 
 ### General preferences
 
-- Language
 - Timezone
 - Default environment
 - Helpful interface hints
+
+Circuit Breaker 1.0.0 ships in English and offers no language selection. See
+[Known limitations for 1.0.0](release/1.0.0-support-contract.md#known-limitations-for-100).
 
 ### Appearance and layout
 
@@ -106,10 +108,10 @@ Restoring a backup is an API operation, not a Settings control. See [Backup & Re
 
 ## Most Common Tasks
 
-### Change timezone or language
+### Change timezone
 
 1. Open **Settings**.
-2. Update timezone and/or language.
+2. Update the timezone under **General → Regional**.
 3. Save changes.
 
 ### Set your default environment

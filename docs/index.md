@@ -35,7 +35,7 @@ To see how to begin adding these components, proceed to [Getting Started](gettin
 
 - **[Auto-Discovery (Beta)](discovery.md):** Scan selected network ranges, review results, then merge approved items into your inventory.
 - **[cb-agent](agent.md):** Install a small Linux daemon on a remote site or a separate VLAN so Circuit Breaker can collect host telemetry, run monitor probes, and discover from inside a network the server cannot reach.
-- **[Settings](settings.md):** Control language, timezone, appearance, map defaults, and system behavior.
+- **[Settings](settings.md):** Control timezone, appearance, map defaults, and system behavior.
 - **[Authentication & Access](auth-access.md):** Local auth, OAuth/OIDC, MFA, invites, and recovery workflows.
 - **[Notifications](integrations-webhooks-notifications.md):** Route alerts to notification sinks and manage delivery.
 - **Monitoring:** Native ICMP, TCP, HTTP, and DNS checks with live status, uptime history, and latency history, on hardware, compute units, and services.

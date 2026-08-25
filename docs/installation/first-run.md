@@ -80,9 +80,10 @@ Pick a colour palette and light/dark mode. You can also set your preferred font 
 Configure:
 - **Location** — search for your city to auto-set the weather widget and clock in the header
 - **Timezone** — set manually or filled automatically from your location choice
-- **Language** — UI display language (English, Spanish, French, German, Chinese, Japanese)
 
-All of these can be changed later in **Settings → General**.
+Both can be changed later in **Settings → General**. There is no language step: Circuit Breaker
+1.0.0 ships in English and offers no language selection. See
+[Known limitations for 1.0.0](../release/1.0.0-support-contract.md#known-limitations-for-100).
 
 ---
 
