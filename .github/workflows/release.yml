@@ -76,10 +76,157 @@ jobs:
   # workflow. The divergence is recorded rather than hidden: see the header of
   # e2e.yml. Restoring the gate is one `uses:` job plus one entry in `needs`.
 
+  # ── Container image, built natively per architecture ─────────────────────────
+  # This was one `buildx build --platform linux/amd64,linux/arm64` inside the
+  # Publish Release job, with the arm64 half emulated through QEMU on an amd64
+  # runner. That build died in v1.0.0-rc.4 with
+  #
+  #   E: Could not read from .../packagecloud.io_..._InRelease
+  #      - getline (12: Cannot allocate memory)
+  #
+  # at Dockerfile.mono:134 — not a bad instruction (the same RUN succeeds on
+  # arm64 under QEMU when it is the only thing running, and the amd64 leg of
+  # that same step passed) but an out-of-memory kill. buildx runs both platforms
+  # and every independent stage concurrently, so a 15.6 GiB runner was carrying
+  # emulated pip, npm and Go builds at the moment apt tried to read a package
+  # index.
+  #
+  # Building each architecture on its own native runner removes the emulation
+  # and the contention together. build.yml already ships the native packages
+  # this way on the same pair of runner labels; only the image was still
+  # emulated. Each leg pushes by digest under no tag, and the merge job below
+  # is what makes those digests addressable — so a half-built release never
+  # leaves a usable tag behind.
+  image:
+    name: Build Image (${{ matrix.arch }})
+    needs: version
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: amd64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push by digest
+        id: build
+        run: |
+          IMAGE="ghcr.io/blkleg/circuitbreaker"
+          docker buildx build \
+            --platform "linux/${{ matrix.arch }}" \
+            -f Dockerfile.mono \
+            --provenance=true \
+            --sbom=true \
+            --output "type=image,name=${IMAGE},push-by-digest=true,name-canonical=true,push=true" \
+            --metadata-file /tmp/build-metadata.json \
+            .
+          DIGEST=$(python3 -c "import json;print(json.load(open('/tmp/build-metadata.json'))['containerimage.digest'])")
+          echo "built ${{ matrix.arch }} -> ${DIGEST}"
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      # The digest is the whole handoff to the merge job: the filename is the
+      # digest, so the job below needs no parsing and cannot mix the two up.
+      - name: Export digest
+        uses: actions/upload-artifact@v5
+        with:
+          name: image-digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ── Assemble the multi-arch manifest list ────────────────────────────────────
+  # GOV-20 twice over. The tag list comes from scripts/release_channel.py, so a
+  # release candidate cannot move :latest; and this job — not the matrix above —
+  # is what `artifact-smoke` gates, because this is the first point at which any
+  # tag exists. The matrix pushes only untagged blobs addressable by digest,
+  # which nothing can pull by name, so letting it run alongside the smoke test
+  # publishes nothing early. Creating a tag before that gate is green would
+  # publish an image the installed-artifact test had not yet cleared, which is
+  # the property GOV-20 exists to prevent.
+  image-merge:
+    name: Merge Image Manifest
+    needs: [version, build, artifact-smoke, image]
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-22.04
+    outputs:
+      digest: ${{ steps.merge.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download per-architecture digests
+        uses: actions/download-artifact@v5
+        with:
+          path: /tmp/digests
+          pattern: image-digest-*
+          merge-multiple: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create manifest list
+        id: merge
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          IMAGE="ghcr.io/blkleg/circuitbreaker"
+          TAG_ARGS=""
+          FIRST_TAG=""
+          for tag in $(python3 scripts/release_channel.py --version "${VERSION}" --field tags); do
+            TAG_ARGS="${TAG_ARGS} -t ${IMAGE}:${tag}"
+            [ -n "${FIRST_TAG}" ] || FIRST_TAG="${tag}"
+          done
+          echo "Publishing tags:${TAG_ARGS}"
+
+          # One file per architecture, each named for the digest it carries.
+          # Two are expected; anything else means a leg silently vanished.
+          cd /tmp/digests
+          COUNT=$(find . -maxdepth 1 -type f | wc -l)
+          if [ "${COUNT}" -ne 2 ]; then
+            echo "::error::expected 2 per-architecture digests, found ${COUNT}"
+            ls -la
+            exit 1
+          fi
+          # shellcheck disable=SC2046
+          docker buildx imagetools create ${TAG_ARGS} \
+            $(printf "${IMAGE}@sha256:%s " *)
+
+          # The manifest-list digest is what everything downstream signs, scans
+          # and attests, so read it back from the registry rather than assuming
+          # imagetools echoed it.
+          docker buildx imagetools inspect "${IMAGE}:${FIRST_TAG}" \
+            --format '{{json .Manifest}}' > /tmp/manifest-descriptor.json
+          DIGEST=$(python3 -c "import json;print(json.load(open('/tmp/manifest-descriptor.json'))['digest'])")
+          echo "digest=${IMAGE}@${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "manifest list ${IMAGE}@${DIGEST}"
+
   # ── Create GitHub Release + push Docker ──────────────────────────────────────
   release:
     name: Publish Release
-    needs: [version, build, artifact-smoke]
+    needs: [version, build, artifact-smoke, image-merge]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -125,50 +272,15 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | \
             docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
+      # No QEMU here any more: RC-02 claims amd64 AND arm64 for the container
+      # channel, and both are now built natively by the `image` matrix above and
+      # combined by `image-merge`. This job consumes the published manifest list
+      # and never builds an image itself.
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
-      # RC-02 claims amd64 AND arm64 for the container channel, but this step
-      # ran a plain `docker build` on an amd64 runner, so the published image
-      # was amd64 only and the support contract promised something that was
-      # never built. Native packages were already dual-arch via build.yml's
-      # ubuntu-22.04 + ubuntu-22.04-arm matrix; only the image was not.
-      #
-      # GOV-20: the tag list comes from scripts/release_channel.py, so a
-      # release candidate cannot move :latest.
-      - name: Build and push Docker image
-        id: docker_push
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          IMAGE="ghcr.io/blkleg/circuitbreaker"
-          TAG_ARGS=""
-          for tag in $(python3 scripts/release_channel.py --version "${VERSION}" --field tags); do
-            TAG_ARGS="${TAG_ARGS} -t ${IMAGE}:${tag}"
-          done
-          echo "Publishing tags:${TAG_ARGS}"
-          docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            -f Dockerfile.mono \
-            ${TAG_ARGS} \
-            --provenance=true \
-            --sbom=true \
-            --metadata-file /tmp/build-metadata.json \
-            --push \
-            .
-          # The metadata file is buildx's own record of what it pushed, which
-          # is more reliable than re-inspecting by tag: a concurrent push
-          # cannot move it between build and read.
-          DIGEST=$(python3 -c "import json;print(json.load(open('/tmp/build-metadata.json'))['containerimage.digest'])")
-          echo "digest=${IMAGE}@${DIGEST}" >> "$GITHUB_OUTPUT"
-
       # Prove both architectures are in the published manifest rather than
-      # trusting that --platform did what it was asked.
+      # trusting that the merge did what it was asked.
       - name: Assert published manifest covers both architectures
         env:
           VERSION: ${{ needs.version.outputs.version }}
@@ -199,7 +311,7 @@ jobs:
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
-          image-ref: ${{ steps.docker_push.outputs.digest }}
+          image-ref: ${{ needs.image-merge.outputs.digest }}
           format: sarif
           output: trivy-image-results.sarif
           severity: 'CRITICAL,HIGH'
@@ -238,7 +350,7 @@ jobs:
       - name: Generate container SBOM
         env:
           VERSION: ${{ needs.version.outputs.version }}
-          IMAGE_DIGEST: ${{ steps.docker_push.outputs.digest }}
+          IMAGE_DIGEST: ${{ needs.image-merge.outputs.digest }}
         run: |
           syft scan "${IMAGE_DIGEST}" \
             --output "cyclonedx-json=dist/release/circuit-breaker_${VERSION}_sbom-container.cdx.json"
@@ -246,14 +358,14 @@ jobs:
       - name: Sign Docker image with cosign
         env:
           COSIGN_EXPERIMENTAL: "1"
-          IMAGE_DIGEST: ${{ steps.docker_push.outputs.digest }}
+          IMAGE_DIGEST: ${{ needs.image-merge.outputs.digest }}
         run: |
           cosign sign --yes "${IMAGE_DIGEST}"
 
       - name: Attach container SBOM to image
         env:
           VERSION: ${{ needs.version.outputs.version }}
-          IMAGE_DIGEST: ${{ steps.docker_push.outputs.digest }}
+          IMAGE_DIGEST: ${{ needs.image-merge.outputs.digest }}
         run: |
           cosign attach sbom \
             --sbom "dist/release/circuit-breaker_${VERSION}_sbom-container.cdx.json" \
