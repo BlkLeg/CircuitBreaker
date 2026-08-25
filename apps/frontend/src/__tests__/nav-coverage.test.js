@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { NAV_GROUPS, NAV_MAP, canSeeNavItem, visibleNavGroups } from '../data/navigation';
 import { guardFor } from '../data/routeGuards';
@@ -195,5 +195,49 @@ describe('navigation derives its role gate from routeGuards', () => {
     expect(
       visibleNavGroups({ role: 'viewer' }).flatMap((g) => g.items.map((i) => i.path))
     ).not.toContain('/notifications');
+  });
+});
+
+/**
+ * INC-09 was a configuration advertising content that did not exist: six languages in
+ * supportedLngs, five namespaces, three of them empty files, and about twenty-two
+ * translated strings in total. This is that made into a test.
+ */
+describe('i18n advertises only what it ships', () => {
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- reads a source file in this repo
+  const i18nSrc = readFileSync(srcFile('i18n.js'), 'utf8');
+
+  const parseArray = (field) => {
+    const match = i18nSrc.match(new RegExp(`${field}:\\s*\\[([^\\]]*)\\]`));
+    if (!match) return null;
+    return [...match[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  };
+
+  it('supports exactly the locale directories that exist', () => {
+    const declared = parseArray('supportedLngs');
+    expect(declared, 'supportedLngs not found in i18n.js').not.toBeNull();
+
+    const present = readdirSync(resolve(process.cwd(), 'public', 'locales')).sort();
+
+    expect(
+      declared.slice().sort(),
+      'i18n.js advertises a language with no locale directory, or a directory ships ' +
+        'without being advertised. Either is INC-09 returning.'
+    ).toEqual(present);
+  });
+
+  it('declares no namespace whose English file is missing or empty', () => {
+    const namespaces = parseArray('ns');
+    expect(namespaces, 'ns not found in i18n.js').not.toBeNull();
+
+    for (const ns of namespaces) {
+      const file = resolve(process.cwd(), 'public', 'locales', 'en', `${ns}.json`);
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- reads a repo locale file
+      const parsed = JSON.parse(readFileSync(file, 'utf8'));
+      expect(
+        Object.keys(parsed).length,
+        `namespace "${ns}" is declared in i18n.js but en/${ns}.json is empty`
+      ).toBeGreaterThan(0);
+    }
   });
 });
