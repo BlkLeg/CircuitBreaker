@@ -45,7 +45,20 @@ export default function UpdateStatusPanel() {
         <>
           <p style={{ fontSize: 13, marginBottom: 4 }}>To upgrade:</p>
           <code
-            style={{ display: 'block', padding: 8, background: 'var(--color-bg-subtle, #111827)' }}
+            // --color-bg-subtle is defined nowhere in src/styles, so this
+            // always resolved to the hardcoded #111827 -- near-black, with
+            // inherited --color-text on top, which is near-black under every
+            // light preset. --color-secondary and --color-text are both defined
+            // in main.css :root and re-set together per theme variant by
+            // theme/applyTheme.js.
+            style={{
+              display: 'block',
+              padding: 8,
+              overflowX: 'auto',
+              borderRadius: 'var(--radius, 6px)',
+              background: 'var(--color-secondary)',
+              color: 'var(--color-text)',
+            }}
           >
             {status.upgrade_command}
           </code>
