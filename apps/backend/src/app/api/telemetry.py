@@ -1,5 +1,8 @@
+import asyncio
 import json
 import logging
+import os
+from types import SimpleNamespace
 from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -21,6 +24,24 @@ from app.services.telemetry_service import get_telemetry_for_hardware, write_tel
 _logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["telemetry"])
+
+
+def _device_timeout_seconds() -> int:
+    """Per-device cap for a telemetry poll, in seconds.
+
+    Deliberately the same knob and the same default the background collector
+    reads (app/workers/telemetry_collector.py), so an operator who widens the
+    budget for a slow BMC gets the wider budget on the manual "poll now" button
+    too rather than discovering the two paths disagree. The 5s floor is the
+    collector's as well: a mistyped 0 would otherwise turn every poll into an
+    instant "unreachable", which looks exactly like a dead device and sends the
+    operator hunting the network instead of the config.
+
+    Kept as a local read rather than a shared import because the collector is a
+    worker-side module; the duplication is two lines and the coupling would be
+    the wrong direction.
+    """
+    return max(5, int(os.environ.get("CB_TELEMETRY_DEVICE_TIMEOUT_SECONDS", "20")))
 
 
 def _safe_json(val: Any) -> dict[str, Any] | None:
@@ -95,7 +116,50 @@ async def poll_now(
     if not hw:
         raise HTTPException(status_code=404, detail="Hardware not found")
 
-    result = poll_hardware(hw, vault)
+    # poll_hardware is synchronous and talks to the device — SNMP via blocking
+    # subprocess.run, Redfish via blocking HTTP. Called inline from this async
+    # endpoint it ran on the event loop, so one unreachable host stalled every
+    # request the API process was serving, not just this one: the
+    # snmp_network_device profile alone spends up to ~105s in the kernel (three
+    # 5s snmpget calls plus nine 10s snmpwalk calls) before it gives up. Hand it
+    # to a worker thread and cap it, exactly as the collector does.
+    #
+    # One deliberate consequence: poll_hardware's _fire_and_forget_publish is a
+    # no-op off the loop (it needs a running loop and logs a debug line without
+    # one). That publish was redundant here anyway — write_telemetry below is
+    # the authoritative cache+publish for this path — so the manual poll now
+    # emits one telemetry event instead of two racing ones.
+    #
+    # The thread gets a detached stub rather than the live ORM row, the same way
+    # the collector does, and on the timeout path that is load-bearing rather
+    # than tidiness: a timed-out poll leaks its thread (see below), and that
+    # thread reads hardware.id at dispatcher.py:95 *after* the slow call
+    # returns. By then this request has committed through write_telemetry, and a
+    # commit expires the instance, so that read would fire a refresh SELECT on
+    # this request's Session from a second thread. Sessions are not thread-safe.
+    # The stub carries every attribute poll_hardware touches — telemetry_config,
+    # ip_address, id — and carries no Session with it.
+    hw_stub = SimpleNamespace(
+        id=hw.id,
+        telemetry_config=hw.telemetry_config,
+        ip_address=hw.ip_address,
+    )
+    timeout_s = _device_timeout_seconds()
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(poll_hardware, hw_stub, vault),
+            timeout=timeout_s,
+        )
+    except TimeoutError:
+        # The worker thread is not cancelled by this — asyncio.to_thread cannot
+        # interrupt blocking C calls — but it is orphaned rather than awaited,
+        # so the request returns on time and the thread retires when the
+        # underlying socket timeout fires.
+        result = {
+            "status": "unreachable",
+            "error_msg": f"Timeout reaching hardware {hardware_id} after {timeout_s}s",
+            "data": {},
+        }
     if "status" not in result and "error" in result:
         result = {"status": "unreachable", "error_msg": str(result["error"]), "data": {}}
     elif result.get("status") == "unknown" and "error" in result:

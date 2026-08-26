@@ -21,6 +21,8 @@ _DOC_UPLOADS_DIR = Path(settings.uploads_dir) / "docs"
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB
 _MAX_IMPORT_MD_BYTES = 1 * 1024 * 1024  # 1 MB per .md
 _MAX_IMPORT_ZIP_BYTES = 10 * 1024 * 1024  # 10 MB total ZIP
+_MAX_IMPORT_ZIP_ENTRIES = 500
+_MAX_IMPORT_TOTAL_MD_BYTES = 20 * 1024 * 1024  # 20 MB uncompressed across all members
 
 # Static routes MUST come before /{doc_id} to avoid path-matching conflicts
 
@@ -84,15 +86,44 @@ def _parse_zip_entries(data: bytes) -> list[tuple[str, str]]:
     except zipfile.BadZipFile as exc:
         raise HTTPException(status_code=400, detail="Invalid ZIP file") from exc
 
+    infos = zf.infolist()
+    if len(infos) > _MAX_IMPORT_ZIP_ENTRIES:
+        raise HTTPException(status_code=413, detail="ZIP must contain \u2264 500 files")
+
     entries: list[tuple[str, str]] = []
-    for info in zf.infolist():
+    total_bytes = 0
+    for info in infos:
         if info.is_dir() or not info.filename.lower().endswith(".md"):
             continue
         # Prevent path traversal \u2014 keep only the bare filename
         safe_name = Path(info.filename).name
         if not safe_name:
             continue
-        md_bytes = zf.read(info)
+        # Reject on the *declared* uncompressed size before spending anything on
+        # the member. The 10 MB gate above bounds the compressed payload only,
+        # and deflate turns 10 MB of one repeated byte into roughly 10 GB, so a
+        # size check that happens after decompressing is a check that happens
+        # after the damage.
+        if info.file_size > _MAX_IMPORT_MD_BYTES:
+            raise HTTPException(status_code=413, detail=f"{safe_name} exceeds 1 MB limit")
+        # Sum the declared sizes rather than the bytes actually read, so the
+        # archive-wide budget is likewise decided before the spending: 500
+        # members that each individually clear the 1 MB bar still add up to half
+        # a gigabyte of docs.
+        total_bytes += info.file_size
+        if total_bytes > _MAX_IMPORT_TOTAL_MD_BYTES:
+            raise HTTPException(status_code=413, detail="ZIP contents exceed 20 MB uncompressed")
+        # Read through a bounded stream instead of zf.read(info). This is not
+        # belt-and-braces on top of the file_size check above: zipfile's own
+        # read() hands the decompressor a max_length of 1 GB and only *then*
+        # truncates the result to file_size, so a member whose header lies small
+        # over a real multi-gigabyte deflate stream returns the handful of bytes
+        # it claimed while having materialized the whole stream on the way. A
+        # sized read caps what the decompressor is allowed to produce per chunk,
+        # which is the part that actually costs memory. One byte past the cap
+        # distinguishes "exactly at the limit" from "over it".
+        with zf.open(info) as fh:
+            md_bytes = fh.read(_MAX_IMPORT_MD_BYTES + 1)
         if len(md_bytes) > _MAX_IMPORT_MD_BYTES:
             raise HTTPException(status_code=413, detail=f"{safe_name} exceeds 1 MB limit")
         title = Path(safe_name).stem or _DEFAULT_IMPORT_TITLE

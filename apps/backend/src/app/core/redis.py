@@ -10,7 +10,8 @@ self-healing without hammering the server on every call.
 
 Configuration is driven by the ``CB_REDIS_URL`` environment variable which
 defaults to ``redis://localhost:6379/0`` for the embedded single-container
-deployment.
+deployment.  ``CB_REDIS_MAX_CONNECTIONS`` sizes the pool — see
+``docs/operations/sizing-profiles.md`` for how to budget it.
 """
 
 from __future__ import annotations
@@ -27,9 +28,33 @@ import redis.asyncio as aioredis
 
 _logger = logging.getLogger(__name__)
 
+# Pool exhaustion has to be told apart from a dead server, because the two want
+# opposite responses: a shortage wants patience, a dead server wants a redial.
+# redis-py grew a dedicated ``MaxConnectionsError`` in 5.3; pyproject still
+# declares a ``>=5.0.0`` floor, and on those older releases the pool signalled
+# exhaustion with a plain ``ConnectionError`` that is indistinguishable from a
+# real disconnect except by its message.  Rather than sniff strings, the empty
+# tuple simply never matches there — an old redis-py keeps today's conservative
+# behaviour instead of gaining a fragile new one.
+_POOL_EXHAUSTED_ERRORS: tuple[type[BaseException], ...]
+try:
+    from redis.exceptions import MaxConnectionsError as _MaxConnectionsError
+
+    _POOL_EXHAUSTED_ERRORS = (_MaxConnectionsError,)
+except ImportError:  # pragma: no cover - redis-py < 5.3
+    _POOL_EXHAUSTED_ERRORS = ()
+
 _redis: aioredis.Redis | None = None
 _url: str = os.environ.get("CB_REDIS_URL", "redis://localhost:6379/0")
 _password_file: str = os.environ.get("CB_REDIS_PASSWORD_FILE", "/data/.redis_pass")
+
+# Every pub/sub subscriber holds a connection out of this pool for the whole
+# life of its socket, so the pool has to cover the shipped WebSocket caps
+# (telemetry 100 + monitors 100 + the shared manager's 50) plus the agent /link
+# sockets and the command traffic that runs alongside them — per worker
+# process.  A pool too small for the subscriber population does not merely
+# queue: it fails PINGs on the command path.
+_MAX_CONNECTIONS: int = int(os.environ.get("CB_REDIS_MAX_CONNECTIONS", "250"))
 
 _RECONNECT_COOLDOWN_S = 10.0
 _last_reconnect_attempt: float = 0.0
@@ -81,7 +106,7 @@ async def _try_connect(connect_timeout: int = 5) -> aioredis.Redis | None:
             _url,
             password=password,
             decode_responses=True,
-            max_connections=20,
+            max_connections=_MAX_CONNECTIONS,
             socket_connect_timeout=connect_timeout,
         )
         await cast(Awaitable[Any], client.ping())
@@ -124,6 +149,19 @@ async def get_redis() -> aioredis.Redis | None:
         try:
             await cast(Awaitable[Any], _redis.ping())
             return _redis
+        except _POOL_EXHAUSTED_ERRORS:
+            # A local resource shortage, not a dead server.  Falling through to
+            # the branch below would call ``aclose()``, and redis-py's
+            # ``aclose()`` disconnects the pool *including connections in use* —
+            # severing the pub/sub socket every WebSocket listener holds open.
+            # One caller running out of headroom must not take the whole
+            # real-time layer down with it, so degrade this call alone and leave
+            # the client and its subscribers untouched.
+            _logger.warning(
+                "Redis pool exhausted (max_connections=%d) — degrading this call",
+                _MAX_CONNECTIONS,
+            )
+            return None
         except Exception:
             _logger.warning("Redis connection lost — will attempt reconnect")
             try:

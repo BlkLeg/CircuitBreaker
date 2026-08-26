@@ -116,6 +116,7 @@ All **enforced** — these are the shipped configuration files.
 | SQLAlchemy pool size | 20 | **5** | `DB_POOL_SIZE` |
 | Overflow above the pool | 20 | **5** | `DB_MAX_OVERFLOW` |
 | Pool checkout timeout | 5 s — fail fast rather than block the event loop | — | not configurable |
+| Redis pool size | 250 | 250 | `CB_REDIS_MAX_CONNECTIONS` |
 
 The pool shrinks automatically when `CB_DB_POOL_URL` differs from `CB_DB_URL`, because pooling twice
 is worse than pooling once. Both are **enforced**.
@@ -125,6 +126,14 @@ its own pool. With in-process workers (`CB_RUN_INPROCESS_WORKERS=true`, the defa
 pool per uvicorn worker; with dedicated workers it is one per worker service. Six worker programs
 ship in the appliance — `discovery`, `notification`, `telemetry`, `monitor-scheduler`,
 `monitor-poll`, `monitor-probe-dispatch`.
+
+The Redis pool is budgeted per process the same way, but its shape is different: every pub/sub
+subscriber holds a connection for the whole life of its socket, so the pool floor is the subscriber
+population, not the request rate. 250 covers the shipped WebSocket caps — telemetry 100
+(`CB_WS_TELEM_MAX_CONNECTIONS`), monitors 100 (`CB_WS_MON_MAX_CONNECTIONS`) and the shared manager's
+50 (`CB_WS_MAX_CONNECTIONS`) — plus the agent `/link` sockets and the command traffic running
+alongside them. Raise any of those WebSocket caps and raise `CB_REDIS_MAX_CONNECTIONS` with them:
+once subscribers occupy the whole pool, commands on the same client start failing.
 
 ### External PostgreSQL
 

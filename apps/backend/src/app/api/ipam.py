@@ -204,6 +204,22 @@ def scan_network_addresses(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid CIDR: {exc}") from exc
 
+    # Size-check the network before expanding it. `net.cidr` is whatever a
+    # writer stored on the Network row, and NetworkBase.validate_cidr accepts
+    # any syntactically valid network — an IPv6 /32 included. `hosts()` for a
+    # /32 is a generator over 2**96 - 1 addresses, so `list(...)` there never
+    # returns: it allocates IPv6Address objects until the worker dies, and the
+    # `len()` guard below is never reached. `num_addresses` is an O(1) integer,
+    # so testing it first caps materialisation at 1024 objects for any input.
+    #
+    # Both checks stay, and the accept/reject boundary is bit-for-bit what it
+    # was: 1024 is a /22's num_addresses and 1022 is its host count, so no IPv4
+    # range that used to be accepted is now rejected, and the second check
+    # still catches the IPv6 sizes in between (a /118 is 1024 addresses but
+    # 1023 hosts).
+    if network.num_addresses > 1024:
+        raise HTTPException(status_code=400, detail="CIDR too large (max /22 = 1022 hosts)")
+
     hosts = list(network.hosts())
     if len(hosts) > 1022:
         raise HTTPException(status_code=400, detail="CIDR too large (max /22 = 1022 hosts)")
