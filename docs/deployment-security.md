@@ -130,6 +130,41 @@ Do not confuse it with `CB_ALLOW_DEGRADED_DEPENDENCIES`, which is a blanket brea
 waives *all* of those dependency gates at once. Use that one only to get a broken instance back up
 long enough to fix it.
 
+#### The daily release check leaves the box by default
+
+One outbound call is made without you configuring anything, and it discloses the instance version,
+so it is stated here rather than left to be discovered:
+
+- **Where:** `https://api.github.com/repos/BlkLeg/CircuitBreaker/releases`.
+- **When:** once at startup, then every 24 hours plus up to 30 minutes of random jitter. The jitter
+  spreads load across instances; it does not obscure anything.
+- **What is sent:** an unauthenticated `GET`, with `User-Agent: circuit-breaker/<version>` and,
+  unavoidably, the source IP of whatever egress path the request takes. **The running version of
+  this instance is therefore disclosed to a third party once a day.** Nothing about your inventory,
+  your users, your network, or your configuration is sent — the request body is empty and the URL
+  carries only `per_page`.
+- **What comes back:** the public release list. Nothing is downloaded and nothing is installed; the
+  result is a version comparison held in memory and shown to admins as a banner.
+
+This deserves stating plainly because the application deliberately withholds its version from
+unauthenticated callers as fingerprinting material — `GET /api/v1/health` returns `version` only to
+an authenticated caller (`main.py`: "unauthenticated fingerprinting material — they tell a scanner
+which published CVEs to try before it has any credentials"), and `GET /api/v1/system/update` is
+admin-only. Shipping a silent daily disclosure of that same value
+to GitHub is a different trade-off, made because an instance that cannot learn it is out of date is
+the more common real-world harm: a user running an unpatched release without knowing it. If your
+threat model says otherwise, turn it off.
+
+Turning it off — any one of these is sufficient, and each stops the socket being opened at all
+rather than merely hiding the banner:
+
+- `CB_UPDATE_CHECK=false`
+- `CB_AIRGAP=true`
+- the `airgap_mode` switch in **Settings**
+
+The check honours `CB_EGRESS_PROXY_URL` like every other public outbound client, so a proxied
+deployment sees it at the proxy rather than leaving the host directly.
+
 ### NATS authentication and TLS
 
 NATS is the internal bus used for discovery, worker dispatch, and notifications. **Token auth is

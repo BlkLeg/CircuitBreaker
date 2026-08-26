@@ -40,9 +40,28 @@ Circuit Breaker is configured via environment variables. All variables can be pa
 
 | Variable | Default | Description |
 |---|---|---|
-| `CB_AIRGAP` | `false` | Air-gap mode. When `true`, network scans are refused (HTTP 403) — for offline deployments that only use manual inventory. The same switch exists as `airgap_mode` in Settings. |
-| `CB_UPDATE_CHECK` | `true` | Daily check for a newer release in this install's channel. When `false`, no outbound request is made and the UI reports that checking is disabled. `CB_AIRGAP=true` also disables it. |
+| `CB_AIRGAP` | `false` | Air-gap mode. When `true`, network scans are refused (HTTP 403) — for offline deployments that only use manual inventory — and the daily release check below opens no socket. The same switch exists as `airgap_mode` in Settings; either one is enough. |
 | `CB_DOCKER_HOST` | _(empty)_ | Docker API endpoint used for container discovery. The Docker socket is not mounted by default; either apply the `docker/docker-compose.socket.yml` override or point this at a Docker API proxy, e.g. `tcp://docker-socket-proxy:2375`. |
+
+### Release Update Check
+
+This is outbound egress, not discovery. Once a day the instance asks GitHub
+whether a newer release exists in its own channel and, for an admin, shows a
+banner if there is one. It never downloads or installs anything.
+
+| Variable | Default | Description |
+|---|---|---|
+| `CB_UPDATE_CHECK` | `true` | Daily check for a newer release in this install's channel. When `false`, no outbound request is made and the UI reports that checking is disabled. |
+
+Two things also turn it off, with no need to set `CB_UPDATE_CHECK`: `CB_AIRGAP=true`,
+and the `airgap_mode` switch in Settings. Any one of the three is enough.
+
+The request goes to `https://api.github.com/repos/BlkLeg/CircuitBreaker/releases`,
+carries `User-Agent: circuit-breaker/<version>`, and therefore discloses this
+instance's version and its source IP to GitHub once a day. It honours
+`CB_EGRESS_PROXY_URL`. See
+[Outbound egress](../deployment-security.md#outbound-egress) for the full
+disclosure note and the reasoning.
 
 ### Message Bus (NATS)
 
