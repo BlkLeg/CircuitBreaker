@@ -199,6 +199,12 @@ def require_role(*roles: str) -> params.Depends:
             raise HTTPException(status_code=403, detail="Insufficient permissions")
         return user
 
+    # What this gate actually demands, readable without running it. The SEC-06
+    # write gate needs to tell `require_scope("read", "*")` apart from a scope
+    # that permits writing, and both compile to the same `_dep` qualname, so the
+    # declaration has to travel on the object rather than in its name.
+    _dep.cb_authorization = ("role", tuple(roles))
+
     return cast(params.Depends, Depends(_dep))
 
 
@@ -243,5 +249,9 @@ def require_scope(action: str, resource: str) -> params.Depends:
             return user
 
         raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    # See the note in require_role: the declared action/resource is what lets a
+    # structural gate judge whether this authorizes a write or only a read.
+    _dep.cb_authorization = ("scope", action, resource)
 
     return cast(params.Depends, Depends(_dep))

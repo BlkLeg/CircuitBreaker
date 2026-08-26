@@ -958,7 +958,7 @@ def get_job_results(
 def batch_import_results(
     job_id: int,
     payload: BatchImportRequest,
-    _user=require_write_auth,
+    _user=Depends(require_write_auth),
     db: Session = Depends(get_db),
 ):
     """Batch import selected scan results as Hardware nodes. Requires write role."""
@@ -974,7 +974,7 @@ def batch_import_results(
 def import_as_network_endpoint(
     job_id: int,
     payload: ImportAsNetworkRequest,
-    _user=require_write_auth,
+    _user=Depends(require_write_auth),
     db: Session = Depends(get_db),
 ):
     """Import scan results as a connected network topology into a map. Requires write role."""
@@ -1060,7 +1060,7 @@ async def enrich_opnsense_job(
 @router.post("/lldp-enrich")
 def lldp_enrich(
     payload: LLDPEnrichRequest,
-    _user=require_write_auth,
+    _user=Depends(require_write_auth),
     db: Session = Depends(get_db),
 ):
     from app.db.models import Hardware
@@ -1140,7 +1140,7 @@ def lldp_job_results(
 def lldp_apply(
     job_id: int,
     payload: LLDPApplyRequest,
-    _user=require_write_auth,
+    _user=Depends(require_write_auth),
     db: Session = Depends(get_db),
 ):
     from datetime import datetime

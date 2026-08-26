@@ -53,11 +53,39 @@ def _static_file_mounts() -> list[Mount]:
     ]
 
 
+# `require_role(...)` and `require_scope(...)` both close over their declaration
+# and return an inner `_dep`, so every one of them reports the same qualname. A
+# gate that only sees qualnames cannot tell `require_scope("read", "*")` — which
+# authorizes nothing beyond reading — from a scope that permits writing, and it
+# accepted the first as authorization for a write. `core.rbac` therefore tags
+# each `_dep` with what it demands, and `_dependency_calls` surfaces that tag as
+# a marker string beside the qualname.
+_AUTHZ_MARKER_PREFIX = "cb-authz:"
+
+
+def _authorization_marker(call: Any) -> str | None:
+    declared = getattr(call, "cb_authorization", None)
+    if not declared:
+        return None
+    kind, *rest = declared
+    if kind == "role":
+        return f"{_AUTHZ_MARKER_PREFIX}role:{','.join(sorted(rest[0]))}"
+    return f"{_AUTHZ_MARKER_PREFIX}scope:{rest[0]}:{rest[1]}"
+
+
+def _without_markers(calls: Iterable[str]) -> list[str]:
+    """The qualname-only view the inventory records, unchanged by the tagging."""
+    return sorted(c for c in calls if not c.startswith(_AUTHZ_MARKER_PREFIX))
+
+
 def _dependency_calls(dependant: Any) -> set[str]:
     call = getattr(dependant, "call", None)
     module = getattr(call, "__module__", None)
     qualname = getattr(call, "__qualname__", getattr(call, "__name__", None))
     calls = {f"{module}.{qualname}"}
+    marker = _authorization_marker(call)
+    if marker is not None:
+        calls.add(marker)
     for child in dependant.dependencies:
         calls.update(_dependency_calls(child))
     return calls
@@ -369,7 +397,7 @@ def test_full_endpoint_inventory_matches_runtime_routes():
     for path, route, inherited in runtime_routes:
         key = _route_key(path, route)
         public_entry = public_policy.get(key)
-        calls = sorted(_dependency_calls(route.dependant) | inherited)
+        calls = _without_markers(_dependency_calls(route.dependant) | inherited)
         endpoint = getattr(route, "endpoint", None)
         expected.append(
             {
@@ -469,6 +497,7 @@ _UNGATED_WRITE_EXEMPTIONS: dict[tuple[str, str], str] = {
 }
 
 _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_ROLE_RANK = {"viewer": 0, "demo": 0, "editor": 1, "admin": 2}
 
 
 def _http_routes() -> Iterator[tuple[str, APIRoute, frozenset[str]]]:
@@ -477,13 +506,40 @@ def _http_routes() -> Iterator[tuple[str, APIRoute, frozenset[str]]]:
             yield path, route, inherited
 
 
-def _has_write_gate(calls: set[str]) -> bool:
-    """True when a write route names a role, a scope, or the write-auth dependency.
+def _authorizes_writing(marker: str) -> bool:
+    """True when the tagged declaration excludes a viewer.
 
-    The one definition of "this write is authorized by something", shared by the
-    test that demands it and the test that retires exemptions once it appears.
+    `require_scope("read", "*")` does not: a viewer holds `read:*` by default, so
+    a write route carrying only that gate is reachable by every viewer on the
+    install. Neither does `require_role("viewer")`. Anything else — a non-read
+    scope, or a role gate whose most permissive accepted role is editor or above
+    — is a real write authorization.
     """
-    return bool(calls & _READ_DEPENDENCIES) or "app.core.security.require_write_auth" in calls
+    body = marker[len(_AUTHZ_MARKER_PREFIX) :]
+    kind, _, rest = body.partition(":")
+    if kind == "scope":
+        action, _, _resource = rest.partition(":")
+        return action != "read"
+    roles = [r for r in rest.split(",") if r]
+    if not roles:
+        return False
+    # require_role admits the LOWEST-ranked role it names, so that role decides.
+    return min(_ROLE_RANK.get(r, 0) for r in roles) >= _ROLE_RANK["editor"]
+
+
+def _has_write_gate(calls: set[str]) -> bool:
+    """True when a write route is authorized by something a viewer cannot satisfy.
+
+    The one definition of "this write is authorized", shared by the test that
+    demands it and the test that retires exemptions once it appears. Presence of
+    a role/scope dependency is not enough — four discovery routes that create
+    Hardware and rewrite topology sat behind the discovery router's
+    `require_scope("read", "*")` and passed this gate while any viewer could call
+    them.
+    """
+    if "app.core.security.require_write_auth" in calls:
+        return True
+    return any(c.startswith(_AUTHZ_MARKER_PREFIX) and _authorizes_writing(c) for c in calls)
 
 
 def test_no_write_route_is_merely_authenticated():
@@ -511,9 +567,12 @@ def test_no_write_route_is_merely_authenticated():
             offenders.append(f"{method} {path}")
 
     assert not offenders, (
-        "these write routes declare no role or write scope, so any authenticated user "
-        "may call them. Add a require_role/require_scope dependency, or add an entry to "
-        "_UNGATED_WRITE_EXEMPTIONS with a reason: " + ", ".join(sorted(offenders))
+        "these write routes carry no authorization a viewer cannot satisfy, so any "
+        'viewer may call them. A read-only gate — require_scope("read", ...) or '
+        'require_role("viewer") — does not count, and neither does passing '
+        "require_write_auth as a bare default instead of Depends(...). Add a write "
+        "dependency, or add an entry to _UNGATED_WRITE_EXEMPTIONS with a reason: "
+        + ", ".join(sorted(offenders))
     )
 
 

@@ -1,6 +1,6 @@
 {
   "generated_by": "apps/backend/scripts/generate_endpoint_inventory.py",
-  "route_count": 433,
+  "route_count": 437,
   "routes": [
     {
       "auth_policy": "authenticated",
@@ -2827,6 +2827,7 @@
         "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
+        "app.core.security.require_write_auth",
         "app.db.session.get_db"
       ],
       "disclosure": "authenticated response; see route response model/schema",
@@ -2837,7 +2838,7 @@
       ],
       "name": "batch_import_results",
       "path": "/api/v1/discovery/jobs/{job_id}/batch-import",
-      "rbac_policy": "declared-role-or-scope",
+      "rbac_policy": "editor-or-admin-or-write-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
@@ -2870,6 +2871,7 @@
         "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
+        "app.core.security.require_write_auth",
         "app.db.session.get_db"
       ],
       "disclosure": "authenticated response; see route response model/schema",
@@ -2880,7 +2882,7 @@
       ],
       "name": "import_as_network_endpoint",
       "path": "/api/v1/discovery/jobs/{job_id}/import-as-network",
-      "rbac_policy": "declared-role-or-scope",
+      "rbac_policy": "editor-or-admin-or-write-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
@@ -2975,6 +2977,7 @@
         "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
+        "app.core.security.require_write_auth",
         "app.db.session.get_db"
       ],
       "disclosure": "authenticated response; see route response model/schema",
@@ -2985,7 +2988,7 @@
       ],
       "name": "lldp_enrich",
       "path": "/api/v1/discovery/lldp-enrich",
-      "rbac_policy": "declared-role-or-scope",
+      "rbac_policy": "editor-or-admin-or-write-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
@@ -2996,6 +2999,7 @@
         "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
+        "app.core.security.require_write_auth",
         "app.db.session.get_db"
       ],
       "disclosure": "authenticated response; see route response model/schema",
@@ -3006,7 +3010,7 @@
       ],
       "name": "lldp_apply",
       "path": "/api/v1/discovery/lldp-jobs/{job_id}/apply",
-      "rbac_policy": "declared-role-or-scope",
+      "rbac_policy": "editor-or-admin-or-write-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
@@ -4679,7 +4683,24 @@
       "endpoint_module": "app.main",
       "endpoint_name": "health",
       "methods": [
-        "GET",
+        "GET"
+      ],
+      "name": "health",
+      "path": "/api/v1/health",
+      "rbac_policy": "none",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "health",
+      "dependency_calls": [
+        "app.db.session.get_db",
+        "app.main.health"
+      ],
+      "disclosure": "bounded health state",
+      "endpoint_module": "app.main",
+      "endpoint_name": "health",
+      "methods": [
         "HEAD"
       ],
       "name": "health",
@@ -5737,7 +5758,23 @@
       "endpoint_module": "app.main",
       "endpoint_name": "livez",
       "methods": [
-        "GET",
+        "GET"
+      ],
+      "name": "livez",
+      "path": "/api/v1/livez",
+      "rbac_policy": "none",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "health",
+      "dependency_calls": [
+        "app.main.livez"
+      ],
+      "disclosure": "process liveness and uptime",
+      "endpoint_module": "app.main",
+      "endpoint_name": "livez",
+      "methods": [
         "HEAD"
       ],
       "name": "livez",
@@ -7128,7 +7165,23 @@
       "endpoint_module": "app.main",
       "endpoint_name": "readyz",
       "methods": [
-        "GET",
+        "GET"
+      ],
+      "name": "readyz",
+      "path": "/api/v1/readyz",
+      "rbac_policy": "none",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "health",
+      "dependency_calls": [
+        "app.main.readyz"
+      ],
+      "disclosure": "lifecycle state and ok/error per dependency",
+      "endpoint_module": "app.main",
+      "endpoint_name": "readyz",
+      "methods": [
         "HEAD"
       ],
       "name": "readyz",
@@ -7951,7 +8004,23 @@
       "endpoint_module": "app.main",
       "endpoint_name": "startupz",
       "methods": [
-        "GET",
+        "GET"
+      ],
+      "name": "startupz",
+      "path": "/api/v1/startupz",
+      "rbac_policy": "none",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "health",
+      "dependency_calls": [
+        "app.main.startupz"
+      ],
+      "disclosure": "lifecycle state",
+      "endpoint_module": "app.main",
+      "endpoint_name": "startupz",
+      "methods": [
         "HEAD"
       ],
       "name": "startupz",

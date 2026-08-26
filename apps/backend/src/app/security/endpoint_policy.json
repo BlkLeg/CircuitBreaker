@@ -12,7 +12,9 @@
   "routes": [
     {
       "transport": "http",
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "path": "/api/v1/auth/jwt/login",
       "policy": "auth-flow",
       "public_reason": "Password login entry point.",
@@ -20,7 +22,9 @@
     },
     {
       "transport": "http",
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "path": "/api/v1/auth/jwt/logout",
       "policy": "auth-flow",
       "public_reason": "Logout compatibility endpoint; invalid or absent credentials do not disclose protected data.",
@@ -28,7 +32,9 @@
     },
     {
       "transport": "http",
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "path": "/api/v1/auth/accept-invite",
       "policy": "auth-flow",
       "public_reason": "Invite acceptance must run before the invited user has an active session.",
@@ -36,7 +42,9 @@
     },
     {
       "transport": "http",
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "path": "/api/v1/auth/register",
       "policy": "bootstrap-or-auth-flow",
       "public_reason": "Registration/OOBE compatibility path.",
@@ -44,7 +52,9 @@
     },
     {
       "transport": "http",
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "path": "/api/v1/auth/forgot-password",
       "policy": "auth-flow",
       "public_reason": "Password reset request starts before authentication.",
@@ -52,7 +62,9 @@
     },
     {
       "transport": "http",
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "path": "/api/v1/auth/reset-password",
       "policy": "auth-flow",
       "public_reason": "Password reset consumes a reset token instead of a session.",
@@ -60,7 +72,9 @@
     },
     {
       "transport": "http",
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "path": "/api/v1/auth/demo",
       "policy": "auth-flow",
       "public_reason": "Demo session creation is an explicit pre-auth flow.",
@@ -68,7 +82,9 @@
     },
     {
       "transport": "http",
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "path": "/api/v1/auth/login",
       "policy": "auth-flow",
       "public_reason": "Local login entry point.",
@@ -76,7 +92,9 @@
     },
     {
       "transport": "http",
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "path": "/api/v1/auth/force-change-password",
       "policy": "auth-flow",
       "public_reason": "Forced password-change flow uses a constrained credential state.",
@@ -84,7 +102,9 @@
     },
     {
       "transport": "http",
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "path": "/api/v1/auth/vault-reset",
       "policy": "auth-flow",
       "public_reason": "Vault reset password flow consumes a reset credential rather than a normal session.",
@@ -92,7 +112,9 @@
     },
     {
       "transport": "http",
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "path": "/api/v1/auth/logout",
       "policy": "auth-flow",
       "public_reason": "Logout is idempotent session teardown and must stay reachable with an already-invalid session; requiring auth to log out would strand a client whose token expired. It reads only the caller's own token and revokes only the session that token names.",
@@ -100,7 +122,9 @@
     },
     {
       "transport": "http",
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "path": "/api/v1/auth/mfa/verify",
       "policy": "auth-flow",
       "public_reason": "MFA verification is part of the login challenge flow.",
@@ -108,7 +132,9 @@
     },
     {
       "transport": "http",
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "path": "/api/v1/bootstrap/status",
       "policy": "bootstrap",
       "public_reason": "OOBE status must be available before the first admin exists.",
@@ -116,7 +142,9 @@
     },
     {
       "transport": "http",
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "path": "/api/v1/bootstrap/onboarding",
       "policy": "bootstrap",
       "public_reason": "OOBE resume state is pre-auth until bootstrap hardening is completed.",
@@ -124,7 +152,9 @@
     },
     {
       "transport": "http",
-      "methods": ["PATCH"],
+      "methods": [
+        "PATCH"
+      ],
       "path": "/api/v1/bootstrap/onboarding",
       "policy": "bootstrap",
       "public_reason": "OOBE step mutation is pre-auth until bootstrap hardening is completed.",
@@ -132,7 +162,9 @@
     },
     {
       "transport": "http",
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "path": "/api/v1/bootstrap/initialize",
       "policy": "bootstrap",
       "public_reason": "First-admin initialization must run before authentication exists.",
@@ -140,7 +172,9 @@
     },
     {
       "transport": "http",
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "path": "/api/v1/bootstrap/initialize-oauth",
       "policy": "bootstrap",
       "public_reason": "OAuth first-admin initialization must run before authentication exists.",
@@ -148,7 +182,9 @@
     },
     {
       "transport": "http",
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "path": "/api/v1/bootstrap/domain",
       "policy": "bootstrap",
       "public_reason": "Bootstrap domain configuration is part of OOBE before normal sessions exist.",
@@ -156,7 +192,9 @@
     },
     {
       "transport": "websocket",
-      "methods": ["WEBSOCKET"],
+      "methods": [
+        "WEBSOCKET"
+      ],
       "path": "/api/v1/agents/enroll",
       "policy": "agent-protocol",
       "public_reason": "Agent enrollment authenticates inside the Noise protocol handshake.",
@@ -164,7 +202,9 @@
     },
     {
       "transport": "websocket",
-      "methods": ["WEBSOCKET"],
+      "methods": [
+        "WEBSOCKET"
+      ],
       "path": "/api/v1/agents/link",
       "policy": "agent-protocol",
       "public_reason": "Agent link authenticates inside the Noise protocol handshake.",
@@ -172,7 +212,9 @@
     },
     {
       "transport": "http",
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "path": "/api/v1/agents/binary/{version}/{os_name}/{arch}",
       "policy": "agent-download",
       "public_reason": "Agent install scripts need to download a versioned binary during enrollment.",
@@ -180,7 +222,9 @@
     },
     {
       "transport": "http",
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "path": "/api/v1/branding/manifest.json",
       "policy": "public-ui-asset",
       "public_reason": "Browser manifest is a public UI asset.",
@@ -188,7 +232,9 @@
     },
     {
       "transport": "http",
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "path": "/api/v1/auth/exchange",
       "policy": "auth-flow",
       "public_reason": "OAuth/auth-code exchange consumes a one-time auth code before a session cookie exists.",
@@ -196,7 +242,9 @@
     },
     {
       "transport": "http",
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "path": "/api/v1/auth/oauth/providers",
       "policy": "auth-flow",
       "public_reason": "Login screen needs configured OAuth provider metadata.",
@@ -204,7 +252,9 @@
     },
     {
       "transport": "http",
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "path": "/api/v1/auth/oauth/github",
       "policy": "auth-flow",
       "public_reason": "OAuth authorization redirect entry point.",
@@ -212,7 +262,9 @@
     },
     {
       "transport": "http",
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "path": "/api/v1/auth/oauth/github/callback",
       "policy": "auth-flow",
       "public_reason": "OAuth callback entry point.",
@@ -220,7 +272,9 @@
     },
     {
       "transport": "http",
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "path": "/api/v1/auth/oauth/google",
       "policy": "auth-flow",
       "public_reason": "OAuth authorization redirect entry point.",
@@ -228,7 +282,9 @@
     },
     {
       "transport": "http",
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "path": "/api/v1/auth/oauth/google/callback",
       "policy": "auth-flow",
       "public_reason": "OAuth callback entry point.",
@@ -236,7 +292,9 @@
     },
     {
       "transport": "http",
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "path": "/api/v1/auth/oauth/oidc/{provider_slug}",
       "policy": "auth-flow",
       "public_reason": "OIDC authorization redirect entry point.",
@@ -244,7 +302,9 @@
     },
     {
       "transport": "http",
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "path": "/api/v1/auth/oauth/oidc/{provider_slug}/callback",
       "policy": "auth-flow",
       "public_reason": "OIDC callback entry point.",
@@ -252,7 +312,9 @@
     },
     {
       "transport": "http",
-      "methods": ["GET", "HEAD"],
+      "methods": [
+        "GET"
+      ],
       "path": "/api/v1/health",
       "policy": "health",
       "public_reason": "Load balancers and local diagnostics need unauthenticated health.",
@@ -260,7 +322,19 @@
     },
     {
       "transport": "http",
-      "methods": ["GET", "HEAD"],
+      "methods": [
+        "HEAD"
+      ],
+      "path": "/api/v1/health",
+      "policy": "health",
+      "public_reason": "Load balancers and local diagnostics need unauthenticated health.",
+      "disclosure": "bounded health state"
+    },
+    {
+      "transport": "http",
+      "methods": [
+        "GET"
+      ],
       "path": "/api/v1/livez",
       "policy": "health",
       "public_reason": "Container HEALTHCHECK restart probe; must answer before any credential exists.",
@@ -268,7 +342,19 @@
     },
     {
       "transport": "http",
-      "methods": ["GET", "HEAD"],
+      "methods": [
+        "HEAD"
+      ],
+      "path": "/api/v1/livez",
+      "policy": "health",
+      "public_reason": "Container HEALTHCHECK restart probe; must answer before any credential exists.",
+      "disclosure": "process liveness and uptime"
+    },
+    {
+      "transport": "http",
+      "methods": [
+        "GET"
+      ],
       "path": "/api/v1/startupz",
       "policy": "health",
       "public_reason": "Orchestrator startup probe; must answer while the server is still initialising.",
@@ -276,7 +362,19 @@
     },
     {
       "transport": "http",
-      "methods": ["GET", "HEAD"],
+      "methods": [
+        "HEAD"
+      ],
+      "path": "/api/v1/startupz",
+      "policy": "health",
+      "public_reason": "Orchestrator startup probe; must answer while the server is still initialising.",
+      "disclosure": "lifecycle state"
+    },
+    {
+      "transport": "http",
+      "methods": [
+        "GET"
+      ],
       "path": "/api/v1/readyz",
       "policy": "health",
       "public_reason": "Load balancer readiness probe; decides traffic routing, not authentication.",
@@ -284,7 +382,19 @@
     },
     {
       "transport": "http",
-      "methods": ["GET"],
+      "methods": [
+        "HEAD"
+      ],
+      "path": "/api/v1/readyz",
+      "policy": "health",
+      "public_reason": "Load balancer readiness probe; decides traffic routing, not authentication.",
+      "disclosure": "lifecycle state and ok/error per dependency"
+    },
+    {
+      "transport": "http",
+      "methods": [
+        "GET"
+      ],
       "path": "/favicon.ico",
       "policy": "public-ui-asset",
       "public_reason": "Browser favicon asset.",
@@ -292,7 +402,9 @@
     },
     {
       "transport": "http",
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "path": "/install-agent.sh",
       "policy": "agent-download",
       "public_reason": "Agent bootstrap script download used during enrollment.",
@@ -300,7 +412,9 @@
     },
     {
       "transport": "http",
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "path": "/{full_path:path}",
       "policy": "public-ui-asset",
       "public_reason": "SPA fallback serves the browser application; data APIs remain under /api/v1.",
@@ -308,7 +422,9 @@
     },
     {
       "transport": "http",
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "path": "/",
       "policy": "public-ui-asset",
       "public_reason": "Backend-only deployments register a static landing page in place of the SPA fallback; the two are mutually exclusive on the `_frontend_dir` branch in main.py.",
@@ -318,7 +434,10 @@
   "static_surfaces": [
     {
       "transport": "http",
-      "methods": ["GET", "HEAD"],
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
       "path": "/.well-known/acme-challenge/{path:path}",
       "policy": "public-acme-challenge",
       "public_reason": "ACME HTTP-01 validation must be readable by the certificate authority before any certificate exists.",
@@ -326,7 +445,10 @@
     },
     {
       "transport": "http",
-      "methods": ["GET", "HEAD"],
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
       "path": "/uploads/{path:path}",
       "policy": "public-upload-media",
       "public_reason": "Uploaded media is user-facing browser content and is served only under the upload safety policy.",
@@ -334,7 +456,10 @@
     },
     {
       "transport": "http",
-      "methods": ["GET", "HEAD"],
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
       "path": "/user-icons/{path:path}",
       "policy": "public-ui-asset",
       "public_reason": "User and device icon images are referenced by the browser UI.",
@@ -342,7 +467,10 @@
     },
     {
       "transport": "http",
-      "methods": ["GET", "HEAD"],
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
       "path": "/branding/{path:path}",
       "policy": "public-ui-asset",
       "public_reason": "Branding and favicon assets must render before or outside authenticated API calls.",
@@ -350,7 +478,10 @@
     },
     {
       "transport": "http",
-      "methods": ["GET", "HEAD"],
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
       "path": "/assets/{path:path}",
       "policy": "public-ui-asset",
       "public_reason": "Frontend build assets are public browser application resources.",
@@ -359,7 +490,10 @@
     },
     {
       "transport": "http",
-      "methods": ["GET", "HEAD"],
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
       "path": "/icons/{path:path}",
       "policy": "public-ui-asset",
       "public_reason": "Frontend icon assets are public browser application resources.",
@@ -370,7 +504,10 @@
   "framework_surfaces": [
     {
       "transport": "http",
-      "methods": ["GET", "HEAD"],
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
       "path": "/api/openapi.json",
       "policy": "public-api-schema",
       "public_reason": "FastAPI serves the generated OpenAPI document; it is the published API contract for SRV-01 and the CLI/SDK.",
@@ -378,7 +515,10 @@
     },
     {
       "transport": "http",
-      "methods": ["GET", "HEAD"],
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
       "path": "/api/docs",
       "policy": "public-api-schema",
       "public_reason": "Swagger UI renders the public OpenAPI document above and adds no surface of its own.",
@@ -386,7 +526,10 @@
     },
     {
       "transport": "http",
-      "methods": ["GET", "HEAD"],
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
       "path": "/api/redoc",
       "policy": "public-api-schema",
       "public_reason": "ReDoc renders the public OpenAPI document above and adds no surface of its own.",
@@ -394,7 +537,10 @@
     },
     {
       "transport": "http",
-      "methods": ["GET", "HEAD"],
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
       "path": "/docs/oauth2-redirect",
       "policy": "public-protocol-endpoint",
       "public_reason": "Swagger UI's OAuth redirect target; it returns a static page that hands the browser back to the docs UI.",
