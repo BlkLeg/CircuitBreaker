@@ -1,17 +1,37 @@
-"""Non-blocking update check against GitHub Releases API."""
+"""Non-blocking release check.
+
+Two defects made this dead code for the whole 1.0.0-rc window. It asked
+`/releases/latest`, which resolves through GitHub's "Latest release" badge and
+names the newest *stable* release -- `v0.3.4` throughout the rc window. And it
+compared `v.lstrip("v").split("-")[0]`, so `1.0.0-rc.2` and `1.0.0-rc.4` were
+both `(1, 0, 0)` and no candidate install could ever be told to upgrade.
+
+The cache is in-memory by design: hardening section 8 runs the container
+`read_only: true` with only `/data` writable.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import random
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
+
+import httpx
 
 from app.core import version as _version
+from app.core.config import settings
+from app.core.install_method import detect_install_method, upgrade_command
+from app.core.url_validation import configured_egress_proxy_url
 
 logger = logging.getLogger("circuitbreaker.update_check")
 
-GITHUB_RELEASES_URL = "https://api.github.com/repos/BlkLeg/CircuitBreaker/releases/latest"
+GITHUB_RELEASES_URL = "https://api.github.com/repos/BlkLeg/CircuitBreaker/releases"
 CHECK_TIMEOUT = 5  # seconds
+CHECK_INTERVAL_S = 24 * 60 * 60
+JITTER_S = 30 * 60
 
 
 @dataclass(frozen=True)
@@ -68,43 +88,103 @@ def select_update(
     return UpdateVerdict(status="ok", channel=channel, available=available)
 
 
-async def check_for_update(current_version: str) -> str | None:
-    """Return latest version string if newer than current, else None.
+@dataclass(frozen=True)
+class UpdateState:
+    status: str = "never_checked"
+    current: str = ""
+    available: str | None = None
+    channel: str = ""
+    checked_at: str | None = None
+    etag: str | None = None
 
-    Returns None on any error (network, parse, timeout) — never blocks startup.
-    """
-    try:
-        import httpx
-    except ImportError:
-        return None
 
-    try:
-        async with httpx.AsyncClient(timeout=CHECK_TIMEOUT) as client:
-            resp = await client.get(
-                GITHUB_RELEASES_URL,
-                headers={"Accept": "application/vnd.github+json"},
-                follow_redirects=True,
-            )
-            if resp.status_code != 200:
-                return None
-            data = resp.json()
-            latest = str(data.get("tag_name", ""))
-            if latest and _version.is_newer(latest, current_version):
-                return latest
-    except Exception:
-        # Never let update check break the app
-        return None
+_state = UpdateState()
+
+
+def current_state() -> UpdateState:
+    return _state
+
+
+def reset_cache() -> None:
+    """Test seam."""
+    global _state
+    _state = UpdateState()
+
+
+def _transport() -> httpx.AsyncBaseTransport | None:
+    """Test seam; None means httpx's default transport."""
     return None
 
 
-async def log_update_notice(current_version: str) -> None:
-    """Log a notice if a newer version is available."""
-    latest = await check_for_update(current_version)
-    if latest:
-        logger.info(
-            "A newer version of Circuit Breaker is available: %s (current: %s). "
-            "See https://github.com/BlkLeg/CircuitBreaker/releases/%s",
-            latest,
-            current_version,
-            latest,
-        )
+def _now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+async def refresh() -> UpdateState:
+    """Refresh the cached verdict. Never raises, never blocks a caller."""
+    global _state
+    current = settings.app_version
+
+    if settings.airgap:
+        _state = replace(_state, status="airgap", current=current, available=None)
+        return _state
+    if not settings.update_check:
+        _state = replace(_state, status="disabled", current=current, available=None)
+        return _state
+
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": f"circuit-breaker/{current}",
+    }
+    if _state.etag:
+        headers["If-None-Match"] = _state.etag
+
+    kwargs = {"timeout": CHECK_TIMEOUT, "headers": headers}
+    proxy = configured_egress_proxy_url()
+    if proxy:
+        kwargs["proxy"] = proxy
+    transport = _transport()
+    if transport is not None:
+        kwargs["transport"] = transport
+
+    try:
+        async with httpx.AsyncClient(**kwargs) as client:
+            resp = await client.get(GITHUB_RELEASES_URL)
+            if resp.status_code == 304:
+                _state = replace(_state, checked_at=_now())
+                return _state
+            if resp.status_code != 200:
+                raise httpx.HTTPError(f"status {resp.status_code}")
+            payload = resp.json()
+            if not isinstance(payload, list):
+                raise httpx.HTTPError("release list was not a list")
+            verdict = select_update(current, channels_from_releases(payload))
+            _state = UpdateState(
+                status=verdict.status,
+                current=current,
+                available=verdict.available,
+                channel=verdict.channel,
+                checked_at=_now(),
+                etag=resp.headers.get("ETag") or _state.etag,
+            )
+    except Exception as exc:  # network, JSON, schema — all the same to a caller
+        logger.debug("Update check failed: %s", exc)
+        _state = replace(_state, status="unreachable", current=current, checked_at=_now())
+    return _state
+
+
+async def run_update_check_loop() -> None:
+    """Check now, then once a day with jitter until cancelled."""
+    while True:
+        state = await refresh()
+        if state.available:
+            logger.info(
+                "A newer version of Circuit Breaker is available: %s (current: %s). To upgrade: %s",
+                state.available,
+                state.current,
+                upgrade_command(detect_install_method(), state.available),
+            )
+        try:
+            await asyncio.sleep(CHECK_INTERVAL_S + random.uniform(0, JITTER_S))
+        except asyncio.CancelledError:
+            raise

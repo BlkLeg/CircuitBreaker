@@ -90,6 +90,10 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("CB_EGRESS_PROXY_URL", "EGRESS_PROXY_URL"),
     )
     airgap: bool = False
+    # Outbound release check. Distinct from `airgap`: an operator may allow
+    # scanning egress while still declining to contact GitHub. Either one off
+    # disables the check.
+    update_check: bool = True
     docker_host: str = ""
     api_prefix: str = "/api/v1"
     # Default same-origin only; set CORS_ORIGINS to a JSON array or a comma-separated

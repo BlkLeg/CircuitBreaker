@@ -41,6 +41,7 @@ Circuit Breaker is configured via environment variables. All variables can be pa
 | Variable | Default | Description |
 |---|---|---|
 | `CB_AIRGAP` | `false` | Air-gap mode. When `true`, network scans are refused (HTTP 403) — for offline deployments that only use manual inventory. The same switch exists as `airgap_mode` in Settings. |
+| `CB_UPDATE_CHECK` | `true` | Daily check for a newer release in this install's channel. When `false`, no outbound request is made and the UI reports that checking is disabled. `CB_AIRGAP=true` also disables it. |
 | `CB_DOCKER_HOST` | _(empty)_ | Docker API endpoint used for container discovery. The Docker socket is not mounted by default; either apply the `docker/docker-compose.socket.yml` override or point this at a Docker API proxy, e.g. `tcp://docker-socket-proxy:2375`. |
 
 ### Message Bus (NATS)
