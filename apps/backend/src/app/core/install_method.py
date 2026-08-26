@@ -10,6 +10,7 @@ on a candidate today is a downgrade. Spec stage 4 replaces this table once
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import shutil
@@ -79,8 +80,16 @@ def _package_owner() -> str | None:
     return None
 
 
+@functools.lru_cache(maxsize=1)
 def detect_install_method() -> str:
-    """First confident answer wins; `unknown` rather than a guess."""
+    """First confident answer wins; `unknown` rather than a guess.
+
+    Memoized for the process lifetime: an install cannot change method while
+    the process runs, and `_package_owner()` shells out to `dpkg`/`rpm`/`apk`
+    when nothing declarative answers first -- that must not happen per
+    request. Tests that vary the probed state must call
+    `detect_install_method.cache_clear()` between calls.
+    """
     declared = os.environ.get("CB_INSTALL_METHOD", "").strip()
     if declared in KNOWN_METHODS:
         return declared

@@ -9,6 +9,9 @@ from app.core import install_method
 def _clear_env(monkeypatch):
     for var in ("CB_INSTALL_METHOD", "APPIMAGE"):
         monkeypatch.delenv(var, raising=False)
+    install_method.detect_install_method.cache_clear()
+    yield
+    install_method.detect_install_method.cache_clear()
 
 
 def test_explicit_env_wins(monkeypatch):
@@ -60,3 +63,21 @@ def test_unknown_method_gets_documentation_not_a_guess():
 
 def test_missing_target_still_returns_usable_text():
     assert install_method.upgrade_command("binary", None).strip()
+
+
+def test_detect_install_method_is_memoized_for_the_process(monkeypatch):
+    """The endpoint must never re-probe per request; a second call is free."""
+    monkeypatch.setattr(install_method, "_INSTALL_CONF_PATHS", ())
+    monkeypatch.setattr(install_method, "_in_container", lambda: False)
+
+    calls = []
+
+    def _counting_owner():
+        calls.append(1)
+        return "deb"
+
+    monkeypatch.setattr(install_method, "_package_owner", _counting_owner)
+
+    assert install_method.detect_install_method() == "deb"
+    assert install_method.detect_install_method() == "deb"
+    assert len(calls) == 1
