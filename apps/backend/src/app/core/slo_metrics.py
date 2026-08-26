@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from starlette.types import ASGIApp, Receive, Scope, Send
+    from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 #: Process-lifetime registry. Separate from the per-scrape registry in
 #: app.api.metrics so counters are not reset every time Prometheus scrapes.
@@ -186,7 +186,7 @@ class HttpMetricsMiddleware:
         started = time.perf_counter()
         status_holder = {"status": 500}
 
-        async def _send(message: Send) -> None:
+        async def _send(message: Message) -> None:
             if message["type"] == "http.response.start":
                 status_holder["status"] = int(message["status"])
             await send(message)
