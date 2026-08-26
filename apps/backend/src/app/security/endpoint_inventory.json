@@ -1,6 +1,6 @@
 {
   "generated_by": "apps/backend/scripts/generate_endpoint_inventory.py",
-  "route_count": 432,
+  "route_count": 433,
   "routes": [
     {
       "auth_policy": "authenticated",
@@ -8081,6 +8081,27 @@
       "name": "get_system_stats",
       "path": "/api/v1/system/stats",
       "rbac_policy": "editor-or-admin-or-write-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.system.get_update_status",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.system",
+      "endpoint_name": "get_update_status",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_update_status",
+      "path": "/api/v1/system/update",
+      "rbac_policy": "declared-role-or-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
