@@ -16,7 +16,7 @@ introduced thirteen regressions of its own that the document lists. If you are p
 that work up mid-flight, start with
 [`HANDOFF-2026-08-26.md`](./HANDOFF-2026-08-26.md), which is the operating order.
 Everything else here predates the release candidate, between 2026-03-10
-(v0.2.0-beta) and 2026-06-30, and none of it has been re-run against 1.0.0-rc.4.
+(v0.2.0-beta) and 2026-06-30, and none of it has been re-run against 0.4.0.
 
 The current security posture is defined by:
 
@@ -34,7 +34,7 @@ as history only. GOV-13 is the requirement this index exists to close.
 
 - **Superseded** — a later document, or a live control in the tree, covers the
   same ground. The row names what replaced it.
-- **Historical** — accurate for its date, not re-verified against 1.0.0-rc.4.
+- **Historical** — accurate for its date, not re-verified against 0.4.0.
 - **Active** — at least one finding was still open in the tree when this index
   was written. Confirm against the ledger before acting.
 
@@ -42,7 +42,7 @@ as history only. GOV-13 is the requirement this index exists to close.
 
 | Report | Date | Version audited | Status |
 |---|---|---|---|
-| [`bug-bounty-2026-08-26.md`](./bug-bounty-2026-08-26.md) — 35 confirmed defects from a multi-agent hunt, with per-finding status | 2026-08-26 | 1.0.0-rc.4 (`dev` at `f483bcb3`) | **Active** — the only document here describing the current tree. Six findings are fixed, each naming its commit; **twenty-nine are open**, fifteen of them HIGH. The six fixed were reproduced by hand before being touched; the twenty-nine open carry the hunt's own adversarial verification only and are leads, not settled fact — one of the six examined closely overstated its own reachability. Raw evidence in [`bug-bounty-2026-08-26-findings.json`](./bug-bounty-2026-08-26-findings.json). |
+| [`bug-bounty-2026-08-26.md`](./bug-bounty-2026-08-26.md) — 35 confirmed defects from a multi-agent hunt, with per-finding status | 2026-08-26 | 1.0.0-rc.4 (`dev` at `f483bcb3`) | **Active** — the only document here describing the current tree. Six findings were fixed and committed on 2026-08-26 and a further sixteen in the 0.4.0 remediation; **thirteen remain open**, four of them HIGH. That pass also introduced regressions of its own and turned up fifteen new findings, both tabled in the report. The six fixed were reproduced by hand before being touched; the twenty-nine open carry the hunt's own adversarial verification only and are leads, not settled fact — one of the six examined closely overstated its own reachability. Raw evidence in [`bug-bounty-2026-08-26-findings.json`](./bug-bounty-2026-08-26-findings.json). |
 | [`bug-bounty-2026-08-26-findings.json`](./bug-bounty-2026-08-26-findings.json) — raw finding data behind the report above | 2026-08-26 | 1.0.0-rc.4 (`dev` at `f483bcb3`) | **Active** — machine output, kept as the evidence for the report. Each entry carries the refutation attempt that failed to kill it (`reasoning`) and the proposed remediation (`fix`) in full; the report quotes the latter and summarises the rest. |
 | [`SECURITY_TRIAGE_ACTIONABLE_2026-06-30.md`](./SECURITY_TRIAGE_ACTIONABLE_2026-06-30.md) — actionable triage of the June scan run | 2026-06-30 | pre-1.0 `dev` | **Active** — the two top findings are closed in the tree (no `verify_signature` bypass remains anywhere in `apps/backend/src/app`; `docker/nginx.mono.conf` clears `Upgrade`/`Connection` on the general proxy and forwards them only in explicit WebSocket locations). The Medium "JWT secret fallback is logged" still stands: `apps/backend/src/app/core/users.py:197-201` logs the fallback path. Dependency-CVE rows are stale — re-run the scanners. |
 | [`SEC_ANALYSIS-3-12-26.md`](./SEC_ANALYSIS-3-12-26.md) — narrative overview of shipped security features | 2026-03-13 | v0.2.2 | Historical. A feature description, not a finding list; nothing here is actionable. |

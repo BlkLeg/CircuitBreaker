@@ -431,22 +431,75 @@ cmd_update() {
       _info "Pulling latest image: ${CB_IMAGE}"
       docker pull "$CB_IMAGE"
 
-      _info "Recreating container '${CB_CONTAINER}'..."
-      docker stop "$CB_CONTAINER" 2>/dev/null || true
-      docker rm   "$CB_CONTAINER" 2>/dev/null || true
-
+      # Refuse before anything is destroyed, not after. An operator who created
+      # this container with `docker run -e CB_JWT_SECRET=... -e NATS_AUTH_TOKEN=...`
+      # keeps those values in one place only: the container's own config, which
+      # `docker rm` deletes. Recreating without --env-file therefore hands the
+      # replacement none of the secrets docker/entrypoint-mono.sh refuses to
+      # start without, and none of CB_VAULT_KEY/CB_DB_PASSWORD either — a restart
+      # loop with the old container already gone, which is the one outcome an
+      # upgrade must never produce. `~/.circuit-breaker/env` is operator-supplied
+      # (no installer writes it, see docs/cb-cli.md), so its absence is a real
+      # possibility rather than a theoretical one.
       local env_args=()
-      [[ -f "$CB_CONFIG_DIR/env" ]] && env_args=(--env-file "$CB_CONFIG_DIR/env")
+      if [[ -f "$CB_CONFIG_DIR/env" ]]; then
+        env_args=(--env-file "$CB_CONFIG_DIR/env")
+      else
+        _fail "$(printf '%s\n' \
+          "No environment file at ${CB_CONFIG_DIR}/env — refusing to recreate '${CB_CONTAINER}'." \
+          "  Recreating discards the environment this container was created with, and the" \
+          "  replacement would start without CB_JWT_SECRET, CB_VAULT_KEY, CB_DB_PASSWORD and" \
+          "  NATS_AUTH_TOKEN and exit FATAL." \
+          "  Write that file with the values this container was created with (see docs/cb-cli.md)," \
+          "  or upgrade by re-running your original 'docker run'. Nothing has been changed.")"
+      fi
+
+      # Renamed rather than removed: the old container is the rollback, and it
+      # costs nothing to keep until the new one has proved it serves. A leftover
+      # -prev from an upgrade the operator never finished would block the rename,
+      # so it goes first.
+      local prev="${CB_CONTAINER}-prev"
+      docker rm -f "$prev" >/dev/null 2>&1 || true
+
+      _info "Recreating container '${CB_CONTAINER}'..."
+      docker stop "$CB_CONTAINER" >/dev/null 2>&1 || true
+      docker rename "$CB_CONTAINER" "$prev" 2>/dev/null \
+        || docker rm "$CB_CONTAINER" 2>/dev/null || true
 
       docker run -d \
         --name  "$CB_CONTAINER" \
         "${env_args[@]}" \
         -p      "${CB_PORT}:8080" \
         -v      "${CB_VOLUME}:/data" \
-        --security-opt seccomp=unconfined \
         --restart unless-stopped \
         "$CB_IMAGE" \
-        || _fail "Failed to start updated container."
+        || _fail "Failed to start the updated container. The previous one is still here — roll back with: docker rm ${CB_CONTAINER} && docker rename ${prev} ${CB_CONTAINER} && docker start ${CB_CONTAINER}"
+
+      # `docker run -d` exits 0 as soon as the container is *created*. The secret
+      # validation, the migration and every supervised program come after that,
+      # so its exit code says nothing about whether this install came back — and
+      # printing "Updated and restarted." over a crash loop is how an upgrade
+      # failure stays invisible until someone opens the UI. Ask the application,
+      # the same way the restore path does.
+      if ! command -v curl >/dev/null 2>&1; then
+        _ok "Updated and restarted."
+        _warn "curl is not installed, so the health check was skipped — verify with: cb status"
+        _warn "The previous container is kept as '${prev}'; remove it once you are satisfied: docker rm ${prev}"
+        return 0
+      fi
+
+      _info "Waiting for the application to come back…"
+      local tries=0
+      until curl -fsS "http://127.0.0.1:${CB_PORT:-8080}/api/v1/livez" >/dev/null 2>&1; do
+        tries=$((tries + 1))
+        [[ $tries -gt 60 ]] && _fail "$(printf '%s\n' \
+          "Updated, but the application did not become healthy. Check: cb logs" \
+          "  The container that was serving before the upgrade is still here as '${prev}'. Roll back with:" \
+          "    docker rm -f ${CB_CONTAINER} && docker rename ${prev} ${CB_CONTAINER} && docker start ${CB_CONTAINER}")"
+        sleep 2
+      done
+
+      docker rm "$prev" >/dev/null 2>&1 || true
       _ok "Updated and restarted."
       ;;
     compose)
@@ -577,12 +630,21 @@ cmd_restore() {
       _require_docker
       _container_running "$CB_BACKEND_CONTAINER" \
         || _fail "Container '${CB_BACKEND_CONTAINER}' must be running to verify the archive. Start it first."
-      docker cp "$archive" "${CB_BACKEND_CONTAINER}:/tmp/cb-restore.tar.gz" \
+      # Staged on the data volume, not in /tmp: /tmp is a 100 MB tmpfs in the
+      # shipped mono container (docker-compose.yml), and the archive, the tree it
+      # unpacks to and the uncompressed db.sql all land here — a real snapshot
+      # fills that tmpfs and the restore dies partway through unpacking. Only the
+      # mono entrypoint creates ${CB_DATA_DIR}/tmp, so the compose backend needs
+      # it made before anything is copied into it.
+      docker exec -e "CB_DATA_DIR=${CB_DATA_DIR}" "$CB_BACKEND_CONTAINER" \
+        sh -c 'mkdir -p "${CB_DATA_DIR}/tmp"' \
+        || _fail "Could not create the staging directory ${CB_DATA_DIR}/tmp inside '${CB_BACKEND_CONTAINER}'."
+      docker cp "$archive" "${CB_BACKEND_CONTAINER}:${CB_DATA_DIR}/tmp/cb-restore.tar.gz" \
         || _fail "Could not copy the archive into '${CB_BACKEND_CONTAINER}'."
       local -a vopts=()
       [[ -n "$force" ]] && vopts+=(-e "CB_VERSION=")
       manifest=$(docker exec "${vopts[@]}" "$CB_BACKEND_CONTAINER" \
-                   python -m app.cli snapshot verify /tmp/cb-restore.tar.gz) \
+                   python -m app.cli snapshot verify "${CB_DATA_DIR}/tmp/cb-restore.tar.gz") \
         || _fail "This archive cannot be restored — see the reason above."
       ;;
     binary)
@@ -683,35 +745,36 @@ _restore_container() {
 
   _info "Restoring the database…"
   # The archive is already inside the container: step 1 copied it there to verify it.
-  docker exec "$CB_BACKEND_CONTAINER" sh -c '
+  docker exec -e "CB_DATA_DIR=${CB_DATA_DIR}" "$CB_BACKEND_CONTAINER" sh -c '
     set -e
-    rm -rf /tmp/cb-restore && mkdir -p /tmp/cb-restore
-    tar -xzf /tmp/cb-restore.tar.gz -C /tmp/cb-restore --strip-components=1
-    gunzip -c /tmp/cb-restore/db.sql.gz > /tmp/cb-restore/db.sql
+    stage="${CB_DATA_DIR}/tmp/cb-restore"
+    rm -rf "$stage" && mkdir -p "$stage"
+    tar -xzf "${stage}.tar.gz" -C "$stage" --strip-components=1
+    gunzip -c "$stage/db.sql.gz" > "$stage/db.sql"
   ' || _fail "Could not unpack the archive inside the container."
 
   docker exec "$CB_BACKEND_CONTAINER" sh -c "${_DB_CONN_SH}; exec psql \"\$@\" -v ON_ERROR_STOP=1 -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'" \
     || _fail "Could not reset the database schema. The safety snapshot is in your backup directory."
 
-  docker exec "$CB_BACKEND_CONTAINER" sh -c "${_DB_CONN_SH}; exec psql \"\$@\" -v ON_ERROR_STOP=1 -f /tmp/cb-restore/db.sql" \
+  docker exec "$CB_BACKEND_CONTAINER" sh -c "${_DB_CONN_SH}; exec psql \"\$@\" -v ON_ERROR_STOP=1 -f ${CB_DATA_DIR}/tmp/cb-restore/db.sql" \
     || _fail "Database restore failed. The safety snapshot is in your backup directory."
 
   _info "Restoring uploads…"
   docker exec -e "CB_DATA_DIR=${CB_DATA_DIR}" "$CB_BACKEND_CONTAINER" sh -c '
     set -e
-    if [ -d /tmp/cb-restore/uploads ]; then
+    if [ -d "${CB_DATA_DIR}/tmp/cb-restore/uploads" ]; then
       mkdir -p "${CB_DATA_DIR}/uploads"
       rm -rf "${CB_DATA_DIR}/uploads.old"
       cp -a "${CB_DATA_DIR}/uploads" "${CB_DATA_DIR}/uploads.old" 2>/dev/null || true
       rm -rf "${CB_DATA_DIR}/uploads"/*
-      cp -a /tmp/cb-restore/uploads/. "${CB_DATA_DIR}/uploads/"
+      cp -a "${CB_DATA_DIR}/tmp/cb-restore/uploads/." "${CB_DATA_DIR}/uploads/"
     fi
   ' || _fail "Uploads restore failed."
 
   _info "Restoring the vault key…"
   docker exec -e "CB_DATA_DIR=${CB_DATA_DIR}" "$CB_BACKEND_CONTAINER" sh -c '
     set -e
-    key=$(cat /tmp/cb-restore/vault.key)
+    key=$(cat "${CB_DATA_DIR}/tmp/cb-restore/vault.key")
     [ -n "$key" ] || { echo "vault.key in the archive is empty" >&2; exit 1; }
     env_file="${CB_DATA_DIR}/.env"
     mkdir -p "${CB_DATA_DIR}"
@@ -724,7 +787,8 @@ _restore_container() {
     chmod 600 "$env_file"
   ' || _fail "Vault key restore failed — the database is restored but credentials will not decrypt."
 
-  docker exec "$CB_BACKEND_CONTAINER" sh -c 'rm -rf /tmp/cb-restore /tmp/cb-restore.tar.gz' 2>/dev/null || true
+  docker exec -e "CB_DATA_DIR=${CB_DATA_DIR}" "$CB_BACKEND_CONTAINER" \
+    sh -c 'rm -rf "${CB_DATA_DIR}/tmp/cb-restore" "${CB_DATA_DIR}/tmp/cb-restore.tar.gz"' 2>/dev/null || true
 
   # Restarted rather than `supervisorctl start`ed: the vault key changed in the
   # environment file, and the application reads it at process start.

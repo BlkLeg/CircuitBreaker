@@ -12,6 +12,8 @@ curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.
 
 This mode is compose-only: it never runs the native/systemd installer path. It auto-detects Docker, installs Docker (engine + compose plugin) only when missing, downloads `docker-compose.yml`, `docker/docker-compose.socket.yml`, and `.env.example` to `~/.circuitbreaker/`, creates `.env` with generated secrets (if absent), then starts the stack.
 
+Add `--version <version>` to pin the install: the compose file, the root helper daemon and the image all come from that release rather than from `main` and `:latest`. The generated `.env` holds the vault key, the JWT secret and the database password, so it is created `0600` inside `~/.circuitbreaker/`, which is created `0700`. An existing `.env` is never overwritten — the installer keeps it, tightens it to `0600`, and tells you to set `CB_TAG` yourself if you asked for a version.
+
 **Access at:** `https://<host>/`. Port 80 serves a redirect to HTTPS, so use the HTTPS URL — account creation requires a secure context.
 
 ---
@@ -41,7 +43,7 @@ The compose file defines one service:
 
 Published ports are `${CB_PORT:-80}:8080` (HTTP redirect) and `${CB_PORT_HTTPS:-443}:8443` (application).
 
-To pin a release, set `CB_TAG=<version>` in `.env` — the image line resolves to `${CB_IMAGE:-ghcr.io/blkleg/circuitbreaker:${CB_TAG:-latest}}`. Only `:<version>` and `:latest` tags are published.
+To pin a release, set `CB_TAG=<version>` in `.env` — the image line resolves to `${CB_IMAGE:-ghcr.io/blkleg/circuitbreaker:${CB_TAG:-latest}}`. Only `:<version>` and `:latest` tags are published. On a first install, `install.sh --docker --version <version>` writes that `CB_TAG` for you.
 
 ---
 

@@ -115,6 +115,11 @@ Set `CB_TAG` in `~/.circuitbreaker/.env` to the previous version, then:
 docker compose up -d
 ```
 
+Editing `.env` is the rollback path for an existing install: re-running `install.sh --docker
+--version <version>` preserves the `.env` you already have — secrets live in it — so it only warns
+you to set `CB_TAG`. `--version` writes `CB_TAG` itself on a first install, where there is no `.env`
+to preserve.
+
 Review the [release notes](../updates/v0.2.0-overview.md) before rolling back to check for irreversible schema changes.
 
 After 1.0 migrations run, binary downgrade is not supported. Restore the complete pre-upgrade backup

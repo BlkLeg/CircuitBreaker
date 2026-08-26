@@ -1,6 +1,6 @@
 {
   "name": "circuitbreaker",
-  "version": "1.0.0-rc.4",
+  "version": "0.4.0",
   "private": true,
   "description": "Self-hosted infrastructure discovery, monitoring, and interactive topology visualization for homelabs and private networks.",
   "directories": {

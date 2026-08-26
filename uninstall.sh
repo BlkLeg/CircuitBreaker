@@ -88,6 +88,22 @@ else
   Show 3 "Container '$CB_CONTAINER' not found — already removed or never installed."
 fi
 
+# Remove the rollback container `cb update` leaves behind.
+#
+# cb update renames the running container to <name>-prev before starting the
+# replacement, and only removes it once the new one answers /api/v1/livez — so a
+# host whose last upgrade failed, or that has no curl to poll with, still has one.
+# It mounts CB_VOLUME. Docker refuses to delete a volume a container still
+# references, so leaving it here made `docker volume rm` below fail, and this
+# script runs under `set -e`: the uninstaller aborted immediately after the
+# operator had already confirmed the irreversible data prompt, leaving the image,
+# Caddy, the config directory and /usr/local/bin/cb behind with no explanation.
+if docker ps -a --format '{{.Names}}' | grep -q "^${CB_CONTAINER}-prev$"; then
+  Show 2 "Removing rollback container: ${CB_CONTAINER}-prev"
+  docker rm -f "${CB_CONTAINER}-prev" >/dev/null
+  Show 0 "Rollback container removed."
+fi
+
 # Remove the data volume
 echo ""
 Show 3 "Data volume: $CB_VOLUME"
@@ -95,22 +111,41 @@ echo ""
 echo -e "  ${aCOLOUR[4]}WARNING:${COLOUR_RESET} Deleting the volume permanently removes all your inventory"
 echo -e "  data, including hardware, services, topology, and user accounts."
 echo ""
-printf "  Delete data volume '%s'? [Y/n] " "$CB_VOLUME"
+# This is the only step in the uninstaller that cannot be undone. The container
+# and the image both come back from a docker pull and an install.sh re-run, so
+# their prompts default to yes; the volume holds the inventory, the topology, the
+# user accounts and the vault key, and once docker volume rm returns there is
+# nothing left to restore from. So the default here is the opposite of the ones
+# below it: anything short of an explicit yes — a bare Enter, a "nope", a "No
+# thanks", a stray keystroke — keeps the data. The [yY]* glob and the [y/N]
+# marker match the config and data prompts in the Linux and macOS cleanup
+# sections further down, which have always had this shape.
+printf "  Delete data volume '%s'? [y/N] " "$CB_VOLUME"
 read -r REPLY < /dev/tty
 echo ""
 
 case "$REPLY" in
-  [nN][oO]|[nN])
-    Show 2 "Data volume retained."
-    echo "  To remove it later: docker volume rm $CB_VOLUME"
-    ;;
-  *)
+  [yY]*)
     if docker volume inspect "$CB_VOLUME" >/dev/null 2>&1; then
-      docker volume rm "$CB_VOLUME" >/dev/null
-      Show 0 "Volume '$CB_VOLUME' deleted."
+      # `if !` rather than a bare call: errexit would otherwise kill the script
+      # here without printing anything, at the one point where the operator has
+      # just said yes to something irreversible and most needs to be told what
+      # actually happened. Anything still mounting the volume keeps it alive.
+      if ! docker volume rm "$CB_VOLUME" >/dev/null 2>&1; then
+        Show 3 "Volume '$CB_VOLUME' is still in use and was NOT deleted."
+        echo "  Something still references it. Find it with:"
+        echo "    docker ps -a --filter volume=$CB_VOLUME"
+        echo "  then remove that container and re-run: docker volume rm $CB_VOLUME"
+      else
+        Show 0 "Volume '$CB_VOLUME' deleted."
+      fi
     else
       Show 3 "Volume '$CB_VOLUME' not found — may have already been removed."
     fi
+    ;;
+  *)
+    Show 2 "Data volume retained."
+    echo "  To remove it later: docker volume rm $CB_VOLUME"
     ;;
 esac
 

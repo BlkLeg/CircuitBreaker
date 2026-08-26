@@ -223,6 +223,19 @@ def test_concurrent_bootstrap_requests_create_exactly_one_first_admin(setup_db):
             session.commit()
 
     reset_committed_state()
+    # bootstrap_initialize generates a vault key and commits its hash to
+    # app_settings (auth_service._generate_and_persist_vault_key). This test
+    # drives it on committed sessions rather than the rolled-back db_session
+    # fixture, so that hash outlives the test unless it is put back — and
+    # tests/test_config_validate.py then reports the process CB_VAULT_KEY as
+    # stale against it and fails, from the other side of the suite.
+    with SessionLocal() as session:
+        _cfg = session.get(AppSettings, 1)
+        vault_state_before = {
+            "vault_key": _cfg.vault_key,
+            "vault_key_hash": _cfg.vault_key_hash,
+            "vault_key_rotated_at": _cfg.vault_key_rotated_at,
+        }
     barrier = threading.Barrier(2)
     results: list[int] = []
     lock = threading.Lock()
@@ -268,6 +281,8 @@ def test_concurrent_bootstrap_requests_create_exactly_one_first_admin(setup_db):
         session.query(UserSession).delete()
         session.query(User).delete()
         cfg.auth_enabled = True
+        for _name, _value in vault_state_before.items():
+            setattr(cfg, _name, _value)
         session.commit()
 
 

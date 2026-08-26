@@ -196,7 +196,39 @@ fi
 echo "==> Restoring database..."
 dropdb -h 127.0.0.1 -U "$CB_DB_SUPERUSER" "$CB_DB_NAME" 2>/dev/null || true
 createdb -h 127.0.0.1 -U "$CB_DB_SUPERUSER" -O "$CB_DB_OWNER" "$CB_DB_NAME"
-zcat "$SNAP_DIR/db.sql.gz" | psql -h 127.0.0.1 -U "$CB_DB_OWNER" "$CB_DB_NAME"
+# `-v ON_ERROR_STOP=1` is not optional here, and this line went without it for a long
+# time. psql's default is to report a failed statement on stderr and carry straight on
+# to the next one, exiting 0 as long as it reached the end of its input — so a replay
+# that created two tables out of ninety was indistinguishable, to `set -e` and to the
+# operator, from one that created all ninety. The script then synced uploads, rewrote
+# the vault key, started the unit and printed "Restore complete." over a database
+# missing most of its schema. That is the worst possible outcome for a disaster
+# recovery tool: the evidence the operator acts on is the success line itself.
+#
+# The failure shapes this catches are the ordinary ones for a recovery host, not exotic
+# ones: an extension the snapshot uses that this PostgreSQL cannot load, a role the dump
+# grants to that does not exist here, a server older than the one the dump came from.
+#
+# `if !` rather than a bare pipeline is required so errexit does not kill the script
+# before the message below prints; pipefail still surfaces a zcat failure. Deliberately
+# no `--single-transaction`: `cb`'s container path (cb:693, cb:696) and the snapshot
+# round-trip test replay with ON_ERROR_STOP alone, TimescaleDB — which this schema uses
+# where it is available — has its own rules about what may be replayed inside one
+# transaction, and step 10 already drops and recreates the database, so re-running the
+# restore is what cleans up a partial load.
+if ! zcat "$SNAP_DIR/db.sql.gz" \
+    | psql -h 127.0.0.1 -U "$CB_DB_OWNER" -v ON_ERROR_STOP=1 "$CB_DB_NAME"; then
+    echo "ERROR: the dump did not replay cleanly — see the psql errors above." >&2
+    echo "       The database was NOT restored and ${CB_SERVICE_UNIT} has been left" >&2
+    echo "       stopped; what is in '${CB_DB_NAME}' now is a partial load and must" >&2
+    echo "       not be served. Common causes: this host's PostgreSQL lacks an" >&2
+    echo "       extension the snapshot uses (timescaledb needs it in" >&2
+    echo "       shared_preload_libraries), a role the dump grants to does not exist" >&2
+    echo "       here, a major-version mismatch, or no disk space." >&2
+    echo "       Fix the cause and re-run with the same snapshot — step 10 drops and" >&2
+    echo "       recreates the database, so the partial load is discarded." >&2
+    exit 1
+fi
 
 # ── 11. Restore uploads ────────────────────────────────────────────────────
 

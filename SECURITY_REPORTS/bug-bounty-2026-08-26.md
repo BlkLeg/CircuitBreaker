@@ -5,8 +5,8 @@
 Of the original 35: six were fixed and committed on 2026-08-26; sixteen more carry a fix
 in the **uncommitted working tree**; thirteen remain. See
 [Remediation in progress](#remediation-in-progress--started-2026-08-26-tree-at-2d6368ac)
-for exactly which, what is still running, and the thirteen regressions the remediation
-itself introduced that must be fixed before any of it ships.
+for exactly which, and for the thirteen regressions the remediation itself introduced —
+four of them release blockers, now fixed; nine still open.
 
 Unlike every other document indexed in [`README.md`](./README.md), this one describes
 the tree as it stands now rather than as it stood in March or June. Treat the open
@@ -83,9 +83,16 @@ and two had the right conclusion for the wrong stated reason (see B05 and B09 be
 
 ### What is still running or not started
 
-* **In flight** when this was written: B11, B12 (Python half), B13, B14, B22, B23, B24,
-  B25, B26, B27, B28, B30 — one workflow, eight agents, same fix-then-refute shape.
-  Check `git status` to see which of their files already carry changes.
+* **Attempted and discarded:** B11, B12 (Python half), B13, B14, B22, B23, B24, B25,
+  B26, B27, B28, B30, B34. A second workflow was killed mid-edit and left the tree in a
+  state that could not even be collected: `test_listener_purge.py` imported a
+  `listener_purge.py` that was never created, `test_url_validation.py` and
+  `test_snapshot.py` were modified with no corresponding source change, and
+  `listener_service.py` still carried the B34 defect it was meant to remove. Those 21
+  files were reverted rather than committed — the work had no verification and no
+  adversarial review, and the reviewed wave came back 50% INCOMPLETE with real
+  regressions, so unreviewed security edits were not worth the risk. **These findings
+  remain open and untouched.**
 * **Not started:** the migration. B13 (composite index on `listener_events`), B14
   (`AppSettings.audit_chain_checkpoint_hash`) and B34 (a data repair for
   double-encoded `properties_json`) each need DDL. Agents were told **not** to write
@@ -105,17 +112,23 @@ These are not new discoveries about the old code. They are defects **in the fixe
 found by the adversarial reviewers, and each one is a reason not to ship the fix as it
 stands. Ordered by how much damage they do.
 
+**Four of the thirteen — R1, R3, R4 and R9, the release blockers — are fixed**; their
+rows say so and name the evidence. The remaining nine are open. None of the nine can take
+the product down, but R7 turns a mistyped environment variable into a 500, R8 is a real
+thread-safety regression, and R13's two vacuous tests are worse than no tests because
+they read as coverage.
+
 | # | From | What is wrong |
 |---|---|---|
-| R1 | B31 | The `map $uri $cb_cache_control` regex arm matches **proxied** image URIs, so `/branding/*`, `/user-icons/*` and `/uploads/*` now emit **two conflicting `Cache-Control` headers** (backend's `max-age=86400` and nginx's `max-age=31536000, immutable`). Reproduced live against a stub upstream. Worse, branding assets use fixed filenames with no cache-buster, so `immutable` can leave a replaced logo stale forever. Scope the map's regex arm to the static asset path. |
+| R1 | B31 | The `map $uri $cb_cache_control` regex arm matches **proxied** image URIs, so `/branding/*`, `/user-icons/*` and `/uploads/*` now emit **two conflicting `Cache-Control` headers** (backend's `max-age=86400` and nginx's `max-age=31536000, immutable`). Reproduced live against a stub upstream. Worse, branding assets use fixed filenames with no cache-buster, so `immutable` can leave a replaced logo stale forever. Scope the map's regex arm to the static asset path.  **Fixed.** An earlier map arm returns `""` for `~^/(uploads|user-icons|branding)/`, so nginx adds no header there and the backend's own survives. Verified live against a stub upstream: one `Cache-Control` on each proxied path, `immutable` only on hashed static assets, and the SPA document still carries all six security headers with exactly one CSP. |
 | R2 | B31 | `apps/backend/src/app/middleware/security_headers.py` still carries `script-src 'self' 'strict-dynamic'`. With `strict-dynamic` and no nonce the browser ignores `'self'` entirely, so the backend's own `spa_fallback` route white-pages the SPA. It is now the only copy of that string that disagrees with all four nginx configs. |
-| R3 | B19 | The new `mkdir -p "${CB_DATA_DIR}/backups"` runs as root with no `chown`, and `run_upgrade` never calls `stage1_bootstrap`. The directory stays `root:root 0755`, so the breaker-run backend can no longer write scheduled backups or the daily snapshot into it. |
-| R4 | B17 | The new `<CB_CONTAINER>-prev` container still references `CB_VOLUME`, so `docker volume rm` at `uninstall.sh:114` fails. `uninstall.sh` runs under `set -e` with no `\|\| true` there, so **the uninstaller aborts immediately after the operator confirms the irreversible data prompt**, leaving image, Caddy, config dir, systemd units and `/usr/local/bin/cb` in place. Confirmed against a real docker daemon. |
+| R3 | B19 | The new `mkdir -p "${CB_DATA_DIR}/backups"` runs as root with no `chown`, and `run_upgrade` never calls `stage1_bootstrap`. The directory stays `root:root 0755`, so the breaker-run backend can no longer write scheduled backups or the daily snapshot into it.  **Fixed.** `chown breaker:breaker` + `chmod 755` after the `mkdir`, matching what `stage1_bootstrap:137` declares for that path. Pinned by `test_a_created_backups_directory_is_handed_to_breaker`, which was watched failing with the chown removed. |
+| R4 | B17 | The new `<CB_CONTAINER>-prev` container still references `CB_VOLUME`, so `docker volume rm` at `uninstall.sh:114` fails. `uninstall.sh` runs under `set -e` with no `\|\| true` there, so **the uninstaller aborts immediately after the operator confirms the irreversible data prompt**, leaving image, Caddy, config dir, systemd units and `/usr/local/bin/cb` in place. Confirmed against a real docker daemon.  **Fixed.** `uninstall.sh` now removes `<CB_CONTAINER>-prev` before the volume, and the `docker volume rm` is wrapped in `if !` so errexit cannot kill the script silently at the one point the operator most needs to be told what happened. |
 | R5 | B17 | The docker-run-failure rollback message prints `docker rm ... && docker rename ...`; when `docker run` fails at creation there is no such container, `docker rm` exits 1, and the `&&` chain short-circuits before the rename. The printed recovery leaves the install down. Use `docker rm -f`, as the poll-timeout message already does. |
 | R6 | B17 | `docker rename ... 2>/dev/null \|\| docker rm "$CB_CONTAINER"` silently destroys the old container when the rename fails — the exact outcome the rollback insurance exists to prevent, with the error hidden. |
 | R7 | B07 | `_device_timeout_seconds()` does an unguarded `int(os.environ.get(...))`, so a non-numeric `CB_TELEMETRY_DEVICE_TIMEOUT_SECONDS` turns every manual poll into a 500. Before the fix this path read no env var at all. |
 | R8 | B07 | Moving `poll_hardware` onto `asyncio.to_thread` lets two concurrent manual polls of the same host share one cached `ILOClient` — and its `requests.Session`, which is not thread-safe — across worker threads. Previously impossible, because the call only ever ran on the loop thread. |
-| R9 | B20/B32 | `install.sh:331` claims a bad `--version` "fails loudly on the first curl (404 on the tag)". It does not: the six asset fetches have no `\|\| cb_fail` and no ERR trap, so `set -e` kills the script at exit 22 with **zero output**, leaving a half-populated `~/.circuitbreaker`. The B32 fix is what makes this path reachable, so it trades a silent wrong-revision install for a silent death and documents the opposite. |
+| R9 | B20/B32 | `install.sh:331` claims a bad `--version` "fails loudly on the first curl (404 on the tag)". It does not: the six asset fetches have no `\|\| cb_fail` and no ERR trap, so `set -e` kills the script at exit 22 with **zero output**, leaving a half-populated `~/.circuitbreaker`. The B32 fix is what makes this path reachable, so it trades a silent wrong-revision install for a silent death and documents the opposite.  **Fixed.** The five asset fetches run through a loop that `cb_fail`s with the ref and a next step, so a bad `--version` now names the tag instead of exiting 22 with a blank screen. |
 | R10 | B05 | `docs_service.export_docs_zip` has no member-count or aggregate-size cap, so an install with more than 500 docs now produces an archive **its own importer rejects with 413**. Nothing on the export side was adjusted to match the new import caps. |
 | R11 | B09 | The comment and the test both assert that `misfire_grace_time=3600` lets a restart straddling 02:00 still take the snapshot. It cannot: the scheduler uses the default `MemoryJobStore`, so the job is created fresh at boot and there is no missed fire time to grace. A maintainer who removes the parameter will be told by a failing test that it provides a protection it does not provide. |
 | R12 | B15 | `update_stream(**{**cfg, ...})` sends a partial `StreamConfig`; nats-py drops `None` fields, so `num_replicas` and `storage` are omitted and JetStream re-applies defaults. On a clustered NATS an R3 stream would be silently downgraded to R1. |

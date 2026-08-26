@@ -98,9 +98,13 @@ CB_PORT=8080
 # CB_BINARY_ENV_FILE=/etc/circuit-breaker/circuit-breaker.env
 ```
 
-`cb update` (docker mode) also reads an optional `~/.circuit-breaker/env` and passes it to
-`docker run --env-file`. That file is operator-supplied too; nothing creates it, and the command
-works without it.
+`cb update` (docker mode) also reads `~/.circuit-breaker/env` and passes it to
+`docker run --env-file`. That file is operator-supplied too; nothing creates it — and **`cb update`
+refuses to run without it**. Recreating the container discards the environment it was created
+with, so a replacement built from `CB_IMAGE` alone would start with no `CB_JWT_SECRET`,
+`CB_VAULT_KEY`, `CB_DB_PASSWORD` or `NATS_AUTH_TOKEN` and exit FATAL on the first check in
+`docker/entrypoint-mono.sh`. If you created the container with `docker run -e …`, write those same
+values into `~/.circuit-breaker/env` (one `KEY=value` per line, `chmod 600`) before upgrading.
 
 ---
 
@@ -229,6 +233,24 @@ cb update
 
 On `docker` it pulls `CB_IMAGE` and recreates the container; on `compose` it runs `docker compose
 pull` and `up -d`. `binary` installs cannot self-update — re-run `install.sh`.
+
+The `docker` path is written so a failed upgrade is recoverable:
+
+* It **refuses before it destroys anything** if `~/.circuit-breaker/env` is missing (see
+  [Configuration](#configuration) above) — without that file the replacement container has no
+  secrets and cannot start, and the old one is already gone.
+* The container that was serving is **renamed to `<CB_CONTAINER>-prev` rather than removed**, and
+  is only removed once the new one answers `/api/v1/livez`. If the upgrade fails, roll back with:
+
+  ```
+  docker rm -f circuit-breaker && docker rename circuit-breaker-prev circuit-breaker \
+    && docker start circuit-breaker
+  ```
+* Success is **the application answering `/api/v1/livez`**, not `docker run` exiting 0 — the
+  entrypoint's secret checks and the migration all run after the container is created, so a
+  crash-looping upgrade used to be reported as a success. `cb update` polls for up to two minutes
+  and fails with the rollback command above if the application never comes back. Without `curl` on
+  the host the poll is skipped and the command says so.
 
 ---
 

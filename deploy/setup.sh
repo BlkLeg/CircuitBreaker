@@ -1588,8 +1588,35 @@ run_upgrade() {
   cb_step "Creating pre-upgrade backup"
   local backup_file="${CB_DATA_DIR}/backups/pre-upgrade-$(date +%Y%m%d-%H%M%S).sql"
   if systemctl is-active circuitbreaker-pgbouncer &>/dev/null; then
-    PGPASSWORD="$CB_DB_PASSWORD" pg_dump \
-      -h 127.0.0.1 -p 6432 -U breaker circuitbreaker > "$backup_file" 2>/dev/null || true
+    # stage1_bootstrap creates ${CB_DATA_DIR}/backups, and run_upgrade never calls it.
+    # Upgrading an install that predates that directory made the redirection below fail
+    # before pg_dump ever started, which is one of the ways this used to report a
+    # backup that did not exist.
+    #
+    # The chown is not decoration. run_upgrade executes as root with umask 022, so a
+    # bare mkdir leaves the directory root:root 0755 — and the backend runs as breaker.
+    # Creating it here without handing it over would fix this dump and permanently
+    # break every scheduled one (services/db_backup.py and the daily snapshot both
+    # write into it), trading a visible failure for a silent one. breaker:breaker:755
+    # is what stage1_bootstrap:137 declares for this path; match it exactly.
+    mkdir -p "${CB_DATA_DIR}/backups"
+    chown breaker:breaker "${CB_DATA_DIR}/backups"
+    chmod 755 "${CB_DATA_DIR}/backups"
+    # Port 5432 direct, not pgbouncer on 6432: pgbouncer runs pool_mode = transaction
+    # (deploy/config/pgbouncer.ini) and pg_dump needs one session held open for the
+    # whole dump, so the pool cannot serve it. 5432 is also what CB_DB_URL points at.
+    # $PG_BIN_DIR because PGDG installs pg_dump outside root's PATH on the dnf
+    # families (/usr/pgsql-15/bin), where a bare `pg_dump` is simply not found.
+    # stderr goes to the install log so the cb_fail hint below has something to show.
+    if ! PGPASSWORD="$CB_DB_PASSWORD" "$PG_BIN_DIR/pg_dump" \
+         -h 127.0.0.1 -p 5432 -U breaker circuitbreaker > "$backup_file" 2>>"$LOG_FILE" \
+       || [[ ! -s "$backup_file" ]]; then
+      # Delete the stub first: a zero-byte file sitting alongside real dumps reads as
+      # a usable backup months later, which is worse than having none at all.
+      rm -f "$backup_file"
+      cb_fail "Pre-upgrade backup failed — refusing to upgrade without one" \
+              "Check: tail -50 ${LOG_FILE}. Take a verified backup with 'cb backup', then re-run the upgrade."
+    fi
     cb_ok "Backup saved: $backup_file"
   else
     cb_warn "Database not running - skipping backup"
