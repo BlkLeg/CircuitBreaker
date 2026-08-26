@@ -1,6 +1,26 @@
+import re
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
+
+# `service.url` is rendered into an anchor href in the UI, so a stored
+# `javascript:` payload executes in the viewer's session. The frontend refuses
+# to render an untrusted scheme (`utils/validation.safeHref`) and this stops new
+# rows carrying one; both are needed, because the frontend guard is what protects
+# rows written before this validator existed.
+_SAFE_URL_SCHEME = re.compile(r"^https?://", re.IGNORECASE)
+
+
+# Deliberately attached to the two request models rather than to `ServiceBase`:
+# the `Service` response model inherits `ServiceBase`, and a row written before
+# this validator existed would then raise on serialization and take out the whole
+# services list. Reads stay permissive and the frontend refuses to link them.
+def _validate_url_scheme(v: str | None) -> str | None:
+    if v is None or not v.strip():
+        return v
+    if not _SAFE_URL_SCHEME.match(v.strip()):
+        raise ValueError("Service URL must start with http:// or https://")
+    return v
 
 
 class PortEntry(BaseModel):
@@ -38,7 +58,10 @@ class ServiceBase(BaseModel):
 
 
 class ServiceCreate(ServiceBase):
-    pass
+    @field_validator("url")
+    @classmethod
+    def _check_url(cls, v: str | None) -> str | None:
+        return _validate_url_scheme(v)
 
 
 class ServiceUpdate(BaseModel):
@@ -59,6 +82,11 @@ class ServiceUpdate(BaseModel):
     status: str | None = None  # running | stopped | degraded | maintenance
     ip_address: str | None = None
     tags: list[str] | None = None
+
+    @field_validator("url")
+    @classmethod
+    def _check_url(cls, v: str | None) -> str | None:
+        return _validate_url_scheme(v)
 
 
 class Service(ServiceBase):

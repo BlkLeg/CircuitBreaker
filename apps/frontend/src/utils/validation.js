@@ -14,6 +14,25 @@ export function sanitizeImageSrc(url) {
   return /^(https?:|blob:)/i.test(url) || url.startsWith('/') ? url : '';
 }
 
+/**
+ * Allow only safe URL protocols for link href attributes to prevent javascript: XSS.
+ *
+ * Returns undefined rather than an empty string: an anchor with href="" points at the
+ * current page and still navigates, while an anchor with no href at all renders as
+ * inert text, which is the right shape for a URL we have decided not to trust.
+ *
+ * `service.url` is operator-supplied through the API and stored, so a row written
+ * before the schema validator existed still carries whatever it was given.
+ */
+export function safeHref(url) {
+  if (!url) return undefined;
+  if (/^(https?:|mailto:)/i.test(url)) return url;
+  // A same-origin path is safe, but `//evil.test` is protocol-relative and navigates
+  // off-origin while reading as an internal link — so a single leading slash only.
+  if (url.startsWith('/') && !url.startsWith('//')) return url;
+  return undefined;
+}
+
 const IPV4_REGEX =
   /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
 

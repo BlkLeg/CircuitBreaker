@@ -4,6 +4,7 @@ import Drawer from '../common/Drawer';
 import MapAssignSection from './MapAssignSection';
 import MonitorPanel from '../monitors/MonitorPanel';
 import logger from '../../utils/logger';
+import { safeHref } from '../../utils/validation';
 import DocsPanel from '../common/DocsPanel';
 import {
   computeUnitsApi,
@@ -582,7 +583,7 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
                   </div>
                   {svc.url && (
                     <a
-                      href={svc.url}
+                      href={safeHref(svc.url)}
                       target="_blank"
                       rel="noreferrer"
                       className="btn btn-sm"

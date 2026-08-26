@@ -4,6 +4,7 @@ import DocsPanel from '../common/DocsPanel';
 import ConfirmDialog from '../common/ConfirmDialog';
 import { useToast } from '../common/Toast';
 import logger from '../../utils/logger';
+import { safeHref } from '../../utils/validation';
 import { servicesApi, storageApi, miscApi } from '../../api/client';
 import { Database, Box, Trash2, ArrowRight } from 'lucide-react';
 import VulnerabilityPanel from './VulnerabilityPanel';
@@ -197,7 +198,7 @@ function ServiceDetail({ service, isOpen, onClose }) {
             </div>
             <div className="field-group">
               <label>URL</label>
-              <a href={service.url} target="_blank" rel="noreferrer">
+              <a href={safeHref(service.url)} target="_blank" rel="noreferrer">
                 {service.url}
               </a>
             </div>
