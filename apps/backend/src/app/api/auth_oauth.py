@@ -602,6 +602,26 @@ def github_authorize(
     return RedirectResponse(f"https://github.com/login/oauth/authorize?{params}", status_code=302)
 
 
+def select_github_email(emails: list[dict]) -> str | None:
+    """Pick the address GitHub has proven this account holds, or None.
+
+    The account key for sign-in is the email, so an address GitHub has not verified
+    cannot be allowed to select an account. Anyone may add any address to a GitHub
+    account; only the verification proves they hold it.
+
+    The previous fallback here took `emails[0]["email"]` whenever no primary-and-verified
+    address was found, with no verification check at all — so an attacker who added a
+    target's address to their own GitHub account and left it unverified signed in as that
+    target. Unverified addresses are now never eligible; the caller's existing 400
+    handles an account that has none.
+    """
+    verified = [e for e in emails if e.get("verified")]
+    primary = next((e["email"] for e in verified if e.get("primary")), None)
+    if primary:
+        return primary
+    return next((e["email"] for e in verified), None)
+
+
 @router.get("/oauth/github/callback")
 @limiter.limit(lambda: get_limit("auth"))
 async def github_callback(
@@ -644,12 +664,7 @@ async def github_callback(
                 headers={"Authorization": f"Bearer {access_token}"},
                 timeout=10.0,
             )
-            emails = _json_or_502(emails_resp, "GitHub", "email lookup")
-            email = next(
-                (e["email"] for e in emails if e.get("primary") and e.get("verified")), None
-            )
-            if not email and emails:
-                email = emails[0]["email"]
+            email = select_github_email(_json_or_502(emails_resp, "GitHub", "email lookup"))
 
     if not email:
         raise HTTPException(400, "Could not obtain email from GitHub account")
