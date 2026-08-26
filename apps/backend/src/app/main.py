@@ -1380,11 +1380,14 @@ async def lifespan(app: FastAPI):
             "must run as separate containers."
         )
 
-    # ── Phase 9: Update check (non-blocking) ────────────────────────────
+    # ── Phase 9: Update check (non-blocking, daily) ─────────────────────
+    # Appended to _worker_tasks so shutdown cancels it. Deliberately outside
+    # the inprocess worker conditional: knowing the build is stale is not
+    # a worker concern.
     try:
-        from app.core.update_check import log_update_notice
+        from app.core.update_check import run_update_check_loop
 
-        asyncio.create_task(log_update_notice(settings.app_version))
+        _worker_tasks.append(asyncio.create_task(run_update_check_loop()))
     except Exception:
         pass  # Never let update check affect startup
 
