@@ -17,7 +17,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any
+
+from nats.js.api import RetentionPolicy
 
 from app.core.nats_client import nats_client
 from app.core.time import utcnow
@@ -43,19 +46,77 @@ _CACHE_TTL_SECONDS = 60
 # ── Stream bootstrap ──────────────────────────────────────────────────────────
 
 
+def _stream_config() -> dict[str, Any]:
+    """The TELEMETRY stream config this build wants.
+
+    Read fresh on every call so the env knobs take effect on a worker restart rather
+    than only on the process that first created the stream.
+
+    The stream used to be declared with nothing but a name and a subject list, which is
+    JetStream's LimitsPolicy with no max_msgs, no max_bytes and no max_age — i.e. keep
+    every message forever, acked or not. `telemetry_collector` publishes one message per
+    device per poll cycle (30s by default), so the NATS volume grew without bound until
+    the disk filled, at which point every publisher on the box starts failing at once and
+    the loss is nowhere near limited to telemetry.
+    """
+    return {
+        "name": _STREAM_NAME,
+        "subjects": [_SUBJECT_FILTER],
+        # WorkQueuePolicy, matching MONITOR_POLL and MONITOR_PROBE in core/nats_client.py:
+        # `run_ingest_loop` acks every message it has written, so an acked sample is
+        # deleted instead of retained and the steady-state stream size is the backlog,
+        # not the history. Legal here because the ingest worker is the stream's only
+        # consumer — a work queue forbids two consumers with overlapping subject filters,
+        # and every replica shares the one `telemetry_ingest` durable.
+        "retention": RetentionPolicy.WORK_QUEUE,
+        # Belt and braces for the window where the ingest worker is down and nothing is
+        # acking: telemetry has no value once it is an hour stale, and 256 MiB is far
+        # more backlog than the batch loop could ever usefully drain.
+        "max_age": int(os.getenv("CB_TELEMETRY_STREAM_MAX_AGE_S", "3600")),
+        "max_bytes": int(os.getenv("CB_TELEMETRY_STREAM_MAX_BYTES", str(256 * 1024 * 1024))),
+    }
+
+
+async def _update_stream_limits(js: Any, cfg: dict[str, Any]) -> None:
+    """Retro-fit `cfg`'s limits onto a stream that already exists.
+
+    `add_stream` against a stream whose stored config differs reports "stream name
+    already in use" — the same string an identical stream never produces. Swallowing
+    that at debug level, as this worker used to, means an upgraded deployment keeps the
+    limitless stream it was created with forever and never sees a byte of this fix, so
+    the mismatch branch has to reach back and update the stream in place.
+
+    The retention policy is deliberately taken from the *server's* copy rather than from
+    `cfg`. JetStream refuses a stream update that changes retention and rejects the whole
+    request when it sees one, so sending WorkQueuePolicy at a stream created under
+    LimitsPolicy would throw the max_age/max_bytes fix away along with it. Existing
+    installs therefore stay LimitsPolicy and merely become bounded, which is the part
+    that actually closes the disk-exhaustion path; only streams created from scratch get
+    the work queue.
+    """
+    name = cfg["name"]
+    try:
+        info = await js.stream_info(name)
+        await js.update_stream(**{**cfg, "retention": info.config.retention})
+        _logger.info("NATS %s stream limits updated", name)
+    except Exception as exc:  # noqa: BLE001
+        _logger.warning("NATS %s stream limits update failed: %s", name, exc)
+
+
 async def _ensure_stream() -> None:
-    """Create the TELEMETRY JetStream stream if it does not exist."""
+    """Create the TELEMETRY JetStream stream, or bound one an older build left limitless."""
     if not nats_client.is_connected or not nats_client._nc:
         return
     try:
         js = nats_client._nc.jetstream()
+        cfg = _stream_config()
         try:
-            await js.add_stream(name=_STREAM_NAME, subjects=[_SUBJECT_FILTER])
+            await js.add_stream(**cfg)
             _logger.info("NATS %s stream created", _STREAM_NAME)
         except Exception as exc:
             msg = str(exc).lower()
             if "already in use" in msg or "already exists" in msg or "name already in use" in msg:
-                _logger.debug("NATS %s stream already exists", _STREAM_NAME)
+                await _update_stream_limits(js, cfg)
             else:
                 _logger.warning("NATS %s stream ensure failed: %s", _STREAM_NAME, exc)
     except Exception as exc:

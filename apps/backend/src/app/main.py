@@ -1007,6 +1007,27 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
     )
 
+    # Daily full-state snapshot at 02:00 — the tarball that carries the vault
+    # key, the uploads and the config, and the only artifact `cb restore`
+    # accepts. Registered here rather than in `core.scheduler.reload_discovery_jobs`,
+    # which runs only when an administrator writes a discovery profile and first
+    # removes every job it registered: a snapshot job added there exists only in
+    # the stretch between a profile write and the next restart. Nothing surfaces
+    # the gap, because `latest_backup_info()` reports the `pg_backup` artifact
+    # scheduled just above — the absence is discovered at restore time, which is
+    # the one moment it cannot be repaired. `misfire_grace_time` matches
+    # `daily_uptime_rollup`/`discovery_purge` so a restart that straddles 02:00
+    # still takes the snapshot instead of APScheduler silently dropping the run.
+    from app.core.scheduler import run_scheduled_snapshot
+
+    scheduler.add_job(
+        run_scheduled_snapshot,
+        trigger=CronTrigger(hour=2, minute=0),
+        id="daily_db_snapshot",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
     # Uptime Kuma integration sync — every 60 seconds
     from apscheduler.triggers.interval import IntervalTrigger
 

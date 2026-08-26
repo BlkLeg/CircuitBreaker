@@ -1,9 +1,12 @@
 import asyncio
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
+
+from nats.js.api import RetentionPolicy
 
 from app.core.nats_client import nats_client
 from app.core.nmap_args import validate_nmap_arguments
@@ -100,14 +103,63 @@ async def process_job(msg: Any, semaphore: asyncio.Semaphore) -> None:
                 pass
 
 
+def _stream_config() -> dict[str, Any]:
+    """The DISCOVERY stream config this build wants.
+
+    The stream used to be declared with just a name and a subject, i.e. LimitsPolicy with
+    no max_msgs, no max_bytes and no max_age — every job kept forever, acked or not. See
+    `workers/telemetry_ingest_worker._stream_config` for the long form of why that is a
+    disk-exhaustion path; the shape below is the same one.
+    """
+    return {
+        "name": "DISCOVERY",
+        "subjects": ["discovery.jobs"],
+        # `process_job` acks a finished scan and naks a failed one, so a work queue is
+        # right here too: a job that has been run has no reason to stay on disk. The
+        # queue group is what keeps this legal — nats-py turns `queue` into the durable
+        # consumer name (see `subscribe` below), so every replica shares one consumer
+        # rather than each adding another with the same subject filter, which a work
+        # queue would reject.
+        "retention": RetentionPolicy.WORK_QUEUE,
+        # A discovery job whose scan window has long passed is not worth running: a
+        # single job is capped at _JOB_TIMEOUT_S, so an hour is many jobs' worth of slack.
+        "max_age": int(os.getenv("CB_DISCOVERY_STREAM_MAX_AGE_S", "3600")),
+        "max_bytes": int(os.getenv("CB_DISCOVERY_STREAM_MAX_BYTES", str(64 * 1024 * 1024))),
+    }
+
+
+async def _update_stream_limits(js: Any, cfg: dict[str, Any]) -> None:
+    """Retro-fit `cfg`'s limits onto a DISCOVERY stream that already exists.
+
+    `add_stream` reports a config mismatch as "stream name already in use", which this
+    worker used to log as "Stream may already exist" and move on — so an upgraded
+    deployment would have kept its limitless stream forever. Retention is taken from the
+    server's stored config rather than from `cfg` because JetStream rejects an update
+    that changes it, and rejects the whole request along with it. Same reasoning, at
+    length, in `workers/telemetry_ingest_worker._update_stream_limits`.
+    """
+    name = cfg["name"]
+    try:
+        info = await js.stream_info(name)
+        await js.update_stream(**{**cfg, "retention": info.config.retention})
+        logger.info("NATS %s stream limits updated", name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("NATS %s stream limits update failed: %s", name, exc)
+
+
 async def _setup_jetstream(semaphore: asyncio.Semaphore) -> bool:
     """Create stream and subscribe via JetStream. Returns True on success."""
     try:
         js = nats_client._nc.jetstream()
+        cfg = _stream_config()
         try:
-            await js.add_stream(name="DISCOVERY", subjects=["discovery.jobs"])
+            await js.add_stream(**cfg)
         except Exception as e:
-            logger.warning("Stream may already exist: %s", e)
+            msg = str(e).lower()
+            if "already in use" in msg or "already exists" in msg:
+                await _update_stream_limits(js, cfg)
+            else:
+                logger.warning("DISCOVERY stream ensure failed: %s", e)
 
         def cb(msg: Any) -> None:
             asyncio.create_task(process_job(msg, semaphore))

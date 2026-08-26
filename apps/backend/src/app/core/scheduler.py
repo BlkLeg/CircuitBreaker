@@ -71,8 +71,16 @@ def shutdown_scheduler() -> None:
         logger.info("APScheduler stopped")
 
 
-async def _run_scheduled_snapshot() -> None:
-    """Scheduled wrapper for run_full_snapshot — called by APScheduler daily at 02:00."""
+async def run_scheduled_snapshot() -> None:
+    """Scheduled wrapper for run_full_snapshot — called by APScheduler daily at 02:00.
+
+    The job body lives here; its *registration* lives in `app.main.lifespan`.
+    This function used to be registered by `reload_discovery_jobs` below, which
+    runs only when an administrator writes a discovery profile — so a process
+    that never saw such a write took no full-state snapshot at all, and nothing
+    surfaced the gap: `latest_backup_info()` reports the `pg_backup` artifact,
+    which is scheduled separately and kept being produced either way.
+    """
     from app.db.session import SessionLocal
     from app.services.backup.snapshot import BackupError
     from app.services.db_backup import run_full_snapshot
@@ -150,12 +158,4 @@ def reload_discovery_jobs(db: Session) -> None:
         id="daily_uptime_rollup",
         replace_existing=True,
         misfire_grace_time=3600,
-    )
-
-    # Daily full-state snapshot at 02:00
-    scheduler.add_job(
-        _run_scheduled_snapshot,
-        CronTrigger(hour=2, minute=0),
-        id="daily_db_snapshot",
-        replace_existing=True,
     )
