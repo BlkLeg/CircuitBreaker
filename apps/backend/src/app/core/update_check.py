@@ -24,7 +24,7 @@ import httpx
 from app.core import version as _version
 from app.core.config import settings
 from app.core.install_method import detect_install_method, upgrade_command
-from app.core.url_validation import configured_egress_proxy_url
+from app.core.url_validation import outbound_async_client
 
 logger = logging.getLogger("circuitbreaker.update_check")
 
@@ -167,16 +167,18 @@ async def refresh() -> UpdateState:
     if _state.etag:
         headers["If-None-Match"] = _state.etag
 
-    kwargs = {"timeout": CHECK_TIMEOUT, "headers": headers}
-    proxy = configured_egress_proxy_url()
-    if proxy:
-        kwargs["proxy"] = proxy
     transport = _transport()
+    kwargs: dict = {"timeout": CHECK_TIMEOUT, "headers": headers}
     if transport is not None:
         kwargs["transport"] = transport
 
     try:
-        async with httpx.AsyncClient(**kwargs) as client:
+        # outbound_async_client applies the configured egress proxy and pins
+        # trust_env=False with it, the same way threat_feed, auth_oauth,
+        # notifications and notification_worker reach the network. Hand-rolling
+        # the proxy wiring here left this the one outbound caller that still
+        # honoured an ambient HTTPS_PROXY.
+        async with outbound_async_client(**kwargs) as client:
             resp = await client.get(GITHUB_RELEASES_URL, params={"per_page": RELEASES_PER_PAGE})
             if resp.status_code == 304:
                 # Restore the status the etag was earned under; see UpdateState.

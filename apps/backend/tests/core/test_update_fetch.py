@@ -221,3 +221,31 @@ async def test_the_release_list_is_requested_100_at_a_time(monkeypatch):
     monkeypatch.setattr(update_check, "_transport", lambda: _transport(_handler))
     await update_check.refresh()
     assert "per_page=100" in seen["url"], seen["url"]
+
+
+async def test_the_configured_egress_proxy_is_honoured(monkeypatch):
+    """MINOR-C: routed through outbound_async_client like every other caller,
+    so an explicit CB_EGRESS_PROXY_URL applies and trust_env is pinned off."""
+    captured = {}
+    real = update_check.outbound_async_client
+
+    def _spy(**kwargs):
+        client = real(**kwargs)
+        captured["mounts"] = dict(client._mounts)
+        captured["trust_env"] = client.trust_env
+        return client
+
+    monkeypatch.setattr(update_check.settings, "app_version", "1.0.0-rc.2")
+    monkeypatch.setattr(update_check.settings, "airgap", False)
+    monkeypatch.setattr(update_check.settings, "update_check", True)
+    monkeypatch.setattr(update_check.settings, "egress_proxy_url", "http://proxy.internal:3128")
+    monkeypatch.setattr(update_check, "outbound_async_client", _spy)
+    monkeypatch.setattr(
+        update_check,
+        "_transport",
+        lambda: _transport(lambda r: httpx.Response(200, json=RELEASES)),
+    )
+    await update_check.refresh()
+
+    assert captured["trust_env"] is False, "an ambient HTTPS_PROXY must not reach this caller"
+    assert captured["mounts"], "the configured egress proxy must be mounted"
