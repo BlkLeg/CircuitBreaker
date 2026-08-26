@@ -56,6 +56,34 @@ def _validate_router_command(cmd: str) -> None:
         )
 
 
+# A router login name, conservatively. Real router accounts are `admin`, `root`,
+# `ubnt`, occasionally a domain-style `svc.discovery@lab.local` — none of which
+# need a character outside this set, and none of which start with a dash.
+#
+# The leading character matters most: the sshpass argv below ends in a
+# `user@host` destination token, and a username beginning with `-` turns that
+# token into an ssh *option*. `-oProxyCommand=…` is the sharp end of that — it
+# runs a local command on the API host. The `--` in the argv already stops ssh
+# reading it that way, but the asyncssh path hands the username straight to
+# SSHClientConnectionOptions where no `--` can reach it, so the value itself is
+# checked once, here, before either transport sees it.
+_ROUTER_USERNAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._@-]{0,63}$")
+
+
+def _validate_router_username(username: str) -> None:
+    """Reject router usernames that are not plausibly usernames.
+
+    Raises ValueError if the value is empty, over-long, or contains anything
+    outside the conservative set above — including a leading dash, which is
+    what makes a destination token parse as an ssh option.
+    """
+    if not _ROUTER_USERNAME_RE.match(username):
+        raise ValueError(
+            "dhcp_router_username must be 1-64 characters of letters, digits, "
+            "'.', '_', '-' or '@', and must not begin with '-' or '.'"
+        )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Lease file paths tried automatically (in order) when no path is configured
 # ─────────────────────────────────────────────────────────────────────────────
@@ -213,6 +241,12 @@ async def _run_router_ssh_dhcp(
         )  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
         return []
 
+    try:
+        _validate_router_username(username)
+    except ValueError as exc:
+        logger.warning("DHCP SSH: rejected unsafe router username — %s", exc)
+        return []
+
     output: str | None = None
 
     # Try asyncssh first (preferred — pure Python, no subprocess)
@@ -254,6 +288,10 @@ async def _run_router_ssh_dhcp(
             "BatchMode=no",
             "-o",
             f"ConnectTimeout={int(timeout)}",
+            # Everything after "--" is a destination and then the remote command,
+            # whatever it starts with. Belt to the _validate_router_username
+            # braces: the host comes from settings too.
+            "--",
             f"{username}@{host}",
             command,
         ]

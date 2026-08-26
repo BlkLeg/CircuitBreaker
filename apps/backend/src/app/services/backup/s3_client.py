@@ -13,6 +13,7 @@ import logging
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
@@ -129,12 +130,31 @@ class S3Client:
             raise S3Error(f"S3 upload failed: {exc}") from exc
 
     async def list_snapshots(self) -> list[S3Snapshot]:
-        """List snapshot objects sorted by last_modified ascending."""
+        """List snapshot objects sorted by last_modified ascending.
+
+        Only cb-snapshot-*.tar.gz keys are returned — the same filter
+        prune_local applies on disk. The prefix is a location the operator
+        chooses, not a namespace we own: the .cb-probe object probe() writes
+        there and anything the operator already kept under that path share it.
+        prune_remote deletes every object this method returns beyond the
+        retention count, so an unfiltered listing both miscounts retention
+        and eventually deletes files that were never ours.
+
+        Matching is case-sensitive (fnmatchcase rather than fnmatch) because
+        S3 keys are case-sensitive; plain fnmatch would fold case according
+        to the host OS's filename rules, which have nothing to do with the
+        bucket.
+        """
         prefix = self._settings.prefix.rstrip("/") + "/"
         try:
             results = await asyncio.to_thread(self._list_objects_sync, prefix)
         except (BotoCoreError, ClientError) as exc:
             raise S3Error(f"S3 list failed: {exc}") from exc
+        results = [
+            snap
+            for snap in results
+            if fnmatchcase(snap.key.rsplit("/", 1)[-1], "cb-snapshot-*.tar.gz")
+        ]
         results.sort(key=lambda s: s.last_modified)
         return results
 

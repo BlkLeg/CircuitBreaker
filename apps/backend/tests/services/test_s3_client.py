@@ -102,3 +102,31 @@ async def test_s3_error_on_missing_bucket(aws_credentials: None) -> None:
         client = S3Client(settings)
         with pytest.raises(S3Error):
             await client.probe()
+
+
+@pytest.mark.asyncio
+async def test_list_snapshots_ignores_non_snapshot_objects(s3_bucket: None) -> None:
+    """list_snapshots() returns only cb-snapshot-*.tar.gz keys.
+
+    prune_remote() deletes everything list_snapshots() returns beyond the
+    retention count, so anything else living under the configured prefix —
+    the .cb-probe object probe() writes there, or files the operator already
+    had in that bucket path — would be counted against retention and
+    eventually deleted. The listing is the only place that can draw the line.
+    """
+    s3 = boto3.client("s3", region_name="us-east-1")
+    prefix = TEST_SETTINGS.prefix.rstrip("/")
+    for name in [
+        "cb-snapshot-20260320.tar.gz",
+        "cb-snapshot-20260322.tar.gz",
+        ".cb-probe",
+        "someone-elses-file.tar",
+    ]:
+        s3.put_object(Bucket=TEST_SETTINGS.bucket, Key=f"{prefix}/{name}", Body=b"x")
+
+    client = S3Client(TEST_SETTINGS)
+    snapshots = await client.list_snapshots()
+
+    assert len(snapshots) == 2
+    assert all(s.key.endswith(".tar.gz") for s in snapshots)
+    assert all("cb-snapshot-" in s.key.rsplit("/", 1)[-1] for s in snapshots)

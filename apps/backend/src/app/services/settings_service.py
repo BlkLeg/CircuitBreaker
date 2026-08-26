@@ -164,8 +164,19 @@ def update_settings(
             continue
         elif field == "dhcp_router_username":
             from app.services.credential_vault import get_vault
+            from app.services.discovery_dhcp import _validate_router_username
 
             if value:
+                # Refuse the value here rather than at discovery time. A username
+                # shaped like an ssh option ("-oProxyCommand=…") is rejected by
+                # the DHCP tier too, but only silently, once per sweep — the
+                # settings page would have reported the save as a success and
+                # then router discovery would return nothing forever with no
+                # visible reason. Fail the write so the operator sees why.
+                try:
+                    _validate_router_username(value)
+                except ValueError as e:
+                    raise HTTPException(status_code=422, detail=str(e)) from e
                 try:
                     row.dhcp_router_user_enc = get_vault().encrypt(value)
                 except RuntimeError as e:
