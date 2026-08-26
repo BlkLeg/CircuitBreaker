@@ -186,7 +186,7 @@ class HttpMetricsMiddleware:
         started = time.perf_counter()
         status_holder = {"status": 500}
 
-        async def _send(message: dict) -> None:
+        async def _send(message: Send) -> None:
             if message["type"] == "http.response.start":
                 status_holder["status"] = int(message["status"])
             await send(message)

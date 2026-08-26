@@ -47,6 +47,7 @@ class SingleActiveLease:
         if self._db is None:
             self._db = lock_session()
             self._lock_id = _lock_id_for("worker_lease", self._name)
+        assert self._lock_id is not None
         self._held = try_advisory_lock(self._db, self._lock_id)
         return self._held
 
@@ -58,6 +59,7 @@ class SingleActiveLease:
             return
         try:
             if self._held:
+                assert self._lock_id is not None
                 advisory_unlock(self._db, self._lock_id)
         finally:
             self._held = False
