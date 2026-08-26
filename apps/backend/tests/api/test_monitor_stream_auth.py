@@ -257,31 +257,26 @@ def test_monitor_stream_filters_wrong_tenant_subscriptions(ws_client, app_cfg, m
 def test_monitor_stream_service_jwt_requires_read_scope(
     ws_client, app_cfg, db_session, token_scopes, accepted
 ):
-    from app.core.security import create_token
-    from app.services.settings_service import get_or_create_settings
+    from tests.helpers.service_account import service_account_on_its_own_connection
 
-    cfg = get_or_create_settings(db_session)
-    token = create_token(
-        0,
-        cfg.jwt_secret,
-        1,
-        scopes=token_scopes,
-        extra_claims={"label": "SEC-08 monitor stream service token"},
-    )
-
-    with ws_client.websocket_connect(
-        "/api/v1/monitors/stream",
-        headers={"Authorization": f"Bearer {token}"},
-    ) as ws:
-        ws.send_text(token)
-        first = json.loads(ws.receive_text())
-        if accepted:
-            assert first == {"status": "connected"}
-        else:
-            assert first == {"error": "unauthorized"}
-            with pytest.raises(Exception) as exc_info:  # noqa: B017
-                ws.receive_text()
-            assert getattr(exc_info.value, "code", None) in {1008, 4401}
+    # The stream opens its own SessionLocal(), so the APIToken row backing this token
+    # has to be committed outside the fixture's SAVEPOINT to be visible to it.
+    with service_account_on_its_own_connection(
+        db_session, scopes=token_scopes, label="SEC-08 monitor stream service token", hours=1
+    ) as token:
+        with ws_client.websocket_connect(
+            "/api/v1/monitors/stream",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as ws:
+            ws.send_text(token)
+            first = json.loads(ws.receive_text())
+            if accepted:
+                assert first == {"status": "connected"}
+            else:
+                assert first == {"error": "unauthorized"}
+                with pytest.raises(Exception) as exc_info:  # noqa: B017
+                    ws.receive_text()
+                assert getattr(exc_info.value, "code", None) in {1008, 4401}
 
 
 def test_monitor_stream_rejects_expired_demo_identity(ws_client, app_cfg):

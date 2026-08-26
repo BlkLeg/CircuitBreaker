@@ -479,6 +479,7 @@ class CreateServiceAccountRequest(BaseModel):
 @limiter.limit(lambda: get_limit("auth"))
 def create_service_account(
     request: Request,
+    response: Response,
     payload: CreateServiceAccountRequest,
     current_user: Annotated[User, require_role("admin")],
     db: Session = Depends(get_db),
@@ -514,7 +515,7 @@ def create_service_account(
         cfg.jwt_secret,
         expires_delta or 8760,  # Default 1 year
         scopes=payload.scopes,
-        extra_claims={"label": payload.label},
+        extra_claims={"label": payload.label, "jti": secrets.token_urlsafe(16)},
     )
 
     token_hash = create_salted_api_token_hash(token)
@@ -654,6 +655,18 @@ def revoke_api_token(
     invalidate_token_cache()
 
 
+def _hours_until(expires_at) -> int | None:
+    """Whole hours from now until `expires_at`, or None when the row never expires.
+
+    Returns at least 1 so a rotation close to expiry still mints a usable token; the
+    APIToken row's own `expires_at` is what actually retires it either way.
+    """
+    if not expires_at:
+        return None
+    delta = expires_at - utcnow()
+    return max(1, int(delta.total_seconds() / 3600))
+
+
 @router.post("/api-tokens/{token_id}/rotate", response_model=CreateAPITokenResponse, tags=["auth"])
 @limiter.limit(lambda: get_limit("auth"))
 def rotate_api_token(
@@ -668,12 +681,32 @@ def rotate_api_token(
     if not old:
         raise HTTPException(status_code=404, detail="API token not found")
 
-    raw_token = secrets.token_urlsafe(32)
+    scopes = list(old.scopes or [])
+    if old.label and old.label.startswith(_SERVICE_ACCOUNT_LABEL_PREFIX):
+        # A service account authenticates as the sentinel with its scopes carried in
+        # the JWT. Re-minting it as an opaque string moved it to the static-token
+        # branch, which resolves as `created_by` — so rotating a read-only service
+        # account silently handed it the rotating admin's own permissions.
+        cfg = get_or_create_settings(db)
+        if not cfg.jwt_secret:
+            raise HTTPException(status_code=503, detail="Auth not configured")
+        raw_token = create_token(
+            0,
+            cfg.jwt_secret,
+            _hours_until(old.expires_at) or 8760,
+            scopes=scopes,
+            extra_claims={
+                "label": old.label.removeprefix(_SERVICE_ACCOUNT_LABEL_PREFIX),
+                "jti": secrets.token_urlsafe(16),
+            },
+        )
+    else:
+        raw_token = secrets.token_urlsafe(32)
     replacement = APIToken(
         token_hash=create_salted_api_token_hash(raw_token),
         label=old.label,
         created_by=current_user.id,
-        scopes=list(old.scopes or []),
+        scopes=scopes,
         expires_at=old.expires_at,
     )
     db.add(replacement)

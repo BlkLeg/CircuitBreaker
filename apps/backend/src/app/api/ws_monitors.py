@@ -39,6 +39,7 @@ from app.core.rbac import effective_scopes, has_scope
 from app.core.redis import get_redis
 from app.core.security import (
     SESSION_AUDIENCE,
+    service_account_token_is_live,
     verify_salted_api_token_hash,
 )
 from app.core.time import utcnow, utcnow_iso
@@ -217,6 +218,12 @@ def _authenticate_monitor_reader(db: Any, raw_token: str) -> Any | None:
         except (TypeError, ValueError):
             uid = None
         if uid == 0:
+            # Same gate as core.security.resolve_optional_user_id_sync: a
+            # service-account JWT is live only while its APIToken row is. This
+            # branch short-circuits ahead of the scan below, so without the check
+            # a revoked or rotated token kept its monitor stream open.
+            if not service_account_token_is_live(db, raw_token):
+                return None
             token_scopes = _normalise_scope_set(payload.get("scopes"))
             if not _has_monitor_read_scope(
                 _reader_snapshot(SimpleNamespace(id=0, role="admin", is_active=True)),

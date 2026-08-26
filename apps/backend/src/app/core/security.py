@@ -334,6 +334,9 @@ def create_token(
         "exp": utcnow() + timedelta(hours=timeout_hours or 24),
         "aud": SESSION_AUDIENCE,
     }
+    # Callers that need every mint to be distinct — rotating a service account —
+    # pass a `jti` through extra_claims. Without one, two tokens minted in the same
+    # second with the same claims are byte-identical, which makes "rotate" a no-op.
     if role:
         payload["role"] = role
     if scopes is not None:
@@ -452,6 +455,24 @@ def _is_pre_bootstrap_setup_surface(request: HTTPConnection) -> bool:
     return False
 
 
+def service_account_token_is_live(db: Session, raw_token: str) -> bool:
+    """True when `raw_token` still matches an unexpired APIToken row.
+
+    `create_service_account` stores a salted hash of the JWT it mints "for tracking
+    and revocation"; this is the read that makes the second half of that true. The
+    row's own `expires_at` is honoured as well as the JWT's `exp`, so shortening a
+    token's life through the row takes effect immediately.
+    """
+    from app.db.models import APIToken
+
+    for candidate in db.query(APIToken).all():
+        if verify_salted_api_token_hash(raw_token, candidate.token_hash or ""):
+            if candidate.expires_at and candidate.expires_at <= utcnow():
+                return False
+            return True
+    return False
+
+
 def resolve_optional_user_id_sync(db: Session, request: HTTPConnection) -> int | None:
     """Return the authenticated user_id, or None if absent/invalid (synchronous).
 
@@ -509,12 +530,27 @@ def resolve_optional_user_id_sync(db: Session, request: HTTPConnection) -> int |
         uid_raw = payload.get("user_id")
         if uid_raw is not None:
             uid_int = int(uid_raw)
-            if _is_user_accessible(db, uid_int):
-                token_scopes = (
-                    _normalise_token_scopes(payload.get("scopes")) if uid_int == 0 else None
-                )
-                _session_cache_set(token_hash, uid_int, token_scopes)
+            if uid_int == 0:
+                # A service-account JWT is live only while its APIToken row is.
+                # `_is_user_accessible` returns True unconditionally for the
+                # sentinel, so without this the JWT authenticated on signature
+                # alone: revoking the row, or rotating it, left the credential
+                # working until its own `exp` — a year by default.
+                #
+                # The scan verifies rather than looks up, because the salt is
+                # per-token random. It costs the same scan opaque tokens already
+                # pay, and only on a cache miss: `_session_cache` holds the
+                # answer for 10s and `invalidate_token_cache()` runs on revoke
+                # and rotate, so a withdrawal is visible within that window.
+                if not service_account_token_is_live(db, raw_token):
+                    return None
+                token_scopes = _normalise_token_scopes(payload.get("scopes"))
+                _session_cache_set(token_hash, 0, token_scopes)
                 _set_request_token_scopes(request, token_scopes)
+                return 0
+            if _is_user_accessible(db, uid_int):
+                _session_cache_set(token_hash, uid_int, None)
+                _set_request_token_scopes(request, None)
                 return uid_int
             return None
     except (jwt.PyJWTError, ValueError, TypeError):

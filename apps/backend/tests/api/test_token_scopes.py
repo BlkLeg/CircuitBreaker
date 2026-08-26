@@ -85,12 +85,14 @@ async def test_legacy_scopeless_token_inherits_a_viewers_limits_too(client, db_s
 
 
 @pytest.mark.asyncio
-async def test_service_account_jwt_with_empty_scopes_is_denied_not_promoted(client, db_session):
-    from app.core.security import create_token
-    from app.services.settings_service import get_or_create_settings
+async def test_service_account_jwt_with_empty_scopes_is_denied_not_promoted(
+    client, db_session, admin_user
+):
+    # admin_user only owns the APIToken row the service account needs; the request
+    # below still authenticates as the service account, not as that admin.
+    from tests.helpers.service_account import mint_service_account_token
 
-    cfg = get_or_create_settings(db_session)
-    token = create_token(0, cfg.jwt_secret, 24, scopes=[], extra_claims={"label": "empty"})
+    token = mint_service_account_token(db_session, scopes=[], label="empty")
     headers = {"Authorization": f"Bearer {token}"}
     assert (await client.get("/api/v1/kb/oui", headers=headers)).status_code == 403
     assert (await client.get("/api/v1/hardware", headers=headers)).status_code == 403

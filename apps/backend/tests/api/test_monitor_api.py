@@ -184,16 +184,10 @@ async def test_monitor_reads_reject_service_account_jwt_without_read_scope(
 ):
     mid = (await _create(client, auth_headers)).json()["id"]
 
-    from app.core.security import create_token
-    from app.services.settings_service import get_or_create_settings
+    from tests.helpers.service_account import mint_service_account_token
 
-    cfg = get_or_create_settings(db_session)
-    token = create_token(
-        0,
-        cfg.jwt_secret,
-        1,
-        scopes=["write:*"],
-        extra_claims={"label": "SEC-08 write-only service account"},
+    token = mint_service_account_token(
+        db_session, scopes=["write:*"], label="SEC-08 write-only service account", hours=1
     )
 
     for path in _monitor_read_paths(mid):
