@@ -134,3 +134,12 @@ async def test_garbage_payload_does_not_raise(monkeypatch):
 
 def test_state_before_any_check_is_never_checked():
     assert update_check.current_state().status == "never_checked"
+
+
+def test_cb_update_check_env_var_actually_disables_the_check(monkeypatch):
+    """The documented control must work. Without the alias this returns True:
+    Settings sets no env_prefix, so the bare field name binds instead."""
+    from app.core.config import Settings
+
+    monkeypatch.setenv("CB_UPDATE_CHECK", "false")
+    assert Settings().update_check is False
