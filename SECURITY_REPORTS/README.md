@@ -10,8 +10,12 @@ as it stood on its own date. A finding is closed only if the requirement ledger,
 or the finding's own row, names the commit that closed it.
 
 **One exception to "historical".** [`bug-bounty-2026-08-26.md`](./bug-bounty-2026-08-26.md)
-was run against 1.0.0-rc.4 and twenty-nine of its findings are open in the tree
-today. Everything else here predates the release candidate, between 2026-03-10
+was run against 1.0.0-rc.4 and is being actively remediated — sixteen of its findings
+carry a fix in the uncommitted working tree, thirteen are still open, and the remediation
+introduced thirteen regressions of its own that the document lists. If you are picking
+that work up mid-flight, start with
+[`HANDOFF-2026-08-26.md`](./HANDOFF-2026-08-26.md), which is the operating order.
+Everything else here predates the release candidate, between 2026-03-10
 (v0.2.0-beta) and 2026-06-30, and none of it has been re-run against 1.0.0-rc.4.
 
 The current security posture is defined by:
