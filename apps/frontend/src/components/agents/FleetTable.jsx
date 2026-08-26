@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- sortKey is one of SORT_VALUES' own keys, set by this table's column headers */
 import React, { useCallback, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
 import FleetRow from './FleetRow';

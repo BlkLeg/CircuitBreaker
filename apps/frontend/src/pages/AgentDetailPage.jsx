@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- metric, column and capability keys all come from module-level literal lists and from the agent payload's own field names; none is caller-supplied */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {

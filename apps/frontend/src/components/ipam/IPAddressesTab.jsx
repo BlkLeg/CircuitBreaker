@@ -15,6 +15,7 @@ import logger from '../../utils/logger';
 
 function StatusBadge({ status }) {
   const style =
+    // eslint-disable-next-line security/detect-object-injection -- status is the row's own enum value and the literal ends in a `?? {}` fallback
     {
       free: { color: 'var(--color-text-muted)' },
       allocated: { color: 'var(--color-status-up, #22c55e)' },
@@ -160,7 +161,9 @@ export default function IPAddressesTab({
         },
       },
     ],
-    [hardware, networks, onUpdate]
+    // onUpdate is referenced by the notes editor further down, not by any
+    // column renderer in here, so it does not belong in this memo's deps.
+    [hardware, networks]
   );
 
   const FIELDS = useMemo(

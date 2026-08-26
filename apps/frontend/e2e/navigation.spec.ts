@@ -44,6 +44,7 @@ test.describe('client-side navigation completes without a reload', () => {
         window.dispatchEvent(new PopStateEvent('popstate'));
       }, route.path);
 
+      // eslint-disable-next-line security/detect-non-literal-regexp -- route.path comes from the literal ROUTES list above, which holds plain slugs with no regex metacharacters
       await expect(page).toHaveURL(new RegExp(`${route.path}$`));
 
       const content = page.locator('.page-content');

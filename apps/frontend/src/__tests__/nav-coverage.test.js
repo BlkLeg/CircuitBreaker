@@ -208,6 +208,7 @@ describe('i18n advertises only what it ships', () => {
   const i18nSrc = readFileSync(srcFile('i18n.js'), 'utf8');
 
   const parseArray = (field) => {
+    // eslint-disable-next-line security/detect-non-literal-regexp -- field is one of this file's own literal field names
     const match = i18nSrc.match(new RegExp(`${field}:\\s*\\[([^\\]]*)\\]`));
     if (!match) return null;
     return [...match[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);

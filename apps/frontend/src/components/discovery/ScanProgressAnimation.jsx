@@ -65,6 +65,7 @@ export default function ScanProgressAnimation({ className = '', pct = 0, compact
   const styleKey = STYLE_COMPONENTS[settings?.scan_progress_style]
     ? settings.scan_progress_style
     : DEFAULT_STYLE;
+  // eslint-disable-next-line security/detect-object-injection -- styleKey is checked against STYLE_COMPONENTS on the lines above and falls back to DEFAULT_STYLE
   const StyleComponent = STYLE_COMPONENTS[styleKey];
   const containerClassName = [CONTAINER_CLASS_NAME, compact && 'compact', className]
     .filter(Boolean)

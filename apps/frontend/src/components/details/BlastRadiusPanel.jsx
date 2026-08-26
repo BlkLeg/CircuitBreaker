@@ -86,6 +86,7 @@ function BlastRadiusPanel({ assetType, assetId }) {
             <>
               <p>{result.summary}</p>
               {GROUPS.map(({ key, label }) => {
+                // eslint-disable-next-line security/detect-object-injection -- key comes from the GROUPS literal being mapped over
                 const items = result[key] || [];
                 if (items.length === 0) return null;
                 return (

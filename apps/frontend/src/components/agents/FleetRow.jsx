@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- RATE_UNITS is indexed by a loop counter the loop itself clamps to its length; CAPABILITY_LABELS is a lookup table with a `?? name` fallback */
 import React from 'react';
 import PropTypes from 'prop-types';
 import { Link } from 'react-router-dom';

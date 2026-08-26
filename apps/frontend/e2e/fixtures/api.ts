@@ -89,6 +89,7 @@ export async function stubApi(page: Page, overrides: Record<string, unknown> = {
       // Unknown endpoints default to an empty collection, not {}: nearly
       // every unstubbed call is a list, and {} makes pages throw
       // "a.map is not a function" and render their ErrorBoundary.
+      // eslint-disable-next-line security/detect-object-injection -- key is an Object.keys(responses) entry selected two statements above, so it is always an own key of responses
       body: JSON.stringify(key ? responses[key] : []),
     });
   });

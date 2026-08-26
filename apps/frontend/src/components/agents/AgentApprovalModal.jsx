@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- capability keys come from the CAPABILITY_INFO literal at the top of this file, never from input */
 import React, { useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
 import { approveAgent, getAgent, getCapabilityDefaults } from '../../api/agents';

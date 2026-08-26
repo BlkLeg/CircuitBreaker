@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-non-literal-fs-filename -- reads its own repo tree: paths are built from __dirname and this file's own literals, never from input */
 /**
  * The one contrast failure jsdom CAN catch: a component referencing a CSS
  * custom property that is defined nowhere.

@@ -83,5 +83,6 @@ export const REMEDIATION_GUIDES = {
 };
 
 export function getRemediationGuide(remediationId) {
+  // eslint-disable-next-line security/detect-object-injection -- remediationId indexes a module-level guide table and returns null when absent
   return REMEDIATION_GUIDES[remediationId] || null;
 }

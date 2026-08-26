@@ -115,6 +115,22 @@ function NotificationsPage() {
   }, [fetchData]);
 
   // ── Sinks Tab Logic ─────────────────────────────────────────────────────────
+  // useCallback, not a bare async fn: sinkColumns memoizes the cell renderer
+  // that calls this, so a new identity every render either forced the memo to
+  // rebuild or -- with the [] deps it had -- pinned render 1's closure over
+  // fetchData and toast for the life of the page.
+  const handleToggleSink = useCallback(
+    async (id) => {
+      try {
+        await notificationsApi.toggleSink(id);
+        fetchData();
+      } catch (err) {
+        toast.error(err.message);
+      }
+    },
+    [fetchData, toast]
+  );
+
   const sinkColumns = useMemo(
     () => [
       {
@@ -122,6 +138,7 @@ function NotificationsPage() {
         label: 'Provider',
         render: (v) => (
           <div className="tw-flex tw-items-center tw-gap-2">
+            {/* eslint-disable-next-line security/detect-object-injection -- PROVIDER_ICONS is keyed by the sink's own provider_type, with a Bell fallback */}
             {PROVIDER_ICONS[v] || <Bell size={16} />}
             <span className="tw-capitalize">{v}</span>
           </div>
@@ -145,7 +162,7 @@ function NotificationsPage() {
         ),
       },
     ],
-    []
+    [handleToggleSink]
   );
 
   // Warn about unconfigured SMTP on the form itself. An email sink whose SMTP
@@ -191,15 +208,6 @@ function NotificationsPage() {
       }
       setShowSinkForm(false);
       setEditTarget(null);
-      fetchData();
-    } catch (err) {
-      toast.error(err.message);
-    }
-  };
-
-  const handleToggleSink = async (id) => {
-    try {
-      await notificationsApi.toggleSink(id);
       fetchData();
     } catch (err) {
       toast.error(err.message);
@@ -290,6 +298,7 @@ function NotificationsPage() {
         key: 'alert_severity',
         label: 'Severity Threshold',
         render: (v) => (
+          // eslint-disable-next-line security/detect-object-injection -- SEVERITY_COLORS is a lookup table keyed by the row's own severity enum, with a '' fallback
           <span className={`tw-font-bold tw-text-xs ${SEVERITY_COLORS[v] || ''}`}>
             {alertSeverityLabel(v)}
           </span>

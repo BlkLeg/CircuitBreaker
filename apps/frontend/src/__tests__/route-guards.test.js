@@ -93,6 +93,7 @@ describe('App.jsx enforces the declared guards', () => {
 
     for (const path of guarded) {
       expect(block, `${path} declares a guard but its <Route> is not inside <Guarded>`).toMatch(
+        // eslint-disable-next-line security/detect-non-literal-regexp -- path comes from the route table and is regex-escaped on the next line
         new RegExp(`<Guarded\\s+path="${path.replace(/[/:]/g, '\\$&')}"`)
       );
     }

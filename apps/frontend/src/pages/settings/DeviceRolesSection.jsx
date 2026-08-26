@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- RANK_COLORS is a lookup table keyed by rank, with a var(--color-text-muted) fallback */
 import React, { useState } from 'react';
 import { deviceRolesApi } from '../../api/client';
 import { useHardwareRoles } from '../../hooks/useHardwareRoles';

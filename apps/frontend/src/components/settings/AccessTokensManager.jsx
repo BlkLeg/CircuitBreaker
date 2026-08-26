@@ -65,7 +65,9 @@ function AccessTokensManager() {
     load();
   }, [load]);
 
-  const presets = catalog?.presets || [];
+  // `catalog?.presets || []` built a new array identity on every render, so
+  // the selectedPreset memo below it never actually memoized.
+  const presets = useMemo(() => catalog?.presets || [], [catalog]);
   const selectedPreset = useMemo(
     () => presets.find((p) => p.key === presetKey) || presets[0],
     [presets, presetKey]
