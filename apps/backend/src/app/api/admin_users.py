@@ -333,6 +333,12 @@ def update_user(
         target.role = payload.role
         target.is_admin = payload.role == "admin"
         target.is_superuser = payload.role == "admin"
+        # `effective_scopes` returns `defaults | explicit`, so a scope set left over
+        # from the previous role can only widen the result — a demoted admin kept
+        # admin:*, write:* and delete:* and stayed authorized everywhere. Re-derive
+        # unconditionally, matching every creation path and `cli_admin.set_user_role`,
+        # which keeps the column a pure function of the role in both directions.
+        target.scopes = _scopes_for_role(payload.role)
     if payload.is_active is not None:
         target.is_active = payload.is_active
     if payload.display_name is not None:
