@@ -29,6 +29,7 @@ import DiscoverySettingsPage from './settings/DiscoverySettingsPage.jsx';
 import KnowledgeBasePage from './KnowledgeBasePage.jsx';
 import VaultStatusPanel from '../components/settings/VaultStatusPanel.jsx';
 import DbStatusPanel from '../components/settings/DbStatusPanel.jsx';
+import UpdateStatusPanel from '../components/settings/UpdateStatusPanel.jsx';
 import HostStatsPanel from '../components/settings/HostStatsPanel.jsx';
 import BackupSettings from '../components/settings/BackupSettings.jsx';
 import IntegrationsManager from '../components/settings/IntegrationsManager';
@@ -1740,11 +1741,7 @@ export default function SettingsPage() {
             {activeTab === 'system' && (
               <div className="settings-sections-grid">
                 <SettingSection title="About">
-                  <p style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>
-                    App version: <strong>{import.meta.env.VITE_APP_VERSION || 'dev'}</strong>
-                    {' — '}
-                    Use this when reporting issues or confirming you are on the latest release.
-                  </p>
+                  <UpdateStatusPanel />
                 </SettingSection>
                 <SettingSection title="Data Management">
                   <SettingField
