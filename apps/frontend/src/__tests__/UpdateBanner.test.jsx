@@ -3,7 +3,7 @@
  * admin on a stale build, stay hidden otherwise, and come back when a NEWER
  * release lands after a dismissal.
  */
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 
@@ -84,11 +84,25 @@ test('a dismissal does suppress the same release', async () => {
   expect(container).toBeEmptyDOMElement();
 });
 
-test('an unreachable endpoint is never an update claim', async () => {
-  mockGetUpdate.mockRejectedValue(new Error('network down'));
-  const { container } = render(<UpdateBanner />);
-  await vi.waitFor(() => expect(mockGetUpdate).toHaveBeenCalled());
-  expect(container).toBeEmptyDOMElement();
+test('an unreachable endpoint clears a stale update claim on the next check', async () => {
+  // A fresh assertion on `status === null` proves nothing — that's the hook's
+  // initial state regardless of whether the catch runs. So first let a real
+  // update render, then make the hourly refresh fail, and check the
+  // previously-shown version is actually retracted.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    render(<UpdateBanner />);
+    expect(await screen.findByText(/1\.0\.0-rc\.4/)).toBeInTheDocument();
+
+    mockGetUpdate.mockRejectedValueOnce(new Error('network down'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000); // REFRESH_MS
+    });
+
+    expect(screen.queryByText(/1\.0\.0-rc\.4/)).not.toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test('a blocked localStorage read does not crash the banner', async () => {
