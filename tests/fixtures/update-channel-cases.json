@@ -1,0 +1,102 @@
+{
+  "comment": "Shared cases for the update channel rule (spec D2, section 10). Both the Python and the bash implementations must satisfy every case.",
+  "cases": [
+    {
+      "name": "the reported regression: rc.2 is offered rc.4",
+      "current": "1.0.0-rc.2",
+      "channels": {
+        "stable": ["0.3.4", "0.3.3"],
+        "prerelease": ["1.0.0-rc.4", "1.0.0-rc.2", "1.0.0-rc.1", "0.3.4", "0.3.3"]
+      },
+      "withdrawn": [],
+      "expected": { "status": "ok", "channel": "prerelease", "available": "1.0.0-rc.4" }
+    },
+    {
+      "name": "newest prerelease is offered nothing",
+      "current": "1.0.0-rc.4",
+      "channels": {
+        "stable": ["0.3.4"],
+        "prerelease": ["1.0.0-rc.4", "1.0.0-rc.2", "0.3.4"]
+      },
+      "withdrawn": [],
+      "expected": { "status": "ok", "channel": "prerelease", "available": null }
+    },
+    {
+      "name": "a stable install is not pushed onto a candidate",
+      "current": "0.3.4",
+      "channels": {
+        "stable": ["0.3.4", "0.3.3"],
+        "prerelease": ["1.0.0-rc.4", "1.0.0-rc.2", "0.3.4", "0.3.3"]
+      },
+      "withdrawn": [],
+      "expected": { "status": "ok", "channel": "stable", "available": null }
+    },
+    {
+      "name": "an older stable is offered the newest stable",
+      "current": "0.3.3",
+      "channels": {
+        "stable": ["0.3.4", "0.3.3"],
+        "prerelease": ["1.0.0-rc.4", "0.3.4", "0.3.3"]
+      },
+      "withdrawn": [],
+      "expected": { "status": "ok", "channel": "stable", "available": "0.3.4" }
+    },
+    {
+      "name": "rc.10 outranks rc.4",
+      "current": "1.0.0-rc.4",
+      "channels": {
+        "stable": ["0.3.4"],
+        "prerelease": ["1.0.0-rc.10", "1.0.0-rc.4", "0.3.4"]
+      },
+      "withdrawn": [],
+      "expected": { "status": "ok", "channel": "prerelease", "available": "1.0.0-rc.10" }
+    },
+    {
+      "name": "a withdrawn release is never offered",
+      "current": "1.0.0-rc.2",
+      "channels": {
+        "stable": ["0.3.4"],
+        "prerelease": ["1.0.0-rc.4", "1.0.0-rc.2", "0.3.4"]
+      },
+      "withdrawn": ["1.0.0-rc.4"],
+      "expected": { "status": "ok", "channel": "prerelease", "available": null }
+    },
+    {
+      "name": "once stable ships, a candidate is offered it",
+      "current": "1.0.0-rc.4",
+      "channels": {
+        "stable": ["1.0.0", "0.3.4"],
+        "prerelease": ["1.0.0", "1.0.0-rc.4", "0.3.4"]
+      },
+      "withdrawn": [],
+      "expected": { "status": "ok", "channel": "prerelease", "available": "1.0.0" }
+    },
+    {
+      "name": "once stable ships, an old stable is offered it",
+      "current": "0.3.4",
+      "channels": {
+        "stable": ["1.0.0", "0.3.4"],
+        "prerelease": ["1.0.0", "1.0.0-rc.4", "0.3.4"]
+      },
+      "withdrawn": [],
+      "expected": { "status": "ok", "channel": "stable", "available": "1.0.0" }
+    },
+    {
+      "name": "a build the manifest does not list is not guessed at",
+      "current": "1.0.0-dev",
+      "channels": {
+        "stable": ["0.3.4"],
+        "prerelease": ["1.0.0-rc.4", "0.3.4"]
+      },
+      "withdrawn": [],
+      "expected": { "status": "unknown_version", "channel": "prerelease", "available": null }
+    },
+    {
+      "name": "an empty channel offers nothing and does not raise",
+      "current": "1.0.0-rc.2",
+      "channels": { "stable": [], "prerelease": [] },
+      "withdrawn": [],
+      "expected": { "status": "unknown_version", "channel": "prerelease", "available": null }
+    }
+  ]
+}
