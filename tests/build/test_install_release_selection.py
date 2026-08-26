@@ -130,6 +130,43 @@ def test_default_path_does_not_consult_the_releases_latest_endpoint():
     assert offenders == [], f"install.sh still reaches for the badge: {offenders}"
 
 
+def test_post_ga_a_newer_candidate_still_wins_KNOWN_LIMITATION():
+    """Pins today's behaviour and names the gap; it is not an endorsement.
+
+    `cb_pick_release` takes the newest non-draft release, candidates included.
+    That is right for the pre-GA window, and the caller warns loudly when the
+    winner is a candidate. It is permanent, though, not pre-GA only: once
+    v1.0.0 is stable, publishing v1.0.1-rc.1 makes that candidate the newest
+    release and a default `curl | bash` fetches it.
+
+    "Prefer the newest stable, fall back to a candidate only when no stable
+    exists" is NOT the fix -- v0.3.4 is a published stable release, so that rule
+    selects a pre-1.0 build from July for every install today: strictly worse,
+    and the exact "user silently gets an ancient build" failure that started
+    this work. See test_never_falls_back_to_the_newest_stable_during_a_candidate_window.
+
+    The real fix is the signed update manifest, which publishes ordered
+    per-channel release lists and turns "the newest stable" into a list lookup
+    rather than a semver comparator written in bash. Deliberately not
+    hand-rolled here.
+    """
+    releases = [
+        release("v1.0.1-rc.1", prerelease=True),
+        release("v1.0.0"),
+        release("v1.0.0-rc.4", prerelease=True),
+        release("v0.3.4"),
+    ]
+    assert pick(releases)["tag_name"] == "v1.0.1-rc.1"
+
+
+def test_the_candidate_warning_does_not_claim_no_stable_release_exists():
+    """The warning fires whenever the winner is a candidate, which after GA
+    happens with a stable release published. It must not say otherwise."""
+    source = INSTALL_SH.read_text()
+    assert "No stable release yet" not in source
+    assert "Installing release candidate" in source
+
+
 def _strip_v(tag: str) -> str:
     """Run install.sh's own tag -> CB_VERSION conversion, as shipped."""
     line = next(

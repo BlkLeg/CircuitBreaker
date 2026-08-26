@@ -464,10 +464,22 @@ stage0_bootstrap_preflight() {
 # here makes the choice independent of that stale metadata.
 #
 # The rule is the newest non-draft release, release candidates included; the
-# caller warns when the winner is one. Preferring stable unconditionally would
-# install v0.3.4 for the whole 1.0.0-rc window -- a pre-1.0 build months older
-# than the one README.md documents. Once 1.0.0 ships it is the newest release
-# and wins on its own.
+# caller warns loudly when the winner is one. Preferring stable unconditionally
+# would install v0.3.4 for the whole 1.0.0-rc window -- a pre-1.0 build months
+# older than the one README.md documents, which is the same "user silently gets
+# an ancient build" failure this selection exists to prevent.
+#
+# KNOWN LIMITATION, stated plainly rather than wished away: this rule prefers
+# the newest release including candidates, permanently, not just before GA.
+# Once v1.0.0 is stable, publishing v1.0.1-rc.1 makes that candidate the newest
+# release and a default `curl | bash` fetches it again. Closing that properly
+# needs a real per-channel ordering, and doing it here would mean a semver
+# comparator written in bash -- avoiding exactly that is why the signed update
+# manifest is designed the way it is. The manifest publishes ordered per-channel
+# release lists, which turns "the newest stable" into a list lookup instead of a
+# version comparison. Resolve this when that lands; do not hand-roll it here.
+# tests/build/test_install_release_selection.py pins the current behaviour,
+# including the post-GA shape, so a future change to this rule is deliberate.
 cb_pick_release() {
   jq '[.[] | select(.draft == false)] | first // empty' 2>/dev/null || true
 }
@@ -501,7 +513,10 @@ stage0_download_bundle() {
         cb_fail "No installable release found" "Check https://github.com/${CB_GITHUB_REPO}/releases or specify --version <version>"
       fi
       if [[ "$(printf '%s' "$release_json" | jq -r '.prerelease')" == "true" ]]; then
-        cb_warn "No stable release yet - installing release candidate $(printf '%s' "$release_json" | jq -r '.tag_name')"
+        # Not "no stable release yet": see cb_pick_release's known limitation.
+        # The newest release wins whether or not a stable one exists, so this
+        # message must not claim there is none.
+        cb_warn "Installing release candidate $(printf '%s' "$release_json" | jq -r '.tag_name') - the newest published release. Use --version <version> to pick a specific one."
       fi
     fi
 
