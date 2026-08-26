@@ -148,12 +148,17 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-async def refresh() -> UpdateState:
-    """Refresh the cached verdict. Never raises, never blocks a caller."""
+async def refresh(*, airgap_override: bool = False) -> UpdateState:
+    """Refresh the cached verdict. Never raises, never blocks a caller.
+
+    `airgap_override` carries the DB-backed `AppSettings.airgap_mode` flag,
+    which the loop reads for us -- see `_db_airgap_enabled`. It is a keyword so
+    the env-only short-circuit keeps its existing shape.
+    """
     global _state
     current = settings.app_version
 
-    if settings.airgap:
+    if airgap_override or settings.airgap:
         _state = replace(_state, status="airgap", current=current, available=None)
         return _state
     if not settings.update_check:
@@ -209,10 +214,39 @@ async def refresh() -> UpdateState:
     return _state
 
 
+def _db_airgap_enabled() -> bool:
+    """The DB-backed air-gap flag (`AppSettings.airgap_mode`), best effort.
+
+    `settings.airgap` is the env switch; operators can also flip air-gap mode in
+    the UI, which writes `AppSettings.airgap_mode` -- the pair
+    `discovery_service.py` passes to `validate_scan_target` as
+    (`airgap_env`, `airgap_db`). Honouring only the env half meant an operator
+    who air-gapped from the UI still had a daily call leave the box.
+
+    Read-only on purpose: `db.get` rather than `get_or_create_settings`, so a
+    background loop never writes a settings row. Any failure returns False,
+    which only means the check runs exactly as it does today -- reading this
+    flag can only ever reduce egress, and it can never affect scan behaviour.
+    """
+    try:
+        from app.db.models import AppSettings  # noqa: PLC0415
+        from app.db.session import get_session_context  # noqa: PLC0415
+
+        with get_session_context() as db:
+            row = db.get(AppSettings, 1)
+            return bool(getattr(row, "airgap_mode", False)) if row is not None else False
+    except Exception as exc:  # DB down, not migrated yet, no table
+        logger.debug("Could not read airgap_mode: %s", exc)
+        return False
+
+
 async def run_update_check_loop() -> None:
     """Check now, then once a day with jitter until cancelled."""
     while True:
-        state = await refresh()
+        # to_thread because get_session_context is synchronous SQLAlchemy and
+        # this coroutine shares the request event loop.
+        db_airgap = await asyncio.to_thread(_db_airgap_enabled)
+        state = await refresh(airgap_override=db_airgap)
         if state.available:
             logger.info(
                 "A newer version of Circuit Breaker is available: %s (current: %s). To upgrade: %s",

@@ -1,5 +1,9 @@
 """Fetching is allowed to fail; it is never allowed to lie or to block."""
 
+import asyncio
+from contextlib import contextmanager
+from types import SimpleNamespace
+
 import httpx
 import pytest
 
@@ -249,3 +253,89 @@ async def test_the_configured_egress_proxy_is_honoured(monkeypatch):
 
     assert captured["trust_env"] is False, "an ambient HTTPS_PROXY must not reach this caller"
     assert captured["mounts"], "the configured egress proxy must be mounted"
+
+
+async def test_db_airgap_mode_stops_the_daily_call(monkeypatch):
+    """IMPORTANT-1(d): the UI air-gap switch writes AppSettings.airgap_mode.
+    Honouring only the env half left a daily call leaving an air-gapped box."""
+    monkeypatch.setattr(update_check.settings, "airgap", False)
+    monkeypatch.setattr(update_check.settings, "update_check", True)
+
+    def _boom():
+        raise AssertionError("airgap_mode must short-circuit before any socket")
+
+    monkeypatch.setattr(update_check, "_transport", _boom)
+    state = await update_check.refresh(airgap_override=True)
+    assert state.status == "airgap"
+    assert state.available is None
+
+
+async def test_the_loop_reads_airgap_mode_and_passes_it_to_refresh(monkeypatch):
+    """The wiring, not just the parameter: run_update_check_loop must read the
+    DB flag and hand it to refresh()."""
+    seen = {}
+
+    monkeypatch.setattr(update_check, "_db_airgap_enabled", lambda: True)
+
+    async def _fake_refresh(*, airgap_override=False):
+        seen["airgap_override"] = airgap_override
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(update_check, "refresh", _fake_refresh)
+    with pytest.raises(asyncio.CancelledError):
+        await update_check.run_update_check_loop()
+    assert seen["airgap_override"] is True
+
+
+class _FakeDB:
+    def __init__(self, row):
+        self._row = row
+
+    def get(self, _model, _pk):
+        return self._row
+
+
+def _fake_session(row):
+    @contextmanager
+    def _cm():
+        yield _FakeDB(row)
+
+    return _cm
+
+
+def test_db_airgap_reads_the_airgap_mode_column(monkeypatch):
+    import app.db.session as session_module
+
+    monkeypatch.setattr(
+        session_module, "get_session_context", _fake_session(SimpleNamespace(airgap_mode=True))
+    )
+    assert update_check._db_airgap_enabled() is True
+
+
+def test_db_airgap_is_false_when_the_flag_is_off(monkeypatch):
+    import app.db.session as session_module
+
+    monkeypatch.setattr(
+        session_module, "get_session_context", _fake_session(SimpleNamespace(airgap_mode=False))
+    )
+    assert update_check._db_airgap_enabled() is False
+
+
+def test_db_airgap_is_false_when_no_settings_row_exists(monkeypatch):
+    """Read-only on purpose: a background loop must not create a settings row."""
+    import app.db.session as session_module
+
+    monkeypatch.setattr(session_module, "get_session_context", _fake_session(None))
+    assert update_check._db_airgap_enabled() is False
+
+
+def test_db_airgap_read_is_best_effort(monkeypatch):
+    """A DB that is down must not break the check; failing open only means the
+    check behaves exactly as it does today."""
+    import app.db.session as session_module
+
+    def _boom():
+        raise RuntimeError("database is down")
+
+    monkeypatch.setattr(session_module, "get_session_context", _boom)
+    assert update_check._db_airgap_enabled() is False
