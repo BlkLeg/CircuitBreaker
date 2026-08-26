@@ -23,21 +23,28 @@ from packaging.version import InvalidVersion, Version
 _STABLE_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
 
-def _clean(raw: str) -> str:
+def clean(raw: str) -> str:
+    """Strip surrounding whitespace and a leading `v`/`V` tag prefix.
+
+    Public because callers outside this module compare version strings that may
+    or may not carry the git tag's `v` — `update_check.select_update` compares
+    an operator-supplied APP_VERSION against v-stripped release tags, and any
+    asymmetry there yields a silent "no update offered".
+    """
     return str(raw).strip().lstrip("vV")
 
 
 def parse(raw: str) -> Version | None:
     """None for anything unparseable — an unknown version is never 'newer'."""
     try:
-        return Version(_clean(raw))
+        return Version(clean(raw))
     except (InvalidVersion, TypeError):
         return None
 
 
 def is_prerelease(raw: str) -> bool:
     """True for anything that is not a bare MAJOR.MINOR.PATCH."""
-    return not _STABLE_RE.match(_clean(raw))
+    return not _STABLE_RE.match(clean(raw))
 
 
 def is_newer(candidate: str, current: str) -> bool:

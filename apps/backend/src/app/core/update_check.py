@@ -74,15 +74,29 @@ def select_update(
     build. There is no honest comparison to make, so nothing is offered
     (spec section 3.3) — guessing here is how someone gets pushed sideways
     onto a build that is not an upgrade.
+
+    `current` is v-stripped before the membership test. `channels_from_releases`
+    already strips the tag's `v`, and APP_VERSION is an operator-settable env
+    var, so a `v1.0.0-rc.2` value used to miss every entry and yield
+    `unknown_version` — silently offering nothing, which is the exact failure
+    this module exists to end.
     """
+    current = _version.clean(current)
     channel = "prerelease" if _version.is_prerelease(current) else "stable"
-    blocked = set(withdrawn)
-    entries = [v for v in channels.get(channel, ()) if v not in blocked]
+    blocked = {_version.clean(v) for v in withdrawn}
+    entries = [_version.clean(v) for v in channels.get(channel, ())]
+    entries = [v for v in entries if v not in blocked]
 
     if current not in entries:
         return UpdateVerdict(status="unknown_version", channel=channel, available=None)
 
     ranked = [v for v in entries if _version.parse(v) is not None]
+    if not ranked:
+        # `current` matched an entry no version parser accepts (e.g. a channel
+        # of {"prerelease": ["nightly"]}). max() over an empty list raises
+        # ValueError, which refresh() would swallow into status "unreachable" —
+        # a lie, because the network was fine.
+        return UpdateVerdict(status="unknown_version", channel=channel, available=None)
     newest = max(ranked, key=_version.parse)
     available = newest if _version.is_newer(newest, current) else None
     return UpdateVerdict(status="ok", channel=channel, available=available)

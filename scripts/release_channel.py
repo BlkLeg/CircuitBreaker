@@ -26,8 +26,14 @@ def is_prerelease(version: str) -> bool:
     Deliberately allowlist-shaped rather than blocklist-shaped: an unrecognised
     version string is treated as a prerelease, so a typo can never promote a
     stable channel.
+
+    A leading `v` is stripped so this agrees with `app.core.version.is_prerelease`
+    on tag-shaped input. `release.yml` already strips the `v` before calling
+    this, so it is a no-op at build time; it exists so the two implementations
+    cannot drift, which is the guarantee
+    `tests/core/test_version.py::test_agrees_with_release_channel` advertises.
     """
-    return not _STABLE_RE.match(version.strip())
+    return not _STABLE_RE.match(version.strip().lstrip("vV"))
 
 
 def channel_tags(version: str) -> list[str]:

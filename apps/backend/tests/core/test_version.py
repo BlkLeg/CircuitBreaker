@@ -77,8 +77,33 @@ def test_prerelease_uses_the_projects_allowlist_rule(raw, expected):
 
 @pytest.mark.parametrize(
     "raw",
-    ["1.0.0", "0.3.4", "1.0.0-rc.4", "1.0.0-alpha.1", "1.0", "1.0.0.post1", "dev-abc1234"],
+    [
+        "1.0.0",
+        "0.3.4",
+        "1.0.0-rc.4",
+        "1.0.0-alpha.1",
+        "1.0",
+        "1.0.0.post1",
+        "dev-abc1234",
+        # v-prefixed: the tag shape. This test advertises a "must not drift"
+        # guarantee, and these were precisely the inputs where the two
+        # implementations drifted -- app.core.version stripped the `v`,
+        # scripts/release_channel.py did not, so `v1.0.0` was stable to one and
+        # a prerelease to the other.
+        "v1.0.0",
+        "v0.3.4",
+        "v1.0.0-rc.4",
+        "V1.0.0",
+    ],
 )
 def test_agrees_with_release_channel(raw):
     """Build-time and run-time must not drift on what counts as a prerelease."""
     assert version.is_prerelease(raw) is _load_release_channel().is_prerelease(raw)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("v1.0.0", "1.0.0"), ("V1.0.0-rc.4", "1.0.0-rc.4"), ("  1.0.0  ", "1.0.0"), ("", "")],
+)
+def test_clean_strips_whitespace_and_a_leading_v(raw, expected):
+    assert version.clean(raw) == expected
