@@ -7,6 +7,7 @@ Uvicorn workers or backend replicas are deployed.
 import hashlib
 import logging
 from collections.abc import Callable
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
@@ -161,7 +162,7 @@ def single_owner(func: Callable, *, job_id: str) -> Callable:
     if inspect.iscoroutinefunction(func):
 
         @functools.wraps(func)
-        async def _async_single_owner(*args, **kwargs):
+        async def _async_single_owner(*args: "Any", **kwargs: "Any") -> "Any":
             db = await asyncio.to_thread(_acquire_job_lock, lock_id)
             if db is None:
                 _logger.debug("job %s skipped: another process owns it", job_id)
@@ -178,11 +179,11 @@ def single_owner(func: Callable, *, job_id: str) -> Callable:
             finally:
                 await asyncio.to_thread(_release_job_lock, db, lock_id)
 
-        _async_single_owner.cb_single_owner_job_id = job_id
+        _async_single_owner.cb_single_owner_job_id = job_id  # type: ignore[attr-defined]
         return _async_single_owner
 
     @functools.wraps(func)
-    def _sync_single_owner(*args, **kwargs):
+    def _sync_single_owner(*args: "Any", **kwargs: "Any") -> "Any":
         db = _acquire_job_lock(lock_id)
         if db is None:
             _logger.debug("job %s skipped: another process owns it", job_id)
@@ -203,5 +204,5 @@ def single_owner(func: Callable, *, job_id: str) -> Callable:
     # name, which is what APScheduler's argument validation needs and what a
     # test asserting the wiring cannot see through. The marker is that test's
     # only honest handle on "this job is registered single-owner".
-    _sync_single_owner.cb_single_owner_job_id = job_id
+    _sync_single_owner.cb_single_owner_job_id = job_id  # type: ignore[attr-defined]
     return _sync_single_owner

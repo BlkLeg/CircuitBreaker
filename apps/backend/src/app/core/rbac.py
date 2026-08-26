@@ -203,7 +203,7 @@ def require_role(*roles: str) -> params.Depends:
     # write gate needs to tell `require_scope("read", "*")` apart from a scope
     # that permits writing, and both compile to the same `_dep` qualname, so the
     # declaration has to travel on the object rather than in its name.
-    _dep.cb_authorization = ("role", tuple(roles))
+    _dep.cb_authorization = ("role", tuple(roles))  # type: ignore[attr-defined]
 
     return cast(params.Depends, Depends(_dep))
 
@@ -252,6 +252,6 @@ def require_scope(action: str, resource: str) -> params.Depends:
 
     # See the note in require_role: the declared action/resource is what lets a
     # structural gate judge whether this authorizes a write or only a read.
-    _dep.cb_authorization = ("scope", action, resource)
+    _dep.cb_authorization = ("scope", action, resource)  # type: ignore[attr-defined]
 
     return cast(params.Depends, Depends(_dep))

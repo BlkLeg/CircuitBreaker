@@ -673,8 +673,9 @@ def select_github_email(emails: list[dict]) -> str | None:
     verified = [e for e in emails if e.get("verified")]
     primary = next((e["email"] for e in verified if e.get("primary")), None)
     if primary:
-        return primary
-    return next((e["email"] for e in verified), None)
+        return str(primary)
+    fallback = next((e["email"] for e in verified), None)
+    return str(fallback) if fallback else None
 
 
 @router.get("/oauth/github/callback")
@@ -719,7 +720,7 @@ async def github_callback(
                 headers={"Authorization": f"Bearer {access_token}"},
                 timeout=10.0,
             )
-            email = select_github_email(_json_or_502(emails_resp, "GitHub", "email lookup"))
+            email = select_github_email(_json_or_502(emails_resp, "GitHub", "email lookup"))  # type: ignore[arg-type]
 
     if not email:
         raise HTTPException(400, "Could not obtain email from GitHub account")

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import signal
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from app.core.nats_client import nats_client
 
@@ -26,8 +27,8 @@ class SingleActiveLease:
 
     def __init__(self, name: str) -> None:
         self._name = name
-        self._db = None
-        self._lock_id = None
+        self._db: Any | None = None
+        self._lock_id: int | None = None
         self._held = False
 
     @property

@@ -655,7 +655,7 @@ def revoke_api_token(
     invalidate_token_cache()
 
 
-def _hours_until(expires_at) -> int | None:
+def _hours_until(expires_at: "Any") -> int | None:
     """Whole hours from now until `expires_at`, or None when the row never expires.
 
     Returns at least 1 so a rotation close to expiry still mints a usable token; the

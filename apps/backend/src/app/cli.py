@@ -931,7 +931,7 @@ def _run_admin(handler: Any) -> int:
     from app.scripts.cli_admin import EXIT_FAILED, AdminError
 
     try:
-        return handler()
+        return handler()  # type: ignore[no-any-return]
     except AdminError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return exc.exit_code

@@ -1,6 +1,7 @@
 # backend/app/core/scheduler.py
 
 import logging
+from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -25,7 +26,7 @@ class SingleOwnerScheduler(AsyncIOScheduler):
     ownership guarantee that silently does not exist.
     """
 
-    def add_job(self, func, *args, **kwargs):
+    def add_job(self, func: "Any", *args: "Any", **kwargs: "Any") -> "Any":
         job_id = kwargs.get("id")
         if not job_id:
             raise ValueError(

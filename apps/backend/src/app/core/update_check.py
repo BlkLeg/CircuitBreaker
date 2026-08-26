@@ -103,7 +103,7 @@ def select_update(
         # ValueError, which refresh() would swallow into status "unreachable" —
         # a lie, because the network was fine.
         return UpdateVerdict(status="unknown_version", channel=channel, available=None)
-    newest = max(ranked, key=_version.parse)
+    newest = max(ranked, key=_version.parse)  # type: ignore[arg-type]
     available = newest if _version.is_newer(newest, current) else None
     return UpdateVerdict(status="ok", channel=channel, available=available)
 
