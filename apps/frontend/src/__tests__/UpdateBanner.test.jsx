@@ -83,3 +83,35 @@ test('a dismissal does suppress the same release', async () => {
   await vi.waitFor(() => expect(mockGetUpdate).toHaveBeenCalled());
   expect(container).toBeEmptyDOMElement();
 });
+
+test('an unreachable endpoint is never an update claim', async () => {
+  mockGetUpdate.mockRejectedValue(new Error('network down'));
+  const { container } = render(<UpdateBanner />);
+  await vi.waitFor(() => expect(mockGetUpdate).toHaveBeenCalled());
+  expect(container).toBeEmptyDOMElement();
+});
+
+test('a blocked localStorage read does not crash the banner', async () => {
+  const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+    throw new Error('blocked');
+  });
+  try {
+    render(<UpdateBanner />);
+    expect(await screen.findByText(/1\.0\.0-rc\.4/)).toBeInTheDocument();
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test('a blocked localStorage write does not crash dismissal', async () => {
+  const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    throw new Error('blocked');
+  });
+  try {
+    render(<UpdateBanner />);
+    await userEvent.click(await screen.findByRole('button', { name: /dismiss/i }));
+    expect(screen.queryByText(/1\.0\.0-rc\.4/)).not.toBeInTheDocument();
+  } finally {
+    spy.mockRestore();
+  }
+});

@@ -123,7 +123,6 @@ function AppInner() {
       <CommandPalette isOpen={paletteOpen} onClose={handleClosePalette} />
       <Header onOpenPalette={handleOpenPalette} />
       <MasqueradeBanner />
-      <UpdateBanner />
       <ConnectionStatus discoveryConnected={discoveryConnected} />
       <div
         className="page-content"
@@ -133,6 +132,7 @@ function AppInner() {
             : undefined
         }
       >
+        <UpdateBanner />
         <ErrorBoundary>
           <React.Suspense fallback={<LoadingScreen />}>
             {/*
