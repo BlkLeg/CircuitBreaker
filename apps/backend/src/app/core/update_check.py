@@ -32,6 +32,12 @@ GITHUB_RELEASES_URL = "https://api.github.com/repos/BlkLeg/CircuitBreaker/releas
 CHECK_TIMEOUT = 5  # seconds
 CHECK_INTERVAL_S = 24 * 60 * 60
 JITTER_S = 30 * 60
+# GitHub defaults /releases to 30 per page. Once the repo publishes more
+# than 30 releases, an install older than the newest 30 falls off the list,
+# `current not in entries` holds, and select_update returns unknown_version
+# -- offering nothing, silently. That is the reported field bug arriving
+# through a different door. 100 is the API maximum.
+RELEASES_PER_PAGE = 100
 
 
 @dataclass(frozen=True)
@@ -110,6 +116,14 @@ class UpdateState:
     channel: str = ""
     checked_at: str | None = None
     etag: str | None = None
+    # The status the cached etag was earned under. A 304 says "the release list
+    # has not changed", so the verdict that produced this etag is still the
+    # right answer -- including its status. Without this, one transient failure
+    # between a 200 and a 304 pinned status="unreachable" forever, because
+    # GitHub keeps answering 304 until a new release is published, which can be
+    # months. The Settings panel then read "Could not reach the release source"
+    # immediately after a successful check.
+    etag_status: str = ""
 
 
 _state = UpdateState()
@@ -163,9 +177,14 @@ async def refresh() -> UpdateState:
 
     try:
         async with httpx.AsyncClient(**kwargs) as client:
-            resp = await client.get(GITHUB_RELEASES_URL)
+            resp = await client.get(GITHUB_RELEASES_URL, params={"per_page": RELEASES_PER_PAGE})
             if resp.status_code == 304:
-                _state = replace(_state, checked_at=_now())
+                # Restore the status the etag was earned under; see UpdateState.
+                _state = replace(
+                    _state,
+                    status=_state.etag_status or _state.status,
+                    checked_at=_now(),
+                )
                 return _state
             if resp.status_code != 200:
                 raise httpx.HTTPError(f"status {resp.status_code}")
@@ -180,6 +199,7 @@ async def refresh() -> UpdateState:
                 channel=verdict.channel,
                 checked_at=_now(),
                 etag=resp.headers.get("ETag") or _state.etag,
+                etag_status=verdict.status,
             )
     except Exception as exc:  # network, JSON, schema — all the same to a caller
         logger.debug("Update check failed: %s", exc)

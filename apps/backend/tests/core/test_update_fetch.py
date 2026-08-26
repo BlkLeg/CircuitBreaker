@@ -143,3 +143,81 @@ def test_cb_update_check_env_var_actually_disables_the_check(monkeypatch):
 
     monkeypatch.setenv("CB_UPDATE_CHECK", "false")
     assert Settings().update_check is False
+
+
+async def test_a_304_after_a_transient_failure_does_not_pin_unreachable(monkeypatch):
+    """200 -> connect error -> 304 must not leave status='unreachable' forever.
+
+    The etag is earned by a 200 and kept across the failure, so the next call
+    sends If-None-Match and GitHub answers 304 -- and keeps answering 304 until
+    a new release is published, which can be months. `replace(_state,
+    checked_at=...)` carried status='unreachable' through every one of those,
+    so the Settings panel read "Could not reach the release source" immediately
+    after a successful check. No test covered failure-then-304.
+    """
+    monkeypatch.setattr(update_check.settings, "app_version", "1.0.0-rc.2")
+    monkeypatch.setattr(update_check.settings, "airgap", False)
+    monkeypatch.setattr(update_check.settings, "update_check", True)
+
+    monkeypatch.setattr(
+        update_check,
+        "_transport",
+        lambda: _transport(lambda r: httpx.Response(200, json=RELEASES, headers={"ETag": "abc"})),
+    )
+    first = await update_check.refresh()
+    assert first.status == "ok"
+
+    def _down(request):
+        raise httpx.ConnectError("no route to host")
+
+    monkeypatch.setattr(update_check, "_transport", lambda: _transport(_down))
+    assert (await update_check.refresh()).status == "unreachable"
+
+    seen = {}
+
+    def _not_modified(request):
+        seen["inm"] = request.headers.get("If-None-Match")
+        return httpx.Response(304)
+
+    monkeypatch.setattr(update_check, "_transport", lambda: _transport(_not_modified))
+    third = await update_check.refresh()
+
+    assert seen["inm"] == "abc", "the etag survives the failure and is still sent"
+    assert third.status == "ok", "a 304 restores the status the etag was earned under"
+    assert third.available == "1.0.0-rc.4"
+
+
+async def test_a_304_restores_unknown_version_not_ok(monkeypatch):
+    """The restored status is the etag's own, not a hardcoded 'ok'."""
+    monkeypatch.setattr(update_check.settings, "app_version", "9.9.9-rc.1")
+    monkeypatch.setattr(update_check.settings, "airgap", False)
+    monkeypatch.setattr(update_check.settings, "update_check", True)
+    monkeypatch.setattr(
+        update_check,
+        "_transport",
+        lambda: _transport(lambda r: httpx.Response(200, json=RELEASES, headers={"ETag": "z"})),
+    )
+    assert (await update_check.refresh()).status == "unknown_version"
+
+    monkeypatch.setattr(
+        update_check, "_transport", lambda: _transport(lambda r: httpx.Response(304))
+    )
+    assert (await update_check.refresh()).status == "unknown_version"
+
+
+async def test_the_release_list_is_requested_100_at_a_time(monkeypatch):
+    """GitHub pages /releases at 30 by default. Past 30 published releases an
+    older install falls off the list entirely and select_update answers
+    unknown_version -- the reported field bug through a different door."""
+    monkeypatch.setattr(update_check.settings, "app_version", "1.0.0-rc.2")
+    monkeypatch.setattr(update_check.settings, "airgap", False)
+    monkeypatch.setattr(update_check.settings, "update_check", True)
+    seen = {}
+
+    def _handler(request):
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json=RELEASES)
+
+    monkeypatch.setattr(update_check, "_transport", lambda: _transport(_handler))
+    await update_check.refresh()
+    assert "per_page=100" in seen["url"], seen["url"]
