@@ -1,6 +1,12 @@
 # Bug bounty — 2026-08-26
 
-**35 confirmed defects against `1.0.0-rc.4`. Six are fixed; twenty-nine are open.**
+**35 confirmed defects against `1.0.0-rc.4`, plus 15 more found while fixing them.**
+
+Of the original 35: six were fixed and committed on 2026-08-26; sixteen more carry a fix
+in the **uncommitted working tree**; thirteen remain. See
+[Remediation in progress](#remediation-in-progress--started-2026-08-26-tree-at-2d6368ac)
+for exactly which, what is still running, and the thirteen regressions the remediation
+itself introduced that must be fixed before any of it ships.
 
 Unlike every other document indexed in [`README.md`](./README.md), this one describes
 the tree as it stands now rather than as it stood in March or June. Treat the open
@@ -34,17 +40,89 @@ numbers and helper names in it are as of `f483bcb3` and some have since moved.
 
 ## Status
 
-| Severity | Total | Fixed | Open |
-|---|---|---|---|
-| HIGH | 21 | 6 | 15 |
-| MEDIUM | 11 | 0 | 11 |
-| LOW | 3 | 0 | 3 |
-| **Total** | **35** | **6** | **29** |
+The original 35 only. "Fixed" counts committed fixes; "In tree" counts fixes that exist
+but are not yet committed and so are not yet closed.
 
-Everything fixed so far is in the authentication and authorization cluster; that was
-deliberate, not incidental — those were the findings where the consequence was account
-takeover or privilege escalation. What remains is largely resource exhaustion,
-event-loop blocking, backup and restore integrity, and installer defects.
+| Severity | Total | Fixed | In tree | Open |
+|---|---|---|---|---|
+| HIGH | 21 | 6 | 11 | 4 |
+| MEDIUM | 11 | 0 | 3 | 8 |
+| LOW | 3 | 0 | 2 | 1 |
+| **Total** | **35** | **6** | **16** | **13** |
+
+The 15 findings added since are counted separately in
+[Found while fixing the twenty-nine](#found-while-fixing-the-twenty-nine): one fixed in
+tree (B36), fourteen open.
+
+The six *committed* fixes are all in the authentication and authorization cluster; that
+was deliberate, not incidental — those were the findings where the consequence was account
+takeover or privilege escalation. The sixteen in the working tree are the next band:
+resource exhaustion, event-loop blocking, and installer and CLI integrity. What is left
+open is backup and restore integrity, the audit chain, the WebSocket surface and outbound
+SSRF.
+
+## Remediation in progress — started 2026-08-26, tree at `2d6368ac`
+
+**Read this before touching anything.** A multi-agent remediation pass is part-way
+through the twenty-nine. Its work is in the **working tree, uncommitted**. Nothing below
+has a commit hash yet, which is why the rows above say `Fixed (working tree)` rather than
+naming a commit — the convention in "Closing a row" still stands, and those rows are not
+closed until a commit exists.
+
+### What is done
+
+Sixteen findings have a fix, a regression test watched failing before the fix, and an
+independent adversarial review. Every one of them was **confirmed against the tree first**
+— none turned out to be a B04-style overstatement, though several had moved line numbers
+and two had the right conclusion for the wrong stated reason (see B05 and B09 below).
+
+| Wave | Findings | Reviewer verdicts |
+|---|---|---|
+| Backend A | B05, B06, B07, B08, B09, B15, B29, B33 | 6 SOUND, 2 INCOMPLETE (B07, B09) |
+| Installer / CLI / nginx | B12 (`cb` half), B17, B18, B19, B20, B21, B31, B32, B35 | 2 SOUND, 4 INCOMPLETE |
+
+### What is still running or not started
+
+* **In flight** when this was written: B11, B12 (Python half), B13, B14, B22, B23, B24,
+  B25, B26, B27, B28, B30 — one workflow, eight agents, same fix-then-refute shape.
+  Check `git status` to see which of their files already carry changes.
+* **Not started:** the migration. B13 (composite index on `listener_events`), B14
+  (`AppSettings.audit_chain_checkpoint_hash`) and B34 (a data repair for
+  double-encoded `properties_json`) each need DDL. Agents were told **not** to write
+  Alembic revisions, so that one revision still has to be authored, chaining from head
+  `7d2e4a81c6f3`. Backend tests build schema from `models.Base.metadata.create_all`, not
+  Alembic, so a missing revision does not show up as a red test — it shows up as a broken
+  upgrade.
+* **Not started:** wiring the `listener_events` retention purge into `main.py`. The B13
+  agent was forbidden `main.py` to avoid colliding with B09 and was told to report the
+  registration snippet instead.
+* **Not started:** B37 below (the conftest `CB_DATA_DIR` redirect), deliberately deferred
+  because every agent was running tests against that file at the time.
+
+### Regressions this remediation introduced — fix before shipping
+
+These are not new discoveries about the old code. They are defects **in the fixes above**,
+found by the adversarial reviewers, and each one is a reason not to ship the fix as it
+stands. Ordered by how much damage they do.
+
+| # | From | What is wrong |
+|---|---|---|
+| R1 | B31 | The `map $uri $cb_cache_control` regex arm matches **proxied** image URIs, so `/branding/*`, `/user-icons/*` and `/uploads/*` now emit **two conflicting `Cache-Control` headers** (backend's `max-age=86400` and nginx's `max-age=31536000, immutable`). Reproduced live against a stub upstream. Worse, branding assets use fixed filenames with no cache-buster, so `immutable` can leave a replaced logo stale forever. Scope the map's regex arm to the static asset path. |
+| R2 | B31 | `apps/backend/src/app/middleware/security_headers.py` still carries `script-src 'self' 'strict-dynamic'`. With `strict-dynamic` and no nonce the browser ignores `'self'` entirely, so the backend's own `spa_fallback` route white-pages the SPA. It is now the only copy of that string that disagrees with all four nginx configs. |
+| R3 | B19 | The new `mkdir -p "${CB_DATA_DIR}/backups"` runs as root with no `chown`, and `run_upgrade` never calls `stage1_bootstrap`. The directory stays `root:root 0755`, so the breaker-run backend can no longer write scheduled backups or the daily snapshot into it. |
+| R4 | B17 | The new `<CB_CONTAINER>-prev` container still references `CB_VOLUME`, so `docker volume rm` at `uninstall.sh:114` fails. `uninstall.sh` runs under `set -e` with no `\|\| true` there, so **the uninstaller aborts immediately after the operator confirms the irreversible data prompt**, leaving image, Caddy, config dir, systemd units and `/usr/local/bin/cb` in place. Confirmed against a real docker daemon. |
+| R5 | B17 | The docker-run-failure rollback message prints `docker rm ... && docker rename ...`; when `docker run` fails at creation there is no such container, `docker rm` exits 1, and the `&&` chain short-circuits before the rename. The printed recovery leaves the install down. Use `docker rm -f`, as the poll-timeout message already does. |
+| R6 | B17 | `docker rename ... 2>/dev/null \|\| docker rm "$CB_CONTAINER"` silently destroys the old container when the rename fails — the exact outcome the rollback insurance exists to prevent, with the error hidden. |
+| R7 | B07 | `_device_timeout_seconds()` does an unguarded `int(os.environ.get(...))`, so a non-numeric `CB_TELEMETRY_DEVICE_TIMEOUT_SECONDS` turns every manual poll into a 500. Before the fix this path read no env var at all. |
+| R8 | B07 | Moving `poll_hardware` onto `asyncio.to_thread` lets two concurrent manual polls of the same host share one cached `ILOClient` — and its `requests.Session`, which is not thread-safe — across worker threads. Previously impossible, because the call only ever ran on the loop thread. |
+| R9 | B20/B32 | `install.sh:331` claims a bad `--version` "fails loudly on the first curl (404 on the tag)". It does not: the six asset fetches have no `\|\| cb_fail` and no ERR trap, so `set -e` kills the script at exit 22 with **zero output**, leaving a half-populated `~/.circuitbreaker`. The B32 fix is what makes this path reachable, so it trades a silent wrong-revision install for a silent death and documents the opposite. |
+| R10 | B05 | `docs_service.export_docs_zip` has no member-count or aggregate-size cap, so an install with more than 500 docs now produces an archive **its own importer rejects with 413**. Nothing on the export side was adjusted to match the new import caps. |
+| R11 | B09 | The comment and the test both assert that `misfire_grace_time=3600` lets a restart straddling 02:00 still take the snapshot. It cannot: the scheduler uses the default `MemoryJobStore`, so the job is created fresh at boot and there is no missed fire time to grace. A maintainer who removes the parameter will be told by a failing test that it provides a protection it does not provide. |
+| R12 | B15 | `update_stream(**{**cfg, ...})` sends a partial `StreamConfig`; nats-py drops `None` fields, so `num_replicas` and `storage` are omitted and JetStream re-applies defaults. On a clustered NATS an R3 stream would be silently downgraded to R1. |
+| R13 | B35, B19 | **Two vacuous tests.** `test_the_prompt_advertises_the_retaining_default` passes because the block it greps includes a new comment containing the literal `[y/N]` — reverting the actual `printf` leaves the suite green. `test_pgbouncer_liveness_check_is_not_the_dump_target` asserts a string that was already present pre-fix. Both pin nothing. |
+
+There is also a stray file to delete: `apps/backend/2@127.0.0.1`, created by a mistyped
+redirect during the run.
 
 ## All findings
 
@@ -54,23 +132,23 @@ event-loop blocking, backup and restore integrity, and installer defects.
 | B02 | HIGH | `apps/backend/src/app/api/auth_oauth.py:652` | GitHub OAuth callback accepts an unverified email as the account key | **Fixed** `acd2bad9` |
 | B03 | HIGH | `apps/backend/src/app/api/auth_oauth.py:385` | OAuth/OIDC sign-in links to any existing account by email alone, skips MFA, and ignores registration_open | **Fixed** `4a0ab3bd` |
 | B04 | HIGH | `apps/backend/src/app/api/discovery.py:961` | Four discovery write routes have no write authorization — `require_write_auth` passed as a bare default instead of `Depends(...)` **(title overstates it — see the correction below)** | **Fixed** `9e1fcd82` |
-| B05 | HIGH | `apps/backend/src/app/api/docs.py:95` | Zip bomb in docs import: ZIP members are fully decompressed before the per-file size check | Open |
-| B06 | HIGH | `apps/backend/src/app/api/ipam.py:207` | IPAM network scan materialises the full host list before the size check — unbounded hang on IPv6, multi-GB spike on IPv4 | Open |
-| B07 | HIGH | `apps/backend/src/app/api/telemetry.py:98` | Manual telemetry poll blocks the API event loop for up to ~105s on an unreachable SNMP device | Open |
-| B08 | HIGH | `apps/backend/src/app/core/redis.py:84` | get_redis() treats Redis pool exhaustion as a dead server and calls aclose(), disconnecting every live pub/sub socket in the process | Open |
-| B09 | HIGH | `apps/backend/src/app/core/scheduler.py:156` | Nightly full-state snapshot job is only registered by discovery-profile writes, never at boot | Open |
+| B05 | HIGH | `apps/backend/src/app/api/docs.py:95` | Zip bomb in docs import: ZIP members are fully decompressed before the per-file size check | Fixed (working tree) |
+| B06 | HIGH | `apps/backend/src/app/api/ipam.py:207` | IPAM network scan materialises the full host list before the size check — unbounded hang on IPv6, multi-GB spike on IPv4 | Fixed (working tree) |
+| B07 | HIGH | `apps/backend/src/app/api/telemetry.py:98` | Manual telemetry poll blocks the API event loop for up to ~105s on an unreachable SNMP device | Fixed (working tree) |
+| B08 | HIGH | `apps/backend/src/app/core/redis.py:84` | get_redis() treats Redis pool exhaustion as a dead server and calls aclose(), disconnecting every live pub/sub socket in the process | Fixed (working tree) |
+| B09 | HIGH | `apps/backend/src/app/core/scheduler.py:156` | Nightly full-state snapshot job is only registered by discovery-profile writes, never at boot | Fixed (working tree) |
 | B10 | HIGH | `apps/backend/src/app/core/security.py:512` | Service-account JWTs (user_id=0) are accepted on signature alone — deleting or rotating the APIToken row does not revoke them | **Fixed** `bac26cb8` |
 | B11 | HIGH | `apps/backend/src/app/services/backup/snapshot.py:86` | pg_dump output buffered entirely in memory can OOM the 2 GB mono container | Open |
-| B12 | HIGH | `apps/backend/src/app/services/backup/snapshot.py:78` | Snapshot staging uses the system temp dir, which is a 100 MB tmpfs in the shipped Docker deployment | Open |
+| B12 | HIGH | `apps/backend/src/app/services/backup/snapshot.py:78` | Snapshot staging uses the system temp dir, which is a 100 MB tmpfs in the shipped Docker deployment | Fixed (working tree, `cb` half only) |
 | B13 | HIGH | `apps/backend/src/app/services/listener_service.py:358` | SSDP listener runs a blocking multi-round-trip DB write per multicast packet on the API event loop, with attacker-defeatable dedup and no retention on listener_events | Open |
 | B14 | HIGH | `apps/backend/src/app/services/log_purge.py:34` | Audit-log retention purge deletes the chain genesis, so verify-chain reports tampering on every install past the retention window | Open |
-| B15 | HIGH | `apps/backend/src/app/workers/telemetry_ingest_worker.py:53` | TELEMETRY and DISCOVERY JetStream streams are created with no retention policy or limits | Open |
+| B15 | HIGH | `apps/backend/src/app/workers/telemetry_ingest_worker.py:53` | TELEMETRY and DISCOVERY JetStream streams are created with no retention policy or limits | Fixed (working tree) |
 | B16 | HIGH | `apps/frontend/src/components/details/ServiceDetail.jsx:200` | Stored `javascript:` URL in service.url renders into an unchecked `href`, executing script in the viewer's session | **Fixed** `e391c2e5` |
-| B17 | HIGH | `cb:437` | `cb update` (docker mode) destroys the running container and recreates it without the operator's environment, then reports success on a crash loop | Open |
-| B18 | HIGH | `deploy/scripts/restore.sh:199` | restore.sh replays the dump without ON_ERROR_STOP and reports success over a partially loaded database | Open |
-| B19 | HIGH | `deploy/setup.sh:1591` | run_upgrade's pre-upgrade pg_dump swallows every failure and unconditionally reports "Backup saved" | Open |
-| B20 | HIGH | `install.sh:549` | install.sh never verifies the bundle checksum: it fetches a `.sha256` asset that no release publishes, and the missing `else` makes the skip silent | Open |
-| B21 | HIGH | `install.sh:341` | install.sh --docker writes the vault key, JWT secret and DB password to a 0644 .env with no chmod | Open |
+| B17 | HIGH | `cb:437` | `cb update` (docker mode) destroys the running container and recreates it without the operator's environment, then reports success on a crash loop | Fixed (working tree) |
+| B18 | HIGH | `deploy/scripts/restore.sh:199` | restore.sh replays the dump without ON_ERROR_STOP and reports success over a partially loaded database | Fixed (working tree) |
+| B19 | HIGH | `deploy/setup.sh:1591` | run_upgrade's pre-upgrade pg_dump swallows every failure and unconditionally reports "Backup saved" | Fixed (working tree) |
+| B20 | HIGH | `install.sh:549` | install.sh never verifies the bundle checksum: it fetches a `.sha256` asset that no release publishes, and the missing `else` makes the skip silent | Fixed (working tree) |
+| B21 | HIGH | `install.sh:341` | install.sh --docker writes the vault key, JWT secret and DB password to a 0644 .env with no chmod | Fixed (working tree) |
 | B22 | MEDIUM | `apps/backend/src/app/api/auth_oauth.py:33` | One-time OAuth auth codes live in a per-process dict while the mono image runs 2 uvicorn workers | Open |
 | B23 | MEDIUM | `apps/backend/src/app/api/auth_oauth.py:33` | One-time OAuth auth codes live in a per-process dict while the shipped image runs `uvicorn --workers 2`, so `/auth/exchange` fails ~50% of the time | Open |
 | B24 | MEDIUM | `apps/backend/src/app/api/ws_discovery.py:68` | WebSocket per-IP cap and CIDR allowlist key on a forgeable leftmost X-Forwarded-For | Open |
@@ -78,13 +156,13 @@ event-loop blocking, backup and restore integrity, and installer defects.
 | B26 | MEDIUM | `apps/backend/src/app/core/audit_chain.py:136` | verify_audit_chain/repair_audit_chain fully materialise the logs table, including the untruncated body columns the hash never covers | Open |
 | B27 | MEDIUM | `apps/backend/src/app/core/url_validation.py:221` | Outbound SSRF validation resolves DNS but connects by hostname — rebinding reopens the window | Open |
 | B28 | MEDIUM | `apps/backend/src/app/services/auth_service.py:536` | Invite- and register-issued sessions are never recorded, so no revocation path can kill them | Open |
-| B29 | MEDIUM | `apps/backend/src/app/services/backup/pruner.py:66` | prune_remote deletes every object under the S3 prefix, not just cb-snapshot tarballs | Open |
+| B29 | MEDIUM | `apps/backend/src/app/services/backup/pruner.py:66` | prune_remote deletes every object under the S3 prefix, not just cb-snapshot tarballs | Fixed (working tree) |
 | B30 | MEDIUM | `apps/backend/src/app/services/discovery_fingerprint.py:1026` | Discovery HTTP/UPnP fingerprint probes buffer unbounded bodies from untrusted scan hosts and follow redirects unpoliced | Open |
-| B31 | MEDIUM | `docker/nginx.conf:163` | nginx `location /` re-declares add_header, discarding all server-level security headers on the SPA document | Open |
-| B32 | MEDIUM | `install.sh:324` | install.sh --docker silently ignores --version: compose, helper and image can be three different revisions | Open |
-| B33 | LOW | `apps/backend/src/app/services/discovery_dhcp.py:228` | SSH argument injection via the unvalidated DHCP router username in the sshpass fallback | Open |
+| B31 | MEDIUM | `docker/nginx.conf:163` | nginx `location /` re-declares add_header, discarding all server-level security headers on the SPA document | Fixed (working tree) |
+| B32 | MEDIUM | `install.sh:324` | install.sh --docker silently ignores --version: compose, helper and image can be three different revisions | Fixed (working tree) |
+| B33 | LOW | `apps/backend/src/app/services/discovery_dhcp.py:228` | SSH argument injection via the unvalidated DHCP router username in the sshpass fallback | Fixed (working tree) |
 | B34 | LOW | `apps/backend/src/app/services/listener_service.py:379` | Listener events double-encode properties into a JSONB column, storing a JSON scalar string instead of an object | Open |
-| B35 | LOW | `uninstall.sh:98` | uninstall.sh data-volume prompt defaults to destroy and only "n"/"no" retains | Open |
+| B35 | LOW | `uninstall.sh:98` | uninstall.sh data-volume prompt defaults to destroy and only "n"/"no" retains | Fixed (working tree) |
 B22 and B23 are the same defect reported twice by different agents (OAuth auth codes in
 a per-process dict against `uvicorn --workers 2`); they are kept as separate rows so the
 count matches the source data.
@@ -1156,6 +1234,135 @@ case "$REPLY" in
 esac
 
 This is the whole fix. Nothing depends on the current wording: no test asserts the prompt text, and docs/installation/uninstalling.md:87 says only "with confirmation". Leave the image/Caddy/CA prompts (121, 189, 212) as `[Y/n]` — they are recoverable (re-pull, re-run install) and flipping them would make the uninstaller tedious for its actual purpose. Do not add a typed-name confirmation here; `cb restore`'s "Type RESTORE" (cb:604) belongs to a command that overwrites a live install, whereas this prompt is an offer to spare data during an already-requested removal, and the [y/N] default carries the same protection at a fraction of the friction.
+
+## Found while fixing the twenty-nine
+
+These were not in the original 35. They were turned up by the remediation pass that
+began on 2026-08-26 and are recorded here rather than in a new document, because the
+question a reader arrives with — "what is known to be wrong with this tree?" — has one
+answer, not two. They carry the same convention as the rows above: a finding is closed by
+naming the commit that closed it.
+
+| ID | Sev | Location | Finding | Status |
+|---|---|---|---|---|
+| B36 | HIGH | `apps/backend/tests/test_bootstrap_security.py:207` | The bootstrap race test commits a rotated `vault_key_hash` and never restores it, so `test_config_validate.py` fails whenever it runs after — the backend suite is order-dependently red | Fixed (working tree) |
+| B37 | MEDIUM | `apps/backend/tests/conftest.py:29` | The backend suite writes a real generated vault key into `apps/backend/data/.env` in the working tree | Open |
+| B38 | MEDIUM | `apps/backend/src/app/api/docs.py:170` | `import_docs` reads the entire upload into memory before the 10 MB size gate; `upload_doc_image:250` has the identical shape | Open |
+| B39 | MEDIUM | `apps/backend/src/app/middleware/security_headers.py:14` | The backend's own CSP is `script-src 'self' 'strict-dynamic'` with no nonce, which allows no script at all — `spa_fallback` white-pages the SPA | Open |
+| B40 | MEDIUM | `deploy/setup.sh:1589` | The pre-upgrade backup artifact is a bare `.sql` that `cb restore` structurally rejects, so the documented rollback path cannot consume it | Open |
+| B41 | LOW | `apps/backend/src/app/api/docs.py:125` | A corrupt ZIP member raises `BadZipFile` out of the import handler as a 500; only the `ZipFile()` constructor is wrapped | Open |
+| B42 | LOW | `apps/backend/src/app/services/settings_service.py:233` | `dhcp_router_command` is validated at execution time but never at settings-write time, so a rejected command fails silently forever | Open |
+| B43 | LOW | `apps/backend/src/app/main.py:854` | The discovery scan-result purge is registered twice under two job ids, so it runs twice concurrently at 03:00 after any profile write | Open |
+| B44 | LOW | `apps/backend/src/app/workers/discovery.py:103` | The DISCOVERY JetStream stream has a consumer but no publisher anywhere in the tree — the discovery worker consumes a queue nothing feeds | Open |
+| B45 | LOW | `apps/backend/src/app/services/discovery_safe.py:81` | `scan_subnet_safe` materialises the whole host list with no size guard of its own — B06's shape, one layer down | Open |
+| B46 | LOW | `uninstall.sh:13` | Every prompt reads `/dev/tty` under `set -e`, so the advertised `curl \| bash` invocation aborts silently at exit 1 **after** the container is already removed | Open |
+| B47 | LOW | `cb` (restore path) | `docker exec` sees the image ENV, not the entrypoint's exports, and no Dockerfile sets `CB_DATA_DIR` — a latent trap that nearly reintroduced B12 | Open |
+| B48 | LOW | `cb:747` | `cb restore` has no free-space preflight, and the B12 fix means a restore now transiently needs ~2x the snapshot size on the data volume it is restoring into | Open |
+| B49 | LOW | `docker/nginx.mono.conf:122` | `location @backend_warming_up` declares its own `add_header`, so its 503 carries none of the six server-level security headers | Open |
+| B50 | LOW | `install.sh` (end of `stage_docker_deploy`) | `ip route get 1.1.1.1` failing kills the installer under `pipefail` **after** a successful deploy, so the operator never sees the access URLs and concludes it failed | Open |
+
+### B38 through B50 — the short entries
+
+Each was found by an agent working a different finding, reported rather than fixed
+(fixing outside the assigned scope is how a remediation pass stops being reviewable), and
+each carries the reporter's own reasoning. The one-line statements in the table above are
+the finding; what follows is only what a reader needs to act.
+
+**B38** is B05 one frame up. `_parse_zip_entries` checks `len(data)` and answers 413, but
+`await file.read()` at the top of the handler already pulled the whole body into one
+`bytes`. Starlette spools past 1 MB to disk, so the body is not held in RAM while it
+streams — but an unparameterized `.read()` materialises all of it at once. Mitigated in
+the shipped topology by `client_max_body_size 10m`; not mitigated for anything reaching
+the ASGI app directly. Fix: `await file.read(_MAX_IMPORT_ZIP_BYTES + 1)`.
+
+**B39** is the same class as B31 on a distinct code path, and is listed as R2 above
+because the B31 fix makes it the last disagreeing copy. Under CSP Level 3 `strict-dynamic`
+makes the browser ignore `'self'` and every host source; with no nonce and no hash that
+policy permits no script whatsoever. `main.py` registers `spa_fallback` whenever a `dist`
+directory exists, and the mono image sets `STATIC_DIR=/app/frontend/dist`, so the route is
+registered in the shipped container. Neither shipped deployment routes browsers through
+it — which is why this is MEDIUM — but `docs/deployment-security.md:184-200` explicitly
+contemplates fronting the backend with a proxy that sets no CSP of its own.
+
+**B40** was flagged by the hunt itself as a follow-up to B19 and is recorded here so it is
+not lost: making the pre-upgrade dump *honest* (B19) did not make it *restorable*.
+
+**B43**: both registrations wrap the same callable on the same trigger under different
+ids, and `SingleOwnerScheduler` keys its advisory lock on the job id — so the two do not
+exclude each other, and `reload_discovery_jobs` only ever removes one of them. Low impact
+(a bounded DELETE run twice) but it defeats the SRV-02 single-owner guarantee that the
+id-keyed lock exists to provide.
+
+**B44** deserves a deliberate decision rather than a patch. A repo-wide grep for
+`discovery.jobs` returns three hits, all inside `discovery.py` itself: the `add_stream`,
+the subscribe, and a log line. Either the publisher was lost in a refactor — in which case
+scheduled discovery is silently not running through this path — or the worker is vestigial
+and should be removed along with its stream. It currently runs a full container and
+appears live in `topology.py`.
+
+**B46** is not a request to default the prompts. The safety behaviour (nothing is deleted
+without an answer) is correct and load-bearing. The defect is that the abort happens
+*after* the container is stopped and removed, with no message, so the operator is left
+half-uninstalled with an exit code they may not see through a pipe. The honest fix is a
+`[ -t 0 ] || [ -r /dev/tty ]` preflight that fails before touching anything, or an
+explicit non-interactive flag — a decision about the script's contract, not a defect fix.
+
+### B36 — The bootstrap race test leaves a rotated vault key hash committed
+
+**Location:** `apps/backend/tests/test_bootstrap_security.py:207`  ·  **Severity:** HIGH
+
+`test_concurrent_bootstrap_requests_create_exactly_one_first_admin` drives
+`auth_service.bootstrap_initialize` on committed `SessionLocal()` sessions rather than on
+the rolled-back `db_session` fixture, because the point of the test is a real two-thread
+race. `bootstrap_initialize` calls `_generate_and_persist_vault_key`
+(`services/auth_service.py:585`), which mints a fresh key and commits its SHA-256 to
+`app_settings.vault_key_hash`.
+
+The test's cleanup block puts back `auth_enabled` and deletes the users it created. It
+does not put back the vault key columns. Every test that runs afterwards in the same
+session sees an `app_settings.vault_key_hash` that no longer matches the process
+`CB_VAULT_KEY` that `conftest.pytest_configure` set — which is exactly the stale-key
+condition `validate_config` exists to report. So
+`tests/test_config_validate.py::test_the_database_tier_supplies_the_jwt_secret_and_names_itself`
+fails, ~1300 tests away from the test that caused it.
+
+This is why it was invisible: both files pass in isolation, and the backend suite's
+`addopts` carries `-x`, so the run stops at the first failure and never reaches the rest.
+
+Reproduce:
+
+    cd apps/backend && PYTHONPATH=src pytest \
+      tests/test_bootstrap_security.py tests/test_config_validate.py \
+      -q --no-cov -p no:randomly
+
+**Fix (working tree):** captures `vault_key`, `vault_key_hash` and `vault_key_rotated_at`
+before the race and restores them in the same committed transaction the existing cleanup
+uses. Verified by watching the two-file reproduction above fail, then pass.
+
+### B37 — The backend suite writes a real vault key into the working tree
+
+**Location:** `apps/backend/tests/conftest.py:29`  ·  **Severity:** MEDIUM
+
+`vault_service._DATA_ENV_PATH` is computed **at import time**
+(`_DATA_ENV_PATH = _get_data_dir() / ".env"`, `vault_service.py:37`), so it resolves
+against whatever `CB_DATA_DIR` held when the module was first imported. `conftest`
+redirects `UPLOADS_DIR` in `pytest_configure` for precisely this reason — and explains at
+length why a fixture-time monkeypatch would be too late — but does not redirect
+`CB_DATA_DIR`.
+
+Two consequences:
+
+1. `write_vault_key_to_env` deposits a real Fernet key at `apps/backend/data/.env` (0600)
+   on every run that bootstraps. It is gitignored, so it does not show up in review, but
+   it is live secret material written outside any temp dir, and `load_vault_key` reads
+   that same path — so one run can influence the next.
+2. The three tests that *do* `monkeypatch.setenv("CB_DATA_DIR", str(tmp_path))`
+   (`test_bootstrap_security.py:95,142,170`) are not actually redirecting the env write,
+   for the import-time reason above. They pass regardless, which is the more
+   uncomfortable half.
+
+**Fix:** set `CB_DATA_DIR` to a per-run `mkdtemp` in `pytest_configure` beside the
+existing `UPLOADS_DIR` redirect, and remove it in `pytest_unconfigure`.
 
 ## Closing a row
 
