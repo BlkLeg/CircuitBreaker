@@ -1,13 +1,18 @@
 # Security Reports and Patch Records — Index
 
-**These are historical records, not the current source of truth.**
+**Historical records, with one exception — read the status column before acting on
+anything here.**
 
 This file indexes both `SECURITY_REPORTS/` (audits, triage and raw scanner
 output) and `SECURITY_PATCHES/` (patch write-ups and the raw scan run they
 were triaged from). Every document in either directory describes the codebase
-as it stood on its own date, between 2026-03-10 (v0.2.0-beta) and 2026-06-30.
-None of them has been re-run against 1.0.0-rc.4. A finding is closed only if
-the requirement ledger says so.
+as it stood on its own date. A finding is closed only if the requirement ledger,
+or the finding's own row, names the commit that closed it.
+
+**One exception to "historical".** [`bug-bounty-2026-08-26.md`](./bug-bounty-2026-08-26.md)
+was run against 1.0.0-rc.4 and twenty-nine of its findings are open in the tree
+today. Everything else here predates the release candidate, between 2026-03-10
+(v0.2.0-beta) and 2026-06-30, and none of it has been re-run against 1.0.0-rc.4.
 
 The current security posture is defined by:
 
@@ -33,6 +38,8 @@ as history only. GOV-13 is the requirement this index exists to close.
 
 | Report | Date | Version audited | Status |
 |---|---|---|---|
+| [`bug-bounty-2026-08-26.md`](./bug-bounty-2026-08-26.md) — 35 confirmed defects from a multi-agent hunt, with per-finding status | 2026-08-26 | 1.0.0-rc.4 (`dev` at `f483bcb3`) | **Active** — the only document here describing the current tree. Six findings are fixed, each naming its commit; **twenty-nine are open**, fifteen of them HIGH. The six fixed were reproduced by hand before being touched; the twenty-nine open carry the hunt's own adversarial verification only and are leads, not settled fact — one of the six examined closely overstated its own reachability. Raw evidence in [`bug-bounty-2026-08-26-findings.json`](./bug-bounty-2026-08-26-findings.json). |
+| [`bug-bounty-2026-08-26-findings.json`](./bug-bounty-2026-08-26-findings.json) — raw finding data behind the report above | 2026-08-26 | 1.0.0-rc.4 (`dev` at `f483bcb3`) | **Active** — machine output, kept as the evidence for the report. Each entry carries the refutation attempt that failed to kill it (`reasoning`) and the proposed remediation (`fix`) in full; the report quotes the latter and summarises the rest. |
 | [`SECURITY_TRIAGE_ACTIONABLE_2026-06-30.md`](./SECURITY_TRIAGE_ACTIONABLE_2026-06-30.md) — actionable triage of the June scan run | 2026-06-30 | pre-1.0 `dev` | **Active** — the two top findings are closed in the tree (no `verify_signature` bypass remains anywhere in `apps/backend/src/app`; `docker/nginx.mono.conf` clears `Upgrade`/`Connection` on the general proxy and forwards them only in explicit WebSocket locations). The Medium "JWT secret fallback is logged" still stands: `apps/backend/src/app/core/users.py:197-201` logs the fallback path. Dependency-CVE rows are stale — re-run the scanners. |
 | [`SEC_ANALYSIS-3-12-26.md`](./SEC_ANALYSIS-3-12-26.md) — narrative overview of shipped security features | 2026-03-13 | v0.2.2 | Historical. A feature description, not a finding list; nothing here is actionable. |
 | [`trivy_scan-3-13-26.txt`](./trivy_scan-3-13-26.txt) — raw Trivy output | 2026-03-13 | v0.2.2 | Superseded by the Trivy stages that run continuously: filesystem and IaC in [`security.yml`](../.github/workflows/security.yml), and an image scan of the pushed digest in [`release.yml`](../.github/workflows/release.yml) that blocks signing on *fixable* HIGH/CRITICAL — it sets `ignore-unfixed: true`, so the 105 unfixable HIGH/CRIT findings the base image carries are deliberately non-blocking. |
