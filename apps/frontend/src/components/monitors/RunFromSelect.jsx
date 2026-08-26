@@ -70,6 +70,25 @@ export function warningsFor(agent, host) {
 }
 
 /**
+ * Identity-level refusals: the named agent is not a vantage this deployment can
+ * offer at all, as opposed to one that is momentarily unusable.
+ *
+ * The distinction is what makes AGT-13's "reject stale or unauthorized
+ * identifiers after server validation" safe to act on automatically. A
+ * `probe_agent_id` arriving in a deep link is unvalidated input — the link may
+ * have been bookmarked before the agent was deleted, or point at an agent in a
+ * deployment the viewer cannot see — and honouring it silently would seed a
+ * create form with a vantage the save is going to refuse. An agent that is
+ * merely offline or out of scope is a different matter entirely: it exists, the
+ * operator may well have meant it, and the warnings below say what is wrong.
+ */
+const UNUSABLE_PRESELECTION_REASONS = new Set([
+  'agent_missing',
+  'agent_inactive',
+  'tenant_mismatch',
+]);
+
+/**
  * RunFromSelect — §7's "Run from" vantage picker.
  *
  * Deliberately **not** `disabled={!!initial}` the way the check-type select is:
@@ -89,9 +108,14 @@ export default function RunFromSelect({
   checkType = 'icmp',
   targetType = null,
   targetId = null,
+  preselectedAgentId = null,
 }) {
   const [agents, setAgents] = useState([]);
   const [loadError, setLoadError] = useState(null);
+  // Set only when a deep-link preselection was dropped, so the note below can
+  // say the vantage went away rather than leaving the form silently on
+  // "Circuit Breaker server" with no explanation for the change.
+  const [rejectedPreselection, setRejectedPreselection] = useState(null);
 
   useEffect(() => {
     // Scope compatibility is a property of the (agent, destination) pair, so
@@ -115,8 +139,29 @@ export default function RunFromSelect({
     listProbeEligibleAgents(query)
       .then(({ data }) => {
         if (cancelled) return;
-        setAgents(Array.isArray(data) ? data : []);
+        const rows = Array.isArray(data) ? data : [];
+        setAgents(rows);
         setLoadError(null);
+        // AGT-13, slice step 2. The endpoint returns every *active* agent, so
+        // an id that is absent from the answer names one that does not exist,
+        // is not active, or is not visible to this caller — the server's own
+        // verdict, not a guess made here.
+        //
+        // Only a deep-link preselection on a CREATE is dropped. On an edit
+        // (monitorId set) the currently-assigned agent deliberately stays in
+        // the list even when it has become ineligible: clearing it there would
+        // silently reassign the monitor to the server on the next save.
+        if (preselectedAgentId != null && monitorId == null) {
+          const match = rows.find((agent) => agent.agent_id === preselectedAgentId);
+          if (!match || UNUSABLE_PRESELECTION_REASONS.has(match.reason)) {
+            setRejectedPreselection(
+              `Agent ${preselectedAgentId} is no longer available as a vantage, so this monitor will run from the Circuit Breaker server. Pick another agent if you need one.`
+            );
+            onChange(null);
+          } else {
+            setRejectedPreselection(null);
+          }
+        }
       })
       .catch(() => {
         if (cancelled) return;
@@ -126,7 +171,11 @@ export default function RunFromSelect({
     return () => {
       cancelled = true;
     };
-  }, [monitorId, host, checkType, targetType, targetId]);
+    // `onChange` is deliberately not a dependency: MonitorForm passes an inline
+    // arrow, so including it would re-run this validation — and its request —
+    // on every keystroke in the form.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [monitorId, host, checkType, targetType, targetId, preselectedAgentId]);
 
   const options = useMemo(() => {
     const rows = agents.filter((a) => a.eligible || a.agent_id === value);
@@ -147,6 +196,15 @@ export default function RunFromSelect({
 
   const selected = options.find((a) => a.agent_id === value) || null;
   const warnings = warningsFor(selected, host);
+  // AGT-13: "the discovering agent visibly preselected". The <select> shows it,
+  // but a default that was chosen for the operator has to announce itself —
+  // otherwise the one fact that makes this form different from an ordinary
+  // create is carried entirely by a value that looks like it was always there.
+  // `role="status"` so it reaches a screen reader when the form opens.
+  const preselectionNote =
+    preselectedAgentId != null && selected?.agent_id === preselectedAgentId
+      ? `Vantage preselected: ${agentDisplayName(selected)}, the agent that found this device. You can change it.`
+      : null;
 
   return (
     <div className="form-group">
@@ -163,6 +221,16 @@ export default function RunFromSelect({
           </option>
         ))}
       </select>
+      {preselectionNote && (
+        <p className="mon-run-from-note text-muted" role="status">
+          {preselectionNote}
+        </p>
+      )}
+      {rejectedPreselection && (
+        <p className="mon-run-from-warning" role="status">
+          {rejectedPreselection}
+        </p>
+      )}
       {loadError && (
         <p className="mon-run-from-note text-muted" role="status">
           {loadError}
@@ -186,4 +254,9 @@ RunFromSelect.propTypes = {
   checkType: PropTypes.string,
   targetType: PropTypes.string,
   targetId: PropTypes.number,
+  // The vantage this form was OPENED with, when it came from a deep link
+  // ("Create monitor from this agent"). Distinct from `value`, which is
+  // whatever is currently chosen: the two are equal until the operator changes
+  // the selection, and only their equality justifies the preselection note.
+  preselectedAgentId: PropTypes.number,
 };

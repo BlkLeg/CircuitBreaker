@@ -24,6 +24,7 @@ from app.db.models import (
 )
 from app.schemas.agent_frame import CapabilityReadinessPayload, HostTelemetryPayload
 from app.services.agent_registry import record_network_facts
+from app.services.stream_faults import record_stream_fault
 from app.services.telemetry_cache import cache_telemetry, publish_telemetry
 from app.services.telemetry_normalize import (
     _NON_LIVE_STATUSES,
@@ -33,6 +34,11 @@ from app.services.telemetry_normalize import (
 
 _SAMPLE_ID = re.compile(r"^[0-9a-f]{32}$")
 _logger = logging.getLogger(__name__)
+
+# REL-07 fault-metric identity. Both publishes below run once per telemetry
+# sample per agent, so a Redis outage on a 100-agent fleet drove hundreds of
+# unthrottled log lines a minute — at DEBUG, where nobody saw the outage at all.
+_COMPONENT = "agent_telemetry"
 _MAX_PAYLOAD = 256 << 10
 _LIST_LIMITS = {"filesystems": 128, "disks": 128, "interfaces": 128, "temperatures": 256}
 _PERCENT_FIELDS = {"cpu_pct", "mem_pct", "swap_pct", "root_disk_pct"}
@@ -201,7 +207,9 @@ async def ingest_host_sample(
                 ),
             )
         except Exception as exc:
-            _logger.debug("agent telemetry publish failed: %s", exc)
+            record_stream_fault(
+                f"{_COMPONENT}.host_publish", exc, logger=_logger, context={"agent_id": agent.id}
+            )
     if row.hardware_id is not None and project_live:
         hardware_payload = {
             "data": platform,
@@ -218,7 +226,12 @@ async def ingest_host_sample(
                 {"entity_type": "hardware", "hardware_id": row.hardware_id, **hardware_payload},
             )
         except Exception as exc:
-            _logger.debug("agent Hardware telemetry publish failed: %s", exc)
+            record_stream_fault(
+                f"{_COMPONENT}.hardware_publish",
+                exc,
+                logger=_logger,
+                context={"agent_id": agent.id, "hardware_id": row.hardware_id},
+            )
     return row
 
 

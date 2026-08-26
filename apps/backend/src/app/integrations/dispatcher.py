@@ -8,6 +8,7 @@ from app.integrations.ilo import ILOClient
 from app.integrations.snmp_generic import SNMPGenericClient
 from app.integrations.snmp_network_device import SNMPNetworkDeviceClient
 from app.services.credential_vault import CredentialVault
+from app.services.stream_faults import record_stream_fault
 
 _logger = logging.getLogger(__name__)
 
@@ -117,4 +118,12 @@ async def _async_cache_and_publish(hardware_id: int, result: dict, ttl: int | No
         await cache_telemetry(hardware_id, result, ttl=ttl)
         await publish_telemetry(hardware_id, result)
     except Exception as exc:
-        _logger.debug("Redis cache/publish after poll failed: %s", exc)
+        # Fires once per polled device per cycle. Throttled and counted so a
+        # Redis outage shows up as a number instead of as "the live telemetry
+        # panel is blank and nothing in the log says why" (REL-07).
+        record_stream_fault(
+            "integration_dispatch.publish",
+            exc,
+            logger=_logger,
+            context={"hardware_id": hardware_id},
+        )

@@ -97,6 +97,25 @@
   padding: 5px 8px;
   font-size: 12px;
 }
+/* AGT-17's free-text find box. `.filter-input` is `width: 100%` globally, the
+   same reason `.filter-select` needs the override above. */
+.agents-page__filters .filter-input {
+  width: auto;
+  min-width: 12rem;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+/* The aggregate counts (AGT-17). Deliberately quiet: they are a reading of the
+   table below, not a headline, and every number in them is produced by the same
+   predicate that filtered those rows (lib/fleetFilters.summarizeFleet). */
+.agents-page__summary {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.66rem;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
 
 .agents-page__empty {
   background: var(--color-surface);
@@ -661,6 +680,21 @@
   animation: fleet-pulse 2.4s cubic-bezier(0, 0, 0.2, 1) infinite;
 }
 
+/* ACC-10 / AGT-14. The label used to be painted in the tone colour, which is
+   how a 9.6px chip ended up at 4.47:1 (ok) and 3.83:1 (warn) against its own
+   tinted background — under the WCAG AA 4.5:1 floor, and unfixable by tuning
+   the tint: even with NO background tint, `warn` reaches only 4.68:1 on a
+   fleet row and `critical` 3.37:1, because the tone colours are simply not
+   dark enough against this surface at text weight. It was not caught earlier
+   because the WCAG sweep only ever scanned pages with no rows on them.
+
+   The label therefore uses `--color-text` (6.7-8.2:1 across every tone, in
+   both the dark and light palettes, on the plain, pending and hover row
+   backgrounds), and the tone survives on the border, the wash and the glyph —
+   none of which carries meaning on its own. That is also what the file already
+   claims two rules above: colour reinforces the word, it is never the signal.
+   Icons stay tone-coloured deliberately: they are `aria-hidden` decoration
+   beside a label that already says the same thing. */
 .fleet-chip {
   --fleet-tone-color: var(--color-border);
   display: inline-flex;
@@ -670,9 +704,12 @@
   border-radius: 999px;
   padding: 0 6px;
   background: color-mix(in srgb, var(--fleet-tone-color) 12%, transparent);
-  color: var(--fleet-tone-color);
+  color: var(--color-text);
   font-size: 0.6rem;
   letter-spacing: 0.03em;
+}
+.fleet-chip svg {
+  color: var(--fleet-tone-color);
 }
 .fleet-chip[data-tone='ok'] {
   --fleet-tone-color: var(--color-success);
@@ -730,6 +767,24 @@
   background: rgba(var(--color-primary-rgb), 0.18);
   border-color: var(--color-primary);
   color: var(--color-primary);
+}
+
+/* Version drift (AGT-17). The caret and the `.sr-only` clause beside it carry
+   the fact on their own; the colour only draws the eye to a column an operator
+   is already scanning, so it goes on the caret rather than on the version
+   number — the number stays at full text contrast. Warning-coloured rather
+   than danger-coloured on purpose: an agent one version behind is a rollout in
+   progress, not an incident. */
+.fleet-cell[data-drift='behind'] .fleet-drift-mark {
+  color: var(--color-warning);
+  font-weight: 700;
+}
+
+/* AgentStateChip renders inside the dense status cell, so its glyph has to sit
+   on the text baseline rather than pushing the 34px row taller. */
+.fleet-chip svg {
+  flex: none;
+  vertical-align: middle;
 }
 
 .fleet-empty {
@@ -862,4 +917,68 @@
   margin: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
+}
+
+/* ── Agent detail: the state summary (AGT-14) ───────────────────────────────
+   The requirement asks for a distinct, unambiguous treatment per state *and*
+   for each state to carry a documented operator action. Those are two
+   different readings — one at a glance, one when something is wrong — so this
+   block renders both: a chip row that is scannable, and a definition list
+   underneath that says what each chip means and what to do about it.
+
+   Chips reuse `.fleet-chip`'s tone ladder rather than defining a second colour
+   vocabulary for the same states; the detail page imports agents.css for
+   exactly that. Nothing here depends on colour: the glyph and the label are
+   inside the chip, and the reason and remedy are in the list below it. */
+.agent-detail-page__states {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 4px;
+}
+
+.agent-detail-page__state-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Two columns on anything wider than a phone, one below it. The label column
+   is capped rather than sized to content so a long state name cannot push the
+   explanation off the right edge. */
+.agent-detail-page__state-list {
+  display: grid;
+  grid-template-columns: minmax(8rem, 12rem) 1fr;
+  gap: 2px 12px;
+  margin: 0;
+  font-size: 0.78rem;
+}
+.agent-detail-page__state-list dt {
+  font-weight: 600;
+  color: var(--color-text);
+}
+.agent-detail-page__state-list dd {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+/* The action is the actionable half, so it is the half that is not muted. */
+.agent-detail-page__state-list dd em {
+  color: var(--color-text);
+  font-style: normal;
+}
+
+@media (max-width: 640px) {
+  .agent-detail-page__state-list {
+    grid-template-columns: 1fr;
+  }
+  .agent-detail-page__state-list dd {
+    margin-bottom: 6px;
+  }
+}
+
+.agent-detail-page__last-seen {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
 }

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { getInstallCommand } from '../../api/agents';
+import { operatorErrorMessage } from '../../lib/agentErrors';
 import { agentDisplayName } from '../../lib/agentLabel';
 import { useToast } from '../common/Toast';
 import AddAgentInstallStep from './AddAgentInstallStep';
@@ -21,21 +22,25 @@ function stepState(isDone, isActive) {
   return isActive ? STEP_ACTIVE : STEP_WAITING;
 }
 
-const HTTP_FORBIDDEN = 403;
-const GENERIC_INSTALL_ERROR = 'Could not generate an install command';
+const GENERIC_INSTALL_ERROR =
+  'Could not generate an install command. Check the server’s TLS certificate and try again.';
 // GET /agents/install-command is require_role("admin") while this page is
 // viewer-visible, so a 403 here is the normal outcome for a non-admin operator,
 // not a fault. Saying who can get them one beats echoing "Not enough
 // permissions" at someone who cannot act on it.
 const INSTALL_ADMIN_ONLY = 'Ask an administrator for the install command';
 
+// AGT-15: the server answers 503 with an operator-fixable reason when it has
+// one (an unreadable TLS cert names the path and the chmod that fixes it), and
+// preferring it over generic text is what makes the failure actionable. It is
+// passed through `operatorErrorMessage`, which redacts secret-shaped material
+// on the way — this surface must not depend on every present and future error
+// on that route having been written carefully. See lib/agentErrors.js.
 function installErrorMessage(err) {
-  if (err?.response?.status === HTTP_FORBIDDEN) return INSTALL_ADMIN_ONLY;
-  // The server answers 503 with an operator-fixable reason when it has one (an
-  // unreadable TLS cert, no certificate at all). Preferring it over generic
-  // text is what makes the failure actionable.
-  const detail = err?.response?.data?.detail;
-  return typeof detail === 'string' && detail ? detail : GENERIC_INSTALL_ERROR;
+  return operatorErrorMessage(err, {
+    fallback: GENERIC_INSTALL_ERROR,
+    forbidden: INSTALL_ADMIN_ONLY,
+  });
 }
 
 /**

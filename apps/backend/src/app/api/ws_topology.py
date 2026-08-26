@@ -46,11 +46,18 @@ from app.core.security import decode_token
 from app.core.time import utcnow, utcnow_iso
 from app.db.models import User
 from app.services.settings_service import get_or_create_settings
+from app.services.stream_faults import FAULT_DECODE, record_stream_fault
 from app.services.user_service import is_session_revoked
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# REL-07 fault-metric identity for this stream. Only the paths a peer or an
+# outage can drive repeatedly are routed through it; the one-shot close-failure
+# handlers below stay plain DEBUG lines, because they can fire at most once per
+# connection and carry no storm risk.
+_COMPONENT = "ws_topology"
 
 _MAX_CONNECTIONS: int = int(os.getenv("CB_WS_TOPO_MAX_CONNECTIONS", "50"))
 _MAX_PER_IP: int = int(os.getenv("CB_WS_TOPO_MAX_PER_IP", "5"))
@@ -141,8 +148,11 @@ class TopologyConnectionManager:
         for ws in snapshot:
             try:
                 await ws.send_text(payload)
-            except Exception as e:
-                logger.debug("Topology WS send failed: %s", e, exc_info=True)
+            except Exception as exc:
+                # One line per dead socket per batch is a storm when a proxy
+                # drops every connection at once, and the count of dropped
+                # fan-out batches had no metric anywhere.
+                record_stream_fault(f"{_COMPONENT}.broadcast", exc, logger=logger)
                 dead.append(ws)
 
         if dead:
@@ -211,7 +221,7 @@ async def _ping_loop(ws: WebSocket, main_task: asyncio.Task) -> None:
     except asyncio.CancelledError:
         pass
     except Exception as exc:
-        logger.debug("Topology WS ping loop error: %s", exc)
+        record_stream_fault(f"{_COMPONENT}.ping", exc, logger=logger)
         main_task.cancel()
 
 
@@ -298,8 +308,13 @@ async def topology_stream(websocket: WebSocket) -> None:
                     msg = json.loads(raw)
                     if isinstance(msg, dict) and msg.get("type") == "ping":
                         await websocket.send_text(json.dumps({"type": "pong", "ts": utcnow_iso()}))
-                except Exception as e:
-                    logger.debug("Topology WS ping parse/send failed: %s", e, exc_info=True)
+                except Exception as exc:
+                    # Client-controlled: an authenticated peer can send
+                    # malformed frames as fast as it likes, so this is
+                    # throttled and counted rather than logged per frame.
+                    record_stream_fault(
+                        f"{_COMPONENT}.client_frame", exc, logger=logger, fault=FAULT_DECODE
+                    )
         except WebSocketDisconnect:
             pass
         finally:

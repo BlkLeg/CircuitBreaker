@@ -137,6 +137,8 @@ export default function FleetTable({
   onClearFilters,
   isStale,
   lastUpdatedAt,
+  latestFleetVersion = null,
+  clockSkewSeconds = null,
   onReview,
   onRevoke,
   onDelete,
@@ -196,6 +198,8 @@ export default function FleetTable({
           <FleetRow
             key={agent.id}
             agent={agent}
+            latestFleetVersion={latestFleetVersion}
+            clockSkewSeconds={clockSkewSeconds}
             onReview={onReview}
             onRevoke={onRevoke}
             onDelete={onDelete}
@@ -214,6 +218,15 @@ FleetTable.propTypes = {
   // A client-side ms epoch (Date.now()), not an ISO string — it comes from
   // useFleetMetrics' presenceFetchedAt, which is measured locally on purpose.
   lastUpdatedAt: PropTypes.number,
+  // AGT-17: the newest agent_version anywhere in the fleet, so each row can
+  // mark itself as drifted. Computed by the page over the UNFILTERED fleet —
+  // see AgentsPage — because a reference that moved with the filter would make
+  // "behind" mean something different on every view.
+  latestFleetVersion: PropTypes.string,
+  // Signed browser-minus-server seconds (utils/serverClock). Passed down rather
+  // than read per row so every row in one render judges freshness against the
+  // same offset.
+  clockSkewSeconds: PropTypes.number,
   onReview: PropTypes.func,
   onRevoke: PropTypes.func,
   onDelete: PropTypes.func,

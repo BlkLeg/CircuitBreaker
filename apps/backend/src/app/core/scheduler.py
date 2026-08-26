@@ -7,7 +7,37 @@ from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
-_scheduler = AsyncIOScheduler()
+
+
+class SingleOwnerScheduler(AsyncIOScheduler):
+    """An `AsyncIOScheduler` whose every job runs on exactly one process (SRV-02).
+
+    Each job registered here is wrapped in `job_lock.single_owner`, keyed by
+    its APScheduler id, so a second API replica — a rolling restart with
+    overlap, `uvicorn --workers 2`, a second container — skips the run instead
+    of repeating the purge, the backup, or the integration sync. Wrapping at
+    registration rather than at each of the ~30 call sites is deliberate: a job
+    added later is guarded by construction, and forgetting is not an option a
+    future edit has.
+
+    An anonymous job is refused. APScheduler would give it a fresh UUID in
+    every process, which is a lock name that can never collide and therefore an
+    ownership guarantee that silently does not exist.
+    """
+
+    def add_job(self, func, *args, **kwargs):
+        job_id = kwargs.get("id")
+        if not job_id:
+            raise ValueError(
+                "SingleOwnerScheduler requires an explicit, stable job id: it is the "
+                "advisory-lock name that makes the job single-owner across processes"
+            )
+        from app.core.job_lock import single_owner
+
+        return super().add_job(single_owner(func, job_id=job_id), *args, **kwargs)
+
+
+_scheduler = SingleOwnerScheduler()
 
 #: Catch-up window for a discovery-profile cron whose fire time was missed.
 #: Named and exported because `app.main` registers the same jobs at startup:

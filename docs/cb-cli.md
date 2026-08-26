@@ -37,8 +37,17 @@ Running `cb` with no arguments prints the command list.
 | Command | Native | Docker | Compose | Binary |
 |---|---|---|---|---|
 | `status`, `doctor`, `logs`, `restart`, `update`, `backup`, `config validate`, `version`, `uninstall` | ✅ | ✅ | ✅ | ✅ |
+| `migrate`, `token`, `user`, `agent` | ✅ | ✅ | ✅ | ✅ |
 | `restore` | — | ✅ | ✅ | ✅ |
 | `vault-recover` | — | ✅ | ✅ | ✅ |
+
+`migrate`, `token`, `user` and `agent` are the headless administration commands (SRV-06): schema
+state, scoped API tokens, local accounts and the agent fleet, without a browser session. Both
+scripts route them to the backend's own administration CLI — `python -m app.cli <group>` inside the
+backend container on `docker`/`compose`, and the packaged binary's `--admin` passthrough on `native`
+and `binary`, after sourcing the environment file that holds the database credentials and the vault
+key. They need the database, so the stack must be reachable; `config validate` is the only command
+that is deliberately offline.
 
 `vault-recover` writes a vault key into the deployment's env file for installs made by the
 container/binary installer path. Native installs keep that key in `/etc/circuitbreaker/.env`,
@@ -292,6 +301,105 @@ Full procedure, per-mode mechanics, and what each archive member replaces:
 
 ---
 
+### `cb migrate`
+
+Database schema state, and applying it. Both are read from the same migration chain the server runs
+at startup, so the CLI cannot develop a different opinion about what "up to date" means.
+
+```
+cb migrate status [--json]
+cb migrate upgrade
+```
+
+`status` reports the database's revision against this build's. **It exits `3` when the database is
+behind** — a distinct code from "cannot reach the database", so a deployment script can tell the two
+apart without parsing prose. `--json` emits machine-readable output instead of a table.
+
+`upgrade` applies pending migrations through the server's own upgrade path, which takes the
+transaction-scoped advisory lock in `migrations/env.py`. That makes it safe to run while the stack
+is coming up and racing the API's own auto-migrate phase — one of them takes the lock, the other
+waits.
+
+Downgrade is not offered, because it is not supported: restore a verified pre-upgrade backup
+instead. See [Compatibility policy § Downgrade and rollback](release/1.0.0-compatibility-policy.md#downgrade-and-rollback).
+
+---
+
+### `cb token`
+
+Scoped API tokens and service accounts, without a browser session.
+
+```
+cb token create --label LABEL (--expires-in-days N | --never-expires)
+                [--scopes SCOPE ...] [--preset NAME] [--actor EMAIL] [--json]
+cb token list [--json]
+cb token rotate TOKEN_ID [--overlap-hours N] [--actor EMAIL] [--json]
+cb token revoke TOKEN_ID [--actor EMAIL]
+```
+
+| Flag | Effect |
+|---|---|
+| `--label` | Required. What the token is for — it is the only thing `list` can show you later |
+| `--scopes` | Explicit grants, e.g. `--scopes read:* write:telemetry`. The grantable set is in the [API reference](reference/api.md#roles-and-scopes) |
+| `--preset` | A named scope set instead of `--scopes`: `read_only`, `telemetry_ingest`, `read_write`, `full_access` |
+| `--expires-in-days` / `--never-expires` | **One is required.** A token with no expiry has to be asked for explicitly; there is no silent default |
+| `--overlap-hours` | On `rotate`, keep the previous secret working for N hours so holders can be updated first. Never past the token's own expiry. Default `0` — immediate cutover |
+| `--actor` | The administrator the change is recorded against. Optional when the install has exactly one active administrator; required otherwise |
+
+**The secret is printed once, at creation or rotation, and never again.** `list` shows the label,
+scopes, expiry and last use — never the secret, because only a salted HMAC of it is stored.
+
+---
+
+### `cb user`
+
+Local accounts. The [role hierarchy](reference/api.md#roles-and-scopes) is `viewer < editor < admin`.
+
+```
+cb user list [--json]
+cb user create --email EMAIL [--role admin|editor|viewer] [--display-name NAME]
+               [--password-stdin] [--actor EMAIL] [--json]
+cb user set-role EMAIL ROLE [--actor EMAIL]
+cb user disable EMAIL [--actor EMAIL]
+cb user enable EMAIL [--actor EMAIL]
+```
+
+`--role` defaults to `viewer` — the least privilege that is still an account.
+
+**There is deliberately no `--password` flag.** `argv` is visible to every process on the host, so a
+password either arrives on stdin (`--password-stdin`, first line) or is generated and printed once:
+
+```bash
+printf '%s' "$NEW_PASSWORD" | cb user create --email ops@example.com --role editor --password-stdin
+```
+
+`disable` deactivates the account **and revokes its sessions**, so it takes effect immediately rather
+than at the next token expiry.
+
+---
+
+### `cb agent`
+
+Fleet administration without the UI. The approval decision is the security boundary described in
+[cb-agent § Enrollment](agent.md#enrollment) — approve a fingerprint you recognise, not one that
+merely appeared.
+
+```
+cb agent list [--status pending|active|revoked|rejected] [--json]
+cb agent approve AGENT_ID [--actor EMAIL]
+cb agent revoke AGENT_ID [--reason TEXT] [--actor EMAIL]
+```
+
+`approve` applies the **default capability grants** — `host_telemetry`, `remote_probe` and
+`local_discovery` with their shipped defaults. The per-capability opt-outs the approval modal offers
+are a UI affordance; to approve with a narrower set, use the UI or adjust the capabilities afterwards
+with `PUT /api/v1/agents/{agent_id}/capabilities`.
+
+A revoked device key is refused at `/enroll` outright — there is no silent re-enrollment. See
+[Runbook 3 — duplicate agent](agent.md#3-duplicate-agent) if you meant to re-enrol a host.
+
+---
+
 ### `cb config validate`
 
 Validates the configuration **before** it is used, rather than discovering an invalid combination
@@ -390,6 +498,58 @@ curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstal
 
 ---
 
+## The other two entry points
+
+`cb` is a wrapper. Underneath it there are two more surfaces, and on some installs they are the only
+ones available.
+
+### The packaged binary
+
+The deb/rpm/apk packages and the tarball install `circuit-breaker`, a frozen build of
+`app/start.py`. A packaged host has no `python -m app.cli`, so the binary carries the flags itself:
+
+| Flag | Effect |
+|---|---|
+| `--host HOST` | Override the listen host (default `127.0.0.1`, or `HOST`) |
+| `--port PORT` | Override the listen port (default `8080`, or `PORT`) |
+| `--workers N` | Uvicorn worker processes (default `1`, or `UVICORN_WORKERS`) |
+| `--ssl-certfile PATH`, `--ssl-keyfile PATH` | Serve TLS from the backend itself. Both are required together, or startup exits |
+| `--config PATH` | The native config file. A `.toml` path is also forwarded to the `config.toml` loader; anything else is read as the native YAML tier |
+| `--worker-type TYPE` | Run as a background worker instead of the API server: `discovery`, `notification`, `telemetry`, `monitor_scheduler`, `monitor_poll`, `monitor_probe_dispatch` |
+| `--version` | Print the resolved version and exit |
+| `--config-validate` | Validate the configuration and exit non-zero if invalid. What `cb config validate` runs in native and binary mode |
+| `--snapshot-create [--out DIR]` | Build a full-state snapshot and print its path. What `cb backup` runs in binary mode |
+| `--snapshot-verify ARCHIVE` | Verify a snapshot archive. What `cb restore` runs before it stops anything |
+
+The four `--config-validate` / `--snapshot-*` flags are handled **before argument parsing and before
+anything binds a port, creates a directory or runs a migration** — so validating a broken
+configuration cannot itself fail on the very dependency it is checking, and a one-shot snapshot does
+not start a scheduler it has no use for.
+
+### `python -m app.cli`
+
+On a source checkout or inside the container, the same code is reachable as a module. This is what
+`cb` executes in `docker` and `compose` mode.
+
+| Group | Actions | Notes |
+|---|---|---|
+| `config` | `validate` | `--config PATH` picks the `config.toml`. Offline by construction — the pass replaces name resolution for its duration, so it cannot reach Postgres, Redis, NATS or a resolver |
+| `snapshot` | `create`, `verify` | `create --out DIR` overrides `BACKUP_DIR`; `verify ARCHIVE` prints the manifest as JSON and exits non-zero if the archive cannot be restored |
+| `migrate` | `status`, `upgrade` | Database schema state and forward migration |
+| `token` | `create`, `list`, `rotate`, `revoke` | Scoped API tokens and service accounts |
+| `user` | `list`, `create`, `set-role`, `disable`, `enable` | Local accounts |
+| `agent` | `list`, `approve`, `revoke` | Fleet administration without a browser |
+
+Each group has its own `cb` command documented above, except `snapshot`, which `cb backup` and
+`cb restore` drive on your behalf.
+
+!!! tip "The parser is the authority on flags"
+    **Run `python -m app.cli <group> --help`** — or `<group> <action> --help` — for the exact flags
+    of any of these. That output is generated from the parser and cannot go stale, which a table
+    eventually can.
+
+---
+
 ## Known gaps
 
 Recorded here rather than papered over. None of these are wired up today:
@@ -409,3 +569,5 @@ Closing the first two means teaching `install.sh` and the packages to emit `inst
 
 - [Deployment & Security](deployment-security.md)
 - [Backup & Restore](backup-restore.md)
+- [API Reference](reference/api.md) — the surface that does go over HTTP
+- [Configuration precedence and environment catalogue](reference/configuration-precedence.md) — what `cb config validate` checks

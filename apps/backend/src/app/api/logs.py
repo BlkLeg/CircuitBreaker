@@ -7,6 +7,7 @@ destructive action and records itself as the new chain genesis.
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
 from typing import Annotated, Any
@@ -25,10 +26,18 @@ from app.core.time import elapsed_seconds as _elapsed_seconds
 from app.db.models import Log, User
 from app.db.session import SessionLocal, get_db
 from app.schemas.logs import LogEntry, LogsResponse
+from app.services.stream_faults import FAULT_DECODE, record_stream_fault
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["logs"])
 
 _RESERVED_ACTOR_NAMES = {"anonymous", "system", "api-token"}
+
+# REL-07 fault-metric identity for the audit-log SSE stream.
+_STREAM_COMPONENT = "sse_logs"
+# Seconds between polls of the log table for the SSE stream.
+_STREAM_POLL_SECONDS = 2
 
 
 def _profile_url(user: "User") -> str | None:
@@ -287,6 +296,58 @@ def clear_logs(
     return {"deleted": count}
 
 
+def _fetch_stream_batch(
+    last_dt: datetime | None,
+) -> tuple[Sequence[Log], dict[str, dict]]:
+    """Read the next batch of log rows plus the actor cache they need.
+
+    Runs on a worker thread: every call here is blocking SQLAlchemy, and the
+    generator that drives it also has to keep serving keepalives.
+    """
+    with SessionLocal() as db:
+        q = select(Log).order_by(Log.timestamp.asc())
+        if last_dt is not None:
+            q = q.where(Log.timestamp > last_dt)
+        else:
+            q = q.limit(0)  # Nothing to send until we have a reference point
+        rows = db.execute(q).scalars().all()
+        cache = _build_user_cache(db, rows) if rows else {"by_id": {}, "by_name": {}}
+    return rows, cache
+
+
+def _stream_payload(row: Log, cache: dict[str, dict]) -> str:
+    """Render one log row as an SSE ``data:`` frame."""
+    entry = LogEntry.model_validate(row)
+    entry.elapsed_seconds = _elapsed_seconds(row.created_at_utc) if row.created_at_utc else None
+    entry = _enrich_entry(entry, row, cache)
+    payload = json.dumps(
+        {
+            "id": entry.id,
+            "timestamp": entry.timestamp.isoformat(),
+            "created_at_utc": entry.created_at_utc,
+            "elapsed_seconds": entry.elapsed_seconds,
+            "level": entry.level,
+            "severity": entry.severity or entry.level,
+            "category": entry.category,
+            "action": entry.action,
+            "actor": entry.actor,
+            "actor_name": entry.actor_name,
+            "actor_gravatar_hash": entry.actor_gravatar_hash,
+            "actor_profile_photo_url": entry.actor_profile_photo_url,
+            "entity_type": entry.entity_type,
+            "entity_id": entry.entity_id,
+            "entity_name": entry.entity_name,
+            "diff": entry.diff,
+            "old_value": entry.old_value,
+            "new_value": entry.new_value,
+            "user_agent": entry.user_agent,
+            "ip_address": entry.ip_address,
+            "details": entry.details,
+        }
+    )
+    return f"data: {payload}\n\n"
+
+
 @router.get("/stream")
 async def stream_logs(
     since: str | None = None,
@@ -309,55 +370,44 @@ async def stream_logs(
         yield ": keepalive\n\n"
 
         while True:
-            await asyncio.sleep(2)
+            await asyncio.sleep(_STREAM_POLL_SECONDS)
             try:
-                with SessionLocal() as db:
-                    q = select(Log).order_by(Log.timestamp.asc())
-                    if last_dt is not None:
-                        q = q.where(Log.timestamp > last_dt)
-                    else:
-                        q = q.limit(0)  # Nothing to send until we have a reference point
-                    rows = db.execute(q).scalars().all()
-
-                    cache = _build_user_cache(db, rows) if rows else {"by_id": {}, "by_name": {}}
-
-                for row in rows:
-                    entry = LogEntry.model_validate(row)
-                    entry.elapsed_seconds = (
-                        _elapsed_seconds(row.created_at_utc) if row.created_at_utc else None
-                    )
-                    entry = _enrich_entry(entry, row, cache)
-                    payload = json.dumps(
-                        {
-                            "id": entry.id,
-                            "timestamp": entry.timestamp.isoformat(),
-                            "created_at_utc": entry.created_at_utc,
-                            "elapsed_seconds": entry.elapsed_seconds,
-                            "level": entry.level,
-                            "severity": entry.severity or entry.level,
-                            "category": entry.category,
-                            "action": entry.action,
-                            "actor": entry.actor,
-                            "actor_name": entry.actor_name,
-                            "actor_gravatar_hash": entry.actor_gravatar_hash,
-                            "actor_profile_photo_url": entry.actor_profile_photo_url,
-                            "entity_type": entry.entity_type,
-                            "entity_id": entry.entity_id,
-                            "entity_name": entry.entity_name,
-                            "diff": entry.diff,
-                            "old_value": entry.old_value,
-                            "new_value": entry.new_value,
-                            "user_agent": entry.user_agent,
-                            "ip_address": entry.ip_address,
-                            "details": entry.details,
-                        }
-                    )
-                    yield f"data: {payload}\n\n"
-                    if last_dt is None or row.timestamp > last_dt:
-                        last_dt = row.timestamp
-            except Exception:
-                # Never crash the SSE stream
+                rows, cache = await asyncio.to_thread(_fetch_stream_batch, last_dt)
+            except Exception as exc:
+                # Was a bare `except Exception:` with no log line at all — a
+                # database outage produced ": error" every two seconds forever
+                # and left no trace in logs or metrics. Still non-fatal (the
+                # next poll recovers once the database does), but classified,
+                # throttled and counted now (REL-07).
+                record_stream_fault(
+                    f"{_STREAM_COMPONENT}.poll",
+                    exc,
+                    logger=logger,
+                    context={"since": last_dt},
+                )
                 yield ": error\n\n"
+                continue
+
+            for row in rows:
+                try:
+                    payload = _stream_payload(row, cache)
+                except Exception as exc:
+                    # One unserializable row used to abort the whole batch
+                    # *without* advancing `last_dt`, so the next poll re-read
+                    # the same row and failed again: the stream wedged
+                    # permanently on a single bad entry. Skip it, count it, and
+                    # keep the cursor moving.
+                    record_stream_fault(
+                        f"{_STREAM_COMPONENT}.render",
+                        exc,
+                        logger=logger,
+                        context={"log_id": getattr(row, "id", None)},
+                        fault=FAULT_DECODE,
+                    )
+                else:
+                    yield payload
+                if last_dt is None or row.timestamp > last_dt:
+                    last_dt = row.timestamp
 
     return StreamingResponse(
         event_generator(),

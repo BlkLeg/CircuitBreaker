@@ -1,5 +1,6 @@
 """Scan result merging — accept, reject, auto-merge, and bulk operations."""
 
+import asyncio
 import json
 import logging
 import re
@@ -20,13 +21,19 @@ from app.db.models import (
     Topology,
     TopologyNode,
 )
+from app.db.session import get_session_context
 from app.schemas.discovery import ScanResultOut
 from app.services.discovery_fingerprint import _kb_oui_lookup
 from app.services.discovery_network import PORT_SERVICE_MAP, _norm_mac
 from app.services.discovery_proxmox_merge import _merge_proxmox_result
+from app.services.discovery_scheduler import main_loop
 from app.services.log_service import write_log
+from app.services.stream_faults import record_stream_fault
 
 logger = logging.getLogger(__name__)
+
+# REL-07 fault-metric identity for the discovery review fan-out.
+_COMPONENT = "discovery_merge"
 
 
 def _assign_to_default_map(db: Session, entity_type: str, entity_id: int) -> None:
@@ -80,6 +87,72 @@ def _maybe_auto_create_monitor(db: Session, hardware: Hardware) -> None:
         )
     except Exception:
         logger.exception("Failed to auto-create monitor for hardware %d — continuing", hardware.id)
+
+
+async def _emit_result_processed_in_session(result_id: int, status: str) -> None:
+    """`_emit_result_processed_event` for the deferred entry point.
+
+    Its own session on purpose: the caller's session belongs to a request that
+    has already committed and may be closed by the time this actually runs on
+    the loop.
+    """
+    with get_session_context() as db:
+        await _emit_result_processed_event(db, result_id, status)
+
+
+def schedule_result_processed_event(result_id: int, status: str) -> None:
+    """Emit the `result_processed` frame from a synchronous review handler.
+
+    This used to be `asyncio.get_event_loop()` + `is_running()` at four call
+    sites, inside a broad `except Exception` that logged at DEBUG. Every one of
+    those callers is a synchronous `def` route, so FastAPI runs it on its
+    threadpool — and `get_event_loop()` in a worker thread has no current loop:
+    it raises `RuntimeError` (on 3.14 it raises in the main thread too). The
+    handler swallowed that, so the real-time review badge never got its
+    `result_processed` frame from *any* accept or reject, and the
+    `pending_count` the frame carries — the badge's authoritative number, which
+    the client cannot recompute — silently drifted and never recovered.
+
+    `discovery_service.schedule_discovery_scan_job` is the model: use the
+    running loop when there is one, otherwise the loop `main.py`'s lifespan
+    registered, and close the coroutine rather than abandon it unawaited when
+    there is neither (REL-08).
+    """
+    coro = _emit_result_processed_in_session(result_id, status)
+
+    def _log_outcome(finished: Any) -> None:
+        if finished.cancelled():
+            return
+        exc = finished.exception()
+        if exc is not None:
+            record_stream_fault(
+                f"{_COMPONENT}.result_processed",
+                exc,
+                logger=logger,
+                context={"result_id": result_id, "status": status},
+            )
+
+    try:
+        running: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+
+    if running is not None:
+        running.create_task(coro).add_done_callback(_log_outcome)
+        return
+
+    target = main_loop()
+    if target is None or not target.is_running():
+        coro.close()
+        logger.warning(
+            "Discovery result %s (%s): no loop to emit result_processed on; the review "
+            "badge will stay stale until the client refetches.",
+            result_id,
+            status,
+        )
+        return
+
+    asyncio.run_coroutine_threadsafe(coro, target).add_done_callback(_log_outcome)
 
 
 async def _emit_result_processed_event(db: Session, result_id: int, status: str) -> None:
@@ -366,16 +439,7 @@ def merge_scan_result(
         )
 
         # Emit WebSocket event for real-time badge update
-        try:
-            import asyncio
-
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.create_task(_emit_result_processed_event(db, result.id, "reject"))
-            else:
-                asyncio.run(_emit_result_processed_event(db, result.id, "reject"))
-        except Exception as e:
-            logger.debug("Discovery: WebSocket emit reject failed: %s", e, exc_info=True)
+        schedule_result_processed_event(result.id, "reject")
 
         return {"rejected": True}
 
@@ -440,18 +504,7 @@ def merge_scan_result(
                 )
 
                 # Emit WebSocket event for real-time badge update
-                try:
-                    import asyncio
-
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.create_task(_emit_result_processed_event(db, result.id, "accept"))
-                    else:
-                        asyncio.run(_emit_result_processed_event(db, result.id, "accept"))
-                except Exception as e:
-                    logger.debug(
-                        "Discovery: WebSocket emit accept (updated) failed: %s", e, exc_info=True
-                    )
+                schedule_result_processed_event(result.id, "accept")
 
                 return {"updated": True}
 
@@ -516,18 +569,7 @@ def merge_scan_result(
                 )
 
                 # Emit WebSocket event for real-time badge update
-                try:
-                    import asyncio
-
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.create_task(_emit_result_processed_event(db, result.id, "accept"))
-                    else:
-                        asyncio.run(_emit_result_processed_event(db, result.id, "accept"))
-                except Exception as e:
-                    logger.debug(
-                        "Discovery: WebSocket emit accept (new host) failed: %s", e, exc_info=True
-                    )
+                schedule_result_processed_event(result.id, "accept")
 
                 return {
                     "entity_type": "hardware",

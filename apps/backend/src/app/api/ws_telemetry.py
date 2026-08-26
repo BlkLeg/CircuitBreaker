@@ -36,11 +36,17 @@ from app.core.security import decode_token
 from app.core.time import utcnow, utcnow_iso
 from app.db.models import User
 from app.services.settings_service import get_or_create_settings
+from app.services.stream_faults import close_stream_socket, record_stream_fault
 from app.services.user_service import is_session_revoked
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# REL-07 fault-metric identity for this stream.
+_COMPONENT = "ws_telemetry"
+# RFC 6455 1011 "internal error" — the server cannot fulfil the stream contract.
+_WS_INTERNAL_ERROR = 1011
 
 _MAX_CONNECTIONS: int = int(os.getenv("CB_WS_TELEM_MAX_CONNECTIONS", "100"))
 _MAX_PER_IP: int = int(os.getenv("CB_WS_TELEM_MAX_PER_IP", "10"))
@@ -100,11 +106,25 @@ async def _redis_listener(ws: WebSocket, channels: set[str], stop_event: asyncio
         while not stop_event.is_set():
             msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
             if msg and msg["type"] == "message":
+                # Decoding the publisher's payload and writing to this client's
+                # socket are separate failures with opposite correct responses.
+                # They used to share one handler that broke the loop for both,
+                # so a single malformed message from any publisher silently
+                # ended telemetry for a connected client until it reconnected.
                 try:
-                    data = json.loads(msg["data"])
-                    await ws.send_text(json.dumps({"type": "telemetry", **data}))
+                    payload = json.dumps({"type": "telemetry", **json.loads(msg["data"])})
                 except Exception as exc:
-                    logger.debug("Telemetry WS forward failed: %s", exc)
+                    record_stream_fault(
+                        f"{_COMPONENT}.decode",
+                        exc,
+                        logger=logger,
+                        context={"channels": len(channels)},
+                    )
+                    continue
+                try:
+                    await ws.send_text(payload)
+                except Exception as exc:
+                    record_stream_fault(f"{_COMPONENT}.forward", exc, logger=logger)
                     break
             # No asyncio.sleep() here — get_message(timeout=1.0) already yields
             # to the event loop for up to 1s. An extra 50ms sleep was causing
@@ -112,13 +132,19 @@ async def _redis_listener(ws: WebSocket, channels: set[str], stop_event: asyncio
     except asyncio.CancelledError:
         pass
     except Exception as exc:
-        logger.debug("Redis listener error: %s", exc)
+        # The subscription itself is gone; this socket can never carry another
+        # telemetry frame, so close it explicitly rather than leave it open and
+        # silent behind the keep-alive ping (REL-07).
+        record_stream_fault(
+            f"{_COMPONENT}.subscribe", exc, logger=logger, context={"channels": len(channels)}
+        )
+        await close_stream_socket(ws, component=_COMPONENT, code=_WS_INTERNAL_ERROR)
     finally:
         try:
             await pubsub.unsubscribe()
             await pubsub.aclose()
-        except Exception:
-            pass
+        except Exception as exc:
+            record_stream_fault(f"{_COMPONENT}.teardown", exc, logger=logger)
 
 
 async def _ping_loop(ws: WebSocket, main_task: asyncio.Task) -> None:
@@ -131,9 +157,10 @@ async def _ping_loop(ws: WebSocket, main_task: asyncio.Task) -> None:
             await ws.send_text(json.dumps({"type": "ping", "ts": utcnow_iso()}))
     except asyncio.CancelledError:
         pass
-    except Exception:
+    except Exception as exc:
         # Send failed — client disconnected. Cancel the receive loop immediately
         # so the handler's finally block runs without waiting 30s for the next ping.
+        record_stream_fault(f"{_COMPONENT}.ping", exc, logger=logger)
         main_task.cancel()
 
 

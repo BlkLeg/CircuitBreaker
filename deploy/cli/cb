@@ -250,6 +250,34 @@ cmd_backup() {
   echo "Done: $file"
 }
 
+# ── admin command surface ─────────────────────────────────────────────────────
+# The native install has no Python of its own — /opt/circuitbreaker/bin/circuit-breaker
+# is a frozen binary and is the whole of it — so `migrate`, `token`, `user` and
+# `agent` reach app/cli.py the same way `cb config validate` does: through the
+# binary. Nothing here is reimplemented in bash; see the same note in the
+# repo-root cb.
+#
+# The environment is re-sourced with `set -a` for the reason cmd_config gives:
+# this script sources /etc/circuitbreaker/.env without exporting, and the child
+# process must see exactly what the units start with — the database credentials
+# and the vault key included.
+_admin_cli() {
+  set -a
+  # shellcheck source=/dev/null
+  [[ -f /etc/circuitbreaker/.env ]] && source /etc/circuitbreaker/.env
+  # shellcheck source=/dev/null
+  [[ -f /run/circuitbreaker/vault.env ]] && source /run/circuitbreaker/vault.env
+  set +a
+  _require_binary "$CB_BIN" \
+    "the administration commands ship with the Circuit Breaker install. Reinstall, or run 'cb update'."
+  "$CB_BIN" --admin "$@"
+}
+
+cmd_migrate() { _admin_cli migrate "$@"; }
+cmd_token()   { _admin_cli token "$@"; }
+cmd_user()    { _admin_cli user "$@"; }
+cmd_agent()   { _admin_cli agent "$@"; }
+
 cmd_config() {
   local action="${1:-}"
   if [[ "$action" != "validate" ]]; then
@@ -351,6 +379,10 @@ case "${1:-help}" in
   restart)   cmd_restart   ;;
   update)    cmd_update    ;;
   backup)    cmd_backup    ;;
+  migrate)   cmd_migrate "${@:2}" ;;
+  token)     cmd_token   "${@:2}" ;;
+  user)      cmd_user    "${@:2}" ;;
+  agent)     cmd_agent   "${@:2}" ;;
   config)    cmd_config "${2:-}" ;;
   version)   cmd_version   ;;
   uninstall) cmd_uninstall ;;
@@ -365,6 +397,10 @@ case "${1:-help}" in
     echo "    cb restart    Restart all services"
     echo "    cb update     Update to latest version"
     echo "    cb backup     Backup database"
+    echo "    cb migrate    Schema: migrate status | migrate upgrade"
+    echo "    cb token      Scoped API tokens: create | list | rotate | revoke"
+    echo "    cb user       Local accounts: list | create | set-role | disable | enable"
+    echo "    cb agent      Agent fleet: list | approve | revoke"
     echo "    cb config validate"
     echo "                  Validate the configuration the units would start with"
     echo "    cb version    Show installed version"

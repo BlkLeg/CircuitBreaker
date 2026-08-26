@@ -14,6 +14,10 @@
 #   update        Pull latest image and restart  (docker mode only)
 #   backup        Full-state snapshot: database, uploads, config, vault key
 #   restore       Restore a full-state snapshot  (destructive)
+#   migrate       Database schema: migrate status | migrate upgrade
+#   token         Scoped API tokens: create | list | rotate | revoke
+#   user          Local accounts: list | create | set-role | disable | enable
+#   agent         Agent fleet: list | approve | revoke
 #   config        Validate the configuration  (cb config validate)
 #   vault-recover Recover from an uninitialized vault  (after-crash / headless deploy)
 #   version       Show installed version
@@ -784,6 +788,69 @@ _restore_binary() {
     || _fail "Restore failed — see the output above."
 }
 
+# ── admin command surface ─────────────────────────────────────────────────────
+# `migrate`, `token`, `user` and `agent` are one Python command surface
+# (apps/backend/src/app/cli.py) reached three ways, exactly as `cb config
+# validate` and `cb backup` already are: through `python -m app.cli` in a
+# container, and through the frozen binary on a package install, which has no
+# Python of its own.
+#
+# There is deliberately no bash implementation of any of them. Approving an
+# agent means writing capability grants and an agent_events row; minting a
+# token means hashing it the way the verifier hashes it. A shell reimplementation
+# of either is a second definition of a security rule, which is how INC-15
+# happened to the backup format.
+#
+# `docker exec -i`: `cb user create --password-stdin` reads a password from
+# stdin precisely so it never appears in argv, and without -i the pipe does not
+# reach the container.
+_admin_cli() {
+  case "$CB_MODE" in
+    docker|compose)
+      _require_docker
+      _container_running "$CB_BACKEND_CONTAINER" \
+        || _fail "Container '${CB_BACKEND_CONTAINER}' must be running — these commands run inside it, where the database is."
+      docker exec -i "$CB_BACKEND_CONTAINER" python -m app.cli "$@"
+      ;;
+
+    binary)
+      # The unit's environment holds the database credentials and the vault key;
+      # these commands need both, and cmd_config loads it the same way.
+      local env_file="$CB_BINARY_ENV_FILE"
+      if [[ -f "$env_file" ]]; then
+        set -a
+        # shellcheck source=/dev/null
+        source "$env_file"
+        set +a
+      else
+        _warn "No ${env_file} — running against the ambient environment only."
+      fi
+      _require_binary "$CB_BINARY" \
+        "the administration commands ship with the Circuit Breaker binary. Install the package, or set CB_MODE in ${_CONF} to the mode this host actually runs."
+      "$CB_BINARY" --admin "$@"
+      ;;
+
+    *) _fail "Unknown mode '${CB_MODE}'." ;;
+  esac
+}
+
+# ── migrate ───────────────────────────────────────────────────────────────────
+# `status` exits 3 when the database is behind, so a deployment script can tell
+# "needs an upgrade" from "cannot reach the database" without parsing prose.
+# `upgrade` runs through the server's own upgrade path, which takes the
+# transaction-scoped advisory lock in migrations/env.py — so it is safe to run
+# while the stack is coming up and racing the API's auto-migrate phase.
+cmd_migrate() { _admin_cli migrate "$@"; }
+
+# ── token / user / agent ──────────────────────────────────────────────────────
+# Scoped API tokens (create/list/rotate/revoke), local accounts, and the agent
+# fleet. Every mutation is written to the audit log with the administrator it
+# was attributed to; secrets are printed once, at creation, and never stored in
+# readable form.
+cmd_token() { _admin_cli token "$@"; }
+cmd_user()  { _admin_cli user "$@"; }
+cmd_agent() { _admin_cli agent "$@"; }
+
 # ── config ────────────────────────────────────────────────────────────────────
 # Runs the backend's own configuration validator, so `cb` never has a second,
 # drifting opinion about what a valid configuration is.
@@ -994,6 +1061,11 @@ usage() {
   echo -e "    update              Pull latest image and restart  ${GR}(docker mode)${R}"
   echo -e "    backup              Full-state snapshot (database, uploads, config, vault key)"
   echo -e "    restore <archive>   Restore a snapshot  ${GR}(destructive; --yes --force --no-safety-snapshot)${R}"
+  echo -e "    migrate status      Report the schema revision  ${GR}(exit 3 when behind)${R}"
+  echo -e "    migrate upgrade     Apply pending database migrations"
+  echo -e "    token ...           Scoped API tokens  ${GR}(create, list, rotate, revoke)${R}"
+  echo -e "    user ...            Local accounts  ${GR}(list, create, set-role, disable, enable)${R}"
+  echo -e "    agent ...           Agent fleet  ${GR}(list, approve, revoke)${R}"
   echo -e "    config validate     Validate the configuration before it is used"
   echo -e "    vault-recover       Recover an uninitialized vault  ${GR}(recovery path only)${R}"
   echo -e "    version             Show installed version"
@@ -1017,6 +1089,10 @@ case "${1:-help}" in
   update)          cmd_update ;;
   backup)          cmd_backup ;;
   restore)         cmd_restore "${@:2}" ;;
+  migrate)         cmd_migrate "${@:2}" ;;
+  token)           cmd_token "${@:2}" ;;
+  user)            cmd_user "${@:2}" ;;
+  agent)           cmd_agent "${@:2}" ;;
   config)          cmd_config "${2:-}" ;;
   vault-recover)   cmd_vault_recover ;;
   version)         cmd_version ;;

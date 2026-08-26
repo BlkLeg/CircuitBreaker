@@ -49,11 +49,18 @@ from app.core.time import utcnow, utcnow_iso
 from app.core.ws_manager import ws_manager
 from app.db.models import User
 from app.services.settings_service import get_or_create_settings
+from app.services.stream_faults import close_stream_socket, record_stream_fault
 from app.services.user_service import is_session_revoked
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# REL-07 fault-metric identity for this stream; also the log prefix.
+_COMPONENT = "ws_discovery"
+_EVENT_CHANNEL = "cb:discovery:events"
+# RFC 6455 1011 "internal error" — the server cannot fulfil the stream contract.
+_WS_INTERNAL_ERROR = 1011
 
 
 def _extract_client_ip(websocket: WebSocket) -> str:
@@ -87,8 +94,10 @@ async def _ping_loop(ws: WebSocket, main_task: asyncio.Task) -> None:
             await ws.send_text(json.dumps({"type": "ping", "ts": utcnow_iso()}))
     except asyncio.CancelledError:
         pass
-    except Exception as e:
-        logger.debug("Discovery WS ping loop error: %s", e)
+    except Exception as exc:
+        # A failed keep-alive send means the peer is gone; cancel the receive
+        # loop so teardown runs now instead of at the next 30s tick.
+        record_stream_fault(f"{_COMPONENT}.ping", exc, logger=logger)
         main_task.cancel()
 
 
@@ -110,27 +119,38 @@ async def _redis_discovery_listener(ws: WebSocket, stop_event: asyncio.Event) ->
 
     pubsub = r.pubsub()
     try:
-        await pubsub.subscribe("cb:discovery:events")
+        await pubsub.subscribe(_EVENT_CHANNEL)
         while not stop_event.is_set():
             msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
             if msg and msg["type"] == "message":
+                if ws.application_state == WebSocketState.DISCONNECTED:
+                    break
                 try:
-                    if ws.application_state == WebSocketState.DISCONNECTED:
-                        break
                     await ws.send_text(msg["data"])
-                except Exception:
+                except Exception as exc:
+                    # Forwarding failed: the socket is the only thing this task
+                    # feeds, so there is nothing left to do but stop.
+                    record_stream_fault(f"{_COMPONENT}.forward", exc, logger=logger)
                     break
             # No asyncio.sleep() — get_message(timeout=1.0) already yields to the event loop.
     except asyncio.CancelledError:
         pass
     except Exception as exc:
-        logger.debug("Redis discovery listener error: %s", exc)
+        # Redis pub/sub is the *only* cross-worker delivery path for this
+        # stream. Losing it used to be a DEBUG line and a silent return, which
+        # left the socket open, pinging, and permanently empty — the client had
+        # no way to tell a quiet scan queue from a broken fan-out. Classify it,
+        # count it, and close the socket so the client reconnects (REL-07).
+        record_stream_fault(
+            f"{_COMPONENT}.subscribe", exc, logger=logger, context={"channel": _EVENT_CHANNEL}
+        )
+        await close_stream_socket(ws, component=_COMPONENT, code=_WS_INTERNAL_ERROR)
     finally:
         try:
             await pubsub.unsubscribe()
             await pubsub.aclose()
-        except Exception:
-            pass
+        except Exception as exc:
+            record_stream_fault(f"{_COMPONENT}.teardown", exc, logger=logger)
 
 
 # NOTE: This router is mounted at prefix /api/v1/discovery in main.py.

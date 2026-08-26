@@ -4,6 +4,12 @@ Circuit Breaker runs entirely on your LAN by default. This guide covers how to r
 outside that LAN, and — more importantly — what you have to configure so the app behaves correctly
 once something else is terminating TLS in front of it.
 
+It is also the reference for the operational questions that come with exposing anything: which
+[ports](#firewall-and-ports) must be open and which must not, [who owns and renews the TLS
+certificate](#who-owns-tls-and-who-renews-it), what
+[connectivity an agent needs](#agent-connectivity-requirements) at a remote site, and what
+[air-gap mode](#air-gap-limitations) does and does not cover.
+
 > **v1.0 release-candidate boundary:** directly internet-exposed operation is not a supported
 > deployment boundary for a 1.0 release candidate unless the release owner records an approved
 > exception. Prefer VPN or trusted-network access.
@@ -131,6 +137,150 @@ See [Authentication & Access](auth-access.md) for full OAuth setup instructions.
 
 ---
 
+## Firewall and ports
+
+Only two ports need to reach the host from anywhere. Everything else is loopback, and should stay
+that way.
+
+### Mono container
+
+| Port | Direction | Who needs it | Notes |
+|---|---|---|---|
+| `${CB_PORT_HTTPS:-443}` → container `8443` | Inbound | Browsers, `cb-agent`, API clients | The port to publish |
+| `${CB_PORT:-80}` → container `8080` | Inbound | HTTP-01 ACME validation; plain-HTTP health probes | `301`-redirects everything except `/api/v1/health`, `/livez`, `/readyz`, `/startupz` and the ACME challenge path. Close it if you neither use HTTP-01 nor probe over plain HTTP |
+| `5432`, `6432`, `6379`, `4222` | — | Nobody | PostgreSQL, PgBouncer, Redis and NATS run **inside** the container. They are not published and must not be |
+
+### Native systemd
+
+| Port | Direction | Bound to | Notes |
+|---|---|---|---|
+| `443` | Inbound | All interfaces | HTTPS, terminated by nginx |
+| `${CB_PORT}` (installer default `8088`) | Inbound | All interfaces | HTTP; `301`-redirects to HTTPS, except the ACME challenge path |
+| `8000` | — | `127.0.0.1` | The backend. nginx proxies to it; nothing else should reach it |
+| `5432` / `6432` | — | `127.0.0.1` | PostgreSQL / PgBouncer |
+| `6379` | — | `127.0.0.1` | Redis |
+| `4222` | — | `127.0.0.1` | NATS |
+| `2375` | — | Local | The optional Docker API proxy, only when `DOCKER_PROXY_ENABLED=true` |
+
+The native installer opens the two public ports for you when a firewall is already running: with
+`firewall-cmd` it adds `${CB_PORT}/tcp` and — unless `--no-tls` — `443/tcp`, then reloads; with
+`ufw` it does the same, but **only if ufw is already active**, so it never enables a firewall you
+had deliberately left off. `cb doctor` re-checks that the port is actually open off-box, and on
+SELinux hosts that the port carries an SELinux label.
+
+### Outbound
+
+What the server itself dials. Both shipped install paths work with **no inbound rules beyond the
+two above** and these outbound allowances:
+
+| Destination | Needed for | Optional? |
+|---|---|---|
+| `api.github.com:443` | The daily release check | Yes — `CB_UPDATE_CHECK=false` or `CB_AIRGAP=true` |
+| Let's Encrypt ACME endpoints, `:443` | Certificate issuance and renewal | Yes — only if you use Let's Encrypt |
+| Your SMTP server | Invite email | Yes — only if SMTP is configured |
+| Your OAuth/OIDC provider, `:443` | OAuth sign-in | Yes — only if OAuth is configured |
+| `services.nvd.nist.gov:443` | CVE feed sync | Yes |
+| `urlhaus.abuse.ch`, `threatfox.abuse.ch`, `small.oisd.nl`, `:443` | Threat feeds | Yes |
+| `api.macvendors.com:443` | MAC vendor lookup, only when offline OUI sources miss | Yes |
+| Your LAN | Discovery, monitor checks, hardware telemetry (SNMP `161/udp`, Redfish `443`) | Depends on what you monitor |
+
+The complete list of what leaves the deployment, with what each request contains, is in
+[Privacy § What leaves your deployment](security/privacy.md#what-leaves-your-deployment).
+`CB_EGRESS_PROXY_URL` routes the public HTTP clients through a forward proxy.
+
+---
+
+## Who owns TLS, and who renews it
+
+Ownership has to be unambiguous, because a certificate that two systems both think they manage is a
+certificate nobody renews. Pick exactly one row.
+
+| Model | Who terminates TLS | Who renews | What you must do |
+|---|---|---|---|
+| **Bundled, self-signed** (default) | The shipped nginx | Nobody — it is valid for 10 years on native installs | Nothing. Browsers warn on first visit. Fine on a LAN |
+| **Bundled, Let's Encrypt via the Certificates page** | The shipped nginx | Circuit Breaker. Renewal of the **active** certificate re-activates it automatically | Set `CB_TLS_EMAIL`, own a publicly-resolvable domain, and keep port 80 reachable for HTTP-01 (or use DNS-01) |
+| **Bundled, your own certificate** | The shipped nginx | **You** | Place `fullchain.pem` and `privkey.pem` in `$CB_DATA_DIR/tls/` and restart, or import them on the Certificates page and press **Activate**. Repeat at every renewal |
+| **Your reverse proxy terminates** | Your proxy | **You**, in your proxy | Point it at the published HTTPS port; set `CB_TRUSTED_PROXY_CIDRS` to the proxy's source range. The app keeps its own certificate for the internal hop |
+
+Two rules that catch people:
+
+- **Creating or renewing a certificate does not change what is served.** Only **Activate** writes
+  `fullchain.pem` and `privkey.pem` and reloads nginx. At most one certificate is active, enforced
+  as a database constraint.
+- **A LAN-only install cannot obtain a publicly-trusted certificate.** `.local`, `.internal`,
+  `.lan`, `.home`, `.test`, bare hostnames and IP literals are refused by preflight, instantly,
+  because no public CA will ever issue for them. That is not a limitation of this software.
+
+Full procedure, challenge types and the ACME rate limits: [TLS Certificates](tls-certificates.md).
+
+---
+
+## Agent connectivity requirements
+
+`cb-agent` is designed for the remote-site case: **no inbound firewall rule at the agent's site.**
+
+| Requirement | Detail |
+|---|---|
+| Direction | Outbound only. The agent binds **no listening socket** |
+| Destination | Whatever `server_url` in `agent.toml` says — the published HTTPS port of your server |
+| Protocols | `wss://…/api/v1/agents/enroll` and `…/agents/link` (WebSocket over TLS), plus `https://…/api/v1/agents/binary/…` for self-update and `https://…/install-agent.sh` once at install |
+| Ports | Only the port in `server_url`. The agent has no port of its own and never falls back to a different one |
+| Proxies | `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` (and lowercase forms) are honoured for all of the above, WebSocket dials included |
+| Certificate | With a publicly-trusted certificate the agent uses the system trust store. With a self-signed one the server hands the agent a **pin** — the base64 SHA-256 of the served leaf's SubjectPublicKeyInfo — and chain and hostname verification are replaced by an exact match against it |
+
+Consequences for your topology:
+
+- **If a reverse proxy or tunnel sits in front, it must forward `Upgrade` and `Connection` headers**,
+  or agents connect and immediately fail. So do the browser's live-update sockets.
+- **If that proxy re-terminates TLS with its own certificate**, a pinned agent will refuse it — the
+  pin is computed from the certificate *your nginx* serves. Either give the agent a `server_url`
+  that reaches nginx directly, or move to a publicly-trusted certificate so pinning is not used.
+- **`CB_WS_REQUIRE_WSS=true` needs `CB_TRUSTED_PROXY_CIDRS` set first.** Behind a TLS-terminating
+  proxy the handshake reaching the backend is plain `ws://`, and `X-Forwarded-Proto` is ignored from
+  an untrusted peer — so every agent is refused as insecure.
+- **Changing the published port changes the agent's world.** The agent uses the port in
+  `server_url`; a changed `CB_PORT_HTTPS` needs the agents' configuration updated.
+
+The full destination list, the enrollment limits, and what the agent sends to your network:
+[cb-agent § Outbound endpoints](agent.md#outbound-endpoints).
+
+---
+
+## Air-gap limitations
+
+Two different things are often called "air-gapped". Circuit Breaker supports one of them.
+
+**Air-gapped operation — supported.** A running instance can be told never to make an outbound
+request of its own:
+
+```env
+CB_AIRGAP=true
+```
+
+or the `airgap_mode` switch in **Settings** — either is enough. That refuses network scans with
+`403` and stops the release check opening a socket at all. `CB_UPDATE_CHECK=false` turns off the
+release check alone, for an operator who wants scanning egress but no contact with GitHub.
+
+What still requires egress when you use the feature, and what to disable if you have none:
+
+| Feature | Needs egress | Turn off by |
+|---|---|---|
+| Release check | `api.github.com` | `CB_UPDATE_CHECK=false` (or air-gap mode) |
+| Let's Encrypt | ACME endpoints | Use a self-signed or imported certificate |
+| CVE sync | `services.nvd.nist.gov` | Do not trigger a sync |
+| Threat feeds | `abuse.ch`, `oisd.nl` | Do not enable them |
+| MAC vendor fallback | `api.macvendors.com` | Air-gap mode prevents the scan that reaches it |
+| OAuth sign-in | Your provider | Use local accounts |
+| Gravatar, Google Fonts, weather widget | The **user's browser**, not the server | Tighten the CSP at your reverse proxy |
+
+**Air-gapped installation — [unsupported for 1.0.0](release/1.0.0-support-contract.md#deployment-support-matrix).**
+Getting the software onto the host still requires downloading artifacts and dependencies. There is
+no signed offline bundle in this release, and `ACC-8` has not passed. Staging the artifacts yourself
+on a connected machine and carrying them across may well work; it is simply not a supported,
+evidenced path, and `cb update` on a native install fetches the installer over the internet.
+
+---
+
 ## Security Considerations
 
 !!! warning "Exposing the app puts your inventory on the internet"
@@ -166,3 +316,7 @@ See [Authentication & Access](auth-access.md) for full OAuth setup instructions.
 - [Deployment & Security](deployment-security.md)
 - [Authentication & Access](auth-access.md)
 - [Audit Log](audit-log.md)
+- [TLS Certificates](tls-certificates.md)
+- [cb-agent](agent.md)
+- [Threat model](security/threat-model.md) — the trusted-proxy boundary analysed
+- [Privacy](security/privacy.md) — everything that leaves the deployment

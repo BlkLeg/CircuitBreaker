@@ -150,6 +150,20 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      # REL-20: a failed release job must be diagnosable from what was kept.
+      # The step above runs only on success, so before this a failed image
+      # build left nothing behind but a workflow log that expires with the run.
+      # buildx's metadata file names the base image, the resolved digests and
+      # the build options actually used.
+      - name: Upload image build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: image-build-diagnostics-${{ matrix.arch }}
+          path: /tmp/build-metadata.json
+          if-no-files-found: warn
+          retention-days: 30
+
   # ── Assemble the multi-arch manifest list ────────────────────────────────────
   # GOV-20 twice over. The tag list comes from scripts/release_channel.py, so a
   # release candidate cannot move :latest; and this job — not the matrix above —
@@ -222,6 +236,18 @@ jobs:
           DIGEST=$(python3 -c "import json;print(json.load(open('/tmp/manifest-descriptor.json'))['digest'])")
           echo "digest=${IMAGE}@${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "manifest list ${IMAGE}@${DIGEST}"
+
+      # REL-20: the descriptor read back from the registry is the record of
+      # what was published, and it is what a post-mortem needs when the tag has
+      # since moved.
+      - name: Upload manifest descriptor
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: image-manifest-descriptor
+          path: /tmp/manifest-descriptor.json
+          if-no-files-found: warn
+          retention-days: 30
 
   # ── Create GitHub Release + push Docker ──────────────────────────────────────
   release:

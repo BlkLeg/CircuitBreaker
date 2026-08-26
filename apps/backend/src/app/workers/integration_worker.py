@@ -24,6 +24,7 @@ from app.db.models import (
 )
 from app.db.session import get_session_context
 from app.integrations.registry import get_plugin
+from app.workers import SingleActiveLease
 
 _logger = logging.getLogger(__name__)
 _LOOP_INTERVAL_S = 10.0  # how often to check which integrations are due
@@ -156,55 +157,77 @@ def _sync_one(integration_id: int) -> bool:
         return True
 
 
-async def run_integration_worker(stop_event: asyncio.Event) -> None:
-    """In-process async worker: syncs all enabled integrations on their configured intervals.
+async def _sync_due_integrations() -> None:
+    """One pass: sync every enabled integration whose interval has elapsed.
 
-    Registered in main.py lifespan alongside discovery_worker, etc.
+    Split out of the loop so the caller can decide *whether* this process is
+    the one that runs it — the loop below only runs it while holding the
+    single-active lease.
+    """
+    with get_session_context() as db:
+        integrations = (
+            db.query(Integration)
+            .filter(Integration.enabled == True)  # noqa: E712
+            .all()
+        )
+        due_ids = [i.id for i in integrations if _is_due(i)]
+
+    for integration_id in due_ids:
+        try:
+            with get_tracer().start_as_current_span("integration.sync_one") as span:
+                span.set_attribute("integration.id", integration_id)
+                await asyncio.to_thread(_sync_one, integration_id)
+            # Notify status_worker via NATS so it can recompute affected groups
+            try:
+                import json as _json
+
+                await nats_client.publish(
+                    f"integrations.synced.{integration_id}",
+                    _json.dumps({"integration_id": integration_id}).encode(),
+                )
+            except Exception as exc:
+                _logger.debug(
+                    "Integration worker: NATS publish failed for %d: %s",
+                    integration_id,
+                    exc,
+                )
+        except Exception as exc:
+            _logger.error(
+                "Integration worker: unhandled error syncing %d: %s",
+                integration_id,
+                exc,
+                exc_info=True,
+            )
+
+
+async def run_integration_worker(stop_event: asyncio.Event) -> None:
+    """Sync enabled integrations on their configured intervals.
+
+    Single-active by lease (SRV-02). This is a timer, not a queue consumer: a
+    second instance — `uvicorn --workers 2`, a second replica, an overlapping
+    rolling restart — would sync every due integration twice, calling the
+    remote system twice and writing its result twice. An instance that does not
+    hold the lease stands by and keeps trying, so the lease hands off when the
+    holder leaves rather than the syncs stopping.
     """
     _logger.info("Integration worker starting")
+    lease = SingleActiveLease("integration_sync")
 
-    while not stop_event.is_set():
-        try:
-            with get_session_context() as db:
-                integrations = (
-                    db.query(Integration)
-                    .filter(Integration.enabled == True)  # noqa: E712
-                    .all()
-                )
-                due_ids = [i.id for i in integrations if _is_due(i)]
+    try:
+        while not stop_event.is_set():
+            try:
+                if await lease.try_acquire_async():
+                    await _sync_due_integrations()
+                else:
+                    _logger.debug("Integration worker: another instance holds the lease")
+            except Exception as exc:
+                _logger.error("Integration worker: loop error: %s", exc, exc_info=True)
 
-            for integration_id in due_ids:
-                try:
-                    with get_tracer().start_as_current_span("integration.sync_one") as span:
-                        span.set_attribute("integration.id", integration_id)
-                        await asyncio.to_thread(_sync_one, integration_id)
-                    # Notify status_worker via NATS so it can recompute affected groups
-                    try:
-                        import json as _json
-
-                        await nats_client.publish(
-                            f"integrations.synced.{integration_id}",
-                            _json.dumps({"integration_id": integration_id}).encode(),
-                        )
-                    except Exception as exc:
-                        _logger.debug(
-                            "Integration worker: NATS publish failed for %d: %s",
-                            integration_id,
-                            exc,
-                        )
-                except Exception as exc:
-                    _logger.error(
-                        "Integration worker: unhandled error syncing %d: %s",
-                        integration_id,
-                        exc,
-                        exc_info=True,
-                    )
-        except Exception as exc:
-            _logger.error("Integration worker: loop error: %s", exc, exc_info=True)
-
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=_LOOP_INTERVAL_S)
-        except TimeoutError:
-            pass
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=_LOOP_INTERVAL_S)
+            except TimeoutError:
+                pass
+    finally:
+        await lease.release_async()
 
     _logger.info("Integration worker stopped")

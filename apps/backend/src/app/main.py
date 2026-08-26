@@ -91,9 +91,11 @@ from app.core.errors import AppError
 from app.core.log_redaction import install_global_log_redaction
 from app.core.rate_limit import limiter
 from app.core.security import _log_api_token_deprecation, require_auth
+from app.core.slo_metrics import HttpMetricsMiddleware
 from app.core.sql_hardening import build_audit_partition_sql
 from app.core.startup_validation import validate_core_dependencies, validate_startup_secrets
 from app.core.time import utcnow
+from app.core.write_admission import WriteAdmissionMiddleware
 from app.db import models  # noqa: F401 — import to register all model metadata with Base
 from app.db.async_session import AsyncSessionLocal
 from app.db.models import IntegrationConfig
@@ -521,6 +523,24 @@ async def lifespan(app: FastAPI):
     set_state(ServerState.STARTING)
     _logger.info("[lifecycle] server state → STARTING")
 
+    # SRV-02: resolve the process topology once, loudly. A contradiction
+    # between CB_TOPOLOGY_MODE and the legacy CB_RUN_INPROCESS_WORKERS is a
+    # startup failure, not a coin toss decided later by whichever branch reads
+    # its variable first.
+    from app.core import topology as _topology
+    from app.core import write_admission
+
+    try:
+        _topology_mode = _topology.resolve_mode()
+    except _topology.TopologyConfigError as _topology_exc:
+        _logger.critical("STARTUP FAILED: %s", _topology_exc)
+        raise SystemExit(1) from _topology_exc
+    _logger.info("[topology] %s", _topology.describe(_topology_mode))
+
+    # SRV-03: from here the lifespan owns the lifecycle state, so the write
+    # guard may act on STARTING/STOPPING as well as on dependency failures.
+    write_admission.arm()
+
     # Emit one-shot deprecation warning if CB_API_TOKEN is still set in the environment
     _log_api_token_deprecation()
 
@@ -819,10 +839,13 @@ async def lifespan(app: FastAPI):
     discovery_service.set_main_loop(loop)
 
     # ── APScheduler — scheduled discovery jobs ────────────────────────────
-    from apscheduler.schedulers.asyncio import AsyncIOScheduler
     from apscheduler.triggers.cron import CronTrigger
 
-    scheduler = AsyncIOScheduler()
+    from app.core.scheduler import SingleOwnerScheduler
+
+    # SRV-02: every job registered below runs on exactly one process, whatever
+    # the deployment does with replicas. See SingleOwnerScheduler.
+    scheduler = SingleOwnerScheduler()
     from app.core.scheduler import set_scheduler_instance
 
     # Keep discovery profile reloads/status views pointed at the live runtime scheduler.
@@ -1356,7 +1379,7 @@ async def lifespan(app: FastAPI):
 
     # ── Notification and discovery workers (skip when running with dedicated worker
     # containers, e.g. Docker Compose) ───────────────────────────────────────────
-    _run_inprocess_workers = os.environ.get("CB_RUN_INPROCESS_WORKERS", "true").lower() == "true"
+    _run_inprocess_workers = _topology.api_runs_inprocess_workers(_topology_mode)
     _worker_tasks: list = []
     _ingest_stop_event = asyncio.Event()
     _integration_stop_event = asyncio.Event()
@@ -1376,8 +1399,9 @@ async def lifespan(app: FastAPI):
         )
     else:
         _logger.info(
-            "CB_RUN_INPROCESS_WORKERS=false — notification/discovery workers "
-            "must run as separate containers."
+            "[topology] mode=%s — %s run as dedicated worker processes, not in the API.",
+            _topology_mode.value,
+            ", ".join(_topology.INPROCESS_WORKER_FUNCTIONS),
         )
 
     # ── Phase 9: Update check (non-blocking, daily) ─────────────────────
@@ -1451,6 +1475,17 @@ async def lifespan(app: FastAPI):
     # ── Graceful Redis disconnect ──────────────────────────────────────────
     await close_redis()
 
+    # SRV-04: the drain is over — admission stopped when the state went
+    # STOPPING (above), the scheduler was given its grace period, in-process
+    # workers were signalled and awaited, and every lease those workers hold is
+    # released with the connection that held it. Releasing the lifecycle gate
+    # is the last thing this process's lifespan does; the server has already
+    # stopped accepting, so it changes nothing here and keeps a host that
+    # reuses the ASGI app after a completed lifecycle from inheriting a
+    # permanently closed gate.
+    write_admission.disarm()
+    _logger.info("[lifecycle] drain complete")
+
 
 # ── FastAPI app ────────────────────────────────────────────────────────────
 
@@ -1491,9 +1526,19 @@ app.add_middleware(
 app.add_middleware(CSRFMiddleware)
 app.add_middleware(LegacyTokenMiddleware)
 app.add_middleware(LoggingMiddleware)
+# SRV-03: refuse writes the server cannot serve safely. Registered here, which
+# puts it *inside* SecurityHeadersMiddleware (so a 503 rejection still carries
+# the security headers) and *outside* the audit logger (a refused write changed
+# nothing, so there is nothing to audit).
+app.add_middleware(WriteAdmissionMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(TenantRateLimitMiddleware)
 app.add_middleware(TenantMiddleware)
+# RC-05: the availability and latency indicators. Added last, so it is the
+# outermost layer and measures what a client actually experienced — including
+# the time spent in every middleware above, and responses they produce
+# themselves (a rate-limit 429, a readiness 503).
+app.add_middleware(HttpMetricsMiddleware)
 
 # ── Global error handlers ──────────────────────────────────────────────────
 
@@ -1942,6 +1987,12 @@ app.include_router(
 
 
 # ── Health check ───────────────────────────────────────────────────────────
+#
+# Each probe is registered twice: a documented GET and an undocumented HEAD.
+# One `api_route(methods=["GET", "HEAD"])` publishes both methods under the
+# same operation id, and a duplicate operation id is a generation error in
+# every OpenAPI client generator — which is exactly the machine-readable
+# contract SRV-01 requires the headless server to publish.
 
 
 def _health_caller_is_authenticated(request: Request, db) -> bool:
@@ -1968,23 +2019,30 @@ async def _probe_dependencies() -> dict[str, str]:
     Kept separate from liveness on purpose: a database or Redis outage means
     "do not send me traffic", not "kill me and start another one". Conflating
     the two is how a dependency blip turns into a restart storm.
+
+    The probe itself lives in `app.core.health`, which is also what the
+    write-admission guard consults — one implementation, so what readiness
+    reports and what the server actually enforces cannot drift apart.
     """
-    from app.core.redis import redis_health
+    from app.core.health import probe_dependencies
 
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-            # Readiness contract check: discovery endpoints serialize ScanJob.error_reason.
-            # If this column is missing (migration drift), report db as error.
-            conn.execute(text("SELECT error_reason FROM scan_jobs LIMIT 1"))
-        db_status = "ok"
-    except Exception:
-        db_status = "error"
-
-    return {"db": db_status, "redis": "ok" if await redis_health() else "error"}
+    return await probe_dependencies()
 
 
-@app.api_route(f"{_V1}/livez", methods=["GET", "HEAD"])
+async def _health_snapshot():
+    """Freshly evaluated health for a probe endpoint.
+
+    `max_age_s=0` on purpose: an orchestrator polling every few seconds must
+    never be answered out of a cache it has no way to see. The guard on the
+    write path is the caching consumer.
+    """
+    from app.core.health import current_health
+
+    return await current_health(max_age_s=0.0)
+
+
+@app.head(f"{_V1}/livez", include_in_schema=False)
+@app.get(f"{_V1}/livez")
 async def livez() -> dict[str, object]:
     """SRV-03 liveness: is this process able to serve at all?
 
@@ -1995,7 +2053,8 @@ async def livez() -> dict[str, object]:
     return {"status": "alive", "uptime_s": round(time.time() - SERVER_START_TIME)}
 
 
-@app.api_route(f"{_V1}/startupz", methods=["GET", "HEAD"])
+@app.head(f"{_V1}/startupz", include_in_schema=False)
+@app.get(f"{_V1}/startupz")
 async def startupz(response: Response) -> dict[str, object]:
     """SRV-03 startup: has initialisation finished?
 
@@ -2011,7 +2070,8 @@ async def startupz(response: Response) -> dict[str, object]:
     return {"state": state.value, "started": started}
 
 
-@app.api_route(f"{_V1}/readyz", methods=["GET", "HEAD"])
+@app.head(f"{_V1}/readyz", include_in_schema=False)
+@app.get(f"{_V1}/readyz")
 async def readyz(response: Response) -> dict[str, object]:
     """SRV-03 readiness: can this instance safely serve traffic right now?
 
@@ -2021,14 +2081,28 @@ async def readyz(response: Response) -> dict[str, object]:
     from app.core.server_state import ServerState, get_state
 
     state = get_state()
-    checks = await _probe_dependencies()
+    snapshot = await _health_snapshot()
+    checks = dict(snapshot.checks)
     ready = state is ServerState.READY and all(v == "ok" for v in checks.values())
     if not ready:
         response.status_code = 503
-    return {"ready": ready, "state": state.value, "checks": checks}
+    # `state` stays the lifecycle state it has always been; `health` is the
+    # RC-05 health state derived from it and the dependency verdicts, which is
+    # the only place a *degraded* server is distinguishable from a not-ready
+    # one. `writes_permitted` is not advice — it is what the write-admission
+    # guard is enforcing on this process at this moment.
+    return {
+        "ready": ready,
+        "state": state.value,
+        "checks": checks,
+        "health": snapshot.state.value,
+        "degraded": list(snapshot.degraded),
+        "writes_permitted": snapshot.writes_permitted,
+    }
 
 
-@app.api_route(f"{_V1}/health", methods=["GET", "HEAD"])
+@app.head(f"{_V1}/health", include_in_schema=False)
+@app.get(f"{_V1}/health")
 async def health(request: Request, db: Session = Depends(get_db)):
     """Legacy combined health, kept at its exact response shape.
 
@@ -2040,13 +2114,16 @@ async def health(request: Request, db: Session = Depends(get_db)):
     from app.core.server_state import ServerState, get_state
 
     state = get_state()
-    checks = await _probe_dependencies()
+    snapshot = await _health_snapshot()
+    checks = dict(snapshot.checks)
 
     body: dict[str, object] = {
         "state": state.value,
         "ready": state == ServerState.READY,
         "uptime_s": round(time.time() - SERVER_START_TIME),
         "checks": checks,
+        "health": snapshot.state.value,
+        "degraded": list(snapshot.degraded),
     }
 
     # Build version and installed database extensions are unauthenticated

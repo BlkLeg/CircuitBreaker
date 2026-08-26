@@ -19,8 +19,19 @@ from app.core.nats_client import nats_client
 from app.core.subjects import DISCOVERY_LISTENER_FOUND, discovery_listener_found_payload
 from app.db.models import ListenerEvent
 from app.db.session import SessionLocal
+from app.services.stream_faults import FAULT_DECODE, record_stream_fault
 
 _logger = logging.getLogger(__name__)
+
+# REL-07 fault-metric identity. These two listeners consume unauthenticated
+# multicast traffic that any host on the LAN can generate at will, so every
+# per-packet failure path here is throttled and counted rather than logged raw.
+_COMPONENT = "discovery_listener"
+# Backoff after a socket read error, so a permanently broken socket cannot spin.
+_SSDP_RECV_ERROR_BACKOFF_S = 1.0
+# Consecutive read errors tolerated before the SSDP listener gives up and exits
+# rather than looping on a socket that will never recover.
+_SSDP_MAX_CONSECUTIVE_ERRORS = 10
 
 try:
     from zeroconf import ServiceBrowser, Zeroconf
@@ -101,7 +112,10 @@ class ListenerService:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
         if self._zeroconf:
-            await asyncio.get_event_loop().run_in_executor(None, self._zeroconf.close)
+            # get_running_loop(), not get_event_loop(): this is inside a
+            # coroutine, and get_event_loop()'s no-running-loop fallback is
+            # deprecated (REL-08).
+            await asyncio.get_running_loop().run_in_executor(None, self._zeroconf.close)
             self._zeroconf = None
         self.mdns_active = False
         self.ssdp_active = False
@@ -146,7 +160,9 @@ class ListenerService:
         except asyncio.CancelledError:
             pass
         except Exception as exc:
-            _logger.warning("mDNS listener error: %s", exc)
+            record_stream_fault(
+                f"{_COMPONENT}.mdns", exc, logger=_logger, context={"services": len(_MDNS_SERVICES)}
+            )
         finally:
             self.mdns_active = False
 
@@ -161,8 +177,18 @@ class ListenerService:
             if info.addresses:
                 try:
                     ip = socket.inet_ntoa(info.addresses[0])
-                except Exception:
-                    pass
+                except OSError as exc:
+                    # inet_ntoa only rejects a non-4-byte address, i.e. an IPv6
+                    # record. Recording the event without an IP is correct; it
+                    # is counted so a network that is all-IPv6 is visible as
+                    # such instead of looking like an idle one.
+                    record_stream_fault(
+                        f"{_COMPONENT}.mdns_address",
+                        exc,
+                        logger=_logger,
+                        context={"name": name, "octets": len(info.addresses[0])},
+                        fault=FAULT_DECODE,
+                    )
 
             port = info.port
             props: dict = {}
@@ -173,8 +199,14 @@ class ListenerService:
                     else v
                     for k, v in (info.properties or {}).items()
                 }
-            except Exception:
-                pass
+            except (AttributeError, TypeError, ValueError) as exc:
+                record_stream_fault(
+                    f"{_COMPONENT}.mdns_properties",
+                    exc,
+                    logger=_logger,
+                    context={"name": name},
+                    fault=FAULT_DECODE,
+                )
 
             await self._record_event(
                 source="mdns",
@@ -185,56 +217,112 @@ class ListenerService:
                 properties=props,
             )
         except Exception as exc:
-            _logger.debug("mDNS service info error for %s: %s", name, exc)
+            record_stream_fault(
+                f"{_COMPONENT}.mdns_service",
+                exc,
+                logger=_logger,
+                context={"service_type": type_, "name": name},
+            )
 
     # ── SSDP via raw UDP ─────────────────────────────────────────────────────
 
-    async def _run_ssdp(self) -> None:
-        """Listen for SSDP NOTIFY and M-SEARCH responses via UDP multicast."""
+    def _open_ssdp_socket(self) -> socket.socket:
+        """Bind the SSDP multicast socket. Raises OSError if the port is taken."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
             except AttributeError:
                 pass  # not available on all platforms
             sock.bind((_SSDP_ADDR, _SSDP_PORT))
-
             # Join the multicast group on all interfaces
             mcast_req = struct.pack("4sL", socket.inet_aton(_SSDP_ADDR), socket.INADDR_ANY)
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mcast_req)
             sock.setblocking(False)
+        except BaseException:
+            # A half-configured socket must not outlive this call — closing it
+            # here is what keeps a failed bind from leaking a descriptor and a
+            # multicast membership on every restart attempt.
+            sock.close()
+            raise
+        return sock
 
-            loop = asyncio.get_running_loop()
+    def _send_msearch(self) -> None:
+        """Emit one M-SEARCH so devices answer immediately instead of at their
+        next NOTIFY, which can be minutes away."""
+        send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        try:
+            send_sock.sendto(_SSDP_M_SEARCH.encode(), (_SSDP_ADDR, _SSDP_PORT))
+        finally:
+            send_sock.close()
+
+    async def _ssdp_recv_loop(self, sock: socket.socket) -> None:
+        """Forward SSDP datagrams until cancelled or the socket stops working."""
+        loop = asyncio.get_running_loop()
+        consecutive_errors = 0
+        while self.is_running:
+            try:
+                # sock_recvfrom is proper async (epoll/select) — no thread pool needed.
+                # The old run_in_executor on a non-blocking socket was burning 10 thread
+                # slots/second returning BlockingIOError immediately.
+                data, addr = await loop.sock_recvfrom(sock, 4096)
+            except asyncio.CancelledError:
+                raise
+            except OSError as exc:
+                # A read error used to be a DEBUG line and a 1s sleep, forever:
+                # a socket closed out from under the listener (interface down,
+                # descriptor revoked) became an invisible infinite loop that
+                # reported itself as `ssdp_active = True`. Bounded now, so the
+                # task exits and the flag tells the truth (REL-07).
+                consecutive_errors += 1
+                record_stream_fault(
+                    f"{_COMPONENT}.ssdp_recv",
+                    exc,
+                    logger=_logger,
+                    context={"consecutive_errors": consecutive_errors},
+                )
+                if consecutive_errors >= _SSDP_MAX_CONSECUTIVE_ERRORS:
+                    _logger.error(
+                        "SSDP listener stopping after %d consecutive read errors.",
+                        consecutive_errors,
+                    )
+                    return
+                await asyncio.sleep(_SSDP_RECV_ERROR_BACKOFF_S)
+                continue
+            consecutive_errors = 0
+            await self._handle_ssdp_packet(data.decode(errors="replace"), addr[0])
+
+    async def _run_ssdp(self) -> None:
+        """Listen for SSDP NOTIFY and M-SEARCH responses via UDP multicast."""
+        sock: socket.socket | None = None
+        try:
+            sock = self._open_ssdp_socket()
             self.ssdp_active = True
             _logger.info("SSDP socket bound on %s:%d.", _SSDP_ADDR, _SSDP_PORT)
 
-            # Send M-SEARCH to trigger responses from devices
             try:
-                send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-                send_sock.sendto(_SSDP_M_SEARCH.encode(), (_SSDP_ADDR, _SSDP_PORT))
-                send_sock.close()
-            except Exception:
-                pass
+                self._send_msearch()
+            except OSError as exc:
+                # Not fatal — passive NOTIFY capture still works — but it does
+                # mean discovery is slower, which is worth a counted line
+                # rather than the silent `pass` that used to be here.
+                record_stream_fault(f"{_COMPONENT}.ssdp_msearch", exc, logger=_logger)
 
-            while self.is_running:
-                try:
-                    # sock_recvfrom is proper async (epoll/select) — no thread pool needed.
-                    # The old run_in_executor on a non-blocking socket was burning 10 thread
-                    # slots/second returning BlockingIOError immediately.
-                    data, addr = await loop.sock_recvfrom(sock, 4096)
-                    await self._handle_ssdp_packet(data.decode(errors="replace"), addr[0])
-                except asyncio.CancelledError:
-                    break
-                except Exception as exc:
-                    _logger.debug("SSDP recv error: %s", exc)
-                    await asyncio.sleep(1)
+            await self._ssdp_recv_loop(sock)
         except asyncio.CancelledError:
             pass
         except Exception as exc:
-            _logger.warning("SSDP listener error: %s", exc)
+            record_stream_fault(
+                f"{_COMPONENT}.ssdp", exc, logger=_logger, context={"port": _SSDP_PORT}
+            )
         finally:
             self.ssdp_active = False
+            if sock is not None:
+                # The socket used to be left open on every exit path, so each
+                # stop()/start() cycle leaked a descriptor and an IGMP group
+                # membership until the process died.
+                sock.close()
 
     async def _handle_ssdp_packet(self, raw: str, ip: str) -> None:
         headers: dict[str, str] = {}
@@ -294,7 +382,16 @@ class ListenerService:
             db.commit()
             _logger.debug("Listener event: %s %s @ %s:%s", source, service_type, ip_address, port)
         except Exception as exc:
-            _logger.warning("Failed to record listener event: %s", exc)
+            # One WARNING per failed insert is a log storm here, not a log
+            # line: multicast chatter on a busy LAN is hundreds of packets a
+            # minute and every one of them takes this path while the database
+            # is down. Throttled and counted instead (REL-07).
+            record_stream_fault(
+                f"{_COMPONENT}.record",
+                exc,
+                logger=_logger,
+                context={"source": source, "ip": ip_address},
+            )
             db.rollback()
         finally:
             db.close()
@@ -311,8 +408,17 @@ class ListenerService:
                     port=port,
                 ),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            # Was a bare `pass`: with NATS down, live discovery events stopped
+            # reaching the UI with no log line and no metric anywhere. The row
+            # is already committed, so this stays non-fatal — but it is now
+            # visible.
+            record_stream_fault(
+                f"{_COMPONENT}.publish",
+                exc,
+                logger=_logger,
+                context={"subject": DISCOVERY_LISTENER_FOUND, "source": source},
+            )
 
 
 # Singleton instance imported by main.py

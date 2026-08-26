@@ -11,6 +11,7 @@ the endpoint is public, consistent with the unauthenticated read API.
 """
 
 import logging
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
@@ -24,9 +25,12 @@ from prometheus_client import (
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core import slo_metrics
 from app.core.config import settings as _app_settings
 from app.core.security import get_optional_user
+from app.core.time import utcnow
 from app.db.models import (
+    Agent,
     ComputeUnit,
     Doc,
     ExternalNode,
@@ -34,7 +38,9 @@ from app.db.models import (
     HardwareCluster,
     Log,
     MiscItem,
+    MonitorItem,
     Network,
+    ScanJob,
     Service,
     ServiceDependency,
     Storage,
@@ -57,6 +63,102 @@ def _check_metrics_auth(
     """Require authentication for metrics access."""
     if user_id is None:
         raise HTTPException(status_code=401, detail="Authentication required")
+
+
+#: How stale a connected agent's presence may be before it stops counting as
+#: fresh. `agent_registry` throttles the `last_seen_at` write to once every 60
+#: seconds and expires the Redis presence key on the same cadence, so a window
+#: of one throttle interval would count healthy agents as missing on every
+#: other scrape. Three intervals is the smallest window that cannot flap.
+_AGENT_PRESENCE_WINDOW_S = 180
+
+#: Scan-job dispatch states that represent accepted-but-unfinished work.
+_BACKLOG_STATUSES = ("queued", "dispatched", "running", "waiting_for_agent")
+
+
+def _add_slo_gauges(reg: CollectorRegistry, db: Session) -> None:
+    """The database-derived half of the RC-05 indicators.
+
+    Each gauge here is the measurement source for one published objective:
+    monitoring execution freshness, background-processing backlog, and agent
+    presence freshness. They are aggregated in the database — one row back per
+    objective, no per-object labels — so neither the scrape cost nor the label
+    cardinality grows with the inventory (SRV-09).
+    """
+    now = utcnow()
+
+    # Monitoring execution freshness: a check is late once it is more than two
+    # of its own intervals past due, which is the window the objective is
+    # written in ("99% of enabled checks complete within 2 scheduled
+    # intervals").
+    overdue = Gauge(
+        "circuitbreaker_monitor_checks_overdue",
+        "Enabled monitor checks more than two intervals past their due time",
+        registry=reg,
+    )
+    lag = Gauge(
+        "circuitbreaker_monitor_check_lag_seconds",
+        "Age of the oldest overdue enabled monitor check, in seconds",
+        registry=reg,
+    )
+    overdue_cutoff = func.now() - func.make_interval(
+        0, 0, 0, 0, 0, 0, MonitorItem.interval_secs * 2
+    )
+    overdue_count, oldest_due = (
+        db.query(func.count(MonitorItem.id), func.min(MonitorItem.next_due_at))
+        .filter(MonitorItem.enabled.is_(True), MonitorItem.next_due_at < overdue_cutoff)
+        .one()
+    )
+    overdue.set(overdue_count or 0)
+    lag.set((now - oldest_due).total_seconds() if oldest_due else 0.0)
+
+    # Background processing backlog: work that has been accepted but not
+    # finished. The objective is that it drains after a dependency recovery
+    # rather than growing without bound.
+    backlog = Gauge(
+        "circuitbreaker_scan_job_backlog",
+        "Scan jobs accepted but not yet finished, by dispatch status",
+        ["status"],
+        registry=reg,
+    )
+    for status in _BACKLOG_STATUSES:
+        backlog.labels(status=status).set(0)
+    for status, count in (
+        db.query(ScanJob.dispatch_status, func.count(ScanJob.id))
+        .filter(ScanJob.dispatch_status.in_(_BACKLOG_STATUSES))
+        .group_by(ScanJob.dispatch_status)
+        .all()
+    ):
+        backlog.labels(status=status).set(count)
+
+    # Agent presence freshness.
+    presence = Gauge(
+        "circuitbreaker_agents_present",
+        "Active agents whose presence is fresher than the freshness window",
+        registry=reg,
+    )
+    presence_age = Gauge(
+        "circuitbreaker_agent_presence_age_seconds",
+        "Age of the stalest presence record among connected agents, in seconds",
+        registry=reg,
+    )
+    fresh_cutoff = now - timedelta(seconds=_AGENT_PRESENCE_WINDOW_S)
+    presence.set(
+        db.query(func.count(Agent.id))
+        .filter(
+            Agent.status == "active",
+            Agent.last_seen_at.isnot(None),
+            Agent.last_seen_at >= fresh_cutoff,
+        )
+        .scalar()
+        or 0
+    )
+    oldest_seen = (
+        db.query(func.min(Agent.last_seen_at))
+        .filter(Agent.status == "active", Agent.connected_since.isnot(None))
+        .scalar()
+    )
+    presence_age.set((now - oldest_seen).total_seconds() if oldest_seen else 0.0)
 
 
 @router.get(
@@ -329,6 +431,17 @@ def prometheus_metrics(
         storage_used.labels(name=st_name or "", kind=st_kind or "").set(st_used)
 
     # ------------------------------------------------------------------
+    # RC-05 service-objective indicators
+    # ------------------------------------------------------------------
+    _add_slo_gauges(reg, db)
+
+    # ------------------------------------------------------------------
     # Serialise and return
     # ------------------------------------------------------------------
-    return Response(content=generate_latest(reg), media_type=CONTENT_TYPE_LATEST)
+    # Two registries, one exposition. The gauges above are point-in-time reads
+    # of the database and are rebuilt per scrape; the series in
+    # `app.core.slo_metrics` are process-lifetime counters and histograms that
+    # must survive scrapes, so they live in a registry of their own and are
+    # concatenated here. No metric family is defined in both.
+    body = generate_latest(reg) + slo_metrics.exposition()
+    return Response(content=body, media_type=CONTENT_TYPE_LATEST)

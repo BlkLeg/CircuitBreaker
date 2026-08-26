@@ -9,6 +9,33 @@ on:
 permissions:
   contents: read
 
+# REL-20, first half: determinism. Every knob that can reorder or reseed a run
+# is pinned here instead of left to the runner's defaults, and each job copies
+# these values into a run manifest it uploads, so a retained artifact says what
+# produced it rather than requiring the workflow file to be read at the same
+# revision.
+#
+#   PYTHONHASHSEED  CPython salts the hash of str and bytes per process. Left
+#                   unset, anything that iterates a set of strings — a
+#                   dict-backed cache, fixture teardown order, our own shard
+#                   assignment if it used hash() — can differ between two runs
+#                   of the same commit. Pinning it removes a whole class of
+#                   "it only fails in CI".
+#   CB_TEST_SEED    One seed the suites derive from. Fixed rather than
+#                   ${{ github.run_id }} on purpose: a per-run seed makes a
+#                   failure reproducible only after someone reads the log that
+#                   recorded it, and makes two runs of the same commit
+#                   incomparable. The seed is still recorded, so a deliberate
+#                   change to it is visible in the artifacts of both runs.
+#
+# The second half — retention — is per job: every job below writes JUnit,
+# coverage, logs and diagnostics into `artifacts/` and uploads that directory
+# with `if: always()`, because the run that most needs its evidence kept is the
+# one that failed.
+env:
+  PYTHONHASHSEED: "0"
+  CB_TEST_SEED: "20260826"
+
 jobs:
   lint:
     name: Lint
@@ -46,9 +73,10 @@ jobs:
 
       # The repo-policy suite: tracked-file policy (GOV-12), governance files
       # (GOV-10/11/14/16), cb CLI parity (SRV-06/GOV-05), restart probes
-      # (SRV-03), version parity and release channel. Until 2026-08-19 no
-      # workflow ran it, so "a policy test prevents recurrence" was a claim with
-      # nothing behind it — the suite passed locally and could rot unnoticed.
+      # (SRV-03), version parity, release channel, the REL-19 skip register and
+      # the REL-20 shard split. Until 2026-08-19 no workflow ran it, so "a
+      # policy test prevents recurrence" was a claim with nothing behind it —
+      # the suite passed locally and could rot unnoticed.
       #
       # It belongs in Lint: it is pure static analysis of the checked-out tree
       # (git ls-files, file reads, no network) and finishes in under a second,
@@ -62,7 +90,12 @@ jobs:
       # `pytest tests/` locally, and so files added under tests/build/ later
       # cannot be silently dropped.
       - name: Repo policy tests (tests/build)
-        run: .venv/bin/pytest tests/build
+        shell: bash
+        run: |
+          mkdir -p artifacts/junit artifacts/logs
+          .venv/bin/pytest tests/build \
+            --junitxml=artifacts/junit/repo-policy.xml \
+            2>&1 | tee artifacts/logs/repo-policy.log
 
       - name: Install frontend deps
         run: cd apps/frontend && npm ci
@@ -81,6 +114,15 @@ jobs:
 
       - name: ESLint
         run: cd apps/frontend && npm run lint
+
+      - name: Upload lint evidence
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: lint-evidence
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14
 
   security-gate:
     name: Security Gate
@@ -120,7 +162,7 @@ jobs:
           retention-days: 30
 
   backend-tests:
-    name: Backend tests
+    name: Backend tests (shard ${{ matrix.shard }}/${{ strategy.job-total }})
     # Ubuntu 24.04 ships PostgreSQL 16 client tools, matching the PostgreSQL
     # 16.2 testcontainer used by tests/conftest.py. Ubuntu 22.04's pg_dump 14
     # cannot dump that server and breaks the real snapshot tests.
@@ -142,6 +184,29 @@ jobs:
     # it against every RC and on a schedule, so .github/workflows/e2e.yml runs
     # it nightly and on every release tag. It does not gate publication; the
     # header of e2e.yml says why.
+    #
+    # REL-20: sharded, because ~2900 tests behind a testcontainer is the long
+    # pole of the whole workflow. The split is by file and by blake2b of the
+    # path (tests/build/backend_shard.py), so a given test file is in the same
+    # shard on every run, on every machine and under any hash seed — "shard 3
+    # failed" names a reproducible set of tests. The coverage ratchet is not
+    # enforced per shard, because a quarter of the suite cannot reach a
+    # whole-suite threshold; the `backend-coverage` job below combines the four
+    # data files and applies the gate to the total, so the number being
+    # enforced is still the one in apps/backend/pyproject.toml.
+    strategy:
+      # A red shard must not cancel its siblings: cancelling them destroys
+      # exactly the evidence needed to tell a shard-local failure from a
+      # suite-wide one.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      SHARD: ${{ matrix.shard }}
+      SHARD_TOTAL: ${{ strategy.job-total }}
+      # One coverage data file per shard, named for it so the four survive
+      # being downloaded into a single directory by the gate job below.
+      COVERAGE_FILE: ${{ github.workspace }}/artifacts/coverage/.coverage.backend-${{ matrix.shard }}
     steps:
       - uses: actions/checkout@v5
 
@@ -172,8 +237,137 @@ jobs:
       - name: Build frontend (route surface under test)
         run: cd apps/frontend && npm ci && npm run build
 
+      - name: Record the run manifest
+        run: |
+          mkdir -p artifacts/junit artifacts/coverage artifacts/logs artifacts/diagnostics
+          {
+            echo "commit=${GITHUB_SHA}"
+            echo "workflow=${GITHUB_WORKFLOW}"
+            echo "job=backend-tests"
+            echo "shard=${SHARD}/${SHARD_TOTAL}"
+            echo "runner=${RUNNER_OS}/${RUNNER_ARCH}"
+            echo "python=$(.venv/bin/python -V 2>&1)"
+            echo "PYTHONHASHSEED=${PYTHONHASHSEED}"
+            echo "CB_TEST_SEED=${CB_TEST_SEED}"
+            echo "docker=$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo unavailable)"
+            echo "pg_dump=$(pg_dump --version 2>&1)"
+          } | tee artifacts/run-manifest.txt
+
+      # The file list is part of the evidence: it is what makes "re-run shard 3
+      # locally" a copyable command rather than an archaeology exercise.
+      - name: Select this shard's test files
+        run: |
+          python3 tests/build/backend_shard.py \
+            --index "${SHARD}" --total "${SHARD_TOTAL}" > artifacts/shard-files.txt
+          echo "shard ${SHARD}/${SHARD_TOTAL}: $(wc -l < artifacts/shard-files.txt) test files"
+          cat artifacts/shard-files.txt
+
       - name: Backend tests
-        run: cd apps/backend && PYTHONPATH=src ../../.venv/bin/pytest
+        shell: bash
+        run: |
+          cd apps/backend
+          PYTHONPATH=src ../../.venv/bin/pytest \
+            $(cat "${GITHUB_WORKSPACE}/artifacts/shard-files.txt") \
+            --junitxml="${GITHUB_WORKSPACE}/artifacts/junit/backend-shard-${SHARD}.xml" \
+            --cov-fail-under=0 \
+            -p no:cacheprovider \
+            2>&1 | tee "${GITHUB_WORKSPACE}/artifacts/logs/backend-shard-${SHARD}.log"
+
+      # Testcontainers reaps its containers through ryuk at session end, so on a
+      # clean run this collects little. On a crash or a hang it collects the
+      # database the suite was talking to, which is the case the retention rule
+      # exists for.
+      - name: Collect container diagnostics
+        if: always()
+        run: |
+          mkdir -p artifacts/diagnostics
+          docker version > artifacts/diagnostics/docker-version.txt 2>&1 || true
+          docker ps -a > artifacts/diagnostics/containers.txt 2>&1 || true
+          for container in $(docker ps -aq); do
+            docker logs "${container}" > "artifacts/diagnostics/${container}.log" 2>&1 || true
+            docker inspect "${container}" > "artifacts/diagnostics/${container}.json" 2>&1 || true
+          done
+          cp apps/backend/coverage.xml \
+            "artifacts/coverage/coverage-shard-${SHARD}.xml" 2>/dev/null || true
+          ls -laR artifacts > artifacts/diagnostics/artifact-listing.txt
+
+      # include-hidden-files is load-bearing, not tidiness: the coverage data
+      # file is `.coverage.backend-N`, and upload-artifact skips dotfiles by
+      # default — without this the combine job below would download four empty
+      # directories and the gate would measure nothing.
+      - name: Upload backend shard evidence
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: backend-shard-${{ matrix.shard }}
+          path: artifacts/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  backend-coverage:
+    name: Backend coverage gate
+    # No `if: always()`. The ratchet is a statement about a suite that passed;
+    # running it over partial data from failed shards would add a second red
+    # job saying nothing the first did not. The shard jobs upload their own
+    # evidence regardless, so nothing is lost by not running this.
+    needs: backend-tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Python deps
+        run: |
+          python3.12 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e "apps/backend/[dev]"
+
+      - name: Download shard evidence
+        uses: actions/download-artifact@v5
+        with:
+          pattern: backend-shard-*
+          path: shards/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Combine coverage and enforce the ratchet
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          find shards -name '.coverage.backend-*' -exec cp {} apps/backend/ \;
+          ls -la apps/backend/.coverage.backend-* || {
+            echo "::error::no coverage data was retained by the backend shards"
+            exit 1
+          }
+          cd apps/backend
+          # Read the threshold out of the same file pytest reads it from. A
+          # literal here would be a second copy of the ratchet, free to drift
+          # from the one the local `pytest` run enforces.
+          THRESHOLD=$(python3 - <<'PY'
+          import tomllib
+          with open("pyproject.toml", "rb") as handle:
+              options = tomllib.load(handle)["tool"]["pytest"]["ini_options"]["addopts"]
+          print(next(o.split("=", 1)[1] for o in options if o.startswith("--cov-fail-under=")))
+          PY
+          )
+          echo "combined backend coverage must reach ${THRESHOLD}%"
+          ../../.venv/bin/python -m coverage combine
+          ../../.venv/bin/python -m coverage xml \
+            -o "${GITHUB_WORKSPACE}/artifacts/coverage-backend-combined.xml"
+          ../../.venv/bin/python -m coverage report --fail-under="${THRESHOLD}" \
+            | tee "${GITHUB_WORKSPACE}/artifacts/coverage-backend-combined.txt"
+
+      - name: Upload combined coverage
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: backend-coverage-combined
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
 
   test:
     name: Test
@@ -193,10 +387,39 @@ jobs:
       - name: Install frontend deps
         run: cd apps/frontend && npm ci
 
+      - name: Record the run manifest
+        run: |
+          mkdir -p artifacts/junit artifacts/coverage artifacts/logs
+          {
+            echo "commit=${GITHUB_SHA}"
+            echo "workflow=${GITHUB_WORKFLOW}"
+            echo "job=test"
+            echo "runner=${RUNNER_OS}/${RUNNER_ARCH}"
+            echo "node=$(node -v)"
+            echo "go=$(go version)"
+            echo "CB_TEST_SEED=${CB_TEST_SEED}"
+          } | tee artifacts/run-manifest.txt
+
       # REL-15: coverage is enforced and retained, not just produced. The
-      # thresholds live in vitest.config.ts so a local run fails identically.
+      # thresholds live in vitest.config.ts so a local run fails identically;
+      # only the reporter, the seed and the log destination are added here.
+      #
+      # Not sharded, deliberately. Vitest's own --shard is deterministic, but
+      # the v8 coverage thresholds in vitest.config.ts apply per run, so a
+      # sharded run would need --merge-reports to keep the REL-15 gate honest —
+      # more machinery than a suite this size is worth. Determinism is what
+      # REL-20 asks for and is already true: sequence.shuffle is off, so the
+      # file order is the sorted one, and the seed below is recorded with it.
       - name: Frontend tests with coverage
-        run: cd apps/frontend && npm run test:coverage
+        shell: bash
+        run: |
+          cd apps/frontend
+          npx vitest run --coverage \
+            --sequence.shuffle=false \
+            --sequence.seed="${CB_TEST_SEED}" \
+            --reporter=default --reporter=junit \
+            --outputFile.junit="${GITHUB_WORKSPACE}/artifacts/junit/frontend.xml" \
+            2>&1 | tee "${GITHUB_WORKSPACE}/artifacts/logs/frontend.log"
 
       - name: Upload frontend coverage
         if: always()
@@ -207,15 +430,85 @@ jobs:
           retention-days: 14
 
       # -race is mandatory: the agent's daemon-startup ordering guarantees are
-      # only observable under the race detector (see apps/agent/Makefile).
+      # only observable under the race detector (see apps/agent/Makefile). The
+      # command stays `make test` so the Makefile remains the one place that
+      # decides how the agent is tested; the extra flags arrive through GOFLAGS,
+      # scoped to this step so `go vet` below does not inherit them.
+      #
+      # -shuffle=off is go test's default and is stated anyway: REL-20 asks for
+      # a deterministic order, and a default that is never written down is a
+      # default that changes without anyone noticing.
       - name: Agent tests
-        run: cd apps/agent && make test
+        shell: bash
+        env:
+          GOFLAGS: >-
+            -shuffle=off
+            -covermode=atomic
+            -coverprofile=${{ github.workspace }}/artifacts/coverage/agent-coverage.out
+            -json
+        run: |
+          cd apps/agent
+          make test 2>&1 | tee "${GITHUB_WORKSPACE}/artifacts/logs/agent-test.json"
+
+      # go test has no JUnit writer and the repo vendors no converter, so the
+      # -json stream is turned into one here. Keeping the raw stream as well is
+      # deliberate: it carries the interleaved build and race-detector output
+      # that a JUnit <failure> body truncates.
+      - name: Convert Go results to JUnit
+        if: always()
+        run: |
+          python3 - artifacts/logs/agent-test.json artifacts/junit/agent.xml <<'PY'
+          import json, sys, xml.etree.ElementTree as ET
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              events = [json.loads(line) for line in handle if line.startswith("{")]
+          cases = {}
+          for event in events:
+              if "Test" not in event:
+                  continue
+              case = cases.setdefault(
+                  (event["Package"], event["Test"]), {"output": [], "action": "run", "time": "0"}
+              )
+              if event["Action"] in ("pass", "fail", "skip"):
+                  case["action"] = event["Action"]
+                  case["time"] = str(event.get("Elapsed", 0))
+              elif event["Action"] == "output":
+                  case["output"].append(event.get("Output", ""))
+          failures = sum(1 for case in cases.values() if case["action"] == "fail")
+          skipped = sum(1 for case in cases.values() if case["action"] == "skip")
+          suites = ET.Element("testsuites")
+          suite = ET.SubElement(
+              suites, "testsuite", name="cb-agent", tests=str(len(cases)),
+              failures=str(failures), skipped=str(skipped), errors="0",
+          )
+          for (package, test), case in sorted(cases.items()):
+              node = ET.SubElement(
+                  suite, "testcase", classname=package, name=test, time=case["time"]
+              )
+              text = "".join(case["output"])
+              if case["action"] == "fail":
+                  ET.SubElement(node, "failure", message="go test reported a failure").text = text[-8000:]
+              elif case["action"] == "skip":
+                  last = text.strip().splitlines()[-1][:200] if text.strip() else "skipped"
+                  ET.SubElement(node, "skipped", message=last)
+          ET.ElementTree(suites).write(sys.argv[2], encoding="utf-8", xml_declaration=True)
+          print(f"{len(cases)} Go test cases -> {sys.argv[2]} ({failures} failed, {skipped} skipped)")
+          PY
 
       - name: Agent vet
         run: cd apps/agent && go vet ./...
 
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: unit-test-evidence
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
   browser-e2e:
-    name: Browser E2E
+    name: Browser E2E (shard ${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-22.04
     # Pinned to the Playwright image so rendering matches the container the
     # REL-18 visual baselines are generated in. A version skew between this tag
@@ -233,6 +526,15 @@ jobs:
     # prints in the failure message. Nothing in this job needs $HOME to persist.
     env:
       HOME: /root
+    # REL-20: Playwright's --shard is deterministic by construction — it sorts
+    # the test list and slices it — so shard N holds the same specs on every
+    # run. Two shards, not four: each one still pays the production build in
+    # playwright.config.ts's webServer, so the split stops paying for itself
+    # quickly.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v5
 
@@ -243,28 +545,50 @@ jobs:
       - name: Install frontend deps
         run: cd apps/frontend && npm ci
 
+      - name: Record the run manifest
+        run: |
+          mkdir -p artifacts
+          {
+            echo "commit=${GITHUB_SHA}"
+            echo "workflow=${GITHUB_WORKFLOW}"
+            echo "job=browser-e2e"
+            echo "shard=${{ matrix.shard }}/${{ strategy.job-total }}"
+            echo "image=mcr.microsoft.com/playwright:v1.62.1-noble"
+            echo "node=$(node -v)"
+            echo "playwright=$(cd apps/frontend && npx playwright --version)"
+            echo "CB_TEST_SEED=${CB_TEST_SEED}"
+          } | tee artifacts/run-manifest.txt
+
       # The visual-* projects carry the REL-18 baselines (committed 2026-08-19,
       # see docs/testing-visual-baselines.md). They are separate projects so a
       # stale baseline fails the visual gate and not the functional one;
       # playwright.config.ts keeps visual.spec.ts out of the other four.
       - name: Run Playwright suite
+        shell: bash
         run: |
           cd apps/frontend
           npx playwright test \
+            --shard="${{ matrix.shard }}/${{ strategy.job-total }}" \
             --project=chromium \
             --project=firefox \
             --project=webkit \
             --project=mobile-chrome \
             --project=visual-desktop \
-            --project=visual-mobile
+            --project=visual-mobile \
+            2>&1 | tee "${GITHUB_WORKSPACE}/artifacts/playwright.log"
 
       # REL-20: a failed job must be diagnosable from retained artifacts alone.
+      # playwright.config.ts already writes the JUnit report and keeps traces,
+      # screenshots and video on failure; test-results/ is where those land, so
+      # the two paths below cover every artifact class this job produces.
       - name: Upload Playwright report
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: playwright-report
+          name: playwright-report-shard-${{ matrix.shard }}
           path: |
             apps/frontend/playwright-report/
             apps/frontend/test-results/
+            artifacts/
+          if-no-files-found: warn
           retention-days: 14

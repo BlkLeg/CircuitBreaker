@@ -17,6 +17,7 @@ from app.integrations.dispatcher import poll_hardware
 from app.services.credential_vault import get_vault
 from app.services.telemetry_service import write_telemetry
 from app.services.vault_service import load_vault_key
+from app.workers import SingleActiveLease
 
 logger = logging.getLogger(__name__)
 
@@ -215,24 +216,38 @@ async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
         max_parallel,
     )
 
-    while not (shutdown_event and shutdown_event.is_set()):
-        started = time.monotonic()
-        try:
-            with get_tracer().start_as_current_span("telemetry.collect_once"):
-                await collect_once(
-                    interval_s=interval_s, timeout_s=timeout_s, max_parallel=max_parallel
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Telemetry collector loop failure: %s", exc, exc_info=True)
+    # Single-active by lease (SRV-02): this is a timer over every enabled
+    # device, not a queue consumer. A second instance would poll every
+    # monitored device twice and write every sample twice — extra load on the
+    # devices being watched, and duplicate telemetry in the series they feed.
+    lease = SingleActiveLease("telemetry_collector")
 
-        elapsed = time.monotonic() - started
-        sleep_s = max(1.0, interval_s - elapsed)
-        if shutdown_event is None:
-            await asyncio.sleep(sleep_s)
-            continue
-        try:
-            await asyncio.wait_for(shutdown_event.wait(), timeout=sleep_s)
-        except TimeoutError:
-            pass
+    try:
+        while not (shutdown_event and shutdown_event.is_set()):
+            started = time.monotonic()
+            if await lease.try_acquire_async():
+                try:
+                    with get_tracer().start_as_current_span("telemetry.collect_once"):
+                        await collect_once(
+                            interval_s=interval_s, timeout_s=timeout_s, max_parallel=max_parallel
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("Telemetry collector loop failure: %s", exc, exc_info=True)
+            else:
+                logger.debug("Telemetry collector: another instance holds the lease")
+
+            elapsed = time.monotonic() - started
+            sleep_s = max(1.0, interval_s - elapsed)
+            if shutdown_event is None:
+                await asyncio.sleep(sleep_s)
+                continue
+            try:
+                await asyncio.wait_for(shutdown_event.wait(), timeout=sleep_s)
+            except TimeoutError:
+                pass
+    finally:
+        # Hand the lease off as part of the drain (SRV-04), so the process that
+        # replaces this one starts collecting on its next tick.
+        await lease.release_async()
 
     logger.info("Telemetry collector stopped.")

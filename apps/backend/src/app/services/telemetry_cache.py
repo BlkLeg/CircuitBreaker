@@ -14,8 +14,14 @@ import redis.asyncio as aioredis
 
 from app.core.constants import TELEMETRY_CACHE_TTL_SECONDS
 from app.core.redis import get_redis
+from app.services.stream_faults import FAULT_DECODE, record_stream_fault
 
 _logger = logging.getLogger(__name__)
+
+# REL-07 fault-metric identity. Every function here runs once per monitored
+# entity per poll, so an unthrottled WARNING per failure is a log storm the
+# moment Redis goes away — which is exactly when the log needs to stay readable.
+_COMPONENT = "telemetry_cache"
 
 _TELEMETRY_TTL = TELEMETRY_CACHE_TTL_SECONDS
 _METRIC_TTL = TELEMETRY_CACHE_TTL_SECONDS
@@ -33,12 +39,14 @@ async def cache_telemetry(entity_id: int, data: dict, ttl: int | None = None) ->
     try:
         key = _KEY_TELEMETRY.format(entity_id=entity_id)
         await r.set(key, json.dumps(data, default=str), ex=ttl or _TELEMETRY_TTL)
-    except aioredis.ConnectionError as exc:
-        _logger.warning("telemetry cache write failed (connection): %s", exc)
-    except aioredis.RedisError as exc:
-        _logger.warning("telemetry cache write failed (redis): %s", exc)
+    except (aioredis.ConnectionError, aioredis.RedisError, OSError) as exc:
+        record_stream_fault(
+            f"{_COMPONENT}.write", exc, logger=_logger, context={"entity_id": entity_id}
+        )
     except Exception as exc:
-        _logger.error("telemetry cache write failed (unexpected): %s", exc)
+        record_stream_fault(
+            f"{_COMPONENT}.write", exc, logger=_logger, context={"entity_id": entity_id}
+        )
 
 
 async def get_cached_telemetry(entity_id: int) -> dict | None:
@@ -58,21 +66,30 @@ async def get_cached_telemetry(entity_id: int) -> dict | None:
         if raw is None:
             return None
         return cast(dict[Any, Any], json.loads(raw))
-    except aioredis.ConnectionError as exc:
-        _logger.warning("telemetry cache read failed (connection): %s", exc)
+    except (aioredis.ConnectionError, aioredis.RedisError, OSError) as exc:
+        record_stream_fault(
+            f"{_COMPONENT}.read", exc, logger=_logger, context={"entity_id": entity_id, "key": key}
+        )
         return None
-    except aioredis.RedisError as exc:
-        _logger.warning("telemetry cache read failed (redis): %s", exc)
-        return None
-    except json.JSONDecodeError:
-        _logger.warning("Corrupt JSON in cache key %s — deleting", key)
+    except json.JSONDecodeError as exc:
+        record_stream_fault(
+            f"{_COMPONENT}.read",
+            exc,
+            logger=_logger,
+            context={"entity_id": entity_id, "key": key},
+            fault=FAULT_DECODE,
+        )
         try:
             await r.delete(key)
-        except Exception:
-            pass
+        except Exception as delete_exc:
+            # The delete is a best-effort repair of a poisoned key; failing it
+            # only means the next read re-detects the same corruption.
+            record_stream_fault(f"{_COMPONENT}.read_repair", delete_exc, logger=_logger)
         return None
     except Exception as exc:
-        _logger.error("telemetry cache read failed (unexpected): %s", exc)
+        record_stream_fault(
+            f"{_COMPONENT}.read", exc, logger=_logger, context={"entity_id": entity_id, "key": key}
+        )
         return None
 
 
@@ -84,12 +101,10 @@ async def cache_live_metric(ip: str, data: dict) -> None:
     try:
         key = _KEY_METRIC.format(ip=ip)
         await r.set(key, json.dumps(data, default=str), ex=_METRIC_TTL)
-    except aioredis.ConnectionError as exc:
-        _logger.warning("metric cache write failed (connection): %s", exc)
-    except aioredis.RedisError as exc:
-        _logger.warning("metric cache write failed (redis): %s", exc)
+    except (aioredis.ConnectionError, aioredis.RedisError, OSError) as exc:
+        record_stream_fault(f"{_COMPONENT}.metric_write", exc, logger=_logger, context={"ip": ip})
     except Exception as exc:
-        _logger.error("metric cache write failed (unexpected): %s", exc)
+        record_stream_fault(f"{_COMPONENT}.metric_write", exc, logger=_logger, context={"ip": ip})
 
 
 async def get_cached_metric(ip: str) -> dict | None:
@@ -108,21 +123,30 @@ async def get_cached_metric(ip: str) -> dict | None:
         if raw is None:
             return None
         return cast(dict[Any, Any], json.loads(raw))
-    except aioredis.ConnectionError as exc:
-        _logger.warning("metric cache read failed (connection): %s", exc)
+    except (aioredis.ConnectionError, aioredis.RedisError, OSError) as exc:
+        record_stream_fault(
+            f"{_COMPONENT}.metric_read", exc, logger=_logger, context={"ip": ip, "key": key}
+        )
         return None
-    except aioredis.RedisError as exc:
-        _logger.warning("metric cache read failed (redis): %s", exc)
-        return None
-    except json.JSONDecodeError:
-        _logger.warning("Corrupt JSON in cache key %s — deleting", key)
+    except json.JSONDecodeError as exc:
+        record_stream_fault(
+            f"{_COMPONENT}.metric_read",
+            exc,
+            logger=_logger,
+            context={"ip": ip, "key": key},
+            fault=FAULT_DECODE,
+        )
         try:
             await r.delete(key)
-        except Exception:
-            pass
+        except Exception as delete_exc:
+            # The delete is a best-effort repair of a poisoned key; failing it
+            # only means the next read re-detects the same corruption.
+            record_stream_fault(f"{_COMPONENT}.metric_read_repair", delete_exc, logger=_logger)
         return None
     except Exception as exc:
-        _logger.error("metric cache read failed (unexpected): %s", exc)
+        record_stream_fault(
+            f"{_COMPONENT}.metric_read", exc, logger=_logger, context={"ip": ip, "key": key}
+        )
         return None
 
 
@@ -135,9 +159,11 @@ async def publish_telemetry(entity_id: int, data: dict) -> None:
         channel = _CHANNEL_TELEMETRY.format(entity_id=entity_id)
         payload = json.dumps({"entity_id": entity_id, **data}, default=str)
         await r.publish(channel, payload)
-    except aioredis.ConnectionError as exc:
-        _logger.warning("telemetry publish failed (connection): %s", exc)
-    except aioredis.RedisError as exc:
-        _logger.warning("telemetry publish failed (redis): %s", exc)
+    except (aioredis.ConnectionError, aioredis.RedisError, OSError) as exc:
+        record_stream_fault(
+            f"{_COMPONENT}.publish", exc, logger=_logger, context={"entity_id": entity_id}
+        )
     except Exception as exc:
-        _logger.error("telemetry publish failed (unexpected): %s", exc)
+        record_stream_fault(
+            f"{_COMPONENT}.publish", exc, logger=_logger, context={"entity_id": entity_id}
+        )

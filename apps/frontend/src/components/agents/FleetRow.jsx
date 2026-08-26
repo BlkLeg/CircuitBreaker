@@ -4,7 +4,14 @@ import PropTypes from 'prop-types';
 import { Link } from 'react-router-dom';
 import Sparkline from './Sparkline';
 import { normalizeCapability } from '../../api/agents';
+import AgentStateChip from './AgentStateChip';
 import { agentDisplayName } from '../../lib/agentLabel';
+import {
+  agentStateDefinition,
+  deriveAgentStates,
+  fleetRowStateInput,
+  versionDrift,
+} from '../../lib/agentState';
 import { elapsedSecondsFromIso, formatElapsed } from '../../lib/time';
 import {
   CPU_CRITICAL_PCT,
@@ -124,19 +131,36 @@ function grantedCapabilityLabels(capabilities) {
     .map(([name]) => CAPABILITY_LABELS[name] ?? name);
 }
 
+// AGT-14: the chip keeps the dense `spool 118` text the 34px row was designed
+// around, and gains the state contract's reason + operator action through
+// `title` and an `.sr-only` span. A screen-reader user cannot hover a tooltip,
+// so the remedy has to be in the accessible name rather than only beside it.
 function SpoolChip({ depth }) {
+  const definition = agentStateDefinition('spool_pressure');
+  const explanation = `${definition.summary} What to do: ${definition.action}`;
   return (
-    <span
-      className="fleet-chip"
-      data-tone="warn"
-      title="Outbound telemetry the agent has buffered locally and not yet drained to the server."
-    >
+    <span className="fleet-chip" data-tone="warn" title={explanation}>
       spool {depth}
+      <span className="sr-only"> — {explanation}</span>
     </span>
   );
 }
 
 SpoolChip.propTypes = { depth: PropTypes.number.isRequired };
+
+// The states the status cell already renders in its own dense vocabulary (the
+// dot, the presence word, the status chip, the spool chip). Rendering an
+// AgentStateChip for these too would say the same thing twice in a 34px row;
+// each of them instead carries its definition's text inline, above.
+const STATES_THE_ROW_ALREADY_SHOWS = new Set([
+  'online',
+  'offline',
+  'presence_unknown',
+  'revoked',
+  'rejected',
+  'pending_approval',
+  'spool_pressure',
+]);
 
 function AgentCell({ agent }) {
   const label = agentDisplayName(agent);
@@ -155,29 +179,58 @@ function AgentCell({ agent }) {
 
 AgentCell.propTypes = { agent: PropTypes.object.isRequired };
 
-function StatusCell({ agent, state }) {
+// `agents.status` doubles as a state code everywhere except `pending`, which
+// the state contract spells out in full.
+const STATUS_STATE_CODE = { pending: 'pending_approval' };
+
+function StatusChip({ status }) {
+  const code = STATUS_STATE_CODE[status] ?? status;
+  const definition = agentStateDefinition(code);
+  const explanation = definition
+    ? `${definition.summary} What to do: ${definition.action}`
+    : undefined;
+  return (
+    <span className="fleet-chip" data-tone={STATUS_CHIP_TONES[status] ?? 'ok'} title={explanation}>
+      {status}
+      {explanation && <span className="sr-only"> — {explanation}</span>}
+    </span>
+  );
+}
+
+StatusChip.propTypes = { status: PropTypes.string.isRequired };
+
+function StatusCell({ agent, state, states }) {
   const hasBacklog =
     agent.online === true &&
     typeof agent.spool_depth === 'number' &&
     agent.spool_depth >= SPOOL_BACKLOG_WARN_DEPTH;
+  // AGT-14: everything the row's own dot/word/chips cannot express — stale
+  // telemetry, a degraded collector, a queued or failed update, a fully
+  // withheld grant, this browser's clock. Each arrives with its own glyph and
+  // its own operator action, so an operator never has to open the agent to
+  // learn that something other than "up or down" is wrong with it.
+  const advisory = states.filter((item) => !STATES_THE_ROW_ALREADY_SHOWS.has(item.code));
   return (
     <td className="fleet-cell">
       <span className="fleet-dot" data-state={state} />
       <span className="fleet-status">{presenceWordFor(agent)}</span>
-      {agent.status !== ACTIVE_STATUS && (
-        <span className="fleet-chip" data-tone={STATUS_CHIP_TONES[agent.status] ?? 'ok'}>
-          {agent.status}
-        </span>
-      )}
+      {agent.status !== ACTIVE_STATUS && <StatusChip status={agent.status} />}
       {/* Design §4: a backlog on a *healthy* agent is the one signal that
           predicts trouble before anything goes red, so it sits beside the
           status word rather than hidden in the metric columns. */}
       {hasBacklog && <SpoolChip depth={agent.spool_depth} />}
+      {advisory.map((item) => (
+        <AgentStateChip key={item.code} state={item} />
+      ))}
     </td>
   );
 }
 
-StatusCell.propTypes = { agent: PropTypes.object.isRequired, state: PropTypes.string.isRequired };
+StatusCell.propTypes = {
+  agent: PropTypes.object.isRequired,
+  state: PropTypes.string.isRequired,
+  states: PropTypes.array.isRequired,
+};
 
 function MetricCell({ text, tone, points, ariaLabel }) {
   return (
@@ -348,11 +401,41 @@ function PendingCells({ agent }) {
 
 PendingCells.propTypes = { agent: PropTypes.object.isRequired };
 
-function FleetCells({ agent }) {
+// AGT-17: version drift, on the column an operator is already reading. The
+// reference is the newest version anywhere in this fleet (see
+// newestFleetVersion) — not a manifest the page cannot see — so the marker
+// answers "are my agents the same as each other", which is the question a
+// half-finished rollout raises. `data-drift` styles it; the caret and the
+// `.sr-only` clause carry the same fact without colour.
+function VersionCell({ agent, latestFleetVersion }) {
+  const drift = versionDrift(agent.agent_version, latestFleetVersion);
+  if (agent.agent_version == null) return <td className="fleet-cell fleet-num">{EM_DASH}</td>;
+  if (drift !== 'behind') {
+    return <td className="fleet-cell fleet-num">{agent.agent_version}</td>;
+  }
+  const explanation = `Behind the newest agent in this fleet (${latestFleetVersion}). Dispatch an update from the agent's page to bring it forward.`;
+  return (
+    <td className="fleet-cell fleet-num" data-drift="behind" title={explanation}>
+      {agent.agent_version}
+      <span className="fleet-drift-mark" aria-hidden="true">
+        {' '}
+        ↑
+      </span>
+      <span className="sr-only"> — {explanation}</span>
+    </td>
+  );
+}
+
+VersionCell.propTypes = {
+  agent: PropTypes.object.isRequired,
+  latestFleetVersion: PropTypes.string,
+};
+
+function FleetCells({ agent, latestFleetVersion }) {
   const isOffline = agent.online === false;
   return (
     <>
-      <td className="fleet-cell fleet-num">{agent.agent_version ?? EM_DASH}</td>
+      <VersionCell agent={agent} latestFleetVersion={latestFleetVersion} />
       {/* An offline agent's stored uptime is a snapshot from before it went
           away; rendering it would claim the host is still up that long. */}
       <td className="fleet-cell fleet-num">
@@ -366,7 +449,7 @@ function FleetCells({ agent }) {
   );
 }
 
-FleetCells.propTypes = { agent: PropTypes.object.isRequired };
+FleetCells.propTypes = { agent: PropTypes.object.isRequired, latestFleetVersion: PropTypes.string };
 
 function ActionsCell({ agent, onReview, onRevoke, onDelete }) {
   // Pending rows get Review only. Rejecting an enrolment is a decision about
@@ -404,13 +487,30 @@ const ACTION_PROP_TYPES = {
 
 ActionsCell.propTypes = { agent: PropTypes.object.isRequired, ...ACTION_PROP_TYPES };
 
-export default function FleetRow({ agent, onReview, onRevoke, onDelete }) {
+export default function FleetRow({
+  agent,
+  latestFleetVersion = null,
+  clockSkewSeconds = null,
+  onReview,
+  onRevoke,
+  onDelete,
+}) {
   const state = rowStateFor(agent);
+  // One derivation per row, from the shared contract — the status cell and any
+  // future cell that wants a state read the same array rather than each
+  // re-deciding what "stale" means. `states` is intentionally not memoized:
+  // it is a handful of comparisons over data the parent has already re-created
+  // on this render, and a memo keyed on a fresh object would never hit.
+  const states = deriveAgentStates(fleetRowStateInput(agent, { clockSkewSeconds }));
   return (
     <tr className="fleet-row" data-state={state}>
       <AgentCell agent={agent} />
-      <StatusCell agent={agent} state={state} />
-      {state === PENDING_STATUS ? <PendingCells agent={agent} /> : <FleetCells agent={agent} />}
+      <StatusCell agent={agent} state={state} states={states} />
+      {state === PENDING_STATUS ? (
+        <PendingCells agent={agent} />
+      ) : (
+        <FleetCells agent={agent} latestFleetVersion={latestFleetVersion} />
+      )}
       <ActionsCell agent={agent} onReview={onReview} onRevoke={onRevoke} onDelete={onDelete} />
     </tr>
   );
@@ -418,4 +518,9 @@ export default function FleetRow({ agent, onReview, onRevoke, onDelete }) {
 
 // `agent` is a merged fleet row: AgentSummary + presence (online, capabilities,
 // hardware) + latest/spool_* + the derived `series`.
-FleetRow.propTypes = { agent: PropTypes.object.isRequired, ...ACTION_PROP_TYPES };
+FleetRow.propTypes = {
+  agent: PropTypes.object.isRequired,
+  latestFleetVersion: PropTypes.string,
+  clockSkewSeconds: PropTypes.number,
+  ...ACTION_PROP_TYPES,
+};

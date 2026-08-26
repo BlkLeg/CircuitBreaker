@@ -73,23 +73,52 @@ jobs:
           python ensure_env.py
           docker compose -f docker-compose.yml config >/dev/null
 
-      # REL-20: a recorded seed is what makes a failed run reproducible.
-      - name: Run the composed journey
+      # REL-20: the seed is fixed, not derived from the run id.
+      #
+      # ${{ github.run_id }} was recorded but never repeated, so two runs of the
+      # same tag seeded themselves differently and a green run could not be used
+      # to characterise a red one. A constant makes the journey reproducible by
+      # default and still leaves the value in the manifest below, so changing it
+      # is a visible change rather than an invisible one. PYTHONHASHSEED is
+      # pinned for the same reason it is in ci.yml.
+      - name: Record the run manifest
         env:
-          CB_E2E_SEED: ${{ github.run_id }}
+          CB_E2E_SEED: "20260826"
+        run: |
+          mkdir -p diagnostics
+          {
+            echo "commit=${GITHUB_SHA}"
+            echo "workflow=${GITHUB_WORKFLOW}"
+            echo "job=composed-journey"
+            echo "runner=${RUNNER_OS}/${RUNNER_ARCH}"
+            echo "python=$(python -V 2>&1)"
+            echo "PYTHONHASHSEED=0"
+            echo "CB_E2E_SEED=${CB_E2E_SEED}"
+            echo "docker=$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo unavailable)"
+            echo "compose=$(docker compose version 2>&1)"
+          } | tee diagnostics/run-manifest.txt
+
+      - name: Run the composed journey
+        shell: bash
+        env:
+          CB_E2E_SEED: "20260826"
+          PYTHONHASHSEED: "0"
         run: |
           cd apps/agent/e2e
           python -m pytest test_agent_e2e.py -v \
             --junitxml=junit-agent-e2e.xml \
-            --timeout=3600
+            --timeout=3600 \
+            2>&1 | tee "${GITHUB_WORKSPACE}/diagnostics/composed-journey.log"
 
       - name: Collect container diagnostics
         if: always()
         run: |
           mkdir -p diagnostics
           docker ps -a > diagnostics/containers.txt 2>&1 || true
+          docker version > diagnostics/docker-version.txt 2>&1 || true
           for c in $(docker ps -aq); do
             docker logs "$c" > "diagnostics/${c}.log" 2>&1 || true
+            docker inspect "$c" > "diagnostics/${c}.json" 2>&1 || true
           done
 
       - name: Upload diagnostics

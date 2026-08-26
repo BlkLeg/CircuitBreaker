@@ -73,6 +73,33 @@ async def _dispatch(kind: str) -> None:
         raise SystemExit(f"Unknown worker type: {kind!r}")
 
 
+def _log_topology(worker_type: str) -> None:
+    """State the ownership this process is claiming (SRV-02).
+
+    A dedicated worker running beside an API process that still owns the same
+    function in-process is the mixed-mode configuration that duplicates work.
+    It is logged rather than refused: the queue-backed workers are safe to run
+    alongside (JetStream delivers each message once), and the timer-shaped ones
+    hold a `SingleActiveLease`, so the second instance stands by instead of
+    repeating the work. What must never happen is that it is invisible.
+    """
+    from app.core.topology import TopologyConfigError, resolve_mode
+
+    try:
+        mode = resolve_mode()
+    except TopologyConfigError as exc:
+        logger.error("[topology] %s", exc)
+        return
+    logger.info("[topology] mode=%s worker_type=%s", mode.value, worker_type)
+    if mode.value == "mono":
+        logger.warning(
+            "[topology] this is a dedicated %s worker, but CB_TOPOLOGY_MODE=mono says the "
+            "API process owns the background workers too. Set CB_TOPOLOGY_MODE=api on the "
+            "API process so exactly one owner is declared.",
+            worker_type,
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Unified Circuit Breaker worker entrypoint")
     parser.add_argument(
@@ -94,6 +121,7 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO)
     install_global_log_redaction()
+    _log_topology(worker_type)
     logger.info("Starting worker type %s", worker_type)
 
     asyncio.run(_dispatch(worker_type))

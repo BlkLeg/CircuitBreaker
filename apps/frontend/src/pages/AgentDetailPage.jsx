@@ -23,6 +23,19 @@ import ConfirmDialog from '../components/common/ConfirmDialog';
 import AssignedProbesSection from '../components/agents/AssignedProbesSection';
 import DiscoveryScopeSection from '../components/agents/DiscoveryScopeSection';
 import { agentDisplayName } from '../lib/agentLabel';
+import {
+  describeAgentEvent,
+  operatorErrorMessage,
+  updateDispatchMessage,
+} from '../lib/agentErrors';
+import { deriveAgentStates, updateStateFromEvents } from '../lib/agentState';
+import { serverClockOffsetMs } from '../utils/serverClock';
+import { formatTimestamp } from '../lib/time';
+import AgentStateChip, { stateDetailText } from '../components/agents/AgentStateChip';
+// AGT-14: the state chips on this page reuse the fleet's `.fleet-chip` tone
+// ladder rather than defining a second colour vocabulary for the same states,
+// and the `.agent-detail-page__state-*` rules live alongside them.
+import '../styles/agents.css';
 import RemoteProbeConfigEditor, {
   REMOTE_PROBE_MAX_CONCURRENT,
   REMOTE_PROBE_MIN_CONCURRENT,
@@ -173,12 +186,18 @@ export default function AgentDetailPage() {
   // because "no assignments" is exactly what decides whether disabling the
   // capability needs a confirmation.
   const [probes, setProbes] = useState(null);
-  const [disableProbeOpen, setDisableProbeOpen] = useState(false);
+  // AGT-16: one record instead of a boolean per dialog. Every capability change
+  // that expands privilege or withdraws work in flight goes through it, so a
+  // capability added later cannot quietly ship without a confirmation — there
+  // is one place to add its copy, and one dialog that renders it.
+  const [pendingCapability, setPendingCapability] = useState(null);
   // Slice 4 §6. `null` until GET /agents/{id}/discovery resolves; the section
   // says so rather than rendering an empty scope, which would read as "this
   // agent discovers nothing" — the one thing it exists to distinguish.
   const [discovery, setDiscovery] = useState(null);
-  const [disableDiscoveryOpen, setDisableDiscoveryOpen] = useState(false);
+  // AGT-16: dispatching an update replaces the running binary on a remote host.
+  // It shipped as a single unconfirmed click in the page header.
+  const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false);
 
   const { statuses } = useAgentLive();
   const telemetryEntities = useMemo(() => [{ entity_type: 'agent', entity_id: Number(id) }], [id]);
@@ -374,37 +393,84 @@ export default function AgentDetailPage() {
   };
 
   const assignedProbeCount = probes?.assignments?.length ?? 0;
+  const agentLabel = agentDisplayName(agent, id) ?? 'this agent';
 
-  // §7: turning remote probing off while monitors still run from this vantage
-  // is confirmation-worthy, because nothing is deleted — the assignments and
-  // their last known target state survive, and only the execution condition
-  // changes. The user has to be told that before it happens. With no
-  // assignments there is nothing to retain, so there is nothing to confirm.
-  const handleToggleCapability = async (capability, enabled) => {
+  /**
+   * The confirmation copy for one capability change, or null when the change
+   * needs none (AGT-16).
+   *
+   * Two families of change are confirmed, and for opposite reasons:
+   *
+   *   - **Granting** `remote_probe` or `local_discovery` expands what this
+   *     agent may do on the network it sits on — the requirement's "scope
+   *     expansion, remote-probe/discovery grants". Both shipped as an
+   *     unconfirmed checkbox.
+   *   - **Withdrawing** either one changes work already in flight, which the
+   *     operator has to be told about before it happens rather than after.
+   *
+   * Every string names the agent and the exact consequence. "Are you sure?"
+   * over a checkbox is not a confirmation, it is a speed bump.
+   */
+  const capabilityConfirmation = (capability, enabled) => {
+    if (capability === 'remote_probe' && enabled) {
+      return (
+        `Let ${agentLabel} run network checks? It will be able to send ICMP, TCP, HTTP(S) and ` +
+        'DNS probes from that host to any target inside its derived network scope. Nothing runs ' +
+        'until you assign a monitor to it, and it can never probe outside that scope.'
+      );
+    }
+    if (capability === 'local_discovery' && enabled) {
+      return (
+        `Let ${agentLabel} scan its local networks? It will sweep the private subnets that host ` +
+        'is directly connected to and report every device it finds into the review queue. ' +
+        'Scanning is confined to that derived scope; widening it is a separate, confirmed change.'
+      );
+    }
+    // §7: turning remote probing off while monitors still run from this vantage
+    // is confirmation-worthy, because nothing is deleted — the assignments and
+    // their last known target state survive, and only the execution condition
+    // changes. With no assignments there is nothing to retain, so nothing to
+    // confirm.
     if (capability === 'remote_probe' && !enabled && assignedProbeCount > 0) {
-      setDisableProbeOpen(true);
-      return;
+      return (
+        `Disable remote probing on ${agentLabel}? ` +
+        `${assignedProbeCount} assigned monitor${assignedProbeCount === 1 ? '' : 's'} ` +
+        'will stay assigned and will retain their last known target state, but they will ' +
+        'become probe-unavailable and run no checks until remote probing is re-enabled.'
+      );
     }
     // Slice 4 D-14: turning `local_discovery` off retires every in-flight
     // dispatch immediately, and retains every result and history row. An
     // operator who expects the opposite — that history is lost — will not
     // disable when they should, so the dialog says which it is.
     if (capability === 'local_discovery' && !enabled) {
-      setDisableDiscoveryOpen(true);
+      return (
+        `Disable local discovery on ${agentLabel}? ` +
+        'Any scan running from this agent is cancelled immediately, and no new one is ' +
+        'scheduled — but its subnets stay configured and its results and job history are ' +
+        'retained.'
+      );
+    }
+    return null;
+  };
+
+  const handleToggleCapability = async (capability, enabled) => {
+    const message = capabilityConfirmation(capability, enabled);
+    if (message) {
+      setPendingCapability({ capability, enabled, message });
       return;
     }
     await applyCapabilityToggle(capability, enabled);
   };
 
-  const handleConfirmDisableProbe = async () => {
-    setDisableProbeOpen(false);
-    await applyCapabilityToggle('remote_probe', false);
-  };
-
-  const handleConfirmDisableDiscovery = async () => {
-    setDisableDiscoveryOpen(false);
-    await applyCapabilityToggle('local_discovery', false);
-    loadDiscovery();
+  const handleConfirmCapability = async () => {
+    const pending = pendingCapability;
+    setPendingCapability(null);
+    if (!pending) return;
+    await applyCapabilityToggle(pending.capability, pending.enabled);
+    // Discovery's own section is a second read of the same grant, so it has to
+    // be re-fetched whichever direction the grant moved.
+    if (pending.capability === 'local_discovery') loadDiscovery();
   };
 
   const updateHostConfig = async (patch) => {
@@ -437,7 +503,7 @@ export default function AgentDetailPage() {
       setAgent(data);
     } catch (error) {
       setAgent(previous);
-      toast.error(error?.response?.data?.detail ?? 'Could not update telemetry settings');
+      toast.error(operatorErrorMessage(error, { fallback: 'Could not update telemetry settings' }));
     }
   };
 
@@ -476,7 +542,9 @@ export default function AgentDetailPage() {
       setAgent(data);
     } catch (error) {
       setAgent(previous);
-      toast.error(error?.response?.data?.detail ?? 'Could not update remote probe settings');
+      toast.error(
+        operatorErrorMessage(error, { fallback: 'Could not update remote probe settings' })
+      );
     }
   };
 
@@ -492,16 +560,45 @@ export default function AgentDetailPage() {
   };
 
   const handleUpdate = async () => {
+    setUpdateConfirmOpen(false);
     try {
       await triggerAgentUpdate(id);
       toast.success('Update queued — the agent will pick it up within a few seconds');
+      // The queued update is only visible through the event stream (there is no
+      // pending-update field on any REST response), so the states this page
+      // derives are stale the instant the dispatch succeeds.
+      load();
     } catch (err) {
-      toast.error(err?.response?.data?.detail ?? 'Update failed');
+      // AGT-15: mapped to an operator action and redacted on the way through,
+      // rather than echoing whatever `detail` the server happened to send.
+      toast.error(updateDispatchMessage(err));
     }
   };
 
   if (loading) return <div className="agent-detail-page">Loading…</div>;
   if (!agent) return <div className="agent-detail-page">Agent not found</div>;
+
+  // AGT-14. The same contract the fleet row uses (lib/agentState.js), fed the
+  // extra sources this page has and the list does not: the collector readiness
+  // table, the host-telemetry cadence, and the event stream — which is the only
+  // place a dispatched update's outcome is visible, since no REST response
+  // carries `pending_update_version`.
+  const clockOffsetMs = serverClockOffsetMs();
+  const agentStates = deriveAgentStates({
+    status: agent.status,
+    online,
+    lastSeenAt: agent.last_seen_at,
+    capabilities: agent.capabilities,
+    latestSampleAt: telemetry?.latest?.collected_at ?? null,
+    // `telemetry === null` means the read has not resolved; only a resolved
+    // read with no sample is evidence that nothing was ever delivered.
+    hasTelemetryHistory: telemetry == null ? undefined : telemetry.latest != null,
+    telemetryIntervalSeconds: telemetry?.capability?.config?.interval_s ?? hostDefaults.interval_s,
+    readiness: telemetry?.readiness,
+    update: updateStateFromEvents(events),
+    spoolDepth: telemetry?.spool?.depth,
+    clockSkewSeconds: clockOffsetMs == null ? null : clockOffsetMs / 1000,
+  });
 
   return (
     <div className="agent-detail-page">
@@ -519,7 +616,7 @@ export default function AgentDetailPage() {
         )}
         <code>{agent.fingerprint}</code>
         <span>v{agent.agent_version}</span>
-        <button type="button" onClick={handleUpdate}>
+        <button type="button" onClick={() => setUpdateConfirmOpen(true)}>
           Update
         </button>
         {agent.status === 'active' && (
@@ -528,6 +625,35 @@ export default function AgentDetailPage() {
           </button>
         )}
       </header>
+
+      {/* AGT-14: every state that holds, each with its own glyph, its own
+          wording and — in the expanded list below — the action it calls for.
+          The chips are the at-a-glance row; the list underneath is what makes
+          them actionable without a trip to the documentation. */}
+      <section aria-label="Agent state" className="agent-detail-page__states">
+        <div className="agent-detail-page__state-chips">
+          {agentStates.map((state) => (
+            <AgentStateChip key={state.code} state={state} showAction={false} />
+          ))}
+        </div>
+        <dl className="agent-detail-page__state-list">
+          {agentStates.map((state) => (
+            <React.Fragment key={state.code}>
+              <dt>{state.label}</dt>
+              <dd>
+                {state.summary}
+                {stateDetailText(state) ? ` ${stateDetailText(state)}` : ''}{' '}
+                <em>What to do: {state.action}</em>
+              </dd>
+            </React.Fragment>
+          ))}
+        </dl>
+        <p className="agent-detail-page__last-seen">
+          Last seen {formatTimestamp(agent.last_seen_at)}
+          {clockOffsetMs == null &&
+            ' (elapsed times are measured against this browser’s clock; the server’s has not been observed yet)'}
+        </p>
+      </section>
 
       {online && presence?.connected_since && (
         <p className="agent-detail-page__connected-since">
@@ -783,45 +909,66 @@ export default function AgentDetailPage() {
 
       <section aria-label="Events">
         <h2>Events</h2>
+        {/* AGT-15. This list used to render `JSON.stringify(e.detail)`, which
+            put wire-protocol internals — frame types, sequence numbers, raw
+            validation-error text off the link — straight in front of an
+            operator, and would have carried anything a future payload added
+            with it. Every row now goes through describeAgentEvent, which
+            allow-lists the keys it will show per event type and redacts what it
+            does show. See lib/agentErrors.js. */}
         <ul>
-          {events.map((e) => (
-            <li key={e.id}>
-              <span>{e.created_at}</span> — <strong>{e.event_type}</strong>
-              {e.detail && <span> ({JSON.stringify(e.detail)})</span>}
-            </li>
-          ))}
+          {events.map((event) => {
+            const described = describeAgentEvent(event);
+            return (
+              <li key={event.id}>
+                <span>{formatTimestamp(event.created_at)}</span> —{' '}
+                <strong>{described.label}</strong>
+                {described.detail && <span> — {described.detail}</span>}
+              </li>
+            );
+          })}
         </ul>
       </section>
 
+      {/* AGT-16: names the machine and states what revocation actually does,
+          rather than "It will stop reporting immediately" — which understates
+          it. Revocation also stops every monitor assigned to this vantage and
+          cannot be undone without a fresh enrollment. */}
       <ConfirmDialog
         open={revokeOpen}
-        message={`Revoke ${agent.hostname ?? 'this agent'}? It will stop reporting immediately.`}
+        message={
+          `Revoke ${agentLabel}? Its credential stops working immediately: it disconnects, ` +
+          'stops reporting telemetry, and every monitor assigned to it stops running from that ' +
+          'vantage. It cannot reconnect without being enrolled and approved again.'
+        }
         onConfirm={handleRevoke}
         onCancel={() => setRevokeOpen(false)}
       />
 
+      {/* AGT-16: dispatching an update replaces the running binary on a remote
+          machine, and a failed swap is recovered by the agent's own rollback
+          rather than from here. The version is named because "Update" alone
+          does not say what the host is being moved to. */}
       <ConfirmDialog
-        open={disableDiscoveryOpen}
+        open={updateConfirmOpen}
         message={
-          `Disable local discovery on ${agent.name ?? agent.hostname ?? 'this agent'}? ` +
-          'Any scan running from this agent is cancelled immediately, and no new one is ' +
-          'scheduled — but its subnets stay configured and its results and job history are ' +
-          'retained.'
+          `Update ${agentLabel} from version ${agent.agent_version ?? 'unknown'} to the newest ` +
+          'published agent build? It downloads the binary, verifies its digest and restarts ' +
+          'itself, so it drops off briefly. If the swap fails it rolls back to the version it ' +
+          'is on now and reports the failure here.'
         }
-        onConfirm={handleConfirmDisableDiscovery}
-        onCancel={() => setDisableDiscoveryOpen(false)}
+        onConfirm={handleUpdate}
+        onCancel={() => setUpdateConfirmOpen(false)}
       />
 
+      {/* One dialog for every confirmed capability change — the copy is chosen
+          by capabilityConfirmation above, which is also what decides whether a
+          change needs confirming at all. */}
       <ConfirmDialog
-        open={disableProbeOpen}
-        message={
-          `Disable remote probing on ${agent.name ?? agent.hostname ?? 'this agent'}? ` +
-          `${assignedProbeCount} assigned monitor${assignedProbeCount === 1 ? '' : 's'} ` +
-          'will stay assigned and will retain their last known target state, but they will ' +
-          'become probe-unavailable and run no checks until remote probing is re-enabled.'
-        }
-        onConfirm={handleConfirmDisableProbe}
-        onCancel={() => setDisableProbeOpen(false)}
+        open={pendingCapability !== null}
+        message={pendingCapability?.message ?? ''}
+        onConfirm={handleConfirmCapability}
+        onCancel={() => setPendingCapability(null)}
       />
     </div>
   );

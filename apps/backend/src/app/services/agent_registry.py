@@ -32,6 +32,7 @@ from app.services.agent_capabilities import (
     default_config_for,
     normalize_grant,
 )
+from app.services.stream_faults import FAULT_DECODE, record_stream_fault
 
 if TYPE_CHECKING:
     # `agent_discovery` imports this module at its own module scope, so the
@@ -40,6 +41,10 @@ if TYPE_CHECKING:
     from app.services.agent_discovery import DiscoveryCancellation
 
 _logger = logging.getLogger(__name__)
+
+# REL-07 fault-metric identities for the two agent fan-out paths in this module.
+_PRESENCE_COMPONENT = "agent_presence"
+_CONTROL_COMPONENT = "agent_control"
 
 # Derived, read-only views of the one capability registry
 # (`app.services.agent_capabilities`, Task 14 / D-14) — kept only so existing
@@ -1174,22 +1179,32 @@ async def broadcast_presence(agent_id: int, event_type: str, detail: dict | None
 
     message = {"agent_id": agent_id, "event_type": event_type, "detail": detail}
 
+    # Three independent fan-out paths, each best-effort. They used to fail at
+    # DEBUG with no counter, so "the agent list never updates" had no signal
+    # anywhere in logs or metrics — the transport that broke is now named in a
+    # throttled line and a per-transport counter (REL-07).
     try:
         r = await get_redis()
         if r is not None:
             await r.publish(_AGENTS_REDIS_CHANNEL, json.dumps(message, default=str))
     except Exception as exc:
-        _logger.debug("agent presence broadcast (redis) failed: %s", exc)
+        record_stream_fault(
+            f"{_PRESENCE_COMPONENT}.redis", exc, logger=_logger, context={"agent_id": agent_id}
+        )
 
     try:
         await ws_manager.broadcast(message)
     except Exception as exc:
-        _logger.debug("agent presence broadcast (ws_manager) failed: %s", exc)
+        record_stream_fault(
+            f"{_PRESENCE_COMPONENT}.ws", exc, logger=_logger, context={"agent_id": agent_id}
+        )
 
     try:
         await nats_client.publish(subjects.AGENT_EVENT, message)
     except Exception as exc:
-        _logger.debug("agent presence broadcast (nats) failed: %s", exc)
+        record_stream_fault(
+            f"{_PRESENCE_COMPONENT}.nats", exc, logger=_logger, context={"agent_id": agent_id}
+        )
 
 
 WORKER_ID = uuid.uuid4().hex
@@ -1397,13 +1412,26 @@ async def claim_agent_control_frames(
             try:
                 yield json.loads(msg["data"])
             except (TypeError, ValueError) as exc:
-                _logger.warning("agent %s: malformed control frame dropped: %s", agent_id, exc)
+                # Throttled: anything able to publish on this channel can
+                # publish garbage on it at line rate.
+                record_stream_fault(
+                    f"{_CONTROL_COMPONENT}.decode",
+                    exc,
+                    logger=_logger,
+                    context={"agent_id": agent_id},
+                    fault=FAULT_DECODE,
+                )
     finally:
         try:
             await pubsub.unsubscribe()
             await pubsub.aclose()
-        except Exception:
-            pass
+        except Exception as exc:
+            record_stream_fault(
+                f"{_CONTROL_COMPONENT}.teardown",
+                exc,
+                logger=_logger,
+                context={"agent_id": agent_id},
+            )
 
 
 _PENDING_EXPIRY_DAYS = 7

@@ -63,8 +63,16 @@ from app.services.monitoring.collectors import Sample
 from app.services.monitoring.proxmox_override import Outcome, apply_proxmox_overrides
 from app.services.monitoring.state import PENDING, AppliedTransition, apply_result
 from app.services.monitoring.writer import SampleRow, write_samples
+from app.services.stream_faults import (
+    FAULT_DECODE,
+    FAULT_TRANSPORT,
+    record_stream_fault,
+)
 
 logger = logging.getLogger(__name__)
+
+# REL-07 fault-metric identity for the monitor result fan-out.
+_COMPONENT = "monitor_results"
 
 # Who ran the check. Recorded on the run and used for logging; never written to
 # `telemetry_timeseries.source` (see the module docstring).
@@ -425,8 +433,12 @@ async def _publish_transitions(transitions: list[AppliedTransition]) -> None:
         )
         try:
             await nats_client.js_publish(subject, payload)
-        except Exception as exc:  # noqa: BLE001 — alerting is best-effort here
-            logger.warning("Failed to publish monitor alert %s: %s", subject, exc)
+        except Exception as exc:
+            # Best-effort, but throttled: a NATS outage during a mass
+            # down-transition used to produce one WARNING per monitor.
+            record_stream_fault(
+                f"{_COMPONENT}.alert", exc, logger=logger, context={"subject": subject}
+            )
 
 
 async def _publish_live_status(live_status: list[dict]) -> None:
@@ -435,9 +447,33 @@ async def _publish_live_status(live_status: list[dict]) -> None:
         return
     for entry in live_status:
         item_id = entry["monitor_id"]
+        # Serializing this entry and publishing it are different failures. They
+        # shared one handler that `return`ed, so a single unserializable entry
+        # silently dropped the live status of every monitor after it in the
+        # batch — and did so with no log line and no metric (REL-07).
         try:
-            await redis.publish(f"monitor:{item_id}", json.dumps(entry))
-        except Exception:  # noqa: BLE001 — live push degrades silently
+            payload = json.dumps(entry)
+        except (TypeError, ValueError) as exc:
+            record_stream_fault(
+                f"{_COMPONENT}.live_encode",
+                exc,
+                logger=logger,
+                context={"monitor_id": item_id},
+                fault=FAULT_DECODE,
+            )
+            continue
+        try:
+            await redis.publish(f"monitor:{item_id}", payload)
+        except Exception as exc:
+            # A publish failure means the shared Redis client is unusable, so
+            # the remaining entries would fail identically: stop, but say so.
+            record_stream_fault(
+                f"{_COMPONENT}.live_publish",
+                exc,
+                logger=logger,
+                context={"monitor_id": item_id, "remaining": len(live_status)},
+                fault=FAULT_TRANSPORT,
+            )
             return
 
 

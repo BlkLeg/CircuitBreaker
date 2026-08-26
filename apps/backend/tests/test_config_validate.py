@@ -31,7 +31,7 @@ from pathlib import Path
 import pytest
 from cryptography.fernet import Fernet
 
-from app.cli import resolve_config, validate_config
+from app.cli import OverrideError, parse_overrides, resolve_config, validate_config
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _BACKEND_SRC = Path(__file__).resolve().parents[1] / "src"
@@ -572,3 +572,307 @@ def test_entrypoint_forwards_an_explicit_toml_path(tmp_path):
     combined = result.stdout + result.stderr
     assert result.returncode == 1, combined
     assert "placeholder" in combined
+
+
+# --------------------------------------------------------------------------
+# SRV-05: the command-line tier
+#
+# "One precedence order across file, environment, database, and CLI" needs
+# four tiers, and the CLI tier used to be `--config <file>` alone — which
+# selects *which file tier* is read rather than supplying a value, so the
+# order the requirement names had three levels in it, not four.
+# --------------------------------------------------------------------------
+
+
+def test_a_command_line_override_beats_the_environment():
+    env = _valid_env()
+    env["CB_REDIS_URL"] = "redis://from-the-environment:6379/0"
+    report = validate_config(
+        resolve_config(env, overrides={"CB_REDIS_URL": "redis://from-the-flag:6379/0"})
+    )
+    assert report.sources["CB_REDIS_URL"] == "command line (--set)"
+    assert report.ok, report.errors
+
+
+def test_a_command_line_override_beats_config_toml(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text('[redis]\nurl = "redis://from-the-file:6379/0"\n')
+    env = _valid_env()
+    del env["CB_REDIS_URL"]
+
+    resolved = resolve_config(
+        env, config_path=config, overrides={"CB_REDIS_URL": "redis://from-the-flag:6379/0"}
+    )
+    assert resolved.values["CB_REDIS_URL"] == "redis://from-the-flag:6379/0"
+    assert resolved.sources["CB_REDIS_URL"] == "command line (--set)"
+
+
+def test_an_override_may_be_written_as_the_config_toml_key():
+    """`--set server.port=9090` and `--set CB_PORT=9090` must mean the same thing.
+
+    The operator has the TOML key in front of them; making them translate it to
+    an environment variable name to test a change is the kind of friction that
+    ends in the change being made in the file and validated nowhere.
+    """
+    assert parse_overrides(["server.port=9090"]) == {"CB_PORT": "9090"}
+    assert parse_overrides(["CB_PORT=9090"]) == {"CB_PORT": "9090"}
+
+
+def test_an_override_naming_a_key_the_server_does_not_read_is_refused():
+    with pytest.raises(OverrideError) as excinfo:
+        parse_overrides(["server.prot=9090"])
+    assert "server.prot" in str(excinfo.value)
+
+
+def test_an_override_that_is_not_an_assignment_is_refused():
+    with pytest.raises(OverrideError):
+        parse_overrides(["CB_PORT"])
+
+
+def test_cli_reports_a_bad_override_as_usage_not_as_an_invalid_config():
+    result = subprocess.run(
+        [sys.executable, "-m", "app.cli", "config", "validate", "--set", "nope.nope=1"],
+        capture_output=True,
+        text=True,
+        env=_subprocess_env(**_valid_env()),
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "nope.nope" in result.stderr
+
+
+def test_cli_applies_an_override_end_to_end():
+    """The flag must reach the same merge the report is built from."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "app.cli",
+            "config",
+            "validate",
+            "--set",
+            "CB_RATE_LIMIT_STORAGE_URL=memory://",
+        ],
+        capture_output=True,
+        text=True,
+        env=_subprocess_env(**_valid_env()),
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Rate-limit storage" in (result.stdout + result.stderr)
+
+
+# --------------------------------------------------------------------------
+# SRV-05: a value's shape is part of "valid"
+#
+# The gap the ledger recorded: `cb config validate` checked required settings
+# and invalid combinations but not value types, so a config.toml carrying
+# `port = "not-a-port"` was reported valid — CB_PORT is copied out of the file
+# and never parsed by anything the validator called.
+# --------------------------------------------------------------------------
+
+
+def test_a_non_numeric_port_in_config_toml_is_an_error(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text('[server]\nport = "not-a-port"\n')
+    env = _valid_env()
+
+    report = validate_config(resolve_config(env, config_path=config))
+    assert not report.ok
+    assert any("CB_PORT" in error and "not-a-port" in error for error in report.errors)
+
+
+def test_a_port_outside_the_tcp_range_is_an_error():
+    report = validate_config({**_valid_env(), "CB_PORT": "70000"})
+    assert not report.ok
+    assert any("65535" in error for error in report.errors)
+
+
+def test_a_flag_the_env_reader_would_silently_ignore_is_an_error():
+    """`CB_ALLOW_DIRECT_EGRESS=on` is the failure this rule exists for.
+
+    `_env_flag` accepts 1/true/yes and nothing else, so `on` — which is what
+    anyone arriving from nginx or systemd writes — is read as *off*, with no
+    error and no log line, and the egress gate the operator thought they had
+    waived refuses to start the server.
+    """
+    report = validate_config({**_valid_env(), "CB_ALLOW_DIRECT_EGRESS": "on"})
+    assert not report.ok
+    assert any("silently treated as OFF" in error for error in report.errors)
+
+
+def test_a_boolean_pydantic_would_reject_is_reported_not_raised():
+    """Settings() is built inside the pass and raises on a value it cannot parse.
+
+    Before the value rules ran first, `CB_UPDATE_CHECK=maybe` came out of
+    `validate_config` as a pydantic ValidationError — a traceback on the
+    operator's terminal from the one command whose entire job is to turn a bad
+    configuration into a sentence.
+    """
+    report = validate_config({**_valid_env(), "CB_UPDATE_CHECK": "maybe"})
+    assert not report.ok
+    assert any("CB_UPDATE_CHECK" in error and "boolean" in error for error in report.errors)
+
+
+def test_a_malformed_trusted_proxy_cidr_is_an_error():
+    report = validate_config({**_valid_env(), "CB_TRUSTED_PROXY_CIDRS": "10.0.0.0/8,10.0.0.0/64"})
+    assert not report.ok
+    assert any("10.0.0.0/64" in error for error in report.errors)
+
+
+def test_a_database_url_that_is_not_postgres_is_an_error():
+    report = validate_config({**_valid_env(), "CB_DB_URL": "sqlite:///./cb.db"})
+    assert not report.ok
+    assert any("postgresql://" in error for error in report.errors)
+
+
+def test_a_value_error_stops_the_gates_and_says_so():
+    """The gates read these settings; running them on a value nothing can parse
+    produces either a second, confusing error or a traceback."""
+    report = validate_config({**_valid_env(), "CB_PORT": "not-a-port"})
+    assert not report.ok
+    assert any("dependency gates were not run" in warning for warning in report.warnings)
+
+
+def test_every_value_rule_names_a_setting_the_report_can_locate():
+    """A value error is only actionable once the report says which tier set it.
+
+    "CB_PORT is not a number" is no help to an operator with a config.toml in
+    three places, so a setting with a rule must also be one whose source is
+    reported.
+    """
+    from app.cli import _KNOWN_SETTINGS
+    from app.scripts.config_values import VALUE_RULES
+
+    assert not set(VALUE_RULES) - set(_KNOWN_SETTINGS)
+
+
+def test_a_valid_configuration_with_typed_settings_still_passes():
+    env = {
+        **_valid_env(),
+        "CB_PORT": "8080",
+        "CB_UPDATE_CHECK": "false",
+        "CB_TRUSTED_PROXY_CIDRS": "127.0.0.1/32,::1/128",
+        "CORS_ORIGINS": "https://cb.example.com",
+        "DB_POOL_SIZE": "10",
+    }
+    report = validate_config(env)
+    assert report.ok, report.errors
+
+
+# --------------------------------------------------------------------------
+# SRV-05: the database tier
+#
+# Opt-in, because the offline default is what makes the command usable on a
+# host whose database is down.  What the tier is for is not the two values it
+# supplies but the two conflicts nothing else can see: a CB_JWT_SECRET the
+# database shadows, and a CB_VAULT_KEY vault_service would discard as stale.
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def committed_app_settings(app_cfg):
+    """Write app_settings fields on a committed connection, and put them back.
+
+    `resolve_config(database=True)` opens its own engine on purpose — it must
+    read the database the configuration under test names, not the one this
+    process happens to be bound to — so it cannot see anything held in the
+    test's SAVEPOINT.
+    """
+    from app.db.models import AppSettings
+    from app.db.session import SessionLocal
+
+    saved: dict[str, object] = {}
+
+    def apply(**fields: object) -> None:
+        with SessionLocal() as session:
+            cfg = session.get(AppSettings, 1)
+            for name, value in fields.items():
+                saved.setdefault(name, getattr(cfg, name))
+                setattr(cfg, name, value)
+            session.commit()
+
+    yield apply
+
+    if saved:
+        with SessionLocal() as session:
+            cfg = session.get(AppSettings, 1)
+            for name, value in saved.items():
+                setattr(cfg, name, value)
+            session.commit()
+
+
+def _database_env(**overrides: str) -> dict[str, str]:
+    env = _valid_env()
+    env["CB_DB_URL"] = os.environ["CB_DB_URL"]
+    env.update(overrides)
+    return env
+
+
+def test_the_database_tier_supplies_the_jwt_secret_and_names_itself(committed_app_settings):
+    committed_app_settings(jwt_secret="d" * 48)
+    env = _database_env()
+    del env["CB_JWT_SECRET"]
+
+    resolved = resolve_config(env, database=True)
+    assert resolved.sources["CB_JWT_SECRET"] == "database (app_settings.jwt_secret)"
+    report = validate_config(resolved)
+    assert report.ok, report.errors
+
+
+def test_the_database_tier_reports_a_jwt_secret_the_environment_cannot_win(
+    committed_app_settings,
+):
+    """app.core.users reads AppSettings.jwt_secret first, so the env value signs nothing."""
+    committed_app_settings(jwt_secret="d" * 48)
+    report = validate_config(resolve_config(_database_env(CB_JWT_SECRET="e" * 48), database=True))
+    assert any("signs nothing" in warning for warning in report.warnings)
+
+
+def test_a_vault_key_the_server_would_discard_as_stale_is_an_error(committed_app_settings):
+    """load_vault_key() cross-checks the environment key against vault_key_hash.
+
+    A key that fails it is dropped without an error — the server falls through
+    to the next tier — so the operator's configured key decrypts nothing and
+    nothing anywhere says so.
+    """
+    import hashlib
+
+    committed_app_settings(
+        vault_key_hash=hashlib.sha256(_OTHER_VAULT_KEY.encode()).hexdigest(),
+    )
+    report = validate_config(resolve_config(_database_env(), database=True))
+    assert not report.ok
+    assert any("vault_key_hash" in error for error in report.errors)
+
+
+def test_a_vault_key_that_matches_the_stored_hash_passes(committed_app_settings):
+    import hashlib
+
+    committed_app_settings(vault_key_hash=hashlib.sha256(_VAULT_KEY.encode()).hexdigest())
+    report = validate_config(resolve_config(_database_env(), database=True))
+    assert report.ok, report.errors
+
+
+def test_the_database_tier_reports_an_unreachable_database_without_its_password():
+    """Asked for and unavailable is an error; the report stays pasteable."""
+    env = _valid_env()
+    env["CB_DB_URL"] = "postgresql://breaker:hunter2@127.0.0.1:1/circuitbreaker"
+
+    report = validate_config(resolve_config(env, database=True))
+    assert not report.ok
+    blob = "\n".join(report.errors)
+    assert "--database" in blob
+    assert "hunter2" not in blob
+
+
+def test_the_database_tier_is_off_unless_it_is_asked_for(monkeypatch):
+    """Everything above is opt-in: the default pass still opens no socket."""
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("the default pass must not touch the network")
+
+    monkeypatch.setattr(socket, "getaddrinfo", _forbidden)
+    monkeypatch.setattr(socket, "create_connection", _forbidden)
+    monkeypatch.setattr(socket.socket, "connect", _forbidden)
+
+    report = validate_config(resolve_config(_database_env()))
+    assert report.ok, report.errors

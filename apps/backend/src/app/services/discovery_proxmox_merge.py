@@ -1,6 +1,5 @@
 """Proxmox-specific entity upsert and merge helpers for discovery."""
 
-import asyncio
 import json
 import logging
 from datetime import UTC, datetime
@@ -263,7 +262,10 @@ def _merge_proxmox_result(
 ) -> dict:
     from fastapi import HTTPException
 
-    from app.services.discovery_merge import _assign_to_default_map, _emit_result_processed_event
+    from app.services.discovery_merge import (
+        _assign_to_default_map,
+        schedule_result_processed_event,
+    )
 
     payload = _parse_proxmox_metadata(result)
     if payload is None:
@@ -324,14 +326,7 @@ def _merge_proxmox_result(
         ),
     )
 
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.create_task(_emit_result_processed_event(db, result.id, "accept"))
-        else:
-            asyncio.run(_emit_result_processed_event(db, result.id, "accept"))
-    except Exception as e:
-        logger.debug("Discovery: WebSocket emit accept (proxmox) failed: %s", e, exc_info=True)
+    schedule_result_processed_event(result.id, "accept")
 
     return {
         "entity_type": result.matched_entity_type,

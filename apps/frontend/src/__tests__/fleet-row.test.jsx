@@ -29,8 +29,15 @@ vi.mock('../api/agents', async () => {
   return { normalizeCapability: actual.normalizeCapability };
 });
 
+// Relative to now, not a frozen literal. Since AGT-14 the row derives sample
+// freshness (lib/agentState.deriveAgentStates), so a fixture pinned to a fixed
+// past date describes an agent whose telemetry stopped days ago — which is a
+// real state with its own chip, and not the healthy online row these cases are
+// about. The absolute values below are unaffected: none of them is a time.
+const RECENT_ISO = new Date(Date.now() - 20_000).toISOString();
+
 const LATEST = {
-  collected_at: '2026-08-14T10:00:00Z',
+  collected_at: RECENT_ISO,
   cpu_pct: 62,
   mem_pct: 44,
   root_disk_pct: 71,
@@ -50,7 +57,7 @@ const ONLINE_AGENT = {
   arch: 'amd64',
   agent_version: '0.1.0',
   fingerprint: 'b'.repeat(32),
-  last_seen_at: '2026-08-14T10:00:00Z',
+  last_seen_at: RECENT_ISO,
   online: true,
   connected_since: '2026-08-14T08:00:00Z',
   capabilities: {

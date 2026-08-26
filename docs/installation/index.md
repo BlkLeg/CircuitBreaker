@@ -14,12 +14,15 @@ workflow, treat it as beta or development guidance until the matching acceptance
 
 ## System Requirements
 
-| Requirement | Minimum |
-|---|---|
-| **OS** | Linux (amd64, arm64) |
-| **RAM** | 1 GB available |
-| **Disk** | 2 GB |
-| **Network** | Outbound internet access (to download the installer and image) |
+| Requirement | Minimum | Enforced how |
+|---|---|---|
+| **OS** | Linux (amd64, arm64) | Package/binary availability |
+| **RAM** | 1 GB available | The native installer *warns* below 1024 MB and drops Redis `maxmemory` from 256 MB to 128 MB below 2048 MB |
+| **Disk** | 3 GB free | The native installer *fails* below 3 GB free on `/`. on container and binary installs `cb doctor` warns below 1 GiB free on the data directory |
+| **Network** | Outbound internet access (to download the installer and image) | — |
+
+Those are the floor for the smallest deployment. Resources per workload profile, database sizing and
+every bound the software enforces: [Sizing profiles](../operations/sizing-profiles.md).
 
 > **Docker not required to run Circuit Breaker natively.** The default install method runs Circuit Breaker directly as systemd units. The installer does install Docker CE if it is absent, so container telemetry works — that step is best-effort and the install continues normally if it fails.
 
@@ -54,6 +57,18 @@ Two files look like a split stack and are not one:
 
 If another document tells you split Compose is a supported 1.0 channel, that
 document is wrong — please open an issue.
+
+### Single-node, and what that costs
+
+Native and mono are two ways of laying out **one node**. The mono image is a
+**single-node appliance**: PostgreSQL, PgBouncer, Redis, NATS, the backend, the six
+workers and nginx run as twelve supervised programs in one container, sharing one
+lifecycle. Restarting it restarts the database.
+
+**High availability is [unsupported for 1.0.0](../release/1.0.0-support-contract.md#deployment-support-matrix)** —
+one active application server, no clustering, no failover. Availability comes from
+backups and maintenance windows instead. What that means operationally, and what happens
+when the node goes away: [Single-node appliance and availability](../operations/appliance-and-availability.md).
 
 ---
 
@@ -115,3 +130,5 @@ Regardless of method, your next steps are:
 - [Uninstalling](uninstalling.md)
 - [Deployment & Security](../deployment-security.md)
 - [Remote Access & Tunnels](../remote-access.md)
+- [Single-node appliance and availability](../operations/appliance-and-availability.md)
+- [Sizing profiles](../operations/sizing-profiles.md)

@@ -44,12 +44,20 @@ nav:
       - Deployment & Security: deployment-security.md
       - Remote Access & Tunnels: remote-access.md
       - cb CLI Tool: cb-cli.md
+      - Sizing Profiles: operations/sizing-profiles.md
+      - Appliance & Availability: operations/appliance-and-availability.md
       - Visual Test Baselines: testing-visual-baselines.md
       - Backup & Restore: backup-restore.md
       - TLS Certificates: tls-certificates.md
+  - Security:
+      - Threat Model: security/threat-model.md
+      - Privacy: security/privacy.md
+      - Vulnerability Disclosure: security/vulnerability-disclosure.md
   - Reference:
       - Product Overview: overview.md
       - Architecture Walkthrough: architecture.html
+      - API Reference: reference/api.md
+      - Configuration Precedence: reference/configuration-precedence.md
       - Metrics: metrics.md
       - Intelligence API: business_intelligence.md
   - Release Policy:

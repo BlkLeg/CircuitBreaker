@@ -185,7 +185,9 @@ describe('AgentDetailPage', () => {
 
     await waitFor(() => expect(screen.getByText('box1')).toBeInTheDocument());
     expect(screen.getByText('Host telemetry')).toBeInTheDocument();
-    expect(screen.getByText('approved')).toBeInTheDocument();
+    // AGT-15: the timeline renders the operator-facing label, not the raw
+    // `agent_events.event_type` wire string it used to print verbatim.
+    expect(screen.getByText('Approved')).toBeInTheDocument();
   });
 
   it('renders host-telemetry config toggles the server registry declares but the frontend has no copy of', async () => {
@@ -1300,6 +1302,116 @@ describe('AgentDetailPage', () => {
       await screen.findByText('CPU');
       expect(screen.queryByText(/Link this agent to Hardware/)).not.toBeInTheDocument();
       expect(screen.getByText(/lab-nas/)).toBeInTheDocument();
+    });
+  });
+
+  // ── AGT-14: the state section ───────────────────────────────────────────
+  //
+  // The precedence and the rules themselves are unit-tested against the pure
+  // contract (agent-state.test.js). What can only be checked here is that this
+  // page feeds that contract the sources the fleet list does not have — the
+  // collector readiness table, the configured cadence, and the event stream,
+  // which is the ONLY place a dispatched update's outcome is visible because no
+  // REST response carries `pending_update_version`.
+  describe('agent state', () => {
+    const stateSection = () => screen.getByRole('region', { name: 'Agent state' });
+
+    it('says an agent that is genuinely fine is online, and nothing more', async () => {
+      const { getAgentTelemetry } = await import('../api/agents');
+      getAgentTelemetry.mockResolvedValue({
+        data: {
+          latest: { collected_at: new Date().toISOString(), summary: {}, payload: {} },
+          readiness: [],
+          capability: { enabled: true, config: { interval_s: 30 } },
+        },
+      });
+      renderDetail();
+      await waitFor(() => expect(stateSection().textContent).toContain('Online'));
+      expect(stateSection().textContent).not.toContain('Stale telemetry');
+      expect(stateSection().textContent).not.toContain('No samples yet');
+    });
+
+    it('gives every state it shows a reason and an operator action', async () => {
+      const { getAgentTelemetry } = await import('../api/agents');
+      getAgentTelemetry.mockResolvedValue({
+        data: {
+          latest: null,
+          readiness: [
+            {
+              collector: 'host.docker',
+              state: 'unavailable',
+              reason: 'no socket',
+              remediation: null,
+            },
+          ],
+          capability: { enabled: true, config: { interval_s: 30 } },
+        },
+      });
+      renderDetail();
+
+      await waitFor(() => expect(stateSection().textContent).toContain('Capability degraded'));
+      const text = stateSection().textContent;
+      // The requirement is a *documented operator action* per state, not a badge.
+      expect(text).toContain('What to do: Open the agent and read the collector');
+      // …and it names which collector, or the operator has nowhere to look.
+      expect(text).toContain('host.docker');
+    });
+
+    it('derives a pending update from the event stream', async () => {
+      const { getAgentEvents } = await import('../api/agents');
+      getAgentEvents.mockResolvedValue({
+        data: [
+          {
+            id: 2,
+            event_type: 'update_queued',
+            created_at: new Date().toISOString(),
+            detail: { target_version: '0.9.2' },
+          },
+        ],
+      });
+      renderDetail();
+
+      await waitFor(() => expect(stateSection().textContent).toContain('Update pending'));
+      expect(stateSection().textContent).toContain('0.9.2');
+    });
+
+    it('lets a later terminal event resolve that pending update', async () => {
+      const { getAgentEvents } = await import('../api/agents');
+      const now = Date.now();
+      getAgentEvents.mockResolvedValue({
+        data: [
+          {
+            id: 3,
+            event_type: 'update_succeeded',
+            created_at: new Date(now).toISOString(),
+            detail: { version: '0.9.2' },
+          },
+          {
+            id: 2,
+            event_type: 'update_queued',
+            created_at: new Date(now - 60_000).toISOString(),
+            detail: { target_version: '0.9.2' },
+          },
+        ],
+      });
+      renderDetail();
+
+      // The default fixture has telemetry granted and no sample, so the section
+      // settles on `never_reported` — the assertion that matters is that the
+      // resolved update has stopped claiming to be in flight.
+      await waitFor(() => expect(stateSection().textContent).toContain('No samples yet'));
+      expect(stateSection().textContent).not.toContain('Update pending');
+      expect(stateSection().textContent).not.toContain('Update failed');
+    });
+
+    it('admits when elapsed times are measured against an unverified browser clock', async () => {
+      // No API response in this suite carries a `Date` header (every call is
+      // mocked at the module boundary), so the offset is genuinely unmeasured —
+      // and the page has to say so rather than presenting "4 minutes ago" as
+      // though it had been checked.
+      renderDetail();
+      await waitFor(() => expect(stateSection().textContent).toContain('Last seen'));
+      expect(stateSection().textContent).toContain('has not been observed yet');
     });
   });
 

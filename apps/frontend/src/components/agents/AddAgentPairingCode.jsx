@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import PropTypes from 'prop-types';
 import { lookupPairingCode } from '../../api/agents';
+import { PAIRING_LOOKUP_FAILED } from '../../lib/agentErrors';
 import { useToast } from '../common/Toast';
 
 /**
@@ -25,7 +26,12 @@ export default function AddAgentPairingCode({ onResolved }) {
       onResolved?.(data.agent_id);
       setCode('');
     } catch {
-      toast.error('Unknown or expired pairing code');
+      // AGT-15: one message for every cause, and the code the operator typed is
+      // never echoed back. The endpoint is reachable by any authenticated user
+      // and takes a short, guessable code, so distinguishing "no such code"
+      // from "expired" from "already approved" would make this form an oracle
+      // for enumerating pending enrollments. See lib/agentErrors.js.
+      toast.error(PAIRING_LOOKUP_FAILED);
     }
   };
 

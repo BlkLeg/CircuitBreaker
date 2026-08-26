@@ -55,9 +55,21 @@ from app.services import (
     agent_update,
 )
 from app.services.settings_service import get_or_create_settings
+from app.services.stream_faults import (
+    FAULT_DECODE,
+    close_stream_socket,
+    record_stream_fault,
+)
 from app.services.user_service import is_session_revoked
 
 _logger = logging.getLogger(__name__)
+
+# REL-07 fault-metric identities for the two long-lived streams in this module.
+_COMPONENT_LINK = "ws_agents.link"
+_COMPONENT_PRESENCE = "ws_agents.presence"
+_AGENT_EVENT_CHANNEL = "cb:agents:events"
+# RFC 6455 1011 "internal error" — the server cannot fulfil the stream contract.
+_WS_INTERNAL_ERROR = 1011
 
 # Slice 3 D-16: an agent's assigned monitors become due again the moment it
 # reconnects — but jittered, never all at `now()`. An agent with 300 assignments
@@ -492,7 +504,17 @@ async def _run_control_frame_listener(
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        _logger.warning("agent %s: control frame listener error: %s", agent_id, exc)
+        # This task ending is not cosmetic: it is the only path by which a
+        # control frame (update, capability change, disconnect) published from
+        # another worker reaches this agent. It used to end on an unclassified
+        # WARNING and leave the /link connection up and apparently healthy,
+        # accepting heartbeats it could never answer with a control frame.
+        record_stream_fault(
+            f"{_COMPONENT_LINK}.control",
+            exc,
+            logger=_logger,
+            context={"agent_id": agent_id, "worker_id": worker_id},
+        )
 
 
 @unauthenticated_router.websocket("/link")
@@ -832,8 +854,17 @@ async def link_stream(websocket: WebSocket) -> None:
                 # recorded as a protocol_violation AgentEvent: that audit
                 # trail is for receive_frame's decoded-but-invalid
                 # rejections, and an undecryptable frame never gets that far.
-                _logger.warning(
-                    "agent %s: dropped undecryptable inbound /link frame: %s", agent_id, exc
+                # Rate-limited and counted rather than logged raw: a desynced
+                # or hostile peer can drive this branch as fast as it can write
+                # frames, and an unthrottled WARNING per frame is a log storm
+                # (REL-07). The metric keeps the drop visible when the log line
+                # is being suppressed.
+                record_stream_fault(
+                    f"{_COMPONENT_LINK}.decrypt",
+                    exc,
+                    logger=_logger,
+                    context={"agent_id": agent_id},
+                    fault=FAULT_DECODE,
                 )
                 continue
 
@@ -938,7 +969,7 @@ async def _ping_loop(ws: WebSocket, main_task: asyncio.Task) -> None:
     except asyncio.CancelledError:
         pass
     except Exception as exc:
-        _logger.debug("Agent presence WS ping loop error: %s", exc)
+        record_stream_fault(f"{_COMPONENT_PRESENCE}.ping", exc, logger=_logger)
         main_task.cancel()
 
 
@@ -954,7 +985,7 @@ async def _redis_agent_listener(websocket: WebSocket, stop_event: asyncio.Event)
 
     pubsub = r.pubsub()
     try:
-        await pubsub.subscribe("cb:agents:events")
+        await pubsub.subscribe(_AGENT_EVENT_CHANNEL)
         while not stop_event.is_set():
             msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
             if msg and msg["type"] == "message":
@@ -962,18 +993,28 @@ async def _redis_agent_listener(websocket: WebSocket, stop_event: asyncio.Event)
                     break
                 try:
                     await websocket.send_text(msg["data"])
-                except Exception:
+                except Exception as exc:
+                    record_stream_fault(f"{_COMPONENT_PRESENCE}.forward", exc, logger=_logger)
                     break
     except asyncio.CancelledError:
         pass
     except Exception as exc:
-        _logger.debug("Redis agent listener error: %s", exc)
+        # Same reasoning as ws_discovery's listener: pub/sub is the only source
+        # of presence events, so a dead subscription behind a live socket is an
+        # agent list that silently stops updating. Close explicitly (REL-07).
+        record_stream_fault(
+            f"{_COMPONENT_PRESENCE}.subscribe",
+            exc,
+            logger=_logger,
+            context={"channel": _AGENT_EVENT_CHANNEL},
+        )
+        await close_stream_socket(websocket, component=_COMPONENT_PRESENCE, code=_WS_INTERNAL_ERROR)
     finally:
         try:
             await pubsub.unsubscribe()
             await pubsub.aclose()
-        except Exception:
-            pass
+        except Exception as exc:
+            record_stream_fault(f"{_COMPONENT_PRESENCE}.teardown", exc, logger=_logger)
 
 
 @authenticated_router.websocket("/stream")

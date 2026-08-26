@@ -10,6 +10,8 @@ import {
 } from '../../api/discovery';
 import { useToast } from '../common/Toast';
 import ConfirmDialog from '../common/ConfirmDialog';
+// AGT-15: no agent surface echoes a server `detail` unredacted — see lib/agentErrors.js.
+import { operatorErrorMessage } from '../../lib/agentErrors';
 import LocalDiscoveryConfigEditor, {
   DISCOVERY_NUMBER_FIELDS,
   inspectCidr,
@@ -255,7 +257,9 @@ export default function DiscoveryScopeSection({
       onChanged?.();
     } catch (error) {
       setEditorRevision((revision) => revision + 1);
-      toast.error(error?.response?.data?.detail ?? 'Could not update local discovery settings');
+      toast.error(
+        operatorErrorMessage(error, { fallback: 'Could not update local discovery settings' })
+      );
     } finally {
       setBusy(false);
     }
@@ -342,7 +346,7 @@ export default function DiscoveryScopeSection({
         : await resumeAgentDiscovery(agentId);
       onDiscovery?.(data);
     } catch (error) {
-      toast.error(error?.response?.data?.detail ?? 'Could not change the discovery hold');
+      toast.error(operatorErrorMessage(error, { fallback: 'Could not change the discovery hold' }));
     } finally {
       setBusy(false);
     }
@@ -366,8 +370,9 @@ export default function DiscoveryScopeSection({
       });
     } catch (error) {
       toast.error(
-        error?.response?.data?.detail ??
-          `Could not ${paused ? 'pause' : 'resume'} scheduling for ${profile.cidr ?? profile.name}`
+        operatorErrorMessage(error, {
+          fallback: `Could not ${paused ? 'pause' : 'resume'} scheduling for ${profile.cidr ?? profile.name}`,
+        })
       );
     } finally {
       setBusy(false);
@@ -380,7 +385,9 @@ export default function DiscoveryScopeSection({
       toast.success('Discovery cadence updated');
       onChanged?.();
     } catch (error) {
-      toast.error(error?.response?.data?.detail ?? 'Could not update the discovery cadence');
+      toast.error(
+        operatorErrorMessage(error, { fallback: 'Could not update the discovery cadence' })
+      );
     }
   };
 

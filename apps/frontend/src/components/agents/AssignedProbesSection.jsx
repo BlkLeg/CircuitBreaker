@@ -3,6 +3,8 @@ import PropTypes from 'prop-types';
 import { Link } from 'react-router-dom';
 import { listProbeEligibleAgents } from '../../api/agents';
 import { runCheck, updateMonitor } from '../../api/monitor';
+// AGT-15: no agent surface echoes a server `detail` unredacted — lib/agentErrors.js.
+import { operatorErrorMessage, redactSensitive } from '../../lib/agentErrors';
 import { useToast } from '../common/Toast';
 
 // `monitor_items.probe_execution_status` (db/models.py:272) — the *vantage's*
@@ -80,8 +82,13 @@ export default function AssignedProbesSection({ agentId, probes, granted, onChan
         onChanged?.();
       } catch (error) {
         const detail = error?.response?.data?.detail;
+        // AGT-15: `humanizeReason` maps the machine-readable eligibility
+        // vocabulary; anything it does not recognise falls through as the
+        // server's own words, so it is redacted before it is shown.
         toast.error(
-          detail ? `Cannot check now: ${humanizeReason(detail)}` : 'Could not run the check'
+          detail
+            ? `Cannot check now: ${redactSensitive(humanizeReason(detail))}`
+            : 'Could not run the check'
         );
       }
     });
@@ -108,7 +115,7 @@ export default function AssignedProbesSection({ agentId, probes, granted, onChan
         setReassignFor(null);
         onChanged?.();
       } catch (error) {
-        toast.error(error?.response?.data?.detail ?? 'Could not reassign the monitor');
+        toast.error(operatorErrorMessage(error, { fallback: 'Could not reassign the monitor' }));
       }
     });
 
@@ -122,7 +129,9 @@ export default function AssignedProbesSection({ agentId, probes, granted, onChan
         toast.success('Monitor returned to server execution');
         onChanged?.();
       } catch (error) {
-        toast.error(error?.response?.data?.detail ?? 'Could not return the monitor to the server');
+        toast.error(
+          operatorErrorMessage(error, { fallback: 'Could not return the monitor to the server' })
+        );
       }
     });
 

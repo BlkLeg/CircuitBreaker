@@ -2,6 +2,7 @@ import axios from 'axios';
 import logger from '../utils/logger';
 import { safeSet } from '../utils/safeAccess';
 import { hashPasswordForAuth } from '../utils/passwordHash';
+import { recordServerDate } from '../utils/serverClock';
 
 const AUTH_ROUTE_PREFIXES = [
   '/auth/login',
@@ -94,8 +95,23 @@ client.interceptors.request.use((config) => {
 });
 
 client.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    // AGT-14: every agent surface formats "last seen" by subtracting a
+    // server-produced timestamp from the browser's clock, so a browser whose
+    // clock is wrong makes every one of those readings wrong in the same
+    // direction with nothing on screen admitting it. HTTP makes `Date`
+    // mandatory on every response and it is CORS-safelisted, so the offset is
+    // already flowing past here — recording it costs no request. See
+    // utils/serverClock.js.
+    recordServerDate(response.headers);
+    return response;
+  },
   async (error) => {
+    // A 4xx/5xx is still a response from the server and still carries `Date`;
+    // an offset measured from one is exactly as valid as one measured from a
+    // 200, and refusing it would leave a deployment whose reads are failing
+    // with no clock reference at all.
+    recordServerDate(error.response?.headers);
     const config = error.config || {};
     const method = (config.method || 'get').toLowerCase();
     const isSafeMethod = ['get', 'head', 'options'].includes(method);

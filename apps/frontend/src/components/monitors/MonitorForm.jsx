@@ -141,6 +141,13 @@ export default function MonitorForm({ initial = null, prefill = null, onSubmit, 
             checkType={form.check_type}
             targetType={form.target_type}
             targetId={form.target_id}
+            // AGT-13: only a CREATE seeded by "Create monitor from this agent"
+            // has a preselected vantage. An edit's assigned agent is the
+            // operator's own earlier choice, not a default this form picked,
+            // and announcing it as one would be wrong — and would put the
+            // stale-identifier rejection on a path where dropping the
+            // assignment silently reassigns the monitor to the server.
+            preselectedAgentId={initial ? null : (prefill?.probe_agent_id ?? null)}
           />
 
           {form.check_type === 'http' && (

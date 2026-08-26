@@ -67,8 +67,23 @@ def _set_tenant_on_checkout(dbapi_conn: Any, connection_record: Any, connection_
                 cursor.execute("SELECT set_config('app.current_tenant', '', true)", ())
         finally:
             cursor.close()
-    except Exception:  # noqa: BLE001
-        _logger.debug("RLS tenant variable not available — skipping SET app.current_tenant")
+    except Exception as exc:  # noqa: BLE001
+        # Runs on every pool checkout, so this cannot be an unthrottled log
+        # line — but it also must not stay at DEBUG: a connection handed out
+        # with `app.current_tenant` unset is a connection whose row-level
+        # security policies are evaluating against an empty tenant. Classified,
+        # counted and throttled instead, so the condition is measurable
+        # (REL-07). Imported lazily to keep `app.db.session` — which almost
+        # every module imports — free of a service-layer import at module load.
+        from app.services.stream_faults import record_stream_fault
+
+        record_stream_fault(
+            "db_session.rls_tenant",
+            exc,
+            logger=_logger,
+            context={"tenant_id": tid},
+            level=logging.WARNING,
+        )
 
 
 naming_convention = {

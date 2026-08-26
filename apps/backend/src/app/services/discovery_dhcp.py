@@ -17,16 +17,23 @@ dhcp_router_pass_enc) and decrypted here via CredentialVault.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+# Extra seconds allowed for the ssh child to finish talking, on top of the
+# caller's connect timeout, before the deadline fires.
+_SSH_COMMUNICATE_GRACE_SECONDS = 2
+# How long to wait for a killed ssh child to actually be reaped.
+_SSH_KILL_GRACE_SECONDS = 5
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SSH command safety
@@ -148,6 +155,29 @@ def _read_dhcpd_leases(path: str) -> list[dict]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+async def _terminate_ssh_process(proc: Any, host: str) -> None:
+    """Kill an ssh child that outlived its deadline, and reap it.
+
+    `asyncio.timeout` cancels the `communicate()` await; it does not touch the
+    process. Without this the sshpass/ssh child kept running — and stayed a
+    zombie in the API process's child table — for every router that stopped
+    responding mid-command, which on a scheduled DHCP sweep is once per
+    interval, forever.
+    """
+    if proc.returncode is not None:
+        return
+    try:
+        proc.kill()
+    except (ProcessLookupError, OSError) as exc:
+        logger.debug("DHCP SSH: could not kill timed-out ssh to %s: %s", host, exc)
+        return
+    try:
+        async with asyncio.timeout(_SSH_KILL_GRACE_SECONDS):
+            await proc.wait()
+    except TimeoutError:
+        logger.warning("DHCP SSH: ssh child for %s did not exit after kill()", host)
+
+
 async def _run_router_ssh_dhcp(
     host: str,
     username_enc: str,
@@ -205,7 +235,6 @@ async def _run_router_ssh_dhcp(
 
     # Subprocess fallback via sshpass if asyncssh unavailable/failed
     if output is None:
-        import asyncio
         import shutil
 
         if not shutil.which("sshpass"):
@@ -235,16 +264,35 @@ async def _run_router_ssh_dhcp(
                 stderr=asyncio.subprocess.DEVNULL,
                 env={**os.environ, "SSHPASS": password},
             )
-            # wait_for must wrap communicate(), not create_subprocess_exec —
+        except OSError as exc:
+            logger.warning("DHCP SSH: could not start sshpass for %s: %s", host, exc)
+            return []
+
+        try:
+            # The deadline must cover communicate(), not create_subprocess_exec —
             # the latter returns instantly; all blocking time is in communicate().
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout + 2)
-            output = stdout.decode(errors="replace")
+            #
+            # `asyncio.timeout` rather than `wait_for(proc.communicate(), ...)`:
+            # wait_for's first argument is evaluated *before* the call, so if
+            # anything goes wrong reaching the await — including the caller
+            # being cancelled — the coroutine that argument built is left
+            # created and never awaited (REL-08). Wrapping the await instead
+            # means there is no coroutine object in flight that nothing owns.
+            async with asyncio.timeout(timeout + _SSH_COMMUNICATE_GRACE_SECONDS):
+                stdout, _ = await proc.communicate()
         except TimeoutError:
-            logger.debug("subprocess ssh to %s timed out after %ss", host, timeout + 2)
+            logger.debug(
+                "subprocess ssh to %s timed out after %ss",
+                host,
+                timeout + _SSH_COMMUNICATE_GRACE_SECONDS,
+            )
+            await _terminate_ssh_process(proc, host)
             return []
-        except Exception as exc:
+        except OSError as exc:
             logger.debug("subprocess ssh to %s failed: %s", host, exc)
+            await _terminate_ssh_process(proc, host)
             return []
+        output = stdout.decode(errors="replace")
 
     if not output:
         return []

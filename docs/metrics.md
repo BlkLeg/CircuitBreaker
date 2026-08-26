@@ -10,12 +10,16 @@ treat metric names, labels, or cardinality as a stable public API before the
 ## Endpoint
 
 ```
-GET /api/v1/metrics
+GET /api/v1/metrics/metrics
 ```
 
 Returns `text/plain; version=0.0.4; charset=utf-8` — the standard Prometheus scrape format.
 
 > **Note:** The endpoint is intentionally placed under `/api/v1/` (not at the root `/metrics`) to avoid conflicts with Circuit Breaker's frontend catch-all route.
+>
+> The path really does end in `/metrics/metrics`: the metrics router is mounted at the
+> `/api/v1/metrics` prefix and declares its route as `/metrics`. `GET /api/v1/metrics` answers
+> `404`.
 
 ---
 
@@ -52,7 +56,7 @@ scrape_configs:
   - job_name: 'circuit-breaker'
     static_configs:
       - targets: ['your-server:80']
-    metrics_path: '/api/v1/metrics'
+    metrics_path: '/api/v1/metrics/metrics'
     authorization:
       credentials: '<your-service-account-token>'
 ```
@@ -104,6 +108,29 @@ These follow the [kube-state-metrics](https://github.com/kubernetes/kube-state-m
 | `circuitbreaker_compute_unit_cpu_cores_configured` | Gauge | `name`, `kind` | Configured CPU cores per compute unit (omitted if not set) |
 | `circuitbreaker_storage_capacity_gb` | Gauge | `name`, `kind` | Configured capacity per storage item in GB (omitted if not set) |
 | `circuitbreaker_storage_used_gb` | Gauge | `name`, `kind` | Reported used space per storage item in GB (omitted if not set) |
+
+---
+
+### Service-objective series
+
+The tables above are point-in-time gauges rebuilt from the database on every scrape. These are
+**process-lifetime** counters and gauges, held in a separate registry so a scrape does not reset
+them, and appended to the same exposition. They are the measurement source behind the
+[1.0.0 service objectives](release/1.0.0-service-objectives.md).
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `circuitbreaker_http_requests_total` | Counter | `method`, `route`, `status_class` | HTTP requests served. The availability indicator |
+| `circuitbreaker_http_request_duration_seconds` | Histogram | `method`, `route` | Request duration. Buckets are `0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0` — `0.5` is a bucket edge because the latency objective is stated at p95 < 500 ms |
+| `circuitbreaker_health_state` | Gauge | `state` | One-hot: `1` for the current state, `0` for the others. Every state (`starting`, `ready`, `degraded`, `not_ready`, `stopping`) is always present, so an alert fires on a value rather than on a missing label |
+| `circuitbreaker_write_admission_rejections_total` | Counter | `health` | Mutating requests refused because readiness could not serve them safely, by the state that refused |
+| `circuitbreaker_background_job_runs_total` | Counter | `job`, `outcome` | Background job executions. The `skipped_not_owner` outcome makes single-owner execution observable rather than merely asserted |
+| `circuitbreaker_process_uptime_seconds` | Gauge | — | Seconds since this process finished importing |
+
+**Cardinality is bounded by construction.** `route` is the route *template* the request matched
+(`/api/v1/hardware/{hardware_id}`), never the raw path — which would carry ids and grow without
+limit. A request that matched no route collapses to the single value `unmatched`. Status is bucketed
+into a class rather than exposed per code.
 
 ---
 

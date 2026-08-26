@@ -738,7 +738,11 @@ describe('AgentsPage install command errors', () => {
     fireEvent.click(screen.getByText('Add agent'));
 
     await waitFor(() =>
-      expect(mockToast.error).toHaveBeenCalledWith('Could not generate an install command')
+      // AGT-15: the fallback still has to be actionable, so it names what to
+      // check rather than only reporting that something went wrong.
+      expect(mockToast.error).toHaveBeenCalledWith(
+        expect.stringContaining('Could not generate an install command')
+      )
     );
   });
 });

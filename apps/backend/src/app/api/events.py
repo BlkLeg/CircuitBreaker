@@ -41,11 +41,15 @@ from app.core.security import _extract_token, _is_user_accessible, decode_token
 from app.db.models import Log
 from app.db.session import SessionLocal
 from app.services.settings_service import get_or_create_settings
+from app.services.stream_faults import FAULT_DECODE, record_stream_fault
 from app.services.user_service import is_session_revoked
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# REL-07 fault-metric identity for the SSE stream.
+_COMPONENT = "sse_events"
 
 _KEEPALIVE_INTERVAL = 15  # seconds between SSE keepalive comments
 # Log SSE NATS queue drops at most once per interval to avoid log spam under load
@@ -53,6 +57,40 @@ _QUEUE_FULL_LOG_INTERVAL_S = 30.0
 # How often a live stream re-checks that its session is still valid. This is the
 # upper bound on how long a revoked session keeps receiving alert data.
 _REVALIDATE_INTERVAL_S = 15.0
+
+
+def decode_nats_event(msg: Any) -> dict | None:
+    """Parse one NATS message body, or return None if it is not usable.
+
+    Returning None rather than `{}` is the point: the old code substituted an
+    empty payload on a parse failure, which turned an unparseable frame into a
+    well-formed event the frontend rendered as a real (empty) notification.
+    Counted so a publisher shipping bad frames is visible (REL-07).
+    """
+    try:
+        decoded = json.loads(msg.data.decode())
+    except Exception as exc:
+        record_stream_fault(
+            f"{_COMPONENT}.decode",
+            exc,
+            logger=logger,
+            context={"subject": getattr(msg, "subject", "?")},
+            fault=FAULT_DECODE,
+        )
+        return None
+    if not isinstance(decoded, dict):
+        # A bare list/str/number is valid JSON but not an event; the `**data`
+        # splat downstream would raise on it inside the NATS callback, where
+        # nothing would ever see the traceback.
+        record_stream_fault(
+            f"{_COMPONENT}.decode",
+            TypeError(f"event payload is {type(decoded).__name__}, not an object"),
+            logger=logger,
+            context={"subject": getattr(msg, "subject", "?")},
+            fault=FAULT_DECODE,
+        )
+        return None
+    return decoded
 
 
 # ── Mid-stream revocation ────────────────────────────────────────────────────
@@ -128,8 +166,16 @@ def _nats_event_generator(queue: asyncio.Queue[Any], raw_token: str | None) -> A
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                logger.debug("SSE NATS generator error: %s", exc)
+                # Reading the in-process queue has no recoverable failure mode:
+                # anything that reaches here (a closed loop, a broken queue)
+                # will reach here again on the next iteration, and the old code
+                # yielded ": error" in a tight loop with no sleep — a spin that
+                # pinned a core and filled the client's socket buffer. End the
+                # stream explicitly instead; the browser's EventSource
+                # reconnects (REL-07).
+                record_stream_fault(f"{_COMPONENT}.nats_queue", exc, logger=logger)
                 yield ": error\n\n"
+                break
 
     return _gen()
 
@@ -223,7 +269,17 @@ def _db_poll_generator(raw_token: str | None) -> AsyncIterator[str]:
                     yield f"event: {event_type}\ndata: {json.dumps(payload)}\n\n"
                     last_log_id = max(last_log_id, row.id)
             except Exception as exc:
-                logger.debug("SSE DB poll error: %s", exc)
+                # The 2s sleep above already bounds the retry rate, so this
+                # loop keeps polling — the database coming back is exactly the
+                # recovery this fallback exists for. What it must not do is
+                # hide the outage at DEBUG for hours: classified, throttled and
+                # counted (REL-07).
+                record_stream_fault(
+                    f"{_COMPONENT}.db_poll",
+                    exc,
+                    logger=logger,
+                    context={"last_log_id": last_log_id},
+                )
                 yield ": error\n\n"
 
     return _gen()
@@ -248,15 +304,9 @@ async def events_stream(request: Request, _user: Any = require_role("viewer")) -
 
         async def _nats_cb(msg: Any) -> None:
             nonlocal _last_queue_full_log
-            try:
-                data = json.loads(msg.data.decode())
-            except Exception:
-                logger.debug(
-                    "SSE NATS: malformed message on %s",
-                    getattr(msg, "subject", "?"),
-                    exc_info=True,
-                )
-                data = {}
+            data = decode_nats_event(msg)
+            if data is None:
+                return
             subj = msg.subject
             if subj in (subjects.ALERT_EVENT,):
                 event_type = "alert"
@@ -306,8 +356,11 @@ async def events_stream(request: Request, _user: Any = require_role("viewer")) -
                 for sub in subscriptions:
                     try:
                         await sub.unsubscribe()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        # A failed unsubscribe leaks a NATS subscription for
+                        # the life of the connection; counted so the leak is
+                        # measurable instead of invisible.
+                        record_stream_fault(f"{_COMPONENT}.unsubscribe", exc, logger=logger)
 
         return StreamingResponse(
             _cleanup_generator(),

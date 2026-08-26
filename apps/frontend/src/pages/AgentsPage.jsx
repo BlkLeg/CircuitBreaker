@@ -3,17 +3,24 @@ import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Satellite } from 'lucide-react';
 import PropTypes from 'prop-types';
-import {
-  deleteAgent,
-  getAgent,
-  listAgents,
-  lookupPairingCode,
-  normalizeCapability,
-  revokeAgent,
-} from '../api/agents';
+import { deleteAgent, getAgent, listAgents, lookupPairingCode, revokeAgent } from '../api/agents';
+import { agentDisplayName } from '../lib/agentLabel';
 import { useAgentLive } from '../hooks/useAgentLive';
 import { useFleetMetrics } from '../hooks/useFleetMetrics';
 import { isLivePushFresh } from '../utils/agentPresenceFreshness';
+import { serverClockOffsetMs } from '../utils/serverClock';
+import { newestFleetVersion } from '../lib/agentState';
+import { PAIRING_LOOKUP_FAILED } from '../lib/agentErrors';
+import {
+  ALL as ALL_FILTER_VALUE,
+  CAPABILITY_LABELS,
+  FLEET_FILTER_KEYS,
+  fleetRowFacts,
+  isFleetFiltered,
+  matchesFleetFilters,
+  readFleetFilters,
+  summarizeFleet,
+} from '../lib/fleetFilters';
 import { useToast } from '../components/common/Toast';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import AgentApprovalModal from '../components/agents/AgentApprovalModal';
@@ -38,22 +45,11 @@ import '../styles/agents.css';
 // being revoked is a roster change, not a measurement.
 const REFRESH_MS = 30000;
 
-// Labels for the capability filter's <select>. FleetRow keeps its own copy for
-// the row chips — matching this codebase's existing per-view capability label
-// maps (AgentDetailPage, AgentApprovalModal) rather than inventing a shared
-// module for three strings that are worded differently per surface.
-const CAPABILITY_LABELS = {
-  host_telemetry: 'Host telemetry',
-  remote_probe: 'Remote probe',
-  local_discovery: 'Local discovery',
-};
-
-// Values mirror the `agents.status` enum minus `pending`: pending rows are
-// pinned above the fleet by FleetTable and are never subject to the filters, so
-// offering `pending` here would be a filter that cannot hide anything.
-const STATUS_FILTER_VALUES = ['active', 'revoked', 'rejected'];
-const ONLINE_FILTER_VALUES = ['online', 'offline'];
-const ALL_FILTER_VALUE = 'all';
+// The filter vocabulary, the predicate and the header counts all live in
+// lib/fleetFilters.js. AGT-17 asks for "aggregate counts that cannot disagree
+// with filtered rows", and the only way to promise that is for the count and
+// the filter to be one implementation — so this page owns the URL plumbing and
+// nothing about what a filter means.
 const PENDING_STATUS = 'pending';
 
 /**
@@ -107,75 +103,161 @@ function withLivePush(row, push, presenceFetchedAt) {
   return row;
 }
 
-function matchesFilters(agent, { statusFilter, capabilityFilter, onlineFilter }) {
-  if (statusFilter !== ALL_FILTER_VALUE && agent.status !== statusFilter) return false;
-  if (
-    capabilityFilter !== ALL_FILTER_VALUE &&
-    // Task 15 / D-11: a withheld grant arrives as {enabled: false, config: {}},
-    // which is truthy — `.enabled` is the test, never the object itself.
-    // eslint-disable-next-line security/detect-object-injection -- capabilityFilter is validated against CAPABILITY_LABELS before it reaches here
-    !normalizeCapability(agent.capabilities?.[capabilityFilter]).enabled
-  ) {
-    return false;
-  }
-  if (onlineFilter === 'online' && agent.online !== true) return false;
-  if (onlineFilter === 'offline' && agent.online !== false) return false;
-  return true;
-}
-
-/** The three fleet filters. Extracted purely to keep the page's tree readable. */
-function FleetFilters({ statusFilter, capabilityFilter, onlineFilter, onChange }) {
+/**
+ * One labelled <select>. Six filters written out longhand was six chances for
+ * one of them to lose its label association; this makes the id/htmlFor pairing
+ * structural.
+ */
+function FilterSelect({ id, label, value, options, onChange }) {
   return (
-    <div className="filter-bar agents-page__filters">
-      <label htmlFor="agents-filter-status">Status</label>
+    <>
+      <label htmlFor={id}>{label}</label>
       <select
-        id="agents-filter-status"
+        id={id}
         className="filter-select"
-        value={statusFilter}
-        onChange={(e) => onChange('status', e.target.value)}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
       >
-        <option value="all">All statuses</option>
-        <option value="active">Active</option>
-        <option value="revoked">Revoked</option>
-        <option value="rejected">Rejected</option>
-      </select>
-
-      <label htmlFor="agents-filter-capability">Capability</label>
-      <select
-        id="agents-filter-capability"
-        className="filter-select"
-        value={capabilityFilter}
-        onChange={(e) => onChange('capability', e.target.value)}
-      >
-        <option value="all">All capabilities</option>
-        {Object.entries(CAPABILITY_LABELS).map(([key, label]) => (
-          <option key={key} value={key}>
-            {label}
+        {options.map(([optionValue, optionLabel]) => (
+          <option key={optionValue} value={optionValue}>
+            {optionLabel}
           </option>
         ))}
       </select>
+    </>
+  );
+}
 
-      <label htmlFor="agents-filter-online">Online</label>
-      <select
+FilterSelect.propTypes = {
+  id: PropTypes.string.isRequired,
+  label: PropTypes.string.isRequired,
+  value: PropTypes.string.isRequired,
+  options: PropTypes.array.isRequired,
+  onChange: PropTypes.func.isRequired,
+};
+
+/**
+ * The fleet filters (AGT-17). Status/capability/online answer "what is this
+ * agent"; health, drift and spool answer "is it a problem" — the three the
+ * requirement adds, and the three an operator with a hundred machines actually
+ * opens the page to ask.
+ *
+ * The counts beside them come from summarizeFleet, which runs this same filter
+ * set over the same rows, so a count can never contradict the table.
+ */
+function FleetFilters({ filters, summary, onChange }) {
+  return (
+    <div className="filter-bar agents-page__filters">
+      <label htmlFor="agents-filter-q">Find</label>
+      <input
+        id="agents-filter-q"
+        className="filter-input"
+        type="search"
+        placeholder="name, host, address, version"
+        value={filters.q}
+        onChange={(event) => onChange('q', event.target.value)}
+      />
+
+      <FilterSelect
+        id="agents-filter-status"
+        label="Status"
+        value={filters.status}
+        onChange={(value) => onChange('status', value)}
+        options={[
+          [ALL_FILTER_VALUE, 'All statuses'],
+          ['active', 'Active'],
+          ['revoked', 'Revoked'],
+          ['rejected', 'Rejected'],
+        ]}
+      />
+
+      <FilterSelect
+        id="agents-filter-capability"
+        label="Capability"
+        value={filters.capability}
+        onChange={(value) => onChange('capability', value)}
+        options={[[ALL_FILTER_VALUE, 'All capabilities'], ...Object.entries(CAPABILITY_LABELS)]}
+      />
+
+      <FilterSelect
         id="agents-filter-online"
-        className="filter-select"
-        value={onlineFilter}
-        onChange={(e) => onChange('online', e.target.value)}
-      >
-        <option value="all">All</option>
-        <option value="online">Online</option>
-        <option value="offline">Offline</option>
-      </select>
+        label="Online"
+        value={filters.online}
+        onChange={(value) => onChange('online', value)}
+        options={[
+          [ALL_FILTER_VALUE, 'All'],
+          ['online', 'Online'],
+          ['offline', 'Offline'],
+        ]}
+      />
+
+      <FilterSelect
+        id="agents-filter-health"
+        label="Health"
+        value={filters.health}
+        onChange={(value) => onChange('health', value)}
+        options={[
+          [ALL_FILTER_VALUE, 'Any health'],
+          ['attention', `Needs attention (${summary.attention})`],
+          ['healthy', 'Healthy'],
+        ]}
+      />
+
+      <FilterSelect
+        id="agents-filter-drift"
+        label="Version"
+        value={filters.drift}
+        onChange={(value) => onChange('drift', value)}
+        options={[
+          [ALL_FILTER_VALUE, 'Any version'],
+          ['behind', `Behind newest (${summary.behind})`],
+          ['current', 'On newest'],
+        ]}
+      />
+
+      <FilterSelect
+        id="agents-filter-spool"
+        label="Spool"
+        value={filters.spool}
+        onChange={(value) => onChange('spool', value)}
+        options={[
+          [ALL_FILTER_VALUE, 'Any backlog'],
+          ['pressure', `Under pressure (${summary.spool})`],
+        ]}
+      />
     </div>
   );
 }
 
 FleetFilters.propTypes = {
-  statusFilter: PropTypes.string.isRequired,
-  capabilityFilter: PropTypes.string.isRequired,
-  onlineFilter: PropTypes.string.isRequired,
+  filters: PropTypes.object.isRequired,
+  summary: PropTypes.object.isRequired,
   onChange: PropTypes.func.isRequired,
 };
+
+/**
+ * "12 of 40 agents · 3 offline · 2 behind newest · 1 spool backlog".
+ *
+ * Every number here is produced by summarizeFleet from the same predicate the
+ * table filters with — see lib/fleetFilters.js. `role="status"` because the
+ * numbers change under the operator as filters are applied and as polls land,
+ * and a count that only sighted users can see moving is not a count.
+ */
+function FleetSummary({ summary }) {
+  const parts = [`${summary.matching} of ${summary.total} agents`];
+  if (summary.pending > 0) parts.push(`${summary.pending} awaiting approval`);
+  if (summary.offline > 0) parts.push(`${summary.offline} offline`);
+  if (summary.attention > 0) parts.push(`${summary.attention} need attention`);
+  if (summary.behind > 0) parts.push(`${summary.behind} behind newest`);
+  if (summary.spool > 0) parts.push(`${summary.spool} with a spool backlog`);
+  return (
+    <p className="agents-page__summary" role="status">
+      {parts.join(' · ')}
+    </p>
+  );
+}
+
+FleetSummary.propTypes = { summary: PropTypes.object.isRequired };
 
 export default function AgentsPage() {
   const toast = useToast();
@@ -186,6 +268,7 @@ export default function AgentsPage() {
   const [loading, setLoading] = useState(true);
   const [approvalAgentId, setApprovalAgentId] = useState(null);
   const [revokeTarget, setRevokeTarget] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
 
   const { statuses, connected } = useAgentLive();
   // Both metric polls and their two very different cadences live here now. The
@@ -197,26 +280,20 @@ export default function AgentsPage() {
     useFleetMetrics();
 
   // Fleet filters live in the URL (mirrors MonitorsPage's statusFilter/
-  // typeFilter pattern) so a filtered view is bookmarkable/shareable.
-  const statusFilter = STATUS_FILTER_VALUES.includes(params.get('status'))
-    ? params.get('status')
-    : ALL_FILTER_VALUE;
-  const capabilityFilter = Object.hasOwn(CAPABILITY_LABELS, params.get('capability'))
-    ? params.get('capability')
-    : ALL_FILTER_VALUE;
-  const onlineFilter = ONLINE_FILTER_VALUES.includes(params.get('online'))
-    ? params.get('online')
-    : ALL_FILTER_VALUE;
-  const isFiltered =
-    statusFilter !== ALL_FILTER_VALUE ||
-    capabilityFilter !== ALL_FILTER_VALUE ||
-    onlineFilter !== ALL_FILTER_VALUE;
+  // typeFilter pattern) so a filtered view is bookmarkable/shareable — which
+  // AGT-17's "saved URL state" is about: a filtered fleet is something an
+  // operator hands to a colleague, not a per-session convenience.
+  const filters = readFleetFilters(params);
+  const isFiltered = isFleetFiltered(filters);
 
   const setFilterParam = useCallback(
     (key, value) => {
       setParams(
         (prev) => {
           const next = new URLSearchParams(prev);
+          // An empty search box is not a filter. Treating '' the same as 'all'
+          // keeps `?q=` out of the URL and out of isFleetFiltered, which
+          // decides whether "nothing matched" or "no agents" is the truth.
           if (value && value !== ALL_FILTER_VALUE) next.set(key, value);
           else next.delete(key);
           return next;
@@ -231,7 +308,7 @@ export default function AgentsPage() {
     setParams(
       (prev) => {
         const next = new URLSearchParams(prev);
-        ['status', 'capability', 'online'].forEach((key) => next.delete(key));
+        FLEET_FILTER_KEYS.forEach((key) => next.delete(key));
         return next;
       },
       { replace: true }
@@ -287,7 +364,9 @@ export default function AgentsPage() {
     if (!code) return;
     lookupPairingCode(code)
       .then(({ data }) => setApprovalAgentId(data.agent_id))
-      .catch(() => toast.error('Unknown or expired pairing code'))
+      // AGT-15: the same single, non-enumerating message the pairing-code form
+      // uses. Two surfaces resolving the same code must not answer differently.
+      .catch(() => toast.error(PAIRING_LOOKUP_FAILED))
       .finally(() => {
         params.delete('c');
         setParams(params, { replace: true });
@@ -310,6 +389,20 @@ export default function AgentsPage() {
     [agents, presenceById, presenceFetchedAt, seriesById, statuses]
   );
 
+  // AGT-17's version-drift reference: the newest version anywhere in this
+  // fleet, computed over every agent including the ones a filter is hiding.
+  // Deriving it from the filtered subset would move the reference as the
+  // operator filtered, and "behind" would stop meaning anything.
+  const latestFleetVersion = useMemo(() => newestFleetVersion(merged), [merged]);
+  // Read at render, not held in state: the offset is refreshed by every API
+  // response through client.jsx's interceptor, and this page re-renders on
+  // every poll, so a fresh read here is as live as the data beside it.
+  const clockSkewSeconds = (() => {
+    const offset = serverClockOffsetMs();
+    return offset == null ? null : offset / 1000;
+  })();
+  const filterContext = { latestFleetVersion, clockSkewSeconds };
+
   const pending = merged.filter((a) => a.status === PENDING_STATUS);
   // Filters apply to the fleet only. Pending agents are pinned to the top of the
   // same list by FleetTable and stay visible under every filter combination —
@@ -317,8 +410,9 @@ export default function AgentsPage() {
   const fleetRows = merged.filter(
     (a) =>
       a.status !== PENDING_STATUS &&
-      matchesFilters(a, { statusFilter, capabilityFilter, onlineFilter })
+      matchesFleetFilters(a, filters, fleetRowFacts(a, filterContext))
   );
+  const summary = summarizeFleet(merged, filters, filterContext);
 
   const handleRevokeConfirmed = async () => {
     if (!revokeTarget) return;
@@ -333,13 +427,22 @@ export default function AgentsPage() {
     }
   };
 
-  const handleDelete = async (agent) => {
+  // AGT-16: deleting an agent record is irreversible and privilege-relevant —
+  // it drops the enrollment, its event history and its capability grants, and
+  // the host keeps whatever the installer put on it. It shipped as a one-click
+  // action with no confirmation at all, next to Revoke, which is exactly the
+  // gap the requirement names. The dialog below names the machine and the
+  // consequence rather than asking "Are you sure?".
+  const handleDeleteConfirmed = async () => {
+    if (!deleteTarget) return;
     try {
-      await deleteAgent(agent.id);
-      toast.success(`${agent.hostname ?? 'Agent'} removed`);
+      await deleteAgent(deleteTarget.id);
+      toast.success(`${agentDisplayName(deleteTarget, deleteTarget.id)} removed`);
       refreshFleet();
     } catch {
       toast.error('Delete failed');
+    } finally {
+      setDeleteTarget(null);
     }
   };
 
@@ -377,12 +480,8 @@ export default function AgentsPage() {
 
       {!isAddStandalone && (
         <>
-          <FleetFilters
-            statusFilter={statusFilter}
-            capabilityFilter={capabilityFilter}
-            onlineFilter={onlineFilter}
-            onChange={setFilterParam}
-          />
+          <FleetFilters filters={filters} summary={summary} onChange={setFilterParam} />
+          <FleetSummary summary={summary} />
           <FleetTable
             rows={[...pending, ...fleetRows]}
             isFiltered={isFiltered}
@@ -391,9 +490,11 @@ export default function AgentsPage() {
             // rather than showing frozen numbers that still look live.
             isStale={hasPresenceFailed}
             lastUpdatedAt={presenceFetchedAt}
+            latestFleetVersion={latestFleetVersion}
+            clockSkewSeconds={clockSkewSeconds}
             onReview={(agent) => setApprovalAgentId(agent.id)}
             onRevoke={setRevokeTarget}
-            onDelete={handleDelete}
+            onDelete={setDeleteTarget}
           />
         </>
       )}
@@ -409,11 +510,32 @@ export default function AgentsPage() {
         />
       )}
 
+      {/* AGT-16: both dialogs name the exact target and the exact consequence.
+          "Revoke this agent?" and "Delete this agent?" are the same sentence to
+          an operator with two tabs open; the hostname is what tells them which
+          machine they are about to cut off. */}
       <ConfirmDialog
         open={revokeTarget != null}
-        message={`Revoke ${revokeTarget?.hostname ?? 'this agent'}? It will stop reporting immediately.`}
+        message={
+          `Revoke ${agentDisplayName(revokeTarget, revokeTarget?.id) ?? 'this agent'}? ` +
+          'Its credential stops working immediately: it disconnects, stops reporting telemetry, ' +
+          'and every monitor assigned to it stops running from that vantage. It cannot reconnect ' +
+          'without being enrolled and approved again.'
+        }
         onConfirm={handleRevokeConfirmed}
         onCancel={() => setRevokeTarget(null)}
+      />
+
+      <ConfirmDialog
+        open={deleteTarget != null}
+        message={
+          `Delete ${agentDisplayName(deleteTarget, deleteTarget?.id) ?? 'this agent'}? ` +
+          'This removes the enrollment record, its capability grants and its whole event ' +
+          'history from this server, and cannot be undone. The agent software stays installed ' +
+          'on the host — uninstall it there, or it will enroll again as a new pending agent.'
+        }
+        onConfirm={handleDeleteConfirmed}
+        onCancel={() => setDeleteTarget(null)}
       />
     </div>
   );

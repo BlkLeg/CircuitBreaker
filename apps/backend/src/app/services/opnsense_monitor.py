@@ -16,8 +16,12 @@ import logging
 from datetime import UTC, datetime
 
 from app.core.log_sanitize import safe_log_fragment
+from app.services.stream_faults import record_stream_fault
 
 logger = logging.getLogger(__name__)
+
+# REL-07 fault-metric identity for the OPNsense background poller.
+_COMPONENT = "opnsense_monitor"
 
 _ARP_POLL_INTERVAL = 60  # seconds
 _LEASE_POLL_INTERVAL = 300  # seconds (5 min)
@@ -56,9 +60,11 @@ async def _run_monitor_loop(settings_dict: dict) -> None:
     arp_tick: float = 0
     lease_tick: float = 0
 
+    loop = asyncio.get_running_loop()
+
     while True:
         try:
-            now = asyncio.get_event_loop().time()
+            now = loop.time()
 
             if now - arp_tick >= _ARP_POLL_INTERVAL:
                 arp_tick = now
@@ -70,8 +76,15 @@ async def _run_monitor_loop(settings_dict: dict) -> None:
 
         except asyncio.CancelledError:
             raise  # let lifespan cancellation propagate
-        except Exception:
-            logger.exception("OPNsense monitor: unexpected error in poll loop — will retry")
+        except Exception as exc:
+            # `logger.exception` every 10s for as long as the fault lasts is a
+            # traceback every 10 seconds, forever: throttled and counted now, so
+            # a stuck monitor is a rising number rather than a wall of identical
+            # stacks nobody can read past (REL-07). The loop still retries —
+            # this task must not die, it is the only OPNsense poller.
+            record_stream_fault(
+                _COMPONENT, exc, logger=logger, context={"loop": "opnsense_monitor"}
+            )
 
         await asyncio.sleep(10)  # check every 10s; real work only when interval elapsed
 
@@ -84,8 +97,10 @@ async def _poll_arp(settings_dict: dict) -> None:
 
     try:
         base_url, api_key, api_secret, verify_ssl = _build_client_kwargs(settings_dict)
-    except (ValueError, Exception) as exc:
-        logger.warning("OPNsense monitor: settings error — %s", exc)
+    except Exception as exc:
+        # `(ValueError, Exception)` before — the tuple read as "narrow" but
+        # `Exception` already subsumes `ValueError`, so nothing was narrowed.
+        record_stream_fault(f"{_COMPONENT}.settings", exc, logger=logger)
         return
 
     try:

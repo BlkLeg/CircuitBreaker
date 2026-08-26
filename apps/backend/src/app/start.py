@@ -301,9 +301,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.worker_type:
         import asyncio
         import logging
+        import os
 
         from app.core.log_redaction import install_global_log_redaction
         from app.workers.main import _TYPE_MAP, _dispatch
+
+        # SRV-02: this process serves no HTTP and owns one worker function.
+        # Recording that here means the topology a worker reports is the one it
+        # is actually running, rather than the API default it inherited from the
+        # environment it was launched in. An operator who set the legacy flag
+        # keeps whatever they configured — inventing a mode on top of it would
+        # manufacture the very contradiction the topology check exists to catch.
+        if not os.environ.get("CB_RUN_INPROCESS_WORKERS", "").strip():
+            os.environ.setdefault("CB_TOPOLOGY_MODE", "worker")
 
         worker_type = args.worker_type
         if worker_type in _TYPE_MAP:
