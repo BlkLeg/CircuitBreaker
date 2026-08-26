@@ -14,9 +14,19 @@ against a regression, and a test that can only ever fail reports nothing.
      apps/backend/src (only a stale .pyc in __pycache__ remains of it), so both
      ERRORed with ModuleNotFoundError before asserting anything.
 
-Those four IDs are the only record in this repository of what was specified for
-racks and for derived status. If either feature is picked up later, restore the
-tests from git history rather than re-deriving the contract.
+  11. CB-PATTERN-003 / 12. CB-PATTERN-004 — orphan detection and vendor+model
+     grouping. `GET /api/v1/hardware/orphans` and `GET /api/v1/hardware/groups`
+     were deleted by f2c9bff7 ("delete seven routes with no caller"); that
+     commit touched no test file, so both tests kept calling the routes and
+     both started failing with 422 — `/hardware/{hardware_id}` matches the
+     literal path segment and rejects "orphans" as a non-integer id. Removed
+     here rather than restored: the frontend calls neither route, which is why
+     they were deleted.
+
+Those six IDs are the only record in this repository of what was specified for
+racks, for derived status, and for pattern detection. If any of those features
+is picked up later, restore the tests from git history rather than re-deriving
+the contract.
 
 Uses existing conftest.py fixtures (client, db, db_engine).
 """
@@ -29,9 +39,6 @@ IP_PORT_HOST     = "10.0.0.70"   # hardware host in port-conflict test
 IP_PORT_SVC      = "10.0.0.71"   # service IP for port-conflict test
 IP_MAC_HW1       = "10.0.1.1"    # first hardware in MAC-duplicate test
 IP_MAC_HW2       = "10.0.1.2"    # second hardware in MAC-duplicate test
-IP_GROUP_DELL_1  = "10.0.2.1"    # Dell R740 #1 in hardware-groups test
-IP_GROUP_DELL_2  = "10.0.2.2"    # Dell R740 #2 in hardware-groups test
-IP_GROUP_HP_1    = "10.0.2.3"    # HP DL380 in hardware-groups test
 CIDR_MERGE       = "10.0.0.0/24" # target CIDR for scan-job fixtures
 IP_MERGE_RESULT  = "10.0.0.99"   # IP in merge-atomicity scan result
 IP_SOURCE_RESULT = "10.0.0.200"  # IP in source_scan_result_id test
@@ -174,34 +181,6 @@ def test_last_seen_updated(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data.get("last_seen") is not None
-
-
-# ── 11. CB-PATTERN-003: Find orphans ──────────────────────────────────────────
-
-
-def test_find_orphans(client):
-    """Orphaned hardware (no children) detected."""
-    hw = _create_hardware(client, name="OrphanHost")
-    resp = client.get("/api/v1/hardware/orphans")
-    assert resp.status_code == 200
-    orphan_ids = [o["id"] for o in resp.json()]
-    assert hw["id"] in orphan_ids
-
-
-# ── 12. CB-PATTERN-004: Hardware groups ────────────────────────────────────────
-
-
-def test_hardware_groups(client):
-    """Vendor+model grouping returns counts."""
-    _create_hardware(client, name="Dell-1", vendor="dell", model="R740", ip_address=IP_GROUP_DELL_1)
-    _create_hardware(client, name="Dell-2", vendor="dell", model="R740", ip_address=IP_GROUP_DELL_2)
-    _create_hardware(client, name="HP-1", vendor="hp", model="DL380", ip_address=IP_GROUP_HP_1)
-    resp = client.get("/api/v1/hardware/groups")
-    assert resp.status_code == 200
-    groups = resp.json()
-    # vendor is coerced to "other" for non-VendorSlug values by schema validator
-    # Let's just check we get groups back
-    assert len(groups) >= 1
 
 
 # ── 13. CB-LEARN-002: Catalog auto-fill ───────────────────────────────────────
