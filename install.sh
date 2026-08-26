@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Circuit Breaker Native Installer
 # Downloads a pre-built bundle from GitHub Releases and installs it.
-# Usage: curl -fsSL https://github.com/BlkLeg/CircuitBreaker/releases/latest/download/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | sudo bash
 
 # Color codes
 RED='\033[0;31m'
@@ -449,6 +449,29 @@ stage0_bootstrap_preflight() {
 }
 
 
+# Choose the release a default install (no --version) should fetch.
+#
+# Reads the /releases list JSON on stdin -- newest first, as the API returns
+# it -- and prints the chosen release object, or nothing if there is none.
+#
+# This deliberately does not ask /releases/latest. That endpoint answers with
+# whatever carries the "Latest release" badge, and v1.0.0-rc.1 and rc.2 were
+# published before release.yml learned to pass --prerelease (GOV-20), so both
+# are recorded as stable and rc.2 still holds the badge. A default install
+# therefore fetched the rc.2 bundle: it reported its version as 1.0.0-rc.2,
+# and it predates the gh#104 PyInstaller fix, so every Proxmox connection
+# failed with "No module named 'proxmoxer.backends'". Picking from the list
+# here makes the choice independent of that stale metadata.
+#
+# The rule is the newest non-draft release, release candidates included; the
+# caller warns when the winner is one. Preferring stable unconditionally would
+# install v0.3.4 for the whole 1.0.0-rc window -- a pre-1.0 build months older
+# than the one README.md documents. Once 1.0.0 ships it is the newest release
+# and wins on its own.
+cb_pick_release() {
+  jq '[.[] | select(.draft == false)] | first // empty' 2>/dev/null || true
+}
+
 stage0_download_bundle() {
   cb_section "Downloading Circuit Breaker Bundle"
 
@@ -468,13 +491,17 @@ stage0_download_bundle() {
       release_json=$(curl -fsSL "${CB_RELEASE_API}/tags/v${CB_VERSION}" 2>/dev/null) \
         || cb_fail "Release v${CB_VERSION} not found" "Check: https://github.com/${CB_GITHUB_REPO}/releases"
     else
-      # /releases/latest returns 404 for pre-releases; fall back to the list
-      release_json=$(curl -fsSL "${CB_RELEASE_API}/latest" 2>/dev/null)
-      if [[ -z "$release_json" ]] || echo "$release_json" | grep -q '"message"'; then
-        release_json=$(curl -fsSL "${CB_RELEASE_API}" 2>/dev/null | jq '[.[] | select(.draft==false and .prerelease==false)] | .[0]' 2>/dev/null)
-      fi
+      # Select from the release list rather than trusting the badge -- see
+      # cb_pick_release for why /releases/latest cannot be used here.
+      local releases_json
+      releases_json=$(curl -fsSL "${CB_RELEASE_API}" 2>/dev/null) \
+        || cb_fail "Failed to fetch the release list" "Check internet connectivity or specify --version <version>"
+      release_json=$(printf '%s' "$releases_json" | cb_pick_release)
       if [[ -z "$release_json" ]] || [[ "$release_json" == "null" ]]; then
-        cb_fail "Failed to fetch latest release" "Check internet connectivity or specify --version <version>"
+        cb_fail "No installable release found" "Check https://github.com/${CB_GITHUB_REPO}/releases or specify --version <version>"
+      fi
+      if [[ "$(printf '%s' "$release_json" | jq -r '.prerelease')" == "true" ]]; then
+        cb_warn "No stable release yet - installing release candidate $(printf '%s' "$release_json" | jq -r '.tag_name')"
       fi
     fi
 

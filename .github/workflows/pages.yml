@@ -59,9 +59,16 @@ jobs:
       - name: Publish installer script
         run: cp install.sh _site/install.sh
 
-      # Preserves the previous behaviour of the old Pages root: a browser-only
-      # meta-refresh to the latest release asset. curl does not follow meta
+      # A browser-only meta-refresh to the installer. curl does not follow meta
       # refresh, so this is a human "click here" page, never a pipe target.
+      #
+      # Points at the copy this same workflow publishes above, not at
+      # releases/latest/download/install.sh: that URL resolves through the
+      # "Latest release" badge, which names the newest *stable* release. For
+      # the whole 1.0.0-rc window that is v0.3.4, so the badge URL handed
+      # clickers a pre-1.0 installer -- the same stale-badge fault that made a
+      # default install fetch the rc.2 bundle (see cb_pick_release in
+      # install.sh).
       - name: Publish installer redirect
         run: |
           mkdir -p _site/install
@@ -70,12 +77,12 @@ jobs:
           <html lang="en">
           <head>
             <meta charset="utf-8">
-            <meta http-equiv="refresh" content="0; url=https://github.com/BlkLeg/circuitbreaker/releases/latest/download/install.sh">
+            <meta http-equiv="refresh" content="0; url=/install.sh">
             <title>Circuit Breaker Installer</title>
           </head>
           <body>
             <p>Redirecting to Circuit Breaker installer...
-              <a href="https://github.com/BlkLeg/circuitbreaker/releases/latest/download/install.sh">Click here if not redirected.</a>
+              <a href="/install.sh">Click here if not redirected.</a>
             </p>
           </body>
           </html>
