@@ -89,7 +89,12 @@ class Settings(BaseSettings):
         "",
         validation_alias=AliasChoices("CB_EGRESS_PROXY_URL", "EGRESS_PROXY_URL"),
     )
-    airgap: bool = False
+    # Settings sets no env_prefix, so a bare `airgap: bool = False` only ever
+    # bound the un-prefixed AIRGAP. docs, docker-compose.yml and
+    # core/network_acl.py all name CB_AIRGAP, so an operator who set the
+    # documented variable got airgap=False and scans ran anyway. The alias
+    # restores the documented behaviour; see also update_check below.
+    airgap: bool = Field(False, validation_alias=AliasChoices("CB_AIRGAP", "AIRGAP"))
     # Outbound release check. Distinct from `airgap`: an operator may allow
     # scanning egress while still declining to contact GitHub. Either one off
     # disables the check.
