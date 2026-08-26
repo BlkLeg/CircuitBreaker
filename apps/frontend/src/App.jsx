@@ -21,6 +21,7 @@ import { useDiscoveryStream, discoveryEmitter } from './hooks/useDiscoveryStream
 import { connectSSE, disconnectSSE } from './lib/sseClient.js';
 import ConnectionStatus from './components/ConnectionStatus.jsx';
 import MasqueradeBanner from './components/MasqueradeBanner.jsx';
+import UpdateBanner from './components/UpdateBanner.jsx';
 import ServerLifecycleBanner from './components/ServerLifecycleBanner.jsx';
 import LoadingScreen from './components/common/LoadingScreen.jsx';
 import Guarded from './components/common/Guarded';
@@ -122,6 +123,7 @@ function AppInner() {
       <CommandPalette isOpen={paletteOpen} onClose={handleClosePalette} />
       <Header onOpenPalette={handleOpenPalette} />
       <MasqueradeBanner />
+      <UpdateBanner />
       <ConnectionStatus discoveryConnected={discoveryConnected} />
       <div
         className="page-content"

@@ -358,6 +358,7 @@ export const adminApi = {
   getBackupSettings: () => client.get('/admin/settings/backup'),
   updateBackupSettings: (data) => client.put('/admin/settings/backup', data),
   testBackupConnection: () => client.post('/admin/settings/backup/test'),
+  updateStatus: () => client.get('/system/update'),
 };
 
 // ── Masquerade interceptor helpers ──────────────────────────────────────────
