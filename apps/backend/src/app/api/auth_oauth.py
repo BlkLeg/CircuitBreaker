@@ -17,7 +17,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.core.rate_limit import get_limit, limiter
-from app.core.time import utcnow_iso
+from app.core.time import utcnow, utcnow_iso
 from app.core.url_validation import OIDC_POLICY, outbound_async_client, validate_outbound_url
 from app.db.models import AppSettings, OAuthState, User
 from app.db.session import get_db
@@ -380,11 +380,40 @@ def _upsert_oauth_user(
     oauth_tokens: dict,
     avatar_url: str | None = None,
     role: str = "viewer",
+    *,
+    invited: bool = False,
 ) -> tuple[User, bool]:
-    """Upsert an OAuth user. Returns (user, is_new)."""
+    """Upsert an OAuth user. Returns (user, is_new).
+
+    Two rules here are the account boundary rather than bookkeeping:
+
+    Creation honours `registration_open`, which the password path already does
+    (`api/auth.py:145`). Without it, closing registration closed only the form —
+    any OAuth provider still minted accounts.
+
+    An existing row is reused only when it is already bound to this provider. It
+    used to be reused for any match on email, and the branch then assigned
+    `user.provider = provider`, silently rebinding a local-password account to
+    whoever signed in. Registering a provider account under an existing admin's
+    address was therefore a complete takeover of that admin.
+
+    `invited` keeps the invite flow open, since an invite is the administrator
+    stating this address may hold an account. The `cfg.auth_enabled` escape keeps
+    the pre-OOBE first-admin flow working — before bootstrap there is no account
+    to take over.
+    """
+    from app.services.settings_service import get_or_create_settings
+
+    cfg = get_or_create_settings(db)
+    # The password path normalises before lookup (api/auth.py); without the same
+    # normalisation here "Ops@Corp" and "ops@corp" are two accounts, and which one
+    # a sign-in reaches depends on how the provider happened to spell it.
+    email = email.strip().lower()
     user = db.query(User).filter(User.email == email).first()
     is_new = user is None
     if is_new:
+        if cfg.auth_enabled and not invited and not getattr(cfg, "registration_open", True):
+            raise HTTPException(status_code=403, detail="Registration is currently closed")
         from app.core.security import hash_password
 
         user = User(
@@ -400,6 +429,11 @@ def _upsert_oauth_user(
         db.add(user)
     else:
         assert user is not None
+        if cfg.auth_enabled and not invited and user.provider != provider:
+            raise HTTPException(
+                status_code=403,
+                detail="This email is already registered. Ask an administrator to link it.",
+            )
         user.provider = provider
         try:
             vault = get_vault()
@@ -432,6 +466,27 @@ def _issue_jwt_and_redirect(
     from app.services.user_service import record_session
 
     cfg = get_or_create_settings(db)
+    if getattr(user, "mfa_enabled", False):
+        # The password path stops here and demands the second factor
+        # (`api/auth.py`); the OAuth path issued a full session instead, so
+        # enrolling in MFA protected only one of the two ways in. Same token
+        # format and same audience, so `/auth/mfa/verify` redeems it unchanged.
+        #
+        # No session cookie and no record_session: nothing is issued until the
+        # second factor is presented.
+        mfa_token = jwt.encode(
+            {
+                "user_id": user.id,
+                "aud": "cb:mfa-challenge",
+                "exp": utcnow() + timedelta(minutes=5),
+            },
+            cfg.jwt_secret or "",
+            algorithm="HS256",
+        )
+        challenge = RedirectResponse(url=f"{base_url}/?cb_mfa_token={mfa_token}", status_code=302)
+        challenge.headers["Cache-Control"] = "no-store"
+        return challenge
+
     token = _make_token(user, cfg)
     record_session(db, user, request, token, cfg)
     code = _issue_auth_code(token)
@@ -690,6 +745,7 @@ async def github_callback(
         {"access_token": access_token},
         avatar_url=avatar_url,
         role=invited_role,
+        invited=bool(_invite_token),
     )
     bootstrap_redir = _bootstrap_redirect_or_none(user, base_url, "github", db, request)
     if bootstrap_redir:
@@ -778,6 +834,10 @@ async def google_callback(
     email = g_user.get("email")
     if not email:
         raise HTTPException(400, "Could not obtain email from Google account")
+    # The email selects the account, so an address the provider has not verified
+    # cannot be allowed to select one. Google returns email_verified explicitly.
+    if g_user.get("email_verified") is False:
+        raise HTTPException(400, "Google reported an unverified email")
     display_name = g_user.get("name", "")
     avatar_url = g_user.get("picture")
     invited_role = "viewer"
@@ -799,6 +859,7 @@ async def google_callback(
         {"access_token": access_token},
         avatar_url=avatar_url,
         role=invited_role,
+        invited=bool(_invite_token),
     )
     bootstrap_redir = _bootstrap_redirect_or_none(user, base_url, "google", db, request)
     if bootstrap_redir:
@@ -913,6 +974,11 @@ async def oidc_callback(
     email = userinfo.get("email")
     if not email:
         raise HTTPException(400, "OIDC provider did not return email")
+    # Same rule as Google above. Absent means the provider makes no claim either
+    # way and is left to the operator's trust in the issuer they configured; an
+    # explicit false is the provider saying this address is unproven.
+    if userinfo.get("email_verified") is False:
+        raise HTTPException(400, "OIDC provider reported an unverified email")
     display_name = userinfo.get("name") or userinfo.get("preferred_username", "")
     avatar_url = userinfo.get("picture")
     invited_role = "viewer"
@@ -934,6 +1000,7 @@ async def oidc_callback(
         {"access_token": access_token},
         avatar_url=avatar_url,
         role=invited_role,
+        invited=bool(_invite_token),
     )
     bootstrap_redir = _bootstrap_redirect_or_none(user, base_url, provider_slug, db, request)
     if bootstrap_redir:

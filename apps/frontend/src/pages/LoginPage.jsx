@@ -104,6 +104,18 @@ function LoginPage() {
       });
   }, []);
 
+  // OAuth redirect where the account has MFA enabled: the server issues no session,
+  // only a short-lived challenge, and the same second-factor step the password path
+  // uses redeems it.
+  useEffect(() => {
+    const params = new URLSearchParams(globalThis.location.search);
+    const oauthMfaToken = params.get('cb_mfa_token');
+    if (!oauthMfaToken) return;
+    globalThis.history.replaceState({}, '', globalThis.location.pathname);
+    setMfaToken(oauthMfaToken);
+    setMfaStep(true);
+  }, []);
+
   // OAuth redirect: one-time ?cb_auth_code= only (exchanged for JWT via API — never in URL).
   useEffect(() => {
     const params = new URLSearchParams(globalThis.location.search);
