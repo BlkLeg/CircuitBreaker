@@ -505,7 +505,11 @@ stage0_download_bundle() {
       fi
     fi
 
-    CB_VERSION=$(echo "$release_json" | jq -r '.tag_name' | tr -d v)
+    # ${tag#v}, not `tr -d v`: `tr` deletes every v in the string, not the
+    # leading one. Harmless for today's tags, wrong for any tag with a v
+    # elsewhere in it (a -dev or -preview suffix, a codename).
+    CB_VERSION=$(echo "$release_json" | jq -r '.tag_name')
+    CB_VERSION="${CB_VERSION#v}"
     if [[ -z "$CB_VERSION" ]] || [[ "$CB_VERSION" == "null" ]]; then
       cb_fail "Failed to parse release version" "GitHub API may be rate-limited"
     fi

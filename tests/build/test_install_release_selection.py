@@ -128,3 +128,35 @@ def test_default_path_does_not_consult_the_releases_latest_endpoint():
     ]
     offenders = [line for line in code if "/latest" in line]
     assert offenders == [], f"install.sh still reaches for the badge: {offenders}"
+
+
+def _strip_v(tag: str) -> str:
+    """Run install.sh's own tag -> CB_VERSION conversion, as shipped."""
+    line = next(
+        ln.strip()
+        for ln in INSTALL_SH.read_text().splitlines()
+        if ln.strip().startswith('CB_VERSION="${CB_VERSION')
+    )
+    result = subprocess.run(
+        ["bash", "-c", f'set -euo pipefail\nCB_VERSION={json.dumps(tag)}\n{line}\nprintf %s "$CB_VERSION"'],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+@pytest.mark.parametrize(
+    ("tag", "expected"),
+    [
+        ("v1.0.0", "1.0.0"),
+        ("v1.0.0-rc.4", "1.0.0-rc.4"),
+        ("1.0.0", "1.0.0"),
+        # PREEXISTING-3: `tr -d v` deleted every v in the tag, not the leading
+        # one, so any tag with a v elsewhere came out mangled.
+        ("v1.0.0-preview.1", "1.0.0-preview.1"),
+        ("v2.0.0-dev.1", "2.0.0-dev.1"),
+    ],
+)
+def test_only_the_leading_v_is_stripped_from_the_tag(tag, expected):
+    assert _strip_v(tag) == expected
