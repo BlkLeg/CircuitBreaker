@@ -114,3 +114,10 @@ def test_workflow_calls_the_tier0_script_rather_than_inlining_it():
     assert "mypy src/app" not in workflow, (
         "mypy is a tier-0 gate; its command belongs in tier0-static.sh, not in the workflow"
     )
+
+
+def test_pre_push_hook_runs_the_full_gate():
+    """The hook existed and ran `make lint` — a fraction of the gate. ADR 0005
+    makes the pre-push slot the T0+T1 gate."""
+    hook = (REPO_ROOT / ".husky" / "pre-push").read_text(encoding="utf-8")
+    assert "make verify" in hook, hook
