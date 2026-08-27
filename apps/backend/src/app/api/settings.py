@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -174,7 +174,7 @@ async def test_smtp(
     else:
         result = await svc.test_connection()
 
-    cfg.smtp_last_test_at = datetime.utcnow().isoformat()
+    cfg.smtp_last_test_at = datetime.now(UTC).isoformat()
     cfg.smtp_last_test_status = result["status"]
     if result["status"] == "ok" and not cfg.smtp_enabled:
         cfg.smtp_enabled = True

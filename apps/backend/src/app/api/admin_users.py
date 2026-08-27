@@ -3,7 +3,7 @@
 import logging
 import secrets
 import string
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -603,7 +603,7 @@ async def create_invite_endpoint(
     invite.email_status = email_status
     invite.email_error = email_error
     if email_status == "sent":
-        invite.email_sent_at = datetime.utcnow().isoformat()
+        invite.email_sent_at = datetime.now(UTC).isoformat()
     db.commit()
 
     return InviteCreateResponse(

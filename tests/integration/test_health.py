@@ -50,8 +50,8 @@ def redis_up(monkeypatch):
 class _DriftedEngine:
     """An engine whose schema is missing scan_jobs.error_reason.
 
-    Mirrors the readiness contract check in app.main._probe_dependencies:
-    ``SELECT 1`` succeeds, the discovery contract column does not.
+    Mirrors the readiness contract check in app.core.health: ``SELECT 1``
+    succeeds, the discovery contract column does not.
     """
 
     class _Conn:
@@ -159,10 +159,17 @@ def test_schema_drift_makes_readyz_unready_without_making_the_process_dead(clien
     /health keeps answering 200 with the failure in `checks` because the Docker
     HEALTHCHECK and deploy scripts still read it.
     """
-    import app.main as main_mod
+    # Patch app.db.session.engine, not app.main.engine. The db probe moved
+    # into app.core.health, which does `from app.db.session import engine`
+    # inside the function -- resolved per call, deliberately, so a test can
+    # substitute it. Patching app.main.engine stopped reaching the probe when
+    # that move happened, and this test then asserted 503 against a perfectly
+    # healthy database and got the truthful 200.
+    import app.core.health as health_mod
+    import app.db.session as db_session_mod
 
-    original_engine = main_mod.engine
-    main_mod.engine = _DriftedEngine()
+    original_engine = db_session_mod.engine
+    db_session_mod.engine = _DriftedEngine()
     try:
         ready = client.get("/api/v1/readyz")
         assert ready.status_code == 503
@@ -177,4 +184,12 @@ def test_schema_drift_makes_readyz_unready_without_making_the_process_dead(clien
         assert health.status_code == 200
         assert health.json()["checks"]["db"] == "error"
     finally:
-        main_mod.engine = original_engine
+        db_session_mod.engine = original_engine
+        # Restoring the engine is not enough: app.core.health caches its
+        # verdict, and the write-admission guard is the caching consumer. A
+        # db=error snapshot left behind here made every later test that
+        # bootstraps fail with `503 required dependency unavailable: db` --
+        # test_ip_reservation.py, which sorts right after this file. That did
+        # not happen while this test patched app.main.engine, because the probe
+        # never read it; the leak is the cost of the patch actually working.
+        health_mod.reset_cache()

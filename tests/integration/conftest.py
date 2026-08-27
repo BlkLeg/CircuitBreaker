@@ -59,7 +59,15 @@ def db_engine():
 @pytest.fixture(scope="function")
 def db(db_engine):
     with db_engine.connect() as conn:
-        tables = ", ".join(table.name for table in Base.metadata.sorted_tables)
+        # metadata.tables, not metadata.sorted_tables: a single
+        # `TRUNCATE a, b, c CASCADE` is order-independent by definition, so the
+        # topological sort bought nothing -- and it raises
+        # CircularDependencyError on the agents -> hardware -> scan_results ->
+        # agents foreign-key cycle, which failed the setup of every test taking
+        # this fixture (364 errors). The DDL path tolerates that cycle because
+        # it can defer constraints; `sorted_tables` cannot, so it was the only
+        # place the cycle was fatal.
+        tables = ", ".join(table.name for table in Base.metadata.tables.values())
         if tables:
             conn.execute(text(f"TRUNCATE TABLE {tables} CASCADE;"))
         conn.commit()

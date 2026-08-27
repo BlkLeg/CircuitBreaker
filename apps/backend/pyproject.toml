@@ -274,7 +274,10 @@ filterwarnings = [
     # shawnji (backend): starlette's TestClient still imports httpx 0.x. Remove
     # when starlette supports httpx2 or the suite drops starlette.testclient
     # (only tests/api/test_monitor_stream_auth.py uses it).
-    "ignore:Using `httpx` with `starlette.testclient` is deprecated:DeprecationWarning",
+    # UserWarning, not DeprecationWarning: StarletteDeprecationWarning
+    # subclasses UserWarning despite its name, so the previous spelling matched
+    # nothing and this entry had been inert since starlette 1.x.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:UserWarning",
     # shawnji (backend): slowapi calls asyncio.iscoroutinefunction, deprecated
     # in 3.14 and slated for removal in 3.16. Does not fire on CI's 3.12.
     # Remove when slowapi moves to inspect.iscoroutinefunction.
