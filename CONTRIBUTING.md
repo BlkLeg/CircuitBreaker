@@ -53,8 +53,7 @@ staged `.ts`, `.tsx`, and `.py` files. `.pre-commit-config.yaml` additionally pi
 `gitleaks protect --staged`, `ruff` (with `ruff-format`), and `mypy --strict` if you also use
 `pre-commit`.
 
-`make install` does **not** install Go. `.husky/pre-push` now runs `make verify`, which is the
-same gate GitHub Actions runs (ADR 0005), and that gate's security scan calls `govulncheck` — it
+`make install` does **not** install Go. `.husky/pre-push` now runs `make verify`, which applies Tier 0 gates matching CI plus local Tier 1 (not yet in workflows; see design §4 for differences), and that gate's security scan calls `govulncheck` — it
 fails closed if the tool is missing, so every push needs it. Install both before your first push:
 
 ```bash

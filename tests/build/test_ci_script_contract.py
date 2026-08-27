@@ -116,7 +116,7 @@ def test_tier_scripts_do_not_swallow_gate_failures():
 TIER0_LOAD_BEARING_GATES = [
     (
         "Alembic single-head check",
-        "get_heads",
+        "len(heads) == 1",
         "a forked/diverged migration history would go undetected",
     ),
     (
