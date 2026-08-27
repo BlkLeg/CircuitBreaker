@@ -306,16 +306,22 @@ guarantee structural rather than procedural.
 `matrix.yaml` is the single source of truth for what is claimed to work, and
 feeds both the tier and the support-tier table in §8.
 
+Each row names where it executes, because arm64 rows run on GitHub's native
+aarch64 runners rather than on the x86_64 fleet (§8.2):
+
 ```yaml
-- {distro: debian-12,  format: deb,         arch: amd64, template: 9001, tier: 1}
-- {distro: fedora-40,  format: rpm,         arch: amd64, template: 9002, tier: 1}
-- {distro: debian-12,  format: deb,         arch: arm64, template: 9003, tier: 2}
-- {distro: fedora-40,  format: rpm,         arch: arm64, template: 9004, tier: 2}
-- {distro: alpine-3.20, format: apk,        arch: amd64, template: 9005, tier: 3}
-- {distro: arch,       format: pkg.tar.zst, arch: amd64, template: 9006, tier: 3}
-- {distro: debian-12,  format: AppImage,    arch: amd64, template: 9001, tier: 3}
-- {distro: debian-12,  format: tarball,     arch: amd64, template: 9001, tier: 3}
+- {distro: debian-12,   format: deb,         arch: amd64, runner: pve/9001,        tier: 1}
+- {distro: fedora-40,   format: rpm,         arch: amd64, runner: pve/9002,        tier: 1}
+- {distro: ubuntu-22.04, format: deb,        arch: arm64, runner: gha/ubuntu-22.04-arm, tier: 2}
+- {distro: ubuntu-22.04, format: deb,        arch: arm64, runner: local/qemu-arm64, tier: 2}
+- {distro: alpine-3.20, format: apk,         arch: amd64, runner: pve/9005,        tier: 3}
+- {distro: arch,        format: pkg.tar.zst, arch: amd64, runner: pve/9006,        tier: 3}
+- {distro: debian-12,   format: AppImage,    arch: amd64, runner: pve/9001,        tier: 3}
+- {distro: debian-12,   format: tarball,     arch: amd64, runner: pve/9001,        tier: 3}
 ```
+
+The `runner` field is the only thing that varies by execution site;
+`tier3-artifact.sh` is identical across all of them (P1).
 
 ### 7.3 Evidence
 
@@ -342,45 +348,87 @@ This is the most complex slice and is sequenced last (§11).
 
 Adopting Rust's model (P5), published in the docs and enforced by §7's matrix:
 
-| Tier | Guarantee | Formats | Gate |
-|---|---|---|---|
-| **1** | Guaranteed to install, boot, upgrade and roll back | deb/rpm amd64 | blocks release |
-| **2** | Guaranteed to install and boot | deb/rpm arm64 | blocks release |
-| **3** | Guaranteed to build; installation best-effort | apk, AppImage, tarball, pkg.tar.zst | reported, does not block |
+| Tier | Guarantee | Formats | Verified on | Gate |
+|---|---|---|---|---|
+| **1** | Guaranteed to install, boot, upgrade and roll back | deb/rpm amd64 | PVE clones | blocks release |
+| **2** | Guaranteed to install and boot | deb/rpm arm64 | `ubuntu-22.04-arm` (native aarch64) | blocks release |
+| **3** | Guaranteed to build; installation best-effort | apk, AppImage, tarball, pkg.tar.zst | PVE clones | reported, does not block |
 
-Three of five escaped bugs are arm64, and the Raspberry Pi 5 is evidently a
-real deployment target. arm64 therefore cannot be Tier 3.
+Three of five escaped bugs are arm64 and the Raspberry Pi 5 is evidently a
+real deployment target, so arm64 cannot be Tier 3. It is not promoted to
+Tier 1 because upgrade and rollback are exercised on the fleet, which is
+x86_64 — see §8.2 for how the Tier 2 guarantee is met without arm hardware,
+and for what is knowingly left uncovered.
 
-### 8.2 The problem this design cannot solve by itself
+### 8.2 Covering arm64 without buying hardware
 
-**The fleet is x86_64. The bugs are arm64.**
+There is no arm64 hardware in the fleet and none is being acquired. That
+constraint turns out to bind far less than it first appears, because the
+project already has native aarch64 CI and is not using it for this.
 
-Proxmox VE runs on x86_64 hosts. Booting an arm64 guest there requires full
-system emulation (`qemu-system-aarch64`), which is roughly an order of
-magnitude slower and — more importantly — does not reproduce the conditions
-in issues #81, #101 and #103 faithfully. Those are PyInstaller `_MEI`
-extraction behaviour, a `PIL/_avif` crash loop, and an upgrade path: symptoms
-of real userspace, real page sizes and real filesystem behaviour on the
-target. `binfmt_misc` + `qemu-user-static` is adequate for *building* arm64
-artifacts and inadequate for *booting* them honestly.
+**`build.yml` and `artifact-smoke.yml` already run on `ubuntu-22.04-arm`** —
+GitHub's native aarch64 runners, free for public repositories, which this one
+is. arm64 packages are already built and installed on real aarch64 silicon
+today. What that job does not do is *start* what it installed. The arm64 gap
+is therefore not an absence of hardware; it is the same boot-and-exercise gap
+as amd64, on a runner that already exists.
 
-Three options, in descending order of fidelity:
+The strategy is four layers, cheapest and highest-yield first.
 
-1. **A real arm64 host in the fleet.** A Raspberry Pi 5 — the exact hardware
-   in #101 and #103 — added as a Tier-3 target host. Highest fidelity;
-   directly reproduces three open issues; costs one device.
-2. **Emulated arm64 VM on PVE.** No new hardware; catches gross failures such
-   as #104's missing module and #87's migration crash; will not faithfully
-   reproduce `_MEI`/page-size/timing issues.
-3. **arm64 stays Tier 3 (build-only).** Honest, and matches today's reality —
-   but it means shipping a platform the project knows it does not verify,
-   while users are actively filing bugs against it.
+**L1 — Catch the arch-independent bugs on x86, where they are cheapest.**
+Not every bug filed against arm64 is an arm64 bug. #104 (`proxmoxer.backends`
+missing from the PyInstaller bundle) is a hidden-import defect with no
+architecture component at all, and is caught deterministically by a bundle
+completeness assertion — enumerate the dynamic imports the app performs,
+assert each resolves inside the frozen bundle — which runs anywhere in
+seconds. #87 is explicitly "all platforms". Parts of #101 (`environment_id`
+type mismatch, `DB_POOL_SIZE` naming) are plain logic and configuration
+defects. **Two of the five open issues, and part of a third, need no arm64 at
+all** — they need the boot-and-exercise tier that does not yet exist.
 
-**Recommendation: option 1.** Every other part of this design is about
-closing the gap between what is tested and what is shipped; leaving the
-architecture with the highest escape rate untested would reproduce the exact
-failure this document exists to correct. This is flagged as an open question
-in §13 because it is a hardware purchasing decision, not an engineering one.
+**L2 — Native aarch64 boot-and-exercise on GitHub's arm runners.**
+Extend the existing `ubuntu-22.04-arm` job from "installs and reports a
+version" to the full §7.1 contract: start the service, run migrations, probe
+`/livez` and `/readyz`, exercise the CLI, assert no restart loop. This is real
+aarch64 execution on real silicon and costs nothing. It is what makes the
+Tier 2 guarantee ("guaranteed to install and boot") honest rather than
+aspirational, and it would plausibly have caught #81 and the `PIL/_avif`
+crash loop in #101, both of which are missing-or-broken shared library
+failures rather than timing ones.
+
+**L3 — Emulated aarch64 locally, for the development loop.**
+`binfmt_misc` + `qemu-user-static` with `docker buildx` runs the arm64
+artifact on the laptop. Lower fidelity than L2 and explicitly not a gate — its
+purpose is that a developer debugging an arm64 failure can iterate locally
+instead of pushing to see. Because `tier3-artifact.sh` is one script (P1), the
+emulated container and the native runner execute the identical contract; only
+`matrix.yaml`'s `runner` field differs.
+
+**L4 — Name the residue, and make it loud instead of silent.**
+What none of the above reaches: Raspberry Pi 5 specifically — its kernel, its
+page-size configuration, its storage — and timing-dependent failures on slow
+hardware. `ubuntu-22.04-arm` is aarch64 Linux; it is not a Pi. #103's upgrade
+failure and #101's `_MEI` accumulation may be in this residue.
+
+The compensating control is observability, not more testing. Read #81 again:
+the backend "crashes **silently**". That word is the actual defect. Surface
+that cannot be tested must instead fail loudly — a first-boot self-check that
+validates the frozen bundle, the migration state and the runtime environment,
+and reports a specific diagnosis to the journal and to `cb doctor`, converts
+an untestable failure into a one-line bug report from the user who hits it.
+This is the same principle as P2 and R4 applied to runtime rather than to
+gates: the enemy throughout this document is not failure, it is silence.
+
+Residual risk is recorded in the risk register rather than closed. If Pi-class
+escapes continue after L1–L4 land, the hardware question reopens with evidence
+instead of speculation.
+
+**Correction to an earlier draft of this section:** it asserted that the
+architecture with the highest escape rate could not be verified without
+purchasing hardware, having reasoned from the fleet's architecture without
+checking the runner labels the repository already uses. Native aarch64 CI was
+already wired into two workflows. The recommendation to acquire a device is
+withdrawn.
 
 ---
 
@@ -486,9 +534,12 @@ The first row is the only one that matters. The rest are leading indicators.
 
 ## 13. Open questions
 
-1. **arm64 fidelity (§8.2).** Real Pi 5 in the fleet, emulated VM, or
-   declared Tier 3? Recommendation: real hardware. Requires a purchasing
-   decision.
+1. ~~**arm64 fidelity.**~~ **Resolved 2026-08-27:** no arm hardware will be
+   acquired. §8.2 meets the Tier 2 guarantee on GitHub's existing native
+   `ubuntu-22.04-arm` runners, which the repository already uses for building
+   and smoke-installing, and records the Pi-specific residue as accepted risk
+   with a loud-failure compensating control. Reopens only if Pi-class escapes
+   continue after L1–L4 land.
 2. **PVE API credentials for the harness.** A dedicated PVE role and token
    with clone/destroy rights, scoped to a template pool, stored via the
    existing vault mechanism rather than in a developer's shell profile.
@@ -509,6 +560,7 @@ The first row is the only one that matters. The rest are leading indicators.
 | Fleet becomes a second system to maintain | Ephemeral clones from templates; no persistent state to drift; the tier scripts are the same ones CI runs |
 | Script extraction stalls half-done | Phase 1 migrates T0/T1 only; a thin caller and an inline block are interchangeable, so partial migration is a valid resting state |
 | The design is written and not built | Phases are ordered so Phase 1 alone delivers the stated developer goal |
+| Pi-specific arm64 failures survive L1–L4 (§8.2) | Accepted. Compensating control is the first-boot self-check and `cb doctor` diagnosis, converting a silent crash into a reportable one; reopens the hardware question with evidence |
 
 ---
 

@@ -53,7 +53,8 @@ still reports it as satisfied.
 Platform support becomes declared tiers with stated guarantees:
 
 - **Tier 1** — guaranteed to install, boot, upgrade and roll back: deb/rpm on amd64.
-- **Tier 2** — guaranteed to install and boot: deb/rpm on arm64.
+- **Tier 2** — guaranteed to install and boot: deb/rpm on arm64, verified on
+  GitHub's native `ubuntu-22.04-arm` runners.
 - **Tier 3** — guaranteed to build only: apk, AppImage, tarball, `pkg.tar.zst`.
 
 Three further rules apply repo-wide: a gate may not pass by not running; test
@@ -75,7 +76,14 @@ around services, artifacts and nested `docker compose` fall exactly on the agent
 suite, the tier most in need of local execution.
 
 **Leaving arm64 at Tier 3.** Honest about today, but the project would knowingly ship a
-platform it does not verify while users file bugs against it.
+platform it does not verify while users file bugs against it — and unnecessary, since
+native aarch64 runners are already in use here and cost nothing.
+
+**Acquiring arm64 hardware for the fleet.** Considered and withdrawn. The repository is
+public and `build.yml` and `artifact-smoke.yml` already run on `ubuntu-22.04-arm`, so
+arm64 packages are already built and installed on real aarch64 silicon. The gap is that
+the job does not start what it installs, which is the same gap as amd64 and needs no
+purchase to close.
 
 ## Consequences
 
@@ -86,11 +94,19 @@ governing what gets verified.
 Gate logic becomes reviewable code in the diff rather than YAML that only executes where
 no reviewer can run it.
 
-The fleet is x86_64 and three of five escaped bugs are aarch64. Emulation builds arm64
-honestly and boots it dishonestly: `_MEI` extraction, page sizes and upgrade timing are
-the symptoms in #101 and #103. Meeting the Tier 2 guarantee therefore requires real arm64
-hardware in the fleet. This is left open as a purchasing decision rather than closed by
-pretending emulation covers it — see the design document, §8.2.
+The fleet is x86_64, but aarch64 coverage does not depend on it. Two of the five open
+issues (#87, #104) and part of a third (#101) have no architecture component and are
+caught by the boot-and-exercise tier on any host. The remainder are covered by extending
+the existing native `ubuntu-22.04-arm` job from "installs and prints a version" to the
+full boot-and-exercise contract, with local qemu emulation available for the development
+loop but never as a gate.
+
+What is knowingly not covered is Raspberry Pi 5 specifically — its kernel, page-size
+configuration and storage — since `ubuntu-22.04-arm` is aarch64 Linux but is not a Pi.
+That residue is accepted rather than closed, with observability as the compensating
+control: #81's defect is that the backend crashes *silently*, and a first-boot self-check
+that reports a specific diagnosis converts an untestable failure into a one-line bug
+report. Throughout this record the enemy is not failure; it is silence.
 
 Third-party actions are tag-pinned rather than SHA-pinned, which is the propagation
 mechanism this class of supply-chain compromise uses. Moving to commit SHAs is folded into
