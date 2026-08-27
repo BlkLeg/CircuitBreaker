@@ -100,6 +100,9 @@ apps/frontend/coverage/
 .coverage.*
 htmlcov/
 
+# CI artifacts: written by `make verify` (local CI scripts) — never committed
+artifacts/
+
 # Generated security scan reports (keep STANDING reports untracked naturally)
 SECURITY_REPORTS/security_scan_report*.md
 /security_scan_report.md

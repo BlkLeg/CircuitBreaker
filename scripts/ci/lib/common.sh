@@ -48,7 +48,10 @@ cb::skipped() {
 }
 
 cb::evidence_dir() {
-    local dir="$CB_EVIDENCE_ROOT/$1"
-    mkdir -p "$dir/junit" "$dir/logs"
-    printf '%s' "$dir"
+    # Flat, and deliberately so: ci.yml and dev-ci.yml both write
+    # artifacts/junit/ and artifacts/logs/ directly, with no per-tier
+    # subdirectory, and four jobs consume those paths. A local run should
+    # produce the same tree a CI artifact download does.
+    mkdir -p "$CB_EVIDENCE_ROOT/junit" "$CB_EVIDENCE_ROOT/logs"
+    printf '%s' "$CB_EVIDENCE_ROOT"
 }

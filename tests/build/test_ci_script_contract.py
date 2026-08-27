@@ -53,3 +53,23 @@ def test_skipped_marker_is_unmistakable():
 def test_repo_root_resolves_to_this_repo():
     result = _bash(f'source "{COMMON}"; printf "%s" "$CB_REPO_ROOT"')
     assert Path(result.stdout).resolve() == REPO_ROOT
+
+
+def test_evidence_dir_creates_flat_layout(tmp_path):
+    """cb::evidence_dir must create a flat layout with junit/ and logs/
+    subdirectories, matching the structure that ci.yml and dev-ci.yml write."""
+    tmp_evidence_root = tmp_path / "evidence"
+    result = _bash(
+        f'export CB_EVIDENCE_ROOT="{tmp_evidence_root}"; source "{COMMON}"; '
+        f'dir=$(cb::evidence_dir); printf "%s" "$dir"'
+    )
+    assert result.returncode == 0, result.stderr
+
+    # Verify the path ends in "evidence"
+    echoed_dir = result.stdout
+    assert echoed_dir.endswith("evidence"), f"Expected path to end in 'evidence', got {echoed_dir}"
+
+    # Verify junit/ and logs/ subdirectories exist
+    echoed_path = Path(echoed_dir)
+    assert (echoed_path / "junit").is_dir(), f"junit/ directory not created at {echoed_path / 'junit'}"
+    assert (echoed_path / "logs").is_dir(), f"logs/ directory not created at {echoed_path / 'logs'}"
