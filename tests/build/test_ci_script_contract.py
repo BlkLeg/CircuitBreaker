@@ -73,3 +73,44 @@ def test_evidence_dir_creates_flat_layout(tmp_path):
     echoed_path = Path(echoed_dir)
     assert (echoed_path / "junit").is_dir(), f"junit/ directory not created at {echoed_path / 'junit'}"
     assert (echoed_path / "logs").is_dir(), f"logs/ directory not created at {echoed_path / 'logs'}"
+
+
+TIER_SCRIPTS = ["tier0-static.sh"]
+
+
+def test_tier_scripts_exist_and_are_executable():
+    for name in TIER_SCRIPTS:
+        script = CI_DIR / name
+        assert script.is_file(), f"{script} is missing"
+        assert script.stat().st_mode & 0o111, f"{script} is not executable"
+
+
+def test_tier_scripts_use_strict_bash():
+    for name in TIER_SCRIPTS:
+        text = (CI_DIR / name).read_text(encoding="utf-8")
+        assert text.startswith("#!/usr/bin/env bash\n"), name
+        assert "set -euo pipefail" in text, name
+
+
+def test_tier_scripts_do_not_swallow_gate_failures():
+    """No `|| true` on a gate. cb::skipped exists for the informational case."""
+    for name in TIER_SCRIPTS:
+        for lineno, line in enumerate(
+            (CI_DIR / name).read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            assert "|| true" not in stripped, f"{name}:{lineno}: {stripped}"
+
+
+def test_workflow_calls_the_tier0_script_rather_than_inlining_it():
+    """P1: a gate defined in YAML can only ever run in CI."""
+    workflow = (REPO_ROOT / ".github/workflows/dev-ci.yml").read_text(encoding="utf-8")
+    assert "scripts/ci/tier0-static.sh" in workflow
+    assert "ruff check src/app" not in workflow, (
+        "ruff is a tier-0 gate; its command belongs in tier0-static.sh, not in the workflow"
+    )
+    assert "mypy src/app" not in workflow, (
+        "mypy is a tier-0 gate; its command belongs in tier0-static.sh, not in the workflow"
+    )
