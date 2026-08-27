@@ -180,7 +180,7 @@ fourth tier for real-hardware artifact verification.
 | Tier | Contents | Runs where | Budget | Gate |
 |---|---|---|---|---|
 | **T0** static | lint, format, typecheck, repo-policy suites (`tests/build`), suppression manifest | laptop | 90 s | every commit |
-| **T1** unit + integration | frontend unit, security gate, and (measured 2026-08-27, see below) backend integration via Testcontainers — present in the T1 script but off by default in the pre-push gate; runs in full via `make verify-full` | laptop | 4 min | **pre-push hook** |
+| **T1** unit + integration | frontend unit, security gate, and (measured 2026-08-27, see below) backend integration via Testcontainers — present in the T1 script but off by default in the pre-push gate; runs in full via `make verify-full`. The Go agent unit suite and `go vet` are also T1 in substance (unit-tier, laptop-runnable) but are **in CI only, not yet in the script** — see the note below the entry points | laptop | 4 min | **pre-push hook** |
 | **T2** composed | agent E2E, browser E2E, mono image smoke | laptop on demand, or fleet | 30 min | pre-merge to `main` |
 | **T3** artifact | install · **boot** · exercise · upgrade · rollback, per format/arch/distro | fleet, ephemeral VMs | 20 min | pre-release + nightly |
 
@@ -198,6 +198,35 @@ make verify-fleet    # T3                                — pre-release
 it for; when T2's script lands, its pre-merge caller will need a name that
 does not collide with this one — an open question for that phase, not this
 one.
+
+**As of Phase 1, T0 is extracted and CI-wired; T1 is extracted and invoked
+only by `make`, not yet by any workflow.** `tier0-static.sh` is called from
+both `ci.yml` and `dev-ci.yml` (§5). `tier1-unit.sh` is called from
+`Makefile`'s `verify`/`verify-full` targets and from nothing in
+`.github/workflows/` — `grep -rn "tier1-unit" .github/` returns nothing. The
+`backend-tests` and `test` jobs in `dev-ci.yml` (and their `ci.yml` twins)
+still carry T1's gate bodies inline. **T1 therefore currently has two
+definitions, not one** — the exact condition Goal 3 and P1 exist to prevent —
+and they already differ:
+
+- **The frontend invocation.** `tier1-unit.sh` ran `npm test`
+  (`vitest run --passWithNoTests`, green on zero collected tests) where CI
+  runs `vitest run --coverage` with the REL-15 thresholds enforced. Fixed in
+  this fix wave; recorded here so the fix is legible against the gap it
+  closed.
+- **The Go agent unit suite and `go vet`.** `dev-ci.yml:339` (`make test` in
+  `apps/agent`, under the race detector) and `:397` (`go vet ./...`) run on
+  every push. `tier1-unit.sh` runs neither — it is silent on Go entirely. A
+  developer's `make verify` can be green while the agent module has a failing
+  test or a `go vet` finding that only CI will catch.
+
+**Closing this — wiring `tier1-unit.sh` into the workflows, or reconciling the
+Go delta — is Phase 4 work** ("T2 extraction and harness hardening"), not
+this fix wave: the `backend-tests` job's sharding matrix does not map onto
+the script cleanly, and that reconciliation is a larger change than a fix
+wave should absorb. Until then, a green `dev-ci.yml`/`ci.yml` run remains the
+only local statement of Go correctness; `make verify`/`make verify-full` do
+not cover it.
 
 **T1 is the pre-push gate.** The 4-minute budget is a hard design constraint,
 not an aspiration: a gate slower than the developer's patience gets bypassed,
@@ -221,7 +250,15 @@ Every tier script:
 
 1. Declares required tooling and **fails closed** if absent (P2).
 2. Takes no argument that differs between laptop, fleet and CI.
-3. Writes evidence to `artifacts/<tier>/` in a fixed layout.
+3. Writes evidence to a **flat** `artifacts/` layout — `artifacts/junit/` and
+   `artifacts/logs/`, the exact paths `ci.yml` and `dev-ci.yml` already write
+   (e.g. `artifacts/junit/repo-policy.xml`, `artifacts/logs/frontend.log`).
+   No per-tier subdirectory: an earlier draft of this section specified
+   `artifacts/<tier>/`, which was never what CI wrote and was corrected before
+   implementation (commit `55f828c0`) — `scripts/ci/lib/common.sh`'s
+   `cb::evidence_dir` takes no tier argument for exactly this reason. The
+   local tree must match what a CI artifact download produces, or the two
+   stop being the same gate.
 4. Exits non-zero on any gate failure. `|| true` is forbidden on a gate; a
    genuinely informational step must print an explicit `SKIPPED (reason)`
    marker so that "did not run" is never spelled the same as "found nothing".
@@ -244,7 +281,11 @@ scripts/ci/
     dispatch.sh        # push artifact + tier3 script, run, collect, destroy
 ```
 
-Workflows reduce to thin callers:
+Workflows reduce to thin callers. **This is the Phase 4 target shape, not
+the current state** — as of Phase 1, only T0 is wired this way (`ci.yml` and
+`dev-ci.yml` both call `tier0-static.sh`); the Tier 1 snippet below is not yet
+wired into any workflow, and wiring it is explicitly out of scope for Phase 1
+(§4):
 
 ```yaml
 - name: Tier 1
@@ -310,9 +351,13 @@ for each row in matrix.yaml:
     exercise    run migrations; hit health + a real API path; run `cb` CLI parity checks
     upgrade     install N-1 first, upgrade to N, assert data + schema survived
     rollback    execute the documented rollback; assert the service returns
-    collect     journalctl, migration logs, /data listing  → artifacts/tier3/<row>/
+    collect     journalctl, migration logs, /data listing  → artifacts/diagnostics/tier3-<row>/
     destroy     always, even on failure — AFTER collection
 ```
+
+(Evidence layout is flat, per §4's tier contract — `artifacts/diagnostics/tier3-<row>/`, not a
+`artifacts/tier3/<row>/` per-tier subtree. An earlier draft of both this section and §4
+specified per-tier nesting; §4 records why that was corrected before implementation.)
 
 Ephemeral clones rather than snapshot-reset persistent VMs: an install test on
 a host with residue is not an install test, and template cloning makes that
@@ -506,6 +551,15 @@ tests.
 `scripts/ci/tier0-static.sh`, `tier1-unit.sh`, `make verify`, and a
 `pre-push` hook. Delivers the developer-facing goal in the smallest
 increment, and every later phase reuses the harness.
+
+**Prerequisite this phase does not install for you: Go.** `make verify` is
+the pre-push hook for every contributor, and Tier 1's security gate fails
+closed without `govulncheck`, which needs a Go toolchain. `make install`
+does not bootstrap Go — it only builds the Python venv and installs frontend
+deps. Contributors need, once: `sudo dnf install golang` (or their
+platform's equivalent) and
+`go install golang.org/x/vuln/cmd/govulncheck@v1.7.0`. Documented in
+`CONTRIBUTING.md`'s Local Setup section alongside `make install`.
 
 **Phase 2 — T3 first slice: boot-and-exercise on one Fedora VM.**
 Install the rpm, start the service, run migrations, probe `/livez` and
