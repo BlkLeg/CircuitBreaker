@@ -6,11 +6,24 @@
 # satisfied.
 set -euo pipefail
 
+# REL-20: both workflows pin this at workflow level (ci.yml, dev-ci.yml) and
+# tests/build/test_ci_evidence_retention.py enforces it there. Exporting it
+# here too means the local gate removes the same source of run-to-run
+# nondeterminism (per-process str/bytes hash salting) that CI does, instead of
+# only being deterministic when GitHub runs it.
+export PYTHONHASHSEED=0
+
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 cd "$CB_REPO_ROOT"
 
 EVIDENCE="$(cb::evidence_dir)"
+mkdir -p "$EVIDENCE/coverage"
 CB_VERIFY_BACKEND="${CB_VERIFY_BACKEND:-shards}"
+# dev-ci.yml sets this at workflow level (env: CB_TEST_SEED: "20260826"); it is
+# unset on a laptop, so pin the same value here. This is the seed the frontend
+# suite's --sequence.seed uses below — keep it equal to CI's so a local run and
+# a CI run of the same commit exercise tests in the same order.
+CB_TEST_SEED="${CB_TEST_SEED:-20260826}"
 
 cb::require_tool docker "the backend suite and the security gate both need it"
 cb::require_tool npm
@@ -25,7 +38,20 @@ cb::require_tool govulncheck \
     "install: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0 — the security gate fails closed without it"
 
 cb::section "Frontend unit tests"
-( cd apps/frontend && npm test ) 2>&1 | tee "$EVIDENCE/logs/frontend.log"
+# Deliberately NOT `npm test` (= `vitest run --passWithNoTests`). That flag is
+# exactly the defect commit 05350354 exists to fix: it is green on zero
+# collected tests, so it can pass by not running (design P2/goal 4). It also
+# skips the REL-15 coverage thresholds in vitest.config.ts, which CI enforces
+# and which this gate must mirror to be worth calling a gate. This block is
+# copied from dev-ci.yml's "Frontend tests with coverage" step (the one CI
+# actually runs) rather than from package.json's "test" script — do not
+# "simplify" it back to `npm test`.
+( cd apps/frontend && npx vitest run --coverage \
+    --sequence.shuffle=false \
+    --sequence.seed="${CB_TEST_SEED}" \
+    --reporter=default --reporter=junit \
+    --outputFile.junit="$EVIDENCE/junit/frontend.xml" \
+) 2>&1 | tee "$EVIDENCE/logs/frontend.log"
 
 cb::section "Backend suite (mode: $CB_VERIFY_BACKEND)"
 if [ "$CB_VERIFY_BACKEND" = "off" ]; then
@@ -49,6 +75,10 @@ else
             > "$EVIDENCE/logs/backend-shard-$shard-files.txt"
         (
             cd apps/backend
+            # One coverage data file per shard, as dev-ci.yml's COVERAGE_FILE
+            # does — without it, the four concurrent pytest processes below
+            # all write to the same apps/backend/.coverage and race.
+            export COVERAGE_FILE="$EVIDENCE/coverage/.coverage.backend-$shard"
             # shellcheck disable=SC2046  # word splitting is the point: one arg per file
             PYTHONPATH=src "$CB_REPO_ROOT/.venv/bin/pytest" \
                 $(cat "$EVIDENCE/logs/backend-shard-$shard-files.txt") \
