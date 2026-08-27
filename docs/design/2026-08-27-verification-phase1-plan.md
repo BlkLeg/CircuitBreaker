@@ -17,7 +17,7 @@
 - **P2 / R4 — fail closed.** A missing tool is a failed gate (exit 127). An informational step that did not run prints `SKIPPED (<reason>)`; it may never be silent.
 - **No `|| true` on a gate line.** Informational steps must use `cb::skipped`.
 - **R5 — every custom pytest mark must be registered in the config that governs it.** Root `pytest.ini` carries `filterwarnings = error`, so an unregistered mark is a collection failure.
-- **Evidence layout:** `artifacts/<tier>/{junit,logs}/`. Already used by dev-ci.yml; keep it.
+- **Evidence layout:** flat — `artifacts/junit/` and `artifacts/logs/`, the exact paths `ci.yml` and `dev-ci.yml` already write (`artifacts/junit/repo-policy.xml`, `artifacts/logs/frontend.log`, `artifacts/junit/backend-shard-N.xml`). Do not introduce a per-tier subdirectory: four jobs depend on this layout and the local tree should match a CI artifact download.
 - Backend commands run through `.venv/bin/*` from the repo root, as the Makefile and workflows already do.
 - Shell scripts live at `scripts/ci/`, are `chmod +x`, and start with `#!/usr/bin/env bash` + `set -euo pipefail`.
 
@@ -31,7 +31,7 @@
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `cb::section <title>`, `cb::require_tool <tool> [hint]` (exit 127 when absent), `cb::require_file <path> [hint]`, `cb::skipped <what> <reason>`, `cb::evidence_dir <tier>` (echoes an existing dir), and `$CB_REPO_ROOT`.
+- Produces: `cb::section <title>`, `cb::require_tool <tool> [hint]` (exit 127 when absent), `cb::require_file <path> [hint]`, `cb::skipped <what> <reason>`, `cb::evidence_dir` (no argument; creates `artifacts/{junit,logs}` and echoes `artifacts`), and `$CB_REPO_ROOT`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -153,9 +153,12 @@ cb::skipped() {
 }
 
 cb::evidence_dir() {
-    local dir="$CB_EVIDENCE_ROOT/$1"
-    mkdir -p "$dir/junit" "$dir/logs"
-    printf '%s' "$dir"
+    # Flat, and deliberately so: ci.yml and dev-ci.yml both write
+    # artifacts/junit/ and artifacts/logs/ directly, with no per-tier
+    # subdirectory, and four jobs consume those paths. A local run should
+    # produce the same tree a CI artifact download does.
+    mkdir -p "$CB_EVIDENCE_ROOT/junit" "$CB_EVIDENCE_ROOT/logs"
+    printf '%s' "$CB_EVIDENCE_ROOT"
 }
 ```
 
@@ -252,7 +255,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 cd "$CB_REPO_ROOT"
 
-EVIDENCE="$(cb::evidence_dir tier0)"
+EVIDENCE="$(cb::evidence_dir)"
 
 cb::require_tool python3
 cb::require_file .venv/bin/ruff "run 'make install' to build the dev virtualenv"
@@ -483,7 +486,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 cd "$CB_REPO_ROOT"
 
-EVIDENCE="$(cb::evidence_dir tier1)"
+EVIDENCE="$(cb::evidence_dir)"
 CB_VERIFY_BACKEND="${CB_VERIFY_BACKEND:-shards}"
 
 cb::require_tool docker "the backend suite and the security gate both need it"
@@ -513,16 +516,16 @@ else
     pids=()
     for shard in 1 2 3 4; do
         python3 tests/build/backend_shard.py --index "$shard" --total 4 \
-            > "$EVIDENCE/logs/backend-$shard-files.txt"
+            > "$EVIDENCE/logs/backend-shard-$shard-files.txt"
         (
             cd apps/backend
             # shellcheck disable=SC2046  # word splitting is the point: one arg per file
             PYTHONPATH=src "$CB_REPO_ROOT/.venv/bin/pytest" \
-                $(cat "$EVIDENCE/logs/backend-$shard-files.txt") \
-                --junitxml="$EVIDENCE/junit/backend-$shard.xml" \
+                $(cat "$EVIDENCE/logs/backend-shard-$shard-files.txt") \
+                --junitxml="$EVIDENCE/junit/backend-shard-$shard.xml" \
                 --cov-fail-under=0 \
                 -p no:cacheprovider \
-                > "$EVIDENCE/logs/backend-$shard.log" 2>&1
+                > "$EVIDENCE/logs/backend-shard-$shard.log" 2>&1
         ) &
         pids+=("$!")
     done
@@ -531,7 +534,7 @@ else
         if ! wait "${pids[$i]}"; then
             failed=1
             printf '::error::backend shard %s failed — see %s\n' \
-                "$((i + 1))" "$EVIDENCE/logs/backend-$((i + 1)).log" >&2
+                "$((i + 1))" "$EVIDENCE/logs/backend-shard-$((i + 1)).log" >&2
         fi
     done
     [ "$failed" -eq 0 ] || exit 1
