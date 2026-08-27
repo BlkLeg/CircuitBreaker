@@ -10,6 +10,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_DIR = REPO_ROOT / "scripts" / "ci"
 COMMON = CI_DIR / "lib" / "common.sh"
@@ -104,9 +106,72 @@ def test_tier_scripts_do_not_swallow_gate_failures():
             assert "|| true" not in stripped, f"{name}:{lineno}: {stripped}"
 
 
-def test_workflow_calls_the_tier0_script_rather_than_inlining_it():
-    """P1: a gate defined in YAML can only ever run in CI."""
-    workflow = (REPO_ROOT / ".github/workflows/dev-ci.yml").read_text(encoding="utf-8")
+# (gate name, substring that must appear in tier0-static.sh, why its absence
+# is a silent gate loss rather than a cosmetic diff). The contract suite locks
+# the script's *shape* (strict bash, no `|| true`, executable) but, before
+# this test, nothing locked its *contents* — deleting a gate from the middle
+# of the file still passed every other test in this suite, because a step
+# that no longer exists as a named GitHub Actions step is just a missing line
+# in one file rather than a missing item in the job UI.
+TIER0_LOAD_BEARING_GATES = [
+    (
+        "Alembic single-head check",
+        "get_heads",
+        "a forked/diverged migration history would go undetected",
+    ),
+    (
+        "repo-policy suite",
+        "pytest tests/build",
+        "GOV/SRV policy tests (tracked-file policy, CLI parity, restart probes, "
+        "release channel, etc.) would no longer run anywhere",
+    ),
+    (
+        "Ruff",
+        "bin/ruff\" check src/app",
+        "backend lint violations would no longer fail the gate",
+    ),
+    (
+        "Mypy",
+        "bin/mypy\" src/app",
+        "backend type errors would no longer fail the gate",
+    ),
+    (
+        "release-control ledger validator",
+        "validate_v1_release_control.py",
+        "the 1.0.0 requirement ledger could drift from the specs unnoticed",
+    ),
+    (
+        "ESLint",
+        "npm run lint",
+        "frontend lint violations would no longer fail the gate",
+    ),
+]
+
+
+def test_tier0_static_still_contains_its_six_gates():
+    """Before this test, deleting the release-control ledger check, the
+    Alembic check, `pytest tests/build`, or `npm run lint` from
+    tier0-static.sh passed the whole test_ci_script_contract.py suite and
+    silently stopped a gate running — the exact failure mode P1/P2 exist to
+    prevent, just moved from workflow YAML into a shell script."""
+    text = (CI_DIR / "tier0-static.sh").read_text(encoding="utf-8")
+    for gate_name, needle, consequence in TIER0_LOAD_BEARING_GATES:
+        assert needle in text, (
+            f"tier0-static.sh no longer invokes the '{gate_name}' gate "
+            f"(expected to find {needle!r}); {consequence}"
+        )
+
+
+@pytest.mark.parametrize("workflow_name", ["dev-ci.yml", "ci.yml"])
+def test_workflow_calls_the_tier0_script_rather_than_inlining_it(workflow_name):
+    """P1: a gate defined in YAML can only ever run in CI.
+
+    Both workflows are checked, not just dev-ci.yml: ci.yml gates main and
+    dev-ci.yml gates dev, and this repo's own history (the pre-migration
+    ci.yml lint job) is a case of exactly one of the two being migrated while
+    the other silently kept an inlined, hand-copied twin.
+    """
+    workflow = (REPO_ROOT / ".github/workflows" / workflow_name).read_text(encoding="utf-8")
     assert "scripts/ci/tier0-static.sh" in workflow
     assert "ruff check src/app" not in workflow, (
         "ruff is a tier-0 gate; its command belongs in tier0-static.sh, not in the workflow"
