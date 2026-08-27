@@ -171,7 +171,17 @@ echo "\`\`\`" >> "$REPORT_FILE"
 echo "## 4. ESLint + security (Frontend)" >> "$REPORT_FILE"
 echo "\`\`\`" >> "$REPORT_FILE"
 echo "Running ESLint (includes eslint-plugin-security)..."
-(cd apps/frontend && npm run lint) >> "$REPO_ROOT/$REPORT_FILE" 2>&1 || true
+# Informational, not a gate — the Lint job runs ESLint as a real gate. But an
+# informational section still has to distinguish "ran and was clean" from "never
+# ran", which this one did not: CI installs no frontend dependencies for the
+# Security Gate job, so every run recorded a bare `sh: 1: eslint: not found`
+# that read exactly like a clean scan (#106). Follows the Hadolint section's
+# shape below rather than inventing a second convention.
+if [ -x "$REPO_ROOT/apps/frontend/node_modules/.bin/eslint" ]; then
+    (cd apps/frontend && npm run lint) >> "$REPO_ROOT/$REPORT_FILE" 2>&1 || true
+else
+    echo "ESLint skipped (frontend dependencies not installed; run 'npm ci' in apps/frontend)." >> "$REPORT_FILE"
+fi
 echo "\`\`\`" >> "$REPORT_FILE"
 
 # ── 5. Hadolint (Dockerfile lint) — informational only ──────────────────────
