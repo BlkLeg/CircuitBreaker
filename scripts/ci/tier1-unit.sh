@@ -16,6 +16,13 @@ cb::require_tool docker "the backend suite and the security gate both need it"
 cb::require_tool npm
 cb::require_file .venv/bin/pytest "run 'make install' to build the dev virtualenv"
 cb::require_file apps/frontend/node_modules "run 'cd apps/frontend && npm ci' first"
+# govulncheck is invoked by security_scan.sh, not by this script directly — but that
+# call is section 10 of 10, after the frontend suite and all four backend shards have
+# already run. Without this preflight, a missing govulncheck is only discovered after
+# paying the full multi-minute cost of everything ahead of it in the gate, which is
+# exactly the kind of late, expensive failure this tier exists to prevent.
+cb::require_tool govulncheck \
+    "install: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0 — the security gate fails closed without it"
 
 cb::section "Frontend unit tests"
 ( cd apps/frontend && npm test ) 2>&1 | tee "$EVIDENCE/logs/frontend.log"
