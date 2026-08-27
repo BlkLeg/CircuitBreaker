@@ -448,6 +448,8 @@ follows the Hadolint section's convention and says when it did not run."
 
 **Why the backend suite is sharded rather than run under `-n auto`:** `apps/backend/tests/conftest.py` starts its TimescaleDB testcontainer in `pytest_configure`, which runs once per process. Under xdist that is one container per worker — twelve on this laptop. The suite already has a deterministic path-hash sharder (`tests/build/backend_shard.py`, REL-20) that CI uses; running those same four shards as four concurrent processes gives full coverage, four containers, and the identical partition CI reports against.
 
+**How the shard is applied (verified against `dev-ci.yml`, not assumed):** `backend_shard.py --index N --total 4` prints one `apps/backend`-relative test path per line; the workflow redirects that to a file and passes `$(cat …)` to pytest. The four shards currently hold 66/61/77/57 files. There is no `SHARD` env var that pytest itself honours — passing one and running `pytest tests` would run the entire suite in every process.
+
 - [ ] **Step 1: Extend the contract test**
 
 In `tests/build/test_ci_script_contract.py`, change:
@@ -500,14 +502,26 @@ if [ "$CB_VERIFY_BACKEND" = "off" ]; then
 else
     # The four shards CI runs, run concurrently. Same sharder, same partition,
     # so "shard 3 failed" means the same set of tests here as in CI.
+    #
+    # The shard is applied by generating a FILE LIST and passing it to pytest,
+    # exactly as dev-ci.yml does. Setting a SHARD env var and running `pytest
+    # tests` would not shard anything — it would run the whole ~2900-test suite
+    # in each of the four processes. backend_shard.py emits apps/backend-relative
+    # paths, so the list is generated from the repo root and consumed after the
+    # cd. --cov-fail-under=0 because coverage is enforced across the combined
+    # shards, not per shard.
     pids=()
     for shard in 1 2 3 4; do
+        python3 tests/build/backend_shard.py --index "$shard" --total 4 \
+            > "$EVIDENCE/logs/backend-$shard-files.txt"
         (
             cd apps/backend
-            SHARD="$shard" PYTHONPATH=src \
-                "$CB_REPO_ROOT/.venv/bin/pytest" tests \
-                -p no:cacheprovider \
+            # shellcheck disable=SC2046  # word splitting is the point: one arg per file
+            PYTHONPATH=src "$CB_REPO_ROOT/.venv/bin/pytest" \
+                $(cat "$EVIDENCE/logs/backend-$shard-files.txt") \
                 --junitxml="$EVIDENCE/junit/backend-$shard.xml" \
+                --cov-fail-under=0 \
+                -p no:cacheprovider \
                 > "$EVIDENCE/logs/backend-$shard.log" 2>&1
         ) &
         pids+=("$!")
