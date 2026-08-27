@@ -88,12 +88,14 @@ EGRESS_PROXY_POLICY = OutboundPolicy(
 )
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
 def _default_port(scheme: str) -> int:
-    if scheme == "https":
-        return 443
-    if scheme == "http":
-        return 80
-    raise ValueError(f"URL scheme '{scheme}' is not allowed")
+    try:
+        return _DEFAULT_PORTS[scheme]
+    except KeyError:
+        raise ValueError(f"URL scheme '{scheme}' is not allowed") from None
 
 
 def _dedupe(items: Iterable[str]) -> tuple[str, ...]:
@@ -203,6 +205,134 @@ def validate_redirect_target(
     return validate_outbound_url(urljoin(source_url, location), policy)
 
 
+def _bracketed(host: str) -> str:
+    """Wrap an IPv6 literal in brackets so it is legal in a netloc or Host header."""
+
+    return f"[{host}]" if ":" in host else host
+
+
+def _ascii_host(host: str) -> str:
+    """Punycode a hostname so it is legal in a ``Host`` header.
+
+    httpx IDNA-encodes ``URL.host`` on its way to the wire, so before the pin an
+    IDN webhook sent ``Host: xn--bcher-kva.example``.  The pin builds the header
+    itself out of ``validated.host``, which is raw Unicode from
+    ``urlparse().hostname``; handing that to httpx puts UTF-8 bytes in a header
+    field that must be ASCII.  Hosts the stdlib codec refuses (an empty or
+    over-long label) are passed through unchanged -- validation already accepted
+    the URL, and a header we cannot spell is not a reason to drop the request.
+    """
+
+    try:
+        return host.encode("idna").decode("ascii")
+    except (UnicodeError, ValueError):
+        return host
+
+
+def _reaches_through_proxy(client: httpx.AsyncClient | httpx.Client | None, url: str) -> bool:
+    """True when this client will send *url* to a forward proxy instead of dialing it.
+
+    This is load-bearing, not a nicety.  httpcore honours the ``sni_hostname``
+    extension on a direct connection, but ``AsyncTunnelHTTPConnection``
+    (``httpcore/_async/http_proxy.py``) builds its TLS ``server_hostname`` from
+    ``self._remote_origin.host`` -- the host in the request URL -- and never
+    looks at ``request.extensions``.  Pin the URL to an IP literal on that path
+    and every HTTPS request dies with ``certificate verify failed: IP address
+    mismatch``.  That is the deployment ``docs/deployment-security.md`` tells
+    operators to run, so an unconditional pin trades a rebinding window for a
+    total notification outage on the *hardened* configuration.
+
+    Skipping the pin there costs nothing that was ever there: behind a proxy the
+    name is resolved by the proxy, not by this process, so there is no local
+    second lookup for a rebinding answer to win.  What guards egress in that
+    deployment is the proxy's own policy.
+
+    httpx exposes proxy wiring only privately.  ``_transport_for_url`` returns
+    ``client._transport`` when no mount matches, and a *different* transport
+    when one does -- a proxy from ``proxy=``, one from ``HTTPS_PROXY`` under
+    ``trust_env``, or an explicit ``mounts=`` entry.  Anything that is not
+    provably the client's own transport is treated as proxied, and so is a
+    client whose internals we cannot read at all: getting this wrong towards
+    "proxied" costs the rebinding hardening, getting it wrong the other way
+    takes the install off the air.
+    """
+
+    if client is None:
+        return True
+    try:
+        return client._transport_for_url(httpx.URL(url)) is not client._transport
+    except Exception:  # noqa: BLE001 -- unreadable internals must not break the send
+        return True
+
+
+def pinned_request(
+    validated: ValidatedURL,
+    kwargs: dict[str, Any],
+    client: httpx.AsyncClient | httpx.Client | None,
+) -> tuple[str, dict[str, Any]]:
+    """Rewrite a validated request so it dials an address that was already approved.
+
+    ``validate_outbound_url`` resolves the hostname and rejects the answer set if
+    any address is private, loopback, link-local or otherwise reserved.  Handing
+    the *name* back to httpx then throws that work away: the connection pool
+    resolves a second time at connect, and a TTL-0 rebinding answer can move the
+    socket to 127.0.0.1 or 169.254.169.254 in the gap between the two lookups.
+    The check is real, it is just checking a different answer than the one that
+    gets dialed.
+
+    Dialing the IP literal removes the second lookup, and with it the window.
+    Two things have to travel with it or the pin would break working requests:
+
+    * ``Host`` keeps the original name (punycoded, and with its port when it is
+      not the scheme default), so virtual-hosted servers still route to the
+      right site.
+    * ``sni_hostname`` keeps the original name as the TLS ``server_hostname``
+      (httpcore 1.x reads this extension on a direct connection; httpx's default
+      SSLContext has ``check_hostname=True``), so the certificate is still
+      verified against the real hostname and not against the IP literal.
+
+    ``client`` is required and is not decoration: the pin is skipped whenever
+    that client would reach the URL through a forward proxy, because httpcore's
+    CONNECT path ignores ``sni_hostname`` -- see ``_reaches_through_proxy``.
+    Pass the client the request will actually be sent on; do not pass ``None``
+    to make a caller compile, that silently disables the pin.
+
+    Maintainers: do not "simplify" this by passing ``validated.url`` to the
+    client again.  The name form is still the right base for ``urljoin`` on a
+    redirect Location -- that is why ``safe_async_request`` keeps it for that --
+    but on a direct connection it must not be what the socket is opened to.
+
+    Policies with ``allow_unresolved_hostname`` may carry no addresses at all
+    (``LAN_INTEGRATION_POLICY``, ``MONITOR_TARGET_POLICY``, ``EGRESS_PROXY_POLICY``
+    when DNS is unavailable).  There is nothing to pin then, so the name is kept
+    and those requests keep the pre-existing check-then-connect window; closing
+    that would mean refusing to talk to hosts this deployment cannot resolve.
+    """
+
+    if not validated.addresses or _reaches_through_proxy(client, validated.url):
+        # Return the caller's kwargs untouched, headers and extensions included:
+        # the proxied path has to behave exactly as it did before the pin
+        # existed, or the skip would not be a skip.
+        return validated.url, kwargs
+
+    # Every address in the set passed `_is_forbidden_address`, so any of them is
+    # safe to dial; the first is the resolver's own preference order.
+    parsed = urlparse(validated.url)
+    literal = _bracketed(validated.addresses[0])
+    host_header = _bracketed(_ascii_host(validated.host))
+    if validated.port != _DEFAULT_PORTS.get(validated.scheme):
+        host_header = f"{host_header}:{validated.port}"
+
+    kwargs = dict(kwargs)
+    headers = httpx.Headers(kwargs.get("headers") or {})
+    headers["Host"] = host_header
+    kwargs["headers"] = headers
+    extensions = dict(kwargs.get("extensions") or {})
+    extensions.setdefault("sni_hostname", _ascii_host(validated.host))
+    kwargs["extensions"] = extensions
+    return parsed._replace(netloc=f"{literal}:{validated.port}").geturl(), kwargs
+
+
 async def safe_async_request(
     client: httpx.AsyncClient,
     method: str,
@@ -218,17 +348,22 @@ async def safe_async_request(
     kwargs.pop("follow_redirects", None)
     for _ in range(max_redirects + 1):
         validated = validate_outbound_url(current_url, policy)
+        target, send_kwargs = pinned_request(validated, kwargs, client)
         response = await client.request(
             method,
-            validated.url,
+            target,
             follow_redirects=False,
-            **kwargs,
+            **send_kwargs,
         )
         if response.status_code not in {301, 302, 303, 307, 308}:
             return response
         if max_redirects <= 0:
             return response
         location = response.headers.get("location", "")
+        # The redirect base stays the *name* form on purpose: a relative Location
+        # has to resolve against the real host, not against the pinned literal.
+        # The next iteration re-validates and re-pins, so the hop is dialed by
+        # address too.
         current_url = validate_redirect_target(validated.url, location, policy).url
         max_redirects -= 1
         if response.status_code == 303:

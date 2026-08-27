@@ -39,6 +39,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
 import app.db.session as _db_session
+from app.api.ws_discovery import trusted_ws_client_ip
 from app.core.auth_cookie import is_websocket_secure, token_from_websocket_scope, ws_require_wss
 from app.core.log_sanitize import safe_log_fragment
 from app.core.rbac import require_role
@@ -202,12 +203,14 @@ topology_ws_manager = TopologyConnectionManager()
 
 
 def _extract_client_ip(websocket: WebSocket) -> str:
-    forwarded = websocket.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    if websocket.client:
-        return websocket.client.host
-    return "unknown"
+    """This stream's per-IP cap bucket key and rejected-handshake log identity.
+
+    Reading the leftmost `X-Forwarded-For` entry off any peer let a caller
+    rotate the header for a fresh connection budget (B24). The trust rule is
+    shared with every other WS stream; see `trusted_ws_client_ip` in
+    ws_discovery.py for what it does and what must not be undone.
+    """
+    return trusted_ws_client_ip(websocket)
 
 
 async def _ping_loop(ws: WebSocket, main_task: asyncio.Task) -> None:

@@ -213,7 +213,19 @@ def toggle_sink(
 
 
 def _ok_from_resp(resp: Any) -> dict[str, Any]:
-    return {"ok": resp.status_code < 400, "error": None if resp.status_code < 400 else resp.text}
+    """Report the status of a webhook Test, never the body it returned.
+
+    This used to hand back ``resp.text`` verbatim for any status >= 400. That
+    echo is what would turn any residual SSRF on this surface into a read
+    primitive: an admin who can point a sink at an internal URL gets whatever
+    that endpoint said rendered in the Test result. The status code is what an
+    operator needs in order to debug a webhook; the body is what an attacker
+    needs. Do not put it back.
+    """
+
+    if resp.status_code < 400:
+        return {"ok": True, "error": None}
+    return {"ok": False, "error": f"Webhook endpoint returned HTTP {resp.status_code}"}
 
 
 async def _test_webhook_sink(webhook_url: str | None, body: dict[str, Any]) -> dict[str, Any]:

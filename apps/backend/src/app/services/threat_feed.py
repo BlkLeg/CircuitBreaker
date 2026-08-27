@@ -27,6 +27,7 @@ from app.core.redis import get_redis
 from app.core.url_validation import (
     THREAT_FEED_POLICY,
     outbound_async_client,
+    pinned_request,
     validate_outbound_url,
     validate_redirect_target,
 )
@@ -114,9 +115,22 @@ class PublicBlocklistProvider:
     async def fetch(self) -> ThreatFeed:
         feed = ThreatFeed(fetched_at=datetime.now(UTC).isoformat())
         fetched_any = False
+        # No keepalive, and that is a security property rather than a tuning
+        # choice. `pinned_request` rewrites each validated feed URL to the IP
+        # literal that validation approved, and httpcore keys its connection
+        # pool on origin *without* including the `sni_hostname` extension in
+        # the key. Two feed names resolving to one address therefore collapse
+        # to a single origin, and the second download would ride a connection
+        # whose certificate was verified only for the first name — no
+        # handshake of its own, no certificate check of its own. Opening a
+        # connection per feed costs one handshake per URL on a job that runs on
+        # a timer; sharing one costs the per-name identity the pin exists to
+        # preserve. Pinned by
+        # test_feed_client_does_not_reuse_a_connection_across_two_feed_names.
         async with outbound_async_client(
             timeout=FEED_FETCH_TIMEOUT_S,
             follow_redirects=False,
+            limits=httpx.Limits(max_keepalive_connections=0),
         ) as client:
             for category in _FEED_CATEGORIES:
                 for url in self.urls.get(category, []):
@@ -144,10 +158,23 @@ class PublicBlocklistProvider:
         current_url = url
         for _ in range(6):
             validated = validate_outbound_url(current_url, THREAT_FEED_POLICY)
+            # Dial the address validation just approved rather than the name.
+            # Handing the name back to httpx makes the pool resolve a second
+            # time at connect, so a TTL-0 answer can move the socket to loopback
+            # or to 169.254.169.254 in the gap between the check and the connect
+            # — and THREAT_FEED_POLICY, unlike the LAN policies, allows none of
+            # that. `pinned_request` needs the client because it must not pin
+            # when the request is going to a forward proxy; see its docstring.
+            target, send_kwargs = pinned_request(validated, {}, client)
             chunks: list[bytes] = []
             total_bytes = 0
-            async with client.stream("GET", validated.url, follow_redirects=False) as response:
+            async with client.stream(
+                "GET", target, follow_redirects=False, **send_kwargs
+            ) as response:
                 if response.status_code in {301, 302, 303, 307, 308}:
+                    # The redirect base stays the *name* form: a relative
+                    # Location has to resolve against the real host, not the
+                    # pinned literal. The next hop re-validates and re-pins.
                     current_url = validate_redirect_target(
                         validated.url,
                         response.headers.get("location", ""),

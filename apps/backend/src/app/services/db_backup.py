@@ -25,6 +25,21 @@ _logger = logging.getLogger(__name__)
 _data_dir = Path(os.environ.get("CB_DATA_DIR", "/var/lib/circuitbreaker"))
 BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", str(_data_dir / "backups")))
 
+# Block size for the streamed dump. Matches backup/snapshot.py and backup/verify.py.
+_STREAM_BLOCK = 1024 * 1024
+
+# Suffix for a dump that is still being written. Deliberately does NOT match the
+# `cb-*.sql.gz` glob that _prune_old_backups and latest_backup_info use, so a partial
+# file can never be mistaken for a restorable backup.
+_PARTIAL_SUFFIX = ".part"
+
+# How old a leftover partial has to be before the next run deletes it. A SIGKILL — the
+# OOM this module's streaming exists to avoid, a `docker restart`, a supervisord kill —
+# runs no `finally`, so without a sweep every kill leaks a database-sized file onto the
+# volume pgdata lives on. Six hours is far longer than any plausible pg_dump and short
+# enough that leakage stays bounded at roughly one file.
+_PARTIAL_MAX_AGE_SECONDS = 6 * 3600
+
 
 def _pg_env_from_url(url: str) -> dict[str, str]:
     """Parse a postgresql:// URL into pg_dump environment variables."""
@@ -50,25 +65,90 @@ def backup_postgres() -> None:
         return
 
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    _sweep_stale_partials()
     stamp = datetime.now(tz=UTC).strftime("%Y%m%d_%H%M%S")
     out_path = BACKUP_DIR / f"cb-{stamp}.sql.gz"
+    part_path = out_path.with_name(out_path.name + _PARTIAL_SUFFIX)
+    err_path = BACKUP_DIR / f"cb-{stamp}.err"
 
     try:
-        proc = subprocess.run(  # noqa: S603
-            ["pg_dump", "--no-password"],
-            env=_pg_env_from_url(db_url),
-            capture_output=True,
-            check=True,
-        )
-        with gzip.open(out_path, "wb") as f:
-            f.write(proc.stdout)
+        # Streamed in fixed blocks, never buffered whole. `subprocess.run(...,
+        # capture_output=True)` materialised the ENTIRE dump as one Python bytes object
+        # before a byte of it was compressed, so a 1 GB database was a 1 GB resident
+        # allocation inside a container capped at 2 GB — and this is the DAILY job
+        # (registered in main.py's scheduler, also reachable from POST /admin/db/backup),
+        # so it took the whole application down on a schedule. Do not restore
+        # capture_output; the identical rewrite lives in backup/snapshot.py.
+        #
+        # stderr goes to a FILE, not a pipe. Draining stdout to EOF while stderr is an
+        # undrained 64 KB pipe deadlocks pg_dump the first time it is chatty — the
+        # obvious "just add stderr=PIPE" is that deadlock, and a hung daily job is a
+        # backup that silently stops existing.
+        with err_path.open("wb") as errf:
+            proc = subprocess.Popen(  # noqa: S603
+                ["pg_dump", "--no-password"],
+                env=_pg_env_from_url(db_url),
+                stdout=subprocess.PIPE,
+                stderr=errf,
+            )
+            try:
+                stdout = proc.stdout
+                if stdout is None:  # stdout=PIPE guarantees one; narrow for type checkers
+                    raise OSError("pg_dump stdout pipe was not created")
+                with stdout, gzip.open(part_path, "wb") as f:
+                    for block in iter(lambda: stdout.read(_STREAM_BLOCK), b""):
+                        f.write(block)
+                returncode = proc.wait()
+            except BaseException:
+                # The backup volume filling up mid-dump raises here. Reap the child
+                # instead of leaving a pg_dump holding a database connection open until
+                # the interpreter happens to collect it.
+                proc.kill()
+                proc.wait()
+                raise
+        if returncode != 0:
+            raise subprocess.CalledProcessError(returncode, "pg_dump", stderr=err_path.read_bytes())
+
+        # Rename only after a clean exit. Streaming puts bytes on disk before the exit
+        # status is known, and a truncated dump carrying the real `cb-*.sql.gz` name
+        # would become latest_backup_info()'s answer and the newest file retention keeps
+        # — an operator would find out it was truncated while restoring from it.
+        part_path.replace(out_path)
         size_kb = out_path.stat().st_size // 1024
         _logger.info("DB backup written: %s (%d KB)", out_path.name, size_kb)
     except subprocess.CalledProcessError as exc:
-        _logger.error("pg_dump failed: %s", exc.stderr.decode(errors="replace"))
+        stderr = exc.stderr.decode(errors="replace") if exc.stderr else ""
+        _logger.error("pg_dump failed: %s", stderr)
         return
+    except OSError as exc:
+        _logger.error("DB backup failed: %s", exc)
+        return
+    finally:
+        part_path.unlink(missing_ok=True)
+        err_path.unlink(missing_ok=True)
 
     _prune_old_backups()
+
+
+def _sweep_stale_partials() -> None:
+    """Delete the scratch files a killed backup run leaves behind.
+
+    See _PARTIAL_MAX_AGE_SECONDS. Both globs are narrow on purpose: they must never
+    match `cb-*.sql.gz`, which is a finished, restorable backup. Never fatal — a backup
+    that cannot tidy up is still worth taking.
+    """
+    cutoff = datetime.now(tz=UTC).timestamp() - _PARTIAL_MAX_AGE_SECONDS
+    for pattern in (f"cb-*.sql.gz{_PARTIAL_SUFFIX}", "cb-*.err"):
+        for path in BACKUP_DIR.glob(pattern):
+            try:
+                if not path.is_file() or path.stat().st_mtime >= cutoff:
+                    continue
+                path.unlink(missing_ok=True)
+                _logger.warning(
+                    "Swept DB backup scratch file from an interrupted run: %s", path.name
+                )
+            except OSError as exc:
+                _logger.warning("Could not sweep DB backup scratch file %s: %s", path.name, exc)
 
 
 def _prune_old_backups() -> None:

@@ -12,6 +12,7 @@ from urllib.parse import urlencode, urlparse
 
 import httpx
 import jwt
+from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
@@ -28,27 +29,102 @@ _logger = logging.getLogger(__name__)
 
 # ── One-time auth-code exchange (S4) ─────────────────────────────────────────
 # Short-lived codes replace embedding the full JWT in the OAuth redirect URL.
-# Codes are single-use, expire in 60 s, and are stored in process memory only.
+# Codes are single-use, expire in 60 s, and are held in Redis (loopback-bound
+# and password-protected in the shipped image) so that either uvicorn worker
+# can redeem one, with process memory as a Redis-down fallback.
+#
+# The dict below used to be the only store. `docker/supervisord.mono.conf`
+# starts the API with `--workers 2`, and the provider callback and the
+# browser's follow-up /auth/exchange are two separate connections that land on
+# whichever worker the kernel picks — so roughly half of all OAuth sign-ins
+# died on "Invalid or expired auth code" after the user had already
+# authenticated with the provider. Do not move this back into process memory
+# without also dropping the worker count to 1.
+#
+# Nothing written to Redis is useful to a reader of Redis. The key is
+# sha256(code) — the selector-not-credential shape `services/agent_enrollment.py`
+# already uses for pairing codes and `core/security.py` uses for revoked
+# sessions — and the value is the session JWT sealed under a Fernet key derived
+# from the code, which is never stored anywhere. `docker-compose.deps.yml`
+# publishes redis on 0.0.0.0:6379 with no requirepass for local development and
+# the default CB_REDIS_URL points the backend straight at it, so
+# `SCAN cb:oauth:authcode:*` from anything that can reach that port must yield
+# neither a redeemable code nor a usable session token. Both halves are
+# load-bearing: hashing the key alone would still hand a reader a live JWT, and
+# sealing the value alone would still hand them the code that unseals it.
 
 _pending_auth_codes: dict[str, tuple[str, float]] = {}  # {code: (jwt, monotonic_expires)}
 _AUTH_CODE_TTL = 60.0
+_AUTH_CODE_KEY_PREFIX = "cb:oauth:authcode:"  # shared across uvicorn workers
 
 
-def _issue_auth_code(token: str) -> str:
-    """Store *token* under a one-time random code valid for _AUTH_CODE_TTL seconds."""
+def _auth_code_redis_key(code: str) -> str:
+    """Redis key for *code* — the hash, never the code itself."""
+    return f"{_AUTH_CODE_KEY_PREFIX}{hashlib.sha256(code.encode()).hexdigest()}"
+
+
+def _auth_code_cipher(code: str) -> Fernet:
+    """Fernet key derived from *code*, domain-separated from the lookup hash.
+
+    The separation is the entire point of sealing the value: if this reused the
+    plain sha256(code) that names the Redis key, then the key name visible to
+    anyone running SCAN would *be* the decryption key and the ciphertext would
+    protect nothing. Do not collapse the two digests into one.
+    """
+    digest = hashlib.sha256(b"cb-oauth-authcode-seal-v1|" + code.encode()).digest()
+    return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def _prune_pending_auth_codes() -> None:
+    """Drop expired entries from the Redis-down fallback map.
+
+    This runs on every mint, *before* the Redis branch, and it has to stay
+    there. When the prune lived after the branch it stopped running the moment
+    Redis was healthy, so entries deposited during an outage — each one a full
+    session JWT valid for cfg.session_timeout_hours — were frozen in worker
+    memory for the life of the process, long after their 60 s code window shut.
+    Expired entries are already unredeemable; this is about not keeping the
+    secret around. Do not move it back below the `return code`.
+    """
     now = time.monotonic()
-    # Prune expired codes; prevents unbounded growth without a background task
-    stale = [k for k, (_, exp) in _pending_auth_codes.items() if now > exp]
-    for k in stale:
+    for k in [k for k, (_, exp) in _pending_auth_codes.items() if now > exp]:
         del _pending_auth_codes[k]
+
+
+async def _issue_auth_code(token: str) -> str:
+    """Store *token* under a one-time random code valid for _AUTH_CODE_TTL seconds.
+
+    Written to Redis with a server-side TTL so the worker that handles
+    /auth/exchange need not be the one that handled the provider callback.
+    Redis being unreachable is degraded, not broken (the convention
+    `core/redis.py` sets): the code still works, but only on this worker.
+    """
+    from app.core.redis import get_redis
+
+    _prune_pending_auth_codes()
     code = secrets.token_urlsafe(32)
-    _pending_auth_codes[code] = (token, now + _AUTH_CODE_TTL)
+    r = await get_redis()
+    if r is not None:
+        try:
+            sealed = _auth_code_cipher(code).encrypt(token.encode()).decode()
+            await r.setex(_auth_code_redis_key(code), int(_AUTH_CODE_TTL), sealed)
+            return code
+        except Exception:
+            # Fall through to process memory rather than fail a sign-in the
+            # user has already completed at the provider.
+            _logger.warning("Redis write failed for auth code", exc_info=True)
+
+    _pending_auth_codes[code] = (token, time.monotonic() + _AUTH_CODE_TTL)
+    _logger.warning(
+        "Redis unreachable — this auth code is redeemable only on the worker that "
+        "issued it; with --workers 2 the exchange will fail about half the time"
+    )
     return code
 
 
 @router.get("/exchange")
 @limiter.limit(lambda: get_limit("auth"))
-def exchange_auth_code(
+async def exchange_auth_code(
     request: Request,
     response: Response,
     code: str = Query(...),
@@ -57,7 +133,41 @@ def exchange_auth_code(
 
     Codes are deleted on first use and expire after 60 s so they are
     useless even if captured in a log line.
+
+    The redemption uses Redis's native GETDEL, which resolves and deletes in a
+    single server-side atomic step. A GET followed by a separate DELETE would
+    not be equivalent: with two workers, both could complete the GET and hand
+    out the same JWT before either DELETE landed, which is exactly the
+    single-use guarantee this code exists to provide. Do not split it.
+
+    The stored value is sealed (see _auth_code_cipher), so the code presented
+    here is what decrypts it; a caller without the code cannot use the entry
+    even with full read access to Redis.
     """
+    from app.core.redis import get_redis
+
+    r = await get_redis()
+    if r is not None:
+        try:
+            val = await r.getdel(_auth_code_redis_key(code))
+        except Exception:
+            _logger.warning("Redis read failed for auth code — trying process memory")
+            val = None
+        if val is not None:
+            sealed = val.decode() if isinstance(val, bytes) else str(val)
+            try:
+                return {"token": _auth_code_cipher(code).decrypt(sealed.encode()).decode()}
+            except InvalidToken:
+                # The entry did not open under a key derived from the code that
+                # named it: it was tampered with, or written by a build that
+                # sealed it differently. Either way there is nothing redeemable
+                # here — do not fall through to the in-process map and do not
+                # hand back the ciphertext.
+                _logger.warning("Auth code entry failed to unseal — refusing it")
+                raise HTTPException(400, "Invalid or expired auth code") from None
+
+    # Either Redis is down now, or it was down when this code was minted and
+    # the code only ever existed on this worker.
     entry = _pending_auth_codes.pop(code, None)
     if entry is None or time.monotonic() > entry[1]:
         raise HTTPException(400, "Invalid or expired auth code")
@@ -456,7 +566,7 @@ def _upsert_oauth_user(
     return user, is_new
 
 
-def _issue_jwt_and_redirect(
+async def _issue_jwt_and_redirect(
     user: User, base_url: str, db: Session, request: Request
 ) -> RedirectResponse:
     """Issue a CB JWT for the user and redirect to frontend with token."""
@@ -489,14 +599,14 @@ def _issue_jwt_and_redirect(
 
     token = _make_token(user, cfg)
     record_session(db, user, request, token, cfg)
-    code = _issue_auth_code(token)
+    code = await _issue_auth_code(token)
     response = RedirectResponse(url=f"{base_url}/?cb_auth_code={code}", status_code=302)
     response.headers["Cache-Control"] = "no-store"
     set_auth_cookie_on_response(request, response, token, cfg.session_timeout_hours)
     return response
 
 
-def _bootstrap_redirect_or_none(
+async def _bootstrap_redirect_or_none(
     user: User,
     base_url: str,
     provider_name: str,
@@ -525,7 +635,7 @@ def _bootstrap_redirect_or_none(
         db.commit()
     token = _make_token(user, cfg)
     record_session(db, user, request, token, cfg)
-    code = _issue_auth_code(token)
+    code = await _issue_auth_code(token)
     response = RedirectResponse(
         url=f"{base_url}/oobe?cb_auth_code={code}&bootstrap=1&provider={provider_name}",
         status_code=302,
@@ -748,10 +858,10 @@ async def github_callback(
         role=invited_role,
         invited=bool(_invite_token),
     )
-    bootstrap_redir = _bootstrap_redirect_or_none(user, base_url, "github", db, request)
+    bootstrap_redir = await _bootstrap_redirect_or_none(user, base_url, "github", db, request)
     if bootstrap_redir:
         return bootstrap_redir
-    return _issue_jwt_and_redirect(user, base_url, db, request)
+    return await _issue_jwt_and_redirect(user, base_url, db, request)
 
 
 # ---------------------------------------------------------------------------
@@ -862,10 +972,10 @@ async def google_callback(
         role=invited_role,
         invited=bool(_invite_token),
     )
-    bootstrap_redir = _bootstrap_redirect_or_none(user, base_url, "google", db, request)
+    bootstrap_redir = await _bootstrap_redirect_or_none(user, base_url, "google", db, request)
     if bootstrap_redir:
         return bootstrap_redir
-    return _issue_jwt_and_redirect(user, base_url, db, request)
+    return await _issue_jwt_and_redirect(user, base_url, db, request)
 
 
 # ---------------------------------------------------------------------------
@@ -1003,7 +1113,7 @@ async def oidc_callback(
         role=invited_role,
         invited=bool(_invite_token),
     )
-    bootstrap_redir = _bootstrap_redirect_or_none(user, base_url, provider_slug, db, request)
+    bootstrap_redir = await _bootstrap_redirect_or_none(user, base_url, provider_slug, db, request)
     if bootstrap_redir:
         return bootstrap_redir
-    return _issue_jwt_and_redirect(user, base_url, db, request)
+    return await _issue_jwt_and_redirect(user, base_url, db, request)

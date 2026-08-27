@@ -26,6 +26,11 @@ _logger = logging.getLogger(__name__)
 router = APIRouter(tags=["telemetry"])
 
 
+_DEVICE_TIMEOUT_ENV = "CB_TELEMETRY_DEVICE_TIMEOUT_SECONDS"
+_DEFAULT_DEVICE_TIMEOUT_SECONDS = 20
+_MIN_DEVICE_TIMEOUT_SECONDS = 5
+
+
 def _device_timeout_seconds() -> int:
     """Per-device cap for a telemetry poll, in seconds.
 
@@ -40,8 +45,35 @@ def _device_timeout_seconds() -> int:
     Kept as a local read rather than a shared import because the collector is a
     worker-side module; the duplication is two lines and the coupling would be
     the wrong direction.
+
+    The try/except is not defensive noise, and a maintainer must not collapse it
+    back into a bare ``int(os.environ.get(...))``. This function is on the
+    request path: it is called inside ``poll_now``, so a value ``int()`` refuses
+    — ``"20s"``, ``"30.5"``, an empty assignment in a compose file, a trailing
+    newline from a secrets mount — raises ValueError out of the endpoint and
+    turns *every* manual poll into a 500. The operator sees "Internal Server
+    Error" on a button that worked yesterday, with nothing pointing at their own
+    environment file. A configuration typo is allowed to be ignored; it is not
+    allowed to take the feature down, so a malformed value logs once at WARNING
+    and falls back to the documented default. (The collector makes the same read
+    at start-up, where a ValueError is a loud, immediate boot failure with the
+    variable named in the traceback — that is a different and acceptable
+    outcome, which is why only this copy is guarded.)
     """
-    return max(5, int(os.environ.get("CB_TELEMETRY_DEVICE_TIMEOUT_SECONDS", "20")))
+    raw = os.environ.get(_DEVICE_TIMEOUT_ENV)
+    if raw is None:
+        return _DEFAULT_DEVICE_TIMEOUT_SECONDS
+    try:
+        parsed = int(raw)
+    except ValueError:
+        _logger.warning(
+            "%s=%r is not an integer; falling back to %ss for this poll.",
+            _DEVICE_TIMEOUT_ENV,
+            raw,
+            _DEFAULT_DEVICE_TIMEOUT_SECONDS,
+        )
+        return _DEFAULT_DEVICE_TIMEOUT_SECONDS
+    return max(_MIN_DEVICE_TIMEOUT_SECONDS, parsed)
 
 
 def _safe_json(val: Any) -> dict[str, Any] | None:

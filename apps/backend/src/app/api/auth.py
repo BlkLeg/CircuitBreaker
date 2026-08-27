@@ -117,6 +117,7 @@ def accept_invite_endpoint(
     from app.services.auth_service import _make_token, _to_profile
     from app.services.settings_service import get_or_create_settings
     from app.services.user_service import accept_invite as svc_accept_invite
+    from app.services.user_service import record_session
 
     password_or_hash = (
         payload.password_hash if payload.password_hash is not None else payload.password
@@ -126,6 +127,22 @@ def accept_invite_endpoint(
     user = svc_accept_invite(db, payload.token, password_or_hash, payload.display_name)
     cfg = get_or_create_settings(db)
     token = _make_token(user, cfg)
+    # Revocation in this codebase is table-driven: `is_session_revoked` looks the
+    # raw JWT up by hash in `user_sessions`, and `revoke_all_sessions` flips the
+    # flag on rows that are already there. A token minted without a row is
+    # therefore *unkillable* — logout, admin reset-password and admin
+    # revoke-sessions all miss it, and the admin UI reports "0 sessions revoked"
+    # while the token keeps authenticating until session_timeout_hours elapses
+    # on its own (B28).
+    #
+    # This call belongs here rather than in auth_service because this endpoint
+    # mints its own token instead of going through `auth_service.login`. That is
+    # exactly how the accept-invite half of B28 survived a first round of
+    # fixing: the recording was added to the service layer, the endpoint kept
+    # its own `_make_token`, and the regression test called the service
+    # directly so it never noticed. Invites are the normal way a second user
+    # joins an instance, so this is the larger half of the finding in practice.
+    record_session(db, user, request, token, cfg)
     body = AuthResponse(token=token, user=_to_profile(user)).model_dump()
     return auth_response_with_cookie(request, token, body, cfg.session_timeout_hours)
 

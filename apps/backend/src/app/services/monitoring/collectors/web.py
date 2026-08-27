@@ -36,6 +36,20 @@ def _request(url: str, params: dict) -> tuple[httpx.Response, float]:
     # and names that resolve somewhere new between save and check.
     validate_outbound_url(url, MONITOR_TARGET_POLICY)
 
+    # B27 (dial-the-validated-address pinning) is deliberately NOT applied here,
+    # and the finding stays open for this path. `pinned_request` must know
+    # whether the request is going through a forward proxy — httpcore's CONNECT
+    # tunnel ignores the `sni_hostname` extension the pin relies on, so pinning
+    # a proxied HTTPS request fails certificate verification outright — and it
+    # learns that from the client object. This collector sends through the
+    # module-level `httpx.request`, which builds and discards its own Client, so
+    # there is nothing to ask. What the pin would buy here is also the smallest
+    # of any call site: MONITOR_TARGET_POLICY already permits loopback and
+    # RFC1918, so the only rebinding it would block is a flip to link-local or
+    # another reserved range. If this ever moves to an explicit `httpx.Client`,
+    # pass it to `pinned_request` and keep the *name* form as the base for the
+    # redirect `urljoin` below.
+
     method = str(params.get("method", "GET")).upper()
     headers = dict(params.get("headers") or {})
     auth_type = params.get("auth_type", "none")

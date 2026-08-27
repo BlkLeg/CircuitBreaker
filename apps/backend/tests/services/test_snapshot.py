@@ -25,13 +25,26 @@ from app.services.backup.snapshot import BackupError, build_snapshot
 # known-broken behaviour, and an xfail would silently swallow a genuine
 # regression on machines that *do* have pg_dump.
 #
-# Note this only covers the tests that invoke pg_dump for real.
-# `test_build_snapshot_raises_on_pg_dump_failure` monkeypatches
-# `subprocess.run` and therefore still runs everywhere.
+# Note this only covers the tests that invoke pg_dump for real. The tests below that
+# use `_fake_pg_dump` put a stand-in binary first on PATH and therefore run everywhere.
 requires_pg_dump = pytest.mark.skipif(
     shutil.which("pg_dump") is None,
     reason="pg_dump binary not installed (postgresql-client); required to build a real snapshot",
 )
+
+
+@pytest.fixture(autouse=True)
+def _staging_under_tmp_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep snapshot staging inside tmp_path for every test in this module.
+
+    ``snapshot._staging_roots()`` reads CB_DATA_DIR and falls back to
+    /var/lib/circuitbreaker. conftest.py only sets CB_DATA_DIR inside the (non-autouse)
+    ws_client fixture, so without this the suite tries to CREATE /var/lib/circuitbreaker/tmp
+    and stage snapshots there — invisibly on a workstation, where the mkdir fails and the
+    builder falls back to /tmp, but successfully in a root CI container, which then gets
+    an uncompressed copy of uploads/ written onto its root filesystem.
+    """
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path / "data"))
 
 
 @pytest.fixture()
@@ -159,17 +172,13 @@ async def test_build_snapshot_raises_on_pg_dump_failure(
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
 
-    # Make pg_dump fail by patching subprocess.run to raise
-    import subprocess
-
-    original_run = subprocess.run
-
-    def bad_run(cmd: list, **kwargs):  # type: ignore[no-untyped-def]
-        if "pg_dump" in cmd[0]:
-            raise subprocess.CalledProcessError(1, cmd, stderr=b"intentional failure")
-        return original_run(cmd, **kwargs)
-
-    monkeypatch.setattr(subprocess, "run", bad_run)
+    # Make pg_dump fail by putting a stand-in that exits non-zero first on PATH.
+    # This used to monkeypatch `subprocess.run`, which stopped simulating anything the
+    # moment the dump was rewritten to stream through `subprocess.Popen` (B11) — the
+    # test would then have shelled out to the real binary against a live database and
+    # passed only if pg_dump happened to be missing. Driving the failure through the
+    # real fork/exec keeps this test honest across any future rewrite of the call.
+    _install_failing_pg_dump(monkeypatch, tmp_path / "bin")
 
     with pytest.raises(BackupError, match="pg_dump"):
         await build_snapshot(
@@ -184,22 +193,35 @@ async def test_build_snapshot_raises_on_pg_dump_failure(
     assert list(backup_dir.glob("cb-snapshot-*.tar.gz")) == []
 
 
-def _fake_pg_dump(monkeypatch: pytest.MonkeyPatch) -> None:
+def _write_pg_dump_stub(bin_dir: Path, body: str) -> Path:
+    """Write an executable `pg_dump` into bin_dir and return it."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    script = bin_dir / "pg_dump"
+    script.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+    script.chmod(0o755)
+    return script
+
+
+def _fake_pg_dump(monkeypatch: pytest.MonkeyPatch, bin_dir: Path) -> None:
     """Stand in for the pg_dump binary.
 
     The manifest fields under test are independent of the dump's contents, so these
     tests run everywhere instead of skipping on hosts without postgresql-client.
+
+    PATH, not a monkeypatched `subprocess` function: the snapshot builder resolves
+    `pg_dump` through the environment it hands the child (`_pg_env_from_url` copies
+    os.environ), so a stub on PATH stands in no matter which subprocess API the builder
+    uses. Patching `subprocess.run` silently stopped standing in for anything when the
+    dump became a streamed `subprocess.Popen` (B11).
     """
-    import subprocess
+    _write_pg_dump_stub(bin_dir, 'printf %s "-- fake dump"')
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
 
-    original_run = subprocess.run
 
-    def fake_run(cmd: list, **kwargs):  # type: ignore[no-untyped-def]
-        if cmd and "pg_dump" in cmd[0]:
-            return subprocess.CompletedProcess(cmd, 0, stdout=b"-- fake dump\n", stderr=b"")
-        return original_run(cmd, **kwargs)
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+def _install_failing_pg_dump(monkeypatch: pytest.MonkeyPatch, bin_dir: Path) -> None:
+    """A `pg_dump` on PATH that writes to stderr and exits 1."""
+    _write_pg_dump_stub(bin_dir, 'printf %s "intentional failure" >&2\nexit 1')
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
 
 
 async def _build(tmp_path: Path, uploads_dir: Path) -> Path:
@@ -229,7 +251,7 @@ async def test_manifest_declares_a_format_version(
     tmp_path: Path, uploads_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A restore that half-understands an archive is the failure this batch exists to end."""
-    _fake_pg_dump(monkeypatch)
+    _fake_pg_dump(monkeypatch, tmp_path / "bin")
 
     tarball = await _build(tmp_path, uploads_dir)
     manifest = _read_manifest(tarball)
@@ -241,7 +263,7 @@ async def test_manifest_declares_a_format_version(
 async def test_manifest_records_the_install_mode(
     tmp_path: Path, uploads_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _fake_pg_dump(monkeypatch)
+    _fake_pg_dump(monkeypatch, tmp_path / "bin")
     monkeypatch.setenv("CB_INSTALL_MODE", "compose")
 
     tarball = await _build(tmp_path, uploads_dir)
@@ -254,7 +276,7 @@ async def test_manifest_records_the_install_mode(
 async def test_manifest_install_mode_is_unknown_when_unset(
     tmp_path: Path, uploads_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _fake_pg_dump(monkeypatch)
+    _fake_pg_dump(monkeypatch, tmp_path / "bin")
     monkeypatch.delenv("CB_INSTALL_MODE", raising=False)
 
     tarball = await _build(tmp_path, uploads_dir)

@@ -20,7 +20,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
-import subprocess
+import os
 import tarfile
 from pathlib import Path
 
@@ -30,16 +30,39 @@ from cryptography.fernet import Fernet
 from app.services.backup.verify import SnapshotProblem, verify_archive
 
 
-def _fake_pg_dump(monkeypatch: pytest.MonkeyPatch, payload: bytes = b"-- fake dump\n") -> None:
-    """Stand in for the pg_dump binary; the key under test is independent of the dump."""
-    original_run = subprocess.run
+@pytest.fixture(autouse=True)
+def _staging_under_tmp_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep snapshot staging inside tmp_path for every test in this module.
 
-    def fake_run(cmd: list, **kwargs):  # type: ignore[no-untyped-def]
-        if cmd and "pg_dump" in cmd[0]:
-            return subprocess.CompletedProcess(cmd, 0, stdout=payload, stderr=b"")
-        return original_run(cmd, **kwargs)
+    ``snapshot._staging_roots()`` reads CB_DATA_DIR and falls back to
+    /var/lib/circuitbreaker. conftest.py only sets CB_DATA_DIR inside the (non-autouse)
+    ws_client fixture, so without this the suite tries to CREATE /var/lib/circuitbreaker/tmp
+    and stage snapshots there — invisibly on a workstation, where the mkdir fails and the
+    builder falls back to /tmp, but successfully in a root CI container, which then gets
+    an uncompressed copy of uploads/ written onto its root filesystem.
+    """
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path / "data"))
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+
+def _fake_pg_dump(
+    monkeypatch: pytest.MonkeyPatch, bin_dir: Path, payload: bytes = b"-- fake dump\n"
+) -> None:
+    """Stand in for the pg_dump binary; the key under test is independent of the dump.
+
+    A stub first on PATH, not a monkeypatched `subprocess.run`. The builder resolves
+    `pg_dump` through the environment it hands the child (`snapshot._pg_env_from_url`
+    copies os.environ, PATH included), so this stands in whichever subprocess API the
+    builder uses — patching `subprocess.run` quietly stopped standing in for anything
+    when the dump became a streamed `subprocess.Popen` (B11), and the test would then
+    have been exercising the real binary, or nothing at all.
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    dump = bin_dir / "dump.sql"
+    dump.write_bytes(payload)
+    script = bin_dir / "pg_dump"
+    script.write_text(f'#!/bin/sh\ncat "{dump}"\n', encoding="utf-8")
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
 
 
 def _vault_key_in(archive: Path) -> str:
@@ -74,7 +97,7 @@ async def test_snapshot_archives_the_key_the_database_is_encrypted_with(
 
     monkeypatch.setattr(db_backup, "BACKUP_DIR", tmp_path / "backups")
     monkeypatch.setattr(db_backup, "_data_dir", tmp_path / "data")
-    _fake_pg_dump(monkeypatch)
+    _fake_pg_dump(monkeypatch, tmp_path / "bin")
 
     archive = await db_backup.run_full_snapshot(db_session)
 

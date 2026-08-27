@@ -22,6 +22,7 @@ from pydantic import ValidationError
 from sqlalchemy import text
 from starlette.websockets import WebSocketState
 
+from app.api.ws_discovery import trusted_ws_client_ip
 from app.core import agent_crypto
 from app.core.agent_crypto import (
     REKEY_DIRECTION_OUTBOUND,
@@ -949,13 +950,14 @@ async def link_stream(websocket: WebSocket) -> None:
 
 
 def _extract_client_ip(websocket: WebSocket) -> str:
-    """Extract real client IP, honouring X-Forwarded-For set by nginx."""
-    forwarded = websocket.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    if websocket.client:
-        return websocket.client.host
-    return "unknown"
+    """This stream's per-IP cap bucket key and rejected-handshake log identity.
+
+    Reading the leftmost `X-Forwarded-For` entry off any peer let a caller
+    rotate the header for a fresh connection budget (B24). The trust rule is
+    shared with every other WS stream; see `trusted_ws_client_ip` in
+    ws_discovery.py for what it does and what must not be undone.
+    """
+    return trusted_ws_client_ip(websocket)
 
 
 async def _ping_loop(ws: WebSocket, main_task: asyncio.Task) -> None:

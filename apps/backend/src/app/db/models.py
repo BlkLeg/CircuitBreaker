@@ -1323,6 +1323,26 @@ class AppSettings(Base):
     dev_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     audit_log_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=90)
     audit_log_hide_ip: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Hash of the last audit-log row the retention purge deleted. The audit
+    # chain links each row to its predecessor, so removing the oldest rows
+    # orphans whatever row becomes first: its previous_hash names a row that no
+    # longer exists, and verify_audit_chain — which seeds its walk from NULL,
+    # the genesis value — reported "chain broken" on every install that lived
+    # past its retention window. The purge records the tip it cut here and the
+    # verifier seeds from it instead, so a purge stays verifiable while a
+    # *deletion nobody recorded* still reads as tampering. Do not write this
+    # from anywhere but services/log_purge.py: any other writer can forge an
+    # arbitrary chain prefix by setting it. NULL means "chain starts at
+    # genesis", i.e. a fresh install that has never been purged.
+    #
+    # Adding this column REQUIRES an Alembic revision, and shipping the model
+    # without one is a total outage rather than a degraded audit feature:
+    # get_or_create_settings does `db.get(AppSettings, 1)` — a full-entity
+    # SELECT naming every column — and has call sites throughout the app,
+    # core/security.py's session verification among them. A database missing
+    # this column therefore fails *every authenticated request* with
+    # UndefinedColumn, not merely the purge and the chain verifier.
+    audit_chain_checkpoint_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     telemetry_hot_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     telemetry_warm_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Branding
@@ -1934,6 +1954,22 @@ class ListenerEvent(Base):
         JSONB, nullable=True
     )  # TXT records / SSDP headers — JSONB as of v0.2.0
     seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+
+    # The dedup probe in services/listener_service._persist_event filters on
+    # exactly these three columns, once per multicast packet that clears the
+    # rate gate. Without a composite index that is a scan of every retained
+    # event per advertisement, on a table fed by unauthenticated LAN traffic.
+    # Declared here as well as in the Alembic revision so a schema built by
+    # `Base.metadata.create_all` — which is how the backend test suite builds
+    # it — matches the one an upgrade produces. They drifted before.
+    __table_args__ = (
+        Index(
+            "ix_listener_events_dedup",
+            "ip_address",
+            "service_type",
+            "seen_at",
+        ),
+    )
 
 
 # ── Users ─────────────────────────────────────────────────────────────────────

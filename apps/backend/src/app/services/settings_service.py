@@ -190,6 +190,34 @@ def update_settings(
                         ) from e
                     raise
             continue
+        elif field == "dhcp_router_command":
+            from app.services.discovery_dhcp import _validate_router_command
+
+            # Same argument as the username above, one field over. The DHCP tier runs
+            # `_validate_router_command` on this string before it hands it to asyncssh or
+            # sshpass, and a command carrying a shell metacharacter is dropped there with
+            # a warning in the worker log and an empty lease list — the sweep simply
+            # reports no DHCP leases. Validated only at execution time, the settings page
+            # confirms the save, the value sticks, and Tier 3 discovery is dead from then
+            # on for a reason the operator never sees. Refusing the write is the only
+            # place the person who typed the command is still listening.
+            #
+            # The execution-time validator is imported rather than reimplemented on
+            # purpose: two copies of a blocklist drift, and a write path that accepts what
+            # the SSH path rejects is exactly the silent failure this closes. For the same
+            # reason there is no `if value:` around the call — every value that reaches
+            # this column goes through the one check, with no second rule here about which
+            # values are worth checking. An empty command is legal (it makes
+            # `run_dhcp_lease_discovery` fall back to the built-in dnsmasq command) and
+            # the validator says so on its own, having no forbidden character to find;
+            # `value or ""` is only there because the column is nullable and the blocklist
+            # comprehension needs a string to iterate.
+            try:
+                _validate_router_command(value or "")
+            except ValueError as e:
+                raise HTTPException(status_code=422, detail=str(e)) from e
+            setattr(row, field, value)
+            continue
         elif field == "dhcp_router_password":
             from app.services.credential_vault import get_vault
 

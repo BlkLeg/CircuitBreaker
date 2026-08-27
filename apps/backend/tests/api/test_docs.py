@@ -20,11 +20,11 @@ import zipfile
 import pytest
 from fastapi import HTTPException
 
-from app.api.docs import (
-    _MAX_IMPORT_MD_BYTES,
-    _MAX_IMPORT_TOTAL_MD_BYTES,
-    _MAX_IMPORT_ZIP_ENTRIES,
-    _parse_zip_entries,
+from app.api.docs import _parse_zip_entries
+from app.services.docs_service import (
+    MAX_IMPORT_MD_BYTES,
+    MAX_IMPORT_TOTAL_MD_BYTES,
+    MAX_IMPORT_ZIP_ENTRIES,
 )
 
 # 64 MB of a single repeated byte deflates to roughly 64 KB, so this comfortably
@@ -35,7 +35,7 @@ from app.api.docs import (
 _BOMB_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
 
 # Headroom over the ~1 MB a correct implementation is allowed to hold (the
-# bounded read of _MAX_IMPORT_MD_BYTES + 1) plus whatever the ASGI stack and
+# bounded read of MAX_IMPORT_MD_BYTES + 1) plus whatever the ASGI stack and
 # the ZIP payload itself cost. Anything under this is decisively "did not
 # decompress 64 MB"; the failing behavior peaks two orders of magnitude higher.
 _PEAK_ALLOCATION_CEILING = 12 * 1024 * 1024
@@ -149,9 +149,9 @@ def test_a_zip_whose_members_total_more_than_the_uncompressed_budget_is_rejected
     per-.md cap, so nothing short of an aggregate budget stops a 10 MB ZIP from
     expanding into hundreds of megabytes of docs.
     """
-    member = b"A" * _MAX_IMPORT_MD_BYTES
+    member = b"A" * MAX_IMPORT_MD_BYTES
     member_count = 25
-    assert member_count * _MAX_IMPORT_MD_BYTES > _MAX_IMPORT_TOTAL_MD_BYTES
+    assert member_count * MAX_IMPORT_MD_BYTES > MAX_IMPORT_TOTAL_MD_BYTES
     payload = _zip_of({f"doc-{i}.md": member for i in range(member_count)})
 
     with pytest.raises(HTTPException) as exc_info:
@@ -168,7 +168,7 @@ def test_a_zip_with_more_members_than_the_entry_cap_is_rejected():
     hundred thousand one-byte .md files is a cheap way to make the importer do
     a hundred thousand INSERTs.
     """
-    payload = _zip_of({f"doc-{i}.md": b"x" for i in range(_MAX_IMPORT_ZIP_ENTRIES + 1)})
+    payload = _zip_of({f"doc-{i}.md": b"x" for i in range(MAX_IMPORT_ZIP_ENTRIES + 1)})
 
     with pytest.raises(HTTPException) as exc_info:
         _parse_zip_entries(payload)
@@ -180,9 +180,9 @@ def test_a_zip_with_more_members_than_the_entry_cap_is_rejected():
 def test_a_zip_sitting_exactly_on_the_entry_cap_is_accepted():
     """The cap is inclusive — 500 members is fine, 501 is not."""
     entries = _parse_zip_entries(
-        _zip_of({f"doc-{i}.md": b"x" for i in range(_MAX_IMPORT_ZIP_ENTRIES)})
+        _zip_of({f"doc-{i}.md": b"x" for i in range(MAX_IMPORT_ZIP_ENTRIES)})
     )
-    assert len(entries) == _MAX_IMPORT_ZIP_ENTRIES
+    assert len(entries) == MAX_IMPORT_ZIP_ENTRIES
 
 
 # ── the paths that must keep working ─────────────────────────────────────────
@@ -212,7 +212,7 @@ async def test_a_small_well_formed_zip_still_imports_its_markdown(client, auth_h
 
 
 def test_a_member_one_byte_over_the_per_file_cap_is_rejected():
-    payload = _zip_of({"big.md": b"A" * (_MAX_IMPORT_MD_BYTES + 1)})
+    payload = _zip_of({"big.md": b"A" * (MAX_IMPORT_MD_BYTES + 1)})
 
     with pytest.raises(HTTPException) as exc_info:
         _parse_zip_entries(payload)

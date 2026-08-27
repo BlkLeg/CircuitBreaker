@@ -19,10 +19,16 @@ router = APIRouter(tags=["docs"])
 
 _DOC_UPLOADS_DIR = Path(settings.uploads_dir) / "docs"
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB
-_MAX_IMPORT_MD_BYTES = 1 * 1024 * 1024  # 1 MB per .md
-_MAX_IMPORT_ZIP_BYTES = 10 * 1024 * 1024  # 10 MB total ZIP
-_MAX_IMPORT_ZIP_ENTRIES = 500
-_MAX_IMPORT_TOTAL_MD_BYTES = 20 * 1024 * 1024  # 20 MB uncompressed across all members
+# The four import ceilings are NOT defined here, and are NOT imported by name
+# either. They are the contract this endpoint shares with
+# docs_service.export_docs_zip, they live at the one place both ends can see
+# (the block at the top of docs_service.py), and every use below reads them
+# through the module — `docs_service.MAX_IMPORT_ZIP_BYTES` — so that at runtime
+# there is one object per ceiling rather than a definition and a snapshot of
+# it. A `from app.services.docs_service import MAX_IMPORT_ZIP_BYTES` here would
+# look identical and be a second name bound once at import time: moving the
+# definition would then move the exporter and leave this importer where it was,
+# which is R10 exactly.
 
 # Static routes MUST come before /{doc_id} to avoid path-matching conflicts
 
@@ -74,21 +80,47 @@ def create_doc(
 _DEFAULT_IMPORT_TITLE = "Imported Document"
 
 
+def _mb(n: int) -> str:
+    """Render a byte ceiling for a client-facing message.
+
+    The numbers in the messages below are computed from the ceilings rather
+    than written out, so that moving a ceiling cannot leave the API telling
+    uploaders a limit that is no longer the one being enforced.
+    """
+    return f"{n / (1024 * 1024):g}"
+
+
 def _parse_zip_entries(data: bytes) -> list[tuple[str, str]]:
     """Parse a ZIP payload and return a list of (title, body_md) tuples.
 
     Raises HTTPException on bad input.
     """
-    if len(data) > _MAX_IMPORT_ZIP_BYTES:
-        raise HTTPException(status_code=413, detail="ZIP must be \u2264 10 MB")
+    if len(data) > docs_service.MAX_IMPORT_ZIP_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"ZIP must be \u2264 {_mb(docs_service.MAX_IMPORT_ZIP_BYTES)} MB",
+        )
+    # Same blunt catch, same reason as the member read further down: this call
+    # parses an attacker-supplied central directory, and BadZipFile is not the
+    # only thing it produces. Fuzzing 4000 corruptions of each of the four
+    # standard methods through this constructor alone raised
+    # NotImplementedError("zip file version 12.8") — a byte in the version
+    # field is enough — which the previous `except zipfile.BadZipFile` let out
+    # as a 500, i.e. B41 was open here too and not only on the member read.
+    # infolist() sits inside the try as well: it is a read of the directory
+    # this constructor just parsed, it costs nothing to cover, and it is one
+    # fewer place for the next zipfile release to raise something new from.
     try:
         zf = zipfile.ZipFile(io.BytesIO(data))
-    except zipfile.BadZipFile as exc:
+        infos = zf.infolist()
+    except Exception as exc:
         raise HTTPException(status_code=400, detail="Invalid ZIP file") from exc
 
-    infos = zf.infolist()
-    if len(infos) > _MAX_IMPORT_ZIP_ENTRIES:
-        raise HTTPException(status_code=413, detail="ZIP must contain \u2264 500 files")
+    if len(infos) > docs_service.MAX_IMPORT_ZIP_ENTRIES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"ZIP must contain \u2264 {docs_service.MAX_IMPORT_ZIP_ENTRIES} files",
+        )
 
     entries: list[tuple[str, str]] = []
     total_bytes = 0
@@ -104,15 +136,24 @@ def _parse_zip_entries(data: bytes) -> list[tuple[str, str]]:
         # and deflate turns 10 MB of one repeated byte into roughly 10 GB, so a
         # size check that happens after decompressing is a check that happens
         # after the damage.
-        if info.file_size > _MAX_IMPORT_MD_BYTES:
-            raise HTTPException(status_code=413, detail=f"{safe_name} exceeds 1 MB limit")
+        if info.file_size > docs_service.MAX_IMPORT_MD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"{safe_name} exceeds {_mb(docs_service.MAX_IMPORT_MD_BYTES)} MB limit",
+            )
         # Sum the declared sizes rather than the bytes actually read, so the
         # archive-wide budget is likewise decided before the spending: 500
         # members that each individually clear the 1 MB bar still add up to half
         # a gigabyte of docs.
         total_bytes += info.file_size
-        if total_bytes > _MAX_IMPORT_TOTAL_MD_BYTES:
-            raise HTTPException(status_code=413, detail="ZIP contents exceed 20 MB uncompressed")
+        if total_bytes > docs_service.MAX_IMPORT_TOTAL_MD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"ZIP contents exceed "
+                    f"{_mb(docs_service.MAX_IMPORT_TOTAL_MD_BYTES)} MB uncompressed"
+                ),
+            )
         # Read through a bounded stream instead of zf.read(info). This is not
         # belt-and-braces on top of the file_size check above: zipfile's own
         # read() hands the decompressor a max_length of 1 GB and only *then*
@@ -122,10 +163,45 @@ def _parse_zip_entries(data: bytes) -> list[tuple[str, str]]:
         # sized read caps what the decompressor is allowed to produce per chunk,
         # which is the part that actually costs memory. One byte past the cap
         # distinguishes "exactly at the limit" from "over it".
-        with zf.open(info) as fh:
-            md_bytes = fh.read(_MAX_IMPORT_MD_BYTES + 1)
-        if len(md_bytes) > _MAX_IMPORT_MD_BYTES:
-            raise HTTPException(status_code=413, detail=f"{safe_name} exceeds 1 MB limit")
+        # The try around ZipFile() above covers the *central directory* only.
+        # Everything a member can be wrong about surfaces here instead, and it
+        # reached the client as a 500 until B41. Every one of those failures
+        # means "the archive you uploaded is not readable", which is a 400 —
+        # the same answer the same archive already got when its directory was
+        # the broken part.
+        #
+        # The catch is deliberately `Exception` and must not be narrowed back
+        # to a tuple. B41's first fix enumerated the five shapes a corrupt
+        # *deflate or stored* member produces (zlib.error, BadZipFile for a bad
+        # CRC or a clobbered local header, RuntimeError for the encrypted bit,
+        # NotImplementedError for an unknown method) and a bzip2 member walked
+        # straight through it: bz2's decompressor raises a bare
+        # OSError("Invalid data stream"), and the two bytes that select method
+        # 12 are the uploader's to set. Fuzzing 4000 corruptions of each of the
+        # four methods CPython can decompress produced seven distinct types —
+        # BadZipFile, zlib.error, lzma.LZMAError, OSError, ValueError
+        # ("negative seek value", from a corrupted offset), RuntimeError and
+        # NotImplementedError — across three modules that are free to add an
+        # eighth in any CPython release. An enumeration of somebody else's
+        # exception surface is a list that is wrong the moment it is written.
+        #
+        # What makes the blunt catch safe is the size of the try body: exactly
+        # two calls, both into zipfile, on bytes the uploader controls. Do not
+        # grow it. In particular the `len(md_bytes)` gate below must stay
+        # outside, because HTTPException is an Exception too and moving it in
+        # would turn the B05 bomb ceilings into "could not read" 400s.
+        try:
+            with zf.open(info) as fh:
+                md_bytes = fh.read(docs_service.MAX_IMPORT_MD_BYTES + 1)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Could not read {safe_name} from the ZIP"
+            ) from exc
+        if len(md_bytes) > docs_service.MAX_IMPORT_MD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"{safe_name} exceeds {_mb(docs_service.MAX_IMPORT_MD_BYTES)} MB limit",
+            )
         title = Path(safe_name).stem or _DEFAULT_IMPORT_TITLE
         entries.append((title, md_bytes.decode("utf-8", errors="replace")))
 
@@ -139,8 +215,11 @@ def _parse_md_entry(filename: str | None, data: bytes) -> list[tuple[str, str]]:
 
     Raises HTTPException on bad input.
     """
-    if len(data) > _MAX_IMPORT_MD_BYTES:
-        raise HTTPException(status_code=413, detail=".md file must be \u2264 1 MB")
+    if len(data) > docs_service.MAX_IMPORT_MD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f".md file must be \u2264 {_mb(docs_service.MAX_IMPORT_MD_BYTES)} MB",
+        )
     title = Path(filename or _DEFAULT_IMPORT_TITLE).stem or _DEFAULT_IMPORT_TITLE
     return [(title, data.decode("utf-8", errors="replace"))]
 
@@ -151,6 +230,11 @@ def export_docs(
     db: Session = Depends(get_db),
 ) -> StreamingResponse:
     """Export all docs (or a filtered subset by ?ids=1&ids=2) as a ZIP of .md files."""
+    # No size refusal here, deliberately: an archive too big for this API's own
+    # importer is still handed over, carrying a member that says so. The reason
+    # a refusal is the wrong answer — the shipped caller cannot read a 413's
+    # detail and has no subset-export UI to act on it — is written out on
+    # export_docs_zip.
     data = docs_service.export_docs_zip(db, ids=ids)
     return StreamingResponse(
         io.BytesIO(data),
@@ -167,7 +251,18 @@ async def import_docs(
 ) -> Any:
     """Import docs from a .md file or a .zip archive containing .md files."""
     filename = (file.filename or "").lower()
-    data = await file.read()
+    # Bounded read, not a bare file.read(). Every ceiling below is enforced
+    # against len(data), and a ceiling checked after an unbounded read is a
+    # ceiling checked after the cost it exists to prevent: Starlette spools a
+    # large body to disk rather than holding it in RAM, but .read() with no
+    # argument pulls all of it back into a single bytes object regardless of
+    # how big it got. nginx's client_max_body_size stops this in the shipped
+    # container and stops nothing for anything reaching the ASGI app directly,
+    # so the bound belongs here. One byte past the cap so the len() gate can
+    # still tell an upload sitting exactly on the limit from one over it. The
+    # .md branch has a tighter cap of its own and applies it to this same
+    # buffer, so reading to the larger of the two bounds is correct for both.
+    data = await file.read(docs_service.MAX_IMPORT_ZIP_BYTES + 1)
 
     is_zip = filename.endswith(".zip") or file.content_type in (
         "application/zip",
@@ -246,10 +341,14 @@ async def upload_doc_image(
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="File must be an image")
 
-    # Read and validate size
-    data = await file.read()
+    # Read and validate size. Bounded for the reason spelled out in
+    # import_docs above: the 5 MB gate on the next line only bounds what this
+    # handler keeps, not what an unparameterized .read() already allocated.
+    data = await file.read(_MAX_IMAGE_BYTES + 1)
     if len(data) > _MAX_IMAGE_BYTES:
-        raise HTTPException(status_code=413, detail="Image must be ≤ 5 MB")
+        raise HTTPException(
+            status_code=413, detail=f"Image must be \u2264 {_mb(_MAX_IMAGE_BYTES)} MB"
+        )
     if not verify_image_magic_bytes(data, file.content_type):
         raise HTTPException(status_code=400, detail="Image content does not match declared type.")
 

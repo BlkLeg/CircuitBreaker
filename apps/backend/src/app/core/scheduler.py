@@ -111,14 +111,16 @@ def reload_discovery_jobs(db: Session) -> None:
     it owns before re-registering, withholding a profile here is the whole
     mechanism: nothing is deleted, and the profile resumes on the next reload.
     """
-    from app.services.discovery_scheduler import purge_old_scan_results, run_scan_job_by_profile
+    from app.services.discovery_scheduler import run_scan_job_by_profile
     from app.services.discovery_service import profiles_due_for_scheduling
 
     # Remove all existing discovery jobs
     scheduler = get_scheduler()
 
+    # Only the per-profile crons. `discovery_purge` used to be removed here too,
+    # because this function also registered it — see the note below the loop.
     for job in scheduler.get_jobs():
-        if job.id.startswith("discovery_profile_") or job.id == "discovery_purge":
+        if job.id.startswith("discovery_profile_"):
             job.remove()
 
     profiles = profiles_due_for_scheduling(db)
@@ -141,14 +143,21 @@ def reload_discovery_jobs(db: Session) -> None:
         except Exception as e:
             logger.error(f"Failed to schedule profile {profile.id}: {e}")
 
-    # Register daily purge job
-    scheduler.add_job(
-        purge_old_scan_results,
-        trigger=CronTrigger(hour=3, minute=0),
-        id="discovery_purge",
-        replace_existing=True,
-        misfire_grace_time=3600,
-    )
+    # The daily scan-result purge is **not** registered here. `app.main.lifespan`
+    # already registers the same callable at 03:00 under the id
+    # `purge_old_scan_results`, and this function used to add a second copy of it
+    # under the id `discovery_purge` (B43) — so every discovery-profile write left
+    # two jobs running one purge on the same trigger. `SingleOwnerScheduler` keys
+    # its advisory lock on the *job id*, so two ids are two locks: the copies did
+    # not exclude each other, and the only reason the DELETE did not actually run
+    # twice at once was `discovery_scheduler.purge_old_scan_results`' own inner
+    # `run_with_advisory_lock("discovery_purge")` — a lock the scheduler knows
+    # nothing about, and one a maintainer could reasonably delete on the grounds
+    # that `SingleOwnerScheduler` is supposed to make it redundant. At that point
+    # the duplicate becomes a genuine concurrent double purge. Do not re-add a
+    # registration here: the purge has to exist on every boot, not only in the
+    # stretch between a profile write and the next restart, which is the same
+    # reason the nightly snapshot moved out of this function (B09).
 
     # Register daily aggregation rollup job
     from app.workers.rollup_worker import run_rollup_job

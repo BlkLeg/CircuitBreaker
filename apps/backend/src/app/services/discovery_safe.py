@@ -5,7 +5,9 @@ import logging
 import os
 import socket
 import subprocess
+from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from itertools import islice
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,19 @@ PORT_SERVICE_MAP = {
 
 # Common ports probed in safe TCP connect scan (no raw sockets)
 SAFE_TCP_PORTS = [22, 23, 80, 139, 161, 443, 445, 3389, 8006, 8060, 8080, 8443, 8888]
+
+# Largest network scan_subnet_safe will expand.  Mirrors
+# discovery_network._MAX_CIDR_ADDRESSES (a /12) on purpose — see the comment in
+# scan_subnet_safe for why the value is repeated here instead of imported.
+_MAX_SCAN_ADDRESSES = 1_048_576
+
+# How many addresses the sweep holds in memory, and hands to the thread pool, at a
+# time.  The size guard above bounds the *range*; this bounds the *allocation* inside
+# an accepted range, which is a separate problem: a /12 is under the limit and still
+# a million host strings and a million eagerly-submitted Futures.  4096 is large
+# enough that the pool never starves (max_workers tops out at 100) and small enough
+# that peak footprint is a fixed few hundred KB regardless of CIDR size.
+_SWEEP_BATCH_ADDRESSES = 4096
 
 
 def _ping_host(ip: str, timeout: float = 1.0) -> bool:
@@ -71,41 +86,90 @@ def _tcp_probe(ip: str, ports: list[int] | None = None, timeout: float = 0.5) ->
     return open_ports
 
 
+def _iter_host_batches(hosts: Iterable[object], batch_size: int) -> Iterator[list[str]]:
+    """Yield lists of at most *batch_size* address strings from a lazy host iterator.
+
+    ``ipaddress.IPv4Network.hosts()`` is a generator, and keeping it one is the point:
+    ``[str(ip) for ip in network.hosts()]`` materialises the entire range up front, and
+    ``ThreadPoolExecutor.map`` then submits every element as a Future before running
+    any of them.  Consuming in batches keeps both costs proportional to the batch and
+    not to the CIDR.  Do not "tidy" the callers back into a single list.
+    """
+    iterator = iter(hosts)
+    while True:
+        batch = [str(ip) for ip in islice(iterator, batch_size)]
+        if not batch:
+            return
+        yield batch
+
+
 def scan_subnet_safe(cidr: str, max_workers: int = 100) -> list[dict]:
     """Ping sweep + TCP connect scan with no raw socket privileges.
 
     Returns a list of dicts: {"ip": str, "open_ports": list[int], "ping_alive": bool}
     Only hosts that responded to ping OR have at least one open port are returned.
+
+    Raises ValueError for a range larger than _MAX_SCAN_ADDRESSES; the scan-job
+    runner treats that the same way it treats any other scan failure.
     """
     network = ipaddress.IPv4Network(cidr, strict=False)
-    hosts = [str(ip) for ip in network.hosts()]
-    if not hosts:
-        return []
 
-    workers = min(max_workers, len(hosts))
+    # Size-check the network before expanding it.  This is B06's defect one layer
+    # down: the comprehension below was unconditional, so the only thing standing
+    # between this function and a /8 was whatever the caller happened to validate.
+    # That is not a guarantee this function can rely on — it is a plain module-level
+    # helper, importable and callable directly, and the sweep in
+    # discovery_service.py reaches it through run_in_executor with the job's stored
+    # target string.  For a /8 the comprehension allocates 16.7 million str objects
+    # and then hands the same 16.7 million items to ThreadPoolExecutor.map, which
+    # submits every one of them as a Future up front rather than lazily: gigabytes
+    # of allocation before the first ICMP packet leaves the box, on a worker thread
+    # with no timeout around it.
+    #
+    # num_addresses is an O(1) integer on the network object, so testing it first
+    # means nothing at all is materialised for a range we are going to refuse.
+    #
+    # The limit is deliberately the same 1_048_576 that
+    # discovery_network._validate_cidr already enforces one layer up, so no CIDR
+    # that reaches this function through the normal scan path changes verdict: this
+    # closes the direct-call hole, it does not tighten scan policy.  If either
+    # number moves, move both — the constant is duplicated here rather than
+    # imported for the same reason PORT_SERVICE_MAP above is (circular import).
+    if network.num_addresses > _MAX_SCAN_ADDRESSES:
+        raise ValueError(
+            f"CIDR {cidr} is too large for a safe sweep "
+            f"(max {_MAX_SCAN_ADDRESSES} addresses). Use a smaller range (e.g. /24)."
+        )
 
-    # Phase 1: parallel ICMP ping sweep
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        ping_results = list(ex.map(_ping_host, hosts))
-    alive_ips = {ip for ip, up in zip(hosts, ping_results, strict=False) if up}
+    # Phase 1: parallel ICMP ping sweep, one bounded batch at a time.  The results
+    # kept across batches are only the addresses that answered, which is bounded by
+    # what is actually on the wire rather than by the size of the range.
+    alive: list[str] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for batch in _iter_host_batches(network.hosts(), _SWEEP_BATCH_ADDRESSES):
+            alive.extend(ip for ip, up in zip(batch, ex.map(_ping_host, batch), strict=False) if up)
+    alive_ips = set(alive)
 
-    # Phase 2: TCP probe all alive hosts (and hosts skipped by ping as fallback)
-    # If ping found nothing (firewall blocks ICMP), probe all hosts via TCP
-    probe_targets = list(alive_ips) if alive_ips else hosts
-
-    with ThreadPoolExecutor(max_workers=min(50, len(probe_targets))) as ex:
-        port_results = list(ex.map(_tcp_probe, probe_targets))
+    # Phase 2: TCP probe all alive hosts (and hosts skipped by ping as fallback).
+    # If ping found nothing (firewall blocks ICMP), probe all hosts via TCP — the
+    # range is re-walked lazily rather than kept from phase 1, for the same reason.
+    if alive:
+        target_batches = _iter_host_batches(alive, _SWEEP_BATCH_ADDRESSES)
+    else:
+        target_batches = _iter_host_batches(network.hosts(), _SWEEP_BATCH_ADDRESSES)
 
     found: list[dict] = []
-    for ip, open_ports in zip(probe_targets, port_results, strict=False):
-        if ip in alive_ips or open_ports:
-            found.append(
-                {
-                    "ip": ip,
-                    "open_ports": open_ports,
-                    "ping_alive": ip in alive_ips,
-                }
-            )
+    with ThreadPoolExecutor(max_workers=50) as ex:
+        for batch in target_batches:
+            for ip, open_ports in zip(batch, ex.map(_tcp_probe, batch), strict=False):
+                if ip in alive_ips or open_ports:
+                    found.append(
+                        {
+                            "ip": ip,
+                            "open_ports": open_ports,
+                            "ping_alive": ip in alive_ips,
+                        }
+                    )
 
     return found
 

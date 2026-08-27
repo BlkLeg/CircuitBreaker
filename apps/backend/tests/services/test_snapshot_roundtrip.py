@@ -37,6 +37,20 @@ requires_pg_client = pytest.mark.skipif(
 SCRATCH_DB = "cb_roundtrip_scratch"
 
 
+@pytest.fixture(autouse=True)
+def _staging_under_tmp_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep snapshot staging inside tmp_path for every test in this module.
+
+    ``snapshot._staging_roots()`` reads CB_DATA_DIR and falls back to
+    /var/lib/circuitbreaker. conftest.py only sets CB_DATA_DIR inside the (non-autouse)
+    ws_client fixture, so without this the suite tries to CREATE /var/lib/circuitbreaker/tmp
+    and stage snapshots there — invisibly on a workstation, where the mkdir fails and the
+    builder falls back to /tmp, but successfully in a root CI container, which then gets
+    an uncompressed copy of uploads/ written onto its root filesystem.
+    """
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path / "data"))
+
+
 def _libpq_url(database: str) -> str:
     """Rewrite the SQLAlchemy URL into a libpq one pointing at `database`."""
     parsed = urlparse(db_url)

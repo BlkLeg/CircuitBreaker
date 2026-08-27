@@ -65,6 +65,20 @@ class ILOClient:
         except Exception as e:
             return {"error": str(e)}
 
+    def close(self) -> None:
+        """Release this client's pooled sockets.
+
+        Cached clients live for the life of the process and are never closed —
+        that reuse is the point. This exists for the private, uncached client
+        the dispatcher builds when the pooled one for a host is already in use
+        by another worker thread (see `_pooled_client`): nothing will ever hand
+        out that Session again, so its connections have to be given back here
+        rather than whenever the collector notices. A BMC tolerates only a
+        handful of concurrent Redfish sessions, so leaking one per contended
+        poll is how the pool exhaustion this cache exists to prevent comes back.
+        """
+        self._session.close()
+
     def get_status(self, data: dict) -> str:
         health = data.get("health", "")
         if health == "Critical":

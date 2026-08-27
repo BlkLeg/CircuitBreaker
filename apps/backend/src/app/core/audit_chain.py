@@ -10,9 +10,9 @@ import time
 from typing import Any
 
 from sqlalchemy import BigInteger, bindparam, select, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
-from app.db.models import Log
+from app.db.models import AppSettings, Log
 
 _logger = logging.getLogger(__name__)
 
@@ -126,16 +126,110 @@ def lock_audit_chain(session: Session, *, wait_seconds: float | None = None) -> 
         ) from exc
 
 
+# The columns canonical_log_payload hashes, plus the two chain columns and the
+# implicitly-loaded primary key. Everything else on a Log row — old_value,
+# new_value, details, user_agent — is untruncated body text that no hash covers,
+# so loading it to verify a chain buys nothing and costs the whole table. Keep
+# this tuple in step with canonical_log_payload: a field added to the payload
+# and not added here would be lazy-loaded one row at a time (correct, but a
+# SELECT per row), and one removed from the payload but left here is dead
+# weight.
+_HASHED_COLUMNS = (
+    Log.created_at_utc,
+    Log.action,
+    Log.actor_id,
+    Log.role_at_time,
+    Log.entity_type,
+    Log.entity_id,
+    Log.diff,
+    Log.ip_address,
+    Log.previous_hash,
+    Log.log_hash,
+)
+
+# Rows per round trip while streaming the chain. Peak memory is this window
+# rather than the table; the identity map is weak and the instances are clean,
+# so each batch is collectable as the walk advances.
+_VERIFY_YIELD_PER = 1000
+
+
+# Rows per window while relinking a damaged suffix. Smaller than the verify
+# window because each row here is dirtied and flushed rather than only read.
+_REPAIR_BATCH_ROWS = 500
+
+
+def chain_seed_hash(session: Session) -> str | None:
+    """Return the hash the chain walk must start from.
+
+    NULL — genesis — on a fresh install. After a retention purge it is the
+    ``log_hash`` of the last row that purge deleted, recorded by
+    :func:`app.services.log_purge.purge_old_audit_logs`, because the row that is
+    now first still names its deleted predecessor in ``previous_hash``. Seeding
+    from the checkpoint is what keeps a purged chain verifiable; seeding from
+    the first surviving row's own ``previous_hash`` instead would "work" too and
+    would be a hole, since it would make any deletion of the head self-
+    justifying. An unrecorded deletion still fails, which is the point.
+    """
+    return session.execute(
+        select(AppSettings.audit_chain_checkpoint_hash).order_by(AppSettings.id.asc()).limit(1)
+    ).scalar_one_or_none()
+
+
 def verify_audit_chain(session: Session) -> dict[str, Any]:
-    """Load logs in id order, recompute expected hash for each, verify linkage.
+    """Stream logs in id order, recompute expected hash for each, verify linkage.
 
     Returns a dict: valid (bool), first_failure_id (int | None), message (str),
     checked_count (int).
-    """
-    stmt = select(Log).order_by(Log.id.asc())
-    logs = list(session.execute(stmt).scalars().all())
 
-    if not logs:
+    The walk is streamed and column-restricted on purpose. This runs against the
+    largest table in the product, and materialising it — every row, every body
+    column — put the whole audit log in the Python heap for a read that touches
+    ten columns. Do not "simplify" this back to ``list(session.execute(
+    select(Log)).scalars())``.
+    """
+    stmt = (
+        select(Log)
+        .options(load_only(*_HASHED_COLUMNS))
+        .order_by(Log.id.asc())
+        .execution_options(stream_results=True, yield_per=_VERIFY_YIELD_PER)
+    )
+
+    previous_hash: str | None = chain_seed_hash(session)
+    checked_count = 0
+    failure: dict[str, Any] | None = None
+
+    result = session.execute(stmt)
+    try:
+        for log in result.scalars():
+            checked_count += 1
+            expected_hash = compute_log_hash(log, previous_hash)
+
+            if log.previous_hash != previous_hash:
+                failure = {
+                    "valid": False,
+                    "first_failure_id": log.id,
+                    "message": f"Log id={log.id}: previous_hash mismatch (chain broken).",
+                    "checked_count": checked_count,
+                }
+                break
+            if log.log_hash != expected_hash:
+                failure = {
+                    "valid": False,
+                    "first_failure_id": log.id,
+                    "message": f"Log id={log.id}: log_hash mismatch (entry tampered).",
+                    "checked_count": checked_count,
+                }
+                break
+            previous_hash = expected_hash
+    finally:
+        # Breaking out of a server-side cursor leaves it open on the connection
+        # until the transaction ends; close it where the walk stops.
+        result.close()
+
+    if failure is not None:
+        return failure
+
+    if checked_count == 0:
         return {
             "valid": True,
             "first_failure_id": None,
@@ -143,31 +237,11 @@ def verify_audit_chain(session: Session) -> dict[str, Any]:
             "checked_count": 0,
         }
 
-    previous_hash: str | None = None
-    for checked_count, log in enumerate(logs, start=1):
-        expected_hash = compute_log_hash(log, previous_hash)
-
-        if log.previous_hash != previous_hash:
-            return {
-                "valid": False,
-                "first_failure_id": log.id,
-                "message": f"Log id={log.id}: previous_hash mismatch (chain broken).",
-                "checked_count": checked_count,
-            }
-        if log.log_hash != expected_hash:
-            return {
-                "valid": False,
-                "first_failure_id": log.id,
-                "message": f"Log id={log.id}: log_hash mismatch (entry tampered).",
-                "checked_count": checked_count,
-            }
-        previous_hash = expected_hash
-
     return {
         "valid": True,
         "first_failure_id": None,
-        "message": f"Chain verified ({len(logs)} entries).",
-        "checked_count": len(logs),
+        "message": f"Chain verified ({checked_count} entries).",
+        "checked_count": checked_count,
     }
 
 
@@ -191,17 +265,56 @@ def repair_audit_chain(
         return {"repaired": False, "before": before, "changed": [], "after": before}
 
     first_failure_id = before["first_failure_id"]
-    logs = list(session.execute(select(Log).order_by(Log.id.asc()).with_for_update()).scalars())
-    previous_hash: str | None = None
-    changed: list[dict[str, Any]] = []
-    in_repair_segment = False
 
+    # Taken before the rows are read, not after: this is the lock that keeps a
+    # concurrent append from linking onto a row this repair is about to rewrite.
     lock_audit_chain(session)
-    for log in logs:
-        expected_hash = compute_log_hash(log, previous_hash)
-        if log.id == first_failure_id:
-            in_repair_segment = True
-        if in_repair_segment:
+
+    # verify_audit_chain has already proved that every row before the first
+    # failure recomputes to its stored log_hash, so the stored hash of the row
+    # just before it is a sound seed. Replaying the prefix would recompute
+    # values already known to be right; selecting it FOR UPDATE would also lock
+    # the entire table for the duration of the repair. Only the damaged suffix
+    # is loaded and locked. When the failure is at the head there is no prior
+    # row, and the seed is the retention checkpoint (genesis on a chain that has
+    # never been purged) — re-anchoring to NULL there would rewrite every hash
+    # in the table and still not verify.
+    seed = session.execute(
+        select(Log.log_hash).where(Log.id < first_failure_id).order_by(Log.id.desc()).limit(1)
+    ).scalar_one_or_none()
+    if seed is None:
+        seed = chain_seed_hash(session)
+
+    previous_hash: str | None = seed
+    changed: list[dict[str, Any]] = []
+
+    # Walked in bounded windows, and column-restricted exactly like the verify
+    # walk above. The damaged suffix is not a small thing: when the failure is
+    # at the head — which is every install whose chain head was cut before the
+    # retention checkpoint existed — the suffix *is* the whole logs table, and
+    # the earlier `list(session.execute(select(Log)...))` pulled every row into
+    # the heap complete with old_value, new_value, details and user_agent, none
+    # of which the hash covers. Each window is flushed before the next is read,
+    # and nothing holds a reference to the previous one, so the rows are
+    # collectable as the repair advances. Do not collapse this back into one
+    # unbounded select.
+    next_id = first_failure_id
+    while True:
+        window = list(
+            session.execute(
+                select(Log)
+                .options(load_only(*_HASHED_COLUMNS))
+                .where(Log.id >= next_id)
+                .order_by(Log.id.asc())
+                .limit(_REPAIR_BATCH_ROWS)
+                .with_for_update()
+            ).scalars()
+        )
+        if not window:
+            break
+
+        for log in window:
+            expected_hash = compute_log_hash(log, previous_hash)
             old_previous_hash = log.previous_hash
             old_log_hash = log.log_hash
             if old_previous_hash != previous_hash or old_log_hash != expected_hash:
@@ -216,7 +329,15 @@ def repair_audit_chain(
                         "new_log_hash": expected_hash,
                     }
                 )
-        previous_hash = expected_hash
+            previous_hash = expected_hash
+
+        # FOR UPDATE with a LIMIT drops rows another transaction deleted under
+        # us rather than re-running the query, so a short window is not proof
+        # the suffix is exhausted. Advance past the last id seen and stop only
+        # on an empty window.
+        next_id = window[-1].id + 1
+        session.flush()
+        del window
 
     session.flush()
 

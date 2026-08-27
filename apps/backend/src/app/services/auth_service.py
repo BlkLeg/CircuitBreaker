@@ -472,6 +472,8 @@ def register(
     password_or_hash: str,
     cfg: AppSettings,
     display_name: str | None = None,
+    *,
+    request: Any = None,
 ) -> AuthResponse:
     if db.query(User).count() == 0:
         raise HTTPException(
@@ -533,7 +535,26 @@ def register(
         actor_id=user.id,
     )
 
+    # B28: record the session before handing the token back. Revocation in this
+    # codebase is table-driven — is_session_revoked() (called from
+    # core.security.resolve_user_id on every authenticated request),
+    # revoke_all_sessions() behind the admin reset-password button, and
+    # revoke_token_session() behind logout all work by looking the raw JWT up by
+    # hash in user_sessions. A full-length token that was never written to that
+    # table is unkillable: it keeps authenticating until session_timeout_hours
+    # elapses, and the admin UI cheerfully reports "0 sessions revoked" while it
+    # does. Do not drop this call to save a write — every other path in this
+    # module that mints a session token (login, vault_reset_password,
+    # bootstrap_initialize, bootstrap_initialize_oauth) records one too, and the
+    # revocation surface assumes that invariant holds.
+    #
+    # `request` is optional and keyword-only so existing positional callers keep
+    # working; when it is None the session is still recorded and still revocable,
+    # only the IP / User-Agent columns shown in the sessions list are null.
+    from app.services.user_service import record_session
+
     token = _make_token(user, cfg)
+    record_session(db, user, request, token, cfg)
     return AuthResponse(token=token, user=_to_profile(user))
 
 

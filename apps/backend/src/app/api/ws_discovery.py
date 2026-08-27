@@ -43,6 +43,7 @@ from starlette.websockets import WebSocketState
 
 import app.db.session as _db_session
 from app.core.auth_cookie import is_websocket_secure, token_from_websocket_scope, ws_require_wss
+from app.core.forwarded import client_host, forwarded_client_identity, request_from_trusted_proxy
 from app.core.rbac import require_role
 from app.core.security import decode_token
 from app.core.time import utcnow, utcnow_iso
@@ -63,14 +64,51 @@ _EVENT_CHANNEL = "cb:discovery:events"
 _WS_INTERNAL_ERROR = 1011
 
 
+def trusted_ws_client_ip(websocket: WebSocket) -> str:
+    """The client address, honouring `X-Forwarded-For` only behind a trusted proxy.
+
+    Every WebSocket endpoint in this package keys a security decision on this
+    value: it is the per-IP connection cap's bucket key, the log identity for
+    every rejected handshake, and — on /ws/monitors and the telemetry stream —
+    the address the operator's `ws_allowed_cidrs` network allowlist is matched
+    against. Whoever gets to choose it gets to choose whether those controls
+    apply to them.
+
+    All five streams used to read the *leftmost* `X-Forwarded-For` entry off any
+    peer, which handed that choice to the caller twice over: the shipped nginx
+    *appends* (`$proxy_add_x_forwarded_for`), so a client's own header survives
+    to the left of its real address, and a client that reaches uvicorn directly
+    can invent the header outright. So an off-net caller could name an address
+    inside the operator's allowlist and be let straight in, or rotate the header
+    for a fresh connection budget and make CB_WS_MAX_PER_IP mean nothing.
+
+    app.core.forwarded owns this trust decision for the whole codebase — the
+    rate limiter and the security-headers middleware already ask it — so ask it
+    here rather than re-deriving it. It walks the chain right to left and stops
+    at the first hop outside `trusted_proxy_cidrs`, which is the nearest address
+    an attacker cannot forge, and falls back to the socket peer whenever the
+    peer is not one of our own proxies.
+
+    This lives here, and ws_telemetry/ws_monitors/ws_topology/ws_agents import
+    it, because B24 was exactly the cost of having had five byte-identical
+    copies of the old two-line read: the first fix pass corrected two of them and
+    left the /ws/monitors allowlist bypass live in the other three. Do not paste
+    a sixth copy into a new stream, and do not "simplify" the body back to
+    `headers["x-forwarded-for"].split(",")[0]` — that is the bug, not a
+    shortcut. The shipped defaults still recover the real client IP:
+    `trusted_proxy_cidrs` defaults to loopback and the mono image proxies over
+    127.0.0.1, so nothing legitimate loses its identity here.
+    """
+    if request_from_trusted_proxy(websocket):
+        forwarded = forwarded_client_identity(websocket.headers)
+        if forwarded:
+            return forwarded
+    return client_host(websocket) or "unknown"
+
+
 def _extract_client_ip(websocket: WebSocket) -> str:
-    """Extract real client IP, honouring X-Forwarded-For set by nginx."""
-    forwarded = websocket.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    if websocket.client:
-        return websocket.client.host
-    return "unknown"
+    """This stream's cap-bucket key — see `trusted_ws_client_ip` above."""
+    return trusted_ws_client_ip(websocket)
 
 
 def _warn_if_insecure(websocket: WebSocket) -> None:

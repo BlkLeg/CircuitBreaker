@@ -127,7 +127,7 @@ def test_the_address_is_normalised_before_lookup(db_session, factories):
     assert got.id == user.id
 
 
-def test_oauth_sign_in_demands_the_second_factor_when_mfa_is_enabled(
+async def test_oauth_sign_in_demands_the_second_factor_when_mfa_is_enabled(
     db_session, factories, monkeypatch
 ):
     """OAuth used to hand out a full session regardless of mfa_enabled."""
@@ -142,7 +142,7 @@ def test_oauth_sign_in_demands_the_second_factor_when_mfa_is_enabled(
     db_session.commit()
 
     request = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
-    resp = _issue_jwt_and_redirect(user, "https://cb.example", db_session, request)
+    resp = await _issue_jwt_and_redirect(user, "https://cb.example", db_session, request)
 
     location = resp.headers["location"]
     assert "cb_auth_code=" not in location, "a session was issued without the second factor"

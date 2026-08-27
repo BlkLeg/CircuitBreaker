@@ -21,6 +21,7 @@ import logging
 import re
 import socket
 import struct
+import zlib
 from pathlib import Path
 from typing import Any, cast
 
@@ -38,6 +39,113 @@ _MDNS_TIMEOUT: float = 4.0
 _HTTP_TIMEOUT: float = 3.0
 _MDNS_MULTICAST_GROUP = "224.0.0.251"
 _MDNS_PORT = 5353
+
+# ── Response body caps ────────────────────────────────────────────────────────
+# Everything the two HTTP-shaped probes below talk to is a host on the subnet
+# being scanned, i.e. the least trusted peer in the system.  A response body is
+# whatever that host feels like sending, so the probes read a bounded prefix and
+# nothing more.  The numbers are what each parser actually needs: the HTTP probe
+# only runs a <title> regex, and a UPnP device description document is a few KB.
+_HTTP_MAX_BODY_BYTES = 8_192
+_UPNP_MAX_BODY_BYTES = 65_536
+
+
+async def _read_raw_capped(resp: httpx.Response, limit: int) -> bytes:
+    """Pull at most *limit* bytes off the wire, before any content decoding.
+
+    ``aiter_raw`` and not ``aiter_bytes``, and the difference is the entire control.
+    ``aiter_bytes`` yields the stream *after* httpx has run the content decoder that
+    it builds from the response's own ``Content-Encoding`` header — that is, from a
+    header chosen by the untrusted host being scanned.  With ``chunk_size=None`` one
+    raw network read becomes one fully-decoded chunk, so a caller that appends the
+    chunk and only then tests its running total has already paid for the allocation
+    it meant to refuse: 65 KB of gzip on the wire expanded to 64 MiB inside the
+    probe, 8192x the cap, and instantly enough that the outer timeout never fired.
+    Capping the raw stream instead means the number below is bytes actually received,
+    which is the only quantity the peer cannot inflate.
+
+    Reading a body shorter than *limit* to exhaustion lets httpx return the
+    connection to the pool; breaking out mid-body forces it closed.  That asymmetry
+    is deliberate — a host that keeps talking past the cap loses its keep-alive.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in resp.aiter_raw():
+        chunks.append(chunk)
+        total += len(chunk)
+        if total >= limit:
+            break
+    return b"".join(chunks)[:limit]
+
+
+def _decompress_capped(raw: bytes, content_encoding: str, limit: int) -> bytes:
+    """Undo one layer of Content-Encoding, producing at most *limit* bytes.
+
+    ``decompressobj().decompress(data, max_length)`` is the load-bearing call: the
+    plain ``zlib.decompress`` / ``gzip.decompress`` helpers, and httpx's own decoder,
+    take no output bound and will happily turn the capped prefix back into whatever
+    the compressor claims it was.  *limit* is applied to the output, so the ratio the
+    attacker controls stops mattering.
+
+    Anything that is not a single gzip or deflate layer yields no evidence rather
+    than a second guess: multi-layer encodings ("gzip, gzip") and brotli/zstd exist
+    to be nested, and a fingerprint hint is not worth carrying an unbounded decoder
+    for.  *raw* is normally a truncated stream — zlib returns the prefix it could
+    decode and that is exactly what the regex scanners want.
+    """
+    token = content_encoding.strip().lower()
+    if not token or token == "identity":
+        return raw
+    if token in ("gzip", "x-gzip"):
+        window_sizes: tuple[int, ...] = (zlib.MAX_WBITS | 16,)
+    elif token == "deflate":
+        # RFC 1950 says zlib-wrapped; a good deal of embedded gear sends it raw.
+        window_sizes = (zlib.MAX_WBITS, -zlib.MAX_WBITS)
+    else:
+        return b""
+    for wbits in window_sizes:
+        try:
+            return zlib.decompressobj(wbits).decompress(raw, limit)
+        except zlib.error:
+            continue
+    return b""
+
+
+async def _read_capped(resp: httpx.Response, limit: int) -> str:
+    """Read at most *limit* bytes from an already-streaming response body, as text.
+
+    Must be used with ``client.stream(...)`` rather than ``client.get(...)``.  That
+    distinction is the whole point and not a stylistic one: ``get()`` calls
+    ``Response.read()``, which drains the socket into memory in full and only then
+    hands back an object, so slicing the result afterwards ("body = resp.text[:8192]")
+    truncates a buffer that has already been paid for.  A host answering the probe
+    with a multi-gigabyte body — or an endless one, since the timeout only bounds a
+    connection that goes quiet, not one that keeps trickling — took the scan worker
+    down with it.
+
+    *limit* is enforced twice, on the wire and again on the decompressor's output, so
+    neither the body length nor the compression ratio is something the scanned host
+    gets to choose.  Do not "simplify" this back onto ``aiter_bytes`` or ``resp.text``.
+
+    The charset comes from the response's Content-Type when it declares one, because
+    consumer gear labels its ``<title>`` and ``<friendlyName>`` iso-8859-1 far more
+    often than it is willing to admit, and a hard UTF-8 decode silently deletes every
+    accented character out of exactly the evidence these probes exist to collect.
+    Decoded leniently either way: this is fingerprinting evidence from an untrusted
+    device, so a body that is not valid text should degrade the guess, never raise.
+    """
+    body = _decompress_capped(
+        await _read_raw_capped(resp, limit),
+        resp.headers.get("content-encoding", ""),
+        limit,
+    )
+    charset = resp.charset_encoding or "utf-8"
+    try:
+        return body.decode(charset, errors="ignore")
+    except LookupError:
+        # Content-Type named an encoding Python has never heard of.
+        return body.decode("utf-8", errors="ignore")
+
 
 # ── Optional dependency guards ────────────────────────────────────────────────
 try:
@@ -657,28 +765,49 @@ async def _run_ssdp_unicast_probe(ip: str, open_ports: list[dict]) -> dict[str, 
         "device_type": re.compile(r"<deviceType>(.*?)</deviceType>", re.I | re.S),
     }
 
+    # follow_redirects=False, matching discovery_opnsense.py and every other
+    # outbound client in the backend.  The target of this probe is an arbitrary
+    # host on the scanned subnet, and a redirect is that host choosing the next URL
+    # we fetch: a 302 to http://169.254.169.254/ or to an internal admin port turns
+    # a read-only fingerprint into an SSRF primitive aimed from inside the network.
+    # A UPnP description document lives at a fixed path on the device itself and has
+    # no business redirecting anywhere, so nothing legitimate is lost. Do not set
+    # this back to True to "improve coverage" — police the target instead.
+    # accept-encoding: identity asks the device not to compress, which keeps the raw
+    # cap and the useful cap the same number for a well-behaved peer.  It is only a
+    # request — the bound that holds against a host that gzips anyway is _read_capped.
     async with httpx.AsyncClient(
         timeout=_SSDP_TIMEOUT,
-        follow_redirects=True,
+        follow_redirects=False,
+        headers={"accept-encoding": "identity"},
     ) as client:
         for port in targets:
             scheme = "https" if port == 443 else "http"
             for path in upnp_paths:
                 url = f"{scheme}://{ip}:{port}{path}"
                 try:
-                    resp = await client.get(url)
-                    if resp.status_code != 200:
-                        continue
-                    ct = resp.headers.get("content-type", "")
-                    if "xml" not in ct and "text" not in ct:
-                        continue
-                    body = resp.text
-                    result: dict[str, str | None] = {}
-                    for field, pattern in xml_re_map.items():
-                        m = pattern.search(body)
-                        result[field] = m.group(1).strip() if m else None
-                    if any(result.values()):
-                        return result
+                    async with client.stream("GET", url) as resp:
+                        if resp.status_code != 200 or (
+                            "xml" not in resp.headers.get("content-type", "")
+                            and "text" not in resp.headers.get("content-type", "")
+                        ):
+                            # Skipped, but still drained up to the cap before the
+                            # context closes.  Three of these four UPnP paths 404 on
+                            # real gear, and `continue`-ing with the body unread
+                            # makes httpx tear the connection down instead of
+                            # pooling it — four TCP handshakes per port per host
+                            # across a whole subnet sweep, for four bytes of "nope".
+                            # The cap still applies: a host that keeps talking past
+                            # it loses its keep-alive, which is the right answer.
+                            await _read_raw_capped(resp, _UPNP_MAX_BODY_BYTES)
+                            continue
+                        body = await _read_capped(resp, _UPNP_MAX_BODY_BYTES)
+                        result: dict[str, str | None] = {}
+                        for field, pattern in xml_re_map.items():
+                            m = pattern.search(body)
+                            result[field] = m.group(1).strip() if m else None
+                        if any(result.values()):
+                            return result
                 except Exception:
                     continue
     return {}
@@ -1021,31 +1150,44 @@ async def _run_http_fingerprint_probe(ip: str, open_ports: list[dict]) -> dict[s
 
     result: dict[str, str | None] = {}
 
+    # follow_redirects=False for the same reason as the UPnP probe above: the host
+    # answering this request is an untrusted box on the scanned subnet, and
+    # following its Location header lets it point the scanner at anything the
+    # scanner can reach.  The cost is that a device which 302s its landing page
+    # elsewhere yields a Server header but no page title; that is a weaker guess,
+    # not a broken probe, and _classify_device already copes with partial evidence.
     async with httpx.AsyncClient(
         timeout=_HTTP_TIMEOUT,
-        follow_redirects=True,
+        follow_redirects=False,
+        headers={"accept-encoding": "identity"},
     ) as client:
         for scheme, port in candidates[:3]:  # cap at 3 attempts
             url = f"{scheme}://{ip}:{port}/"
             try:
-                resp = await client.get(url)
-                server_hdr = resp.headers.get("server", "")
-                for pat, fields in _SERVER_HEADER_RULES:
-                    if pat.search(server_hdr):
-                        result.update({k: v for k, v in fields.items() if v is not None})
-                        break
+                # Streamed, not client.get(): headers are available as soon as the
+                # context is entered, and the body is then read through a cap
+                # instead of being buffered whole and sliced afterwards.  See
+                # _read_capped for why the slice was never a limit.
+                async with client.stream("GET", url) as resp:
+                    server_hdr = resp.headers.get("server", "")
+                    for pat, fields in _SERVER_HEADER_RULES:
+                        if pat.search(server_hdr):
+                            result.update({k: v for k, v in fields.items() if v is not None})
+                            break
 
-                # Page title scan
-                ct = resp.headers.get("content-type", "")
-                if "html" in ct or url.endswith("/"):
-                    body = resp.text[:8192]  # only first 8 KB
-                    title_m = _TITLE_RE.search(body)
-                    if title_m:
-                        title = title_m.group(1).strip()
-                        for pat, fields in _HTTP_TITLE_RULES:
-                            if pat.search(title):
-                                result.update({k: v for k, v in fields.items() if v is not None})
-                                break
+                    # Page title scan
+                    ct = resp.headers.get("content-type", "")
+                    if "html" in ct or url.endswith("/"):
+                        body = await _read_capped(resp, _HTTP_MAX_BODY_BYTES)
+                        title_m = _TITLE_RE.search(body)
+                        if title_m:
+                            title = title_m.group(1).strip()
+                            for pat, fields in _HTTP_TITLE_RULES:
+                                if pat.search(title):
+                                    result.update(
+                                        {k: v for k, v in fields.items() if v is not None}
+                                    )
+                                    break
 
                 if result:
                     return result

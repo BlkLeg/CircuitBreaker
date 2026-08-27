@@ -24,6 +24,8 @@ _PG_CONTAINER = None
 # Per-run upload root, created in pytest_configure and removed in
 # pytest_unconfigure so the suite never writes into the working tree.
 _UPLOADS_TMPDIR: str | None = None
+# Per-run data root, same lifecycle as _UPLOADS_TMPDIR above.
+_DATA_TMPDIR: str | None = None
 
 
 def pytest_configure(config):
@@ -65,6 +67,24 @@ def pytest_configure(config):
     _UPLOADS_TMPDIR = tempfile.mkdtemp(prefix="cb-test-uploads-")
     os.environ["UPLOADS_DIR"] = _UPLOADS_TMPDIR
 
+    # Same problem as UPLOADS_DIR, one directory up, and worse in consequence
+    # (B37). `vault_service._data_dir()` is `CB_DATA_DIR or Path.cwd()/"data"`,
+    # and the suite's cwd is apps/backend -- so a run with CB_DATA_DIR unset
+    # generated a REAL Fernet key and wrote it to apps/backend/data/.env in the
+    # working tree. It is gitignored, so it never showed up in `git status`; it
+    # just sat there, 0600, indistinguishable from a developer's own key, and a
+    # later run would load it instead of generating a fresh one.
+    #
+    # The same variable now also decides where a snapshot stages its work
+    # (services/backup/snapshot._staging_root, default /var/lib/circuitbreaker)
+    # and where certificates and the CVE database land, so leaving it unset
+    # points several code paths at real system locations. One redirect covers
+    # all of them, and it has to happen here rather than in a fixture because
+    # these are read at import time into module-level constants.
+    global _DATA_TMPDIR
+    _DATA_TMPDIR = tempfile.mkdtemp(prefix="cb-test-data-")
+    os.environ["CB_DATA_DIR"] = _DATA_TMPDIR
+
     import psycopg2
 
     conn = psycopg2.connect(
@@ -77,7 +97,7 @@ def pytest_configure(config):
 
 
 def pytest_unconfigure(config):
-    global _PG_CONTAINER, _UPLOADS_TMPDIR
+    global _PG_CONTAINER, _UPLOADS_TMPDIR, _DATA_TMPDIR
     if _PG_CONTAINER:
         try:
             _PG_CONTAINER.stop()
@@ -87,6 +107,12 @@ def pytest_unconfigure(config):
         # Only ever removes the directory this process created via mkdtemp.
         shutil.rmtree(_UPLOADS_TMPDIR, ignore_errors=True)
         _UPLOADS_TMPDIR = None
+    if _DATA_TMPDIR:
+        # Same guarantee: this process created it, so this process removes it.
+        # It holds a generated vault key, which is exactly why it does not
+        # outlive the run.
+        shutil.rmtree(_DATA_TMPDIR, ignore_errors=True)
+        _DATA_TMPDIR = None
 
 
 # ── DB schema ─────────────────────────────────────────────────────────────────

@@ -33,6 +33,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
 import app.db.session as _db_session
+from app.api.ws_discovery import trusted_ws_client_ip
 from app.core.auth_cookie import is_websocket_secure, token_from_websocket_scope, ws_require_wss
 from app.core.network_acl import is_ip_in_cidrs as _is_ip_in_cidrs
 from app.core.rbac import effective_scopes, has_scope
@@ -71,12 +72,18 @@ _lock = asyncio.Lock()
 
 
 def _extract_client_ip(websocket: WebSocket) -> str:
-    forwarded = websocket.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    if websocket.client:
-        return websocket.client.host
-    return "unknown"
+    """This stream leans on the client address twice, and both are security decisions.
+
+    It is the `_MAX_PER_IP` cap bucket, and it is the address the operator's
+    `ws_allowed_cidrs` allowlist is matched against at the CIDR-whitelist gate
+    below. Until B24 was closed everywhere this read the leftmost
+    `X-Forwarded-For` entry off any peer, so an off-net client could put an
+    allowlisted address in a header it wrote itself and walk through a network
+    ACL. The trust rule is shared with every other WS stream; see
+    `trusted_ws_client_ip` in ws_discovery.py for what it does and what must not
+    be undone.
+    """
+    return trusted_ws_client_ip(websocket)
 
 
 async def _check_limits(client_ip: str) -> bool:
@@ -95,7 +102,23 @@ async def _register(ws: WebSocket, client_ip: str) -> None:
 
 
 async def _unregister(ws: WebSocket, client_ip: str) -> None:
+    """Drop one registered connection. Idempotent — calling it twice is a no-op.
+
+    Same contract, and same reason, as ws_telemetry._unregister. The handler can
+    reach this twice for one socket (the receive loop's `finally` always
+    unregisters, and the outer `except Exception` unregisters again on its way
+    to close(1011)) and can reach it for a socket that was never registered,
+    when the failure happened during the auth or CIDR phase. Both used to
+    corrupt the tally, because the old body decremented unconditionally and
+    treated a count of 0 as `<= 1`: the second call *popped the IP key
+    outright*, wiping the count for every other live connection from that
+    address and letting it open `_MAX_PER_IP` more. Gating on membership in
+    `_connections` — the same set `_register` adds to under the same lock —
+    makes the pairing exact. Do not drop the guard to save a lookup.
+    """
     async with _lock:
+        if ws not in _connections:
+            return
         _connections.discard(ws)
         current = _ip_counts.get(client_ip, 0)
         if current <= 1:

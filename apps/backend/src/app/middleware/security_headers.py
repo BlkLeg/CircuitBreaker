@@ -11,7 +11,14 @@ from app.core.forwarded import forwarded_proto
 
 _CSP = (
     "default-src 'self'; "
-    "script-src 'self' 'strict-dynamic'; "
+    # Not 'strict-dynamic': under CSP Level 3 it makes the browser ignore
+    # 'self' and every host source in this directive, so a policy naming no
+    # nonce and no hash allows no script at all. apps/frontend/index.html ships
+    # a plain <script type="module"> with no nonce, and spa_fallback serves that
+    # very file, so this header white-paged the SPA on every deployment where
+    # the backend fronts the frontend itself. Matches the four nginx configs
+    # verbatim — see test_the_backend_csp_matches_the_nginx_configs.
+    "script-src 'self' 'unsafe-inline'; "
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
     "font-src 'self' https://fonts.gstatic.com; "
     "img-src 'self' data: blob: https://www.gravatar.com "

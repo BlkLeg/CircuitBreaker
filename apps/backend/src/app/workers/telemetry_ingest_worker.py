@@ -32,6 +32,7 @@ from app.services.telemetry_normalize import (
     _normalise_payload,
     live_metric_fields,
 )
+from app.workers.stream_limits import update_stream_limits
 
 _logger = logging.getLogger(__name__)
 
@@ -78,29 +79,15 @@ def _stream_config() -> dict[str, Any]:
 
 
 async def _update_stream_limits(js: Any, cfg: dict[str, Any]) -> None:
-    """Retro-fit `cfg`'s limits onto a stream that already exists.
+    """Retro-fit `cfg`'s limits onto a TELEMETRY stream that already exists.
 
-    `add_stream` against a stream whose stored config differs reports "stream name
-    already in use" — the same string an identical stream never produces. Swallowing
-    that at debug level, as this worker used to, means an upgraded deployment keeps the
-    limitless stream it was created with forever and never sees a byte of this fix, so
-    the mismatch branch has to reach back and update the stream in place.
-
-    The retention policy is deliberately taken from the *server's* copy rather than from
-    `cfg`. JetStream refuses a stream update that changes retention and rejects the whole
-    request when it sees one, so sending WorkQueuePolicy at a stream created under
-    LimitsPolicy would throw the max_age/max_bytes fix away along with it. Existing
-    installs therefore stay LimitsPolicy and merely become bounded, which is the part
-    that actually closes the disk-exhaustion path; only streams created from scratch get
-    the work queue.
+    Delegates to `workers.stream_limits.update_stream_limits`, which carries the
+    whole argument — why the body is built from the server's stored config, why
+    retention is not sent, and why the dedupe window is clamped. It is shared
+    with the DISCOVERY worker because this logic existed twice, only one copy was
+    fixed for R12, and nothing made the divergence visible.
     """
-    name = cfg["name"]
-    try:
-        info = await js.stream_info(name)
-        await js.update_stream(**{**cfg, "retention": info.config.retention})
-        _logger.info("NATS %s stream limits updated", name)
-    except Exception as exc:  # noqa: BLE001
-        _logger.warning("NATS %s stream limits update failed: %s", name, exc)
+    await update_stream_limits(js, cfg)
 
 
 async def _ensure_stream() -> None:

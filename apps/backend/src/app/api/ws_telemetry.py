@@ -18,6 +18,10 @@ Auth protocol (identical to ws_topology.py):
 
 Falls back to no-op if Redis is unavailable (WebSocket stays open but receives
 no push events; client should poll REST as fallback).
+
+A connection may hold at most `_MAX_SUBSCRIPTIONS` distinct channels in total,
+not per frame; exceeding it is a policy violation ({"error":
+"subscription_limit_exceeded"}, close 1008) like the other rejections here.
 """
 
 import asyncio
@@ -29,6 +33,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
 import app.db.session as _db_session
+from app.api.ws_discovery import trusted_ws_client_ip
 from app.core.auth_cookie import is_websocket_secure, token_from_websocket_scope, ws_require_wss
 from app.core.network_acl import is_ip_in_cidrs as _is_ip_in_cidrs
 from app.core.redis import get_redis
@@ -58,12 +63,15 @@ _lock = asyncio.Lock()
 
 
 def _extract_client_ip(websocket: WebSocket) -> str:
-    forwarded = websocket.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    if websocket.client:
-        return websocket.client.host
-    return "unknown"
+    """This stream leans on the client address twice, and both are security decisions.
+
+    It is the `_MAX_PER_IP` cap bucket, and it is what the operator's
+    `ws_allowed_cidrs` allowlist is matched against below — so a caller who can
+    pick this value picks whether the network ACL applies to it. The trust rule
+    is shared with every other WS stream; see `trusted_ws_client_ip` in
+    ws_discovery.py for what it does and what must not be undone.
+    """
+    return trusted_ws_client_ip(websocket)
 
 
 async def _check_limits(client_ip: str) -> bool:
@@ -82,7 +90,22 @@ async def _register(ws: WebSocket, client_ip: str) -> None:
 
 
 async def _unregister(ws: WebSocket, client_ip: str) -> None:
+    """Drop one registered connection. Idempotent — calling it twice is a no-op.
+
+    The handler can reach this twice for one socket: the receive loop's
+    `finally` always unregisters, and the outer `except Exception` unregisters
+    again on its way to close(1011). It can also reach it for a socket that was
+    never registered, when the failure happened during the auth or ACL phase.
+    Both used to corrupt the tally, because the old body decremented
+    unconditionally and treated a count of 0 as `<= 1`: the second call *popped
+    the IP key outright*, wiping the count for every other live connection from
+    that address and letting it open `_MAX_PER_IP` more. Gating on membership in
+    `_connections` — the same set that `_register` adds to under the same lock —
+    makes the pairing exact. Do not drop the guard to save a lookup.
+    """
     async with _lock:
+        if ws not in _connections:
+            return
         _connections.discard(ws)
         current = _ip_counts.get(client_ip, 0)
         if current <= 1:
@@ -270,18 +293,53 @@ async def telemetry_stream(websocket: WebSocket) -> None:
                                     new_channels.add(f"telemetry:agent:{entity_id}")
                                 elif entity_type == "hardware" and isinstance(entity_id, int):
                                     new_channels.add(f"telemetry:{entity_id}")
+                        # What this frame actually asks for that we are not
+                        # already subscribed to. Computed before the merge
+                        # because the merge destroys the answer.
+                        added = new_channels - subscribed_channels
                         subscribed_channels.update(new_channels)
-                        if listener_task:
-                            stop_event.set()
-                            listener_task.cancel()
-                            try:
-                                await listener_task
-                            except (asyncio.CancelledError, Exception):
-                                pass
-                        stop_event = asyncio.Event()
-                        listener_task = asyncio.create_task(
-                            _redis_listener(websocket, subscribed_channels, stop_event)
-                        )
+                        # `_MAX_SUBSCRIPTIONS` used to bound only the slice
+                        # taken from *this* frame, while every frame was merged
+                        # into one accumulating set — so a client could send
+                        # frame after frame of fresh entity ids and hold an
+                        # unbounded channel set on a single authenticated
+                        # socket, making the server pay an O(n) Redis
+                        # unsubscribe/resubscribe on each one. Cap the total,
+                        # which is the quantity that actually costs memory and
+                        # pub/sub work, and do it *before* the resubscribe below
+                        # so the offending frame never pays for it. `break`
+                        # leaves the receive loop for the existing `finally`,
+                        # which stops the listener, cancels the ping task and
+                        # unregisters the connection — no teardown belongs here.
+                        if len(subscribed_channels) > _MAX_SUBSCRIPTIONS:
+                            await websocket.send_text(
+                                json.dumps({"error": "subscription_limit_exceeded"})
+                            )
+                            await websocket.close(code=1008)
+                            break
+                        # B25's other half: capping the set stops it growing,
+                        # but a client that resends the *same* ids still made
+                        # the server cancel the listener, UNSUBSCRIBE every
+                        # channel, close the pubsub and issue a fresh N-channel
+                        # SUBSCRIBE — an O(n) Redis round trip per frame, at
+                        # zero cost to the sender, for a subscription set that
+                        # did not change. Only rebuild when this frame adds
+                        # something (or when there is no listener yet, which is
+                        # also how the very first, possibly empty, subscribe
+                        # frame starts one). Removals still rebuild: that is the
+                        # unsubscribe branch below, and it has to.
+                        if added or listener_task is None:
+                            if listener_task:
+                                stop_event.set()
+                                listener_task.cancel()
+                                try:
+                                    await listener_task
+                                except (asyncio.CancelledError, Exception):
+                                    pass
+                            stop_event = asyncio.Event()
+                            listener_task = asyncio.create_task(
+                                _redis_listener(websocket, subscribed_channels, stop_event)
+                            )
 
                 if isinstance(msg, dict) and "unsubscribe" in msg:
                     entity_ids = msg["unsubscribe"]

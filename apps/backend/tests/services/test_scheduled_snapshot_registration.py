@@ -85,9 +85,20 @@ def test_the_snapshot_job_is_registered_in_the_lifespan_and_not_in_reload_discov
     database, a vault and a scheduler thread. Asserted against the source, the
     way the `agent_discovery_reconcile` precedent next door is.
 
-    `misfire_grace_time` is part of the assertion: APScheduler's default drops a
-    fire time the process slept through, and a restart that straddles 02:00 is
-    exactly when the snapshot matters most.
+    `misfire_grace_time` is part of the assertion, but not for the reason this
+    docstring gave until R11 (see `test_scheduler_job_registration.py`, which
+    now bans the claim tree-wide and would fail on the wording that used to be
+    here). It buys one thing: a *running* process whose 02:00 wakeup lands late
+    — a stalled event loop, a saturated thread pool, a host suspended and
+    resumed — still takes the snapshot, where APScheduler's one-second default
+    grace would drop the night's run over a two-second hiccup. It does nothing
+    for a process that was not up at 02:00. `SingleOwnerScheduler` uses
+    APScheduler's default in-memory job store and `main.lifespan` builds a new
+    one on every boot, so an instance that starts at 02:30 holds no fire time
+    from the 02:00 it was down for; grace forgives a fire time the scheduler is
+    holding, and there is none. Asserting the parameter here is asserting the
+    late-wakeup protection only, and a maintainer who deletes it should be told
+    that and nothing more.
     """
     backend = Path(__file__).resolve().parents[2]
     main_py = (backend / "src/app/main.py").read_text()
