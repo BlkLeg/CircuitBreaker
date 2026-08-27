@@ -66,6 +66,25 @@ CB_BACKEND_CONTAINER=""
 # CB_DATA_DIR: path to the data directory INSIDE the backend container.
 #   docker  → /data
 #   compose → /app/data
+#
+# Every `docker exec` below that runs a container-side script or the application's
+# own Python passes this in explicitly with `-e "CB_DATA_DIR=${CB_DATA_DIR}"`, and
+# that is not belt-and-braces. `docker exec` builds the new process's environment
+# from the *image's* ENV, not from anything the entrypoint exported — so
+# docker/entrypoint-mono.sh's own export is invisible here, and only Dockerfile.mono's
+# `ENV CB_DATA_DIR=/data` reaches an exec'd process. docker/backend.Dockerfile
+# (compose's cb-backend) declares no such ENV at all.
+#
+# Both halves of what that variable feeds fail quietly when it is missing:
+#
+#   * a single-quoted `sh -c '… ${CB_DATA_DIR}/tmp …'` body expands it to the
+#     empty string, so every staging path becomes /tmp/… — the 100 MB tmpfs the
+#     restore was moved off in the first place, reintroduced with no error;
+#   * services/db_backup.py resolves `_data_dir` from this variable and falls
+#     back to /var/lib/circuitbreaker, so a snapshot built without it is rooted
+#     somewhere the volume is not, and captures no uploads.
+#
+# tests/build/test_cb_update_recreate.py fails if a new call site forgets it.
 CB_DATA_DIR=""
 # CB_INSTALL_DIR, CB_COMPOSE_FILE: for compose mode (cb update, uninstall)
 CB_INSTALL_DIR=""
@@ -424,6 +443,34 @@ cmd_restart() {
   esac
 }
 
+# The rollback instructions the update path prints when something goes wrong.
+#
+# Two things used to be wrong with them. They chained `docker rm` to the rename
+# with `&&`, and when `docker run` fails at *creation* there is no container to
+# remove — `docker rm` exits 1, the `&&` short-circuits, the rename never runs,
+# and an operator who pasted the line faithfully was left with the install still
+# down and no sign of why. And they were printed unconditionally, including on
+# the path where there was no previous container to rename back.
+#
+# `rm -f` tolerates a container that was never created; `;` rather than `&&`
+# means the rename is attempted regardless; and the rename/start pair keeps `&&`
+# because starting a container that was not restored is not a recovery.
+#
+# Reads `have_prev` and `prev` from cmd_update, its only caller.
+_update_rollback_hint() {
+  local headline="$1"
+  if [[ -z "$have_prev" ]]; then
+    printf '%s\n' \
+      "$headline" \
+      "  There was no previous container to roll back to — this upgrade created '${CB_CONTAINER}' fresh."
+    return
+  fi
+  printf '%s\n' \
+    "$headline" \
+    "  The container that was serving before the upgrade is still here as '${prev}'. Roll back with:" \
+    "    docker rm -f ${CB_CONTAINER} 2>/dev/null; docker rename ${prev} ${CB_CONTAINER} && docker start ${CB_CONTAINER}"
+}
+
 cmd_update() {
   case "$CB_MODE" in
     docker)
@@ -462,9 +509,32 @@ cmd_update() {
       docker rm -f "$prev" >/dev/null 2>&1 || true
 
       _info "Recreating container '${CB_CONTAINER}'..."
-      docker stop "$CB_CONTAINER" >/dev/null 2>&1 || true
-      docker rename "$CB_CONTAINER" "$prev" 2>/dev/null \
-        || docker rm "$CB_CONTAINER" 2>/dev/null || true
+      # The rename *is* the rollback, so a rename that fails has to stop the
+      # upgrade. This used to fall back to `docker rm "$CB_CONTAINER"` with the
+      # error sent to /dev/null, which destroyed the only copy of the
+      # pre-upgrade container — the exact outcome the rename exists to prevent,
+      # performed silently, and then the failure messages below went on to tell
+      # the operator to roll back to a container that no longer existed.
+      #
+      # A container that is simply not there is a different case and not an
+      # error: `cb update` after a failed run has nothing to set aside, and
+      # recreating from CB_IMAGE is the whole point. Distinguish the two up
+      # front instead of inferring it from the rename's exit code.
+      local have_prev=""
+      if docker inspect --type container "$CB_CONTAINER" >/dev/null 2>&1; then
+        docker stop "$CB_CONTAINER" >/dev/null 2>&1 || true
+        local rename_err=""
+        if ! rename_err="$(docker rename "$CB_CONTAINER" "$prev" 2>&1)"; then
+          _fail "$(printf '%s\n' \
+            "Could not set '${CB_CONTAINER}' aside as '${prev}', so this upgrade would have no rollback." \
+            "  docker rename said: ${rename_err}" \
+            "  Nothing has been removed. The container is stopped; start it again with:" \
+            "    docker start ${CB_CONTAINER}")"
+        fi
+        have_prev=1
+      else
+        _warn "No container named '${CB_CONTAINER}' to replace — creating it fresh, with no rollback to fall back on."
+      fi
 
       docker run -d \
         --name  "$CB_CONTAINER" \
@@ -473,7 +543,7 @@ cmd_update() {
         -v      "${CB_VOLUME}:/data" \
         --restart unless-stopped \
         "$CB_IMAGE" \
-        || _fail "Failed to start the updated container. The previous one is still here — roll back with: docker rm ${CB_CONTAINER} && docker rename ${prev} ${CB_CONTAINER} && docker start ${CB_CONTAINER}"
+        || _fail "$(_update_rollback_hint "Failed to start the updated container.")"
 
       # `docker run -d` exits 0 as soon as the container is *created*. The secret
       # validation, the migration and every supervised program come after that,
@@ -484,7 +554,7 @@ cmd_update() {
       if ! command -v curl >/dev/null 2>&1; then
         _ok "Updated and restarted."
         _warn "curl is not installed, so the health check was skipped — verify with: cb status"
-        _warn "The previous container is kept as '${prev}'; remove it once you are satisfied: docker rm ${prev}"
+        [[ -n "$have_prev" ]] && _warn "The previous container is kept as '${prev}'; remove it once you are satisfied: docker rm ${prev}"
         return 0
       fi
 
@@ -492,10 +562,8 @@ cmd_update() {
       local tries=0
       until curl -fsS "http://127.0.0.1:${CB_PORT:-8080}/api/v1/livez" >/dev/null 2>&1; do
         tries=$((tries + 1))
-        [[ $tries -gt 60 ]] && _fail "$(printf '%s\n' \
-          "Updated, but the application did not become healthy. Check: cb logs" \
-          "  The container that was serving before the upgrade is still here as '${prev}'. Roll back with:" \
-          "    docker rm -f ${CB_CONTAINER} && docker rename ${prev} ${CB_CONTAINER} && docker start ${CB_CONTAINER}")"
+        [[ $tries -gt 60 ]] && _fail "$(_update_rollback_hint \
+          "Updated, but the application did not become healthy. Check: cb logs")"
         sleep 2
       done
 
@@ -547,8 +615,8 @@ cmd_backup() {
       # The snapshot is written inside the container, where the database, the
       # uploads directory and the vault key all are; only the finished archive
       # crosses to the host.
-      out=$(docker exec -e "CB_INSTALL_MODE=${CB_MODE}" "$CB_BACKEND_CONTAINER" \
-              python -m app.cli snapshot create) \
+      out=$(docker exec -e "CB_INSTALL_MODE=${CB_MODE}" -e "CB_DATA_DIR=${CB_DATA_DIR}" \
+              "$CB_BACKEND_CONTAINER" python -m app.cli snapshot create) \
         || _fail "Snapshot failed — see the output above."
       # The path is the last line: anything the builder logs comes before it.
       out=$(printf '%s\n' "$out" | tail -n1)
@@ -630,6 +698,41 @@ cmd_restore() {
       _require_docker
       _container_running "$CB_BACKEND_CONTAINER" \
         || _fail "Container '${CB_BACKEND_CONTAINER}' must be running to verify the archive. Start it first."
+
+      # Free-space preflight. Moving staging off /tmp and onto the data volume was
+      # the right fix — /tmp is a 100 MB tmpfs and a real snapshot is not — but it
+      # moved the space the restore transiently needs onto the same volume Postgres
+      # is writing into. Between here and the end of the unpack that volume holds
+      # the copied archive, the tree it untars to *and* the gunzipped db.sql, so
+      # twice the archive is a floor rather than a guarantee: db.sql alone is
+      # several times its own compressed size.
+      #
+      # Running out is the expensive failure. The unpack happens after the schema
+      # has been dropped, so what is left is neither the old database nor the new
+      # one and the operator is into the safety snapshot. This check runs before
+      # anything is copied, stopped or dropped, which is why it can afford to
+      # refuse: a wrong refusal costs a failed command and nothing else.
+      #
+      # A container whose df cannot answer — a busybox image, an unreadable mount —
+      # is not a reason to block a recovery on a measurement. Say what could not be
+      # measured and carry on.
+      local archive_kb="" free_kb="" need_kb=0
+      archive_kb=$(du -k "$archive" 2>/dev/null | awk 'NR==1 {print $1}') || archive_kb=""
+      free_kb=$(docker exec "$CB_BACKEND_CONTAINER" df -Pk "$CB_DATA_DIR" 2>/dev/null \
+                | awk 'NR==2 {print $4}') || free_kb=""
+      if [[ "$archive_kb" =~ ^[0-9]+$ && "$free_kb" =~ ^[0-9]+$ ]]; then
+        need_kb=$(( archive_kb * 2 ))
+        if (( free_kb < need_kb )); then
+          _fail "$(printf '%s\n' \
+            "Not enough room on ${CB_DATA_DIR} in '${CB_BACKEND_CONTAINER}' to unpack this archive." \
+            "  Archive: $(( archive_kb / 1024 )) MiB. Free: $(( free_kb / 1024 )) MiB. Needed: at least $(( need_kb / 1024 )) MiB." \
+            "  The archive, the tree it unpacks to and the uncompressed db.sql all stage on that volume." \
+            "  Nothing has been changed. Free space and re-run:  docker exec ${CB_BACKEND_CONTAINER} df -h ${CB_DATA_DIR}")"
+        fi
+      else
+        _warn "Could not measure free space on ${CB_DATA_DIR} in '${CB_BACKEND_CONTAINER}' — restoring anyway. Unpacking needs roughly twice the archive size there."
+      fi
+
       # Staged on the data volume, not in /tmp: /tmp is a 100 MB tmpfs in the
       # shipped mono container (docker-compose.yml), and the archive, the tree it
       # unpacks to and the uncompressed db.sql all land here — a real snapshot
@@ -641,9 +744,13 @@ cmd_restore() {
         || _fail "Could not create the staging directory ${CB_DATA_DIR}/tmp inside '${CB_BACKEND_CONTAINER}'."
       docker cp "$archive" "${CB_BACKEND_CONTAINER}:${CB_DATA_DIR}/tmp/cb-restore.tar.gz" \
         || _fail "Could not copy the archive into '${CB_BACKEND_CONTAINER}'."
+      # CB_DATA_DIR is unconditional and spelled out on the exec itself; vopts carries
+      # only the conditional override. Folding the two together hid the first inside an
+      # array, where neither a reader nor the scan in
+      # tests/build/test_cb_update_recreate.py can see that it is being passed at all.
       local -a vopts=()
       [[ -n "$force" ]] && vopts+=(-e "CB_VERSION=")
-      manifest=$(docker exec "${vopts[@]}" "$CB_BACKEND_CONTAINER" \
+      manifest=$(docker exec -e "CB_DATA_DIR=${CB_DATA_DIR}" "${vopts[@]}" "$CB_BACKEND_CONTAINER" \
                    python -m app.cli snapshot verify "${CB_DATA_DIR}/tmp/cb-restore.tar.gz") \
         || _fail "This archive cannot be restored — see the reason above."
       ;;
@@ -874,7 +981,7 @@ _admin_cli() {
       _require_docker
       _container_running "$CB_BACKEND_CONTAINER" \
         || _fail "Container '${CB_BACKEND_CONTAINER}' must be running — these commands run inside it, where the database is."
-      docker exec -i "$CB_BACKEND_CONTAINER" python -m app.cli "$@"
+      docker exec -i -e "CB_DATA_DIR=${CB_DATA_DIR}" "$CB_BACKEND_CONTAINER" python -m app.cli "$@"
       ;;
 
     binary)
@@ -930,7 +1037,8 @@ cmd_config() {
       _require_docker
       _container_running "$CB_BACKEND_CONTAINER" \
         || _fail "Container '${CB_BACKEND_CONTAINER}' must be running — the validator runs inside it."
-      docker exec "$CB_BACKEND_CONTAINER" python -m app.cli config validate
+      docker exec -e "CB_DATA_DIR=${CB_DATA_DIR}" "$CB_BACKEND_CONTAINER" \
+        python -m app.cli config validate
       ;;
     binary)
       # Load the same environment file the unit does, so the validator sees

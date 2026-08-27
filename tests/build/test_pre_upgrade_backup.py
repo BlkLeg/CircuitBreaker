@@ -25,6 +25,14 @@ rejected (docs/release/1.0.0-compatibility-policy.md), so "restore the
 pre-upgrade backup" is the documented recovery -- against a file that was empty
 or absent.
 
+Making the dump honest did not make it usable. The artifact is a bare `.sql`, and
+for a while nothing in the tree would take one: `deploy/scripts/restore.sh`
+rejected it at its tarball structure check and `cb restore` rejected it in the
+backend's snapshot verifier, so the operator was handed a path and no way to use
+it. `restore.sh` now accepts either artifact (tests/build/test_restore_dump_errors.py
+covers that half), and the last test here is the other half -- the line that tells
+the operator, at the moment they are given the file, what consumes it.
+
 These tests run the shipped block in a sandbox with a stub pg_dump rather than
 asserting on its text, because the swallow was a property of how the pieces
 composed, not of any one token.
@@ -289,7 +297,77 @@ def test_pgbouncer_down_still_only_warns(tmp_path):
     assert "OK|Backup saved:" not in run.stdout
 
 
-def test_pgbouncer_liveness_check_is_not_the_dump_target(tmp_path):
-    """The systemctl probe names pgbouncer only because it proves Postgres is up."""
-    block = _block()
-    assert "circuitbreaker-pgbouncer" in block
+def test_pgbouncer_is_named_only_by_the_liveness_probe_never_by_the_dump(tmp_path):
+    """The systemctl probe names pgbouncer only because it proves Postgres is up.
+
+    This used to assert `"circuitbreaker-pgbouncer" in block`, which the
+    `systemctl is-active` guard has satisfied since long before the fix -- it
+    passed against the defect it was written for and pinned nothing.
+
+    The real invariant is the other half of that sentence: pgbouncer is a
+    *liveness signal* here, not a connection target. pg_dump holds one session
+    open for the whole run and `deploy/config/pgbouncer.ini` sets
+    `pool_mode = transaction`, so a dump routed through the pool cannot
+    complete. `test_dump_targets_postgres_directly_not_the_transaction_pool`
+    watches the port at runtime; this watches the shape of the source, so a
+    reintroduction that reaches the pool by some other spelling -- a
+    `$PGBOUNCER_HOST`, a `--port "$POOL_PORT"` -- is caught even when the argv
+    it expands to is not the literal 6432 that test looks for.
+    """
+    probe = []
+    elsewhere = []
+    for line in _block().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if "pgbouncer" not in stripped.lower() and "6432" not in stripped:
+            continue
+        (probe if "systemctl is-active" in stripped else elsewhere).append(stripped)
+
+    assert probe, (
+        "the backup block no longer probes pgbouncer at all, so nothing establishes "
+        f"that Postgres is up before the dump:\n{_block()}"
+    )
+    assert not elsewhere, (
+        "pgbouncer is reachable from the dump itself, not just from the liveness "
+        "probe. pool_mode = transaction cannot serve a pg_dump, which needs one "
+        "session held open for the whole run -- dump against 5432 direct:\n  "
+        + "\n  ".join(elsewhere)
+    )
+
+
+def test_the_saved_backup_names_the_command_that_restores_it(tmp_path):
+    """A path with no consumer beside it is half a rollback.
+
+    Read off the *runtime* output rather than out of the block, so an explanatory
+    comment about the rollback command cannot satisfy it -- that is exactly how
+    this directory shipped a vacuous test before (R13).
+    """
+    run = run_backup(tmp_path)
+    assert run.returncode == 0, run.proc.stderr
+
+    dump = str(run.dumps[0])
+    recovery = [line for line in run.stdout.splitlines() if "restore.sh" in line]
+    assert recovery, (
+        "the upgrade printed the pre-upgrade backup's path and nothing that takes "
+        f"it. Post-1.0 downgrade is rejected, so this file is the rollback:\n{run.stdout}"
+    )
+    assert len(recovery) == 1, recovery
+    assert dump in recovery[0], (
+        "the rollback command names a different file from the one just written -- "
+        f"an operator pasting it restores nothing:\n  {recovery[0]}\n  wrote: {dump}"
+    )
+    assert "deploy/scripts/restore.sh" in recovery[0], (
+        "the rollback command does not name deploy/scripts/restore.sh, which is the "
+        f"only tool that takes a bare pre-upgrade dump:\n  {recovery[0]}"
+    )
+
+
+def test_no_rollback_command_is_printed_when_no_backup_was_taken(tmp_path):
+    """The pgbouncer-down branch writes no file; it must not advertise restoring one."""
+    run = run_backup(tmp_path, pgbouncer="inactive")
+    assert run.returncode == 0, run.proc.stderr
+    assert "restore.sh" not in run.stdout, (
+        "the upgrade skipped the backup and still told the operator how to restore "
+        f"the file it did not write:\n{run.stdout}"
+    )

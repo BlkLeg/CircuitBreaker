@@ -58,6 +58,21 @@ edit that file and restart `circuitbreaker.target` instead.
 `deploy/scripts/restore.sh`, which `cb restore` drives in `binary` mode and which stays directly
 callable — see [Backup & Restore](backup-restore.md#full-restore-disaster-recovery).
 
+That script takes either of the two artifacts this product produces, and does with each one exactly
+what it contains:
+
+| Give it | It came from | What it replaces |
+|---|---|---|
+| `cb-snapshot-*.tar.gz` | `cb backup`, the admin endpoint, the nightly job | Database, uploads, vault key, and native config |
+| `pre-upgrade-*.sql` (or `.sql.gz`) | `install.sh --upgrade`, before it migrates | The database, and nothing else |
+
+The second is the rollback for an upgrade that went wrong, and it is deliberately the narrower
+artifact: a migration changes the schema, not the uploads and not the vault key, so this host's
+copies of those already match the database being replayed. `install.sh --upgrade` prints the exact
+command next to the path it just wrote. `cb restore` does **not** take a bare dump — it verifies
+through the backend's snapshot verifier, which is a snapshot-shaped check — so a database-only
+rollback is run through `restore.sh` directly.
+
 Everything else behaves the same way from the outside; where the mechanics differ (which port is
 probed, what a backup contains) it is noted in the command's own section below.
 
@@ -243,9 +258,18 @@ The `docker` path is written so a failed upgrade is recoverable:
   is only removed once the new one answers `/api/v1/livez`. If the upgrade fails, roll back with:
 
   ```
-  docker rm -f circuit-breaker && docker rename circuit-breaker-prev circuit-breaker \
+  docker rm -f circuit-breaker; docker rename circuit-breaker-prev circuit-breaker \
     && docker start circuit-breaker
   ```
+
+  The first separator is `;` and not `&&` on purpose: when `docker run` fails at *creation*
+  there is no `circuit-breaker` to remove, `docker rm` exits non-zero, and an `&&` would
+  short-circuit before the rename that actually restores service.
+* If that rename **cannot** be done, `cb update` stops there rather than continuing. It prints
+  what `docker rename` said and leaves the stopped container in place — an upgrade with no
+  rollback is not one worth starting. Running `cb update` when no such container exists is a
+  different case and still works: it creates one from `CB_IMAGE`, and says that this upgrade
+  has nothing to roll back to.
 * Success is **the application answering `/api/v1/livez`**, not `docker run` exiting 0 — the
   entrypoint's secret checks and the migration all run after the container is created, so a
   crash-looping upgrade used to be reported as a success. `cb update` polls for up to two minutes
@@ -308,6 +332,18 @@ The order is the safety property: **verify → confirm → safety snapshot → s
 verify**. The archive is checked by the backend's own verifier before anything is stopped, so an
 unrestorable archive costs a failed command rather than an outage, and a fresh `cb backup` of the
 current state is taken before anything is destroyed. Declining the confirmation changes nothing.
+
+On `docker` and `compose` the same preflight also checks free space, because everything the restore
+unpacks stages on the data volume rather than in `/tmp` (`/tmp` is a 100 MB tmpfs in the shipped
+mono container, which a real snapshot does not fit in). The volume transiently holds the copied
+archive, the tree it untars to *and* the uncompressed `db.sql`, so `cb restore` wants **at least
+twice the archive size** free on `$CB_DATA_DIR` and refuses before it copies anything if that is not
+there. Twice is a floor, not a promise: an uncompressed dump is several times its gzipped size. A
+container whose `df` cannot answer is a warning rather than a refusal — a recovery is not blocked on
+a measurement.
+
+It takes the snapshot tarball only. A bare `pre-upgrade-*.sql` from `install.sh --upgrade` is a
+different shape and is restored with `deploy/scripts/restore.sh` — see the mode table above.
 
 On `docker` and `compose` the archive is replayed inside the backend container (Postgres stays up —
 it is what is being restored into). `supervisorctl` stops `backend-api` and every `worker-*` program

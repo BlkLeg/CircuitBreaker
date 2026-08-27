@@ -50,6 +50,20 @@ chosen for the use case — webhooks, threat feeds, LAN integrations, monitor ta
 egress proxy each get their own. Literal IPs, resolved DNS answers, and every redirect hop are all
 checked, and the cloud metadata address is refused under every policy.
 
+Validation resolves the name, and then the request is **pinned to the address that was approved** —
+otherwise the name could resolve to something else between the check and the connect (DNS
+rebinding). The pin carries the original hostname in `Host` and in the TLS SNI, so certificates are
+still verified against the name and not the address.
+
+The pin is **skipped when `CB_EGRESS_PROXY_URL` is set**, deliberately. On the CONNECT path the HTTP
+client builds TLS `server_hostname` from the request URL and ignores the SNI override, so a pinned
+request would present the IP literal to the origin and fail certificate verification for every HTTPS
+request — i.e. pinning would break exactly the hardened deployment this page recommends. A forward
+proxy resolves the name itself and the app never opens the socket, so the rebinding window the pin
+closes is not the app's to close there. Threat-feed downloads additionally run with connection
+keep-alive disabled: pooled connections are keyed on address, so two feed hostnames resolving to one
+address would otherwise share a connection whose certificate was verified for only the first.
+
 **Scan target ACL.** Discovery targets are checked against the allowed-network ACL, RFC 1918
 private-address enforcement, and air-gap mode (`CB_AIRGAP`, or the airgap setting in the UI).
 

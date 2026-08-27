@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# This export reaches the processes supervisord starts under this entrypoint, and
+# nothing else. `docker exec` builds its environment from the image's ENV, so the `cb`
+# CLI — which drives backup, restore and the vault commands that way — never sees it.
+# Dockerfile.mono carries `ENV CB_DATA_DIR=/data` for exactly that reason, and the
+# fallback below must keep agreeing with it: the two are the same directory reached by
+# two different routes, and a restore that resolves an empty CB_DATA_DIR stages under
+# /tmp, which is a 100 MB tmpfs here. tests/build/test_cb_update_recreate.py pins them
+# to each other.
 DATA="${CB_DATA_DIR:-/data}"
 export CB_DATA_DIR="$DATA"
 export CB_ALEMBIC_INI="${CB_ALEMBIC_INI:-/app/backend/alembic.ini}"

@@ -27,6 +27,19 @@ fatal, and reflected in the exit status, only when `-v ON_ERROR_STOP=1` is on it
 command line. Everything else restore.sh shells out to that is not guaranteed on a
 developer machine is stubbed too, so this module carries no skip marker -- a skipped
 test pins nothing, and REL-19 rightly makes every skip a registered, dated liability.
+
+The second half of the module covers the other artifact this script now takes. `install.sh
+--upgrade` writes a bare `pre-upgrade-*.sql` before it migrates, and post-1.0 downgrade is
+rejected outright, so that dump is the whole of the rollback for a migration that goes
+wrong -- but nothing in the tree would consume it: restore.sh rejected it at the tarball
+structure check, and `cb restore` rejected it in the backend verifier. The upgrade
+produced a rollback nobody could perform.
+
+The dump is the right artifact for that moment rather than a weaker one. run_upgrade takes
+it after `install.sh` has already replaced the binary with the new build and before
+migrations run, so the snapshot builder is not available to it -- `run_full_snapshot`
+reads `AppSettings` through the new ORM against the old schema -- and a migration changes
+the schema, not the uploads and not the vault key. What was missing was a consumer.
 """
 
 from __future__ import annotations
@@ -212,3 +225,308 @@ def test_a_clean_dump_still_restores_end_to_end(tmp_path: Path):
     )
     env_text = (tmp_path / "etc" / "circuitbreaker.env").read_text()
     assert "CB_VAULT_KEY=dGVzdC12YXVsdC1rZXk=" in env_text, env_text
+
+
+# ── the bare pre-upgrade dump (the other artifact restore.sh takes) ───────────
+
+
+def _run_dump(
+    tmp_path: Path, sql: str, *, name: str = "pre-upgrade-20260826-020000.sql"
+) -> subprocess.CompletedProcess[str]:
+    """Run the real script against a bare .sql, the way a rollback does."""
+    dump = tmp_path / name
+    dump.write_text(sql)
+    return subprocess.run(
+        [shutil.which("bash") or "bash", str(RESTORE_SH), str(dump)],
+        input="y\n",
+        env=_harness(tmp_path),
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+# What run_upgrade's `pg_dump ... > pre-upgrade-<ts>.sql` actually writes: psql-replayable
+# plain SQL under pg_dump's own header. The header is what tells a truncated artifact from
+# a whole one, so it belongs in the fixture rather than being assumed away.
+PG_DUMP_HEADER = "--\n-- PostgreSQL database dump\n--\n\n"
+
+
+def test_a_bare_pre_upgrade_dump_is_restored_rather_than_rejected(tmp_path: Path):
+    """The regression: the documented rollback artifact had no consumer.
+
+    `install.sh --upgrade` writes this file and tells the operator it is their way
+    back. restore.sh used to answer `tar -tzf` on it, print "Cannot read tarball"
+    and exit 1 -- so the only artifact standing between a bad migration and a lost
+    install was one no tool in the repository would take.
+    """
+    result = _run_dump(tmp_path, PG_DUMP_HEADER + GOOD_SQL)
+    combined = result.stdout + result.stderr
+
+    assert result.returncode == 0, (
+        "restore.sh refused the bare pre-upgrade dump that install.sh --upgrade "
+        "writes and documents as the rollback:\n" + combined
+    )
+    assert "Restore complete" in result.stdout, combined
+    replayed = (tmp_path / "psql-stdin.sql").read_text()
+    assert "roundtrip_probe" in replayed, (
+        "the dump's own SQL never reached psql -- the restore reported success "
+        f"without replaying anything:\n{replayed}"
+    )
+
+
+def test_the_bare_dump_is_replayed_with_on_error_stop_too(tmp_path: Path):
+    """The new path must not be the one place the ON_ERROR_STOP fix does not reach."""
+    _run_dump(tmp_path, PG_DUMP_HEADER + GOOD_SQL)
+    argv = (tmp_path / "psql-argv.log").read_text()
+    assert "ON_ERROR_STOP=1" in argv, (
+        "the bare dump was replayed without ON_ERROR_STOP=1, so psql would run on "
+        "past the first failed statement and exit 0. psql argv was:\n" + argv
+    )
+
+
+def test_a_bare_dump_that_does_not_replay_cleanly_fails_the_restore(tmp_path: Path):
+    """Same contract as the snapshot path: a partial load is not a restore."""
+    result = _run_dump(tmp_path, PG_DUMP_HEADER + BAD_SQL)
+    combined = result.stdout + result.stderr
+
+    assert result.returncode != 0, combined
+    assert "Restore complete" not in result.stdout, combined
+
+
+def test_a_bare_dump_leaves_the_vault_key_and_the_uploads_alone(tmp_path: Path):
+    """A dump carries neither, and a rollback needs neither changed.
+
+    This is the half that would be silently wrong if the .sql path were bolted onto
+    the snapshot path instead of branched out of it: step 12 would read a vault.key
+    that does not exist, and step 11 would rsync an uploads/ that does not exist
+    over the one this host is still using.
+    """
+    uploads = tmp_path / "data" / "uploads"
+    uploads.mkdir(parents=True)
+    (uploads / "logo.png").write_bytes(b"the file this host is still serving")
+
+    result = _run_dump(tmp_path, PG_DUMP_HEADER + GOOD_SQL)
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+
+    assert (uploads / "logo.png").read_bytes() == b"the file this host is still serving", (
+        "a database-only restore deleted the uploads it was never given:\n" + combined
+    )
+    env_text = (tmp_path / "etc" / "circuitbreaker.env").read_text()
+    assert "CB_VAULT_KEY=stale-key-from-before-the-restore" in env_text, (
+        "a database-only restore rewrote CB_VAULT_KEY, which would make every "
+        f"encrypted column on this host unreadable:\n{env_text}"
+    )
+
+
+def test_the_confirmation_says_what_a_database_only_restore_does_not_touch(tmp_path: Path):
+    """"REPLACE all data" is not true of this path, and the operator answers y to it."""
+    result = _run_dump(tmp_path, PG_DUMP_HEADER + GOOD_SQL)
+    prompt = result.stdout[: result.stdout.find("Continue?")]
+    assert "NOT touched" in prompt, (
+        "the operator was asked to confirm a restore described as replacing all "
+        f"data, when uploads and the vault key are left alone:\n{prompt}"
+    )
+
+
+def test_a_truncated_dump_is_refused_before_the_service_is_stopped(tmp_path: Path):
+    """A dump killed by a full disk is the failure this path exists to survive.
+
+    Nothing has been destroyed at the point this is caught, which is the whole
+    reason the check sits ahead of step 8 rather than being discovered by psql
+    after the database has already been dropped.
+    """
+    result = _run_dump(tmp_path, "-- this file lost its contents\n")
+    combined = result.stdout + result.stderr
+
+    assert result.returncode != 0, combined
+    assert "==> Stopping" not in result.stdout, (
+        "restore.sh stopped the service before noticing the dump was unusable:\n" + combined
+    )
+    assert "Nothing has been changed" in combined, combined
+
+
+def test_an_empty_dump_is_refused(tmp_path: Path):
+    """`pre-upgrade-*.sql` is deleted on failure upstream; a 0-byte one is still possible."""
+    result = _run_dump(tmp_path, "")
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0, combined
+    assert "empty" in combined.lower(), combined
+
+
+# ── The printed rollback has to survive being pasted ─────────────────────────
+#
+# deploy/setup.sh prints `sudo /opt/circuitbreaker/deploy/scripts/restore.sh <dump>`
+# after a failed upgrade, at the point where it has already stopped
+# circuitbreaker.target. Three things made that instruction a trap on a host
+# install.sh had itself built, and none of them were reachable through the stubs
+# above, because a `dropdb`/`createdb` that always exits 0 cannot express the
+# failure:
+#
+#   * `dropdb -h 127.0.0.1 -U postgres` cannot authenticate. pg_hba.conf is
+#     `host all all 127.0.0.1/32 md5`, and setup.sh initdb's the cluster with
+#     --auth-host=md5 and never sets a password on the postgres role. dropdb's
+#     failure was eaten by `|| true`; createdb was the line that actually died,
+#     under set -e, after the service was already stopped.
+#   * the owner-side replay ran psql with no PGPASSWORD against the same md5 rule.
+#   * on the dnf families the client binaries live under /usr/pgsql-*/bin, which
+#     is not on root's PATH -- setup.sh:1608 says so and qualifies its own
+#     pg_dump accordingly, while this script called them bare.
+
+
+def _superuser_stub_that_refuses_tcp(tmp_path: Path) -> dict[str, str]:
+    """A createdb/dropdb pair that behaves like the real ones over TCP with md5."""
+    env = _harness(tmp_path)
+    stubs = Path(env["PATH"].split(os.pathsep)[0])
+    refuse = (
+        "#!/bin/sh\n"
+        'printf \'%s %s\\n\' "$(basename "$0")" "$*" >> "$CB_TEST_SU_LOG"\n'
+        'for a in "$@"; do\n'
+        '  if [ "$a" = "-h" ]; then\n'
+        '    echo "$(basename "$0"): error: connection to server at \\"127.0.0.1\\"'
+        ' failed: fe_sendauth: no password supplied" >&2\n'
+        "    exit 1\n"
+        "  fi\n"
+        "done\n"
+        "exit 0\n"
+    )
+    for name in ("dropdb", "createdb"):
+        (stubs / name).write_text(refuse)
+        (stubs / name).chmod(0o755)
+    env["CB_TEST_SU_LOG"] = str(tmp_path / "superuser-argv.log")
+    return env
+
+
+def test_the_superuser_step_does_not_connect_over_tcp(tmp_path: Path):
+    """dropdb/createdb must go over the local socket, not -h 127.0.0.1."""
+    archive = _write_snapshot(tmp_path, GOOD_SQL)
+    env = _superuser_stub_that_refuses_tcp(tmp_path)
+    result = subprocess.run(
+        [shutil.which("bash") or "bash", str(RESTORE_SH), str(archive)],
+        input="y\n",
+        env=env,
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    log = Path(env["CB_TEST_SU_LOG"])
+    calls = log.read_text().splitlines() if log.exists() else []
+    assert calls, "neither dropdb nor createdb ran at all:\n" + result.stdout + result.stderr
+    over_tcp = [c for c in calls if "-h " in c]
+    assert not over_tcp, (
+        "the superuser step connects over TCP, which pg_hba answers with md5 and "
+        "which the postgres role on an install.sh-built host has no password for. "
+        "The operator pasting the rollback setup.sh printed loses the service and "
+        "restores nothing:\n  " + "\n  ".join(over_tcp)
+    )
+    assert result.returncode == 0, (
+        "the restore did not complete with a superuser step that refuses TCP:\n"
+        + result.stdout
+        + result.stderr
+    )
+
+
+def test_a_superuser_step_that_fails_says_so_instead_of_dying(tmp_path: Path):
+    """createdb failing must report; it used to kill the script under set -e."""
+    archive = _write_snapshot(tmp_path, GOOD_SQL)
+    env = _harness(tmp_path)
+    stubs = Path(env["PATH"].split(os.pathsep)[0])
+    (stubs / "createdb").write_text(
+        '#!/bin/sh\necho "createdb: error: permission denied" >&2\nexit 1\n'
+    )
+    (stubs / "createdb").chmod(0o755)
+    result = subprocess.run(
+        [shutil.which("bash") or "bash", str(RESTORE_SH), str(archive)],
+        input="y\n",
+        env=env,
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    combined = result.stdout + result.stderr
+
+    assert result.returncode != 0, "a failed createdb was treated as success:\n" + combined
+    assert "could not create database" in combined.lower(), (
+        "createdb failed and the script exited without saying what happened -- "
+        "which is the whole defect, since the service is already stopped by "
+        f"this point:\n{combined}"
+    )
+
+
+def test_the_owner_replay_supplies_a_password(tmp_path: Path):
+    """pg_hba is md5 for 127.0.0.1; psql with no PGPASSWORD cannot replay."""
+    archive = _write_snapshot(tmp_path, GOOD_SQL)
+    env = _harness(tmp_path)
+    env["CB_TEST_PGPASSWORD_LOG"] = str(tmp_path / "pgpassword.log")
+    stubs = Path(env["PATH"].split(os.pathsep)[0])
+    # Prepended, not appended: PSQL_STUB exits from inside its own case, so a
+    # line after it never runs.
+    (stubs / "psql").write_text(
+        PSQL_STUB.replace(
+            "#!/bin/sh\n",
+            '#!/bin/sh\nprintf \'%s\\n\' "${PGPASSWORD-UNSET}" > "$CB_TEST_PGPASSWORD_LOG"\n',
+            1,
+        )
+    )
+    (stubs / "psql").chmod(0o755)
+    Path(env["CB_ENV_FILE"]).write_text(
+        "CB_VAULT_KEY=stale-key-from-before-the-restore\nCB_DB_PASSWORD=s3cret-from-env-file\n"
+    )
+
+    subprocess.run(
+        [shutil.which("bash") or "bash", str(RESTORE_SH), str(archive)],
+        input="y\n",
+        env=env,
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    seen = Path(env["CB_TEST_PGPASSWORD_LOG"])
+    assert seen.exists(), "psql never ran, so nothing about PGPASSWORD was observed"
+    value = seen.read_text().strip()
+    assert value == "s3cret-from-env-file", (
+        "the replay ran without the password from $CB_ENV_FILE, so against the "
+        "shipped pg_hba (md5 on 127.0.0.1) it would prompt on a stdin already "
+        f"carrying the dump and fail. PGPASSWORD was {value!r}"
+    )
+
+
+def test_the_client_binaries_are_resolved_through_pg_bin_dir(tmp_path: Path):
+    """PGDG puts psql outside root's PATH on the dnf families; setup.sh says so."""
+    archive = _write_snapshot(tmp_path, GOOD_SQL)
+    env = _harness(tmp_path)
+    stubs = Path(env["PATH"].split(os.pathsep)[0])
+
+    # The dnf-family shape: nothing on PATH, everything under $PG_BIN_DIR.
+    pg_bin = tmp_path / "usr" / "pgsql-15" / "bin"
+    pg_bin.mkdir(parents=True)
+    for name in ("psql", "dropdb", "createdb"):
+        (pg_bin / name).write_text((stubs / name).read_text())
+        (pg_bin / name).chmod(0o755)
+        (stubs / name).unlink()
+    env["PG_BIN_DIR"] = str(pg_bin)
+
+    result = subprocess.run(
+        [shutil.which("bash") or "bash", str(RESTORE_SH), str(archive)],
+        input="y\n",
+        env=env,
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    combined = result.stdout + result.stderr
+
+    assert "Missing required tools" not in combined, (
+        "restore.sh refused to run because it looked for the client binaries on "
+        "PATH only. On Fedora/RHEL/Rocky they are under $PG_BIN_DIR, which is "
+        f"exactly where setup.sh finds its own pg_dump:\n{combined}"
+    )
+    assert result.returncode == 0, combined

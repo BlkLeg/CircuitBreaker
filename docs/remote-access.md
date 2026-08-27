@@ -240,6 +240,16 @@ Consequences for your topology:
   an untrusted peer — so every agent is refused as insecure.
 - **Changing the published port changes the agent's world.** The agent uses the port in
   `server_url`; a changed `CB_PORT_HTTPS` needs the agents' configuration updated.
+- **The WebSocket per-IP cap and `ws_allowed_cidrs` also depend on `CB_TRUSTED_PROXY_CIDRS`.**
+  Every `/ws/` endpoint now resolves the client address through the same trusted-proxy check the
+  rest of the app uses, instead of trusting the leftmost `X-Forwarded-For` value. That closes a real
+  hole — an off-network client could previously satisfy an operator's `ws_allowed_cidrs` allowlist by
+  setting a header — but it fails *closed*: behind a proxy that is **not** listed in
+  `CB_TRUSTED_PROXY_CIDRS`, the forwarded address is ignored, every client is seen as the proxy's own
+  address, and so they share one connection-cap bucket and any `ws_allowed_cidrs` entry naming a real
+  client subnet stops matching. The shipped topologies are unaffected — nginx proxies over
+  `127.0.0.1`, which is in the default — but a custom proxy needs its source range listed here for
+  the same reason `CB_WS_REQUIRE_WSS` does.
 
 The full destination list, the enrollment limits, and what the agent sends to your network:
 [cb-agent § Outbound endpoints](agent.md#outbound-endpoints).
@@ -290,7 +300,12 @@ evidenced path, and `cb update` on a native install fetches the installer over t
 - Enable MFA on admin accounts.
 - Set `CB_WS_REQUIRE_WSS=true` so plain-WebSocket connections are refused — and make sure
   `CB_TRUSTED_PROXY_CIDRS` is correct first, or this will reject everything.
-- Set `CB_TRUSTED_PROXY_CIDRS` to the proxy's real source range, and nothing wider.
+- Set `CB_TRUSTED_PROXY_CIDRS` to the proxy's real source range, and nothing wider. Every
+  WebSocket stream now derives the client address the same way the rate limiter does: it
+  believes `X-Forwarded-For` only from a peer inside this list, and otherwise uses the socket
+  peer. That is what stops an off-net client from writing itself an address inside the
+  WebSocket CIDR allowlist (`ws_allowed_cidrs` in app settings), but it also means a proxy
+  missing from this list makes every WebSocket client look like the proxy.
 - Review the [Audit Log](audit-log.md) periodically for unexpected access.
 - Consider an authenticating layer (zero-trust access policies, VPN, or client certificates) in
   front of the app rather than exposing it directly.
@@ -303,6 +318,8 @@ evidenced path, and `cb update` on a native install fetches the installer over t
 |---|---|---|
 | Browser warns about the certificate | The shipped certificate is self-signed | Expected on a fresh install. Terminate TLS at a proxy with a real certificate, or place a valid `fullchain.pem` / `privkey.pem` in the TLS directory |
 | Redirect loop on the HTTP port | Something upstream is speaking HTTP to a port that always redirects to HTTPS | Point the upstream at the HTTPS port, or have it set `X-Forwarded-Proto: https` and terminate TLS itself |
+| The WebSocket CIDR allowlist (`ws_allowed_cidrs`) suddenly rejects everyone (`ip_not_allowed`) | `CB_TRUSTED_PROXY_CIDRS` does not include the proxy, so the allowlist is matched against the proxy's own address instead of the client's | Add the proxy's source CIDR and restart. Adding the proxy's address to the WebSocket allowlist instead would let *any* client through, since they all arrive with that address |
+| WebSocket connections rejected with `connection_limit_exceeded` under load | Same cause: with the proxy untrusted every client shares one per-IP bucket (`CB_WS_*_MAX_PER_IP`) | Add the proxy's source CIDR to `CB_TRUSTED_PROXY_CIDRS`; raise the cap only if the real per-client count justifies it |
 | Everyone gets rate-limited at once | `CB_TRUSTED_PROXY_CIDRS` does not include the proxy, so all requests share the proxy's IP as the rate-limit key | Add the proxy's source CIDR and restart |
 | WebSockets refused when `CB_WS_REQUIRE_WSS=true` | `X-Forwarded-Proto` is being ignored because the peer is untrusted | Add the proxy's source CIDR to `CB_TRUSTED_PROXY_CIDRS` |
 | Live updates never arrive | The proxy is not forwarding `Upgrade` / `Connection` headers | Enable WebSocket support on the upstream proxy |

@@ -114,11 +114,26 @@ def test_an_explicit_yes_still_deletes_the_volume(reply, tmp_path):
 
 
 def test_the_prompt_advertises_the_retaining_default():
-    """The [y/N] marker and the case arms have to tell the same story."""
+    """The [y/N] marker and the case arms have to tell the same story.
+
+    Asserted against the `printf` line alone, not the block. The block also
+    carries the comment explaining why the default is what it is, and that
+    comment quotes `[y/N]` -- so `"[y/N]" in block` stayed true with the prompt
+    itself reverted to `[Y/n]`, which is the one thing this test exists to
+    catch. What reaches the operator is the format string; that is what is read.
+    """
     block = _volume_block()
-    assert "[y/N]" in block, (
+    prompt = next(
+        (line for line in block.splitlines() if line.lstrip().startswith("printf")),
+        None,
+    )
+    assert prompt is not None, (
+        "the data-volume prompt is no longer a printf -- if it was restructured, "
+        f"update this test to read whatever now writes it:\n{block}"
+    )
+    assert "[y/N]" in prompt, (
         "the data-volume prompt must offer [y/N]; a prompt that shows [Y/n] "
-        "tells the operator Enter will delete their data"
+        f"tells the operator Enter will delete their data: {prompt.strip()}"
     )
 
 

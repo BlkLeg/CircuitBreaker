@@ -195,8 +195,16 @@ docker_target_home() {
     echo "/root"
     return 0
   fi
+  # `|| true` is load-bearing, and it is the same shape as the B50 fix at the end
+  # of stage_docker_deploy. A bare assignment of a pipeline dies on the spot under
+  # `set -euo pipefail` when getent exits 2 for an unknown key — cut still returns
+  # 0, pipefail promotes the 2, errexit ends the run — so the cb_fail written for
+  # exactly this case, two lines below, was unreachable. An operator installing
+  # over sudo from an LDAP or SSSD account that NSS cannot resolve got exit 2 and
+  # a blank screen instead of the name of the user that could not be found.
+  # Absorb the status here and let the emptiness check below do the reporting.
   local user_home
-  user_home="$(getent passwd "${target_user}" | cut -d: -f6)"
+  user_home="$(getent passwd "${target_user}" | cut -d: -f6 || true)"
   if [[ -z "${user_home}" ]]; then
     cb_fail "Failed to resolve user home" "Could not determine home directory for ${target_user}"
   fi
@@ -426,9 +434,34 @@ stage_docker_deploy() {
 
   cb_install_helper_daemon "${install_dir}"
 
-  local host_ip
-  host_ip="$(ip route get 1.1.1.1 2>/dev/null | awk '/src/ {print $7; exit}')"
-  [[ -z "${host_ip}" ]] && host_ip="localhost"
+  # Everything below this line is the payoff for everything above it — the
+  # install directory, the access URLs, the commands the operator needs next —
+  # and nothing here is allowed to abort. This lookup in particular is cosmetic:
+  # it only decides which address the URLs are printed with, and nothing
+  # downstream consumes it.
+  #
+  # It used to be a bare assignment, and it killed the installer here, after
+  # `docker compose up -d` had returned and cb-helperd was installed. `ip route
+  # get 1.1.1.1` exits non-zero when iproute2 is absent and on any host with no
+  # route to that address — an air-gapped LAN deployment, which is squarely this
+  # product's audience. The 2>/dev/null hides the message but not the status,
+  # `pipefail` promotes it past the awk that would otherwise have returned a
+  # clean 0, and `set -e` then ended the run. The operator saw the stack come up
+  # and then a silent exit 2 with no summary at all, and the reasonable
+  # conclusion from that screen is that the install failed — followed by tearing
+  # down a deployment that was in fact working.
+  #
+  # `|| true` inside the substitution absorbs the pipeline's status before
+  # errexit can see it; the empty result then takes the localhost fallback. The
+  # fallback is spelled as an `if` rather than the shorter `[[ ... ]] && ...`
+  # because that form returns 1 whenever the address *was* found, and it is one
+  # edit away from being the last command in this function — at which point the
+  # successful case would abort the installer instead of the failing one.
+  local host_ip=""
+  host_ip="$(ip route get 1.1.1.1 2>/dev/null | awk '/src/ {print $7; exit}' || true)"
+  if [[ -z "${host_ip}" ]]; then
+    host_ip="localhost"
+  fi
 
   echo ""
   cb_ok "Docker deployment complete"
@@ -571,11 +604,21 @@ cb_verify_bundle_checksum() {
 
   cb_step "Verifying checksum"
 
+  # `|| true` for the same reason as docker_target_home's getent: `echo` cannot
+  # fail, so this pipeline's status is jq's, and jq exits 2 on a body it cannot
+  # parse — a truncated or proxy-mangled response that still arrived with a 200,
+  # which is exactly what `curl -fsSL` hands back. As a bare assignment under
+  # `set -euo pipefail` that ended the install on this line, so the cb_fail
+  # below never ran and the operator could not tell whether an unverifiable
+  # bundle had been refused or the installer had simply crashed. Stopping is
+  # correct here — this function is deliberately fail-closed — but it has to
+  # stop *out loud*. An unparseable body leaves checksum_url empty and falls
+  # into the same branch as a release that publishes no SHA256SUMS at all.
   local checksum_url
-  checksum_url=$(echo "$release_json" | jq -r '.assets[] | select(.name=="SHA256SUMS") | .browser_download_url')
+  checksum_url=$(echo "$release_json" | jq -r '.assets[] | select(.name=="SHA256SUMS") | .browser_download_url' || true)
   if [[ -z "$checksum_url" ]] || [[ "$checksum_url" == "null" ]]; then
-    cb_fail "Release v${CB_VERSION} publishes no SHA256SUMS asset" \
-      "Refusing to install a bundle that cannot be verified — pass --skip-checksum only for a bundle you already trust"
+    cb_fail "Could not determine the SHA256SUMS asset for release v${CB_VERSION}" \
+      "The release publishes none, or the API response could not be parsed. Refusing to install a bundle that cannot be verified — pass --skip-checksum only for a bundle you already trust"
   fi
 
   curl -fsSL -o /tmp/cb-SHA256SUMS "$checksum_url" \

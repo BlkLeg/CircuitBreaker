@@ -70,6 +70,58 @@ if ! command -v docker >/dev/null 2>&1; then
   Show 1 "Docker is not installed. Nothing to uninstall."
 fi
 
+# ─── Interactive terminal preflight ──────────────────────────────────────────
+#
+# Every prompt below reads from /dev/tty rather than from stdin, and that is
+# deliberate: the advertised invocation is `curl ... | bash`, where stdin is the
+# downloaded script itself, so a read from stdin would swallow the rest of the
+# source. But /dev/tty only resolves for a process that has a controlling
+# terminal. Under cron, a CI runner, `ssh host '...'` without -t, or a
+# `docker run` without -t, the open returns ENXIO, `read` returns non-zero, and
+# `set -e` ends the script on the spot.
+#
+# The spot it ended at was the *first* prompt — which is below the container
+# stop and the container removal. The operator got exit 1, one line of bash's
+# own stderr, and a host that still had the image, Caddy, the config directory
+# and /usr/local/bin/cb on it. Through a pipe with stderr discarded that is an
+# uninstaller which appears to do nothing and in fact half-uninstalled the
+# product. So ask "can this process be asked anything at all?" here, before the
+# first destructive step, rather than discovering it after.
+#
+# This does NOT relax the prompts themselves. An operator who has a terminal and
+# answers nothing — EOF on the read, a pipe that closes mid-run — must still
+# abort rather than fall through to a destructive default; no answer is not
+# consent. This preflight is only about the case where no answer was ever
+# possible.
+#
+# The test has to be a real open. `[ -r /dev/tty ]` is not one: /dev/tty is a
+# 0666 device node present on every host, so access(2) answers yes even when
+# there is no controlling terminal to attach it to and the open(2) that follows
+# returns ENXIO. `true < /dev/tty` performs the same open the reads will.
+# The 2>/dev/null must come *before* the redirection it is silencing — bash
+# applies redirections left to right, so with the order reversed the failure
+# message is written to a stderr that has not been redirected yet.
+if ! true 2>/dev/null < /dev/tty; then
+  echo ""
+  Show 3 "No terminal is available to answer this uninstaller's prompts."
+  echo ""
+  echo "  Before removing anything, this script asks whether to delete your data"
+  echo "  volume, your Docker images and your CA certificates, and it reads those"
+  echo "  answers from /dev/tty. This process has no controlling terminal, so"
+  echo "  none of them can be answered — and nothing has been removed."
+  echo ""
+  echo "  Run it attached to a terminal instead:"
+  echo "    curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh -o uninstall.sh"
+  echo "    bash uninstall.sh"
+  echo ""
+  echo "  Over ssh, allocate one with -t. The operator who reaches this message"
+  echo "  got here through the piped form, so there is no uninstall.sh on the"
+  echo "  remote host to run -- fetch and run it in the same command:"
+  echo "    ssh -t <host> 'curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh | bash'"
+  echo ""
+  Show 1 "Uninstall aborted. Nothing was removed."
+fi
+
 # Stop the container
 if docker ps --format '{{.Names}}' | grep -q "^${CB_CONTAINER}$"; then
   Show 2 "Stopping container: $CB_CONTAINER"

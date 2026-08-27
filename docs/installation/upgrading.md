@@ -125,6 +125,24 @@ Review the [release notes](../updates/v0.2.0-overview.md) before rolling back to
 After 1.0 migrations run, binary downgrade is not supported. Restore the complete pre-upgrade backup
 instead of starting an older binary against a newer schema.
 
+`install.sh --upgrade` takes that backup itself, to `${CB_DATA_DIR}/backups/pre-upgrade-<stamp>.sql`,
+before it stops the services. Two things about it are worth knowing before you need it:
+
+* **It now fails the upgrade if it cannot be taken.** It used to print "Backup saved" unconditionally
+  — over a `pg_dump` that had exited non-zero, or written nothing, or not been found on `PATH` at
+  all. The upgrade then migrated the schema, and the documented recovery pointed at a file that was
+  empty or absent.
+* **The artifact is a bare `.sql`, and `deploy/scripts/restore.sh` accepts it** as well as a full
+  `cb-snapshot-*.tar.gz`. The rollback the upgrade prints is directly runnable:
+
+  ```bash
+  sudo /opt/circuitbreaker/deploy/scripts/restore.sh ${CB_DATA_DIR}/backups/pre-upgrade-<stamp>.sql
+  ```
+
+  Note that a bare dump restores the **database only** — no `uploads/`, no `CB_VAULT_KEY` rewrite, no
+  nginx site config. That is the right shape for rolling back an upgrade, where those are unchanged.
+  For a host rebuild, use a snapshot: see [Backup & Restore](../backup-restore.md).
+
 ---
 
 ## Related

@@ -83,7 +83,19 @@ docker rmi ghcr.io/blkleg/circuitbreaker:latest
 Earlier releases shipped a single `circuit-breaker` container fronted by a `cb-caddy` proxy. `uninstall.sh` at the repository root still removes that layout and nothing else — it requires Docker, targets the container `circuit-breaker` and the volume `circuit-breaker-data`, and does not know about the systemd units or the `circuitbreaker` compose project described above.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/uninstall.sh -o uninstall.sh
+bash uninstall.sh
+```
+
+Download it and run it, rather than piping it straight into `bash`. Every prompt in the script reads
+from `/dev/tty`, so the piped form has nothing to answer with: it used to remove the container and
+then abort at the first prompt with one line of bash's own stderr, leaving the image, the config
+directory and `/usr/local/bin/cb` behind. The script now checks for a controlling terminal **before**
+it removes anything and, when there is none, explains what is missing and exits without touching the
+host. Over ssh, allocate one with `-t`:
+
+```bash
+ssh -t <host> 'curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/uninstall.sh | bash'
 ```
 
 It stops and removes the `circuit-breaker` and `cb-caddy` containers, their network and volumes (with confirmation), the Caddy CA certificate from the system trust store and Firefox NSS databases, and the `~/.circuit-breaker` config directory.

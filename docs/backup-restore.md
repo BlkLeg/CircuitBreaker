@@ -236,8 +236,23 @@ are the two properties that make the command safe to run under pressure.
 sudo deploy/scripts/restore.sh /path/to/cb-snapshot-20260814-020000.tar.gz
 ```
 
-Use it directly when `cb` or its `install.conf` is part of what was lost. It requires `tar`, `gzip`,
-`psql`, `rsync`, `jq`, `sed`, and `sha256sum` on the host. By default it stops `circuitbreaker.target`,
+Use it directly when `cb` or its `install.conf` is part of what was lost.
+
+It accepts **two artifacts**, and what it requires depends on which you hand it. A full snapshot
+(`cb-snapshot-*.tar.gz`) needs `tar`, `gzip`, `psql`, `rsync`, `jq`, `sed` and `sha256sum`. A bare
+`.sql`/`.sql.gz` — which is what `install.sh --upgrade` writes to `${CB_DATA_DIR}/backups/` before it
+migrates — needs only `gzip`, `psql` and `sed`, because there is no manifest to read, no checksum to
+verify and no `uploads/` to sync. Demanding the full set for a database-only restore would refuse a
+recovery over tools it is never going to call.
+
+`psql`, `dropdb` and `createdb` are resolved through `$PG_BIN_DIR` before `PATH`, and failing that by
+looking under `/usr/pgsql-*/bin`. On the dnf families PGDG installs the client binaries outside
+root's `PATH`, so a bare name is simply "not found" there — the same reason `deploy/setup.sh`
+qualifies its own `pg_dump`. The superuser step (drop and create) runs over the **local socket** as
+the `postgres` OS user rather than over TCP: `deploy/config/pg_hba.conf` is `local all postgres peer`
+with `md5` for `127.0.0.1`, and the cluster is initdb'd with `--auth-host=md5` and no password on the
+`postgres` role, so a TCP superuser connection can never authenticate on a host this installer built.
+The owner-side replay does go over TCP and takes `PGPASSWORD` from `$CB_ENV_FILE`. By default it stops `circuitbreaker.target`,
 drops and recreates the `circuitbreaker` database owned by `breaker` and loads the dump, syncs
 `uploads/` with `rsync --delete`, writes `CB_VAULT_KEY` back into `/etc/circuitbreaker/.env`, and
 restores the nginx site config — validating it with `nginx -t` before reloading, so a config that

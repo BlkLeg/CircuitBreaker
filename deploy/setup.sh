@@ -1618,6 +1618,19 @@ run_upgrade() {
               "Check: tail -50 ${LOG_FILE}. Take a verified backup with 'cb backup', then re-run the upgrade."
     fi
     cb_ok "Backup saved: $backup_file"
+    # Name the command that consumes it, on the same screen. Post-1.0 downgrade is
+    # rejected outright (docs/release/1.0.0-compatibility-policy.md), so this dump is
+    # the whole of the rollback for a migration that goes wrong — and for a long time
+    # nothing in the tree would take it: a bare .sql is not the snapshot tarball shape
+    # that `cb backup` produces, and both restore paths rejected it on structure. That
+    # is fixed in deploy/scripts/restore.sh, which now accepts either artifact, and this
+    # line is the other half of the fix. An operator reading this at 3am should not have
+    # to work out what to do with the file they were just handed.
+    #
+    # The path is /opt/circuitbreaker/deploy/scripts/restore.sh because that is where
+    # the bundle puts it (scripts/build_native_release.py copies deploy/scripts into the
+    # release tarball, mode intact) — the same layout this upgrade just installed.
+    echo "    Roll back with: sudo /opt/circuitbreaker/deploy/scripts/restore.sh ${backup_file}"
   else
     cb_warn "Database not running - skipping backup"
   fi
