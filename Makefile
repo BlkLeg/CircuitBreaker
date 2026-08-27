@@ -33,6 +33,12 @@ NATS_DEV_PORT       ?= 4222
 NATS_AUTH_TOKEN_DEV ?= dev-token-local-only
 CB_NATS_URL_DEV     ?= nats://localhost:$(NATS_DEV_PORT)
 CB_ALLOW_DEGRADED_DEPENDENCIES_DEV ?= true
+# Which process owns the background loops (app/core/topology.py). Defaults to
+# mono so `make backend` on its own is still a complete appliance and keeps
+# running the in-process workers. `make dev` overrides it to `api`, because it
+# starts dedicated monitor workers and two owners is the combination
+# topology.py refuses to let pass silently.
+CB_TOPOLOGY_MODE_DEV ?= mono
 
 DOCKER_REGISTRY   ?= ghcr.io/blkleg/circuitbreaker
 
@@ -57,9 +63,18 @@ ensure-nmap: ## Fail early if the nmap binary is missing (discovery needs it)
 	  echo "ERROR: nmap not found. Install it (Fedora: sudo dnf install nmap; Debian: sudo apt install nmap) then re-run."; \
 	  exit 1; }
 
-dev: ensure-nmap deps-up stop ## Native backend + frontend + monitor workers + deps
+# `migrate` is a prerequisite, not a step inside one of the parallel branches
+# below, and that ordering is the whole point: Make finishes every prerequisite
+# before it runs the first recipe line, whereas the `&` branches race. The
+# backend branch does run `alembic upgrade head` itself, but monitor-workers
+# does not wait for it -- so against a fresh database the scheduler started
+# ticking once a second while the schema was still being built and logged
+# `UndefinedTable: relation "monitor_items" does not exist` for the length of
+# the whole migration run. Against an already-migrated database the window is
+# zero, which is why this only ever bit someone starting from an empty volume.
+dev: ensure-nmap deps-up stop migrate ## Native backend + frontend + monitor workers + deps
 	trap 'kill 0; wait' EXIT; \
-		$(MAKE) --no-print-directory backend & \
+		$(MAKE) --no-print-directory backend CB_TOPOLOGY_MODE_DEV=api & \
 		$(MAKE) --no-print-directory monitor-workers & \
 		$(MAKE) --no-print-directory frontend
 
@@ -81,6 +96,7 @@ backend:  ## Native backend (ZERO DOCKER DRIFT)
 		NATS_URL="nats://localhost:4222" \
 		NATS_AUTH_TOKEN="dev-token-local-only" \
 		CB_ALLOW_DEGRADED_DEPENDENCIES="$(CB_ALLOW_DEGRADED_DEPENDENCIES_DEV)" \
+		CB_TOPOLOGY_MODE="$(CB_TOPOLOGY_MODE_DEV)" \
 		CB_AUTO_MIGRATE=false \
 		PYTHONPATH=src $(CURDIR)/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 8 $(CB_UVICORN_ARGS)
 
@@ -104,6 +120,7 @@ monitor-workers:  ## Native monitor scheduler + poll worker
 			NATS_URL="$(CB_NATS_URL_DEV)" \
 			NATS_AUTH_TOKEN="$(NATS_AUTH_TOKEN_DEV)" \
 			CB_ALLOW_DEGRADED_DEPENDENCIES="$(CB_ALLOW_DEGRADED_DEPENDENCIES_DEV)" \
+			CB_TOPOLOGY_MODE=worker \
 			PYTHONPATH=src $(CURDIR)/.venv/bin/python -m app.workers.main --type=$$kind & \
 		done; \
 		wait
