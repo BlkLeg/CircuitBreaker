@@ -223,7 +223,18 @@ security-report: ## Run full security scan report (non-blocking)
 
 .PHONY: lint format test test-db test-backend test-frontend security-check security-report verify-fast verify verify-full
 
-lint: ## Run backend and frontend linters
+# This target is NOT `scripts/ci/tier0-static.sh`, and that is deliberate
+# rather than an oversight: lint-staged (root package.json) runs `make lint`
+# on every commit that touches a staged .ts/.tsx/.py file, so it has to stay
+# ruff+mypy+eslint fast. tier0-static.sh is the definition of record for the
+# full Tier 0 gate (ADR 0005) — it also runs the Alembic single-head check,
+# the tests/build repo-policy suite and the release-control ledger validator,
+# none of which belong on the commit-time path. `make verify-fast` runs that
+# script; use it, not this target, when you want the real Tier 0 gate. This
+# is a known, accepted third copy of ruff/mypy/eslint's *invocation* (not
+# their *pass/fail semantics*, which the tools themselves own) — narrower in
+# scope than tier0-static.sh, not a divergent reimplementation of it.
+lint: ## Run backend and frontend linters (fast subset for pre-commit; see comment)
 	cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/ruff check src/app
 	cd $(BACKEND_DIR) && PYTHONPATH=src $(CURDIR)/.venv/bin/mypy src/app
 	cd $(FRONTEND_DIR) && npm run lint
