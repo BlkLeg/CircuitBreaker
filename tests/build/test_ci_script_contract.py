@@ -186,3 +186,79 @@ def test_pre_push_hook_runs_the_full_gate():
     makes the pre-push slot the T0+T1 gate."""
     hook = (REPO_ROOT / ".husky" / "pre-push").read_text(encoding="utf-8")
     assert "make verify" in hook, hook
+
+
+def test_use_go_bin_adds_the_go_install_prefix_to_path(tmp_path):
+    """`go install` writes to `go env GOBIN`, or `go env GOPATH`/bin when GOBIN
+    is unset. Neither is on PATH by default, so a gate that asks
+    `command -v govulncheck` without resolving this first rejects a correct
+    install and tells the developer to redo it — which changes nothing."""
+    gopath = tmp_path / "gopath"
+    (gopath / "bin").mkdir(parents=True)
+    stub_dir = tmp_path / "stub"
+    stub_dir.mkdir()
+    go = stub_dir / "go"
+    go.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$1 $2" in\n'
+        '  "env GOBIN") echo "" ;;\n'
+        f'  "env GOPATH") echo "{gopath}" ;;\n'
+        "esac\n"
+    )
+    go.chmod(0o755)
+    result = _bash(
+        f'export PATH="{stub_dir}:$PATH"; source "{COMMON}"; '
+        'cb::use_go_bin; printf "%s" "$PATH"'
+    )
+    assert result.returncode == 0, result.stderr
+    assert str(gopath / "bin") in result.stdout
+
+
+def test_use_go_bin_prefers_an_explicit_gobin(tmp_path):
+    gobin = tmp_path / "explicit"
+    gobin.mkdir()
+    stub_dir = tmp_path / "stub"
+    stub_dir.mkdir()
+    go = stub_dir / "go"
+    go.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$1 $2" in\n'
+        f'  "env GOBIN") echo "{gobin}" ;;\n'
+        '  "env GOPATH") echo "/nonexistent" ;;\n'
+        "esac\n"
+    )
+    go.chmod(0o755)
+    result = _bash(
+        f'export PATH="{stub_dir}:$PATH"; source "{COMMON}"; '
+        'cb::use_go_bin; printf "%s" "$PATH"'
+    )
+    assert result.returncode == 0, result.stderr
+    assert str(gobin) in result.stdout
+    assert "/nonexistent" not in result.stdout
+
+
+def test_use_go_bin_is_a_no_op_without_a_go_toolchain():
+    """No toolchain, nothing to resolve — and it must not abort the caller, so
+    that `cb::require_tool go` is what reports the real problem."""
+    result = _bash(f'PATH=""; source "{COMMON}"; cb::use_go_bin; echo REACHED')
+    assert result.returncode == 0, result.stderr
+    assert "REACHED" in result.stdout
+
+
+def test_tier1_resolves_go_binaries_before_demanding_them():
+    """The govulncheck preflight guards section 10 of security_scan.sh, which
+    bootstraps govulncheck itself when `go` is present. A preflight stricter
+    than the gate it guards blocks `make verify` on a working install."""
+    text = (CI_DIR / "tier1-unit.sh").read_text(encoding="utf-8")
+    assert "cb::use_go_bin" in text, "tier1 must resolve the Go install prefix"
+    assert text.index("cb::use_go_bin") < text.index("cb::require_tool govulncheck"), (
+        "cb::use_go_bin must run before anything asks whether govulncheck exists"
+    )
+
+
+def test_tier1_requires_the_go_toolchain_itself():
+    """govulncheck shells out to `go list` at runtime: without `go` on PATH it
+    fails with the misleading `no go.mod file` rather than naming the real
+    cause. `go` is the actual precondition, so the gate states it."""
+    text = (CI_DIR / "tier1-unit.sh").read_text(encoding="utf-8")
+    assert "cb::require_tool go " in text

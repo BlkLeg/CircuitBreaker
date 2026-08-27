@@ -34,6 +34,22 @@ cb::require_file apps/frontend/node_modules "run 'cd apps/frontend && npm ci' fi
 # already run. Without this preflight, a missing govulncheck is only discovered after
 # paying the full multi-minute cost of everything ahead of it in the gate, which is
 # exactly the kind of late, expensive failure this tier exists to prevent.
+#
+# Resolve the Go install prefix FIRST. `go install golang.org/x/vuln/cmd/govulncheck@v1.7.0`
+# — the command CONTRIBUTING tells contributors to run, and the command this very
+# hint printed — lands the binary in `go env GOPATH`/bin, which is not on PATH on
+# Fedora. Asking `command -v govulncheck` before resolving that failed the gate for
+# a correct install and told the developer to redo it, which changed nothing.
+cb::use_go_bin
+# `go` itself is the hard requirement, not merely the govulncheck binary: govulncheck
+# shells out to `go list` at runtime, so without a toolchain it fails with
+# "no go.mod file" — a message naming neither the missing tool nor the real cause.
+# security_scan.sh bootstraps govulncheck into its own GOBIN when `go` is present,
+# so a preflight that demanded the binary but not the toolchain was both too strict
+# (rejecting an install the gate would have accepted) and too lax (passing a
+# toolchain-less host the gate cannot serve).
+cb::require_tool go \
+    "install a Go toolchain (e.g. 'sudo dnf install golang'); govulncheck shells out to 'go list' and the security gate fails closed without it"
 cb::require_tool govulncheck \
     "install: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0 — the security gate fails closed without it"
 

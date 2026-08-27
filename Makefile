@@ -278,10 +278,17 @@ test-frontend: ## Run frontend unit tests natively
 # is never silent — cb::skipped prints it on every run. The backend suite
 # still runs on every push in CI, and locally via `verify-full` when you want
 # it. Re-measure before changing this default; don't re-derive it from taste.
+#
+# Re-measured 2026-08-27 after the govulncheck preflight was fixed: 3m17s, not
+# the 1m46s recorded above. The earlier figure was taken on a host where
+# security_scan.sh's section 10 could not resolve govulncheck, so it never paid
+# for the Go vulnerability scan. 3m17s is still inside the budget, but the
+# headroom is 43s rather than 2m14s — the next gate added to Tier 1 has to be
+# measured, not assumed to fit.
 verify-fast: ## Tier 0 only — static gates (~90s)
 	scripts/ci/tier0-static.sh
 
-verify: verify-fast ## Tier 0 + Tier 1 minus the backend suite — the pre-push gate (budget: 4 min, measured 1m46s)
+verify: verify-fast ## Tier 0 + Tier 1 minus the backend suite — the pre-push gate (budget: 4 min, measured 3m17s)
 	CB_VERIFY_BACKEND=off scripts/ci/tier1-unit.sh
 
 verify-full: verify-fast ## Tier 0 + full Tier 1 including the backend suite (measured 6m43s)
