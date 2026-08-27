@@ -75,7 +75,7 @@ def test_evidence_dir_creates_flat_layout(tmp_path):
     assert (echoed_path / "logs").is_dir(), f"logs/ directory not created at {echoed_path / 'logs'}"
 
 
-TIER_SCRIPTS = ["tier0-static.sh"]
+TIER_SCRIPTS = ["tier0-static.sh", "tier1-unit.sh"]
 
 
 def test_tier_scripts_exist_and_are_executable():
