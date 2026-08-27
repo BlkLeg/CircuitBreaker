@@ -210,6 +210,28 @@
       "compensating_control": "The allowlist matches the field name on the finding's line rather than allowlisting the two files, so every other line of those files is still scanned and a real secret in them fails the gate.",
       "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
+    },
+    {
+      "id": "GITLEAKS-CONFIG-009",
+      "tool": "gitleaks-config",
+      "selector": "pem-shape-redaction-fixture",
+      "owner": "security-owner",
+      "reviewer": "release-owner",
+      "reason": "redactSensitive() strips PEM blocks, so apps/frontend/src/__tests__/agent-errors.test.js must hold a string of PEM shape to prove it does. The body is the 12 characters MIIBVgIBADAN, which decode to the 9 bytes 30 82 01 56 02 01 00 30 0d — a truncated PKCS#8 PrivateKeyInfo header (SEQUENCE, version INTEGER 0, and the start of the AlgorithmIdentifier) carrying no key material and no private exponent. The literal is written inline in the assertion that redaction removed it.",
+      "compensating_control": "The allowlist matches that body on the finding's line rather than allowlisting the file, so every other line of the redaction corpus is still scanned and a real private key in the same file fails the gate.",
+      "expiry": "2026-11-13",
+      "requirements": ["SEC-18", "RC-08"]
+    },
+    {
+      "id": "GITLEAKS-CONFIG-010",
+      "tool": "gitleaks-config",
+      "selector": "test-vault-key-literal",
+      "owner": "security-owner",
+      "reviewer": "release-owner",
+      "reason": "dGVzdC12YXVsdC1rZXk= is base64 for the ASCII string \"test-vault-key\". tests/build/test_restore_dump_errors.py writes it into a stub snapshot so restore.sh can be asserted to carry CB_VAULT_KEY through into the restored env file; nothing is ever encrypted or decrypted with it. This is the same fabricated value already excused for apps/backend/tests/services/test_restore_targets.py by the documented-and-test-fixtures allowlist.",
+      "compensating_control": "The allowlist matches the literal rather than a path, so a real vault key in any of the restore tests still fails the gate, and the next test asserting the same round-trip is covered without widening the suppression to another directory.",
+      "expiry": "2026-11-13",
+      "requirements": ["SEC-18", "RC-08"]
     }
   ]
 }

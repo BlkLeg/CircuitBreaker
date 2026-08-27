@@ -39,6 +39,13 @@ describe('redactSensitive', () => {
   });
 
   it('removes signed-token and long base64 shapes', () => {
+    // The jwt.io sample token, signed with the published key "your-256-bit-secret"
+    // and carrying only {"sub":"1"}. It is here because redactSensitive's JWT
+    // branch cannot be tested without a string of JWT shape, so Semgrep's
+    // detected-jwt-token fires on the fixture that proves tokens get redacted.
+    // Suppressed by rule id on this line alone: a real token anywhere else in
+    // this file, including the line below, still fails the gate.
+    // nosemgrep: generic.secrets.security.detected-jwt-token.detected-jwt-token
     const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1g';
     expect(redactSensitive(`token ${jwt}`)).not.toContain('eyJhbGciOiJIUzI1NiJ9');
     const blob = 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbg==';

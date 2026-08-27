@@ -79,3 +79,29 @@ id = "server-key-fingerprints"
 description = "current/successor_key_fingerprint is a public-key digest the API returns, not a secret"
 regexTarget = "line"
 regexes = ['(current|successor)_key_fingerprint']
+
+# `redactSensitive` strips PEM blocks, so agent-errors.test.js has to hold a
+# string of PEM shape to prove it. The body is the 12 characters `MIIBVgIBADAN`
+# -- a DER prefix, not a key: it decodes to a truncated PKCS#8 header and
+# carries no key material, and the literal is written inline in the assertion
+# that redaction removed it. Matched on that body rather than on the path,
+# following secret-min-length-kwarg: a real private key elsewhere in the same
+# file, including the redaction corpus above it, still fails the gate.
+[[allowlists]]
+id = "pem-shape-redaction-fixture"
+description = "MIIBVgIBADAN is a truncated DER header used to prove redactSensitive strips PEM blocks"
+regexTarget = "line"
+regexes = ['MIIBVgIBADAN']
+
+# `dGVzdC12YXVsdC1rZXk=` is base64 for the ASCII string "test-vault-key". The
+# build tests write it into a stub snapshot so restore.sh can be asserted to
+# carry CB_VAULT_KEY through into the restored env file; nothing is ever
+# encrypted or decrypted with it. This is the same fabricated value already
+# excused for test_restore_targets.py by documented-and-test-fixtures above --
+# named here by the literal instead of by a fourth path, so the next restore
+# test asserting the same round-trip is covered without another edit, and a
+# real vault key in any of those files still fails the gate.
+[[allowlists]]
+id = "test-vault-key-literal"
+description = "base64 of the ASCII string \"test-vault-key\", a stub-snapshot fixture for restore.sh round-trip assertions"
+regexes = ['dGVzdC12YXVsdC1rZXk=']

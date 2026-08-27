@@ -462,10 +462,23 @@ def test_full_endpoint_inventory_matches_runtime_routes():
     # (regenerating it without one would silently record the degraded shape as
     # the policy of record, which is worse than the failure this exemption
     # replaces), so both sides of the swap are dropped from the comparison.
+    #
+    # Both sides drop the whole pair, not just the half that happens to be
+    # missing. Filtering the recorded side by `absent_routes` instead made the
+    # exemption branch-dependent: the inventory records `/{full_path:path}` (it
+    # is generated with a build), so without a build `absent_routes` held that
+    # path and both sides lost one route, but WITH a build `absent_routes` held
+    # only `/` -- which the inventory never had -- so the fallback was subtracted
+    # from runtime and kept in the record, for a permanent `437 vs 436`. That is
+    # exactly the shape a real policy drift takes, on a gate whose whole job is
+    # to distinguish the two. `absent_routes` now only decides whether the
+    # message explains the swap.
     frontend_only_routes = {"/{full_path:path}", "/"}
     runtime_route_paths = {row["path"] for row in expected}
     absent_routes = frontend_only_routes - runtime_route_paths
-    recorded_routes = [row for row in inventory["routes"] if row["path"] not in absent_routes]
+    recorded_routes = [
+        row for row in inventory["routes"] if row["path"] not in frontend_only_routes
+    ]
     expected_routes = [row for row in expected if row["path"] not in frontend_only_routes]
 
     frontend_only = {"/assets/{path:path}", "/icons/{path:path}"}
