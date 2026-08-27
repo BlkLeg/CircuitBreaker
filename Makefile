@@ -221,7 +221,7 @@ security-check: ## Run security scans (gate mode — fails on HIGH/CRIT)
 security-report: ## Run full security scan report (non-blocking)
 	./scripts/security_scan.sh
 
-.PHONY: lint format test test-db test-backend test-frontend security-check security-report
+.PHONY: lint format test test-db test-backend test-frontend security-check security-report verify-fast verify verify-full
 
 lint: ## Run backend and frontend linters
 	cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/ruff check src/app
@@ -252,3 +252,26 @@ test-backend: test-db ## Run backend integration tests natively
 
 test-frontend: ## Run frontend unit tests natively
 	cd $(FRONTEND_DIR) && npm test
+
+# ADR 0005: the verification ladder. Each target is a thin caller of the script
+# GitHub Actions also calls, so "it passed locally" means the same gate ran —
+# not a local reimplementation of it.
+#
+# `verify`'s 4-minute budget is a hard constraint, not a preference: a gate
+# slower than the developer's patience gets bypassed, and a bypassed gate is
+# worse than no gate at all, because branch protection still reports it
+# satisfied. Measured on 2026-08-27, the full Tier 1 (backend suite included,
+# CB_VERIFY_BACKEND=shards) took 6m43s — 68% over budget — while Tier 1 with
+# the backend suite skipped (CB_VERIFY_BACKEND=off) took 1m46s, 2m14s under
+# budget. So `verify` runs with the backend suite off by default; the omission
+# is never silent — cb::skipped prints it on every run. The backend suite
+# still runs on every push in CI, and locally via `verify-full` when you want
+# it. Re-measure before changing this default; don't re-derive it from taste.
+verify-fast: ## Tier 0 only — static gates (~90s)
+	scripts/ci/tier0-static.sh
+
+verify: verify-fast ## Tier 0 + Tier 1 minus the backend suite — the pre-push gate (budget: 4 min, measured 1m46s)
+	CB_VERIFY_BACKEND=off scripts/ci/tier1-unit.sh
+
+verify-full: verify-fast ## Tier 0 + full Tier 1 including the backend suite (measured 6m43s)
+	CB_VERIFY_BACKEND=shards scripts/ci/tier1-unit.sh

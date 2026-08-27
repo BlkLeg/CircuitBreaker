@@ -180,23 +180,40 @@ fourth tier for real-hardware artifact verification.
 | Tier | Contents | Runs where | Budget | Gate |
 |---|---|---|---|---|
 | **T0** static | lint, format, typecheck, repo-policy suites (`tests/build`), suppression manifest | laptop | 90 s | every commit |
-| **T1** unit + integration | backend integration (Testcontainers), frontend unit, security gate | laptop | 4 min | **pre-push hook** |
+| **T1** unit + integration | frontend unit, security gate, and (measured 2026-08-27, see below) backend integration via Testcontainers — present in the T1 script but off by default in the pre-push gate; runs in full via `make verify-full` | laptop | 4 min | **pre-push hook** |
 | **T2** composed | agent E2E, browser E2E, mono image smoke | laptop on demand, or fleet | 30 min | pre-merge to `main` |
 | **T3** artifact | install · **boot** · exercise · upgrade · rollback, per format/arch/distro | fleet, ephemeral VMs | 20 min | pre-release + nightly |
 
-Entry points:
+Entry points (Phase 1 status — only T0 and T1 are extracted; T2/T3 callers
+below are the target shape, not yet wired):
 
 ```
-make verify-fast     # T0                      — the inner loop
-make verify          # T0 + T1                 — the pre-push gate
-make verify-full     # T0 + T1 + T2            — pre-merge
-make verify-fleet    # T3                      — pre-release
+make verify-fast     # T0                                — the inner loop (measured ~17s)
+make verify          # T0 + T1 minus the backend suite    — the pre-push gate (measured 1m46s)
+make verify-full     # T0 + T1 in full (+ backend suite)  — on demand / pre-merge (measured 6m43s)
+make verify-fleet    # T3                                — pre-release
 ```
+
+`verify-full` names T1's full form here because that is what Phase 1 needed
+it for; when T2's script lands, its pre-merge caller will need a name that
+does not collide with this one — an open question for that phase, not this
+one.
 
 **T1 is the pre-push gate.** The 4-minute budget is a hard design constraint,
 not an aspiration: a gate slower than the developer's patience gets bypassed,
 and a bypassed gate is worse than no gate because it produces false
 confidence in the branch protection rules that depend on it.
+
+**The backend suite moved out of the default pre-push run for budget
+reasons, measured, not guessed.** On 2026-08-27, full T1 with the backend
+suite (`CB_VERIFY_BACKEND=shards`) took 6m43s — 68% over the 4-minute budget.
+T1 with the backend suite off (`CB_VERIFY_BACKEND=off`) took 1m46s, 2m14s
+under budget. `make verify` therefore runs with the backend suite off by
+default. This is never a silent gap: `cb::skipped` prints the omission on
+every run, so a green `make verify` never looks like it covered more than it
+did. The backend suite still runs on every push in CI, and locally on demand
+via `make verify-full`. Re-measure before changing this default; the numbers
+above are the evidence, not the last word.
 
 ### Tier contract
 
@@ -523,7 +540,7 @@ Measured, not asserted:
 |---|---|---|
 | Escape rate in the install/boot band | 5 of 5 open bugs | 0 new escapes |
 | CI surprises (CI red where `make verify` was green) | unmeasured, known >0 | → 0 |
-| `make verify` p95 duration | n/a | < 5 min |
+| `make verify` p95 duration | measured 2026-08-27: 1m46s as shipped (backend suite off); 6m43s if the backend suite is included (`make verify-full`) | < 5 min |
 | Gates that can pass without running | ≥ 2 (ESLint, rmtree) | 0 |
 | Package formats with a boot assertion | 0 of 6 | 6 of 6 |
 | Architectures with a boot assertion | 0 of 2 | 2 of 2 |
