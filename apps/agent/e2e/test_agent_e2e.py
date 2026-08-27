@@ -541,11 +541,24 @@ class _AgentStreamListener:
         # same token as the first text message below, which is the actual
         # mechanism this endpoint's body uses to authenticate a bearer-only
         # (no-cookie) client such as this one.
-        self._ws = connect(
-            f"{WS_BASE_URL}/api/v1/agents/stream",
-            ssl_context=_tls_context(),
-            open_timeout=15,
-            additional_headers={"Authorization": f"Bearer {token}"},
+        # Two websockets deprecations are load-bearing here, because pytest.ini's
+        # `filterwarnings = error` makes both fatal and e2e.yml pins no version:
+        #
+        #   * `ssl`, not `ssl_context` — renamed in 13.0.
+        #   * `connect()` entered as a context manager — 17.0 deprecated holding
+        #     the return value directly. This listener outlives its constructor,
+        #     so it cannot use a `with` block; an ExitStack held on the instance
+        #     is the same contract with the lifetime this class actually has,
+        #     and `close()` unwinds it. `legacy=True` would also silence it, but
+        #     that switch exists to be removed.
+        self._stack = contextlib.ExitStack()
+        self._ws = self._stack.enter_context(
+            connect(
+                f"{WS_BASE_URL}/api/v1/agents/stream",
+                ssl=_tls_context(),
+                open_timeout=15,
+                additional_headers={"Authorization": f"Bearer {token}"},
+            )
         )
         self._ws.send(token)
         ack = json.loads(self._ws.recv(timeout=10))
@@ -584,7 +597,9 @@ class _AgentStreamListener:
         self._stop.set()
         self._thread.join(timeout=5)
         try:
-            self._ws.close()
+            # Unwinds the ExitStack the constructor opened, which is what closes
+            # the socket; `self._ws.close()` would leave the stack un-exited.
+            self._stack.close()
         except Exception:
             pass
 
@@ -722,6 +737,16 @@ def _enroll_agent(
     }, "approve did not apply the server's default capability grants"
 
     assert proc.wait(timeout=15) == 0, "enroll process did not exit 0 after approval"
+    # The pipe outlives the loop above on purpose: `enroll.Run` blocks until the
+    # server stops reporting the agent as pending (internal/enroll/enroll.go),
+    # so the process is still writing — "approved — connecting" — long after the
+    # pairing code was read and broken out on. It is only finished once the
+    # approval above has landed and `wait()` has returned, which is the earliest
+    # point this can be closed. Leaving it to the garbage collector raised
+    # `ResourceWarning: unclosed file`, which pytest.ini's `filterwarnings =
+    # error` turns into a failure attributed to whichever test happened to
+    # trigger the collection rather than to the helper that leaked it.
+    proc.stdout.close()
     return agent_id, stream
 
 
@@ -3563,11 +3588,16 @@ class _DiscoveryStreamListener:
     def __init__(self, cookie: str):
         from websockets.sync.client import connect
 
-        self._ws = connect(
-            f"{WS_BASE_URL}/api/v1/discovery/stream",
-            ssl_context=_tls_context(),
-            open_timeout=15,
-            additional_headers={"Cookie": f"cb_session={cookie}"},
+        # Same two websockets deprecations as _AgentStreamListener — see the note
+        # there for why the connection is held open through an ExitStack.
+        self._stack = contextlib.ExitStack()
+        self._ws = self._stack.enter_context(
+            connect(
+                f"{WS_BASE_URL}/api/v1/discovery/stream",
+                ssl=_tls_context(),
+                open_timeout=15,
+                additional_headers={"Cookie": f"cb_session={cookie}"},
+            )
         )
         ack = json.loads(self._ws.recv(timeout=10))
         assert ack.get("status") == "connected", f"discovery stream auth failed: {ack}"
@@ -3604,7 +3634,9 @@ class _DiscoveryStreamListener:
         self._stop.set()
         self._thread.join(timeout=5)
         try:
-            self._ws.close()
+            # Unwinds the ExitStack the constructor opened, which is what closes
+            # the socket; `self._ws.close()` would leave the stack un-exited.
+            self._stack.close()
         except Exception:
             pass
 
