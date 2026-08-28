@@ -1,0 +1,82 @@
+#cloud-config
+# scripts/ci/fleet/cloud-init/fedora.user-data
+#
+# The test FIXTURE, not the test. Everything here is a precondition the package
+# declares but does not create -- autopkgtest's Depends: split. The candidate
+# artifact is deliberately absent: dispatch.sh pushes it and tier3-artifact.sh
+# installs it, because a VM that boots with the package already on it is not
+# testing an install.
+#
+# Why these services: nfpm.yaml's rpm override lists postgresql-server, redis and
+# nats-server under `recommends`, which are weak dependencies -- dnf pulls them in
+# but nothing runs initdb, creates a role, or starts a unit. And
+# packaging/postinstall.sh writes an env file naming
+# postgresql://circuitbreaker:changeme@127.0.0.1:5432/circuitbreaker. So the
+# database the package names does not exist until something makes it.
+#
+# Two corrections against the first draft, both found by booting it:
+#
+#   * `redis` is not a Fedora 44 package. Fedora replaced it with `valkey`, which
+#     is wire-compatible and listens on 6379, so the package's CB_REDIS_URL needs
+#     no change. Naming the wrong package did not merely skip redis: dnf resolves
+#     `packages:` as ONE transaction, so a single unresolvable name failed the
+#     whole list and postgresql-server was never installed either.
+#   * `nats-server` is in no Fedora repo at all -- upstream ships tarballs, not
+#     an rpm. It is deliberately omitted rather than fetched: /readyz checks `db`
+#     and `redis` only, so NATS absence produces retry warnings in the journal
+#     and does not affect the assertion. If a future readiness contract adds
+#     NATS, this fixture has to grow a pinned upstream install; until then,
+#     pretending to provide it would be the dishonest option.
+
+ssh_authorized_keys:
+  - CB_SSH_PUBKEY_PLACEHOLDER
+
+package_update: false
+packages:
+  - postgresql-server
+  - postgresql
+  - valkey
+
+# ONE fail-fast script, not a list of independent commands. cloud-init's runcmd
+# entries do not stop at the first failure, so the original list wrote the
+# readiness marker below even though every step before it had failed -- and
+# provision.sh, which waits on exactly that marker, reported a fully provisioned
+# host that had nothing installed on it. That is the same defect as a security
+# gate reporting a missing scanner as a clean scan: a success signal for work
+# that never happened. `set -euo pipefail` here means the marker is reachable
+# only if everything above it succeeded.
+runcmd:
+  - - bash
+    - -euo
+    - pipefail
+    - -c
+    - |
+      postgresql-setup --initdb
+
+      # scram-sha-256, not trust: the package's generated env authenticates with
+      # a password, and a trust-auth fixture would mask a credential mismatch --
+      # which is one of the things this tier is here to catch.
+      sed -i -E 's/^(host[[:space:]]+all[[:space:]]+all[[:space:]]+[0-9.\/]+[[:space:]]+)ident$/\1scram-sha-256/' \
+        /var/lib/pgsql/data/pg_hba.conf
+
+      systemctl enable --now postgresql
+      systemctl enable --now valkey
+
+      # Exactly the role and database packaging/postinstall.sh's generated env
+      # names. If these are wrong, the tier must fail rather than be adjusted to
+      # match whatever the package happens to want.
+      su - postgres -c "psql -v ON_ERROR_STOP=1 -c \"CREATE ROLE circuitbreaker LOGIN PASSWORD 'changeme'\""
+      su - postgres -c "createdb -O circuitbreaker circuitbreaker"
+
+      # Prove the credential path works before declaring the fixture ready, so a
+      # later auth failure is unambiguously the package's problem, not ours.
+      PGPASSWORD=changeme psql -h 127.0.0.1 -U circuitbreaker -d circuitbreaker -v ON_ERROR_STOP=1 -c 'SELECT 1' >/dev/null
+
+      systemctl is-active --quiet postgresql
+      systemctl is-active --quiet valkey
+
+      # Written last and only on success: provision.sh waits on this file, so it
+      # must mean every precondition above completed.
+      touch /var/lib/cloud/cb-fixture-ready
+
+final_message: "cb fleet fixture ready after $UPTIME seconds"

@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# Boot one ephemeral Fedora VM for a Tier 3 row, unprivileged.
+#
+# Raw qemu rather than libvirt, deliberately: /dev/kvm is 0666 on this host and
+# opens without group membership, so the release gate needs no daemon, no group
+# and no password. libvirt would have needed virt-install (absent), libvirtd
+# (inactive) and a group the developer is not in -- three root operations to run
+# a test.
+#
+# Ephemerality is a copy-on-write overlay over a read-only golden image, not a
+# cleanup routine. Cleanup routines are skipped when a run is killed; a fresh
+# overlay per run cannot be.
+#
+# Prints ONE line to stdout on success: "<ssh_port> <ssh_key> <vm_dir>".
+# Everything else goes to stderr so callers can parse stdout without filtering.
+set -euo pipefail
+
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
+
+FLEET_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MATRIX="$FLEET_DIR/matrix.yaml"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/circuit-breaker/fleet"
+
+cb::require_tool qemu-system-x86_64 "install qemu-system-x86 (Fedora: sudo dnf install qemu-system-x86)"
+cb::require_tool qemu-img "install qemu-img (Fedora: sudo dnf install qemu-img)"
+cb::require_tool genisoimage "install genisoimage (Fedora: sudo dnf install genisoimage)"
+cb::require_tool ssh
+cb::require_tool ssh-keygen
+cb::require_tool curl
+cb::require_tool sha256sum
+
+if [ ! -w /dev/kvm ]; then
+    printf '::error::/dev/kvm is not writable by this user — KVM acceleration is required.\n' >&2
+    printf 'On this fleet host /dev/kvm is mode 0666. If it is not on yours, add yourself to the kvm group.\n' >&2
+    exit 127
+fi
+
+# ── matrix lookup ───────────────────────────────────────────────────────────
+# One row in Phase 2, but read by id so Phase 3's rows do not require rewriting
+# every caller.
+fleet::matrix_field() {
+    local row_id=$1 field=$2
+    awk -v id="$row_id" -v key="$field" '
+        /^[[:space:]]*-[[:space:]]+id:/ { in_row = ($0 ~ id) }
+        in_row && $0 ~ "^[[:space:]]*" key ":" {
+            sub("^[[:space:]]*" key ":[[:space:]]*", "")
+            gsub(/^"|"$/, "")
+            print; exit
+        }
+    ' "$MATRIX"
+}
+
+ROW_ID="${1:-fedora-rpm-amd64}"
+IMAGE_URL="$(fleet::matrix_field "$ROW_ID" image_url)"
+IMAGE_SHA="$(fleet::matrix_field "$ROW_ID" image_sha256)"
+if [ -z "$IMAGE_URL" ] || [ -z "$IMAGE_SHA" ]; then
+    printf '::error::row %s has no image_url/image_sha256 in %s\n' "$ROW_ID" "$MATRIX" >&2
+    exit 1
+fi
+
+# ── golden image, fetched once and verified every time ──────────────────────
+# Verified on every run, not only on download: a truncated fetch, a full disk or
+# a tampered cache would otherwise silently become "the clean Fedora host".
+mkdir -p "$CACHE_DIR"
+GOLDEN="$CACHE_DIR/$(basename "$IMAGE_URL")"
+if [ ! -f "$GOLDEN" ]; then
+    cb::section "Fetching golden image for $ROW_ID (once; cached in $CACHE_DIR)" >&2
+    curl -fSL --retry 3 -o "$GOLDEN.part" "$IMAGE_URL" >&2
+    mv "$GOLDEN.part" "$GOLDEN"
+fi
+if ! printf '%s  %s\n' "$IMAGE_SHA" "$GOLDEN" | sha256sum --check --status; then
+    printf '::error::golden image checksum mismatch for %s\n' "$GOLDEN" >&2
+    printf 'expected %s — delete the file and re-run to refetch\n' "$IMAGE_SHA" >&2
+    exit 1
+fi
+
+# ── per-run scratch ─────────────────────────────────────────────────────────
+VM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cb-fleet-${ROW_ID}-XXXXXX")"
+OVERLAY="$VM_DIR/disk.qcow2"
+SEED="$VM_DIR/seed.iso"
+KEY="$VM_DIR/id_ed25519"
+
+# The overlay IS the clean-host guarantee. -b makes writes land here and leaves
+# the golden image untouched, so run N+1 cannot inherit run N's residue.
+qemu-img create -f qcow2 -F qcow2 -b "$GOLDEN" "$OVERLAY" 20G >&2
+
+# A key per run, thrown away with the VM. Nothing long-lived is trusted by a
+# machine this disposable.
+ssh-keygen -t ed25519 -N '' -f "$KEY" -q
+
+USER_DATA="$VM_DIR/user-data"
+sed "s|CB_SSH_PUBKEY_PLACEHOLDER|$(cat "$KEY.pub")|" \
+    "$FLEET_DIR/cloud-init/fedora.user-data" > "$USER_DATA"
+printf 'instance-id: cb-%s\nlocal-hostname: cb-fleet\n' "$ROW_ID" > "$VM_DIR/meta-data"
+genisoimage -output "$SEED" -volid cidata -joliet -rock \
+    "$USER_DATA" "$VM_DIR/meta-data" >/dev/null 2>&1
+
+# ── boot ────────────────────────────────────────────────────────────────────
+# User-mode networking with a forwarded port: no bridge, no tap device, no root.
+# The guest is unreachable from the LAN, which is the correct blast radius for a
+# machine running an unreviewed candidate package as root.
+SSH_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+
+cb::section "Booting $ROW_ID (ssh on 127.0.0.1:$SSH_PORT)" >&2
+# -display none rather than -nographic: -nographic wires both serial and the
+# monitor to stdio, which qemu refuses to combine with -daemonize. Serial is
+# redirected to console.log below, which is what the diagnostics need anyway.
+qemu-system-x86_64 \
+    -name "cb-fleet-$ROW_ID" \
+    -machine q35,accel=kvm \
+    -cpu host \
+    -smp 2 \
+    -m 4096 \
+    -display none -serial "file:$VM_DIR/console.log" -monitor none \
+    -drive "file=$OVERLAY,if=virtio,format=qcow2" \
+    -drive "file=$SEED,if=virtio,format=raw,readonly=on" \
+    -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22" \
+    -device virtio-net-pci,netdev=net0 \
+    -pidfile "$VM_DIR/qemu.pid" \
+    -daemonize >&2
+
+# ── wait for SSH, then for the fixture ──────────────────────────────────────
+SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+          -o LogLevel=ERROR -o ConnectTimeout=5 -i "$KEY" -p "$SSH_PORT")
+
+deadline=$(( SECONDS + 300 ))
+until ssh "${SSH_OPTS[@]}" fedora@127.0.0.1 true 2>/dev/null; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+        printf '::error::VM did not accept SSH within 300s — console log follows\n' >&2
+        tail -50 "$VM_DIR/console.log" >&2 || true
+        exit 1
+    fi
+    sleep 3
+done
+
+# Two waits, not one. SSH comes up well before cloud-init has finished running
+# runcmd, and dispatching into a half-provisioned host produces failures that
+# look like package bugs.
+deadline=$(( SECONDS + 600 ))
+until ssh "${SSH_OPTS[@]}" fedora@127.0.0.1 \
+        'test -f /var/lib/cloud/cb-fixture-ready' 2>/dev/null; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+        printf '::error::cloud-init fixture did not complete within 600s\n' >&2
+        ssh "${SSH_OPTS[@]}" fedora@127.0.0.1 \
+            'sudo tail -80 /var/log/cloud-init-output.log' >&2 || true
+        exit 1
+    fi
+    sleep 5
+done
+
+printf '%s %s %s\n' "$SSH_PORT" "$KEY" "$VM_DIR"
