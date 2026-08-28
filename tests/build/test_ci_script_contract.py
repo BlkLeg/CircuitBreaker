@@ -77,7 +77,7 @@ def test_evidence_dir_creates_flat_layout(tmp_path):
     assert (echoed_path / "logs").is_dir(), f"logs/ directory not created at {echoed_path / 'logs'}"
 
 
-TIER_SCRIPTS = ["tier0-static.sh", "tier1-unit.sh"]
+TIER_SCRIPTS = ["tier0-static.sh", "tier1-unit.sh", "tier3-artifact.sh"]
 
 
 def test_tier_scripts_exist_and_are_executable():
@@ -95,7 +95,17 @@ def test_tier_scripts_use_strict_bash():
 
 
 def test_tier_scripts_do_not_swallow_gate_failures():
-    """No `|| true` on a gate. cb::skipped exists for the informational case."""
+    """No `|| true` on a gate. cb::skipped exists for the informational case.
+
+    One exemption, and it has to be spelled out on the line: `# diagnostics:`.
+    Tier 3 collects a journal and a unit state on its failure paths, and those
+    commands must not themselves abort the run -- a collector that dies while
+    gathering evidence for a failure destroys the only account of it. But
+    "diagnostics" is also the obvious excuse for silencing a real gate, so the
+    exemption is not a judgement the reader has to make: the author writes the
+    word, in the diff, next to the suppression, the way REL-19 makes a
+    filterwarnings ignore name an owner and a removal condition.
+    """
     for name in TIER_SCRIPTS:
         for lineno, line in enumerate(
             (CI_DIR / name).read_text(encoding="utf-8").splitlines(), start=1
@@ -103,7 +113,13 @@ def test_tier_scripts_do_not_swallow_gate_failures():
             stripped = line.strip()
             if stripped.startswith("#"):
                 continue
-            assert "|| true" not in stripped, f"{name}:{lineno}: {stripped}"
+            if "|| true" not in stripped:
+                continue
+            assert "# diagnostics:" in stripped, (
+                f"{name}:{lineno}: `|| true` on a gate line. If this is evidence "
+                f"collection rather than a gate, say so on the line itself with "
+                f"`# diagnostics: <why>`:\n    {stripped}"
+            )
 
 
 # (gate name, substring that must appear in tier0-static.sh, why its absence
@@ -262,3 +278,31 @@ def test_tier1_requires_the_go_toolchain_itself():
     cause. `go` is the actual precondition, so the gate states it."""
     text = (CI_DIR / "tier1-unit.sh").read_text(encoding="utf-8")
     assert "cb::require_tool go " in text
+
+
+def test_tier3_is_self_contained_because_it_runs_in_a_guest():
+    """tier0 and tier1 source lib/common.sh; tier3 cannot.
+
+    It executes inside an ephemeral VM where this repository does not exist --
+    only the script and the candidate package are copied in. Sourcing the shared
+    library would fail at runtime, in the guest, several minutes into a slow
+    tier. That constraint is also what keeps it identical across every matrix row
+    (P1): a script with no repo to reach into cannot grow distro-specific
+    branches by accident.
+    """
+    text = (CI_DIR / "tier3-artifact.sh").read_text(encoding="utf-8")
+    assert "lib/common.sh" not in text, (
+        "tier3-artifact.sh runs in a guest without the repo; it must not source "
+        "the shared library"
+    )
+    assert "cb::" not in text, "the cb:: helpers are not available in the guest"
+
+
+def test_tier3_waits_for_readyz_not_just_livez():
+    """The whole point of this tier (design section 11) is that the service
+    *starts*. /livez only proves the process is alive; a package that installs,
+    launches and can never reach its database passes a liveness check and fails
+    every user."""
+    text = (CI_DIR / "tier3-artifact.sh").read_text(encoding="utf-8")
+    assert "/livez" in text
+    assert "/readyz" in text
