@@ -326,49 +326,94 @@ def _get_existing_schema_tables() -> set[str]:
         raise
 
 
-def _warn_if_rls_without_bypass() -> None:
-    """Warn once when RLS is enabled on tenant tables but the DB role lacks BYPASSRLS."""
-    rls_tables = (
-        "hardware",
-        "services",
-        "networks",
-        "compute_units",
-        "storage",
-        "hardware_clusters",
-        "external_nodes",
-        "ip_addresses",
-        "vlans",
-        "sites",
-        "node_relations",
-        "scan_jobs",
-        "integration_configs",
-        "topologies",
-    )
-    try:
-        with engine.connect() as conn:
-            bypass = conn.execute(
+_RLS_TENANT_TABLES = (
+    "hardware",
+    "services",
+    "networks",
+    "compute_units",
+    "storage",
+    "hardware_clusters",
+    "external_nodes",
+    "ip_addresses",
+    "vlans",
+    "sites",
+    "node_relations",
+    "scan_jobs",
+    "integration_configs",
+    "topologies",
+)
+
+
+def _rls_bypass_warning(bind, tables: tuple[str, ...] = _RLS_TENANT_TABLES) -> str | None:
+    """The message to warn with, or None when the role can read its tenant tables.
+
+    Three ways a role is unaffected by RLS, and this used to check only the first:
+
+    * ``rolbypassrls`` on the role;
+    * owning the table -- PostgreSQL does not apply policies to a table's owner;
+    * unless the table is ``FORCE ROW LEVEL SECURITY``, which binds the owner too.
+
+    Checking only rolbypassrls warned every packaged install that its database
+    was misconfigured when it was not: the packaged role owns the database it
+    migrated, so it owns those tables and reads them normally.
+    (0040_rls_policies ENABLEs RLS and does not FORCE it.)
+
+    That is worth more than log tidiness, because the remedy the message implies
+    is ``ALTER ROLE ... BYPASSRLS`` -- a cluster-wide, unconditional, permanent
+    exemption on every table, where ownership bypass is scoped to owned tables
+    and can be tightened later by adding FORCE. A misleading warning pointing at
+    a privilege escalation is worse than no warning.
+
+    Returned rather than logged so it can be tested against a real database
+    without asserting on log plumbing. Development and CI run as a role that has
+    BYPASSRLS, which is precisely why nothing here was exercised before.
+    """
+    with bind.connect() as conn:
+        if (
+            conn.execute(
                 sa.text("SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user")
             ).scalar()
-            if bypass is True:
-                return
-            for tbl in rls_tables:
-                row = conn.execute(
-                    sa.text(
-                        "SELECT c.relrowsecurity FROM pg_class c "
-                        "JOIN pg_namespace n ON n.oid = c.relnamespace "
-                        "WHERE n.nspname = 'public' AND c.relname = :t AND c.relkind = 'r'"
-                    ),
-                    {"t": tbl},
-                ).fetchone()
-                if row and row[0]:
-                    _logger.warning(
-                        "Row-level security is enabled on public.%s but the database role "
-                        "%r does not have BYPASSRLS. Tenant-scoped queries may return no rows "
-                        "unless session variables (e.g. app.current_tenant) match policies.",
-                        tbl,
-                        conn.execute(sa.text("SELECT current_user")).scalar(),
-                    )
-                    return
+            is True
+        ):
+            return None
+
+        for tbl in tables:
+            row = conn.execute(
+                sa.text(
+                    "SELECT c.relrowsecurity, c.relforcerowsecurity, "
+                    "       pg_get_userbyid(c.relowner) = current_user AS is_owner "
+                    "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "WHERE n.nspname = 'public' AND c.relname = :t AND c.relkind = 'r'"
+                ),
+                {"t": tbl},
+            ).fetchone()
+            if not row:
+                continue
+            enabled, forced, is_owner = row
+            if not enabled:
+                continue
+            if is_owner and not forced:
+                continue  # owner bypass applies; policies do not restrict this role
+            role = conn.execute(sa.text("SELECT current_user")).scalar()
+            reason = (
+                "the table is FORCE ROW LEVEL SECURITY, so owning it does not help"
+                if forced
+                else "the role neither owns the table nor has BYPASSRLS"
+            )
+            return (
+                f"Row-level security is enabled on public.{tbl} and {reason} "
+                f"(role {role!r}). Tenant-scoped queries may return no rows unless "
+                f"session variables (e.g. app.current_tenant) match policies."
+            )
+    return None
+
+
+def _warn_if_rls_without_bypass() -> None:
+    """Warn once when RLS would actually hide rows from this role."""
+    try:
+        message = _rls_bypass_warning(engine)
+        if message:
+            _logger.warning("%s", message)
     except Exception:
         _logger.debug("RLS/BYPASSRLS diagnostic skipped", exc_info=True)
 
