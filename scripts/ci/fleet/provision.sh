@@ -42,11 +42,33 @@ fi
 # which the substring test this replaced would have resolved to the wrong row.
 ROW_ID="${1:-fedora-rpm-amd64}"
 IMAGE_URL="$(cb::matrix_field "$ROW_ID" image_url "$MATRIX")"
-IMAGE_SHA="$(cb::matrix_field "$ROW_ID" image_sha256 "$MATRIX")"
-if [ -z "$IMAGE_URL" ] || [ -z "$IMAGE_SHA" ]; then
-    printf '::error::row %s has no image_url/image_sha256 in %s\n' "$ROW_ID" "$MATRIX" >&2
+SSH_USER="$(cb::matrix_field "$ROW_ID" ssh_user "$MATRIX")"
+CLOUD_INIT="$(cb::matrix_field "$ROW_ID" cloud_init "$MATRIX")"
+
+# Exactly one digest, and which one decides the checker. Fedora publishes
+# sha256, Debian publishes sha512 and nothing else; demanding a single algorithm
+# would have meant computing one distributor's digest locally and calling it a
+# pin, which proves only that the file has not changed since it was fetched.
+IMAGE_SHA256="$(cb::matrix_field "$ROW_ID" image_sha256 "$MATRIX")"
+IMAGE_SHA512="$(cb::matrix_field "$ROW_ID" image_sha512 "$MATRIX")"
+if [ -n "$IMAGE_SHA256" ] && [ -n "$IMAGE_SHA512" ]; then
+    printf '::error::row %s declares both image_sha256 and image_sha512 — name the one the distributor publishes\n' "$ROW_ID" >&2
+    exit 1
+elif [ -n "$IMAGE_SHA256" ]; then
+    IMAGE_SHA="$IMAGE_SHA256"; SHA_TOOL=sha256sum
+elif [ -n "$IMAGE_SHA512" ]; then
+    IMAGE_SHA="$IMAGE_SHA512"; SHA_TOOL=sha512sum
+else
+    IMAGE_SHA=""; SHA_TOOL=""
+fi
+
+if [ -z "$IMAGE_URL" ] || [ -z "$IMAGE_SHA" ] || [ -z "$SSH_USER" ] || [ -z "$CLOUD_INIT" ]; then
+    printf '::error::row %s is incomplete in %s (need image_url, image_sha256|image_sha512, ssh_user, cloud_init)\n' \
+        "$ROW_ID" "$MATRIX" >&2
     exit 1
 fi
+cb::require_tool "$SHA_TOOL"
+cb::require_file "$FLEET_DIR/cloud-init/$CLOUD_INIT" "row $ROW_ID names a cloud-init fixture that does not exist"
 
 # ── golden image, fetched once and verified every time ──────────────────────
 # Verified on every run, not only on download: a truncated fetch, a full disk or
@@ -58,7 +80,7 @@ if [ ! -f "$GOLDEN" ]; then
     curl -fSL --retry 3 -o "$GOLDEN.part" "$IMAGE_URL" >&2
     mv "$GOLDEN.part" "$GOLDEN"
 fi
-if ! printf '%s  %s\n' "$IMAGE_SHA" "$GOLDEN" | sha256sum --check --status; then
+if ! printf '%s  %s\n' "$IMAGE_SHA" "$GOLDEN" | "$SHA_TOOL" --check --status; then
     printf '::error::golden image checksum mismatch for %s\n' "$GOLDEN" >&2
     printf 'expected %s — delete the file and re-run to refetch\n' "$IMAGE_SHA" >&2
     exit 1
@@ -106,7 +128,7 @@ ssh-keygen -t ed25519 -N '' -f "$KEY" -q
 
 USER_DATA="$VM_DIR/user-data"
 sed "s|CB_SSH_PUBKEY_PLACEHOLDER|$(cat "$KEY.pub")|" \
-    "$FLEET_DIR/cloud-init/fedora.user-data" > "$USER_DATA"
+    "$FLEET_DIR/cloud-init/$CLOUD_INIT" > "$USER_DATA"
 printf 'instance-id: cb-%s\nlocal-hostname: cb-fleet\n' "$ROW_ID" > "$VM_DIR/meta-data"
 genisoimage -output "$SEED" -volid cidata -joliet -rock \
     "$USER_DATA" "$VM_DIR/meta-data" >/dev/null 2>&1
@@ -140,7 +162,7 @@ SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
           -o LogLevel=ERROR -o ConnectTimeout=5 -i "$KEY" -p "$SSH_PORT")
 
 deadline=$(( SECONDS + 300 ))
-until ssh "${SSH_OPTS[@]}" fedora@127.0.0.1 true 2>/dev/null; do
+until ssh "${SSH_OPTS[@]}" "$SSH_USER@127.0.0.1" true 2>/dev/null; do
     if [ "$SECONDS" -ge "$deadline" ]; then
         printf '::error::VM did not accept SSH within 300s — console log follows\n' >&2
         if ! tail -50 "$VM_DIR/console.log" >&2; then
@@ -155,11 +177,11 @@ done
 # runcmd, and dispatching into a half-provisioned host produces failures that
 # look like package bugs.
 deadline=$(( SECONDS + 600 ))
-until ssh "${SSH_OPTS[@]}" fedora@127.0.0.1 \
+until ssh "${SSH_OPTS[@]}" "$SSH_USER@127.0.0.1" \
         'test -f /var/lib/cloud/cb-fixture-ready' 2>/dev/null; do
     if [ "$SECONDS" -ge "$deadline" ]; then
         printf '::error::cloud-init fixture did not complete within 600s\n' >&2
-        if ! ssh "${SSH_OPTS[@]}" fedora@127.0.0.1 \
+        if ! ssh "${SSH_OPTS[@]}" "$SSH_USER@127.0.0.1" \
                 'sudo tail -80 /var/log/cloud-init-output.log' >&2; then
             cb::skipped "cloud-init log" "could not be read from the failing VM"
         fi
@@ -175,11 +197,35 @@ done
 # with nothing installed, and provisioning reported a ready host; the fixture is
 # fail-fast now, but that is one editable file standing between a broken machine
 # and a package getting the blame for it. Cheap to check, so check.
-if ! ssh "${SSH_OPTS[@]}" fedora@127.0.0.1 \
-        'systemctl is-active --quiet postgresql && systemctl is-active --quiet valkey' 2>/dev/null; then
+#
+# WHICH services to check comes from the guest, not from here. Slice 1 hardcoded
+# `postgresql && valkey`, which are Fedora's names -- Debian's redis unit is
+# redis-server, so the same literal would have failed the Debian row for a
+# service that was running perfectly. Each fixture writes the units it started to
+# cb-fixture-services and this verifies that list, which keeps every
+# distro-specific name in the fixture where the design says it belongs.
+# An explicit branch rather than `|| true`. The two outcomes are different
+# failures and want different messages: an ssh that dies here means the guest
+# went away between the readiness marker and this line, while an empty file
+# means the fixture completed without declaring what it started. Collapsing them
+# with `|| true` would report the second for both.
+FIXTURE_UNITS=""
+if ! FIXTURE_UNITS="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@127.0.0.1" \
+        'cat /var/lib/cloud/cb-fixture-services' 2>/dev/null)"; then
+    printf '::error::could not read /var/lib/cloud/cb-fixture-services from the guest\n' >&2
+    printf 'The readiness marker was present, so %s completed but its service list is unreadable.\n' "$CLOUD_INIT" >&2
+    exit 1
+fi
+if [ -z "${FIXTURE_UNITS//[[:space:]]/}" ]; then
+    printf '::error::%s wrote an empty cb-fixture-services list — provisioning cannot verify what it started\n' "$CLOUD_INIT" >&2
+    exit 1
+fi
+if ! ssh "${SSH_OPTS[@]}" "$SSH_USER@127.0.0.1" \
+        "systemctl is-active --quiet $FIXTURE_UNITS" 2>/dev/null; then
     printf '::error::fixture marker present but its services are not active — the guest reported ready and is not\n' >&2
-    if ! ssh "${SSH_OPTS[@]}" fedora@127.0.0.1 \
-            'systemctl is-active postgresql valkey; sudo tail -40 /var/log/cloud-init-output.log' >&2; then
+    printf 'units the fixture claims to have started: %s\n' "$FIXTURE_UNITS" >&2
+    if ! ssh "${SSH_OPTS[@]}" "$SSH_USER@127.0.0.1" \
+            "systemctl is-active $FIXTURE_UNITS; sudo tail -40 /var/log/cloud-init-output.log" >&2; then
         cb::skipped "fixture diagnostics" "could not be read from the failing VM"
     fi
     exit 1

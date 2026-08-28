@@ -35,6 +35,20 @@ def test_verify_fleet_calls_dispatch_not_an_inlined_body():
     assert "qemu-system" not in recipe, "the gate body belongs in dispatch.sh, not the Makefile"
 
 
+def test_both_fleet_targets_can_reach_every_matrix_row():
+    """Slice 2 added the deb rows. A target that hardcodes one row id makes the
+    others unreachable without editing the Makefile, which is how a matrix grows
+    rows nobody runs."""
+    matrix = (REPO_ROOT / "scripts" / "ci" / "fleet" / "matrix.yaml").read_text(encoding="utf-8")
+    ids = re.findall(r"^- id:\s*(\S+)", matrix, re.M)
+    assert len(ids) > 2, "expected more than the two rows slice 1 shipped"
+    for target in ("verify-fleet", "verify-fleet-upgrade"):
+        recipe = _recipe(target)
+        assert "CB_ROW" in recipe, (
+            f"{target} cannot select a matrix row, so {len(ids)} rows share one entry point"
+        )
+
+
 def test_verify_fleet_requires_an_explicit_candidate():
     recipe = _recipe("verify-fleet")
     assert "CB_CANDIDATE" in recipe, (

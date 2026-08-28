@@ -3,7 +3,7 @@
 **ADR:** [0005 — Verification Tiers and Platform Support](../adr/0005-verification-tiers-and-platform-support.md)
 **Design:** [2026-08-27-verification-strategy-design.md](./2026-08-27-verification-strategy-design.md)
 **Date:** 2026-08-28
-**Status:** Slice 1 implemented; slices 2–4 not started
+**Status:** Slices 1 and 2 implemented, neither executed; slices 3–4 not started
 
 ## What this phase is for
 
@@ -23,7 +23,7 @@ Four, ordered so that each is independently shippable and no slice adds two new 
 | # | Slice | Adds | Status |
 |---|---|---|---|
 | 1 | Upgrade and rollback on the Fedora row | The lifecycle, on the platform Phase 2 already proved | **Implemented 2026-08-28** |
-| 2 | Debian/deb amd64 | A second package manager, and the format-agnostic `tier3-artifact.sh` that P1 claims | Not started |
+| 2 | Debian/deb amd64 | A second package manager, and the format-agnostic `tier3-artifact.sh` that P1 claims | **Implemented 2026-08-28** |
 | 3 | Tier 3 formats | apk, AppImage, tarball, `pkg.tar.zst` | Not started |
 | 4 | arm64 | §8.2's L2 job on `ubuntu-22.04-arm`, and the local qemu-arm64 row | Not started |
 
@@ -149,9 +149,84 @@ nfpm will not install would be worse than naming the gap. Documented in `upgradi
 **The `cb` operator CLI is still absent from the package.** Unchanged from Phase 2, still recorded
 by the tier rather than asserted.
 
+---
+
+## Slice 2 — the deb family, and what "identical across every row" costs
+
+Phase 2 satisfied P1 — `tier3-artifact.sh` is "identical across all of them" — by having exactly
+one row. Every install, query and downgrade was a bare `dnf`/`rpm` call, and the script was
+identical across rows the way a sentence is grammatical in a language with one sentence in it.
+Slice 2 is the first time the claim costs anything.
+
+### What moved
+
+**The package layer.** Three functions — `pkg::install_dir`, `pkg::downgrade_to`,
+`pkg::list_contents` — and nothing outside them names a package manager. The format comes from the
+candidate's extension rather than from a caller-set variable: a row that hands the script a `.deb`
+*is* a deb row, so a mismatch between the row and the artifact fails here with a named reason
+instead of surfacing as a plausible dependency error inside the guest. An upgrade across formats is
+rejected outright. `tests/build/test_fleet_multi_distro.py` parses the script and fails on any
+package-manager call at command position outside that layer — substring matching was not good
+enough and produced a false positive on `*.rpm) PKG_FORMAT=rpm ;;` the first time.
+
+**Two apt details that would each have looked like a packaging bug.** `apt-get install` needs
+`--allow-downgrades` or it reports the newer installed version as satisfying the request and exits
+zero, leaving the new binary in place for the rollback assertion to trip over somewhere far from
+the cause. And `--install-recommends` is passed explicitly rather than relied on, because a host
+with `APT::Install-Recommends "false"` would silently drop the companion broker and produce an
+install no user has.
+
+**Provisioning stopped being Fedora-shaped.** `ssh_user` and `cloud_init` are row fields now, since
+cloud images use different default accounts and a hardcoded one fails every other image with
+`Permission denied (publickey)` — which reads like a broken key rather than a wrong username. The
+fixture-verification step used to check `postgresql && valkey` from the host; Debian's redis unit
+is `redis-server`, so that literal would have failed a perfectly healthy Debian guest. Each fixture
+now writes the units it started to `/var/lib/cloud/cb-fixture-services` and provisioning verifies
+that list, which keeps every distro-specific name in the fixture where the design says it belongs.
+
+**Both entry points can reach every row.** `CB_ROW` selects the matrix row, defaulting to the
+Fedora rows so the common case stays a one-variable command. A matrix grows rows nobody runs when
+the only entry point hardcodes one id.
+
+### Image digests: why the schema now takes either algorithm
+
+Fedora publishes `CHECKSUM` with sha256. Debian publishes `SHA512SUMS` and nothing else. Insisting
+on sha256 for both would have meant downloading Debian's image, hashing it locally, and calling the
+result a pin — which proves only that the file has not changed since it was fetched, and would pin
+a tampered image exactly as faithfully as a good one. The matrix takes `image_sha256` **or**
+`image_sha512`, exactly one, and the row's choice selects the checker.
+
+Both URLs now point at dated, immutable paths rather than `latest`. A gate whose input can change
+without a commit is not a controlled input, and the eventual failure looks like a corrupt download
+rather than a new upstream release.
+
+### `nats-server` on Debian — checked, not assumed
+
+The deb declares a **hard** `depends` on `nats-server`, which would make the whole row fail at
+install if Debian did not package it. It does, in bookworm and trixie. So the Debian fixture
+deliberately does *not* pre-install it: apt pulls it during the install the tier performs, and
+pre-installing it would hide a broken dependency declaration, which is one of the things this row
+exists to catch. The rpm side cannot do this — Fedora packages no broker at all, which is why the
+rpm ships a separate `circuit-breaker-nats` package that `dispatch.sh` pushes alongside.
+
+### Still not executed
+
+Same as slice 1, and worth repeating because it is the thing that matters: **neither row has ever
+run.** The host these were written on has no `qemu-system-x86_64`, no `genisoimage`, no `nfpm` and
+no built artifacts, and no passwordless sudo to install any of them. Every assertion in both slices
+is written and none is observed. Tier 1 stays **not in force** and no ledger row moves.
+
 ## Next
 
-Slice 2 (Debian/deb) is the natural follow-on and is where `tier3-artifact.sh` has to become
-genuinely format-agnostic — `dnf`/`apt`, `rpm -ql`/`dpkg -L` — which is the P1 claim the design
-makes and the current script only half honours. It also needs `cloud-init/debian.user-data`, since
-every distro-specific precondition belongs in provisioning rather than in the tier script.
+**Slice 3 — Tier 3 formats.** apk, AppImage, tarball and `pkg.tar.zst`. These are "guaranteed to
+build" rather than "guaranteed to install", so the tier's contract for them is narrower and the
+`pkg::` layer needs arms that reflect that rather than pretending an AppImage installs.
+
+**Slice 4 — arm64.** §8.2's L2 job, extending `artifact-smoke.yml`'s existing native
+`ubuntu-22.04-arm` run from "prints a version" to the full boot-and-exercise contract. This is the
+slice that moves Tier 2 into force, and it needs no hardware purchase — the runners are already in
+use and already free for this public repository.
+
+**Before either: run what exists.** Two implemented slices with zero executions is the largest
+single gap in this phase. It needs a host with qemu, genisoimage and nfpm, and two builds at
+different `VERSION` values.

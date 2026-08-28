@@ -321,12 +321,18 @@ verify-full: verify-fast ## Tier 0 + full Tier 1 including the backend suite (me
 # whatever .rpm happened to be lying in dist/ makes that claim about a file whose
 # provenance nobody checked, which is #106's defect class wearing different
 # clothes.
-verify-fleet: ## Tier 3 — install+boot the candidate on an ephemeral Fedora VM (CB_CANDIDATE=path/to.rpm)
+# CB_ROW selects which matrix row to run. It defaults to the Fedora row the
+# first slice built, so the common case stays a one-variable command, but the
+# deb rows are reachable without editing the Makefile:
+#   make verify-fleet CB_ROW=debian-deb-amd64 CB_CANDIDATE=dist/native/...deb
+# dispatch.sh rejects a row whose declared mode does not match the arguments, so
+# a mistyped row fails with the reason rather than running the wrong journey.
+verify-fleet: ## Tier 3 — install+boot a candidate on an ephemeral VM (CB_CANDIDATE=path/to.rpm|.deb, CB_ROW=matrix row)
 	@test -n "$(CB_CANDIDATE)" || { \
 	  echo "ERROR: set CB_CANDIDATE to the package under test, e.g."; \
 	  echo "  make build && make verify-fleet CB_CANDIDATE=dist/native/circuit-breaker_$$(cat VERSION)_amd64.rpm"; \
 	  exit 2; }
-	scripts/ci/fleet/dispatch.sh fedora-rpm-amd64 "$(CB_CANDIDATE)"
+	scripts/ci/fleet/dispatch.sh "$(or $(CB_ROW),fedora-rpm-amd64)" "$(CB_CANDIDATE)"
 
 # The other half of the Tier 1 guarantee. Two artifacts, because an upgrade needs
 # something to upgrade FROM: the tier installs CB_CANDIDATE_PREVIOUS, boots it,
@@ -339,7 +345,7 @@ verify-fleet: ## Tier 3 — install+boot the candidate on an ephemeral Fedora VM
 # mistyped path here would produce a passing run that upgraded nothing. dispatch.sh
 # rejects two files with the same name; it cannot tell you the versions inside
 # them differ, so build them from two different VERSION values.
-verify-fleet-upgrade: ## Tier 3 — upgrade N-1→N and roll back (CB_CANDIDATE=..., CB_CANDIDATE_PREVIOUS=...)
+verify-fleet-upgrade: ## Tier 3 — upgrade N-1→N and roll back (CB_CANDIDATE=..., CB_CANDIDATE_PREVIOUS=..., CB_ROW=matrix row)
 	@test -n "$(CB_CANDIDATE)" || { \
 	  echo "ERROR: set CB_CANDIDATE to the package being upgraded TO, e.g."; \
 	  echo "  make verify-fleet-upgrade CB_CANDIDATE=dist/native/circuit-breaker_$$(cat VERSION)_amd64.rpm \\"; \
@@ -352,4 +358,4 @@ verify-fleet-upgrade: ## Tier 3 — upgrade N-1→N and roll back (CB_CANDIDATE=
 	  echo "  CB_CANDIDATE, or dnf will treat the upgrade as a no-op and the row will"; \
 	  echo "  pass without having upgraded anything."; \
 	  exit 2; }
-	scripts/ci/fleet/dispatch.sh fedora-rpm-amd64-upgrade "$(CB_CANDIDATE)" "$(CB_CANDIDATE_PREVIOUS)"
+	scripts/ci/fleet/dispatch.sh "$(or $(CB_ROW),fedora-rpm-amd64-upgrade)" "$(CB_CANDIDATE)" "$(CB_CANDIDATE_PREVIOUS)"

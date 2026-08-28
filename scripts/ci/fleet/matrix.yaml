@@ -4,9 +4,11 @@
 # It feeds both this tier and the support-tier table in §8, so a row here is a
 # published promise, not a convenience.
 #
-# `runner` is the ONLY field that varies by execution site. tier3-artifact.sh is
-# identical across every row (P1); anything distro-specific belongs in that row's
-# provisioning.
+# `runner` is the only field that varies by execution SITE. `ssh_user` and
+# `cloud_init` vary by distro, which is where the design says distro-specific
+# things belong: "anything distro-specific belongs in that row's provisioning".
+# tier3-artifact.sh is still one file, pushed byte-identical to every guest; it
+# branches on the artifact it is handed, not on anything set here.
 #
 # `tier` is the §8 support tier this row backs:
 #   1 = guaranteed to install, boot, upgrade and roll back
@@ -14,28 +16,36 @@
 #   3 = guaranteed to build; installation best-effort
 #
 # `mode` is which half of the Tier 1 guarantee the row actually exercises:
-#   install = install, boot, exercise            (Phase 2)
+#   install = install, boot, exercise
 #   upgrade = all of the above on version N-1, then upgrade to N, then execute
 #             the documented rollback and assert the pre-upgrade state is back
-#             (Phase 3)
 # A `tier: 1` row is only fully backed once a matching `mode: upgrade` row
-# passes. ADR 0005's "Tier guarantees: when they take effect" table is what
-# records whether that has happened; adding the row below does not move it.
+# passes. ADR 0005's "Tier guarantees: when they take effect" table records
+# whether that has happened; adding a row here does not move it.
 #
-# Release 44, not the 42 this plan was drafted against: 42 reached EOL and its
-# mirror tree 404s, and 44 is what the fleet host itself runs. Bump deliberately
-# — a new release is a new claim, and the digest below must be re-resolved from
-# Fedora's published CHECKSUM every time it moves.
+# ── on image digests ───────────────────────────────────────────────────────
+# Exactly one of image_sha256 or image_sha512, and it must be the digest the
+# DISTRIBUTOR published, not one computed from a local download. Hashing a file
+# you already fetched proves the file has not changed since you fetched it,
+# which is not the property wanted here: it would pin a tampered image just as
+# faithfully as a good one.
 #
-# image_url is dl.fedoraproject.org rather than download.fedoraproject.org: the
-# latter is a mirror redirector, and the mirror it chose did not carry the file.
-# A release gate should not depend on which mirror answered today.
+# The two algorithms are not a style choice. Fedora publishes CHECKSUM with
+# sha256; Debian publishes SHA512SUMS and nothing else. Demanding sha256 would
+# have meant computing Debian's digest locally and calling it a pin.
 #
-# Phase 3 adds the second row below. The remaining §7.2 rows — debian/deb,
-# arm64, and the Tier 3 formats — are the later slices of this phase and each
-# needs its own cloud-init fixture before it can be listed here. A row without
-# provisioning is a claim the tier cannot support.
+# Both URLs point at an immutable, dated path rather than a `latest` symlink.
+# `latest` moves under you, and a release gate whose input changes without a
+# commit is not a controlled input — the digest below would start failing and
+# the failure would look like corruption rather than a new upstream release.
 
+# Fedora 44, not the 42 this plan was drafted against: 42 reached EOL and its
+# mirror tree 404s, and 44 is what the fleet host itself runs. Bump deliberately
+# — a new release is a new claim.
+#
+# dl.fedoraproject.org rather than download.fedoraproject.org: the latter is a
+# mirror redirector, and the mirror it chose did not carry the file. A release
+# gate should not depend on which mirror answered today.
 - id: fedora-rpm-amd64
   distro: fedora-44
   format: rpm
@@ -43,13 +53,15 @@
   runner: local/qemu
   tier: 1
   mode: install
+  ssh_user: fedora
+  cloud_init: fedora.user-data
   image_url: "https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
   image_sha256: "28680fe5b371a5a82ebf43a31926e086a168e59949d03969c5093e7071f90b7f"
 
 # Same host, same image, same script — the difference is that this row is handed
-# a second package and made to prove the whole lifecycle. It is deliberately a
-# separate row rather than a flag on the one above: the install claim and the
-# upgrade claim fail for different reasons and an operator reading the evidence
+# a second package and made to prove the whole lifecycle. Deliberately a separate
+# row rather than a flag on the one above: the install claim and the upgrade
+# claim fail for different reasons, and an operator reading the evidence
 # directory should be able to tell which one broke without opening a log.
 - id: fedora-rpm-amd64-upgrade
   distro: fedora-44
@@ -58,5 +70,35 @@
   runner: local/qemu
   tier: 1
   mode: upgrade
+  ssh_user: fedora
+  cloud_init: fedora.user-data
   image_url: "https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
   image_sha256: "28680fe5b371a5a82ebf43a31926e086a168e59949d03969c5093e7071f90b7f"
+
+# Slice 2. The second package manager, and the reason tier3-artifact.sh had to
+# stop being a pile of bare dnf calls. Debian genericcloud rather than generic:
+# genericcloud drops the drivers for bare metal and other hypervisors, which is
+# the right image for a qemu guest and about a third smaller.
+- id: debian-deb-amd64
+  distro: debian-12
+  format: deb
+  arch: amd64
+  runner: local/qemu
+  tier: 1
+  mode: install
+  ssh_user: debian
+  cloud_init: debian.user-data
+  image_url: "https://cloud.debian.org/images/cloud/bookworm/20260821-2577/debian-12-genericcloud-amd64-20260821-2577.qcow2"
+  image_sha512: "c602f42a374c097bafcbc77c2d034fb06cb8a831d791bcbaa5d043f029874b0c32d41cb72ba8b6d50ccfd64c9b4b0dc9ade5b6e4065712f3eb152338e532721f"
+
+- id: debian-deb-amd64-upgrade
+  distro: debian-12
+  format: deb
+  arch: amd64
+  runner: local/qemu
+  tier: 1
+  mode: upgrade
+  ssh_user: debian
+  cloud_init: debian.user-data
+  image_url: "https://cloud.debian.org/images/cloud/bookworm/20260821-2577/debian-12-genericcloud-amd64-20260821-2577.qcow2"
+  image_sha512: "c602f42a374c097bafcbc77c2d034fb06cb8a831d791bcbaa5d043f029874b0c32d41cb72ba8b6d50ccfd64c9b4b0dc9ade5b6e4065712f3eb152338e532721f"

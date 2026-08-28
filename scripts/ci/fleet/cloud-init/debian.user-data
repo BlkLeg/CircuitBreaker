@@ -1,0 +1,99 @@
+#cloud-config
+# scripts/ci/fleet/cloud-init/debian.user-data
+#
+# The test FIXTURE, not the test. Everything here is a precondition the package
+# declares but does not create -- autopkgtest's Depends: split. The candidate
+# artifact is deliberately absent: dispatch.sh pushes it and tier3-artifact.sh
+# installs it, because a VM that boots with the package already on it is not
+# testing an install.
+#
+# Debian's half of ADR 0005 Phase 3, slice 2. It is shorter than the Fedora
+# fixture for two real reasons rather than by being less careful:
+#
+#   * Debian's postgresql package runs initdb, creates the cluster and starts
+#     the unit in its own postinst. Fedora ships postgresql-server with no
+#     cluster at all, which is why fedora.user-data has to run
+#     postgresql-setup --initdb before anything can connect.
+#   * redis-server is a real Debian package under that name. Fedora replaced
+#     redis with valkey, so the Fedora fixture installs valkey and relies on it
+#     being wire-compatible on 6379.
+#
+# nats-server is deliberately NOT installed here. The .deb lists it under
+# `depends` (nfpm.yaml), Debian packages it, and apt therefore pulls it during
+# the install the tier performs. Pre-installing it would hide a broken
+# dependency declaration -- which is one of the things this row exists to catch.
+# The rpm side cannot do this: Fedora packages no broker, so the rpm ships a
+# separate circuit-breaker-nats package that dispatch.sh pushes alongside.
+
+ssh_authorized_keys:
+  - CB_SSH_PUBKEY_PLACEHOLDER
+
+# True, unlike the Fedora fixture. The Debian cloud image ships without apt
+# lists, and `apt-get install ./circuit-breaker.deb` has to resolve nats-server
+# and libc6 from the archive. Without this the install fails with "unable to
+# locate package nats-server", which looks like a packaging defect and is not.
+package_update: true
+packages:
+  - postgresql
+  - redis-server
+
+# ONE fail-fast script, not a list of independent commands. cloud-init's runcmd
+# entries do not stop at the first failure, so a list would write the readiness
+# marker below even if every step before it had failed -- and provision.sh, which
+# waits on exactly that marker, would report a fully provisioned host that had
+# nothing on it. That is the same defect as a security gate reporting a missing
+# scanner as a clean scan: a success signal for work that never happened.
+# `set -euo pipefail` here means the marker is reachable only if everything above
+# it succeeded.
+runcmd:
+  - - bash
+    - -euo
+    - pipefail
+    - -c
+    - |
+      # The cluster version is not pinned in this file. bookworm ships 15 today,
+      # and hardcoding it would silently stop matching on the first point release
+      # that moves -- as a path that no longer exists, so the sed would be a
+      # no-op and the auth change would simply not happen.
+      HBA="$(ls /etc/postgresql/*/main/pg_hba.conf | head -n 1)"
+
+      systemctl enable --now postgresql
+      systemctl enable --now redis-server
+
+      # scram-sha-256, not trust or peer: the package's generated env
+      # authenticates with a password, and a trust-auth fixture would mask a
+      # credential mismatch -- which is one of the things this tier is here to
+      # catch.
+      #
+      # `#` as the sed delimiter. It has to avoid two things at once: the
+      # address field is CIDR (127.0.0.1/32, ::1/128), which rules out `/`, and
+      # the method alternation is (ident|peer|trust|md5), which rules out `|`.
+      # `#` appears in neither, and a comment line cannot reach this expression
+      # because the pattern is anchored to a line beginning with `host`.
+      sed -i -E 's#^(host[[:space:]]+all[[:space:]]+all[[:space:]]+[^[:space:]]+[[:space:]]+)(ident|peer|trust|md5)$#\1scram-sha-256#' "$HBA"
+      systemctl reload postgresql
+
+      # Exactly the role and database packaging/postinstall.sh's generated env
+      # names. If these are wrong, the tier must fail rather than be adjusted to
+      # match whatever the package happens to want.
+      su - postgres -c "psql -v ON_ERROR_STOP=1 -c \"CREATE ROLE circuitbreaker LOGIN PASSWORD 'changeme'\""
+      su - postgres -c "createdb -O circuitbreaker circuitbreaker"
+
+      # Prove the credential path works before declaring the fixture ready, so a
+      # later auth failure is unambiguously the package's problem, not ours.
+      PGPASSWORD=changeme psql -h 127.0.0.1 -U circuitbreaker -d circuitbreaker -v ON_ERROR_STOP=1 -c 'SELECT 1' >/dev/null
+
+      systemctl is-active --quiet postgresql
+      systemctl is-active --quiet redis-server
+
+      # The units this fixture is responsible for, named for provision.sh to
+      # re-verify from the host. Debian calls its redis unit redis-server where
+      # Fedora calls its equivalent valkey; keeping the names here is what lets
+      # provision.sh stay distro-agnostic.
+      printf 'postgresql redis-server\n' > /var/lib/cloud/cb-fixture-services
+
+      # Written last and only on success: provision.sh waits on this file, so it
+      # must mean every precondition above completed.
+      touch /var/lib/cloud/cb-fixture-ready
+
+final_message: "cb fleet fixture ready after $UPTIME seconds"

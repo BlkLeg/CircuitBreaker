@@ -75,6 +75,13 @@ runcmd:
       systemctl is-active --quiet postgresql
       systemctl is-active --quiet valkey
 
+      # The units this fixture is responsible for, named for provision.sh to
+      # re-verify from the host. It used to check `postgresql && valkey` itself,
+      # which is Fedora's spelling -- Debian's redis unit is redis-server, and
+      # the same literal would have failed a healthy Debian guest. The knowledge
+      # of what this distro calls things stays in this distro's fixture.
+      printf 'postgresql valkey\n' > /var/lib/cloud/cb-fixture-services
+
       # Written last and only on success: provision.sh waits on this file, so it
       # must mean every precondition above completed.
       touch /var/lib/cloud/cb-fixture-ready

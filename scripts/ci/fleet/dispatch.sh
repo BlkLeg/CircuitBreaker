@@ -31,6 +31,15 @@ cb::require_tool ssh
 # publishes an upgrade guarantee is the failure mode this whole tier exists to
 # stop -- a green result standing in for an observation nobody made.
 ROW_MODE="$(cb::matrix_field "$ROW_ID" mode "$FLEET_DIR/matrix.yaml")"
+# The cloud image's default account. Hardcoding `fedora` worked while there was
+# one row; Debian's image has no such user and every scp and ssh below would
+# have failed with "Permission denied (publickey)", which reads like a broken
+# key rather than a wrong username.
+SSH_USER="$(cb::matrix_field "$ROW_ID" ssh_user "$FLEET_DIR/matrix.yaml")"
+if [ -z "$SSH_USER" ]; then
+    printf '::error::row %s declares no ssh_user\n' "$ROW_ID" >&2
+    exit 1
+fi
 if [ -z "$ROW_MODE" ]; then
     printf '::error::row %s is not in %s, or declares no mode\n' "$ROW_ID" "$FLEET_DIR/matrix.yaml" >&2
     exit 1
@@ -85,7 +94,7 @@ fleet::collect() {
     if [ -n "$SSH_PORT" ]; then
         if ! scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                  -o LogLevel=ERROR -i "$SSH_KEY" -P "$SSH_PORT" -r \
-                 fedora@127.0.0.1:/tmp/cb-tier3-evidence/. "$ROW_EVIDENCE/" 2>/dev/null; then
+                 "$SSH_USER"@127.0.0.1:/tmp/cb-tier3-evidence/. "$ROW_EVIDENCE/" 2>/dev/null; then
             cb::skipped "guest evidence" "scp from the guest failed — the VM may not have reached the tier script"
         fi
     else
@@ -143,7 +152,7 @@ cb::section "Provision $ROW_ID"
 read -r SSH_PORT SSH_KEY VM_DIR < <("$FLEET_DIR/provision.sh" "$ROW_ID")
 
 cb::section "Push the candidate and the tier script"
-fleet::ssh fedora@127.0.0.1 \
+fleet::ssh "$SSH_USER"@127.0.0.1 \
     'sudo mkdir -p /opt/cb-tier3/previous && sudo chown -R fedora /opt/cb-tier3'
 # Companion packages beside the candidate go too. `dnf install circuit-breaker`
 # on a real Fedora host also pulls circuit-breaker-nats, since the rpm recommends
@@ -157,7 +166,7 @@ done
 scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
     -i "$SSH_KEY" -P "$SSH_PORT" \
     "${PUSH[@]}" \
-    fedora@127.0.0.1:/opt/cb-tier3/
+    "$SSH_USER"@127.0.0.1:/opt/cb-tier3/
 
 # The previous version goes to its own directory rather than beside the
 # candidate. tier3-artifact.sh installs a whole directory at a time -- that is
@@ -173,12 +182,12 @@ if [ -n "$PREVIOUS" ]; then
     scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
         -i "$SSH_KEY" -P "$SSH_PORT" \
         "${PUSH_PREVIOUS[@]}" \
-        fedora@127.0.0.1:/opt/cb-tier3/previous/
+        "$SSH_USER"@127.0.0.1:/opt/cb-tier3/previous/
     GUEST_PREVIOUS="/opt/cb-tier3/previous/$(basename "$PREVIOUS")"
 fi
 
 cb::section "Execute tier3-artifact.sh in the guest ($ROW_MODE)"
-fleet::ssh fedora@127.0.0.1 \
+fleet::ssh "$SSH_USER"@127.0.0.1 \
     "sudo bash /opt/cb-tier3/tier3-artifact.sh /opt/cb-tier3/$(basename "$PACKAGE") $GUEST_PREVIOUS"
 
 # Collect explicitly on the success path too, so the emptiness check below runs

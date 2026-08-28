@@ -61,6 +61,69 @@ capture() {
     fi
 }
 
+# ── the package manager, chosen by what we were handed ──────────────────────
+#
+# Slice 2. The design's P1 says tier3-artifact.sh is "identical across every row"
+# and Phase 2 satisfied that by only ever having one row: every install, query
+# and downgrade below was a bare dnf/rpm call. Identical-because-unshared is not
+# the property P1 wants.
+#
+# So the file is still one file, pushed byte-identical to every guest, and it
+# branches on the artifact it is given rather than on a variable the caller sets.
+# The candidate's extension is the honest discriminator: a row that hands this
+# script a .deb IS a deb row, and a mismatch between the row and the artifact
+# becomes a visible failure here instead of a plausible-looking dnf error.
+case "$PACKAGE" in
+    *.rpm) PKG_FORMAT=rpm ;;
+    *.deb) PKG_FORMAT=deb ;;
+    *)     fail "unsupported candidate format: $PACKAGE (this tier installs .rpm and .deb)" ;;
+esac
+if [ -n "$PREVIOUS" ] && [ "${PREVIOUS##*.}" != "$PKG_FORMAT" ]; then
+    fail "candidate is .$PKG_FORMAT but previous is .${PREVIOUS##*.} — an upgrade across package formats is not a thing"
+fi
+
+pkg::install_dir() {
+    # Every package in the directory, not just the named candidate. On a real
+    # host `dnf install circuit-breaker` also pulls circuit-breaker-nats, because
+    # the rpm recommends it and dnf installs weak dependencies by default.
+    # Installing from local files cannot resolve that, so dispatch.sh pushes the
+    # companion and this installs the set -- otherwise the tier would test a
+    # configuration no user has.
+    case "$PKG_FORMAT" in
+        rpm) dnf install -y "$1"/*.rpm ;;
+        # --install-recommends is explicit rather than relied upon. apt installs
+        # recommends by default, but a host with APT::Install-Recommends "false"
+        # would silently drop the companion broker and produce an install no user
+        # has -- the same class of difference the rpm side pushes the companion to
+        # avoid. The paths are absolute, which is what makes apt treat them as
+        # files rather than as package names.
+        deb) DEBIAN_FRONTEND=noninteractive apt-get install -y --install-recommends "$1"/*.deb ;;
+    esac
+}
+
+pkg::downgrade_to() {
+    # The application package only, not the whole directory. The companion
+    # circuit-breaker-nats package is very often the SAME version in both builds
+    # -- it tracks the pinned upstream broker, not this project's VERSION -- and
+    # both managers error rather than shrugging when a named package has no lower
+    # version to move to.
+    case "$PKG_FORMAT" in
+        rpm) dnf downgrade -y "$1" ;;
+        # apt refuses a downgrade unless told; without the flag it reports the
+        # newer installed version as satisfying the request and exits zero,
+        # which would leave the new binary in place and let the rollback
+        # assertion fail somewhere far away from the cause.
+        deb) DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades "$1" ;;
+    esac
+}
+
+pkg::list_contents() {
+    case "$PKG_FORMAT" in
+        rpm) rpm -ql circuit-breaker ;;
+        deb) dpkg -L circuit-breaker ;;
+    esac
+}
+
 # ── reusable steps ──────────────────────────────────────────────────────────
 # Phase 2 ran these once, top to bottom. Phase 3 runs the boot-and-exercise set
 # three times against three different states of the same host -- the previous
@@ -71,18 +134,12 @@ capture() {
 
 t3::install_set() {
     local label=$1 dir=$2
-    section "Install $label from $dir"
-    # `dnf install` on local files resolves the package's own dependencies, which
-    # is what a user gets. The rpm lists postgresql-server/redis/nats-server under
-    # `recommends` (weak), so this pulls them but does not configure them -- the VM
-    # fixture already did that, because nothing in the package ever will.
-    # Every package in the directory, not just the named candidate. On a real
-    # Fedora host `dnf install circuit-breaker` also pulls circuit-breaker-nats,
-    # because the rpm recommends it and dnf installs weak dependencies by default.
-    # Installing from local files cannot resolve that, so dispatch.sh pushes the
-    # companion and this installs the set -- otherwise the tier would test a
-    # configuration no user has.
-    dnf install -y "$dir"/*.rpm 2>&1 | tee "$EVIDENCE/install-$label.log"
+    section "Install $label from $dir ($PKG_FORMAT)"
+    # The package's own dependency resolution, which is what a user gets. Both
+    # families list postgresql/redis under weak or ordinary dependencies, so this
+    # pulls them but does not configure them -- the VM fixture already did that,
+    # because nothing in the package ever will.
+    pkg::install_dir "$dir" 2>&1 | tee "$EVIDENCE/install-$label.log"
 }
 
 t3::assert_installed_paths() {
@@ -268,7 +325,7 @@ t3::collect() {
     capture "$EVIDENCE/journal-$label.log" journalctl -u circuit-breaker --no-pager -n 500
     capture "$EVIDENCE/unit-state-$label.txt" systemctl show circuit-breaker -p ActiveState -p SubState -p UnitFileState -p ExecMainStatus
     capture "$EVIDENCE/data-dir-$label.txt" ls -la /var/lib/circuit-breaker
-    capture "$EVIDENCE/package-contents-$label.txt" rpm -ql circuit-breaker
+    capture "$EVIDENCE/package-contents-$label.txt" pkg::list_contents
 }
 
 # ── install and boot: the Phase 2 contract, run against whichever version
@@ -405,13 +462,7 @@ section "Roll back: stop the service"
 systemctl stop circuit-breaker
 
 section "Roll back: reinstall the previous package"
-# The application package only, not the whole directory. The companion
-# circuit-breaker-nats package is very often the SAME version in both builds --
-# it tracks the pinned upstream broker, not this project's VERSION -- and
-# `dnf downgrade` errors rather than shrugging when a named package has no
-# lower version to move to. Handing it the directory would fail the rollback for
-# a package that was never part of the upgrade.
-dnf downgrade -y "$PREVIOUS" 2>&1 | tee "$EVIDENCE/downgrade.log"
+pkg::downgrade_to "$PREVIOUS" 2>&1 | tee "$EVIDENCE/downgrade.log"
 VERSION_ROLLED_BACK="$(cat /usr/local/share/circuit-breaker/VERSION)"
 [ "$VERSION_ROLLED_BACK" = "$VERSION_AT_START" ] \
     || fail "after downgrade the shipped VERSION is $VERSION_ROLLED_BACK, expected $VERSION_AT_START"

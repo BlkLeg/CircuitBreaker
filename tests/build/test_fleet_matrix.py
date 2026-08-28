@@ -17,8 +17,18 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MATRIX = REPO_ROOT / "scripts" / "ci" / "fleet" / "matrix.yaml"
 
-_REQUIRED = {"id", "distro", "format", "arch", "runner", "tier", "mode", "image_url", "image_sha256"}
+_REQUIRED = {
+    "id", "distro", "format", "arch", "runner", "tier", "mode",
+    "ssh_user", "cloud_init", "image_url",
+}
 _MODES = {"install", "upgrade"}
+# Exactly one of these, and it must be the digest the distributor publishes.
+# Fedora publishes sha256 in CHECKSUM; Debian publishes SHA512SUMS and nothing
+# else. Insisting on one algorithm would have meant computing the other
+# distributor's digest from a local download and calling it a pin -- which
+# proves only that the file has not changed since it was fetched, and would pin
+# a tampered image just as faithfully as a good one.
+_DIGESTS = {"image_sha256": 64, "image_sha512": 128}
 
 
 def _rows() -> list[dict[str, str]]:
@@ -58,14 +68,57 @@ def test_every_row_declares_every_required_field():
         assert not missing, f"row {row.get('id', '?')} is missing {sorted(missing)}"
 
 
-def test_every_image_is_pinned_by_checksum():
-    """An unpinned image makes 'clean Fedora host' mean 'whatever the mirror
-    served today', which is not a controlled input."""
+def test_every_image_is_pinned_by_exactly_one_published_checksum():
+    """An unpinned image makes 'clean host' mean 'whatever the mirror served
+    today', which is not a controlled input. Two digests is not better than one:
+    it invites the pair drifting apart, and leaves unstated which one the
+    distributor actually published."""
     for row in _rows():
-        digest = row["image_sha256"]
-        assert re.fullmatch(r"[0-9a-f]{64}", digest), (
-            f"row {row['id']}: image_sha256 must be a 64-character hex sha256, got {digest!r}"
+        present = {field for field in _DIGESTS if row.get(field)}
+        assert len(present) == 1, (
+            f"row {row['id']}: expected exactly one of {sorted(_DIGESTS)}, found {sorted(present)}"
         )
+        field = present.pop()
+        digest = row[field]
+        width = _DIGESTS[field]
+        assert re.fullmatch(rf"[0-9a-f]{{{width}}}", digest), (
+            f"row {row['id']}: {field} must be {width} lowercase hex characters, got {digest!r}"
+        )
+
+
+def test_every_image_url_is_immutable():
+    """`latest` moves under you. A release gate whose input can change without a
+    commit is not a controlled input, and the failure it eventually produces
+    looks like a corrupt download rather than a new upstream release."""
+    for row in _rows():
+        url = row["image_url"]
+        assert "/latest/" not in url, (
+            f"row {row['id']} pins a moving path: {url}. Use the dated or versioned "
+            f"directory the distributor also publishes."
+        )
+
+
+def test_every_row_names_a_cloud_init_fixture_that_exists():
+    """A row whose fixture is missing provisions a host with no database, and the
+    package gets the blame for it."""
+    for row in _rows():
+        fixture = MATRIX.parent / "cloud-init" / row["cloud_init"]
+        assert fixture.is_file(), f"row {row['id']} names a missing fixture: {fixture}"
+
+
+def test_every_cloud_init_fixture_declares_the_units_it_started():
+    """provision.sh re-verifies the fixture from the host rather than trusting the
+    guest's readiness marker, and it reads the unit list out of the guest instead
+    of hardcoding one. Slice 1 hardcoded Fedora's `postgresql && valkey`; Debian
+    calls its redis unit redis-server, so the same literal would have failed a
+    perfectly healthy guest."""
+    for fixture in sorted((MATRIX.parent / "cloud-init").glob("*.user-data")):
+        text = fixture.read_text(encoding="utf-8")
+        assert "cb-fixture-services" in text, (
+            f"{fixture.name} does not write /var/lib/cloud/cb-fixture-services, so "
+            f"provisioning cannot verify what it claims to have started"
+        )
+        assert "cb-fixture-ready" in text, f"{fixture.name} writes no readiness marker"
 
 
 def test_row_ids_are_unique_and_path_safe():
@@ -120,22 +173,34 @@ def test_upgrade_rows_reuse_an_install_row_platform():
         )
 
 
-def test_phase_3_ships_the_fedora_rpm_install_and_upgrade_rows():
-    """Phase 3's first slice is upgrade and rollback on the row Phase 2 built.
-    Breadth -- debian/deb, arm64, the tier 3 formats -- is the later slices, and
-    a row added here without its cloud-init fixture is a claim the tier cannot
-    support."""
+def test_phase_3_ships_the_slices_that_are_built():
+    """Slice 1 added upgrade and rollback on the Fedora row Phase 2 built; slice 2
+    added the deb family. arm64 and the tier 3 formats are slices 3 and 4, and a
+    row added here without its fixture and its format support is a claim the tier
+    cannot honour."""
     rows = {row["id"]: row for row in _rows()}
-    assert set(rows) == {"fedora-rpm-amd64", "fedora-rpm-amd64-upgrade"}, (
-        f"unexpected matrix rows: {sorted(rows)}"
-    )
+    assert set(rows) == {
+        "fedora-rpm-amd64",
+        "fedora-rpm-amd64-upgrade",
+        "debian-deb-amd64",
+        "debian-deb-amd64-upgrade",
+    }, f"unexpected matrix rows: {sorted(rows)}"
     for row in rows.values():
-        assert row["distro"].startswith("fedora")
-        assert row["format"] == "rpm"
-        assert row["arch"] == "amd64"
+        assert row["arch"] == "amd64", "arm64 is slice 4"
         assert row["runner"] == "local/qemu"
-    assert rows["fedora-rpm-amd64"]["mode"] == "install"
-    assert rows["fedora-rpm-amd64-upgrade"]["mode"] == "upgrade"
+
+
+def test_every_declared_format_is_one_the_tier_script_can_install():
+    """The matrix is a set of promises and tier3-artifact.sh is what keeps them.
+    A row naming a format the script cannot install would fail at the point of
+    use with an error about an artifact, not about the row that promised it."""
+    tier = (MATRIX.parent.parent / "tier3-artifact.sh").read_text(encoding="utf-8")
+    for row in _rows():
+        fmt = row["format"]
+        assert f"*.{fmt})" in tier, (
+            f"row {row['id']} declares format {fmt}, which tier3-artifact.sh does not "
+            f"dispatch on"
+        )
 
 
 def test_rows_sharing_a_platform_pin_the_same_image():
@@ -144,7 +209,8 @@ def test_rows_sharing_a_platform_pin_the_same_image():
     install row's platform."""
     by_platform: dict[tuple[str, str], set[str]] = {}
     for row in _rows():
-        by_platform.setdefault((row["distro"], row["arch"]), set()).add(row["image_sha256"])
+        digest = next(row[field] for field in _DIGESTS if row.get(field))
+        by_platform.setdefault((row["distro"], row["arch"]), set()).add(digest)
     for platform, digests in by_platform.items():
         assert len(digests) == 1, (
             f"{platform} rows pin {len(digests)} different images: {sorted(digests)}"
