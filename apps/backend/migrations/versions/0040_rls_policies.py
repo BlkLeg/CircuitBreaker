@@ -38,6 +38,15 @@ _RLS_TABLES = [
 ]
 
 
+def _role_exists(bind: sa.engine.Connection, role_name: str) -> bool:
+    result = bind.execute(sa.text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": role_name})
+    return result.scalar() is not None
+
+
+def _quote_ident(ident: str) -> str:
+    return '"' + ident.replace('"', '""') + '"'
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     insp = sa.inspect(bind)
@@ -62,14 +71,32 @@ def upgrade() -> None:
             )
         )
 
-    # Ensure the application role bypasses RLS (it sets the variable itself)
-    try:
-        op.execute(sa.text("ALTER ROLE breaker SET row_security = off"))
-    except Exception as exc:  # noqa: BLE001
+    # Ensure the application role bypasses RLS (it sets the variable itself).
+    #
+    # Resolved from the connection rather than hardcoded, following
+    # 0080_app_role_schema_grants: packaging/postinstall.sh generates the role
+    # `circuitbreaker` while deploy/setup.sh generates `breaker`, so a literal
+    # name is wrong for one of the two installers no matter which is chosen.
+    #
+    # And checked against pg_roles rather than attempted-and-caught. PostgreSQL
+    # aborts the enclosing transaction when a statement fails, so catching the
+    # Python exception rolled nothing back: every later statement raised
+    # InFailedSqlTransaction and the migration run stopped here, at 0040 of
+    # roughly a hundred. The old warning said "RLS may block queries", which read
+    # as degradation and was in fact a dead install -- Tier 3's boot check is
+    # what finally surfaced it.
+    bind = op.get_bind()
+    url = bind.engine.url
+    role = (url.username or "").strip()
+    if role and _role_exists(bind, role):
+        op.execute(sa.text(f"ALTER ROLE {_quote_ident(role)} SET row_security = off"))
+    else:
         import logging
 
         logging.getLogger(__name__).warning(
-            "Could not set row_security=off on breaker role: %s (RLS may block queries)", exc
+            "No application role resolved from the connection URL (got %r); "
+            "skipping row_security=off. RLS may block queries for this role.",
+            role,
         )
 
 
