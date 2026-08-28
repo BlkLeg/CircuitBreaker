@@ -8,8 +8,10 @@ if ! id -u circuitbreaker >/dev/null 2>&1; then
 fi
 
 # Create directories
-mkdir -p /var/lib/circuit-breaker /var/log/circuit-breaker /etc/circuit-breaker
-chown circuitbreaker:circuitbreaker /var/lib/circuit-breaker /var/log/circuit-breaker
+mkdir -p /var/lib/circuit-breaker /var/lib/circuit-breaker/uploads \
+         /var/log/circuit-breaker /etc/circuit-breaker
+chown -R circuitbreaker:circuitbreaker /var/lib/circuit-breaker
+chown circuitbreaker:circuitbreaker /var/log/circuit-breaker
 chmod 750 /var/lib/circuit-breaker /var/log/circuit-breaker
 chmod 755 /etc/circuit-breaker
 
@@ -36,10 +38,44 @@ NATS_AUTH_TOKEN=${NATS_TOKEN}
 STATIC_DIR=/usr/local/share/circuit-breaker/frontend
 CB_ALEMBIC_INI=/usr/local/share/circuit-breaker/backend/alembic.ini
 CB_AGENT_BINARIES_DIR=/usr/local/share/circuit-breaker/agent-binaries
+CB_DATA_DIR=/var/lib/circuit-breaker
+UPLOADS_DIR=/var/lib/circuit-breaker/uploads
 EOF
   chmod 600 /etc/circuit-breaker/circuit-breaker.env
   chown root:circuitbreaker /etc/circuit-breaker/circuit-breaker.env
 fi
+
+# Backfill CB_DATA_DIR into an env file that predates it.
+#
+# The block above writes the env only when it is absent, so without this an
+# existing install upgrades straight back into the crash: the file it already
+# has is precisely the one missing this line. Four modules fall back to `/data`
+# when CB_DATA_DIR is unset -- the container path -- and the unit runs under
+# ProtectSystem=strict, so the service starts, tries to write, and dies with
+# `OSError: [Errno 30] Read-only file system: '/data'` on a loop. Found by the
+# Tier 3 boot check (ADR 0005 Phase 2), which is the first thing in this
+# project's history to install the package and start it on a clean host.
+#
+# /var/lib/circuit-breaker is not a new choice: the package already creates it,
+# owns it to the service user, and the unit already grants it write access. The
+# env simply never said so.
+#
+# UPLOADS_DIR is here for the same reason and was found the same way: fixing
+# CB_DATA_DIR moved the crash one layer down to
+# `FileNotFoundError: 'data/uploads'`. Its default is *relative*, so it resolves
+# against the working directory -- and the unit sets none, so systemd runs the
+# service from `/`. A relative default is invisible in review and fatal on a
+# packaged host.
+for _kv in \
+  "CB_DATA_DIR=/var/lib/circuit-breaker" \
+  "UPLOADS_DIR=/var/lib/circuit-breaker/uploads"; do
+  _key="${_kv%%=*}"
+  if [ -f /etc/circuit-breaker/circuit-breaker.env ] \
+     && ! grep -q "^${_key}=" /etc/circuit-breaker/circuit-breaker.env; then
+    echo "${_kv}" >> /etc/circuit-breaker/circuit-breaker.env
+    echo "Added ${_kv} to the existing environment file."
+  fi
+done
 
 # Enable and reload systemd
 systemctl daemon-reload
