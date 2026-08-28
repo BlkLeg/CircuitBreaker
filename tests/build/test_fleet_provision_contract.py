@@ -135,3 +135,43 @@ def test_cloud_init_does_not_install_the_candidate():
     text = USER_DATA.read_text(encoding="utf-8")
     assert ".rpm" not in text, "cloud-init must not install the candidate package"
     assert "circuit-breaker.service" not in text
+
+
+def test_provision_verifies_the_fixture_itself_rather_than_trusting_the_marker():
+    """A marker is the guest's claim about itself; the host must check.
+
+    The fixture is now fail-fast, so cb-fixture-ready is trustworthy today. That
+    is a property of one file that anyone can edit, and provision.sh returning
+    "ready" is what every assertion downstream is built on. So the host confirms
+    the two services it actually needs before printing its contract line -- if
+    the marker and reality ever diverge again, provisioning fails instead of
+    handing tier3-artifact.sh a broken machine and letting the package take the
+    blame.
+    """
+    text = PROVISION.read_text(encoding="utf-8")
+    assert "systemctl is-active" in text, (
+        "provision.sh must verify the fixture services from the host, not rely "
+        "solely on the guest-written readiness marker"
+    )
+    marker_at = text.index("cb-fixture-ready")
+    verify_at = text.index("systemctl is-active")
+    assert verify_at > marker_at, (
+        "the independent check belongs after the marker wait, as confirmation "
+        "of it rather than a replacement for it"
+    )
+
+
+def test_provision_cleans_up_its_own_scratch_when_it_fails():
+    """A failed provision must not leak the VM dir it created.
+
+    provision.sh mktemps a directory, writes a disk overlay into it and boots a
+    VM from it, then hands the path to its caller. dispatch.sh traps and destroys
+    -- but only once it has read that path, so any failure *before* the handoff
+    leaves the directory and possibly a running VM with no owner. Two were found
+    on disk after the -nographic and continuation-chain failures. The design's
+    "destroy always" is not satisfied by a cleanup that only runs on the paths
+    that got far enough to tell someone about it.
+    """
+    text = PROVISION.read_text(encoding="utf-8")
+    assert "trap " in text, "provision.sh must clean up its own scratch on failure"
+    assert "cb::fleet_scratch_cleanup" in text or "rm -rf \"$VM_DIR\"" in text

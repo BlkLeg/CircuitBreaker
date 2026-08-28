@@ -76,6 +76,25 @@ fi
 
 # ── per-run scratch ─────────────────────────────────────────────────────────
 VM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cb-fleet-${ROW_ID}-XXXXXX")"
+
+# Own the scratch until it is handed over. Everything from here on can fail --
+# a bad qemu flag, an image that will not boot, a fixture that never completes --
+# and each of those leaves a directory holding a disk overlay, plus possibly a
+# running VM that nothing is tracking. dispatch.sh does trap and destroy, but
+# only after it has READ the path below, so a failure before the handoff has no
+# owner at all. Two such directories were found on disk after the -nographic and
+# continuation-chain failures during Phase 2; "destroy always" has to include the
+# paths that never got far enough to tell anyone.
+#
+# Cleared deliberately on the success path: from that point the caller owns it.
+cb::fleet_scratch_cleanup() {
+    [ -n "${VM_DIR:-}" ] || return 0
+    if [ -f "$VM_DIR/qemu.pid" ]; then
+        kill "$(cat "$VM_DIR/qemu.pid")" 2>/dev/null || true
+    fi
+    rm -rf "$VM_DIR"
+}
+trap cb::fleet_scratch_cleanup EXIT INT TERM
 OVERLAY="$VM_DIR/disk.qcow2"
 SEED="$VM_DIR/seed.iso"
 KEY="$VM_DIR/id_ed25519"
@@ -148,4 +167,21 @@ until ssh "${SSH_OPTS[@]}" fedora@127.0.0.1 \
     sleep 5
 done
 
+# Confirm the fixture from the host rather than taking the guest's word for it.
+# cb-fixture-ready is the guest asserting something about itself, and everything
+# downstream -- the install, the boot, every /readyz retry -- is built on this
+# function returning success. The first version of the fixture wrote that marker
+# with nothing installed, and provisioning reported a ready host; the fixture is
+# fail-fast now, but that is one editable file standing between a broken machine
+# and a package getting the blame for it. Cheap to check, so check.
+if ! ssh "${SSH_OPTS[@]}" fedora@127.0.0.1 \
+        'systemctl is-active --quiet postgresql && systemctl is-active --quiet valkey' 2>/dev/null; then
+    printf '::error::fixture marker present but its services are not active — the guest reported ready and is not\n' >&2
+    ssh "${SSH_OPTS[@]}" fedora@127.0.0.1 \
+        'systemctl is-active postgresql valkey; sudo tail -40 /var/log/cloud-init-output.log' >&2 || true
+    exit 1
+fi
+
+# Handed over: the caller owns the VM from here, so stop cleaning it up.
+trap - EXIT INT TERM
 printf '%s %s %s\n' "$SSH_PORT" "$KEY" "$VM_DIR"
