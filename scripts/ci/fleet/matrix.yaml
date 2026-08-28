@@ -1,0 +1,35 @@
+# scripts/ci/fleet/matrix.yaml
+#
+# The single source of truth for what this project claims works (design §7.2).
+# It feeds both this tier and the support-tier table in §8, so a row here is a
+# published promise, not a convenience.
+#
+# `runner` is the ONLY field that varies by execution site. tier3-artifact.sh is
+# identical across every row (P1); anything distro-specific belongs in that row's
+# provisioning. Phase 2 ships one row. Phase 3 adds the rest of §7.2's matrix.
+#
+# `tier` is the §8 support tier this row backs:
+#   1 = guaranteed to install, boot, upgrade and roll back
+#   2 = guaranteed to install and boot
+#   3 = guaranteed to build; installation best-effort
+# This row is the evidence behind the Tier 1 claim for rpm/amd64 — except upgrade
+# and rollback, which Phase 3 adds. Until then the row backs the *boot* half only,
+# and §8's table must not be updated to claim otherwise.
+#
+# Release 44, not the 42 this plan was drafted against: 42 reached EOL and its
+# mirror tree 404s, and 44 is what the fleet host itself runs. Bump deliberately
+# — a new release is a new claim, and the digest below must be re-resolved from
+# Fedora's published CHECKSUM every time it moves.
+#
+# image_url is dl.fedoraproject.org rather than download.fedoraproject.org: the
+# latter is a mirror redirector, and the mirror it chose did not carry the file.
+# A release gate should not depend on which mirror answered today.
+
+- id: fedora-rpm-amd64
+  distro: fedora-44
+  format: rpm
+  arch: amd64
+  runner: local/qemu
+  tier: 1
+  image_url: "https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
+  image_sha256: "28680fe5b371a5a82ebf43a31926e086a168e59949d03969c5093e7071f90b7f"
