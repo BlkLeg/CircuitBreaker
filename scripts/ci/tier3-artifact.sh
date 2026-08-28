@@ -18,7 +18,20 @@ BASE_URL="http://127.0.0.1:8000/api/v1"
 mkdir -p "$EVIDENCE"
 
 section() { printf '\n\033[1m▸ %s\033[0m\n' "$1"; }
-fail()    { printf '::error::%s\n' "$1" >&2; exit 1; }
+# Evidence is written by root here and fetched by an unprivileged user there, so
+# every exit path opens it up first. Without this a single 0600 file -- the
+# redacted env copy below inherits that mode from its source -- makes scp
+# return non-zero and the whole collection read as failed.
+readable_evidence() {
+    # Guarded so a chmod failure cannot abort fail() before it prints the real
+    # error, but reported rather than swallowed: if this does not work the
+    # collector is about to come back empty, and the reason belongs on stderr
+    # where the run can still show it.
+    chmod -R a+rX "$EVIDENCE" 2>/dev/null && return 0
+    printf '::warning::could not make %s world-readable — evidence collection will likely fail\n' \
+        "$EVIDENCE" >&2
+}
+fail()    { readable_evidence; printf '::error::%s\n' "$1" >&2; exit 1; }
 
 # Evidence collection that can neither abort the run nor lie about itself.
 #
@@ -158,5 +171,7 @@ capture "$EVIDENCE/journal.log" journalctl -u circuit-breaker --no-pager -n 500
 capture "$EVIDENCE/unit-state.txt" systemctl show circuit-breaker -p ActiveState -p SubState -p ExecMainStatus
 capture "$EVIDENCE/data-dir.txt" ls -la /var/lib/circuit-breaker
 capture "$EVIDENCE/package-contents.txt" rpm -ql circuit-breaker
+
+readable_evidence
 
 section "Tier 3 complete"

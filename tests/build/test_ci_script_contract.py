@@ -318,3 +318,21 @@ def test_tier3_waits_for_readyz_not_just_livez():
     text = (CI_DIR / "tier3-artifact.sh").read_text(encoding="utf-8")
     assert "/livez" in text
     assert "/readyz" in text
+
+
+def test_tier3_leaves_its_evidence_readable_to_the_collector():
+    """Evidence written as root must be fetchable by the unprivileged collector.
+
+    tier3-artifact.sh runs under sudo in the guest; dispatch.sh collects over scp
+    as the `fedora` user. The first real run copied /etc/circuit-breaker's env
+    file into the evidence directory, and `cp` as root reproduces its 0600 mode --
+    so scp hit one unreadable file, returned non-zero, and the whole collection
+    was reported as failed even though most of it had transferred. P7 says the
+    tier fails when evidence is empty; it should not be one chmod away from
+    reporting that falsely.
+    """
+    text = (CI_DIR / "tier3-artifact.sh").read_text(encoding="utf-8")
+    assert "chmod -R a+rX" in text, (
+        "tier3 must make its evidence world-readable so the collector can fetch "
+        "it; files copied from 0600 sources are otherwise root-only"
+    )
