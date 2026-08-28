@@ -71,25 +71,47 @@ scripts:
   postinstall: packaging/postinstall.sh
   preremove: packaging/preremove.sh
 
+# NATS is a `depends`, not a `recommends`, wherever the distro packages it.
+# The application refuses to start without a broker -- validate_core_dependencies
+# treats it as required for worker dispatch, notification delivery and event
+# fan-out -- so a weak dependency lets the package manager install something that
+# cannot run. Tier 3 caught exactly that on Fedora.
+#
+# Depending on the distro package rather than vendoring one is deliberate:
+# Dockerfile.mono states the policy ("version pinning on apt packages is
+# intentionally avoided to keep CVE fixes current"), and vendoring would make a
+# NATS CVE fix wait on a Circuit Breaker release instead of an apt upgrade.
+#
+# Fedora has no nats-server package at all, which is why rpm neither depends on
+# nor recommends one: packaging/nfpm-nats.yaml builds a separate
+# `circuit-breaker-nats` package that vendors the pinned binary there. Separate,
+# so the vendored CVE surface stays out of this package and an operator pointing
+# CB_NATS_URL at an external or clustered broker can decline it.
 overrides:
   deb:
     depends:
       - libc6
+      - nats-server
     recommends:
       - postgresql
       - redis-server
-      - nats-server
   rpm:
     depends:
       - glibc
     recommends:
       - postgresql-server
       - redis
-      - nats-server
+      # Fedora packages no broker, so this names our own. `recommends` is the
+      # right strength here rather than `depends`: dnf installs weak dependencies
+      # by default, so a plain `dnf install circuit-breaker` gets a working
+      # broker — while an operator pointing CB_NATS_URL at an external or
+      # clustered NATS can decline it with --setopt=install_weak_deps=False.
+      # Depending on it outright would forbid that topology, which is what the
+      # unit's Wants= is careful not to do.
+      - circuit-breaker-nats
   apk:
     depends:
       - postgresql16
       - redis
       - nginx
-    recommends:
       - nats-server

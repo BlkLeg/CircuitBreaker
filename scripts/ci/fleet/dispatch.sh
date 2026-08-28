@@ -105,9 +105,18 @@ read -r SSH_PORT SSH_KEY VM_DIR < <("$FLEET_DIR/provision.sh" "$ROW_ID")
 
 cb::section "Push the candidate and the tier script"
 fleet::ssh fedora@127.0.0.1 'sudo mkdir -p /opt/cb-tier3 && sudo chown fedora /opt/cb-tier3'
+# Companion packages beside the candidate go too. `dnf install circuit-breaker`
+# on a real Fedora host also pulls circuit-breaker-nats, since the rpm recommends
+# it and dnf installs weak dependencies by default; installing from local files
+# cannot resolve that, so the set is pushed and installed together. Testing the
+# application package alone would test a configuration no user ends up with.
+PUSH=("$PACKAGE" "$CB_REPO_ROOT/scripts/ci/tier3-artifact.sh")
+for companion in "$(dirname "$PACKAGE")"/circuit-breaker-nats_*."${PACKAGE##*.}"; do
+    [ -f "$companion" ] && PUSH+=("$companion")
+done
 scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
     -i "$SSH_KEY" -P "$SSH_PORT" \
-    "$PACKAGE" "$CB_REPO_ROOT/scripts/ci/tier3-artifact.sh" \
+    "${PUSH[@]}" \
     fedora@127.0.0.1:/opt/cb-tier3/
 
 cb::section "Execute tier3-artifact.sh in the guest"

@@ -1,0 +1,19 @@
+# The one pinned NATS server, shared by every path that provisions one.
+#
+# Before this file there were three strategies and no agreement between them:
+# Dockerfile.mono installed Debian's nats-server, deploy/setup.sh downloaded
+# whatever the GitHub API called "latest" (falling back to 2.11.3) with no
+# checksum at all, and the rpm shipped nothing while only *recommending* a
+# package Fedora does not have. Three provisioning paths, three possible
+# versions, one of them unverified and installed to /usr/local/bin as root.
+#
+# Sourceable by bash (deploy/setup.sh) and trivially parsed by Python
+# (scripts/build_native_release.py) so neither can drift from the other.
+#
+# Checksums are upstream's own, from the release's SHA256SUMS asset:
+#   https://github.com/nats-io/nats-server/releases/download/v2.14.6/SHA256SUMS
+# Bump both the version and the digests together, deliberately — a version bump
+# with a stale digest must fail the download, not skip the check.
+NATS_VERSION=2.14.6
+NATS_SHA256_amd64=61c3d55f69f61ec616b75782250936445f2819e9e5f2ae6159b10a31abd2200c
+NATS_SHA256_arm64=3ff6e463762db64186a36cf0276dae8320509e995151ad0153ba9c9f67eee3f9

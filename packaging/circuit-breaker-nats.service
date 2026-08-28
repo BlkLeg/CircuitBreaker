@@ -1,0 +1,49 @@
+[Unit]
+# The broker for hosts whose distro does not package one — Fedora today.
+#
+# Shipped by the separate `circuit-breaker-nats` package, not by circuit-breaker
+# itself, so that a deployment pointing CB_NATS_URL at an external or clustered
+# broker can simply not install it, and so the vendored binary's CVE surface
+# stays separable from the application's.
+Description=Circuit Breaker — NATS message bus (JetStream)
+Documentation=https://docs.nats.io/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=circuitbreaker
+Group=circuitbreaker
+# JetStream needs durable storage; /var/lib/circuit-breaker is the directory the
+# application package already creates and the only one its unit can write to.
+ExecStart=/usr/local/bin/nats-server \
+    --jetstream \
+    --store_dir /var/lib/circuit-breaker/nats \
+    --addr 127.0.0.1 \
+    --port 4222 \
+    --auth ${NATS_AUTH_TOKEN}
+EnvironmentFile=-/etc/circuit-breaker/circuit-breaker.env
+Restart=always
+RestartSec=5
+
+# Bound to loopback above and hardened here: this broker exists to serve one
+# local application, so it has no reason to reach the network, own privileges, or
+# write anywhere but its own store.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/circuit-breaker/nats
+
+[Install]
+WantedBy=multi-user.target

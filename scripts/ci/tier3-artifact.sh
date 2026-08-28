@@ -61,7 +61,12 @@ section "Install $(basename "$PACKAGE")"
 # what a user gets. The rpm lists postgresql-server/redis/nats-server under
 # `recommends` (weak), so this pulls them but does not configure them -- the VM
 # fixture already did that, because nothing in the package ever will.
-dnf install -y "$PACKAGE" 2>&1 | tee "$EVIDENCE/install.log"
+# Every package staged here, not just the named candidate. On a real Fedora host
+# `dnf install circuit-breaker` also pulls circuit-breaker-nats, because the rpm
+# recommends it and dnf installs weak dependencies by default. Installing from
+# local files cannot resolve that, so dispatch.sh pushes the companion and this
+# installs the set — otherwise the tier would test a configuration no user has.
+dnf install -y /opt/cb-tier3/*.rpm 2>&1 | tee "$EVIDENCE/install.log"
 
 section "Assert the package installed what it claims"
 for path in \

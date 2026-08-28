@@ -5,8 +5,13 @@
 [Unit]
 Description=Circuit Breaker — Homelab Topology Mapper
 Documentation=https://github.com/BlkLeg/circuitbreaker
-After=network-online.target postgresql.service redis.service nats.service
-Wants=network-online.target
+After=network-online.target postgresql.service redis.service nats.service circuit-breaker-nats.service
+# Wants=, never Requires=. A missing broker degrades rather than hangs since the
+# bounded initial connect, and CB_NATS_URL exists so the broker can live on
+# another host entirely -- the multi-host agent topology depends on that staying
+# first-class. Requires= would make every install run its own broker and turn a
+# clustered deployment into the exception.
+Wants=network-online.target circuit-breaker-nats.service
 
 [Service]
 Type=exec

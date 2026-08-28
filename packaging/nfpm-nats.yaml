@@ -1,0 +1,46 @@
+# The vendored NATS broker, for platforms whose distro does not package one.
+#
+# A separate package on purpose. Debian/Ubuntu and Alpine both ship nats-server,
+# so there nfpm.yaml simply depends on it and the distro owns CVE updates — the
+# policy Dockerfile.mono states outright. Fedora has no such package, and rather
+# than vendor a binary into the application package everywhere (which would have
+# made a NATS CVE fix wait on a Circuit Breaker release), the vendored copy lives
+# here: separable CVE surface, and declinable by anyone whose CB_NATS_URL points
+# at an external or clustered broker.
+#
+# The binary is staged by scripts/build_native_release.py, which downloads the
+# version in packaging/nats-server.pin and verifies it against the digest there
+# before it is ever packaged.
+name: circuit-breaker-nats
+arch: "${GOARCH}"
+platform: linux
+version: "${NATS_VERSION}"
+version_schema: semver
+maintainer: "BlkLeg <letshost-admin@proton.me>"
+description: "NATS JetStream broker for Circuit Breaker, for distros that do not package one"
+vendor: "BlkLeg"
+homepage: "https://github.com/BlkLeg/circuitbreaker"
+license: "Apache-2.0"
+section: "admin"
+priority: "optional"
+
+contents:
+  - src: dist/native/bundle/nats/nats-server
+    dst: /usr/local/bin/nats-server
+    file_info:
+      mode: 0755
+
+  - src: packaging/circuit-breaker-nats.service
+    dst: /lib/systemd/system/circuit-breaker-nats.service
+    file_info:
+      mode: 0644
+
+  - dst: /var/lib/circuit-breaker/nats
+    type: dir
+    file_info:
+      mode: 0750
+      owner: circuitbreaker
+      group: circuitbreaker
+
+scripts:
+  postinstall: packaging/nats-postinstall.sh

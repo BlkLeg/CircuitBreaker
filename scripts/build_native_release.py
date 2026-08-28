@@ -15,9 +15,10 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
+import urllib.request
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
-
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BACKEND_ENTRYPOINT = REPO_ROOT / "apps" / "backend" / "src" / "app" / "start.py"
@@ -210,7 +211,7 @@ def _collect_dynamic_import_hidden_imports() -> list[str]:
     for package in _DYNAMIC_IMPORT_PACKAGES:
         try:
             submodules = collect_submodules(package)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise SystemExit(
                 f"Could not enumerate submodules of {package!r}, which loads part of "
                 f"itself dynamically and must be declared as a hidden import: {exc}\n"
@@ -514,6 +515,68 @@ def write_metadata(output_dir: Path, manifest: dict[str, object], archive_path: 
     )
 
 
+def stage_nats_server(bundle_dir: Path, target_arch: str) -> str:
+    """Download the pinned NATS server into the bundle, verifying its digest.
+
+    Only Fedora needs this: Debian/Ubuntu and Alpine package nats-server, so
+    nfpm.yaml depends on the distro package there and the distro owns CVE
+    updates. Fedora packages none, so the circuit-breaker-nats package vendors
+    this binary.
+
+    Fails rather than skips. A build that quietly omits the broker produces an
+    rpm that installs and cannot start, which is the exact defect Tier 3 caught
+    and the reason this code path exists.
+
+    Returns the pinned version string.
+    """
+    pin_path = REPO_ROOT / "packaging" / "nats-server.pin"
+    pin: dict[str, str] = {}
+    for line in pin_path.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if "=" in line:
+            key, _, value = line.partition("=")
+            pin[key.strip()] = value.strip()
+
+    version = pin["NATS_VERSION"]
+    digest = pin.get(f"NATS_SHA256_{target_arch}")
+    if not digest:
+        raise RuntimeError(
+            f"packaging/nats-server.pin has no NATS_SHA256_{target_arch}; add the "
+            f"digest from the release's SHA256SUMS before building for this arch"
+        )
+
+    tarball = f"nats-server-v{version}-linux-{target_arch}.tar.gz"
+    url = f"https://github.com/nats-io/nats-server/releases/download/v{version}/{tarball}"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        archive = Path(tmp) / tarball
+        print(f"  Fetching {tarball}")
+        urllib.request.urlretrieve(url, archive)
+
+        actual = hashlib.sha256(archive.read_bytes()).hexdigest()
+        if actual != digest:
+            raise RuntimeError(
+                f"NATS checksum mismatch for {tarball}:\n"
+                f"  expected {digest}\n  actual   {actual}\n"
+                f"Refusing to package an unverified binary."
+            )
+
+        with tarfile.open(archive) as tar:
+            member = next(
+                (m for m in tar.getmembers() if m.name.endswith("/nats-server")), None
+            )
+            if member is None:
+                raise RuntimeError(f"no nats-server binary inside {tarball}")
+            member.name = "nats-server"
+            nats_dir = bundle_dir / "nats"
+            nats_dir.mkdir(parents=True, exist_ok=True)
+            tar.extract(member, nats_dir, filter="data")
+        (bundle_dir / "nats" / "nats-server").chmod(0o755)
+
+    print(f"  Staged nats-server v{version} ({target_arch}), digest verified")
+    return version
+
+
 def create_linux_packages(
     bundle_dir: Path, version: str, target_arch: str, output_dir: Path
 ) -> list[Path]:
@@ -545,6 +608,31 @@ def create_linux_packages(
     }
 
     packages: list[Path] = []
+
+    # The vendored broker, for distros that package none (Fedora). Staged and
+    # digest-verified first: a failure here must stop the build rather than
+    # produce an rpm whose companion package silently does not exist.
+    # dist_bundle, not bundle_dir: this function copies bundle_dir into
+    # dist/native/bundle above, and nfpm-nats.yaml reads the dist path. Staging
+    # into the source bundle after that copy puts the binary somewhere nothing
+    # packages from.
+    nats_version = stage_nats_server(dist_bundle, goarch)
+    nats_config = REPO_ROOT / "packaging" / "nfpm-nats.yaml"
+    nats_pkg = output_dir / f"circuit-breaker-nats_{nats_version}_{goarch}.rpm"
+    nats_result = subprocess.run(
+        [nfpm, "package", "--config", str(nats_config), "--packager", "rpm",
+         "--target", str(nats_pkg)],
+        env={**env, "NATS_VERSION": nats_version}, cwd=str(REPO_ROOT),
+        capture_output=True, text=True,
+    )
+    if nats_result.returncode == 0:
+        print(f"  Created: {nats_pkg.name}")
+        packages.append(nats_pkg)
+    else:
+        raise RuntimeError(
+            f"circuit-breaker-nats packaging failed: {nats_result.stderr.strip()}"
+        )
+
     for fmt in ("deb", "rpm", "apk"):
         pkg_path = output_dir / f"circuit-breaker_{version}_{goarch}.{fmt}"
         result = subprocess.run(

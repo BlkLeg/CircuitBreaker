@@ -18,6 +18,23 @@ cb_resolve_env_template() {
   return 1
 }
 
+cb_resolve_nats_pin() {
+  local setup_dir
+  setup_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local candidates=(
+    "/opt/circuitbreaker/packaging/nats-server.pin"
+    "${setup_dir}/../packaging/nats-server.pin"
+  )
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [[ -f "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 cb_write_default_env_template() {
   local fallback_template="/etc/circuitbreaker/.env.template.generated"
   cat > "$fallback_template" <<'EOF'
@@ -1528,20 +1545,37 @@ stage2_dependencies() {
 
   # Group 5: NATS Server binary
   cb_step "Installing NATS Server (JetStream)"
-  local NATS_FALLBACK_VER="2.11.3"
-  local nats_version
-  nats_version=$(curl -sS --fail https://api.github.com/repos/nats-io/nats-server/releases/latest 2>/dev/null \
-    | jq -r '.tag_name // empty' | tr -d v) || true
-  if [[ -z "$nats_version" ]]; then
-    cb_warn "Could not fetch latest NATS version from GitHub — using fallback v${NATS_FALLBACK_VER}"
-    nats_version="$NATS_FALLBACK_VER"
-  fi
-  
+
+  # Pinned and verified, from packaging/nats-server.pin — the same file
+  # scripts/build_native_release.py reads when it stages the binary for the
+  # circuit-breaker-nats package, so an installed-by-script host and an
+  # installed-by-package host run the same broker.
+  #
+  # This previously asked the GitHub API what "latest" was and installed the
+  # answer to /usr/local/bin as root with no checksum. That is an unattended
+  # remote-controlled binary on every install, and it disagreed with both other
+  # provisioning paths about which version was correct.
+  local nats_pin
+  nats_pin="$(cb_resolve_nats_pin)" \
+    || cb_fail "Cannot find packaging/nats-server.pin" "the pinned NATS version and digests live there"
+  # shellcheck disable=SC1090  # path resolved above
+  source "$nats_pin"
+
+  local nats_version="${NATS_VERSION}"
+  local nats_sha
+  case "$ARCH" in
+    amd64) nats_sha="${NATS_SHA256_amd64}" ;;
+    arm64) nats_sha="${NATS_SHA256_arm64}" ;;
+    *) cb_fail "No pinned NATS digest for architecture ${ARCH}" "add one to packaging/nats-server.pin" ;;
+  esac
+
   local nats_tarball="nats-server-v${nats_version}-linux-${ARCH}.tar.gz"
   local nats_url="https://github.com/nats-io/nats-server/releases/download/v${nats_version}/${nats_tarball}"
-  
+
   cd /tmp
   curl -fsSL -o "$nats_tarball" "$nats_url" >> "$LOG_FILE" 2>&1 || cb_fail "Failed to download NATS" "$nats_url"
+  echo "${nats_sha}  ${nats_tarball}" | sha256sum --check --status \
+    || cb_fail "NATS checksum mismatch" "expected ${nats_sha} for ${nats_tarball}"
   tar -xzf "$nats_tarball" >> "$LOG_FILE" 2>&1
   cp "nats-server-v${nats_version}-linux-${ARCH}/nats-server" /usr/local/bin/nats-server
   chmod 755 /usr/local/bin/nats-server
