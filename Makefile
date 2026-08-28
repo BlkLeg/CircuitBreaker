@@ -310,3 +310,19 @@ verify: verify-fast ## Tier 0 + Tier 1 minus the backend suite — the pre-push 
 
 verify-full: verify-fast ## Tier 0 + full Tier 1 including the backend suite (measured 6m43s)
 	CB_VERIFY_BACKEND=shards scripts/ci/tier1-unit.sh
+
+# T3. Not part of `verify` and deliberately not wired into any workflow yet: it
+# boots a VM, downloads a 556MB image on first run, and takes minutes, which is
+# not a pre-push gate. Phase 2 ships one row; Phase 3 adds the matrix.
+#
+# CB_CANDIDATE is required rather than defaulted to a dist/ glob. The claim this
+# tier makes is "*this* candidate installs and boots"; a target that tests
+# whatever .rpm happened to be lying in dist/ makes that claim about a file whose
+# provenance nobody checked, which is #106's defect class wearing different
+# clothes.
+verify-fleet: ## Tier 3 — install+boot the candidate on an ephemeral Fedora VM (CB_CANDIDATE=path/to.rpm)
+	@test -n "$(CB_CANDIDATE)" || { \
+	  echo "ERROR: set CB_CANDIDATE to the package under test, e.g."; \
+	  echo "  make build && make verify-fleet CB_CANDIDATE=dist/native/circuit-breaker_$$(cat VERSION)_amd64.rpm"; \
+	  exit 2; }
+	scripts/ci/fleet/dispatch.sh fedora-rpm-amd64 "$(CB_CANDIDATE)"

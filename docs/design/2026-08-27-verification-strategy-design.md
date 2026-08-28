@@ -185,14 +185,22 @@ fourth tier for real-hardware artifact verification.
 | **T3** artifact | install · **boot** · exercise · upgrade · rollback, per format/arch/distro | fleet, ephemeral VMs | 20 min | pre-release + nightly |
 
 Entry points (Phase 1 status — only T0 and T1 are extracted; T2/T3 callers
-below are the target shape, not yet wired):
+below are the target shape, not yet wired — except `verify-fleet`, which
+Phase 2 made real; see the note under the block):
 
 ```
 make verify-fast     # T0                                — the inner loop (measured ~17s)
-make verify          # T0 + T1 minus the backend suite    — the pre-push gate (measured 1m46s)
+make verify          # T0 + T1 minus the backend suite    — the pre-push gate (measured 3m17s)
 make verify-full     # T0 + T1 in full (+ backend suite)  — on demand / pre-merge (measured 6m43s)
-make verify-fleet    # T3                                — pre-release
+make verify-fleet    # T3, one row, local QEMU              — on demand (Phase 2)
 ```
+
+**`verify-fleet` as of Phase 2.** It runs one matrix row —
+`fedora-rpm-amd64` — on a local QEMU VM, and is invoked only by `make`. It is
+not wired into any workflow and gates nothing; that was scoped out of Phase 2
+deliberately. It also requires `CB_CANDIDATE=<path>` rather than globbing
+`dist/`, because "this candidate installs and boots" is a claim about a
+specific file. Phase 3 adds the remaining rows plus upgrade and rollback.
 
 `verify-full` names T1's full form here because that is what Phase 1 needed
 it for; when T2's script lands, its pre-merge caller will need a name that
@@ -342,6 +350,20 @@ with P6's merge queue, this closes the class rather than the instance.
 
 The lifecycle is Molecule's (create → converge → verify → destroy), and the
 assertion contract is autopkgtest's (test the installed package as installed).
+
+**Substrate, as built in Phase 2.** This section specifies PVE template clones.
+Phase 2 implements the same lifecycle on a local ephemeral QEMU VM instead,
+because no PVE fleet was reachable and `/dev/kvm` on the developer host is mode
+0666: raw `qemu-system-x86_64` needs no daemon, no group membership and no
+password, where libvirt would have needed `virt-install`, `libvirtd` and a group
+the developer is not in — three root operations to run a test. Ephemerality is a
+copy-on-write overlay over a checksum-verified golden image, which gives the same
+"never a dirty host" guarantee that template cloning does, structurally rather
+than procedurally.
+
+The `runner` field carries the whole difference (`local/qemu` rather than
+`pve/9002`), and `tier3-artifact.sh` is unchanged by it — which is the property
+that makes a PVE backend a drop-in later rather than a rewrite.
 
 ```
 for each row in matrix.yaml:
