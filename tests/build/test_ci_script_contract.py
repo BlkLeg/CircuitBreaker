@@ -95,16 +95,21 @@ def test_tier_scripts_use_strict_bash():
 
 
 def test_tier_scripts_do_not_swallow_gate_failures():
-    """No `|| true` on a gate. cb::skipped exists for the informational case.
+    """No `|| true` in a tier script. No exemption, including for diagnostics.
 
-    One exemption, and it has to be spelled out on the line: `# diagnostics:`.
-    Tier 3 collects a journal and a unit state on its failure paths, and those
-    commands must not themselves abort the run -- a collector that dies while
-    gathering evidence for a failure destroys the only account of it. But
-    "diagnostics" is also the obvious excuse for silencing a real gate, so the
-    exemption is not a judgement the reader has to make: the author writes the
-    word, in the diff, next to the suppression, the way REL-19 makes a
-    filterwarnings ignore name an owner and a removal condition.
+    An earlier version of this test allowed `|| true` on a line annotated
+    `# diagnostics:`, so Tier 3's evidence collectors could not abort a run they
+    were trying to explain. That was the convenient fix rather than the correct
+    one, twice over. It made an absolute rule self-declared -- the next author
+    who wants a failing gate to stop failing writes the same six characters --
+    and `|| true` still discards the one fact worth keeping: that the collector
+    itself failed. An evidence directory missing a journal, with nothing saying
+    why, is the same ambiguity as a scanner that did not run reading like a clean
+    scan (#106).
+
+    The replacement is a `capture` helper: it never aborts the run and it records
+    every failed collection into collection-errors.log. Strictly more information
+    than `|| true`, and no hole in the rule.
     """
     for name in TIER_SCRIPTS:
         for lineno, line in enumerate(
@@ -113,13 +118,20 @@ def test_tier_scripts_do_not_swallow_gate_failures():
             stripped = line.strip()
             if stripped.startswith("#"):
                 continue
-            if "|| true" not in stripped:
-                continue
-            assert "# diagnostics:" in stripped, (
-                f"{name}:{lineno}: `|| true` on a gate line. If this is evidence "
-                f"collection rather than a gate, say so on the line itself with "
-                f"`# diagnostics: <why>`:\n    {stripped}"
+            assert "|| true" not in stripped, (
+                f"{name}:{lineno}: `|| true` swallows a failure. For evidence "
+                f"collection use the capture helper, which cannot abort the run "
+                f"and records what failed:\n    {stripped}"
             )
+
+
+def test_tier3_records_failed_evidence_collection_rather_than_hiding_it():
+    """P2/R4: a collector that failed must not look like one that found nothing."""
+    text = (CI_DIR / "tier3-artifact.sh").read_text(encoding="utf-8")
+    assert "capture()" in text, "tier3 must define the capture helper"
+    assert "collection-errors.log" in text, (
+        "a failed collection must be recorded, not discarded"
+    )
 
 
 # (gate name, substring that must appear in tier0-static.sh, why its absence

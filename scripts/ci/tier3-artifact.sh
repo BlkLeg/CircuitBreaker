@@ -20,6 +20,28 @@ mkdir -p "$EVIDENCE"
 section() { printf '\n\033[1m▸ %s\033[0m\n' "$1"; }
 fail()    { printf '::error::%s\n' "$1" >&2; exit 1; }
 
+# Evidence collection that can neither abort the run nor lie about itself.
+#
+# `|| true` was the obvious way to stop a collector killing the failure it was
+# sent to explain, and it is wrong for the same reason a missing scanner reading
+# as a clean scan is wrong (#106): the evidence directory ends up missing a file
+# with nothing anywhere saying why. An empty journal.log then means either "the
+# service logged nothing" or "journalctl is not installed", and the reader cannot
+# tell which. capture keeps the run alive AND writes the reason down.
+capture() {
+    local out=$1; shift
+    # rc is captured on the failing command itself. `if ! cmd; then ... $? ...`
+    # reports 0, because $? there is the status of the negation rather than of
+    # cmd -- so the log would have said "COLLECTION FAILED (exit 0)" for every
+    # failure, which is its own small lie in a file that exists to be trusted.
+    local rc=0
+    "$@" > "$out" 2>&1 || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        printf 'COLLECTION FAILED (exit %s): %s\n' "$rc" "$*" \
+            >> "$EVIDENCE/collection-errors.log"
+    fi
+}
+
 # ── install ─────────────────────────────────────────────────────────────────
 section "Install $(basename "$PACKAGE")"
 # `dnf install` on a local file resolves the package's own dependencies, which is
@@ -79,7 +101,7 @@ section "Wait for /livez"
 deadline=$(( SECONDS + 120 ))
 until curl -fsS "$BASE_URL/livez" >/dev/null 2>&1; do
     if [ "$SECONDS" -ge "$deadline" ]; then
-        journalctl -u circuit-breaker --no-pager -n 200 > "$EVIDENCE/journal.log" 2>&1 || true  # diagnostics: a journal we cannot read must not replace the failure it explains
+        capture "$EVIDENCE/journal.log" journalctl -u circuit-breaker --no-pager -n 200
         fail "service never became live within 120s"
     fi
     sleep 2
@@ -93,8 +115,8 @@ section "Wait for /readyz"
 deadline=$(( SECONDS + 180 ))
 until [ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/readyz")" = "200" ]; do
     if [ "$SECONDS" -ge "$deadline" ]; then
-        curl -s "$BASE_URL/readyz" > "$EVIDENCE/readyz.json" 2>&1 || true  # diagnostics: the body is the evidence; a dead endpoint is the finding, not an error here
-        journalctl -u circuit-breaker --no-pager -n 200 > "$EVIDENCE/journal.log" 2>&1 || true  # diagnostics: a journal we cannot read must not replace the failure it explains
+        capture "$EVIDENCE/readyz.json" curl -s "$BASE_URL/readyz"
+        capture "$EVIDENCE/journal.log" journalctl -u circuit-breaker --no-pager -n 200
         fail "service never became ready within 180s — see readyz.json and journal.log"
     fi
     sleep 3
@@ -132,10 +154,9 @@ printf 'GET /health -> %s\n' "$code" | tee -a "$EVIDENCE/api-probe.txt"
 [ "$code" = "200" ] || fail "GET /api/v1/health returned $code"
 
 section "Collect evidence"
-journalctl -u circuit-breaker --no-pager -n 500 > "$EVIDENCE/journal.log" 2>&1 || true  # diagnostics: evidence collection must not fail a run that otherwise passed
-systemctl show circuit-breaker -p ActiveState -p SubState -p ExecMainStatus \
-    > "$EVIDENCE/unit-state.txt" 2>&1 || true  # diagnostics: evidence collection must not fail a run that otherwise passed
-ls -la /var/lib/circuit-breaker > "$EVIDENCE/data-dir.txt" 2>&1 || true  # diagnostics: evidence collection must not fail a run that otherwise passed
-rpm -ql circuit-breaker > "$EVIDENCE/package-contents.txt" 2>&1 || true  # diagnostics: evidence collection must not fail a run that otherwise passed
+capture "$EVIDENCE/journal.log" journalctl -u circuit-breaker --no-pager -n 500
+capture "$EVIDENCE/unit-state.txt" systemctl show circuit-breaker -p ActiveState -p SubState -p ExecMainStatus
+capture "$EVIDENCE/data-dir.txt" ls -la /var/lib/circuit-breaker
+capture "$EVIDENCE/package-contents.txt" rpm -ql circuit-breaker
 
 section "Tier 3 complete"
