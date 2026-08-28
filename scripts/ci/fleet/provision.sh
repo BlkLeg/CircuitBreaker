@@ -90,7 +90,14 @@ VM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cb-fleet-${ROW_ID}-XXXXXX")"
 cb::fleet_scratch_cleanup() {
     [ -n "${VM_DIR:-}" ] || return 0
     if [ -f "$VM_DIR/qemu.pid" ]; then
-        kill "$(cat "$VM_DIR/qemu.pid")" 2>/dev/null || true
+        local pid
+        pid="$(cat "$VM_DIR/qemu.pid")"
+        # kill -0 first: signalling an already-dead pid is the normal case here,
+        # not a failure. What is worth reporting is a VM that refuses to die,
+        # because that is a leak on a host that will run this again.
+        if kill -0 "$pid" 2>/dev/null && ! kill "$pid" 2>/dev/null; then
+            printf '::error::could not terminate qemu pid %s — VM leaked\n' "$pid" >&2
+        fi
     fi
     rm -rf "$VM_DIR"
 }
@@ -146,7 +153,9 @@ deadline=$(( SECONDS + 300 ))
 until ssh "${SSH_OPTS[@]}" fedora@127.0.0.1 true 2>/dev/null; do
     if [ "$SECONDS" -ge "$deadline" ]; then
         printf '::error::VM did not accept SSH within 300s — console log follows\n' >&2
-        tail -50 "$VM_DIR/console.log" >&2 || true
+        if ! tail -50 "$VM_DIR/console.log" >&2; then
+            cb::skipped "console log" "could not be read from the failing VM"
+        fi
         exit 1
     fi
     sleep 3
@@ -160,8 +169,10 @@ until ssh "${SSH_OPTS[@]}" fedora@127.0.0.1 \
         'test -f /var/lib/cloud/cb-fixture-ready' 2>/dev/null; do
     if [ "$SECONDS" -ge "$deadline" ]; then
         printf '::error::cloud-init fixture did not complete within 600s\n' >&2
-        ssh "${SSH_OPTS[@]}" fedora@127.0.0.1 \
-            'sudo tail -80 /var/log/cloud-init-output.log' >&2 || true
+        if ! ssh "${SSH_OPTS[@]}" fedora@127.0.0.1 \
+                'sudo tail -80 /var/log/cloud-init-output.log' >&2; then
+            cb::skipped "cloud-init log" "could not be read from the failing VM"
+        fi
         exit 1
     fi
     sleep 5
@@ -177,8 +188,10 @@ done
 if ! ssh "${SSH_OPTS[@]}" fedora@127.0.0.1 \
         'systemctl is-active --quiet postgresql && systemctl is-active --quiet valkey' 2>/dev/null; then
     printf '::error::fixture marker present but its services are not active — the guest reported ready and is not\n' >&2
-    ssh "${SSH_OPTS[@]}" fedora@127.0.0.1 \
-        'systemctl is-active postgresql valkey; sudo tail -40 /var/log/cloud-init-output.log' >&2 || true
+    if ! ssh "${SSH_OPTS[@]}" fedora@127.0.0.1 \
+            'systemctl is-active postgresql valkey; sudo tail -40 /var/log/cloud-init-output.log' >&2; then
+        cb::skipped "fixture diagnostics" "could not be read from the failing VM"
+    fi
     exit 1
 fi
 
