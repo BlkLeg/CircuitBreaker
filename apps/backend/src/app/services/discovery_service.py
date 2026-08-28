@@ -889,8 +889,6 @@ def _scan_setup(job_id: int) -> dict | None:
             nmap_args = job.label[len(_NMAP_OVERRIDE_PREFIX) :]
 
         if job.profile_id:
-            from app.db.models import DiscoveryProfile
-
             profile = (
                 db.query(DiscoveryProfile).filter(DiscoveryProfile.id == job.profile_id).first()
             )

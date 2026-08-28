@@ -602,8 +602,6 @@ def update_monitor(db: Session, monitor_id: int, payload: MonitorUpdate) -> dict
         return None
     data = payload.model_dump(exclude_unset=True)
     if "config" in data and data["config"] is not None:
-        from app.schemas.monitor import CONFIG_MODELS
-
         model = CONFIG_MODELS[item.check_type]
         data["config"] = model(**data["config"]).model_dump(exclude_unset=True)
         item.params = data.pop("config")

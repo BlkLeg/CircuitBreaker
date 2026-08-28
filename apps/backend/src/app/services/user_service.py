@@ -379,8 +379,6 @@ def consume_invite_for_oauth(
 
     expires = invite.expires
     if expires.tzinfo is None:
-        from datetime import UTC
-
         expires = expires.replace(tzinfo=UTC)
     if expires < utcnow():
         invite.status = "expired"

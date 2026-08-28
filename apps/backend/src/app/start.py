@@ -301,7 +301,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.worker_type:
         import asyncio
         import logging
-        import os
 
         from app.core.log_redaction import install_global_log_redaction
         from app.workers.main import _TYPE_MAP, _dispatch

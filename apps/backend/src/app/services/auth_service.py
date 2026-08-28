@@ -585,8 +585,6 @@ def bootstrap_status(db: Session) -> BootstrapStatusResponse:
     except HTTPException:
         raise
     except Exception as e:
-        import logging
-
         logging.getLogger(__name__).warning(
             "bootstrap_status check failed (DB likely empty): %s", e
         )
@@ -618,9 +616,6 @@ def _generate_and_persist_vault_key(db: Session) -> str | None:
 
         new_key = vault_service.generate_vault_key()
         vault_service.write_vault_key_to_env(new_key)
-
-        import hashlib
-        import os
 
         if cfg_fresh:
             cfg_fresh.vault_key = None

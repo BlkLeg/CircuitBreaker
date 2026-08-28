@@ -652,8 +652,6 @@ def _client_secret(cfg: dict) -> str:
     if not enc:
         return ""
     try:
-        from app.services.credential_vault import get_vault
-
         return str(get_vault().decrypt(enc))
     except Exception:
         return str(enc)

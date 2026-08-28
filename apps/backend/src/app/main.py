@@ -943,7 +943,6 @@ async def lifespan(app: FastAPI):
 
     # Disable expired demo accounts (M-18: demo user expiration enforcement)
     def _disable_expired_demo_users() -> None:
-        from app.core.time import utcnow
         from app.db.models import User
 
         try:
@@ -1248,8 +1247,6 @@ async def lifespan(app: FastAPI):
 
     with get_session_context() as pxmx_db:
         from sqlalchemy import func
-
-        from app.db.models import IntegrationConfig
 
         has_proxmox = (
             pxmx_db.query(IntegrationConfig)

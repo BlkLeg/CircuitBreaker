@@ -193,7 +193,6 @@ def docker_discover(
 
     try:
         import importlib
-        import os
 
         docker_host = os.environ.get("CB_DOCKER_HOST", "").strip()
         base_url = docker_host if docker_host else f"unix://{socket_path}"
