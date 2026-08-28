@@ -1,5 +1,24 @@
 #!/bin/bash
+# nfpm scripts.postinstall — rpm %post, deb postinst, apk .post-install.
 set -e
+
+# ── is this an upgrade? ─────────────────────────────────────────────────────
+# Everything below the config/env section is identical either way; what differs
+# is the closing act. A fresh install needs the "next steps" text and a service
+# the operator starts once they have pointed CB_DB_URL somewhere. An upgrade
+# needs the running service to come back on the new binary, and needs to name
+# the backup preinstall.sh just took -- printing "Next steps: 1. Edit the env
+# file" at an operator who has been running this for a year is noise that hides
+# the one line that matters.
+#
+#   dpkg postinst : "configure" with the OLD version as $2 on upgrade, empty on install
+#   rpm  %post    : 1 on a fresh install, 2 or more on upgrade
+#   apk           : no argument
+case "${1:-}" in
+    configure) if [ -n "${2:-}" ]; then IS_UPGRADE=1; else IS_UPGRADE=0; fi ;;
+    "")        IS_UPGRADE=0 ;;
+    *)         if [ "$1" -ge 2 ] 2>/dev/null; then IS_UPGRADE=1; else IS_UPGRADE=0; fi ;;
+esac
 
 # Create system user if it doesn't exist
 if ! id -u circuitbreaker >/dev/null 2>&1; then
@@ -81,13 +100,47 @@ done
 systemctl daemon-reload
 systemctl enable circuit-breaker.service
 
-echo ""
-echo "Circuit Breaker installed successfully."
-echo ""
-echo "  Next steps:"
-echo "    1. Edit /etc/circuit-breaker/circuit-breaker.env"
-echo "       - Set CB_DB_URL to your PostgreSQL connection string"
-echo "       - Ensure PostgreSQL, Redis, and NATS are running"
-echo "    2. sudo systemctl start circuit-breaker"
-echo "    3. Open http://localhost:8080"
-echo ""
+if [ "$IS_UPGRADE" -eq 1 ]; then
+  # try-restart, not restart: it acts only on a unit that was already running,
+  # so an upgrade cannot start a service the operator had deliberately stopped.
+  # Without this the upgrade leaves the OLD binary running -- rpm replaces the
+  # files underneath a live process and nothing tells systemd -- so the operator
+  # sees a successful upgrade and a service still serving the previous version
+  # until something restarts it.
+  systemctl try-restart circuit-breaker.service
+
+  echo ""
+  echo "Circuit Breaker upgraded successfully."
+  echo ""
+  # Name the newest pre-upgrade dump rather than a glob. This is the rollback
+  # artifact preinstall.sh just wrote, and the operator who needs it is not in a
+  # position to go looking.
+  _latest_backup=""
+  for _candidate in /var/lib/circuit-breaker/backups/pre-upgrade-*.sql; do
+    [ -f "$_candidate" ] && _latest_backup="$_candidate"
+  done
+  if [ -n "$_latest_backup" ]; then
+    echo "  Rolling back this upgrade:"
+    echo "    1. sudo systemctl stop circuit-breaker"
+    echo "    2. reinstall the previous package (dnf downgrade / apt install circuit-breaker=<old>)"
+    echo "    3. sudo circuit-breaker-rollback $_latest_backup"
+    echo ""
+    echo "  Step 2 is not optional. Migrations have run, and the pre-upgrade dump"
+    echo "  restores the OLD schema — the new binary cannot serve it."
+  else
+    echo "  No pre-upgrade backup was taken, so this upgrade cannot be rolled back."
+    echo "  See docs/installation/upgrading.md."
+  fi
+  echo ""
+else
+  echo ""
+  echo "Circuit Breaker installed successfully."
+  echo ""
+  echo "  Next steps:"
+  echo "    1. Edit /etc/circuit-breaker/circuit-breaker.env"
+  echo "       - Set CB_DB_URL to your PostgreSQL connection string"
+  echo "       - Ensure PostgreSQL, Redis, and NATS are running"
+  echo "    2. sudo systemctl start circuit-breaker"
+  echo "    3. Open http://localhost:8080"
+  echo ""
+fi

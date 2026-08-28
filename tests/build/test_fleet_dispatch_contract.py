@@ -85,3 +85,58 @@ def test_fleet_scripts_record_failures_rather_than_swallowing_them():
                 f"collection. Use an explicit branch, or cb::skipped for the "
                 f"informational case:\n    {stripped}"
             )
+
+
+# ── Phase 3: the row and the arguments have to agree ───────────────────────
+
+
+def test_dispatch_reads_the_row_mode_from_the_matrix():
+    """Phase 3 gave matrix.yaml a `mode`, and the dispatcher has to honour it.
+
+    Running the install-only journey for a row that publishes an upgrade
+    guarantee would be a green result standing in for an observation nobody
+    made -- the same shape as #106's missing scanner reading as a clean scan.
+    """
+    text = DISPATCH.read_text(encoding="utf-8")
+    assert "cb::matrix_field" in text, (
+        "dispatch.sh must read the row out of matrix.yaml rather than assuming what "
+        "the row it was handed claims"
+    )
+    assert "ROW_MODE" in text
+
+
+def test_dispatch_refuses_an_upgrade_row_without_a_previous_package():
+    text = DISPATCH.read_text(encoding="utf-8")
+    assert "mode: upgrade and needs a previous package" in text, (
+        "an upgrade row with nothing to upgrade FROM must fail, not quietly run the "
+        "install journey"
+    )
+
+
+def test_dispatch_refuses_a_candidate_that_is_its_own_previous_version():
+    """dnf treats an upgrade to the identical NEVRA as a no-op and exits zero, so
+    passing the same file twice would produce a passing row that upgraded
+    nothing."""
+    text = DISPATCH.read_text(encoding="utf-8")
+    assert "same file name" in text
+
+
+def test_dispatch_keeps_the_two_versions_in_separate_directories():
+    """tier3-artifact.sh installs a whole directory at a time -- that is how the
+    companion nats package gets in -- so two versions in one directory would hand
+    dnf both and let it choose, which is not an upgrade test."""
+    text = DISPATCH.read_text(encoding="utf-8")
+    assert "/opt/cb-tier3/previous" in text
+
+
+def test_dispatch_uses_one_definition_of_the_matrix_reader():
+    """P1. provision.sh carried its own awk copy until Phase 3 needed a second
+    reader; two parsers for the file that defines what the project claims works
+    is exactly the duplication the principle exists to prevent."""
+    provision = (REPO_ROOT / "scripts" / "ci" / "fleet" / "provision.sh").read_text(encoding="utf-8")
+    common = (REPO_ROOT / "scripts" / "ci" / "lib" / "common.sh").read_text(encoding="utf-8")
+    assert "cb::matrix_field()" in common, "the shared reader is not in lib/common.sh"
+    assert "fleet::matrix_field()" not in provision, (
+        "provision.sh still defines its own matrix reader"
+    )
+    assert "cb::matrix_field" in provision

@@ -71,9 +71,9 @@ when this ADR is accepted. Accepting the ADR decides the *structure* — four ti
 definition each in `scripts/ci/`, and the rule that a platform is claimed only where it is
 verified. It does not assert that the verification named above has been built.
 
-| Tier | Guarantee | In force when | State at this ADR's approval |
+| Tier | Guarantee | In force when | State |
 |---|---|---|---|
-| 1 | Install, boot, upgrade, roll back — deb/rpm amd64 | Phase 3 adds the upgrade and rollback rows to `matrix.yaml` and they pass | **Not in force.** Phase 2 ships one row (`fedora-rpm-amd64`) that installs and boots. Upgrade and rollback are unbuilt. |
+| 1 | Install, boot, upgrade, roll back — deb/rpm amd64 | The `mode: upgrade` row passes against a release candidate and its evidence is recorded | **Not in force.** Phase 3 added `fedora-rpm-amd64-upgrade` and the assertions behind it, and fixed the packaging defects it exists to catch. The row has not yet been executed against a candidate, so nothing backs the claim. |
 | 2 | Install and boot — deb/rpm arm64 | The §8.2 L2 job extends `artifact-smoke.yml`'s `ubuntu-22.04-arm` run to the full boot-and-exercise contract | **Not in force.** That job still asserts only that the binary prints a version. |
 | 3 | Build only — apk, AppImage, tarball, `pkg.tar.zst` | The build gate is green for each format | **In force.** `make build` produces all four and `build.yml` gates them. |
 
@@ -86,7 +86,18 @@ Two consequences follow while any row above reads *not in force*:
   and doing so is what moves Tier 1 into force — not an edit to this table.
 
 A tier moves into force by a commit that adds the named evidence, at which point this table's
-last column is updated in the same change. Editing the last column alone is a defect.
+last column is updated in the same change. Editing the last column to claim more than the
+evidence supports is a defect; keeping it current as the state genuinely changes is the point
+of the column.
+
+**2026-08-28.** Phase 3's first slice built the upgrade and rollback contract and the row that
+carries it. It also found and fixed three packaging defects that would have made the Tier 1
+guarantee unmeetable in principle rather than merely unproven: the package path took no
+pre-upgrade backup (no `preinstall` hook existed), the documented rollback tool was not in
+`nfpm.yaml`'s contents at all, and `preremove.sh` stopped and disabled the unit on upgrade
+transactions — which, because rpm runs the old package's `%preun` after the new package's
+`%post`, left every upgraded host with the service down and disabled. Tier 1 stays **not in
+force** until the row runs.
 
 ## Rejected alternatives
 

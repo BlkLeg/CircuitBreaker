@@ -56,6 +56,38 @@ cb::evidence_dir() {
     printf '%s' "$CB_EVIDENCE_ROOT"
 }
 
+cb::matrix_field() {
+    # Read one field of one row out of scripts/ci/fleet/matrix.yaml.
+    #
+    # Lives here rather than in provision.sh because dispatch.sh needs it too:
+    # Phase 3 gave rows a `mode`, and the dispatcher has to know whether the row
+    # it was handed is an upgrade row before it decides what to push. Two copies
+    # of a parser for the file that defines what the project claims works is
+    # exactly the duplication P1 exists to prevent.
+    #
+    # Not a YAML parser. The file is a flat list of `key: value` blocks by
+    # deliberate constraint (tests/build/test_fleet_matrix.py parses it the same
+    # way); if it ever needs nesting, both readers change together.
+    local row_id=$1 field=$2
+    local matrix="${3:-$CB_REPO_ROOT/scripts/ci/fleet/matrix.yaml}"
+    awk -v id="$row_id" -v key="$field" '
+        /^[[:space:]]*-[[:space:]]+id:/ {
+            # Exact match on the id value, not a substring: "fedora-rpm-amd64"
+            # is a prefix of "fedora-rpm-amd64-upgrade", so the substring test
+            # this replaced would have returned the install row for both.
+            value = $0
+            sub(/^[[:space:]]*-[[:space:]]+id:[[:space:]]*/, "", value)
+            gsub(/^"|"$/, "", value)
+            in_row = (value == id)
+        }
+        in_row && $0 ~ "^[[:space:]]*" key ":" {
+            sub("^[[:space:]]*" key ":[[:space:]]*", "")
+            gsub(/^"|"$/, "")
+            print; exit
+        }
+    ' "$matrix"
+}
+
 cb::use_go_bin() {
     # `go install` writes to `go env GOBIN`, or `go env GOPATH`/bin when GOBIN
     # is unset. Neither is on PATH by default on Fedora or on a GitHub runner,

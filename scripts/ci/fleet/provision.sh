@@ -36,23 +36,13 @@ if [ ! -w /dev/kvm ]; then
 fi
 
 # ── matrix lookup ───────────────────────────────────────────────────────────
-# One row in Phase 2, but read by id so Phase 3's rows do not require rewriting
-# every caller.
-fleet::matrix_field() {
-    local row_id=$1 field=$2
-    awk -v id="$row_id" -v key="$field" '
-        /^[[:space:]]*-[[:space:]]+id:/ { in_row = ($0 ~ id) }
-        in_row && $0 ~ "^[[:space:]]*" key ":" {
-            sub("^[[:space:]]*" key ":[[:space:]]*", "")
-            gsub(/^"|"$/, "")
-            print; exit
-        }
-    ' "$MATRIX"
-}
-
+# cb::matrix_field (lib/common.sh) is the one definition; dispatch.sh reads the
+# same file for a row's `mode`, and Phase 3's second row made the id matching
+# load-bearing -- "fedora-rpm-amd64" is a prefix of "fedora-rpm-amd64-upgrade",
+# which the substring test this replaced would have resolved to the wrong row.
 ROW_ID="${1:-fedora-rpm-amd64}"
-IMAGE_URL="$(fleet::matrix_field "$ROW_ID" image_url)"
-IMAGE_SHA="$(fleet::matrix_field "$ROW_ID" image_sha256)"
+IMAGE_URL="$(cb::matrix_field "$ROW_ID" image_url "$MATRIX")"
+IMAGE_SHA="$(cb::matrix_field "$ROW_ID" image_sha256 "$MATRIX")"
 if [ -z "$IMAGE_URL" ] || [ -z "$IMAGE_SHA" ]; then
     printf '::error::row %s has no image_url/image_sha256 in %s\n' "$ROW_ID" "$MATRIX" >&2
     exit 1

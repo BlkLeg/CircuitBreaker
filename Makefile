@@ -238,7 +238,7 @@ security-check: ## Run security scans (gate mode — fails on HIGH/CRIT)
 security-report: ## Run full security scan report (non-blocking)
 	./scripts/security_scan.sh
 
-.PHONY: lint format test test-db test-backend test-frontend security-check security-report verify-fast verify verify-full
+.PHONY: lint format test test-db test-backend test-frontend security-check security-report verify-fast verify verify-full verify-fleet verify-fleet-upgrade
 
 # This target is NOT `scripts/ci/tier0-static.sh`, and that is deliberate
 # rather than an oversight: lint-staged (root package.json) runs `make lint`
@@ -313,7 +313,8 @@ verify-full: verify-fast ## Tier 0 + full Tier 1 including the backend suite (me
 
 # T3. Not part of `verify` and deliberately not wired into any workflow yet: it
 # boots a VM, downloads a 556MB image on first run, and takes minutes, which is
-# not a pre-push gate. Phase 2 ships one row; Phase 3 adds the matrix.
+# not a pre-push gate. Phase 2 shipped the install row; Phase 3 adds the upgrade
+# and rollback row below, and the remaining formats and architectures after it.
 #
 # CB_CANDIDATE is required rather than defaulted to a dist/ glob. The claim this
 # tier makes is "*this* candidate installs and boots"; a target that tests
@@ -326,3 +327,29 @@ verify-fleet: ## Tier 3 — install+boot the candidate on an ephemeral Fedora VM
 	  echo "  make build && make verify-fleet CB_CANDIDATE=dist/native/circuit-breaker_$$(cat VERSION)_amd64.rpm"; \
 	  exit 2; }
 	scripts/ci/fleet/dispatch.sh fedora-rpm-amd64 "$(CB_CANDIDATE)"
+
+# The other half of the Tier 1 guarantee. Two artifacts, because an upgrade needs
+# something to upgrade FROM: the tier installs CB_CANDIDATE_PREVIOUS, boots it,
+# seeds a marker, upgrades to CB_CANDIDATE, then executes the documented rollback
+# and asserts the pre-upgrade schema and data are back.
+#
+# CB_CANDIDATE_PREVIOUS is an explicit path for the same reason CB_CANDIDATE is,
+# and one more: the two must be genuinely different versions. dnf treats an
+# "upgrade" to the identical NEVRA as a no-op and exits zero, so a defaulted or
+# mistyped path here would produce a passing run that upgraded nothing. dispatch.sh
+# rejects two files with the same name; it cannot tell you the versions inside
+# them differ, so build them from two different VERSION values.
+verify-fleet-upgrade: ## Tier 3 — upgrade N-1→N and roll back (CB_CANDIDATE=..., CB_CANDIDATE_PREVIOUS=...)
+	@test -n "$(CB_CANDIDATE)" || { \
+	  echo "ERROR: set CB_CANDIDATE to the package being upgraded TO, e.g."; \
+	  echo "  make verify-fleet-upgrade CB_CANDIDATE=dist/native/circuit-breaker_$$(cat VERSION)_amd64.rpm \\"; \
+	  echo "                            CB_CANDIDATE_PREVIOUS=/path/to/circuit-breaker_<older>_amd64.rpm"; \
+	  exit 2; }
+	@test -n "$(CB_CANDIDATE_PREVIOUS)" || { \
+	  echo "ERROR: set CB_CANDIDATE_PREVIOUS to the package being upgraded FROM."; \
+	  echo "  Build it by checking out the previous tag and running 'make build', or keep"; \
+	  echo "  the artifact from the last release. It must be a LOWER version than"; \
+	  echo "  CB_CANDIDATE, or dnf will treat the upgrade as a no-op and the row will"; \
+	  echo "  pass without having upgraded anything."; \
+	  exit 2; }
+	scripts/ci/fleet/dispatch.sh fedora-rpm-amd64-upgrade "$(CB_CANDIDATE)" "$(CB_CANDIDATE_PREVIOUS)"

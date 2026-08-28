@@ -16,12 +16,51 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 
 FLEET_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROW_ID="${1:?usage: dispatch.sh <row-id> <package-path>}"
-PACKAGE="${2:?usage: dispatch.sh <row-id> <package-path>}"
+ROW_ID="${1:?usage: dispatch.sh <row-id> <package-path> [previous-package-path]}"
+PACKAGE="${2:?usage: dispatch.sh <row-id> <package-path> [previous-package-path]}"
+# Optional, and required for exactly the rows that declare mode: upgrade.
+PREVIOUS="${3:-}"
 
 cb::require_file "$PACKAGE" "build it with 'make build' — dist/native/ holds the candidates"
 cb::require_tool scp
 cb::require_tool ssh
+
+# ── the row and the arguments have to agree ────────────────────────────────
+# The matrix says what each row claims; the arguments say what this invocation
+# can actually prove. Silently running an install-only journey for a row that
+# publishes an upgrade guarantee is the failure mode this whole tier exists to
+# stop -- a green result standing in for an observation nobody made.
+ROW_MODE="$(cb::matrix_field "$ROW_ID" mode "$FLEET_DIR/matrix.yaml")"
+if [ -z "$ROW_MODE" ]; then
+    printf '::error::row %s is not in %s, or declares no mode\n' "$ROW_ID" "$FLEET_DIR/matrix.yaml" >&2
+    exit 1
+fi
+case "$ROW_MODE" in
+    upgrade)
+        if [ -z "$PREVIOUS" ]; then
+            printf '::error::row %s declares mode: upgrade and needs a previous package to upgrade FROM.\n' "$ROW_ID" >&2
+            printf 'Pass it as the third argument, or use CB_CANDIDATE_PREVIOUS with make verify-fleet-upgrade.\n' >&2
+            exit 2
+        fi
+        cb::require_file "$PREVIOUS" "the version to upgrade from — build it from the previous tag, or keep the last release artifact"
+        if [ "$(basename "$PACKAGE")" = "$(basename "$PREVIOUS")" ]; then
+            printf '::error::candidate and previous are the same file name (%s).\n' "$(basename "$PACKAGE")" >&2
+            printf 'An upgrade from a version to itself proves nothing; dnf treats it as a no-op.\n' >&2
+            exit 2
+        fi
+        ;;
+    install)
+        if [ -n "$PREVIOUS" ]; then
+            printf '::error::row %s declares mode: install but a previous package was passed.\n' "$ROW_ID" >&2
+            printf 'Use the mode: upgrade row (%s-upgrade) to exercise upgrade and rollback.\n' "$ROW_ID" >&2
+            exit 2
+        fi
+        ;;
+    *)
+        printf '::error::row %s declares an unknown mode: %s\n' "$ROW_ID" "$ROW_MODE" >&2
+        exit 1
+        ;;
+esac
 
 EVIDENCE_ROOT="$(cb::evidence_dir)"
 ROW_EVIDENCE="$EVIDENCE_ROOT/diagnostics/tier3-$ROW_ID"
@@ -104,7 +143,8 @@ cb::section "Provision $ROW_ID"
 read -r SSH_PORT SSH_KEY VM_DIR < <("$FLEET_DIR/provision.sh" "$ROW_ID")
 
 cb::section "Push the candidate and the tier script"
-fleet::ssh fedora@127.0.0.1 'sudo mkdir -p /opt/cb-tier3 && sudo chown fedora /opt/cb-tier3'
+fleet::ssh fedora@127.0.0.1 \
+    'sudo mkdir -p /opt/cb-tier3/previous && sudo chown -R fedora /opt/cb-tier3'
 # Companion packages beside the candidate go too. `dnf install circuit-breaker`
 # on a real Fedora host also pulls circuit-breaker-nats, since the rpm recommends
 # it and dnf installs weak dependencies by default; installing from local files
@@ -119,9 +159,27 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERRO
     "${PUSH[@]}" \
     fedora@127.0.0.1:/opt/cb-tier3/
 
-cb::section "Execute tier3-artifact.sh in the guest"
+# The previous version goes to its own directory rather than beside the
+# candidate. tier3-artifact.sh installs a whole directory at a time -- that is
+# how the companion nats package gets in -- so two versions in one directory
+# would hand dnf both and let it pick, which is not an upgrade test.
+GUEST_PREVIOUS=""
+if [ -n "$PREVIOUS" ]; then
+    cb::section "Push the previous version ($(basename "$PREVIOUS"))"
+    PUSH_PREVIOUS=("$PREVIOUS")
+    for companion in "$(dirname "$PREVIOUS")"/circuit-breaker-nats_*."${PREVIOUS##*.}"; do
+        [ -f "$companion" ] && PUSH_PREVIOUS+=("$companion")
+    done
+    scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+        -i "$SSH_KEY" -P "$SSH_PORT" \
+        "${PUSH_PREVIOUS[@]}" \
+        fedora@127.0.0.1:/opt/cb-tier3/previous/
+    GUEST_PREVIOUS="/opt/cb-tier3/previous/$(basename "$PREVIOUS")"
+fi
+
+cb::section "Execute tier3-artifact.sh in the guest ($ROW_MODE)"
 fleet::ssh fedora@127.0.0.1 \
-    "sudo bash /opt/cb-tier3/tier3-artifact.sh /opt/cb-tier3/$(basename "$PACKAGE")"
+    "sudo bash /opt/cb-tier3/tier3-artifact.sh /opt/cb-tier3/$(basename "$PACKAGE") $GUEST_PREVIOUS"
 
 # Collect explicitly on the success path too, so the emptiness check below runs
 # against real content. The trap's copy is idempotent.

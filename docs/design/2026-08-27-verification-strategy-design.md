@@ -394,8 +394,13 @@ Each row names where it executes, because arm64 rows run on GitHub's native
 aarch64 runners rather than on the x86_64 fleet (§8.2):
 
 ```yaml
-- {distro: debian-12,   format: deb,         arch: amd64, runner: pve/9001,        tier: 1}
-- {distro: fedora-40,   format: rpm,         arch: amd64, runner: pve/9002,        tier: 1}
+# `mode` (added in Phase 3) is which half of a tier 1 claim the row exercises:
+# install = install, boot, exercise; upgrade = that, then upgrade N-1 -> N, then
+# execute the documented rollback. A tier 1 platform needs both rows.
+- {distro: debian-12,   format: deb,         arch: amd64, runner: pve/9001,        tier: 1, mode: install}
+- {distro: debian-12,   format: deb,         arch: amd64, runner: pve/9001,        tier: 1, mode: upgrade}
+- {distro: fedora-40,   format: rpm,         arch: amd64, runner: pve/9002,        tier: 1, mode: install}
+- {distro: fedora-40,   format: rpm,         arch: amd64, runner: pve/9002,        tier: 1, mode: upgrade}
 - {distro: ubuntu-22.04, format: deb,        arch: arm64, runner: gha/ubuntu-22.04-arm, tier: 2}
 - {distro: ubuntu-22.04, format: deb,        arch: arm64, runner: local/qemu-arm64, tier: 2}
 - {distro: alpine-3.20, format: apk,         arch: amd64, runner: pve/9005,        tier: 3}

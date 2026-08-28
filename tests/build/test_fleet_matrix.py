@@ -17,7 +17,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MATRIX = REPO_ROOT / "scripts" / "ci" / "fleet" / "matrix.yaml"
 
-_REQUIRED = {"id", "distro", "format", "arch", "runner", "tier", "image_url", "image_sha256"}
+_REQUIRED = {"id", "distro", "format", "arch", "runner", "tier", "mode", "image_url", "image_sha256"}
+_MODES = {"install", "upgrade"}
 
 
 def _rows() -> list[dict[str, str]]:
@@ -77,13 +78,74 @@ def test_row_ids_are_unique_and_path_safe():
         )
 
 
-def test_phase_2_ships_exactly_the_fedora_rpm_row():
-    """Phase 2 is one row by design (§11). Phase 3 is what adds breadth; a row
-    added here without its provisioning is a claim the tier cannot support."""
+def test_every_row_declares_a_known_mode():
+    """`mode` is which half of the Tier 1 guarantee a row actually exercises.
+
+    Phase 2's rows only installed and booted, and the tier field alone could not
+    say so -- a `tier: 1` row published "install, boot, upgrade and roll back"
+    while proving the first two. An unrecognised mode is a row whose claim
+    nobody can check, so it fails rather than defaulting to the weaker one.
+    """
+    for row in _rows():
+        assert row["mode"] in _MODES, (
+            f"row {row['id']}: mode must be one of {sorted(_MODES)}, got {row['mode']!r}"
+        )
+
+
+def test_every_tier_1_row_has_an_upgrade_row_backing_it():
+    """A tier 1 claim is "install, boot, upgrade and roll back". A tier 1 row with
+    no upgrade counterpart is three quarters of a promise, which is the state
+    Phase 2 shipped in and ADR 0005's in-force table exists to record."""
     rows = _rows()
-    assert len(rows) == 1, f"Phase 2 defines one row, found {len(rows)}"
-    row = rows[0]
-    assert row["distro"].startswith("fedora")
-    assert row["format"] == "rpm"
-    assert row["arch"] == "amd64"
-    assert row["runner"] == "local/qemu"
+    installs = {(r["distro"], r["format"], r["arch"]) for r in rows if r["tier"] == "1" and r["mode"] == "install"}
+    upgrades = {(r["distro"], r["format"], r["arch"]) for r in rows if r["tier"] == "1" and r["mode"] == "upgrade"}
+    unbacked = sorted(installs - upgrades)
+    assert not unbacked, (
+        f"tier 1 rows with no mode: upgrade counterpart: {unbacked}. Either add the "
+        f"upgrade row or drop the row to tier 2, which claims only install and boot."
+    )
+
+
+def test_upgrade_rows_reuse_an_install_row_platform():
+    """An upgrade row for a platform that is never install-tested would be
+    asserting the harder claim without the easier one."""
+    rows = _rows()
+    installs = {(r["distro"], r["format"], r["arch"]) for r in rows if r["mode"] == "install"}
+    for row in rows:
+        if row["mode"] != "upgrade":
+            continue
+        key = (row["distro"], row["format"], row["arch"])
+        assert key in installs, (
+            f"row {row['id']} upgrades a platform with no install row: {key}"
+        )
+
+
+def test_phase_3_ships_the_fedora_rpm_install_and_upgrade_rows():
+    """Phase 3's first slice is upgrade and rollback on the row Phase 2 built.
+    Breadth -- debian/deb, arm64, the tier 3 formats -- is the later slices, and
+    a row added here without its cloud-init fixture is a claim the tier cannot
+    support."""
+    rows = {row["id"]: row for row in _rows()}
+    assert set(rows) == {"fedora-rpm-amd64", "fedora-rpm-amd64-upgrade"}, (
+        f"unexpected matrix rows: {sorted(rows)}"
+    )
+    for row in rows.values():
+        assert row["distro"].startswith("fedora")
+        assert row["format"] == "rpm"
+        assert row["arch"] == "amd64"
+        assert row["runner"] == "local/qemu"
+    assert rows["fedora-rpm-amd64"]["mode"] == "install"
+    assert rows["fedora-rpm-amd64-upgrade"]["mode"] == "upgrade"
+
+
+def test_rows_sharing_a_platform_pin_the_same_image():
+    """The install and upgrade rows are the same claim about the same host. Two
+    different images would make a passing upgrade row say nothing about the
+    install row's platform."""
+    by_platform: dict[tuple[str, str], set[str]] = {}
+    for row in _rows():
+        by_platform.setdefault((row["distro"], row["arch"]), set()).add(row["image_sha256"])
+    for platform, digests in by_platform.items():
+        assert len(digests) == 1, (
+            f"{platform} rows pin {len(digests)} different images: {sorted(digests)}"
+        )

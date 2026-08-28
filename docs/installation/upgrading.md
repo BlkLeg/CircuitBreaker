@@ -107,6 +107,47 @@ Re-run the installer with the `--version` flag. Give the version **without** the
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | bash -s -- --version 0.3.5
 ```
 
+### Distribution packages (deb / rpm)
+
+A package install is not the `install.sh` layout and does not share its paths, so the
+`/opt/circuitbreaker/...` command below does not exist on these hosts. Use the wrapper the package
+ships instead:
+
+```bash
+sudo circuit-breaker-rollback
+```
+
+Called with no argument it lists the pre-upgrade backups it can restore. Called with one it performs
+the restore.
+
+**Reinstall the previous package first.** This is not optional, and it is the step that is easy to
+miss:
+
+```bash
+# 1. stop the service
+sudo systemctl stop circuit-breaker
+
+# 2. go back to the previous package
+sudo dnf downgrade circuit-breaker          # Fedora / RHEL
+sudo apt install circuit-breaker=<old>      # Debian / Ubuntu
+
+# 3. restore the dump the upgrade took
+sudo circuit-breaker-rollback /var/lib/circuit-breaker/backups/pre-upgrade-<stamp>.sql
+```
+
+The pre-upgrade dump carries the **old** schema. Circuit Breaker runs `alembic upgrade head` at
+startup, so restoring it while the newer binary is installed migrates the schema straight back
+forward and the rollback silently undoes itself. Downgrading first is what prevents that.
+
+The dump is taken by the package's `preinstall` hook, which runs on upgrade transactions only. Like
+`install.sh --upgrade`, **it fails the upgrade if the backup cannot be taken** rather than migrating
+with nothing to go back to. It skips the backup, and says so, in the two cases where there is
+nothing at risk: no environment file, or a database this host cannot reach.
+
+> `apk` packages get no pre-upgrade backup. Alpine calls a separate `.pre-upgrade` script that nfpm
+> does not emit, which is one reason `apk` is a build-only (Tier 3) format rather than a Tier 1 one.
+> See [ADR 0005](../adr/0005-verification-tiers-and-platform-support.md).
+
 ### Docker Compose
 
 Set `CB_TAG` in `~/.circuitbreaker/.env` to the previous version, then:
@@ -138,6 +179,11 @@ before it stops the services. Two things about it are worth knowing before you n
   ```bash
   sudo /opt/circuitbreaker/deploy/scripts/restore.sh ${CB_DATA_DIR}/backups/pre-upgrade-<stamp>.sql
   ```
+
+  That path is the `install.sh` layout. On a deb/rpm host the same script is at
+  `/usr/local/share/circuit-breaker/deploy/scripts/restore.sh` and expects a different unit name,
+  role and environment file — run `sudo circuit-breaker-rollback <file>` there, which supplies them.
+  See [Distribution packages](#distribution-packages-deb--rpm) above.
 
   Note that a bare dump restores the **database only** — no `uploads/`, no `CB_VAULT_KEY` rewrite, no
   nginx site config. That is the right shape for rolling back an upgrade, where those are unchanged.

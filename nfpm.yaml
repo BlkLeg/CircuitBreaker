@@ -49,6 +49,30 @@ contents:
     file_info:
       mode: 0644
 
+  # The rollback path, and the tool that performs it.
+  #
+  # docs/release/1.0.0-compatibility-policy.md defines rollback as restoring the
+  # complete pre-upgrade backup, and docs/installation/upgrading.md printed
+  # `/opt/circuitbreaker/deploy/scripts/restore.sh` as the command that does it.
+  # That path belongs to the install.sh layout; a deb/rpm host has no such file,
+  # because restore.sh was never in this list. The documented recovery for a bad
+  # upgrade could not be performed on a packaged install at all. Shipped here so
+  # it can be, with packaging/rollback.sh supplying this layout's paths --
+  # restore.sh already takes them as overridable variables and needed only a
+  # caller. Found by ADR 0005 Phase 3.
+  #
+  # Sourced from the repository rather than dist/native/bundle/deploy/ so this
+  # does not depend on build_native_release.py having staged the bundle tree
+  # before nfpm runs.
+  - src: deploy/scripts/restore.sh
+    dst: /usr/local/share/circuit-breaker/deploy/scripts/restore.sh
+    file_info:
+      mode: 0755
+  - src: packaging/rollback.sh
+    dst: /usr/local/bin/circuit-breaker-rollback
+    file_info:
+      mode: 0755
+
   # Create empty dirs
   - dst: /var/lib/circuit-breaker
     type: dir
@@ -68,6 +92,12 @@ contents:
       mode: 0755
 
 scripts:
+  # preinstall takes the pre-upgrade database backup on an upgrade transaction
+  # and does nothing on a fresh install. Without it the package path migrated the
+  # schema with nothing to roll back to, while both the compatibility policy and
+  # the upgrade docs promised the backup had been taken -- true only of the
+  # install.sh path, which does it in deploy/setup.sh's run_upgrade.
+  preinstall: packaging/preinstall.sh
   postinstall: packaging/postinstall.sh
   preremove: packaging/preremove.sh
 
@@ -94,12 +124,20 @@ overrides:
       - nats-server
     recommends:
       - postgresql
+      # postgresql-client, not just the server: preinstall.sh's pre-upgrade
+      # backup needs pg_dump and pg_isready, and a host pointing CB_DB_URL at a
+      # database on another machine installs no server at all. Without a client
+      # the gate can only skip the backup and say so, which is a rollback the
+      # operator does not have.
+      - postgresql-client
       - redis-server
   rpm:
     depends:
       - glibc
     recommends:
       - postgresql-server
+      # The client package, for pg_dump/pg_isready — see the deb note above.
+      - postgresql
       - redis
       # Fedora packages no broker, so this names our own. `recommends` is the
       # right strength here rather than `depends`: dnf installs weak dependencies
