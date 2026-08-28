@@ -1,7 +1,8 @@
 # ADR 0005: Verification Tiers and Platform Support
 
-**Status:** Proposed
+**Status:** Accepted for 1.0.0
 **Date:** 2026-08-27
+**Approved:** 2026-08-28 by shawnji, wearing the architecture, release and security hats (owner-map.md escalation steps 3-5). This project has one codeowner, so approval and review are the same person; EXC-002 records that deviation and the automated gates that stand in for the second reviewer.
 **Requirements:** REL-19, RC-08, AGT-01, SEC-18
 **Decision owners:** Architecture, release, security
 **Design:** `docs/design/2026-08-27-verification-strategy-design.md`
@@ -50,7 +51,9 @@ The four-minute T1 budget is a hard constraint. A gate slower than the developer
 patience is bypassed, and a bypassed gate is worse than no gate because branch protection
 still reports it as satisfied.
 
-Platform support becomes declared tiers with stated guarantees:
+Platform support becomes declared tiers with stated guarantees. The table below is the
+target contract; **Tier guarantees: when they take effect**, immediately after it, states
+which of them are in force today and which are not:
 
 - **Tier 1** — guaranteed to install, boot, upgrade and roll back: deb/rpm on amd64.
 - **Tier 2** — guaranteed to install and boot: deb/rpm on arm64, verified on
@@ -60,6 +63,30 @@ Platform support becomes declared tiers with stated guarantees:
 Three further rules apply repo-wide: a gate may not pass by not running; test
 configuration that changes semantics must be branch-invariant; and evidence collection is
 part of the gate, not an optional trailing step.
+
+### Tier guarantees: when they take effect
+
+A tier guarantee is a published promise, so it enters force when its evidence exists and not
+when this ADR is accepted. Accepting the ADR decides the *structure* — four tiers, one
+definition each in `scripts/ci/`, and the rule that a platform is claimed only where it is
+verified. It does not assert that the verification named above has been built.
+
+| Tier | Guarantee | In force when | State at this ADR's approval |
+|---|---|---|---|
+| 1 | Install, boot, upgrade, roll back — deb/rpm amd64 | Phase 3 adds the upgrade and rollback rows to `matrix.yaml` and they pass | **Not in force.** Phase 2 ships one row (`fedora-rpm-amd64`) that installs and boots. Upgrade and rollback are unbuilt. |
+| 2 | Install and boot — deb/rpm arm64 | The §8.2 L2 job extends `artifact-smoke.yml`'s `ubuntu-22.04-arm` run to the full boot-and-exercise contract | **Not in force.** That job still asserts only that the binary prints a version. |
+| 3 | Build only — apk, AppImage, tarball, `pkg.tar.zst` | The build gate is green for each format | **In force.** `make build` produces all four and `build.yml` gates them. |
+
+Two consequences follow while any row above reads *not in force*:
+
+- `docs/release/1.0.0-support-contract.md` must not publish tier language, and must not promote
+  a platform row on the strength of this table. RC-02 requires that every supported row map to a
+  passing acceptance job; a tier whose job does not exist cannot promote anything.
+- `make verify-fleet` gates nothing and is not a release gate. Wiring it to one is Phase 3 work,
+  and doing so is what moves Tier 1 into force — not an edit to this table.
+
+A tier moves into force by a commit that adds the named evidence, at which point this table's
+last column is updated in the same change. Editing the last column alone is a defect.
 
 ## Rejected alternatives
 

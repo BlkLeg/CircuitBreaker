@@ -40,12 +40,21 @@ VALID_INVALIDATION_STATES = {
     "superseded",
     "exception",
 }
+# RC-07 requires the ledger to record how each requirement is verified, not only who
+# owns it. Without this the column can be added and then left blank, which reads as
+# "no mode" rather than as the unanswered question it is.
+VALID_MODES = {
+    "automated",  # tests, gates, scanners or CI jobs decide it with no human step
+    "manual",  # a human decision, review, approval, signature or physical act decides it
+    "hybrid",  # an automated result that a human must also review, approve or author
+}
 REQUIRED_LEDGER_FIELDS = [
     "requirement_id",
     "requirement_source",
     "summary",
     "owner",
     "reviewer",
+    "mode",
     "status",
     "commit",
     "version",
@@ -211,7 +220,12 @@ def validate_ledger(
                 f"{display_path(ledger_path)}:{index}: invalid invalidation_state for "
                 f"{rid}: {row['invalidation_state']}"
             )
-        for field in ("owner", "reviewer", "version", "requirement_source"):
+        if row["mode"] not in VALID_MODES:
+            fail(
+                f"{display_path(ledger_path)}:{index}: invalid mode for {rid}: "
+                f"{row['mode']!r}. RC-07 requires one of {sorted(VALID_MODES)}."
+            )
+        for field in ("owner", "reviewer", "mode", "version", "requirement_source"):
             if not row[field].strip():
                 fail(f"{display_path(ledger_path)}:{index}: {rid} missing {field}")
 

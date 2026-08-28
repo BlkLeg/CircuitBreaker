@@ -8,6 +8,7 @@
 Every passed ledger row must identify:
 
 - requirement ID;
+- verification mode (`automated`, `manual`, or `hybrid`), per RC-07;
 - exact Git commit;
 - version string;
 - artifact digest or container digest;
