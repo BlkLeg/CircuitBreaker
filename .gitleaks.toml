@@ -35,6 +35,15 @@ paths = [
   # history scan cannot reach it -- but the local gate scans the working tree
   # with --no-git, where it is just another file with a session key in it.
   '\.superpowers/.*',
+  # Tier 0-3 evidence (.gitignore:104). Same shape as the entry above: never
+  # committed, unreachable by CI's history scan, and read by the local gate only
+  # because --no-git walks the working tree. It is machine output -- boot
+  # consoles, journals, package listings -- and a Fedora guest's console log
+  # contains the distro's own kernel signing key fingerprint, which
+  # generic-api-key scores as a credential. It is a public certificate
+  # identifier. Without this, running `make verify-fleet` made the next
+  # `make verify` fail on the evidence the first one produced.
+  'artifacts/.*',
 ]
 
 [[allowlists]]

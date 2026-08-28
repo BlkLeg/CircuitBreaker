@@ -227,6 +227,18 @@ TRIVY_RAN=false
 TRIVY_IGNORE=""
 [ -f .trivyignore ] && TRIVY_IGNORE="--ignorefile .trivyignore"
 TRIVY_SKIP_DIRS="--skip-dirs .venv --skip-dirs node_modules --skip-dirs dist"
+
+# Trivy's vulnerability database is ~110MB and `docker run --rm` throws the
+# container away with it, so without a host cache mount every single run
+# redownloads it. Measured 2026-08-27: `make verify` at 4m55s against a 3m17s
+# baseline and a 4-minute hard budget, with "[vulndb] Downloading vulnerability
+# DB..." in the log on a machine that had just run the same scan. It is also an
+# offline problem -- a gate that needs 110MB of network per invocation fails red
+# on a train with nothing wrong in the tree. Native trivy already caches here by
+# default; this gives the dockerised path the same durability.
+TRIVY_CACHE="${TRIVY_CACHE:-$XDG_CACHE_HOME/trivy}"
+mkdir -p "$TRIVY_CACHE"
+TRIVY_CACHE_MOUNT=(-v "$TRIVY_CACHE:/root/.cache/trivy")
 # Native-first: prefer local trivy binary over Docker
 if command -v trivy > /dev/null 2>&1; then
     TRIVY_RAN=true
@@ -241,13 +253,13 @@ if command -v trivy > /dev/null 2>&1; then
 elif docker_available; then
     TRIVY_RAN=true
     if $GATE_MODE; then
-        if ! docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy fs \
+        if ! docker run --rm -v "$(pwd):/workspace" "${TRIVY_CACHE_MOUNT[@]}" -w /workspace aquasec/trivy fs \
             --exit-code 1 --severity HIGH,CRITICAL --ignorefile /workspace/.trivyignore $TRIVY_SKIP_DIRS . >> "$REPORT_FILE" 2>&1; then
             GATE_FAILURES=$((GATE_FAILURES + 1))
             echo "  ⚠ GATE FAILURE: Trivy HIGH/CRIT findings" >> "$REPORT_FILE"
         fi
     else
-        docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy fs \
+        docker run --rm -v "$(pwd):/workspace" "${TRIVY_CACHE_MOUNT[@]}" -w /workspace aquasec/trivy fs \
             --ignorefile /workspace/.trivyignore $TRIVY_SKIP_DIRS . >> "$REPORT_FILE" 2>&1 || true
     fi
 fi
@@ -276,13 +288,13 @@ if command -v trivy > /dev/null 2>&1; then
     fi
 elif docker_available; then
     if $GATE_MODE; then
-        if ! docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy config \
+        if ! docker run --rm -v "$(pwd):/workspace" "${TRIVY_CACHE_MOUNT[@]}" -w /workspace aquasec/trivy config \
             --exit-code 1 --severity HIGH,CRITICAL --ignorefile /workspace/.trivyignore $TRIVY_SKIP_DIRS /workspace >> "$REPORT_FILE" 2>&1; then
             GATE_FAILURES=$((GATE_FAILURES + 1))
             echo "  ⚠ GATE FAILURE: Trivy config HIGH/CRIT" >> "$REPORT_FILE"
         fi
     else
-        docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy config \
+        docker run --rm -v "$(pwd):/workspace" "${TRIVY_CACHE_MOUNT[@]}" -w /workspace aquasec/trivy config \
             --ignorefile /workspace/.trivyignore $TRIVY_SKIP_DIRS /workspace >> "$REPORT_FILE" 2>&1 || true
     fi
 else

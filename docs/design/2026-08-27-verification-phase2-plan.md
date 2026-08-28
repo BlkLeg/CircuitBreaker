@@ -1228,3 +1228,101 @@ git commit -m "docs(fleet): Phase 2 findings and the measured Tier 3 wall clock"
 **Placeholders.** Two, both deliberate and both bounded by a step that resolves them: `image_url` and `image_sha256` in Task 1 Step 4, which Task 1 Step 3 resolves with exact commands and Task 1 Step 5 fails on if left unsubstituted. Everything else carries its command or its code.
 
 **Type consistency.** `provision.sh` prints `<ssh_port> <ssh_key> <vm_dir>`; `dispatch.sh` reads exactly those three in that order. `fleet::collect` and `fleet::destroy` are named identically in the dispatch script and in `test_dispatch_collects_before_it_destroys`. The row id `fedora-rpm-amd64` is used identically in `matrix.yaml`, the Makefile target, the dispatch invocation and the evidence path `artifacts/diagnostics/tier3-fedora-rpm-amd64/`. `TIER_SCRIPTS` is extended in Task 3 to the name `tier3-artifact.sh` created in the same task. `/tmp/cb-tier3-evidence` is written by `tier3-artifact.sh` and read by `fleet::collect`. `/var/lib/cloud/cb-fixture-ready` is written by the cloud-init `runcmd` and waited on by `provision.sh`.
+
+---
+
+## Findings
+
+First real run: `make verify-fleet CB_CANDIDATE=dist/native/circuit-breaker_0.4.0_amd64.rpm`,
+against `circuit-breaker_0.4.0_amd64.rpm` (115 MB, built by `make build` with nfpm 2.47.0).
+
+**Exit 2, wall clock 2m59s** (re-run after the evidence fix: 3m04s). The 20-minute
+budget in §4 holds with large margin; the golden-image download is a one-time
+30s cost outside that, already cached.
+
+### F1 — the packaged service crash-loops on a clean host (package defect)
+
+```
+OSError: [Errno 30] Read-only file system: '/data'
+circuit-breaker.service: Failed with result 'exit-code'
+```
+
+Repeated until `/livez` timed out at 120s. Evidence:
+`artifacts/diagnostics/tier3-fedora-rpm-amd64/journal.log`.
+
+Mechanism:
+
+* `packaging/postinstall.sh` generates `/etc/circuit-breaker/circuit-breaker.env`
+  with `CB_DB_URL`, `CB_VAULT_KEY`, `CB_REDIS_URL`, `NATS_AUTH_TOKEN`,
+  `STATIC_DIR`, `CB_ALEMBIC_INI` and `CB_AGENT_BINARIES_DIR` — and **no
+  `CB_DATA_DIR`**. The collected `installed.env.redacted` shows exactly that key
+  list, which is what makes this finding self-evidencing rather than inferred.
+* Four modules fall back to `/data` when it is unset: `main.py:549`,
+  `services/acme_service.py:60`, `services/agent_install.py:182`,
+  `services/certificate_activation.py:44`. `/data` is the Docker path.
+* `packaging/circuit-breaker.service` sets `ProtectSystem=strict` with
+  `ReadWritePaths=/var/lib/circuit-breaker /var/log/circuit-breaker
+  /etc/circuit-breaker`, so `/data` is both absent and unwritable.
+
+The package already creates `/var/lib/circuit-breaker` and grants it write access
+in the unit, so the intended directory is unambiguous — the generated env simply
+never names it. This is the escaped-bug class ADR 0005 §11 predicted for this
+phase: a defect that exists only in the *packaged native* build and is invisible
+to every suite that runs from a source tree.
+
+Not fixed here, deliberately. It is a one-line change to postinstall.sh plus a
+test, and a phase that builds the detector and silently repairs what it detects
+leaves nobody able to tell which half was load-bearing.
+
+### F2 — the `cb` operator CLI is not shipped in the package (packaging gap)
+
+Recorded by the tier as
+`SKIPPED (not shipped by nfpm.yaml): the cb operator CLI`
+(`artifacts/diagnostics/tier3-fedora-rpm-amd64/cb-cli.txt`).
+
+`nfpm.yaml`'s `contents:` installs the binary, the frontend and backend trees,
+`VERSION`, the agent binaries, the config template and the unit. `deploy/cli/cb`
+is not among them, so `tests/build/test_cb_cli_contract.py` and
+`test_cb_cli_parity.py` govern a CLI that a package install never provides. Whether
+that is intended is a product question, not a tier question; the tier's job was to
+say so out loud rather than assert something else in its place.
+
+### F3 — /etc/circuit-breaker vs /etc/circuitbreaker (not reached)
+
+Predicted before the run and **not** reached: the service never got far enough to
+read a database, so the config-path and DB-user divergence between
+`packaging/postinstall.sh` (`/etc/circuit-breaker/`, user `circuitbreaker`) and
+`deploy/setup.sh` (`/etc/circuitbreaker/`, user `breaker`) is still unexercised.
+It stays a prediction until F1 is fixed and the row reaches `/readyz`.
+
+### What passed
+
+* Install via `dnf install` of the local rpm, with its weak dependencies resolved.
+* Every path in the package contents assertion, including the unit file and the
+  generated env.
+* Env file mode is `600`, checked rather than trusted — it is created by a shell
+  script at install time, which is where a mode gets missed.
+* Version parity: `shipped=0.4.0 reported=0.4.0`.
+
+### Tier defects found by running it
+
+Recorded because they were fixed *inside* this phase and each one is a way this
+tier could have reported something it had not observed:
+
+1. `-nographic` cannot combine with `-daemonize` (`59328c94`).
+2. `redis` is not a Fedora 44 package; `valkey` replaced it. `packages:` is one
+   dnf transaction, so that single wrong name also prevented `postgresql-server`
+   from installing (`59328c94`).
+3. The cloud-init readiness marker was written even when every step before it
+   failed, so provisioning reported a ready host with nothing installed on it
+   (`59328c94`), and the host did not verify it independently (`30b2c615`).
+4. A failed provision leaked its scratch directory and any VM in it (`30b2c615`).
+5. `|| true` on evidence collection discarded the fact that a collector had
+   failed; replaced by `capture`, which records the command and its real exit
+   status (`dc6e1ccd`).
+6. Evidence written as root was copied at mode 0600, so scp returned non-zero and
+   the whole collection read as failed while four of five files had transferred
+   (`e947ba97`).
+
+Every one of these was invisible to the contract tests, which passed throughout.
+The step that caught them was running the thing.

@@ -32,3 +32,33 @@ def test_every_informational_section_can_say_it_did_not_run():
     text = SCRIPT.read_text(encoding="utf-8")
     assert "Hadolint skipped" in text
     assert "ESLint skipped" in text
+
+
+def test_dockerised_trivy_reuses_its_vulnerability_database():
+    """`docker run --rm` with no cache volume redownloads 110MB every run.
+
+    Measured 2026-08-27: `make verify` took 4m55s against a 3m17s baseline and a
+    4-minute hard budget, and the scan log showed
+    `[vulndb] Downloading vulnerability DB...` on a machine that had just run the
+    same scan. The container is discarded by --rm, so trivy's cache goes with it
+    unless a host directory is mounted at its cache path.
+
+    This is not only a budget problem. The design's goal is a gate a developer
+    can trust offline; one that silently needs 110MB of network per invocation is
+    not that, and the failure mode on a train is a red gate with no bad code in
+    it.
+    """
+    text = SCRIPT.read_text(encoding="utf-8")
+    # The mount lives in one array so the four invocations cannot drift apart;
+    # check the array points at trivy's cache path, then that every invocation
+    # uses it.
+    assert 'TRIVY_CACHE_MOUNT=(-v "$TRIVY_CACHE:/root/.cache/trivy")' in text, (
+        "TRIVY_CACHE_MOUNT must map a host directory onto trivy's cache path"
+    )
+    for line in text.splitlines():
+        if "aquasec/trivy" not in line or not line.strip().startswith(("docker run", "if ! docker run")):
+            continue
+        assert "TRIVY_CACHE_MOUNT" in line, (
+            "the dockerised trivy must mount a persistent cache, or it "
+            f"redownloads its 110MB database on every run:\n    {line.strip()}"
+        )
