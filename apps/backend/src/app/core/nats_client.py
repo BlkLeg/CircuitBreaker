@@ -23,6 +23,22 @@ NATS_USER = os.getenv("NATS_USER", "").strip()
 NATS_PASSWORD = os.getenv("NATS_PASSWORD", "").strip()
 NATS_TLS = os.getenv("NATS_TLS", "").strip().lower() in ("1", "true", "yes")
 
+# How long the FIRST connection attempt may take before the client gives up and
+# reports itself disconnected.
+#
+# `max_reconnect_attempts=-1` below means infinite retries, which is what you
+# want for a live connection that drops -- and which nats-py also applies to the
+# initial connect, so `await nats.connect(...)` never returns and never raises
+# when no broker is listening. That turned a decision this code already knows how
+# to make into a hang: the `except` clause sets no-op mode, and the lifespan calls
+# validate_core_dependencies() immediately afterwards to decide whether a missing
+# NATS is fatal or degraded. Neither could run. uvicorn logged "Waiting for
+# application startup." forever and /livez never answered (ADR 0005 Phase 2).
+#
+# Not hypothetical on a packaged host: nats-server is in no Fedora repository and
+# nfpm.yaml only *recommends* it, so a Fedora install has no broker by default.
+NATS_INITIAL_CONNECT_TIMEOUT = float(os.getenv("CB_NATS_CONNECT_TIMEOUT", "10"))
+
 
 class NATSClient:
     """Thin wrapper around nats-py with graceful degradation and auto-reconnect."""
@@ -101,9 +117,12 @@ class NATSClient:
             if NATS_TLS:
                 connect_kw["tls"] = True
 
-            self._nc = await nats.connect(
-                connect_url,
-                **connect_kw,
+            # Bounded: see NATS_INITIAL_CONNECT_TIMEOUT. On timeout this raises
+            # into the handler below, which is where "no broker" is already
+            # handled correctly.
+            self._nc = await asyncio.wait_for(
+                nats.connect(connect_url, **connect_kw),
+                timeout=NATS_INITIAL_CONNECT_TIMEOUT,
             )
             self._js = self._nc.jetstream()
             self._connected = True
@@ -112,6 +131,15 @@ class NATSClient:
             await self.ensure_monitor_poll_stream()
             await self.ensure_monitor_probe_stream()
             _logger.info("NATS connected to %s", self._url)
+        except TimeoutError:
+            self._connected = False
+            _logger.warning(
+                "NATS did not connect at %s within %.0fs — running in no-op mode. "
+                "Readiness reports db and redis only, so this degrades rather than "
+                "fails; set CB_NATS_CONNECT_TIMEOUT to change the bound.",
+                self._url,
+                NATS_INITIAL_CONNECT_TIMEOUT,
+            )
         except Exception as exc:
             self._connected = False
             _logger.warning("NATS unavailable at %s: %s — running in no-op mode", self._url, exc)
