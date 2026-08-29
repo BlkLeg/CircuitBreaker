@@ -3,6 +3,23 @@ import os
 # Force NATS to fail fast in tests (unreachable port) so lifespan doesn't hang
 os.environ.setdefault("NATS_URL", "nats://127.0.0.1:19999")
 
+# No outbound release check from a test run. The suite runs with
+# CB_ALLOW_DIRECT_EGRESS=true (the Makefile explains why), so without this every
+# `client` fixture — several hundred of them — really dials api.github.com from
+# lifespan startup and has that call cancelled by lifespan shutdown a moment
+# later. Cancelling httpx while it is still connecting leaks the socket and its
+# transport: the connection has not reached the pool yet, so `AsyncClient.aclose()`
+# cannot close it, and the finalizer surfaces it as an unraisable ResourceWarning
+# charged to whichever unrelated test the garbage collector happens to interrupt.
+# That is what made test_discovery.py and test_oobe_smoke.py fail on unclosed
+# sockets to 140.82.x.x:443 while pointing at nothing in their own code.
+#
+# Nothing is lost by disabling it: no test here asserts on the update verdict, and
+# app.core.update_check has its own coverage in apps/backend/tests/core/test_update_*.py
+# via its transport seam. Tests do not get to depend on GitHub being reachable, on
+# its 60-requests-per-hour anonymous rate limit, or on connect timing.
+os.environ.setdefault("CB_UPDATE_CHECK", "false")
+
 # Use a writable temp dir so the app lifespan doesn't crash on /data permission checks.
 # Key it on the target database: CB_DATA_DIR holds the one-time bootstrap setup
 # token file, so two suites running side by side against their own databases would

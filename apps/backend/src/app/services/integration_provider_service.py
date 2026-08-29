@@ -193,16 +193,21 @@ def _test_docker(cfg: IntegrationConfig) -> dict:
     """Test Docker daemon reachability via socket or TCP URL."""
     import docker as dockerlib
 
+    from app.services.discovery_safe import docker_client
+
     url = cfg.config_url or "unix:///var/run/docker.sock"
     if url.startswith("/"):
         url = f"unix://{url}"
 
     try:
-        client = dockerlib.DockerClient(base_url=url, timeout=10)
-        info = client.info()
+        # docker_client, not a bare DockerClient: this used to close the client
+        # only on the success path, so every failing "Test connection" left the
+        # daemon socket open. See its docstring for the constructor-side leak it
+        # also covers.
+        with docker_client(url, timeout=10) as client:
+            info = client.info()
         server_version = info.get("ServerVersion", "unknown")
         containers = info.get("Containers", 0)
-        client.close()
         return {
             "status": "ok",
             "message": f"Docker {server_version} ({containers} containers)",
