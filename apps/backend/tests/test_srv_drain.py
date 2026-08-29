@@ -170,11 +170,26 @@ async def test_a_restarted_process_can_take_the_lease_the_old_one_held(lifespan_
 
     from app.core.job_lock import _lock_id_for, advisory_unlock, lock_session, try_advisory_lock
 
+    # Two namespaces, not one. `scheduled_job` covers the APScheduler jobs; the
+    # in-process worker loops take their own leases under `worker_lease`
+    # (app/workers/__init__.py, SingleActiveLease). This test checked only the
+    # first for long enough that the second was leaking in CI as an intermittent
+    # failure of tests/test_worker_lease.py two files later in the same shard --
+    # a test named for the rolling-restart case that did not probe the leases a
+    # rolling restart actually contends for.
+    leases = [
+        ("scheduled_job", job) for job in ("pg_backup", "retention_job", "integration_sync_job")
+    ]
+    leases += [("worker_lease", worker) for worker in ("integration_sync", "telemetry_collector")]
+
     probe = lock_session()
     try:
-        for job_id in ("pg_backup", "retention_job", "integration_sync_job"):
-            lock_id = _lock_id_for("scheduled_job", job_id)
-            assert try_advisory_lock(probe, lock_id), f"{job_id} lease was never released"
+        for namespace, job_id in leases:
+            lock_id = _lock_id_for(namespace, job_id)
+            assert try_advisory_lock(probe, lock_id), (
+                f"{namespace}/{job_id} lease was never released — a replacement process "
+                f"would stand by forever and this function would stop running"
+            )
             advisory_unlock(probe, lock_id)
     finally:
         probe.close()

@@ -1497,6 +1497,13 @@ async def lifespan(app: FastAPI):
     # containers, e.g. Docker Compose) ───────────────────────────────────────────
     _run_inprocess_workers = _topology.api_runs_inprocess_workers(_topology_mode)
     _worker_tasks: list = []
+    # The subset of _worker_tasks that takes a stop event and cleans up in a
+    # `finally` -- currently the telemetry-ingest and integration loops, both of
+    # which release a PostgreSQL advisory lease there. They are tracked
+    # separately because shutdown has to let them observe the stop event before
+    # anything cancels them; see the drain block below for what happens when it
+    # does not.
+    _draining_tasks: list = []
     _ingest_stop_event = asyncio.Event()
     _integration_stop_event = asyncio.Event()
     if _run_inprocess_workers:
@@ -1506,10 +1513,14 @@ async def lifespan(app: FastAPI):
 
         _worker_tasks.append(asyncio.create_task(notification_worker.run_worker()))
         _worker_tasks.append(asyncio.create_task(discovery_worker.run_worker()))
-        _worker_tasks.append(asyncio.create_task(_run_ingest_loop(_ingest_stop_event)))
+        _ingest_task = asyncio.create_task(_run_ingest_loop(_ingest_stop_event))
+        _worker_tasks.append(_ingest_task)
+        _draining_tasks.append(_ingest_task)
         from app.workers.integration_worker import run_integration_worker as _run_integration_worker
 
-        _worker_tasks.append(asyncio.create_task(_run_integration_worker(_integration_stop_event)))
+        _integration_task = asyncio.create_task(_run_integration_worker(_integration_stop_event))
+        _worker_tasks.append(_integration_task)
+        _draining_tasks.append(_integration_task)
         _logger.info(
             "Notification, discovery, telemetry ingest, and integration workers started in-process."
         )
@@ -1562,10 +1573,47 @@ async def lifespan(app: FastAPI):
         _logger.warning("Scheduler shutdown timed out after 10s — forcing stop")
         scheduler.shutdown(wait=False)
 
-    # ── Cancel in-process worker tasks ────────────────────────────────────
-    # Signal ingest worker to drain its current batch before the task is cancelled.
+    # ── Drain, then cancel, in-process worker tasks ───────────────────────
+    # Setting the stop event and cancelling in the same block is what this used
+    # to do, and it meant the cooperative loops never saw the event: `cancel()`
+    # lands before the loop is scheduled again, so the task raises CancelledError
+    # at whatever `await` it is parked on. Their `finally` blocks then run in a
+    # cancelled task, where the very next `await` -- `lease.release_async()`,
+    # which is `asyncio.to_thread(...)` -- raises immediately instead of
+    # releasing.
+    #
+    # The advisory lease therefore stayed held on a session nothing closed. On a
+    # rolling restart the replacement process stands by waiting for a lease the
+    # departing one never handed over, and the function it guards silently stops
+    # happening -- exactly the failure
+    # tests/test_srv_drain.py::test_a_restarted_process_can_take_the_lease_the_old_one_held
+    # exists to catch, which it did not because it probed only the
+    # `scheduled_job` namespace and not `worker_lease`. It surfaced instead as an
+    # intermittent failure of tests/test_worker_lease.py two files later in the
+    # same CI shard.
+    #
+    # So: signal, give the cooperative loops a bounded window to exit on their
+    # own, and only then cancel. Five seconds sits well inside the unit's
+    # TimeoutStopSec=30 and the scheduler's own 10s budget above; the loops park
+    # on `wait_for(stop_event.wait(), ...)` and wake immediately, so the window
+    # is only ever paid by a worker genuinely mid-batch.
+    _WORKER_DRAIN_TIMEOUT_S = 5.0
     _ingest_stop_event.set()
     _integration_stop_event.set()
+
+    if _draining_tasks:
+        _, _still_running = await asyncio.wait(_draining_tasks, timeout=_WORKER_DRAIN_TIMEOUT_S)
+        if _still_running:
+            # Named rather than counted: which loop refused to drain is the first
+            # thing anyone debugging a stuck shutdown needs, and it is also how a
+            # lease that is still held after this point gets attributed.
+            _logger.warning(
+                "Worker task(s) did not drain within %ss and will be cancelled — "
+                "any lease they hold is released only when this process exits: %s",
+                _WORKER_DRAIN_TIMEOUT_S,
+                ", ".join(sorted(_t.get_name() for _t in _still_running)),
+            )
+
     for _wt in _worker_tasks:
         _wt.cancel()
     if _worker_tasks:
