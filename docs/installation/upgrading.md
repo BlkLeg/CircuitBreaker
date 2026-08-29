@@ -183,7 +183,7 @@ before it stops the services. Two things about it are worth knowing before you n
   That path is the `install.sh` layout. On a deb/rpm host the same script is at
   `/usr/local/share/circuit-breaker/deploy/scripts/restore.sh` and expects a different unit name,
   role and environment file — run `sudo circuit-breaker-rollback <file>` there, which supplies them.
-  See [Distribution packages](#distribution-packages-deb--rpm) above.
+  See [Distribution packages](#distribution-packages-deb-rpm) above.
 
   Note that a bare dump restores the **database only** — no `uploads/`, no `CB_VAULT_KEY` rewrite, no
   nginx site config. That is the right shape for rolling back an upgrade, where those are unchanged.
