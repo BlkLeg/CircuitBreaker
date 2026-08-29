@@ -16,6 +16,26 @@ GATE_MODE=false
 [[ "${1:-}" == "--gate" ]] && GATE_MODE=true
 
 GATE_FAILURES=0
+# Tools that could not run at all, tracked apart from tools that ran and found
+# something. Both must fail the gate -- "a gate that passes because the scanner
+# is absent is not a gate" -- but they are different problems with different
+# fixes, and collapsing them into one number sent at least one developer hunting
+# for HIGH/CRIT vulnerabilities that did not exist while the actual cause was
+# two uninstalled binaries.
+GATE_UNAVAILABLE=0
+GATE_MISSING_TOOLS=()
+
+# Record a scanner that could not run. Fails the gate exactly as a finding does;
+# reported differently because "install this" and "fix this" are not the same
+# instruction.
+gate_unavailable() {
+    local tool="$1" what="$2" install_hint="$3"
+    GATE_FAILURES=$((GATE_FAILURES + 1))
+    GATE_UNAVAILABLE=$((GATE_UNAVAILABLE + 1))
+    GATE_MISSING_TOOLS+=("$tool — $install_hint")
+    echo "  ⚠ GATE FAILURE: $tool unavailable — cannot attest $what" >> "$REPORT_FILE"
+}
+
 REPORT_FILE="security_scan_report.md"
 echo "# Security Scan Report - $(date)" > "$REPORT_FILE"
 echo "" >> "$REPORT_FILE"
@@ -161,8 +181,8 @@ if ! $GITLEAKS_RAN; then
     # gate. An RC rerun on a host without gitleaks would otherwise regress
     # silently. Report-only mode keeps skipping.
     if $GATE_MODE; then
-        GATE_FAILURES=$((GATE_FAILURES + 1))
-        echo "  ⚠ GATE FAILURE: Gitleaks unavailable — cannot attest secret scanning" >> "$REPORT_FILE"
+        gate_unavailable Gitleaks "secret scanning" \
+            "go install github.com/zricethezav/gitleaks/v8@latest, or a release binary from https://github.com/gitleaks/gitleaks/releases"
     fi
 fi
 echo "\`\`\`" >> "$REPORT_FILE"
@@ -267,8 +287,8 @@ if ! $TRIVY_RAN; then
     echo "Trivy not found (install: https://aquasecurity.github.io/trivy/latest/getting-started/installation/), skipping." >> "$REPORT_FILE"
     # Fail closed — see the Gitleaks note above.
     if $GATE_MODE; then
-        GATE_FAILURES=$((GATE_FAILURES + 1))
-        echo "  ⚠ GATE FAILURE: Trivy unavailable — cannot attest filesystem scanning" >> "$REPORT_FILE"
+        gate_unavailable Trivy "filesystem scanning" \
+            "https://trivy.dev/latest/getting-started/installation/"
     fi
 fi
 echo "\`\`\`" >> "$REPORT_FILE"
@@ -301,8 +321,8 @@ else
     echo "Trivy not found, skipping config scan." >> "$REPORT_FILE"
     # Fail closed — see the Gitleaks note above.
     if $GATE_MODE; then
-        GATE_FAILURES=$((GATE_FAILURES + 1))
-        echo "  ⚠ GATE FAILURE: Trivy unavailable — cannot attest config/IaC scanning" >> "$REPORT_FILE"
+        gate_unavailable Trivy "config/IaC scanning" \
+            "https://trivy.dev/latest/getting-started/installation/"
     fi
 fi
 echo "\`\`\`" >> "$REPORT_FILE"
@@ -346,8 +366,8 @@ else
     echo "pip-audit unavailable (install: pip install pip-audit), skipping." >> "$REPORT_FILE"
     # Fail closed — see the Gitleaks note above.
     if $GATE_MODE; then
-        GATE_FAILURES=$((GATE_FAILURES + 1))
-        echo "  ⚠ GATE FAILURE: pip-audit unavailable — cannot attest Python dependencies" >> "$REPORT_FILE"
+        gate_unavailable pip-audit "Python dependencies" \
+            "installed automatically into the scanner venv; a failure here means that bootstrap failed"
     fi
 fi
 echo "\`\`\`" >> "$REPORT_FILE"
@@ -384,10 +404,32 @@ echo "\`\`\`" >> "$REPORT_FILE"
 echo "" >> "$REPORT_FILE"
 if $GATE_MODE; then
     if [ $GATE_FAILURES -gt 0 ]; then
-        echo "## ❌ Gate Result: $GATE_FAILURES tool(s) reported HIGH/CRIT findings" >> "$REPORT_FILE"
+        GATE_FINDINGS=$((GATE_FAILURES - GATE_UNAVAILABLE))
+        echo "## ❌ Gate Result: $GATE_FAILURES gate failure(s) — $GATE_FINDINGS finding(s), $GATE_UNAVAILABLE unavailable tool(s)" >> "$REPORT_FILE"
+        if [ ${#GATE_MISSING_TOOLS[@]} -gt 0 ]; then
+            echo "" >> "$REPORT_FILE"
+            echo "Scanners that could not run (install these; nothing below was found in your tree):" >> "$REPORT_FILE"
+            for _missing in "${GATE_MISSING_TOOLS[@]}"; do
+                echo "  - $_missing" >> "$REPORT_FILE"
+            done
+        fi
         echo ""
-        echo "❌ GATE FAILED: $GATE_FAILURES tool(s) reported HIGH/CRIT findings."
-        echo "   Review $REPORT_FILE for details."
+        echo "❌ GATE FAILED: $GATE_FAILURES gate failure(s)."
+        # A full `if`, not `[ ... ] && echo`. This script runs under `set -e`, and
+        # a bare `test && cmd` whose test is false makes the list return non-zero
+        # -- the exact shape that ends a script early depending on where it sits.
+        # The line below is reached precisely when GATE_FINDINGS is 0, which is
+        # the common case for a missing-tool failure, so getting it wrong would
+        # have swallowed the install hints underneath it.
+        if [ $GATE_FINDINGS -gt 0 ]; then
+            echo "   $GATE_FINDINGS scanner(s) reported HIGH/CRIT findings — review $REPORT_FILE."
+        fi
+        if [ $GATE_UNAVAILABLE -gt 0 ]; then
+            echo "   $GATE_UNAVAILABLE scanner(s) could NOT RUN. This is a missing tool, not a vulnerability:"
+            for _missing in "${GATE_MISSING_TOOLS[@]}"; do
+                echo "     - $_missing"
+            done
+        fi
         exit 1
     else
         echo "## ✅ Gate Result: All scans passed (zero HIGH/CRIT)" >> "$REPORT_FILE"
