@@ -34,13 +34,32 @@ jobs:
           path: dist/
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # The candidate SET, not one file out of it. Two things made the old
+      # `find dist -name '*.deb' | head -1` wrong once the release started
+      # shipping a companion broker deb: it picks whichever name sorts first,
+      # which is `circuit-breaker-nats`, so the gate would have asserted the
+      # application's version against a package that is not the application.
+      #
+      # And installing the application deb alone is not what a user gets. It
+      # depends on `nats-server | circuit-breaker-nats`; these runners are
+      # ubuntu-22.04, which packages no nats-server in any component, so apt can
+      # satisfy that only from the companion shipped beside it. That is exactly
+      # how v0.4.0 failed here — after every package and image had been built.
+      #
+      # On a distro that does package a broker (Debian 12, Ubuntu 24.04) apt
+      # prefers the distro's copy when it is not handed ours on the command
+      # line, which is the arrangement nfpm.yaml explains and wants.
       - name: Install the candidate .deb on a clean host
         run: |
-          DEB=$(find dist -name '*.deb' | head -1)
-          [ -n "${DEB}" ] || { echo "::error::no .deb in packages-${{ matrix.arch }}"; exit 1; }
-          echo "Installing ${DEB}"
+          # Absolute paths throughout: that is what makes apt treat these as
+          # files to install rather than as names to look up in a repository.
+          APP_DEB=$(find "$PWD/dist" -name 'circuit-breaker_*.deb' | head -1)
+          [ -n "${APP_DEB}" ] || { echo "::error::no application .deb in packages-${{ matrix.arch }}"; exit 1; }
+          echo "Application package: ${APP_DEB}"
+          echo "Installing the full candidate set:"
+          find "$PWD/dist" -name '*.deb' -print
           sudo apt-get update
-          sudo apt-get install -y "./${DEB}"
+          find "$PWD/dist" -name '*.deb' -print0 | xargs -0 sudo apt-get install -y
 
       # GOV-09 parity, measured at the far end of the pipeline: the artifact a
       # user receives must identify itself as the version being released.
@@ -69,11 +88,23 @@ jobs:
           done
           echo "package contents present"
 
+      # The dependency, asserted as the property rather than as a package name.
+      # `validate_core_dependencies` refuses to start without a broker, so an
+      # install that resolved without one is an install that cannot boot — and
+      # which of the two alternatives satisfied it is the distro's business, not
+      # this gate's.
+      - name: Assert the install resolved a message broker
+        run: |
+          command -v nats-server >/dev/null 2>&1 \
+            || { echo "::error::no nats-server on PATH after install; the broker dependency resolved to nothing and the service would refuse to start"; exit 1; }
+          echo "broker present: $(command -v nats-server)"
+
       - name: Assert uninstall removes what it installed
         run: |
-          sudo apt-get remove -y circuit-breaker
+          sudo apt-get remove -y circuit-breaker circuit-breaker-nats
           for path in \
             /usr/local/bin/circuit-breaker \
+            /usr/local/bin/nats-server \
             /lib/systemd/system/circuit-breaker.service; do
             [ ! -e "${path}" ] || { echo "::error::uninstall left ${path} behind"; exit 1; }
           done

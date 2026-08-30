@@ -126,23 +126,42 @@ scripts:
   postinstall: packaging/postinstall.sh
   preremove: packaging/preremove.sh
 
-# NATS is a `depends`, not a `recommends`, wherever the distro packages it.
-# The application refuses to start without a broker -- validate_core_dependencies
-# treats it as required for worker dispatch, notification delivery and event
-# fan-out -- so a weak dependency lets the package manager install something that
-# cannot run. Tier 3 caught exactly that on Fedora.
+# NATS is a `depends`, not a `recommends`. The application refuses to start
+# without a broker -- validate_core_dependencies treats it as required for worker
+# dispatch, notification delivery and event fan-out -- so a weak dependency lets
+# the package manager install something that cannot run. Tier 3 caught exactly
+# that on Fedora.
 #
-# Depending on the distro package rather than vendoring one is deliberate:
+# Preferring the distro package over a vendored one is deliberate:
 # Dockerfile.mono states the policy ("version pinning on apt packages is
 # intentionally avoided to keep CVE fixes current"), and vendoring would make a
 # NATS CVE fix wait on a Circuit Breaker release instead of an apt upgrade.
 #
-# Fedora has no nats-server package at all, which is why rpm neither depends on
-# nor recommends one: packaging/nfpm-nats.yaml builds a separate
-# `circuit-breaker-nats` package that vendors the pinned binary there. Separate,
-# so the vendored CVE surface stays out of this package and an operator pointing
+# packaging/nfpm-nats.yaml builds a separate `circuit-breaker-nats` package that
+# vendors the pinned binary for hosts whose distro packages none. Separate, so
+# the vendored CVE surface stays out of this package and an operator pointing
 # CB_NATS_URL at an external or clustered broker can decline it.
-# rpm-specific settings. `scripts` here is RPMScripts, which is where %posttrans
+#
+# ── the alternative, and why it is not just `nats-server` ───────────────────
+# This read "Debian/Ubuntu ship nats-server, so there we simply depend on it".
+# Debian 12 does. Ubuntu 24.04 does. **Ubuntu 22.04 does not** -- jammy packages
+# no nats-server in any component -- so the deb was uninstallable on a current
+# Ubuntu LTS, and the whole v0.4.0 release stopped at Artifact Smoke after every
+# package and image had already been built.
+#
+# `nats-server | circuit-breaker-nats` keeps the dependency hard, which is what
+# the startup validator requires, while letting either broker satisfy it. apt
+# prefers the leftmost installable alternative, so Debian 12 and Ubuntu 24.04
+# still take the distro's package and the distro still owns its CVE updates; a
+# host without one resolves against the companion that now ships beside this
+# package for deb as well as rpm. Weakening it to `recommends` instead would have
+# turned a loud failure at install time into a crash loop at first boot, which is
+# the trade this project keeps refusing to make.
+#
+# tests/build/test_nats_provisioning_contract.py pins both halves.
+
+# ── rpm-specific settings ──────────────────────────────────────────────────
+# `scripts` here is RPMScripts, which is where %posttrans
 # lives -- it is NOT available under overrides.rpm, whose `scripts` is the
 # packager-agnostic set (preinstall/postinstall/preremove/postremove). nfpm
 # ignores an unknown key there silently, so the first attempt at this wiring
@@ -164,7 +183,7 @@ overrides:
     depends:
       - age
       - libc6
-      - nats-server
+      - nats-server | circuit-breaker-nats
     recommends:
       - postgresql
       # postgresql-client, not just the server: preinstall.sh's pre-upgrade

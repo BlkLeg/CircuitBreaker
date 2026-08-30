@@ -15,26 +15,6 @@
       "methods": [
         "POST"
       ],
-      "path": "/api/v1/auth/jwt/login",
-      "policy": "auth-flow",
-      "public_reason": "Password login entry point.",
-      "disclosure": "credential exchange result only"
-    },
-    {
-      "transport": "http",
-      "methods": [
-        "POST"
-      ],
-      "path": "/api/v1/auth/jwt/logout",
-      "policy": "auth-flow",
-      "public_reason": "Logout compatibility endpoint; invalid or absent credentials do not disclose protected data.",
-      "disclosure": "logout result only"
-    },
-    {
-      "transport": "http",
-      "methods": [
-        "POST"
-      ],
       "path": "/api/v1/auth/accept-invite",
       "policy": "auth-flow",
       "public_reason": "Invite acceptance must run before the invited user has an active session.",

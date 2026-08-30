@@ -94,14 +94,30 @@ def test_the_dedicated_worker_types_are_all_owned_by_a_worker():
     by the API process, or both would run them."""
     from app.workers.main import _TYPE_MAP
 
+    # The two vocabularies this test exists to join: `--type` names on the left,
+    # JOB_OWNERS function names on the right. They are deliberately not the same
+    # strings, so the mapping is written down rather than inferred.
     aliases = {
         "discovery": "discovery",
         "notification": "notifications",
         "telemetry": "telemetry_ingest",
+        "integration": "integrations",
         "monitor_scheduler": "monitor_scheduler",
         "monitor_poll": "monitor_poll",
         "monitor_probe_dispatch": "monitor_probe_dispatch",
     }
+    # A new worker type used to arrive here as a bare KeyError, which names the
+    # missing dict entry and not the thing that matters -- that a startable
+    # worker type has no recorded owner, which is the duplicate-work question
+    # SRV-02 exists to answer. `integration` was added to _TYPE_MAP by the
+    # dedicated integration worker and reached CI as exactly that KeyError.
+    unmapped = set(_TYPE_MAP.values()) - aliases.keys()
+    assert not unmapped, (
+        f"`app.workers.main --type` can start {sorted(unmapped)}, and this test has no "
+        f"JOB_OWNERS function name for it. Add the alias and confirm the function is "
+        f"owned by 'worker' in app.core.topology.JOB_OWNERS -- an unowned dedicated "
+        f"worker is one the API may also be running."
+    )
     for worker_type in set(_TYPE_MAP.values()):
         function = aliases[worker_type]
         assert JOB_OWNERS[function] == "worker", f"{function} is not owned by a worker process"

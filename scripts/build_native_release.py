@@ -658,29 +658,39 @@ def create_linux_packages(
 
     packages: list[Path] = []
 
-    # The vendored broker, for distros that package none (Fedora). Staged and
+    # The vendored broker, for distros that package none. Staged and
     # digest-verified first: a failure here must stop the build rather than
-    # produce an rpm whose companion package silently does not exist.
+    # produce a package whose companion silently does not exist.
     # dist_bundle, not bundle_dir: this function copies bundle_dir into
     # dist/native/bundle above, and nfpm-nats.yaml reads the dist path. Staging
     # into the source bundle after that copy puts the binary somewhere nothing
     # packages from.
+    #
+    # Built as BOTH rpm and deb, which it was not. The premise for deb-only-
+    # relying-on-the-distro was "Debian/Ubuntu ship nats-server", and that is
+    # true of Debian 12 and Ubuntu 24.04 and false of Ubuntu 22.04 — which
+    # packages no nats-server at all. The application deb hard-depended on it,
+    # so the package was uninstallable on a current Ubuntu LTS and the release
+    # gate caught it only at Artifact Smoke, after everything else was built.
+    # A companion that exists for one packager and not the other is a fallback
+    # that is only nominally available.
     nats_version = stage_nats_server(dist_bundle, goarch)
     nats_config = REPO_ROOT / "packaging" / "nfpm-nats.yaml"
-    nats_pkg = output_dir / f"circuit-breaker-nats_{nats_version}_{goarch}.rpm"
-    nats_result = subprocess.run(
-        [nfpm, "package", "--config", str(nats_config), "--packager", "rpm",
-         "--target", str(nats_pkg)],
-        env={**env, "NATS_VERSION": nats_version}, cwd=str(REPO_ROOT),
-        capture_output=True, text=True,
-    )
-    if nats_result.returncode == 0:
+    for nats_fmt in ("rpm", "deb"):
+        nats_pkg = output_dir / f"circuit-breaker-nats_{nats_version}_{goarch}.{nats_fmt}"
+        nats_result = subprocess.run(
+            [nfpm, "package", "--config", str(nats_config), "--packager", nats_fmt,
+             "--target", str(nats_pkg)],
+            env={**env, "NATS_VERSION": nats_version}, cwd=str(REPO_ROOT),
+            capture_output=True, text=True,
+        )
+        if nats_result.returncode != 0:
+            raise RuntimeError(
+                f"circuit-breaker-nats {nats_fmt} packaging failed: "
+                f"{nats_result.stderr.strip()}"
+            )
         print(f"  Created: {nats_pkg.name}")
         packages.append(nats_pkg)
-    else:
-        raise RuntimeError(
-            f"circuit-breaker-nats packaging failed: {nats_result.stderr.strip()}"
-        )
 
     for fmt in ("deb", "rpm", "apk"):
         pkg_path = output_dir / f"circuit-breaker_{version}_{goarch}.{fmt}"

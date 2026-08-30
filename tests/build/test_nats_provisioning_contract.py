@@ -9,14 +9,30 @@ happened.
 
 The chosen shape, after review:
 
-* Where the distro ships nats-server (Debian/Ubuntu, Alpine), depend on it. The
-  distro then owns CVE updates, which is the policy Dockerfile.mono states
-  explicitly ("version pinning on apt packages is intentionally avoided to keep
-  CVE fixes current"). Vendoring a pinned copy everywhere would have inverted
-  that and made a NATS CVE fix wait on a Circuit Breaker release.
-* Where it does not (Fedora), ship it as a SEPARATE package. Separate keeps the
+* Prefer the distro's nats-server where there is one. The distro then owns CVE
+  updates, which is the policy Dockerfile.mono states explicitly ("version
+  pinning on apt packages is intentionally avoided to keep CVE fixes current").
+  Vendoring a pinned copy everywhere would have inverted that and made a NATS
+  CVE fix wait on a Circuit Breaker release.
+* Where there is none, ship it as a SEPARATE package. Separate keeps the
   vendored CVE surface out of the application package and lets an operator
   running an external or clustered broker simply not install it.
+
+**Corrected 2026-08-30.** This file used to say "where the distro ships
+nats-server (Debian/Ubuntu, Alpine), depend on it", and the deb override was a
+bare `depends: nats-server` on the strength of that sentence. Debian 12 ships
+one. Ubuntu 24.04 ships one. **Ubuntu 22.04 ships none** — jammy packages no
+nats-server in any component — so the deb was uninstallable on a current Ubuntu
+LTS, and the v0.4.0 release ran every build job and then stopped at Artifact
+Smoke with `Depends: nats-server but it is not installable`.
+
+"Debian/Ubuntu" was one word too coarse to be a packaging rule. The dependency is
+now `nats-server | circuit-breaker-nats`: still hard, because the application
+refuses to start without a broker, but satisfiable by the companion on any host
+whose distro has none. apt prefers the leftmost installable alternative, so
+hosts that do package one are unaffected. The companion is built for deb as well
+as rpm now; before, the fallback named a package that was never produced for
+that packager.
 * Pin that vendored copy in one file, shared with deploy/setup.sh, so the
   unverified "latest" download disappears rather than gaining a fourth variant.
 * Wants=, not Requires=. Since the bounded-connect fix, a missing broker
@@ -76,19 +92,83 @@ def test_setup_sh_verifies_what_it_downloads():
     )
 
 
+def _override_depends(platform: str) -> str:
+    text = NFPM.read_text(encoding="utf-8")
+    block = re.search(rf"^  {platform}:\n((?:    .*\n|\n)*)", text, re.M)
+    assert block, f"no {platform} override block in nfpm.yaml"
+    depends = re.search(r"depends:\n((?:      - .*\n)*)", block.group(1))
+    assert depends, f"no depends list in the {platform} override"
+    return depends.group(1)
+
+
 def test_distro_platforms_depend_on_nats_rather_than_recommending_it():
     """The app will not start without a broker, so a weak dependency lets the
     package manager install something that cannot run."""
-    text = NFPM.read_text(encoding="utf-8")
     for platform in ("deb", "apk"):
-        block = re.search(rf"^  {platform}:\n((?:    .*\n|\n)*)", text, re.M)
-        assert block, f"no {platform} override block in nfpm.yaml"
-        body = block.group(1)
-        depends = re.search(r"depends:\n((?:      - .*\n)*)", body)
-        assert depends and "nats-server" in depends.group(1), (
-            f"{platform} ships on a distro that packages nats-server; it belongs "
-            f"in depends, not recommends"
+        assert "nats-server" in _override_depends(platform), (
+            f"{platform} must depend on a broker, not recommend one: "
+            f"validate_core_dependencies refuses to start without it, so a weak "
+            f"dependency produces an install that cannot boot"
         )
+
+
+def test_the_deb_broker_dependency_is_satisfiable_without_a_distro_package():
+    """A hard dependency on a package some supported distro does not have is an
+    uninstallable package, and it fails at the far end of the release pipeline.
+
+    Ubuntu 22.04 packages no nats-server. The alternative lets the companion
+    satisfy the same hard dependency there, while apt still prefers the distro's
+    copy wherever one exists.
+    """
+    depends = _override_depends("deb")
+    assert re.search(r"^      - nats-server \| circuit-breaker-nats$", depends, re.M), (
+        "the deb's broker dependency must name the companion as an alternative "
+        "(`nats-server | circuit-breaker-nats`). A bare `nats-server` is "
+        "uninstallable on Ubuntu 22.04, which packages none; dropping to "
+        "`recommends` instead would swap a loud install failure for a crash loop."
+    )
+
+
+def test_the_companion_broker_is_built_for_every_packager_that_names_it():
+    """An alternative that resolves to a package nothing produces is not a fallback.
+
+    The companion was built as an rpm only, while the deb is the packager that
+    now names it — so the fallback existed in the dependency field and nowhere
+    on disk.
+    """
+    build = (REPO_ROOT / "scripts" / "build_native_release.py").read_text(encoding="utf-8")
+    formats = re.search(r"for nats_fmt in \(([^)]*)\)", build)
+    assert formats, "build_native_release.py no longer loops over companion packagers"
+    named = set(re.findall(r'"(\w+)"', formats.group(1)))
+    assert {"deb", "rpm"} <= named, (
+        f"the circuit-breaker-nats companion is built for {sorted(named)}. Every "
+        f"packager whose depends names it must have one built, or the alternative "
+        f"resolves to nothing."
+    )
+
+
+def test_the_smoke_gate_installs_the_candidate_set_and_proves_a_broker_resolved():
+    """The gate that caught this must keep catching it.
+
+    Installing the application deb alone on a runner whose distro has no broker
+    is the exact configuration that failed, and asserting only that files landed
+    would pass over an install that resolved no broker at all.
+    """
+    smoke = (REPO_ROOT / ".github/workflows/artifact-smoke.yml").read_text(encoding="utf-8")
+    assert "circuit-breaker_*.deb" in smoke, (
+        "the smoke job must name the application deb explicitly; `*.deb | head -1` "
+        "picks circuit-breaker-nats once a companion ships beside it, and would "
+        "assert the application's version against the broker's package"
+    )
+    assert "xargs -0 sudo apt-get install" in smoke, (
+        "the smoke job must install the whole candidate set — that is what a user "
+        "downloading the release assets gets, and on a distro without a broker it "
+        "is the only thing that resolves"
+    )
+    assert "no nats-server on PATH after install" in smoke, (
+        "the smoke job must assert a broker actually resolved; the dependency is "
+        "the thing that broke, and file-presence checks do not see it"
+    )
 
 
 def test_rpm_does_not_recommend_a_package_fedora_does_not_have():

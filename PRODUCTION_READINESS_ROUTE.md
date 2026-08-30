@@ -30,7 +30,7 @@ This route deliberately builds on the verification program the repo already has 
 |---|---|---|
 | Monitor scheduling lag | < shortest supported poll interval, sustained at Tier C workload (§5) | Defensible now (assessment) |
 | Topology load p95 | < ~2 s at 500 entities | Defensible now (assessment) |
-| Navigation wedge rate | To be set from the §4 repro harness; provisional ambition: 0 wedges / 500 navigations under the contention scenario | **Needs runtime validation** — measure 2 weeks before fixing a number |
+| Navigation wedge rate | To be set from the §4 repro harness; provisional ambition: 0 wedges / 500 navigations under the contention scenario | **Needs runtime validation** — but no longer needs a harness built first: two in-tree Playwright specs now reproduce it on ordinary CI runners (§4, 2026-08-30) |
 | Event-loop lag p99 | To be set after the loop-lag gauge exists; collect 4 weeks at Tier B/C before fixing | Needs measurement |
 | Backup restore | Every release rehearses a full restore from an encrypted snapshot in Tier 3 | Procedural, no number needed |
 | Background-job failure visibility | 0 silent poison-message loops: every JetStream max-deliver exhaustion produces an operator-visible record | Procedural | 
@@ -160,7 +160,18 @@ Four phases, ordered by risk reduction and dependency. Scoring model per work it
 
 ## 4. Navigation investigation plan
 
-**Prior evidence (Verified):** `known_bugs-v1.0.0-rc.1.md` item 1 — 3 wedges/~180 navigations under CPU contention; URL advances, outgoing route stays mounted at `opacity:1`, incoming route never mounts; `AnimatePresence mode` ruled out statistically; the report's remaining suspect is the React.lazy + Suspense pair. The route-transition machine: 150 ms exit fade → full unmount → lazy chunk fetch → mount, all 25 routes lazy behind **one shared `Suspense`** (`App.jsx:44-70,137-154`), with react-router v7 wrapping navigations in `React.startTransition` by default (`package.json:37`).
+**Prior evidence (Verified):** `known_bugs-v1.0.0-rc.1.md` item 1 — 3 wedges/~180 navigations under CPU contention; URL advances, outgoing route stays mounted at `opacity:1`, incoming route never mounts; `AnimatePresence mode` ruled out statistically; the report's remaining suspect is the React.lazy + Suspense pair.
+
+**New evidence, 2026-08-30 — the wedge reproduced in CI, with no CPU throttling.** CI run `33336899172` on `main` failed two independent Playwright journeys, in different browsers, with the same shape:
+
+- `e2e/navigation.spec.ts:83` (**Firefox**) — "clicking a nav link advances the rendered page, not just the URL". `.page-content` innerHTML was still the **map page** after 10 s of polling. This spec was added by `d347fdd5`, whose message is *"encode the navigation-regression diagnostic; **bug not reproduced**"*. The diagnostic written for this bug, which previously could not reproduce it, now does.
+- `e2e/agent-monitor-vantage.spec.ts:161` (**WebKit**) — every `toHaveURL` assertion for `/monitors?probe_agent_id=…` passed, and then `getByLabel('Host')` resolved to six elements, **none of them the monitor form**: they are the agent-detail page's `Host telemetry` region and discovery-scope inputs. The URL was on `/monitors`; the DOM was still `/agents/:id`.
+
+Both failed again on retry. Neither ran under contention — these are ordinary CI runners.
+
+**Caveats, stated rather than glossed:** the two failures share a *shape*, not a proven common cause. And the E2E job changed from a single run to two Playwright shards in `2d6368ac`, the same commit that landed the agent-fleet UI, so ordering and parallelism changed at the same time as the code did; either could be what moved the bug from rare to reproducible.
+
+**What this changes.** Phase 2.3's job was to *build* a repro harness. Two now exist, in-tree and running on every push. The §4 decision tree can be entered against a real failing trace — each failure ships a Playwright trace, video and screenshot — instead of waiting on the throttled-journey harness. These two specs must not be quieted, retried harder, or made less strict to get CI green: they are the instrument. The route-transition machine: 150 ms exit fade → full unmount → lazy chunk fetch → mount, all 25 routes lazy behind **one shared `Suspense`** (`App.jsx:44-70,137-154`), with react-router v7 wrapping navigations in `React.startTransition` by default (`package.json:37`).
 
 ### 4.1 Ranked hypotheses
 
@@ -325,9 +336,19 @@ assertions, so they evidence neither B1 nor B3 even setting provenance aside.
 1. **Tag and push `v0.4.0`.** `make release-tag && git push origin v0.4.0`. This is yours to run: it
    publishes a GitHub Release and pushes images to GHCR. `.github/workflows/release.yml` asserts
    version parity against `VERSION` before it builds anything.
-2. **Fetch the published artifacts** — the deb, the rpm, the companion `circuit-breaker-nats` rpm and
-   `SHA256SUMS` — into one directory, and verify the sums. `dispatch.sh` picks the companion up from
-   the candidate's own directory, so they must land together.
+2. **Fetch the published artifacts** — the deb, the rpm, the companion `circuit-breaker-nats`
+   **rpm and deb**, and `SHA256SUMS` — into one directory, and verify the sums. `dispatch.sh` picks
+   the companion up from the candidate's own directory, so they must land together.
+
+   *Note the deb companion is new as of the v0.4.0 release attempt.* The application deb depended on
+   a bare `nats-server`, which Ubuntu 22.04 does not package, so the deb was uninstallable on a
+   current Ubuntu LTS and the release stopped at Artifact Smoke. The dependency is now
+   `nats-server | circuit-breaker-nats` and the companion is built for both packagers. One
+   consequence for Tier 3: the `debian-deb-amd64` rows will now be handed a companion deb and will
+   install **our** broker rather than Debian's, because apt prefers what it is given on the command
+   line. That is the configuration the release ships, so it is the right thing to test — but it means
+   the row no longer exercises "the distro's nats-server satisfies the dependency". Ubuntu 24.04 and
+   Debian 12 still resolve to the distro package for a user installing the application deb alone.
 3. **Run the two `mode: install` rows against those artifacts** (needs local QEMU; nothing in CI runs
    Tier 3):
    ```

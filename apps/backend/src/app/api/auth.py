@@ -4,7 +4,6 @@ API tokens (machine–machine): POST /auth/api-token, GET /auth/api-tokens,
 DELETE /auth/api-tokens/:id. Admin only; token shown once on create.
 
 Mounts:
-  /api/v1/auth/jwt              — login, logout (FastAPI-Users OAuth2 format)
   /api/v1/auth                  — register, forgot-password, reset-password
   /api/v1/users                 — /me, PATCH /me (FastAPI-Users)
   /api/v1/auth/me               — backward-compat GET returning UserProfile

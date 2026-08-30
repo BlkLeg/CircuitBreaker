@@ -1,6 +1,6 @@
 {
   "generated_by": "apps/backend/scripts/generate_endpoint_inventory.py",
-  "route_count": 437,
+  "route_count": 435,
   "routes": [
     {
       "auth_policy": "authenticated",
@@ -1381,51 +1381,6 @@
       ],
       "name": "forgot_password",
       "path": "/api/v1/auth/forgot-password",
-      "rbac_policy": "none",
-      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
-      "transport": "http"
-    },
-    {
-      "auth_policy": "auth-flow",
-      "dependency_calls": [
-        "app.core.users.get_jwt_strategy",
-        "app.core.users.get_user_db",
-        "app.core.users.get_user_manager",
-        "app.db.async_session.get_async_db",
-        "fastapi.security.oauth2.OAuth2PasswordRequestForm",
-        "fastapi_users.router.auth.get_auth_router.<locals>.login"
-      ],
-      "disclosure": "credential exchange result only",
-      "endpoint_module": "fastapi_users.router.auth",
-      "endpoint_name": "get_auth_router.<locals>.login",
-      "methods": [
-        "POST"
-      ],
-      "name": "auth:jwt.login",
-      "path": "/api/v1/auth/jwt/login",
-      "rbac_policy": "none",
-      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
-      "transport": "http"
-    },
-    {
-      "auth_policy": "auth-flow",
-      "dependency_calls": [
-        "app.core.users.get_jwt_strategy",
-        "app.core.users.get_user_db",
-        "app.core.users.get_user_manager",
-        "app.db.async_session.get_async_db",
-        "fastapi.security.oauth2.None",
-        "fastapi_users.authentication.authenticator.Authenticator.current_user_token.<locals>.current_user_token_dependency",
-        "fastapi_users.router.auth.get_auth_router.<locals>.logout"
-      ],
-      "disclosure": "logout result only",
-      "endpoint_module": "fastapi_users.router.auth",
-      "endpoint_name": "get_auth_router.<locals>.logout",
-      "methods": [
-        "POST"
-      ],
-      "name": "auth:jwt.logout",
-      "path": "/api/v1/auth/jwt/logout",
       "rbac_policy": "none",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
