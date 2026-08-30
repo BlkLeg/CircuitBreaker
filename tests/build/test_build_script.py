@@ -40,6 +40,7 @@ class TestCreateLinuxPackagesIncludesApk:
 
         with patch("build_native_release.shutil.which", return_value="/usr/bin/nfpm"), \
              patch("build_native_release.subprocess.run", side_effect=fake_run), \
+             patch("build_native_release.stage_nats_server", return_value="2.14.6"), \
              patch("build_native_release.shutil.copytree"), \
              patch("build_native_release.shutil.rmtree"):
             br.create_linux_packages(tmp_bundle, "0.1.3", "amd64", tmp_path)

@@ -322,7 +322,7 @@ SESSION_AUDIENCE = "fastapi-users:auth"
 def create_token(
     user_id: int,
     secret: str,
-    timeout_hours: int | None,
+    timeout_hours: float | int | None,
     *,
     role: str | None = None,
     scopes: list[str] | None = None,

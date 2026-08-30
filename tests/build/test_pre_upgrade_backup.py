@@ -66,6 +66,10 @@ cb_step() {{ echo "STEP|$1"; }}
 cb_ok()   {{ echo "OK|$1"; }}
 cb_warn() {{ echo "WARN|$1"; }}
 cb_fail() {{ echo "FAIL|$1"; echo "HINT|${{2:-}}"; exit 1; }}
+systemctl() {{
+  [[ "${{1:-}}" == "is-active" && "${{CB_TEST_PGBOUNCER:-active}}" == "active" ]]
+}}
+chown() {{ printf '%s\n' "$@" >> "$CB_TEST_CHOWN"; }}
 run_backup() {{
 {block}
 }}
@@ -82,21 +86,10 @@ case "$CB_TEST_PGDUMP" in
 esac
 """
 
-SYSTEMCTL_STUB = """\
-#!/usr/bin/env bash
-[[ "${1:-}" == "is-active" && "${CB_TEST_PGBOUNCER:-active}" == "active" ]]
-"""
-
-# The sandbox has no `breaker` user, so the real chown would fail the block for a
-# reason that has nothing to do with what is under test. Stub it and record the
-# argv instead, which also lets the ownership handoff itself be asserted --
+# The sandbox has no `breaker` user, so the harness function records chown's argv
+# instead, which also lets the ownership handoff itself be asserted --
 # run_upgrade runs as root with umask 022, and a backups directory left root:root
 # is one the breaker-run backend cannot write its scheduled dumps into.
-CHOWN_STUB = """\
-#!/usr/bin/env bash
-printf '%s\\n' "$@" >> "$CB_TEST_CHOWN"
-"""
-
 
 def _block() -> str:
     match = BLOCK_RE.search(SETUP_SH.read_text(encoding="utf-8"))
@@ -172,11 +165,6 @@ def run_backup(
     for target in [pg_bin / "pg_dump"] + ([stub_path / "pg_dump"] if on_path else []):
         target.write_text(PG_DUMP_STUB, encoding="utf-8")
         target.chmod(0o755)
-    (stub_path / "systemctl").write_text(SYSTEMCTL_STUB, encoding="utf-8")
-    (stub_path / "systemctl").chmod(0o755)
-    (stub_path / "chown").write_text(CHOWN_STUB, encoding="utf-8")
-    (stub_path / "chown").chmod(0o755)
-
     argv = tmp_path / "argv"
     chown = tmp_path / "chown-argv"
     log_file = data_dir / "logs" / "install.log"

@@ -7,7 +7,11 @@ import os
 import threading
 import time
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import httpx
+    import requests
 
 
 class HTTPPolicy(StrEnum):
@@ -69,7 +73,7 @@ def enforce_resolved(policy: HTTPPolicy, addresses: tuple[str, ...]) -> None:
             raise ConnectionError("Private-LAN HTTP target has a public or mixed DNS answer")
 
 
-def httpx_client(policy: HTTPPolicy = PUBLIC_HTTP, **kwargs: Any) -> Any:
+def httpx_client(policy: HTTPPolicy = PUBLIC_HTTP, **kwargs: Any) -> httpx.Client:
     """Construct the only supported synchronous server-side HTTP client."""
     import httpx
 
@@ -77,7 +81,7 @@ def httpx_client(policy: HTTPPolicy = PUBLIC_HTTP, **kwargs: Any) -> Any:
     return httpx.Client(**kwargs)
 
 
-def httpx_async_client(policy: HTTPPolicy = PUBLIC_HTTP, **kwargs: Any) -> Any:
+def httpx_async_client(policy: HTTPPolicy = PUBLIC_HTTP, **kwargs: Any) -> httpx.AsyncClient:
     """Construct the only supported asynchronous server-side HTTP client."""
     import httpx
 
@@ -85,21 +89,23 @@ def httpx_async_client(policy: HTTPPolicy = PUBLIC_HTTP, **kwargs: Any) -> Any:
     return httpx.AsyncClient(**kwargs)
 
 
-def httpx_request(method: str, url: str, *, policy: HTTPPolicy = PUBLIC_HTTP, **kwargs: Any) -> Any:
+def httpx_request(
+    method: str, url: str, *, policy: HTTPPolicy = PUBLIC_HTTP, **kwargs: Any
+) -> httpx.Response:
     import httpx
 
     enforce_before_resolution(policy)
     return httpx.request(method, url, **kwargs)
 
 
-def httpx_get(url: str, *, policy: HTTPPolicy = PUBLIC_HTTP, **kwargs: Any) -> Any:
+def httpx_get(url: str, *, policy: HTTPPolicy = PUBLIC_HTTP, **kwargs: Any) -> httpx.Response:
     import httpx
 
     enforce_before_resolution(policy)
     return httpx.get(url, **kwargs)
 
 
-def requests_session(policy: HTTPPolicy = PUBLIC_HTTP) -> Any:
+def requests_session(policy: HTTPPolicy = PUBLIC_HTTP) -> requests.Session:
     import requests
 
     enforce_before_resolution(policy)

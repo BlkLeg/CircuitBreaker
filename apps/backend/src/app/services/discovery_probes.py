@@ -4,7 +4,7 @@ import asyncio
 import logging
 from typing import Any
 
-from app.core.egress import PRIVATE_LAN_HTTP, httpx_async_client
+from app.core.egress import PUBLIC_HTTP, httpx_async_client
 from app.core.nmap_args import validate_nmap_arguments
 from app.core.validation import validate_snmp_community
 from app.services.discovery_network import PORT_SERVICE_MAP  # noqa: F401 — re-exported for callers
@@ -408,7 +408,7 @@ async def _run_vendor_lookup(mac: str) -> str | None:
     if not mac:
         return None
     try:
-        async with httpx_async_client(PRIVATE_LAN_HTTP, timeout=3.0) as client:
+        async with httpx_async_client(PUBLIC_HTTP, timeout=3.0) as client:
             r = await client.get(f"https://api.macvendors.com/{mac}")
             if r.status_code == 200:
                 return r.text.strip()[:100]
