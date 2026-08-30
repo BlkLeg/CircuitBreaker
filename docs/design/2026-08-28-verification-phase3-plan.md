@@ -560,6 +560,72 @@ That is the third distinct defect in a rollback path which, before this phase,
 had never been executed once: it was not shipped (slice 1, F2), it could not be
 driven without a human (F11), and it could not authenticate (F12).
 
+### F13. deb upgrades left the service stopped too — and the F5 write-up was wrong about why
+
+The F5 note above claimed deb needed no equivalent of `%posttrans`, because dpkg
+runs the old `prerm` before unpack and the new `postinst` last, so
+`postinstall.sh`'s `try-restart` was already the final word. The ordering claim
+was right. The conclusion was wrong, and the `debian-deb-amd64-upgrade` row said
+so on its first execution:
+
+```
+::error::service is not running after the upgrade
+```
+
+`try-restart` acts *only* on a unit that is already running, and the legacy
+`prerm` stopped it at step 1. Running last does not help a command that declines
+to do anything. The unit was correctly **enabled** — `postinstall.sh`'s
+`systemctl enable` had undone the `prerm`'s disable — and not running.
+
+It also falsified a second assumption. `preinstall.sh`'s stamp is not reliable on
+this path: Debian Policy §6.5 runs `old-prerm upgrade` *before*
+`new-preinst upgrade`, so by the time this package records the unit state the
+legacy `prerm` has already stopped and disabled it, and the stamp reads
+`enabled=0 active=0` for a service that was running a moment earlier.
+
+**Fixed** in `postinstall.sh`, on the deb and apk paths only — on rpm the old
+`%preun` runs *after* it, so anything started there is stopped again seconds
+later, and `posttrans.sh` remains the hook for that. The restore keys on the one
+state the ordering cannot manufacture: *enabled and not active* is a state only a
+`prerm` that no-ops on upgrade can leave behind, so it is read as the operator
+having stopped the service deliberately and is the single case that suppresses
+the restore. An upgrade from a version predating slice 1's `prerm` fix cannot
+distinguish "was running" from "was stopped" and restores the service — which is
+Debian's own convention (`dh_installsystemd` restarts on upgrade) and the safer
+of the two errors against an upgrade that silently leaves the product down.
+
+`postinstall.sh`'s env path is now overridable via `CB_ENV_FILE`, in the idiom
+`preinstall.sh` and `rollback.sh` already use and for the reason they give: a
+hook that can only read one hardcoded path cannot be exercised without installing
+a package as root, and this one decides whether the service comes back.
+
+Two existing tests caught side effects of that change, both correctly.
+`test_cb_cli_contract` proves *something in the repo creates* the env file the
+CLI reads, and the indirection hid the creation site; its helper now follows one
+level of variable indirection, and only where the variable's own default is that
+path, so it cannot be used to launder a script that never writes the file.
+`test_version_parity` caught that the synthetic-N-1 recipe had left
+`apps/frontend/package.json` at 0.3.9 — `build_native_release.py` syncs it from
+`VERSION`, so that file has to be restored alongside `VERSION` and
+`preremove.sh`.
+
+### Building a candidate that the matrix can actually run
+
+`make build-in-release-image` reproduces the release job's environment
+(`ubuntu-22.04`, Python 3.12) in a container, so a local build carries the glibc
+2.35 floor rather than this host's 2.43. Standing it up surfaced four
+undocumented dependencies the release build has on the GitHub runner's
+preinstalled environment, none of them visible in `build.yml`: `gpg-agent` (which
+`add-apt-repository` shells out to), a working `sudo`, `python3` already
+resolving to 3.12, and `git config --global --add safe.directory` for a checkout
+the build user does not own — without which Go's VCS stamping fails as an opaque
+`error obtaining VCS status: exit status 128`. "Reproduce the release build
+locally" was not previously possible; it is the same class as everything else in
+this phase — a documented capability nobody had executed.
+
+AppImage does not build in the container (`appimagetool` needs FUSE). deb, rpm,
+apk and the tarball do, which covers every row in the matrix.
+
 ### Status of the rows
 
 | Row | Candidate | Result |
@@ -568,8 +634,12 @@ driven without a human (F11), and it could not authenticate (F12).
 | `fedora-rpm-amd64` | published `v1.0.0-rc.4` | **Failed** — `/data` crash loop (F10). The RC does not boot from its package. |
 | `fedora-rpm-amd64-upgrade` | synthetic 0.3.9 → 0.4.0 | **Passed** — `Tier 3 complete (install, boot, upgrade, roll back)`. Reached only after F5, F9, F11 and F12 were fixed. See the limits below. |
 | `fedora-rpm-amd64-upgrade` | published 0.3.4 → 0.4.0 | **Failed at the fixture**: the published 0.3.4 does not boot (F10), so the upgrade contract was never reached. No bootable N-1 exists. |
-| `debian-deb-amd64` | 0.4.0, built here | **Blocked** by F8: a Fedora-built candidate cannot run on Debian 12, and testing it there proves nothing about the release. Needs a CI-built artifact. |
-| `debian-deb-amd64-upgrade` | — | Not run; blocked by both F8 and F10. |
+| `debian-deb-amd64` | 0.4.0, release image | **Passed.** The identical row against the identical tree, with only the build environment changed — which confirms F8's diagnosis rather than leaving it an inference. |
+| `debian-deb-amd64-upgrade` | synthetic 0.3.9 → 0.4.0, release image | **Passed** after F13. `Tier 3 complete (install, boot, upgrade, roll back)`. |
+
+**All four rows are green**, and the rpm rows were re-run after the F13 change to
+`postinstall.sh` to confirm the deb-path restore does not fire on rpm — it does
+not, and `posttrans.sh` still does.
 
 ### What the green upgrade row does and does not evidence
 

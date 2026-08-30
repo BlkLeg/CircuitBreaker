@@ -8,6 +8,8 @@ __pycache__/
 *.pyd
 .venv/
 .venv-mkdocs/
+# created by scripts/build-in-release-image.sh inside the release container
+.venv-release/
 venv/
 dist/
 build/
