@@ -152,8 +152,13 @@ cb::section "Provision $ROW_ID"
 read -r SSH_PORT SSH_KEY VM_DIR < <("$FLEET_DIR/provision.sh" "$ROW_ID")
 
 cb::section "Push the candidate and the tier script"
+# Double quotes, not single: $SSH_USER has to expand here. The single-quoted
+# version hardcoded `fedora` one line below a correctly parameterised
+# destination, so the deb row failed at this step with `chown: invalid user:
+# 'fedora'` -- the ownership, not the login, which is why it survived a test that
+# only looked for `fedora@`.
 fleet::ssh "$SSH_USER"@127.0.0.1 \
-    'sudo mkdir -p /opt/cb-tier3/previous && sudo chown -R fedora /opt/cb-tier3'
+    "sudo mkdir -p /opt/cb-tier3/previous && sudo chown -R $SSH_USER /opt/cb-tier3"
 # Companion packages beside the candidate go too. `dnf install circuit-breaker`
 # on a real Fedora host also pulls circuit-breaker-nats, since the rpm recommends
 # it and dnf installs weak dependencies by default; installing from local files

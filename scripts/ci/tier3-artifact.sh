@@ -18,7 +18,12 @@ PACKAGE="${1:?usage: tier3-artifact.sh <candidate-package> [previous-package]}"
 # install-and-boot contract Phase 2 shipped, unchanged.
 PREVIOUS="${2:-}"
 EVIDENCE=/tmp/cb-tier3-evidence
-BASE_URL="http://127.0.0.1:8000/api/v1"
+# 8080, not 8000: 8000 is the dev port -- what `make dev` binds and what the Vite
+# proxy forwards to. The packaged service takes start.py's default of 8080, which
+# is also the port postinstall.sh tells the operator to open. Probing the wrong
+# one fails as "service never became live", which reads as a product defect and
+# is not one. tests/build/test_tier3_probes_the_served_port.py couples the two.
+BASE_URL="http://127.0.0.1:8080/api/v1"
 ENV_FILE=/etc/circuit-breaker/circuit-breaker.env
 BACKUP_GLOB='/var/lib/circuit-breaker/backups/pre-upgrade-*.sql'
 mkdir -p "$EVIDENCE"
@@ -187,15 +192,29 @@ t3::assert_rollback_tooling_is_shipped() {
     [ "$rc" = "2" ] || fail "circuit-breaker-rollback with no argument exited $rc, expected 2 (usage)"
 }
 
+# severity: `fatal` where the subject is the artifact under test, `tolerate`
+# where it is the N-1 fixture. The published v0.3.4 binary answers --version with
+# `unknown` -- a real defect, already fixed in the candidate -- and a fatal check
+# on the fixture stopped the upgrade row before it reached a single one of its
+# own assertions. Nothing in the upgrade contract reads --version:
+# VERSION_AT_START comes from the shipped VERSION file. Holding the fixture to
+# the candidate's standard means upgrades could only ever be tested from a
+# historically perfect release, which is the opposite of what this row is for.
+# The mismatch is still written to the evidence directory either way.
 t3::assert_version_matches() {
-    local label=$1
+    local label=$1 severity=${2:-fatal}
     section "Assert the installed binary reports the shipped version ($label)"
     local shipped reported
     shipped="$(cat /usr/local/share/circuit-breaker/VERSION)"
     reported="$(/usr/local/bin/circuit-breaker --version)"
     printf 'shipped=%s reported=%s\n' "$shipped" "$reported" | tee "$EVIDENCE/version-$label.txt"
-    [ "$shipped" = "$reported" ] \
-        || fail "binary reports '$reported' but the shipped VERSION says '$shipped'"
+    if [ "$shipped" != "$reported" ]; then
+        if [ "$severity" = "fatal" ]; then
+            fail "binary reports '$reported' but the shipped VERSION says '$shipped'"
+        fi
+        printf "::warning::[%s] binary reports '%s' but the shipped VERSION says '%s' — recorded, not fatal: this is the N-1 fixture, not the candidate\n" \
+            "$label" "$reported" "$shipped" >&2
+    fi
 }
 
 t3::record_cb_cli() {
@@ -341,7 +360,10 @@ fi
 
 t3::install_set "$START_LABEL" "$START_DIR"
 t3::assert_installed_paths
-t3::assert_version_matches "$START_LABEL"
+# The starting install is the candidate on an install row and the N-1 fixture on
+# an upgrade row, so the severity follows the same branch the label does.
+if [ -n "$PREVIOUS" ]; then START_SEVERITY=tolerate; else START_SEVERITY=fatal; fi
+t3::assert_version_matches "$START_LABEL" "$START_SEVERITY"
 VERSION_AT_START="$(cat /usr/local/share/circuit-breaker/VERSION)"
 t3::record_cb_cli
 t3::start_and_wait_ready "$START_LABEL"
@@ -471,7 +493,11 @@ section "Roll back: restore the pre-upgrade backup"
 # Through the shipped wrapper, exactly as an operator would. Calling restore.sh
 # directly would test a code path the docs do not name and would skip the layout
 # variables the wrapper exists to supply.
-/usr/local/bin/circuit-breaker-rollback "$BACKUP" 2>&1 | tee "$EVIDENCE/rollback.log"
+# CB_ASSUME_YES because this runs over ssh with no TTY. restore.sh prompts
+# before it drops anything, and an unanswered prompt correctly aborts -- so
+# without consent given in advance the row stops at the banner and evidences
+# nothing about the rollback. Phase 3, F11.
+CB_ASSUME_YES=1 /usr/local/bin/circuit-breaker-rollback "$BACKUP" 2>&1 | tee "$EVIDENCE/rollback.log"
 
 section "Wait for the rolled-back service to become ready"
 deadline=$(( SECONDS + 180 ))
@@ -495,7 +521,7 @@ printf '%s' "$REVISION_ROLLED_BACK" > "$EVIDENCE/alembic_version-rolledback.txt"
 [ "$(t3::marker_count after-upgrade)" = "0" ] \
     || fail "the post-upgrade marker row survived the rollback — the restore did not replace the database"
 
-t3::assert_version_matches rolledback
+t3::assert_version_matches rolledback tolerate
 t3::exercise_api rolledback
 t3::collect rolledback
 

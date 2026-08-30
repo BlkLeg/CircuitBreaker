@@ -147,15 +147,25 @@ def test_provisioning_does_not_hardcode_a_distro_account():
     """Cloud images use different default accounts -- `fedora`, `debian`,
     `ubuntu`. A hardcoded one fails every other image with
     "Permission denied (publickey)", which reads like a broken key rather than a
-    wrong username."""
+    wrong username.
+
+    Checked as a bare word rather than as `account@`, which is what the first
+    version of this test looked for. That shape assumed the account name only
+    ever appears as an ssh destination, and it missed
+    `sudo chown -R fedora /opt/cb-tier3` sitting on the line directly below a
+    correctly parameterised `"$SSH_USER"@127.0.0.1` -- so the deb row died at the
+    push step with `chown: invalid user: 'fedora'` on its first execution.
+    """
     for script in (PROVISION, DISPATCH):
-        text = script.read_text(encoding="utf-8")
-        for account in ("fedora@", "debian@", "ubuntu@"):
-            assert account not in text, (
-                f"{script.name} hardcodes the {account.rstrip('@')} account; read "
-                f"ssh_user from the matrix row instead"
-            )
-        assert "SSH_USER" in text, f"{script.name} does not resolve a guest account"
+        for number, line in _code_lines(script):
+            for account in ("fedora", "debian", "ubuntu"):
+                assert not re.search(rf"(?<![\w-]){account}(?![\w-])", line), (
+                    f"{script.name}:{number} hardcodes the {account} account; read "
+                    f"ssh_user from the matrix row instead:\n  {line.strip()}"
+                )
+        assert "SSH_USER" in script.read_text(encoding="utf-8"), (
+            f"{script.name} does not resolve a guest account"
+        )
 
 
 def test_provisioning_verifies_the_units_the_fixture_names():
