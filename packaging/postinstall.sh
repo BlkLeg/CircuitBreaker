@@ -20,6 +20,22 @@ case "${1:-}" in
     *)         if [ "$1" -ge 2 ] 2>/dev/null; then IS_UPGRADE=1; else IS_UPGRADE=0; fi ;;
 esac
 
+# Which packager invoked us. rpm is the one that runs the OLD package's %preun
+# *after* this script, which is why the service restore below is not its job.
+case "${1:-}" in
+    configure) PACKAGER=deb ;;
+    "")        PACKAGER=apk ;;
+    *)         PACKAGER=rpm ;;
+esac
+
+# Overridable for the reason preinstall.sh and rollback.sh give for the same
+# thing: a hook that can only read one hardcoded path cannot be exercised
+# without installing a package as root, and this one decides whether the service
+# comes back after an upgrade.
+ENV_FILE="${CB_ENV_FILE:-/etc/circuit-breaker/circuit-breaker.env}"
+UNIT_STATE_FILE="${CB_UNIT_STATE_FILE:-/run/circuit-breaker/pre-upgrade-unit-state}"
+SERVICE_NAME="${CB_SERVICE_NAME:-circuit-breaker.service}"
+
 # Create system user if it doesn't exist
 if ! id -u circuitbreaker >/dev/null 2>&1; then
   useradd --system --no-create-home --shell /usr/sbin/nologin \
@@ -45,10 +61,10 @@ if [ ! -f /etc/circuit-breaker/config.toml ]; then
 fi
 
 # Generate env file with secrets if not present
-if [ ! -f /etc/circuit-breaker/circuit-breaker.env ]; then
+if [ ! -f "$ENV_FILE" ]; then
   VAULT_KEY=$(openssl rand -base64 32)
   NATS_TOKEN=$(openssl rand -hex 16)
-  cat > /etc/circuit-breaker/circuit-breaker.env <<EOF
+  cat > "$ENV_FILE" <<EOF
 # Circuit Breaker environment — auto-generated during install
 CB_DB_URL=postgresql://circuitbreaker:changeme@127.0.0.1:5432/circuitbreaker
 CB_VAULT_KEY=${VAULT_KEY}
@@ -65,8 +81,8 @@ UPLOADS_DIR=/var/lib/circuit-breaker/uploads
 CB_EGRESS_PROXY_URL=
 CB_ALLOW_DIRECT_EGRESS=true
 EOF
-  chmod 600 /etc/circuit-breaker/circuit-breaker.env
-  chown root:circuitbreaker /etc/circuit-breaker/circuit-breaker.env
+  chmod 600 "$ENV_FILE"
+  chown root:circuitbreaker "$ENV_FILE"
 fi
 
 # Backfill CB_DATA_DIR into an env file that predates it.
@@ -106,9 +122,9 @@ for _kv in \
   "CB_EGRESS_PROXY_URL=" \
   "CB_ALLOW_DIRECT_EGRESS=true"; do
   _key="${_kv%%=*}"
-  if [ -f /etc/circuit-breaker/circuit-breaker.env ] \
-     && ! grep -q "^${_key}=" /etc/circuit-breaker/circuit-breaker.env; then
-    echo "${_kv}" >> /etc/circuit-breaker/circuit-breaker.env
+  if [ -f "$ENV_FILE" ] \
+     && ! grep -q "^${_key}=" "$ENV_FILE"; then
+    echo "${_kv}" >> "$ENV_FILE"
     echo "Added ${_kv} to the existing environment file."
   fi
 done
@@ -124,7 +140,50 @@ if [ "$IS_UPGRADE" -eq 1 ]; then
   # files underneath a live process and nothing tells systemd -- so the operator
   # sees a successful upgrade and a service still serving the previous version
   # until something restarts it.
-  systemctl try-restart circuit-breaker.service
+  systemctl try-restart "$SERVICE_NAME"
+
+  # ...which is not enough on deb, and that was ADR 0005 Phase 3's F13. dpkg runs
+  # `old-prerm upgrade` BEFORE `new-preinst upgrade` (Policy 6.5) and this script
+  # last, so on an upgrade from any released version the legacy prerm has already
+  # stopped the service by the time we get here -- and try-restart acts only on a
+  # unit that is already running, so it does nothing and the upgrade finishes with
+  # the product down. The row caught it as "service is not running after the
+  # upgrade", with the unit correctly enabled because the `systemctl enable` above
+  # had undone the prerm's disable.
+  #
+  # Not on rpm: there the old %preun runs AFTER this script, so anything started
+  # here is stopped again moments later. packaging/posttrans.sh owns that path,
+  # and it is the only scriptlet that runs late enough to.
+  #
+  # preinstall.sh's stamp cannot be fully trusted here for the same ordering
+  # reason: the legacy prerm stopped and disabled the unit before preinst could
+  # look, so the stamp reads enabled=0 active=0 for a service that was running a
+  # moment earlier. Enabled-and-not-active is the one state that ordering cannot
+  # manufacture -- only a prerm that no-ops on upgrade leaves it -- so it is taken
+  # as the operator having stopped the service on purpose, and is the single case
+  # that suppresses the restore. Upgrading from a version predating slice 1's
+  # prerm fix cannot distinguish "was running" from "was stopped" and restores the
+  # service: that is Debian's own convention, and the safer of the two errors
+  # against an upgrade that silently leaves the product down.
+  if [ "$PACKAGER" != "rpm" ]; then
+    _was_enabled=""
+    _was_active=""
+    if [ -f "$UNIT_STATE_FILE" ]; then
+      while IFS='=' read -r _k _v; do
+        case "$_k" in
+          enabled) _was_enabled="$_v" ;;
+          active)  _was_active="$_v" ;;
+        esac
+      done < "$UNIT_STATE_FILE"
+      rm -f "$UNIT_STATE_FILE"
+    fi
+    if [ "$_was_enabled" = "1" ] && [ "$_was_active" = "0" ]; then
+      echo "Circuit Breaker: leaving $SERVICE_NAME stopped — it was stopped before this upgrade."
+    elif ! systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+      systemctl start "$SERVICE_NAME" >/dev/null 2>&1 || true
+      echo "Circuit Breaker: restarted $SERVICE_NAME — the previous package's removal scriptlet stopped it during the upgrade."
+    fi
+  fi
 
   echo ""
   echo "Circuit Breaker upgraded successfully."
@@ -154,7 +213,7 @@ else
   echo "Circuit Breaker installed successfully."
   echo ""
   echo "  Next steps:"
-  echo "    1. Edit /etc/circuit-breaker/circuit-breaker.env"
+  echo "    1. Edit $ENV_FILE"
   echo "       - Set CB_DB_URL to your PostgreSQL connection string"
   echo "       - Ensure PostgreSQL, Redis, and NATS are running"
   echo "    2. sudo systemctl start circuit-breaker"

@@ -83,18 +83,37 @@ def _writers_of(path: str) -> list[str]:
     """
     escaped = re.escape(path)
     boundary = r"(?![A-Za-z0-9._-])"
-    creates = (
-        re.compile(r">>?\s*[\"']?" + escaped + boundary),
-        re.compile(r"\btee\b(?:\s+-a)?\s+[\"']?" + escaped + boundary),
-        re.compile(r"\b(?:cp|mv|install|touch)\b[^\n]*?" + escaped + boundary),
-    )
+
+    def _patterns(target: str) -> tuple[re.Pattern[str], ...]:
+        return (
+            re.compile(r">>?\s*[\"']?" + target + boundary),
+            re.compile(r"\btee\b(?:\s+-a)?\s+[\"']?" + target + boundary),
+            re.compile(r"\b(?:cp|mv|install|touch)\b[^\n]*?" + target + boundary),
+        )
+
     hits = []
     for candidate in _creator_files():
         text = candidate.read_text(errors="replace")
         if path not in text:
             continue
+
+        # Follow one level of variable indirection, and only where the variable's
+        # own default *is* this path. packaging/postinstall.sh, preinstall.sh and
+        # rollback.sh all take their paths as `VAR="${CB_OVERRIDE:-/the/path}"`,
+        # deliberately, so the hooks can be exercised without installing a package
+        # as root -- and a creation through that variable is still a creation.
+        # Anything whose default is a different path is not followed, so this
+        # cannot be used to launder a script that never writes the file.
+        aliases = [escaped]
+        for match in re.finditer(
+            r"^\s*([A-Za-z_][A-Za-z0-9_]*)=\"?\$\{[A-Za-z_][A-Za-z0-9_]*:-" + escaped + r"\}\"?\s*$",
+            text, re.M,
+        ):
+            aliases.append(r"\$\{?" + re.escape(match.group(1)) + r"\}?")
+
+        matchers = tuple(rx for alias in aliases for rx in _patterns(alias))
         for line in text.splitlines():
-            if any(rx.search(line) for rx in creates):
+            if any(rx.search(line) for rx in matchers):
                 hits.append(str(candidate.relative_to(ROOT)))
                 break
     return hits

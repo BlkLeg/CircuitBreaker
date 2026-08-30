@@ -667,3 +667,106 @@ def test_a_url_with_no_password_exports_an_empty_one(tmp_path: Path):
         f"expected an empty password, got {env.get('CB_DB_PASSWORD')!r}"
     )
     assert env.get("CB_DB_OWNER") == "circuitbreaker"
+
+
+# ── deb upgrades leave the service stopped too, for a different reason ──────
+#
+# ADR 0005 Phase 3, F13. The Phase 3 write-up claimed deb needed no equivalent of
+# %posttrans, on the grounds that dpkg runs the old prerm before unpack and the
+# new postinst last, so postinstall.sh already had the final word. The ordering
+# was right and the conclusion was wrong: `try-restart` acts only on a unit that
+# is already running, and the old prerm stopped it at step 1. The
+# debian-deb-amd64-upgrade row failed with
+#
+#     ::error::service is not running after the upgrade
+#
+# with the unit correctly *enabled* -- postinstall's `systemctl enable` had
+# undone the old prerm's disable -- and not running.
+#
+# It also means preinstall.sh's stamp cannot be trusted on this path. Debian
+# Policy 6.5 runs `old-prerm upgrade` before `new-preinst upgrade`, so by the
+# time this package records the unit state, the legacy prerm has already stopped
+# and disabled it: the stamp reads enabled=0 active=0 for a service that was
+# running a moment earlier.
+#
+# So on deb the service is started unless the stamp gives the one unambiguous
+# signal that the operator stopped it on purpose -- enabled, not active -- which
+# only a prerm that no-ops on upgrade can leave behind, i.e. an upgrade from a
+# version that already carries slice 1's fix. Upgrading from a version that
+# predates it cannot distinguish "was running" from "was stopped", and restores
+# the service, which is both Debian's own convention (dh_installsystemd restarts
+# on upgrade) and the safer of the two errors: the alternative is every upgrade
+# silently ending with the product down.
+
+
+def _run_postinstall(tmp_path: Path, args: list[str], *, enabled: str, active: str):
+    """Run postinstall.sh against a stub systemctl and a stamp we control."""
+    bin_dir = tmp_path / "bin"
+    calls = tmp_path / "systemctl-calls.log"
+    # is-active exits non-zero: on a deb upgrade the old prerm has already
+    # stopped the unit by the time this script runs, which is the whole reason
+    # try-restart is not enough. A stub that reported the service as running
+    # would make the restore look unnecessary and the test pass vacuously.
+    _stub(bin_dir, "systemctl", f'echo "$@" >> {calls}\ncase "$1" in is-active|is-enabled) exit 1 ;; esac\nexit 0\n')
+    # postinstall.sh writes under /etc and /var/lib and creates a system user,
+    # none of which an unprivileged test may do. Only the systemctl calls are
+    # under test, so the privileged steps are stubbed inert. `id` reports the
+    # service user as already present, which is the branch a real upgrade takes.
+    _stub(bin_dir, "id", "exit 0\n")
+    for tool in ("useradd", "mkdir", "chown", "chmod", "cp"):
+        _stub(bin_dir, tool, "exit 0\n")
+    _stub(bin_dir, "openssl", "echo stub-secret\n")
+    stamp = tmp_path / "unit-state"
+    if enabled is not None:
+        stamp.write_text(f"enabled={enabled}\nactive={active}\n", encoding="utf-8")
+    env = {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "CB_UNIT_STATE_FILE": str(stamp),
+        "CB_ENV_FILE": str(tmp_path / "circuit-breaker.env"),
+    }
+    result = _run(POSTINSTALL, args, env, tmp_path)
+    return result, (calls.read_text(encoding="utf-8") if calls.exists() else "")
+
+
+def _started(calls: str) -> bool:
+    return bool(re.search(r"^start circuit-breaker", calls, re.M))
+
+
+def test_a_deb_upgrade_from_a_legacy_version_restores_the_service(tmp_path: Path):
+    """The regression: the legacy prerm stopped it at step 1 and try-restart,
+    running last, is a no-op on a stopped unit."""
+    _, calls = _run_postinstall(tmp_path, ["configure", "0.3.9"], enabled="0", active="0")
+    assert _started(calls), (
+        f"the deb upgrade left the service stopped -- this is the row failure "
+        f"'service is not running after the upgrade':\n{calls}"
+    )
+
+
+def test_a_deb_upgrade_respects_a_deliberately_stopped_service(tmp_path: Path):
+    """enabled and not active is the one state only a no-op prerm can leave, so
+    it is the operator's choice and must survive the upgrade."""
+    _, calls = _run_postinstall(tmp_path, ["configure", "0.4.0"], enabled="1", active="0")
+    assert not _started(calls), (
+        f"the upgrade started a service the operator had deliberately stopped:\n{calls}"
+    )
+
+
+def test_a_deb_upgrade_of_a_running_service_keeps_it_running(tmp_path: Path):
+    _, calls = _run_postinstall(tmp_path, ["configure", "0.4.0"], enabled="1", active="1")
+    assert _started(calls) or "try-restart circuit-breaker.service" in calls, calls
+
+
+def test_the_rpm_path_does_not_start_the_service_here(tmp_path: Path):
+    """On rpm the old %preun runs AFTER this scriptlet, so anything started here
+    is stopped again moments later. %posttrans owns that path."""
+    _, calls = _run_postinstall(tmp_path, ["2"], enabled="0", active="0")
+    assert not _started(calls), (
+        f"postinstall started the service on the rpm path, where the old %preun "
+        f"undoes it immediately -- posttrans.sh is the hook for that:\n{calls}"
+    )
+
+
+def test_a_fresh_deb_install_does_not_start_the_service(tmp_path: Path):
+    """The operator points CB_DB_URL somewhere first; the package says so."""
+    _, calls = _run_postinstall(tmp_path, ["configure"], enabled=None, active=None)
+    assert not _started(calls), f"a fresh install started the service:\n{calls}"
