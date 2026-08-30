@@ -147,6 +147,53 @@ t3::install_set() {
     pkg::install_dir "$dir" 2>&1 | tee "$EVIDENCE/install-$label.log"
 }
 
+# ── whose artifact is this? ────────────────────────────────────────────────
+# ADR 0005 Phase 3, F8. Requiring an explicit CB_CANDIDATE stopped the tier
+# testing whatever happened to be lying in dist/, but an explicitly named
+# *locally built* package is still not the artifact a user installs. A
+# PyInstaller bundle inherits its build host's glibc floor: built on Fedora 44 it
+# demands GLIBC_2.38 and cannot run on Debian 12 at all, while the release job
+# builds on ubuntu-22.04 whose 2.35 floor every supported distro clears. That is
+# not theoretical -- it is exactly how the debian-deb-amd64 row failed.
+#
+# So a green row against a local build evidences *a* package, not *the* package,
+# and a ledger row must not cite one. Local builds stay runnable, loudly and on
+# purpose: CB_ALLOW_LOCAL_CANDIDATE=1 marks the run as development, and the
+# choice is written into the evidence directory either way so a reader can tell
+# afterwards which kind of run they are looking at.
+t3::assert_candidate_provenance() {
+    local label=$1
+    local info=/usr/local/share/circuit-breaker/build-info.json
+    section "Record what kind of artifact this is ($label)"
+
+    if [ ! -f "$info" ]; then
+        printf 'built_by=absent\n' | tee "$EVIDENCE/build-info-$label.txt"
+        if [ "${CB_ALLOW_LOCAL_CANDIDATE:-}" = "1" ]; then
+            printf '::warning::[%s] the candidate ships no build-info.json — provenance unknown, continuing because CB_ALLOW_LOCAL_CANDIDATE=1\n' "$label" >&2
+            return 0
+        fi
+        fail "the candidate ships no build-info.json, so its provenance cannot be established. Packages built before this check exist; set CB_ALLOW_LOCAL_CANDIDATE=1 to run anyway, and do not record the result as evidence"
+    fi
+
+    cp "$info" "$EVIDENCE/build-info-$label.json"
+    cat "$info"
+    local built_by
+    built_by="$(sed -n 's/.*"built_by"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$info" | head -n 1)"
+
+    if [ "$built_by" = "ci" ]; then
+        return 0
+    fi
+
+    if [ "${CB_ALLOW_LOCAL_CANDIDATE:-}" = "1" ]; then
+        printf '::warning::[%s] this candidate was built locally (built_by=%s). The run is a development check: it does not evidence the released artifact and no ledger row may cite it.\n' \
+            "$label" "$built_by" >&2
+        printf 'development-run: candidate built locally, not evidence\n' >> "$EVIDENCE/build-info-$label.txt"
+        return 0
+    fi
+
+    fail "the candidate was built locally (built_by=$built_by), and a locally built package is not the artifact users install — it carries this host's glibc floor. Use the artifact the release job produced, or set CB_ALLOW_LOCAL_CANDIDATE=1 to run this as a development check whose result is not evidence"
+}
+
 t3::assert_installed_paths() {
     section "Assert the package installed what it claims"
     for path in \
@@ -360,6 +407,7 @@ fi
 
 t3::install_set "$START_LABEL" "$START_DIR"
 t3::assert_installed_paths
+t3::assert_candidate_provenance "$START_LABEL"
 # The starting install is the candidate on an install row and the N-1 fixture on
 # an upgrade row, so the severity follows the same branch the label does.
 if [ -n "$PREVIOUS" ]; then START_SEVERITY=tolerate; else START_SEVERITY=fatal; fi

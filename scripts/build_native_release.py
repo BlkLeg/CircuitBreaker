@@ -391,6 +391,54 @@ Full documentation
     (bundle_dir / "README.txt").write_text(text, encoding="utf-8")
 
 
+def _write_build_info(share_dir: Path, version: str, target_os: str, target_arch: str) -> None:
+    """Record where and on what this package was built, inside the package.
+
+    ADR 0005 Phase 3, F8. A PyInstaller bundle inherits the glibc floor of its
+    build host: built on Fedora 44 it demands GLIBC_2.38 and will not run on
+    Debian 12, while the release job builds on ubuntu-22.04 whose 2.35 floor
+    every supported distro clears. So a locally built package and the released
+    one are genuinely different artifacts, and a verification tier that cannot
+    tell them apart will happily bank evidence on the one nobody installs.
+
+    Written into share/ rather than beside the package so it travels *inside*
+    the artifact: the claim is then read from the thing under test rather than
+    from the directory someone found it in.
+    """
+    try:
+        glibc = platform.libc_ver()[1] or "unknown"
+    except OSError:  # pragma: no cover - libc_ver probes the executable
+        glibc = "unknown"
+
+    distro = "unknown"
+    os_release = Path("/etc/os-release")
+    if os_release.is_file():
+        fields = {}
+        for line in os_release.read_text(encoding="utf-8").splitlines():
+            key, _, value = line.partition("=")
+            fields[key] = value.strip().strip('"')
+        distro = f"{fields.get('ID', 'unknown')}-{fields.get('VERSION_ID', '')}".rstrip("-")
+
+    # GITHUB_ACTIONS is set to "true" by the runner and by nothing else; a local
+    # build that wants to claim CI provenance has to lie on purpose.
+    in_ci = os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
+    info = {
+        "version": version,
+        "os": target_os,
+        "arch": target_arch,
+        "built_by": "ci" if in_ci else "local",
+        "glibc": glibc,
+        "distro": distro,
+        "python": platform.python_version(),
+        "ci_run": os.environ.get("GITHUB_RUN_ID", ""),
+        "ci_workflow": os.environ.get("GITHUB_WORKFLOW", ""),
+        "commit": os.environ.get("GITHUB_SHA", ""),
+    }
+    # Trailing newline: the tier cats this file into its log, and without one the
+    # next line starts on the same row as the closing brace.
+    (share_dir / "build-info.json").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
+
+
 def stage_bundle(
     binary_path: Path,
     version: str,
@@ -410,6 +458,7 @@ def stage_bundle(
 
     shutil.copy2(binary_path, bundle_dir / binary_path.name)
     shutil.copy2(VERSION_FILE, share_dir / "VERSION")
+    _write_build_info(share_dir, version, target_os, target_arch)
     shutil.copy2(DOCS_SEED_FILE, share_dir / "DocsPage.md")
     shutil.copy2(BACKEND_ROOT / "alembic.ini", backend_share / "alembic.ini")
     shutil.copytree(BACKEND_ROOT / "migrations", backend_share / "migrations", dirs_exist_ok=True)

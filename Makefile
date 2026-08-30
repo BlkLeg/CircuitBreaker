@@ -153,7 +153,7 @@ deps-native-down:  ## Stop native systemd deps
 # ==============================================================================
 DIST_NATIVE ?= dist/native
 
-.PHONY: build build-deps build-release build-from-source release-local release-tag release-retag release-untag docker-build docker-push sign sbom
+.PHONY: build build-deps build-in-release-image build-release build-from-source release-local release-tag release-retag release-untag docker-build docker-push sign sbom
 
 build: ## Build native app (tarball + deb + rpm + apk + AppImage + .pkg.tar.zst)
 	cd $(FRONTEND_DIR) && npm ci && npm run build
@@ -161,6 +161,14 @@ build: ## Build native app (tarball + deb + rpm + apk + AppImage + .pkg.tar.zst)
 
 build-deps: ## Install build toolchain (nfpm, appimagetool, Python 3.12, Node 20)
 	bash scripts/install-build-deps.sh
+
+# A PyInstaller bundle inherits the glibc floor of whatever built it, so `make
+# build` on a modern workstation produces packages that will not run on the
+# distros in the support matrix -- the deb row failed exactly that way on Debian
+# 12. This reproduces the release job's ubuntu-22.04 / Python 3.12 environment so
+# the artifact has the floor the released one has. ADR 0005 Phase 3, F8.
+build-in-release-image: ## Build packages inside the ubuntu-22.04 image the release job uses
+	bash scripts/build-in-release-image.sh
 
 build-release: ## Install build deps then build all packages
 	$(MAKE) --no-print-directory build-deps

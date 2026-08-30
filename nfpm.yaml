@@ -32,6 +32,13 @@ contents:
   - src: dist/native/bundle/share/VERSION
     dst: /usr/local/share/circuit-breaker/VERSION
 
+  # Build provenance, shipped inside the package so a verification tier reads it
+  # from the artifact under test rather than from the directory it was found in.
+  # A PyInstaller bundle inherits its build host's glibc floor, so a local build
+  # and the released one are different artifacts (ADR 0005 Phase 3, F8).
+  - src: dist/native/bundle/share/build-info.json
+    dst: /usr/local/share/circuit-breaker/build-info.json
+
   # Agent binaries + manifest (for the in-app "install agent" command)
   - src: dist/native/bundle/agent-binaries/
     dst: /usr/local/share/circuit-breaker/agent-binaries/

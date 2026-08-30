@@ -192,8 +192,17 @@ if [ -n "$PREVIOUS" ]; then
 fi
 
 cb::section "Execute tier3-artifact.sh in the guest ($ROW_MODE)"
+# CB_ALLOW_LOCAL_CANDIDATE has to be handed across explicitly. ssh does not carry
+# the caller's environment and sudo resets it, so setting it on the host would
+# look like it worked and change nothing in the guest -- the row would refuse a
+# local candidate no matter what the operator set. Forwarded as a `sudo VAR=...`
+# assignment rather than through sudoers, so no host configuration is required.
+GUEST_ENV=""
+if [ -n "${CB_ALLOW_LOCAL_CANDIDATE:-}" ]; then
+    GUEST_ENV="CB_ALLOW_LOCAL_CANDIDATE=$(printf '%q' "$CB_ALLOW_LOCAL_CANDIDATE") "
+fi
 fleet::ssh "$SSH_USER"@127.0.0.1 \
-    "sudo bash /opt/cb-tier3/tier3-artifact.sh /opt/cb-tier3/$(basename "$PACKAGE") $GUEST_PREVIOUS"
+    "sudo ${GUEST_ENV}bash /opt/cb-tier3/tier3-artifact.sh /opt/cb-tier3/$(basename "$PACKAGE") $GUEST_PREVIOUS"
 
 # Collect explicitly on the success path too, so the emptiness check below runs
 # against real content. The trap's copy is idempotent.
