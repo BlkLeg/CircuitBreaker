@@ -73,7 +73,7 @@ verified. It does not assert that the verification named above has been built.
 
 | Tier | Guarantee | In force when | State |
 |---|---|---|---|
-| 1 | Install, boot, upgrade, roll back — deb/rpm amd64 | The `mode: upgrade` row passes against a release candidate and its evidence is recorded | **Not in force.** Phase 3 added `fedora-rpm-amd64-upgrade` and the assertions behind it, and fixed the packaging defects it exists to catch. The row has not yet been executed against a candidate, so nothing backs the claim. |
+| 1 | Install, boot, upgrade, roll back — deb/rpm amd64 | The `mode: upgrade` row passes against a release candidate and its evidence is recorded | **Not in force, and not reachable before 0.5.0.** Phase 3 added `fedora-rpm-amd64-upgrade` and the assertions behind it, and fixed the packaging defects it exists to catch. The row has not been executed against a CI-built candidate — and it cannot yet be executed *honestly*, because no released version boots from its own deb/rpm, so there is no N-1 to upgrade from. 0.4.0 is the first release whose package boots and is retained as the N-1 fixture; this row's evidence is `0.4.0 → 0.5.0`. See the 2026-08-30 note. |
 | 2 | Install and boot — deb/rpm arm64 | The §8.2 L2 job extends `artifact-smoke.yml`'s `ubuntu-22.04-arm` run to the full boot-and-exercise contract | **Not in force.** That job still asserts only that the binary prints a version. |
 | 3 | Build only — apk, AppImage, tarball, `pkg.tar.zst` | The build gate is green for each format | **In force.** `make build` produces all four and `build.yml` gates them. |
 
@@ -98,6 +98,26 @@ pre-upgrade backup (no `preinstall` hook existed), the documented rollback tool 
 transactions — which, because rpm runs the old package's `%preun` after the new package's
 `%post`, left every upgraded host with the service down and disabled. Tier 1 stays **not in
 force** until the row runs.
+
+**2026-08-30.** Recording a structural fact about this table that was previously only in a design
+document, because reading the row without it invites the wrong conclusion — that Tier 1 is one
+fleet run away.
+
+The `mode: upgrade` row needs two artifacts, and the older one has to boot. It never has:
+`docs/design/2026-08-28-verification-phase3-plan.md` established that the deb/rpm install path had
+never worked in *any* released version, so every published package is unusable as an N-1 fixture.
+Phase 3 ran the row against a synthetic 0.3.9 built from the tree, which exercises the mechanism
+and is explicitly not evidence of upgrading from a release. The earliest honest evidence is
+therefore `0.4.0 → 0.5.0`, and no amount of work inside the 0.4.0 release can shorten that.
+
+What 0.4.0 contributes is the fixture: the first package that boots, kept with its digests so the
+0.5.0 upgrade rows have something real to start from. Its `mode: install` rows — now also asserting
+that a scheduled monitor produces a sample, and that an encrypted off-host snapshot can be created
+and restored — back the install-and-boot half of the claim and nothing beyond it.
+
+Two things follow, and both are the point of writing this down. Tier 1 must not be promoted at
+0.4.0 on the strength of green install rows; and the 0.4.0 artifacts must be retained deliberately,
+because losing them costs another whole release cycle rather than a rebuild.
 
 ## Rejected alternatives
 

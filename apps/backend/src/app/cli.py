@@ -840,6 +840,41 @@ def _cmd_snapshot_create(out: str | None) -> int:
     return 0
 
 
+def _cmd_snapshot_encrypt(archive: str, recipient: str) -> int:
+    """Write the off-host derivative of *archive*, encrypted to one age recipient.
+
+    Deliberately the same function the S3 upload path calls.  B3's promise is that
+    nothing leaving the host carries the vault key in the clear, and a second
+    encryptor reachable from the CLI would be a second place for that to stop being
+    true.
+
+    It exists so the promise is *exercisable*.  ``cb restore --identity`` could
+    already read the encrypted format, but only the scheduled S3 job could produce
+    one — so the round trip the release blocker turns on had no caller outside a
+    configured bucket, and neither an operator nor a verification tier could take
+    it.  The private identity stays with the operator: this takes a public
+    recipient and never sees the key that opens the result.
+    """
+    from app.services.backup.age_encryption import encrypt_for_upload
+    from app.services.backup.snapshot import BackupError
+
+    source = Path(archive)
+    if not source.is_file():
+        print(f"snapshot not found: {archive}", file=sys.stderr)
+        return 1
+
+    try:
+        encrypted = encrypt_for_upload(source, recipient)
+    except BackupError as exc:
+        print(f"encryption failed: {exc}", file=sys.stderr)
+        return 1
+
+    # The path alone on stdout, exactly as `snapshot create` does: `cb backup`
+    # captures this line.
+    print(encrypted)
+    return 0
+
+
 # RC-04's minimum directly supported source version, from
 # docs/release/1.0.0-compatibility-policy.md ("Database and source-release
 # compatibility").  A restore replays a dump and then migrates it forward, so an
@@ -1325,6 +1360,20 @@ def build_parser() -> argparse.ArgumentParser:
         "verify", help="Validate a snapshot archive; exit non-zero if it cannot be restored"
     )
     verify.add_argument("archive", help="Path to the snapshot .tar.gz")
+    encrypt = snapshot_actions.add_parser(
+        "encrypt",
+        help="Encrypt a snapshot to one age recipient for storage off this host",
+    )
+    encrypt.add_argument("archive", help="Path to the snapshot .tar.gz")
+    encrypt.add_argument(
+        "--recipient",
+        required=True,
+        help=(
+            "The operator's age X25519 public key (age1...). Only the public half "
+            "belongs here; the identity that decrypts the result must stay with the "
+            "operator, off the host the backup came from."
+        ),
+    )
 
     # ── migrate ──────────────────────────────────────────────────────────────
     migrate = group.add_parser("migrate", help="Database schema migrations")
@@ -1476,6 +1525,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_snapshot_create(args.out)
     if args.group == "snapshot" and args.action == "verify":
         return _cmd_snapshot_verify(args.archive)
+    if args.group == "snapshot" and args.action == "encrypt":
+        return _cmd_snapshot_encrypt(args.archive, args.recipient)
     if args.group == "migrate":
         if args.action == "status":
             return _cmd_migrate_status(args.json)

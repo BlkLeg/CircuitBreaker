@@ -158,3 +158,105 @@ def test_entrypoint_routes_snapshot_verify_to_the_cli(monkeypatch):
 
     assert start.main(["--snapshot-verify", "/var/backups/snap.tar.gz"]) == 0
     assert seen["argv"] == ["snapshot", "verify", "/var/backups/snap.tar.gz"]
+
+
+# ── snapshot encrypt (B3) ────────────────────────────────────────────────────
+#
+# The subcommand exists so the encrypted-backup promise has a caller outside a
+# configured S3 bucket: `cb backup --encrypt-to` and Tier 3's round trip both
+# come through here. It is the third caller of `encrypt_for_upload`, never a
+# second implementation — the same rule `create` and `verify` follow above.
+
+
+def test_parser_accepts_snapshot_encrypt():
+    args = build_parser().parse_args(
+        ["snapshot", "encrypt", "/tmp/snap.tar.gz", "--recipient", "age1abc"]
+    )
+
+    assert args.group == "snapshot"
+    assert args.action == "encrypt"
+    assert args.archive == "/tmp/snap.tar.gz"
+    assert args.recipient == "age1abc"
+
+
+def test_parser_requires_a_recipient_to_encrypt():
+    """An archive encrypted to a default recipient is one nobody holds the key to."""
+    import pytest
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["snapshot", "encrypt", "/tmp/snap.tar.gz"])
+
+
+def test_encrypt_prints_the_derivative_path_and_nothing_else(tmp_path, monkeypatch, capsys):
+    archive = tmp_path / "cb-snapshot-20260830-020000.tar.gz"
+    archive.write_bytes(b"snapshot")
+    encrypted = archive.with_suffix(archive.suffix + ".age")
+
+    def _fake_encrypt(path, recipient):
+        assert path == archive
+        assert recipient == "age1abc"
+        encrypted.write_bytes(b"age-encryption.org/v1\nopaque")
+        return encrypted
+
+    monkeypatch.setattr("app.services.backup.age_encryption.encrypt_for_upload", _fake_encrypt)
+
+    assert main(["snapshot", "encrypt", str(archive), "--recipient", "age1abc"]) == 0
+    assert capsys.readouterr().out.strip() == str(encrypted)
+
+
+def test_encrypt_reports_a_missing_archive_without_calling_the_encryptor(tmp_path, capsys):
+    missing = tmp_path / "absent.tar.gz"
+
+    assert main(["snapshot", "encrypt", str(missing), "--recipient", "age1abc"]) == 1
+    assert "snapshot not found" in capsys.readouterr().err
+
+
+def test_encrypt_turns_a_backup_error_into_the_operator_s_reason(tmp_path, monkeypatch, capsys):
+    """A rejected recipient is an operator mistake, not a traceback."""
+    from app.services.backup.snapshot import BackupError
+
+    archive = tmp_path / "cb-snapshot-20260830-020000.tar.gz"
+    archive.write_bytes(b"snapshot")
+
+    def _refuse(path, recipient):
+        raise BackupError("S3 backup requires one valid age X25519 recipient (age1...)")
+
+    monkeypatch.setattr("app.services.backup.age_encryption.encrypt_for_upload", _refuse)
+
+    assert main(["snapshot", "encrypt", str(archive), "--recipient", "nonsense"]) == 1
+    assert "valid age X25519 recipient" in capsys.readouterr().err
+
+
+def test_entrypoint_routes_snapshot_encrypt_to_the_cli(monkeypatch):
+    """A packaged host has no `python -m app.cli`; this flag is the only route in."""
+    import app.cli
+    from app import start
+
+    seen: dict[str, list[str]] = {}
+
+    def _fake_cli_main(argv: list[str]) -> int:
+        seen["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(app.cli, "main", _fake_cli_main)
+
+    archive = "/var/backups/snap.tar.gz"
+
+    assert start.main(["--snapshot-encrypt", archive, "--recipient", "age1abc"]) == 0
+    assert seen["argv"] == ["snapshot", "encrypt", "--recipient", "age1abc", archive]
+
+
+def test_entrypoint_refuses_snapshot_encrypt_without_an_archive_or_recipient(capsys):
+    """The two ways to mistype it, each named for what is missing.
+
+    `--snapshot-encrypt --recipient age1…` in particular must not be read as a
+    request to encrypt a file called "--recipient": that reports a missing
+    snapshot, which names the wrong mistake.
+    """
+    from app import start
+
+    assert start.main(["--snapshot-encrypt", "--recipient", "age1abc"]) == 2
+    assert "requires the path to a snapshot archive" in capsys.readouterr().err
+
+    assert start.main(["--snapshot-encrypt", "/var/backups/snap.tar.gz"]) == 2
+    assert "requires --recipient" in capsys.readouterr().err

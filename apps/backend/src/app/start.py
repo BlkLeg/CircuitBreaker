@@ -278,6 +278,32 @@ def main(argv: list[str] | None = None) -> int:
             snapshot_args += ["--out", out_override]
         return cli_main(snapshot_args)
 
+    # `cb backup --encrypt-to` reaches the one encryptor through this flag, for the
+    # same reason --snapshot-create exists: a packaged host has no `python -m app.cli`.
+    # The recipient is a public key, so it is safe on a command line; the identity
+    # that opens the result never reaches this process at all.
+    if "--snapshot-encrypt" in arguments:
+        from app.cli import main as cli_main
+
+        index = arguments.index("--snapshot-encrypt")
+        archive = arguments[index + 1] if index + 1 < len(arguments) else None
+        recipient: str | None = None
+        for position, item in enumerate(arguments):
+            if item == "--recipient" and position + 1 < len(arguments):
+                recipient = arguments[position + 1]
+            elif item.startswith("--recipient="):
+                recipient = item.split("=", 1)[1]
+        # A following flag is not a path. Without this check `--snapshot-encrypt
+        # --recipient age1…` would try to encrypt a file named "--recipient" and
+        # report a missing snapshot, which names the wrong mistake.
+        if not archive or archive.startswith("-"):
+            print("--snapshot-encrypt requires the path to a snapshot archive", file=sys.stderr)
+            return 2
+        if not recipient:
+            print("--snapshot-encrypt requires --recipient <age1...>", file=sys.stderr)
+            return 2
+        return cli_main(["snapshot", "encrypt", "--recipient", recipient, archive])
+
     # `cb restore` verifies the archive before it stops anything, in every mode. The
     # binary install reaches the same verifier the containers do through this flag, so
     # an operator holding an old `cb backup` archive is told exactly that, rather than

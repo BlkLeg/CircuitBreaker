@@ -373,6 +373,158 @@ t3::exercise_scheduled_monitor() {
       -u circuit-breaker-discovery.service -u 'circuit-breaker-worker@*' --no-pager -n 300
 }
 
+# ── the encrypted off-host backup contract (B3) ─────────────────────────────
+#
+# The release blocker is "backup artifacts that leave the host are encrypted; the
+# vault key never leaves in plaintext". Unit tests can show that the encryptor
+# calls age with one recipient, and they do -- but every one of them replaces
+# `subprocess.run` with a stub, so nothing anywhere had ever run age, produced a
+# real derivative, or opened one again. A promise about an artifact is only
+# evidenced by producing the artifact and taking it back.
+#
+# This runs on the install rows, not the upgrade ones, for two reasons. §6's gate
+# says "restores it into a fresh install", which is exactly what an install row
+# is; and a restore in the middle of the upgrade row would replace the database
+# the rollback assertions are about, so the two contracts would be reading each
+# other's state.
+t3::exercise_encrypted_snapshot_roundtrip() {
+    section "Encrypted off-host snapshot: create it, prove it is opaque, restore from it"
+    local stage recipient plain encrypted vault_key backup_dir
+
+    # `age` is a hard depends of both packages. Asserted rather than assumed: if
+    # the dependency is ever dropped, the failure a user meets is a backup that
+    # cannot be encrypted, and it should surface here rather than in their bucket.
+    command -v age >/dev/null 2>&1 \
+        || fail "age is not on PATH after installing the package, which declares it as a dependency"
+    command -v age-keygen >/dev/null 2>&1 \
+        || fail "age-keygen is not on PATH after installing the package"
+
+    stage="$(mktemp -d /root/cb-tier3-backup.XXXXXX)"
+    chmod 700 "$stage"
+    backup_dir="$stage/artifacts"
+    mkdir -p "$backup_dir"
+
+    # The operator's identity, generated here and never given to the install. That
+    # is the whole of B3's custody claim: the host can write the archive and can
+    # never open it. Nothing below puts this file in the service environment, and
+    # the restore is handed it by hand, the way an operator would.
+    age-keygen -o "$stage/identity.txt" 2>"$EVIDENCE/age-keygen.log"
+    chmod 600 "$stage/identity.txt"
+    recipient="$(age-keygen -y "$stage/identity.txt")"
+
+    # The record that has to come back. Same technique as the upgrade row's marker:
+    # a table outside Alembic's control, so the assertion is about this database
+    # rather than about whichever schema two versions happen to share.
+    t3::marker_write encrypted-restore
+    [ "$(t3::marker_count encrypted-restore)" = "1" ] \
+        || fail "the marker row was not written before the snapshot"
+
+    CB_BACKUP_DIR="$backup_dir" /usr/local/bin/cb backup --encrypt-to "$recipient" \
+        > "$EVIDENCE/encrypted-backup.log" 2>&1 \
+        || { cat "$EVIDENCE/encrypted-backup.log" >&2; fail "cb backup --encrypt-to failed"; }
+
+    # Globbed the way t3::latest_backup does rather than parsed out of the command's
+    # output: `cb backup` writes a decorated summary for an operator, and a tier that
+    # scraped it would break on a colour change. An unmatched glob stays literal, so
+    # the -f test is what decides, and the two patterns cannot collide -- a name
+    # ending .tar.gz.age is not a name ending .tar.gz.
+    plain=""
+    for candidate in "$backup_dir"/cb-snapshot-*.tar.gz; do
+        [ -f "$candidate" ] && plain="$candidate"
+    done
+    encrypted=""
+    for candidate in "$backup_dir"/cb-snapshot-*.tar.gz.age; do
+        [ -f "$candidate" ] && encrypted="$candidate"
+    done
+    [ -s "$plain" ] || fail "cb backup --encrypt-to produced no plaintext snapshot in $backup_dir"
+    [ -s "$encrypted" ] || fail "cb backup --encrypt-to produced no .tar.gz.age derivative in $backup_dir"
+
+    printf 'plain=%s bytes=%s mode=%s\nencrypted=%s bytes=%s mode=%s\nrecipient=%s\n' \
+        "$(basename "$plain")" "$(stat -c '%s' "$plain")" "$(stat -c '%a' "$plain")" \
+        "$(basename "$encrypted")" "$(stat -c '%s' "$encrypted")" "$(stat -c '%a' "$encrypted")" \
+        "$recipient" | tee "$EVIDENCE/encrypted-snapshot.txt"
+
+    [ "$(stat -c '%a' "$encrypted")" = "600" ] \
+        || fail "the encrypted derivative is mode $(stat -c '%a' "$encrypted"), expected 600"
+    [ "$(head -c 21 "$encrypted")" = "age-encryption.org/v1" ] \
+        || fail "$encrypted does not start with the age file header — it is not an age file"
+
+    # The two halves of the promise, asserted against the bytes rather than against
+    # the code that wrote them.
+    #
+    # The positive control matters as much as the negative one. "The ciphertext
+    # does not contain the vault key" is also true of an empty file, of a
+    # truncated one, and of a derivative built from the wrong archive -- so the
+    # local tarball is checked to *contain* the key first. That is the documented
+    # design (the local snapshot is the security boundary, snapshot.py's docstring
+    # says so), and it is what makes the negative result mean something: the same
+    # key, in the same pair of files, visible in one and not the other.
+    vault_key="$(sed -n 's/^CB_VAULT_KEY=//p' "$ENV_FILE" | tail -n1 | tr -d '"'"'"'\r\n')"
+    [ -n "$vault_key" ] || fail "CB_VAULT_KEY is empty in $ENV_FILE — the control for this assertion is missing"
+    tar -xzOf "$plain" --wildcards '*/vault.key' 2>/dev/null | grep -qF "$vault_key" \
+        || fail "the local snapshot does not carry the host's vault key — this assertion's control is broken, so its negative half proves nothing"
+    if grep -qF "$vault_key" "$encrypted"; then
+        fail "the vault key appears in plaintext inside $encrypted — the artifact that leaves the host is not encrypted"
+    fi
+    if tar -tzf "$encrypted" >/dev/null 2>&1; then
+        fail "$encrypted is still a readable tarball — encryption did not happen"
+    fi
+    printf 'vault-key-in-local-tarball=yes vault-key-in-encrypted-derivative=no readable-as-tar=no\n' \
+        | tee "$EVIDENCE/encrypted-snapshot-opacity.txt"
+
+    # Written after the snapshot, so the restore has something it must remove.
+    # Without it a restore that did nothing at all would pass the assertion below.
+    t3::marker_write after-encrypted-snapshot
+    [ "$(t3::marker_count after-encrypted-snapshot)" = "1" ] \
+        || fail "the post-snapshot marker row was not written"
+
+    section "Restore from the encrypted snapshot, using only the operator's identity"
+    # The plaintext archive is removed first. It is in the same directory, and a
+    # restore that silently reached for it instead would pass this whole section
+    # while proving nothing about the encrypted path.
+    rm -f "$plain"
+    CB_ASSUME_YES=1 /usr/local/bin/cb restore --identity "$stage/identity.txt" --yes "$encrypted" \
+        > "$EVIDENCE/encrypted-restore.log" 2>&1 \
+        || { tail -n 60 "$EVIDENCE/encrypted-restore.log" >&2; fail "cb restore of the encrypted snapshot failed"; }
+
+    deadline=$(( SECONDS + 180 ))
+    until [ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/readyz")" = "200" ]; do
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            capture "$EVIDENCE/readyz-encrypted-restore.json" curl -s "$BASE_URL/readyz"
+            capture "$EVIDENCE/journal-encrypted-restore.log" journalctl -u circuit-breaker --no-pager -n 300
+            fail "the service never became ready within 180s after restoring the encrypted snapshot"
+        fi
+        sleep 3
+    done
+    curl -fsS "$BASE_URL/readyz" | tee "$EVIDENCE/readyz-encrypted-restore.json"
+
+    [ "$(t3::marker_count encrypted-restore)" = "1" ] \
+        || fail "the known record did not survive the encrypted restore"
+    [ "$(t3::marker_count after-encrypted-snapshot)" = "0" ] \
+        || fail "the post-snapshot row survived the restore — the database was not actually replaced"
+    printf 'known-record-restored=yes post-snapshot-row-removed=yes\n' \
+        | tee "$EVIDENCE/encrypted-restore-state.txt"
+
+    # A wrong identity must be refused rather than half-applied. Cheap to check
+    # here, and it is the failure an operator actually meets: the right file with
+    # the wrong key, months later, during a recovery.
+    age-keygen -o "$stage/wrong-identity.txt" 2>/dev/null
+    chmod 600 "$stage/wrong-identity.txt"
+    # rc taken from the command, not from the `if`. `$?` after an if-statement is
+    # the status of the if, which is 0 on the branch not taken -- the same small
+    # lie `capture` above is written to avoid.
+    local wrong_rc=0
+    CB_ASSUME_YES=1 /usr/local/bin/cb restore --identity "$stage/wrong-identity.txt" --yes "$encrypted" \
+        > "$EVIDENCE/encrypted-restore-wrong-identity.log" 2>&1 || wrong_rc=$?
+    [ "$wrong_rc" -ne 0 ] || fail "cb restore accepted an unrelated age identity for $encrypted"
+    printf 'wrong-identity-refused=yes exit=%s\n' "$wrong_rc" \
+        | tee "$EVIDENCE/encrypted-restore-wrong-identity.txt"
+
+    # The identity and both archives are the only copies of the host's secrets that
+    # this section created; nothing outside $stage refers to them.
+    rm -rf -- "$stage"
+}
+
 # ── database helpers ────────────────────────────────────────────────────────
 # Through CB_DB_URL from the installed env, not `sudo -u postgres`. Two reasons:
 # the app's own credential path is the one worth exercising, and a marker table
@@ -461,6 +613,9 @@ t3::exercise_scheduled_monitor "$START_LABEL"
 
 if [ -z "$PREVIOUS" ]; then
     # Phase 2's contract ends here, and the row that carries it is unchanged.
+    # Phase 1 adds one assertion after it: B3's encrypted off-host backup, taken
+    # and restored on the fresh install this row already has standing.
+    t3::exercise_encrypted_snapshot_roundtrip
     t3::assert_rollback_tooling_is_shipped
     t3::collect "$START_LABEL"
     readable_evidence

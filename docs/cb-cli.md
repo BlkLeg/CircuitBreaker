@@ -308,6 +308,34 @@ The archive is written mode `0600` because it contains secrets — treat the fil
 Verify one with `python -m app.cli snapshot verify <archive>`; restore it with `cb restore`. See
 [Backup & Restore](backup-restore.md).
 
+#### `--encrypt-to age1…` — the copy that may leave the host
+
+The snapshot above carries the vault key in plaintext, which is the right shape for an archive that
+stays put and the wrong shape for one that is copied to a NAS, a bucket, or another machine.
+
+```
+cb backup --encrypt-to age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
+```
+
+writes a second artifact beside the first — `cb-snapshot-<stamp>.tar.gz.age`, mode `0600` — encrypted
+to that [age](https://age-encryption.org) X25519 recipient. The plaintext archive is still written
+and still reported: encrypting a copy for transport is not a reason to stop having a local one.
+
+The recipient is a **public** key. The identity that opens the result must live somewhere this host
+is not — generate the pair with `age-keygen -o age-identity.txt` on your workstation, keep
+`age-identity.txt`, and pass only the `age1…` line printed on stderr (or `age-keygen -y
+age-identity.txt`) to `--encrypt-to`. A host that holds both halves has an encrypted backup that
+protects it from nothing.
+
+This is the same derivative the scheduled S3 upload sends, produced by the same encryptor
+(`services/backup/age_encryption.py`), so what you restore from a bucket and what you restore from
+`--encrypt-to` are one format with one verifier. `age` is a hard dependency of the deb and the rpm
+and ships in the mono image; nothing else has to be installed.
+
+Restore it with `cb restore --identity age-identity.txt <archive>.tar.gz.age`. Lose the identity and
+the archive is unrecoverable — that is the property being bought, and there is no recovery path
+around it.
+
 An archive produced by `cb backup` **before** this change (`database.sql` + `manifest.txt`) is a
 different, older format: it carried no vault key and no uploads, and nothing restores it.
 

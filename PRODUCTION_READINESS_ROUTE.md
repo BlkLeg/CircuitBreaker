@@ -21,7 +21,7 @@ This route deliberately builds on the verification program the repo already has 
 | B2 | `CB_AIRGAP=true` provably blocks all application-initiated outbound HTTP, enforced at one choke point with a build-policy test | Stated promise, currently violated by CVE sync | F1 |
 | B3 | Backup artifacts that leave the host (S3) are encrypted; the vault key never leaves in plaintext | Credential custody promise | F2 |
 | B4 | Every session token is minted by one issuer and is revocable (session row always recorded) | The B28 defect class is a silent trust violation | F11 |
-| B5 | Tier 1 platform support (deb/rpm amd64 install/boot/upgrade/rollback) moves to "in force" in the ADR 0005 table, with a real bootable N-1 (this release becomes the first genuine upgrade fixture — Phase 3 currently upgrades against synthetic fixtures because **no released version boots from its own deb/rpm**; Verified, `docs/design/2026-08-28-verification-phase3-plan.md`) | Upgrade path is part of the contract | F5-adjacent |
+| B5 | ~~Tier 1 platform support (deb/rpm amd64 install/boot/upgrade/rollback) moves to "in force" in the ADR 0005 table~~ **Corrected 2026-08-30: not achievable at 0.4.0.** ADR 0005's Tier 1 criterion is "the `mode: upgrade` row passes against a release candidate", and no released version boots from its own deb/rpm, so 0.4.0 has no installable N-1 to upgrade *from*. Restated: **0.4.0 ships as the N-1 fixture** — deb/rpm `mode: install` rows green on CI artifacts, the artifacts and their digests published and retained, and the ADR table's Tier 1 row annotated with the fixture and the version its evidence will arrive at (`0.4.0 → 0.5.0`). Tier 1 goes in force at 0.5.0. (Verified, `docs/design/2026-08-28-verification-phase3-plan.md`: "the earliest honest evidence is `0.4.0 → 0.5.0`") | Upgrade path is part of the contract | F5-adjacent |
 | B6 | The documented latent pytest e2e-mark collection failure is fixed — "a gate may not pass by not running" is ADR 0005's own rule | Gate integrity | F19 (partial) |
 
 ### Reliability objectives (measured targets; set numbers only where defensible)
@@ -88,11 +88,13 @@ Four phases, ordered by risk reduction and dependency. Scoring model per work it
 - [x] Worker ownership/package implementation: explicit API/worker topology, dedicated integration worker, least-privilege systemd units, mono inventory, packaged `cb`, and restore/status/log inventories.
 - [x] Tier 3 scheduled-monitor assertion implemented for fresh, previous, upgraded, and rolled-back states; deb/rpm artifact execution evidence is still required before B1/SRV-02 closes.
 - [x] Central air-gap decision point implemented in `app.core.egress`; public HTTP is rejected before DNS and private-LAN resolved sets reject unresolved/mixed/public answers. All server-side HTTP construction is migrated and the T0 AST ratchet is active.
-- [x] S3 upload implementation encrypts a temporary `.tar.gz.age` derivative and fails closed without a valid operator-held X25519 recipient; local v1 tarballs remain unchanged. Settings/migration/UI and both restore CLIs accept the new format. Tier 2/3 round-trip evidence remains open.
+- [x] S3 upload implementation encrypts a temporary `.tar.gz.age` derivative and fails closed without a valid operator-held X25519 recipient; local v1 tarballs remain unchanged. Settings/migration/UI and both restore CLIs accept the new format.
 - [x] Full-session issuance centralized through `issue_session`, including one-hour demo and 15-minute masquerade row expiry; the parallel `/api/v1/auth/jwt/login` route is removed, user-management routes remain, and the T0 issuer ratchet is active.
 - [x] B6 gate integrity revalidated: root `pytest.ini` registers `e2e`; `pytest apps/agent/e2e --collect-only -q` collected 13 tests on 2026-08-30.
-- [x] All Phase 1 source implementation and T0/T1 contract work complete.
-- [ ] B1–B5 release blockers formally closed. The workspace has historical/synthetic packages but no published N/N+1 pair containing these changes; deb/rpm monitoring, encrypted restore, and real N→N+1 evidence hashes are therefore still required.
+- [x] B3 made exercisable and asserted end-to-end. The encryption was implemented but had no caller outside a configured S3 bucket and no unstubbed test — every `age_encryption` test replaced `subprocess.run`, so `age` had never actually run, and no tier could take the round trip. Closed by `cb backup --encrypt-to` / `cb snapshot encrypt` / the packaged binary's `--snapshot-encrypt` (one encryptor, three entry points, no second implementation), `t3::exercise_encrypted_snapshot_roundtrip` in `scripts/ci/tier3-artifact.sh`, and `tests/build/test_encrypted_backup_contract.py`. The tier asserts both halves against the bytes — the vault key is present in the local tarball and absent from the derivative, the derivative is not readable as a tar, a known record survives the restore, a row written after the snapshot does not, and an unrelated identity is refused.
+- [x] All Phase 1 source implementation and T0/T1 contract work complete. `make verify` green at this commit.
+- [ ] **B1–B4 pending release evidence only.** No source work remains; what is missing is a Tier 3 run against CI-built artifacts. `tier3-artifact.sh` refuses to evidence a locally built candidate on purpose (`built_by=local` ⇒ development run, ADR 0005 Phase 3 F8), and the last four fleet rows were run against local builds *and* predate both the scheduled-monitor and encrypted-backup assertions. See §8.
+- [ ] **B5 cannot close at 0.4.0, and the blocker as written is unachievable.** ADR 0005's Tier 1 row is a single claim — install, boot, upgrade **and** roll back — whose criterion is "the `mode: upgrade` row passes against a release candidate". No released version boots from its own deb/rpm (Verified, `docs/design/2026-08-28-verification-phase3-plan.md`), so the only N-1 available to 0.4.0 is one that cannot be installed and booted, and the upgrade half has nothing honest to run against. That document reaches the same conclusion independently: "the earliest honest evidence is `0.4.0 → 0.5.0`". 0.4.0 is therefore the **fixture release** — it makes Tier 1 evidenceable rather than in force. See §8 for what this changes in the DoD.
 
 **Objective:** every supported topology runs the whole product; no stated promise can be silently broken. **Risk addressed:** users trusting a package that doesn't monitor, an air-gap that leaks, a backup that hands out the vault key, a session that can't be revoked.
 **Findings:** F5, F25, F1, F2, F11, F19(B6). **Complexity: M overall.**
@@ -279,10 +281,10 @@ Stage 1 (immediately after Phase 2.2): nightly non-blocking baseline job, result
 ## 7. Definition of done
 
 ### Required before calling the release production-ready
-- [ ] B1–B6 all closed (Phase 1 complete; Tier 3 monitoring assertion green on deb + rpm amd64).
-- [ ] ADR 0005 platform Tier 1 marked **in force** with evidence; this release recorded as the N-1 upgrade fixture for the next.
-- [ ] Egress, token-issuer, and dependency ratchet gates active in T0.
-- [ ] Backup restore rehearsal (encrypted) evidenced in the ledger.
+- [ ] B1–B4 and B6 closed (Phase 1 complete; Tier 3 monitoring **and** encrypted-restore assertions green on deb + rpm amd64, against CI-built artifacts).
+- [ ] ~~ADR 0005 platform Tier 1 marked **in force** with evidence~~ — **corrected**: Tier 1 cannot be in force at 0.4.0 (see B5). What is required at this release is that 0.4.0 is recorded as the N-1 upgrade fixture for the next, with its artifacts and digests retained, and that the ADR table says so instead of staying silent.
+- [x] Egress and token-issuer ratchet gates active in T0 (`tests/build/test_phase1_policy_ratchets.py`). The **dependency-direction** ratchets are Phase 3.1 and are not a Phase 1 deliverable — they were folded into this line by mistake when the DoD was drafted.
+- [ ] Backup restore rehearsal (encrypted) evidenced in the ledger. *Assertion implemented and gated (`t3::exercise_encrypted_snapshot_roundtrip`, `tests/build/test_encrypted_backup_contract.py`); the ledger row needs the Tier 3 run against CI artifacts.*
 - [ ] Instrumentation from Phase 2.1 shipped (request IDs, loop-lag, nav ring buffer) — production-safe mode only.
 - [ ] The three Verified navigation defects fixed (H5 429s, H6 whole-app unmount, H7 `/map` wedge) and the §4 harness run recorded, with wedge rate published in release notes if nonzero.
 - [ ] Release checklist executed with hard stops; rollback instructions tested on a VM, not just written.
@@ -296,6 +298,75 @@ Stage 1 (immediately after Phase 2.2): nightly non-blocking baseline job, result
 
 ### Valuable follow-up that must not delay the release
 - Phase 3.4 lifespan decomposition beyond the first job batch; F8 models split; F22 MapPage decomposition (do alongside R4a if H4 confirms); F23 `response_model` ratchet; F15 CSP nonces; F21 hygiene sweep; remaining F12 conversions beyond the nav set; F20 N+1 fixes that baselines don't flag as hot; staged fleet updates; Tier D characterization.
+
+---
+
+## 8. Phase 1 closeout — what is done, and the handoff
+
+**State at this commit.** Every Phase 1 slice (1.1–1.7) is implemented and gated. `make verify`
+(Tier 0 + Tier 1, including the security gate) is green; the repo-policy suite is at 513 tests.
+The T0 ratchets that keep the promises from drifting are `tests/build/test_phase1_policy_ratchets.py`
+(egress choke point, single token issuer, retired JWT login router, worker inventory, air-gap DNS
+ordering) and `tests/build/test_encrypted_backup_contract.py` (the `age` dependency, one encryptor,
+both restore paths refusing a `.age` without an identity, and the Tier 3 round trip being called
+rather than merely defined).
+
+**Why this cannot be finished from a workstation.** `tier3-artifact.sh` refuses to treat a locally
+built package as evidence, deliberately: a PyInstaller bundle inherits its build host's glibc floor,
+so a package built on Fedora 44 demands `GLIBC_2.38` and cannot run on Debian 12 at all — which is
+exactly how the `debian-deb-amd64` row failed once already (ADR 0005 Phase 3, F8). Only the release
+job's ubuntu-22.04 build carries the 2.35 floor every supported distro clears, and only it stamps
+`built_by=ci` in `build-info.json`. The four fleet runs in `artifacts/diagnostics/` are development
+checks against local builds; they also predate both the scheduled-monitor and the encrypted-backup
+assertions, so they evidence neither B1 nor B3 even setting provenance aside.
+
+### The remaining steps, in order
+
+1. **Tag and push `v0.4.0`.** `make release-tag && git push origin v0.4.0`. This is yours to run: it
+   publishes a GitHub Release and pushes images to GHCR. `.github/workflows/release.yml` asserts
+   version parity against `VERSION` before it builds anything.
+2. **Fetch the published artifacts** — the deb, the rpm, the companion `circuit-breaker-nats` rpm and
+   `SHA256SUMS` — into one directory, and verify the sums. `dispatch.sh` picks the companion up from
+   the candidate's own directory, so they must land together.
+3. **Run the two `mode: install` rows against those artifacts** (needs local QEMU; nothing in CI runs
+   Tier 3):
+   ```
+   make verify-fleet CB_ROW=fedora-rpm-amd64 CB_CANDIDATE=<dir>/circuit-breaker_0.4.0_amd64.rpm
+   make verify-fleet CB_ROW=debian-deb-amd64 CB_CANDIDATE=<dir>/circuit-breaker_0.4.0_amd64.deb
+   ```
+   Do **not** pass `CB_ALLOW_LOCAL_CANDIDATE=1`. Each row now asserts, on top of install/boot:
+   a scheduled TCP monitor produces an `avail` sample within 20 s (**B1**), and an encrypted snapshot
+   is created, proven opaque, and restored with a known record surviving (**B3**). Evidence lands in
+   `artifacts/diagnostics/tier3-<row>/`; the new files are `monitor-*.json`, `worker-units-*.txt`,
+   `encrypted-snapshot*.txt`, `encrypted-restore*.txt`, and `build-info-candidate.json` should read
+   `"built_by": "ci"` with no `development-run` line beside it.
+4. **Record the ledger rows** with the artifact digests and evidence hashes, per
+   `specs/1.0.0/release-control/evidence-and-invalidation.md`:
+   - `SRV-02` (worker ownership) — the monitoring assertion is what backs it.
+   - `ACC-01` (fresh native install) — the install rows.
+   - `ACC-14` (backup and restore) closes only **partially**: the Tier 3 rehearsal restores into the
+     same host, not a clean one, and takes the snapshot idle rather than under load. Record what was
+     actually exercised and leave the clean-host and under-load clauses open rather than promoting
+     the row on a narrower run than it names.
+5. **Annotate ADR 0005's tier table** rather than flipping it. Tier 1 stays *not in force*; the row
+   should say that 0.4.0 is the first release whose package boots, that it is retained as the N-1
+   fixture, and that Tier 1's evidence arrives at `0.4.0 → 0.5.0`. Silence there reads as an
+   oversight; the annotation is the finding.
+6. **Retain the 0.4.0 artifacts and their digests** somewhere the 0.5.0 upgrade rows can reach them.
+   This is the single most valuable output of this release, and it is lost by default.
+
+### Open, and deliberately not done here
+
+- **A Tier 1 round trip through the real `age` binary.** `age` is not installed on this workstation
+  and is not in the CI test image, so the round trip lives at Tier 3, where the package's own
+  dependency guarantees it. The Tier 0 contract test pins the dependency so it cannot vanish. If
+  `age` is added to the CI image, an unstubbed round-trip test at Tier 1 would be cheap and worth
+  having — the current unit tests all stub `subprocess.run`.
+- **`cb backup --encrypt-to` in `docker`/`compose` mode is implemented but only exercised statically.**
+  The Tier 3 rows are package installs; the container path is asserted by
+  `test_the_shell_never_encrypts_on_its_own` and by the `docker exec` data-dir gate, not by a run.
+- **Phase 3.1's dependency-direction ratchets** (`core→services`, direct-DB-in-`api/`, `except: pass`)
+  are still Phase 3, despite §7 having listed them beside the Phase 1 gates.
 
 ---
 

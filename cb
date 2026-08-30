@@ -13,7 +13,10 @@
 #   restart       Restart Circuit Breaker
 #   update        Pull latest image and restart  (docker mode only)
 #   backup        Full-state snapshot: database, uploads, config, vault key
+#                 [--encrypt-to age1…]  also write an encrypted copy safe to
+#                 store off this host
 #   restore       Restore a full-state snapshot  (destructive)
+#                 [--identity FILE]     required for an encrypted .age snapshot
 #   migrate       Database schema: migrate status | migrate upgrade
 #   token         Scoped API tokens: create | list | rotate | revoke
 #   user          Local accounts: list | create | set-role | disable | enable
@@ -614,8 +617,30 @@ cmd_update() {
 # shape, so every `cb backup` archive was unrestorable by the tool documented to
 # restore it (INC-15).  Do not reintroduce a second builder: extend
 # services/backup/snapshot.py and every caller gets it.
+#
+# ── on --encrypt-to ───────────────────────────────────────────────────────────
+# The snapshot is a secret: it carries the vault key in plaintext, which is why
+# it is mode 0600 and why the warning below is not decoration. That is the right
+# shape for an archive that stays on the host, and the wrong shape for one that
+# leaves it. `--encrypt-to age1…` writes a second artifact beside the first,
+# encrypted to a recipient whose private identity the operator holds and this
+# host never sees — the same derivative the scheduled S3 upload sends, produced
+# by the same function, so there is exactly one encryptor to get right.
+#
+# The plaintext archive is deliberately still written and still returned. The
+# operator asked for a backup; encrypting it for transport does not mean the
+# local copy should stop existing, and a flag that quietly replaced one artifact
+# with another the host cannot read would be a surprising way to lose a restore.
 cmd_backup() {
-  local backup_dir out
+  local backup_dir out recipient="" encrypted=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --encrypt-to) [[ $# -ge 2 ]] || _fail "--encrypt-to requires an age recipient (age1…)"; recipient="$2"; shift 2 ;;
+      -*) _fail "Unknown backup option: $1" ;;
+      *)  _fail "cb backup takes no positional arguments (got '$1')" ;;
+    esac
+  done
+
   backup_dir="${CB_BACKUP_DIR:-$CB_CONFIG_DIR/backups}"
   mkdir -p "$backup_dir" || _fail "Cannot create backup directory $backup_dir."
 
@@ -635,6 +660,24 @@ cmd_backup() {
       # The path is the last line: anything the builder logs comes before it.
       out=$(printf '%s\n' "$out" | tail -n1)
       [[ -n "$out" ]] || _fail "Snapshot reported success but printed no path."
+
+      # Encrypted inside the container, before anything is copied out. `age` ships
+      # in the image and need not exist on the host, and the derivative is built
+      # from the archive where it already lives rather than from a copy — so the
+      # plaintext crosses the container boundary exactly once either way.
+      if [[ -n "$recipient" ]]; then
+        _info "Encrypting the off-host copy to ${recipient}…"
+        encrypted=$(docker exec -e "CB_INSTALL_MODE=${CB_MODE}" -e "CB_DATA_DIR=${CB_DATA_DIR}" \
+                      "$CB_BACKEND_CONTAINER" \
+                      python -m app.cli snapshot encrypt --recipient "$recipient" "$out") \
+          || _fail "Encryption failed — see the output above."
+        encrypted=$(printf '%s\n' "$encrypted" | tail -n1)
+        [[ -n "$encrypted" ]] || _fail "Encryption reported success but printed no path."
+        docker cp "${CB_BACKEND_CONTAINER}:${encrypted}" "$backup_dir/" \
+          || _fail "The encrypted copy was created at ${encrypted} but could not be copied to ${backup_dir}."
+        docker exec "$CB_BACKEND_CONTAINER" rm -f "$encrypted" 2>/dev/null || true
+        encrypted="$backup_dir/$(basename "$encrypted")"
+      fi
 
       docker cp "${CB_BACKEND_CONTAINER}:${out}" "$backup_dir/" \
         || _fail "Snapshot was created in the container at ${out} but could not be copied to ${backup_dir}."
@@ -661,6 +704,19 @@ cmd_backup() {
         || _fail "Snapshot failed — see the output above."
       out=$(printf '%s\n' "$out" | tail -n1)
       [[ -n "$out" ]] || _fail "Snapshot reported success but printed no path."
+
+      if [[ -n "$recipient" ]]; then
+        # `age` is a hard dependency of the deb and the rpm, so a packaged host
+        # has it. Checked anyway: an operator who removed it gets the reason
+        # rather than a subprocess error from inside the binary.
+        command -v age >/dev/null 2>&1 \
+          || _fail "age is required for --encrypt-to and is not on PATH. Reinstall the package, which depends on it."
+        _info "Encrypting the off-host copy to ${recipient}…"
+        encrypted=$("$CB_BINARY" --snapshot-encrypt "$out" --recipient "$recipient") \
+          || _fail "Encryption failed — see the output above."
+        encrypted=$(printf '%s\n' "$encrypted" | tail -n1)
+        [[ -n "$encrypted" ]] || _fail "Encryption reported success but printed no path."
+      fi
       ;;
 
     *) _fail "Unknown mode '${CB_MODE}'." ;;
@@ -673,6 +729,16 @@ cmd_backup() {
   echo -e "  ${GR}Contains the database, uploads, config and the vault key.${R}"
   echo -e "  ${Y}The vault key is stored in plaintext — this file is mode 0600, treat it as a secret.${R}"
   echo -e "  ${GR}Restore with: cb restore ${out}${R}"
+
+  if [[ -n "$encrypted" ]]; then
+    [[ -s "$encrypted" ]] || _fail "Expected an encrypted copy at ${encrypted}, but nothing usable is there."
+    chmod 600 "$encrypted" 2>/dev/null || true
+    echo ""
+    _ok "Encrypted copy written to ${encrypted}"
+    echo -e "  ${GR}This is the artifact that is safe to send off this host: the vault key is inside the ciphertext.${R}"
+    echo -e "  ${Y}It can only be opened by the age identity matching ${recipient} — keep that identity somewhere this host is not.${R}"
+    echo -e "  ${GR}Restore with: cb restore --identity /path/to/age-identity.txt ${encrypted}${R}"
+  fi
 }
 
 # ── restore ───────────────────────────────────────────────────────────────────
@@ -1264,6 +1330,7 @@ usage() {
   echo -e "    restart             Restart Circuit Breaker"
   echo -e "    update              Pull latest image and restart  ${GR}(docker mode)${R}"
   echo -e "    backup              Full-state snapshot (database, uploads, config, vault key)"
+  echo -e "                        ${GR}--encrypt-to age1…  also write a copy safe to store off this host${R}"
   echo -e "    restore <archive>   Restore a snapshot  ${GR}(--identity for .age; destructive)${R}"
   echo -e "    migrate status      Report the schema revision  ${GR}(exit 3 when behind)${R}"
   echo -e "    migrate upgrade     Apply pending database migrations"
@@ -1291,7 +1358,7 @@ case "${1:-help}" in
   logs)            cmd_logs "${2:-}" ;;
   restart)         cmd_restart ;;
   update)          cmd_update ;;
-  backup)          cmd_backup ;;
+  backup)          cmd_backup "${@:2}" ;;
   restore)         cmd_restore "${@:2}" ;;
   migrate)         cmd_migrate "${@:2}" ;;
   token)           cmd_token "${@:2}" ;;
