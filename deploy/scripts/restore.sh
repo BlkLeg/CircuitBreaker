@@ -2,6 +2,8 @@
 # Circuit Breaker — Disaster Recovery Restore Script
 #
 # Usage: restore.sh <path-to-snapshot.tar.gz>
+#        CB_ASSUME_YES=1 restore.sh <path>   — consent in advance, for callers
+#        that cannot answer a prompt (runbooks, cron, ssh without -t).
 #
 # `cb restore <archive>` is the supported entry point on every install mode, and on a
 # native install it drives this script — verifying the archive with the backend's own
@@ -286,11 +288,32 @@ else
     echo "   carries neither, and a rollback does not need them changed."
 fi
 echo ""
-read -r -p "Continue? [y/N] " CONFIRM
-CONFIRM="${CONFIRM:-N}"
-if [[ "${CONFIRM,,}" != "y" ]]; then
-    echo "Aborted." >&2
-    exit 1
+
+# CB_ASSUME_YES is consent given in advance, for a caller that cannot be asked:
+# a runbook, a cron job, `ssh host '...'` without -t, or the Tier 3 upgrade row
+# that has to execute this exact path to evidence ADR 0005's rollback guarantee.
+# Found by that row (Phase 3, F11), which reached the banner below over ssh, got
+# EOF on the read, and declined -- proving nothing about the rollback.
+#
+# What this deliberately does NOT do is treat an unanswered prompt as a yes. An
+# interactive operator who hits EOF or closes the pipe still aborts, which is the
+# rule test_uninstall_volume_prompt.py pins: no answer is not consent. The only
+# way past this point without typing is to have said so beforehand.
+#
+# And it is announced rather than silent. A recovery that dropped a database
+# needs a line in its own log saying who agreed to it.
+if [[ "${CB_ASSUME_YES:-}" == "1" || "${CB_ASSUME_YES:-}" == "true" || "${CB_ASSUME_YES:-}" == "yes" ]]; then
+    echo "Proceeding without a prompt: CB_ASSUME_YES is set."
+else
+    read -r -p "Continue? [y/N] " CONFIRM || CONFIRM=""
+    CONFIRM="${CONFIRM:-N}"
+    if [[ "${CONFIRM,,}" != "y" ]]; then
+        echo "Aborted." >&2
+        # Named here because this is where an automated caller lands, and the
+        # message is the only place it will learn the supported way through.
+        echo "       (Set CB_ASSUME_YES=1 to consent in advance from a script.)" >&2
+        exit 1
+    fi
 fi
 
 # ── 8. Stop service ────────────────────────────────────────────────────────

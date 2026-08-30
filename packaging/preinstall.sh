@@ -28,6 +28,12 @@ set -e
 ENV_FILE="${CB_ENV_FILE:-/etc/circuit-breaker/circuit-breaker.env}"
 DEFAULT_DATA_DIR="${CB_DEFAULT_DATA_DIR:-/var/lib/circuit-breaker}"
 SERVICE_USER="${CB_SERVICE_USER:-circuitbreaker}"
+# Where the pre-transaction unit state is left for posttrans.sh. /run, because
+# it is guaranteed to exist before this package has installed anything, and it
+# is cleared by the next boot -- a stamp that outlived a failed transaction
+# would otherwise steer the following upgrade.
+UNIT_STATE_FILE="${CB_UNIT_STATE_FILE:-/run/circuit-breaker/pre-upgrade-unit-state}"
+SERVICE_NAME="${CB_SERVICE_NAME:-circuit-breaker.service}"
 
 # ── is this an upgrade? ─────────────────────────────────────────────────────
 # Three packagers, three conventions, and getting it wrong in either direction
@@ -54,6 +60,38 @@ esac
 [ "$IS_UPGRADE" -eq 1 ] || exit 0
 
 echo "Circuit Breaker: upgrade detected — taking a pre-upgrade backup."
+
+# ── record the unit state for posttrans.sh ─────────────────────────────────
+# ADR 0005 Phase 3, F5. rpm runs the OLD package's %preun *after* the new
+# package's %post, and every released version through v1.0.0-rc.4 ships a %preun
+# that stops and disables unconditionally. So the last word on an upgrade
+# belongs to a scriptlet this package cannot change, and the service ends up
+# stopped and disabled with no reboot bringing it back.
+#
+# %posttrans is the only hook that runs after it. This is step 1 of the
+# transaction and therefore the last moment the pre-transaction state can still
+# be read -- by the time posttrans runs, the old %preun has already destroyed
+# the answer. Recorded rather than assumed: posttrans restores what was true
+# here, so an operator who had deliberately stopped the service does not find it
+# running afterwards.
+#
+# Written before the backup gate below, which has several legitimate early
+# exits. The unit state has to be recorded on every upgrade, not only on the
+# ones that reach a database.
+if mkdir -p "$(dirname "$UNIT_STATE_FILE")" 2>/dev/null; then
+    {
+        if systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null; then
+            echo "enabled=1"
+        else
+            echo "enabled=0"
+        fi
+        if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+            echo "active=1"
+        else
+            echo "active=0"
+        fi
+    } > "$UNIT_STATE_FILE" 2>/dev/null || true
+fi
 
 # ── what the existing install says about itself ─────────────────────────────
 # Read rather than sourced. This runs as root inside a package transaction and

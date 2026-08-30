@@ -62,9 +62,20 @@ fi
 # Derived from the env file the service actually reads, not hardcoded, so an
 # operator who changed the role or database name in CB_DB_URL is restored into
 # the install they have rather than the one the package shipped with.
+# Percent-decoding is not decoration. A password containing @ or / *must* be
+# encoded in a URL, so those are precisely the passwords that arrive encoded, and
+# handing psql the raw encoded form fails exactly like handing it nothing.
+# Backslashes are escaped first so printf '%b' cannot reinterpret them.
+cb_urldecode() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    printf '%b' "${s//%/\\x}"
+}
+
 db_url="$(sed -n 's/^CB_DB_URL=//p' "$ENV_FILE" 2>/dev/null | tail -n 1 || true)"
 db_name=circuitbreaker
 db_owner=circuitbreaker
+db_password=""
 if [ -n "$db_url" ]; then
     _rest="${db_url#*://}"
     if [ "$_rest" != "$db_url" ]; then
@@ -73,7 +84,14 @@ if [ -n "$db_url" ]; then
                 _userinfo="${_rest%%@*}"
                 _hostpath="${_rest#*@}"
                 _user="${_userinfo%%:*}"
-                [ -n "$_user" ] && db_owner="$_user"
+                [ -n "$_user" ] && db_owner="$(cb_urldecode "$_user")"
+                # The credential half. Present only when the userinfo carries a
+                # colon; peer and trust auth legitimately have none, and must
+                # yield an empty password rather than a stray colon or the user
+                # name.
+                case "$_userinfo" in
+                    *:*) db_password="$(cb_urldecode "${_userinfo#*:}")" ;;
+                esac
                 ;;
             *) _hostpath="$_rest" ;;
         esac
@@ -87,6 +105,13 @@ export CB_ENV_FILE="$ENV_FILE"
 export CB_SERVICE_UNIT=circuit-breaker.service
 export CB_DB_NAME="$db_name"
 export CB_DB_OWNER="$db_owner"
+# restore.sh has always read PGPASSWORD="${CB_DB_PASSWORD:-}" -- its own comment
+# records why: pg_hba is md5 for 127.0.0.1 and it connects as the owner. Nothing
+# on the package path ever set it, so the documented rollback reached the
+# database and failed with "password authentication failed" on the very
+# credentials postinstall.sh had generated. Found by the Tier 3 upgrade row
+# (ADR 0005 Phase 3, F12), which is the first thing to execute this rollback.
+export CB_DB_PASSWORD="$db_password"
 export CB_DB_SUPERUSER="${CB_DB_SUPERUSER:-postgres}"
 
 exec "$RESTORE" "$@"

@@ -117,6 +117,23 @@ scripts:
 # `circuit-breaker-nats` package that vendors the pinned binary there. Separate,
 # so the vendored CVE surface stays out of this package and an operator pointing
 # CB_NATS_URL at an external or clustered broker can decline it.
+# rpm-specific settings. `scripts` here is RPMScripts, which is where %posttrans
+# lives -- it is NOT available under overrides.rpm, whose `scripts` is the
+# packager-agnostic set (preinstall/postinstall/preremove/postremove). nfpm
+# ignores an unknown key there silently, so the first attempt at this wiring
+# produced a package with no posttrans at all and no error to say so.
+#
+# %posttrans is the only scriptlet that runs after the OLD package's %preun,
+# which rpm executes *after* the new package's %post. Every released version
+# through v1.0.0-rc.4 ships a %preun that stops and disables the unit
+# unconditionally, so without this every upgrade from a shipped version ends with
+# the service down and disabled and no reboot brings it back. deb and apk need no
+# equivalent: dpkg runs the old prerm before unpack and the new postinst last, so
+# postinstall.sh's try-restart is already the final word there.
+rpm:
+  scripts:
+    posttrans: packaging/posttrans.sh
+
 overrides:
   deb:
     depends:

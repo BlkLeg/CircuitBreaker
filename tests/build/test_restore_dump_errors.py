@@ -48,6 +48,7 @@ import gzip
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -530,3 +531,99 @@ def test_the_client_binaries_are_resolved_through_pg_bin_dir(tmp_path: Path):
         f"exactly where setup.sh finds its own pg_dump:\n{combined}"
     )
     assert result.returncode == 0, combined
+
+
+# ── the rollback has to be executable without a human ───────────────────────
+#
+# ADR 0005 Phase 3, F11. The upgrade row executes the documented rollback the way
+# the docs tell an operator to -- through the shipped
+# `/usr/local/bin/circuit-breaker-rollback` wrapper -- over `ssh host '...'`,
+# which has no TTY and no stdin. restore.sh's `read -r -p "Continue? [y/N]"` got
+# EOF and the restore declined, so the row stopped at the banner having proved
+# nothing about the rollback.
+#
+# Prompting by default is right and is not being changed: this is a destructive
+# operation and "no answer is not consent" is the rule
+# test_uninstall_volume_prompt.py pins. What was missing is a way to give consent
+# *in advance*, which is what any runbook, cron job or recovery script needs --
+# and what the tier that has to evidence ADR 0005's Tier 1 rollback guarantee
+# needs, since it cannot type.
+#
+# Deliberately NOT copied from uninstall.sh: that script answers "can this
+# process be asked anything at all?" before its first destructive step, because
+# its prompt came *after* the container had been removed. restore.sh's prompt
+# precedes every destructive step, so the ordering hazard that justified the
+# preflight there does not exist here, and a `[ -t 0 ]` gate would only break
+# every caller that legitimately pipes an answer.
+
+
+def test_an_unanswered_prompt_still_aborts(tmp_path: Path):
+    """The rule that does not change: EOF is not consent."""
+    archive = _write_snapshot(tmp_path, "SELECT 1;\n")
+    result = subprocess.run(
+        [shutil.which("bash") or "bash", str(RESTORE_SH), str(archive)],
+        input="",
+        env=_harness(tmp_path),
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode != 0, "an unanswered prompt restored the database anyway"
+    log = tmp_path / "psql-argv.log"
+    assert not log.exists() or "DROP" not in log.read_text(encoding="utf-8"), (
+        "the database was dropped without an answer"
+    )
+
+
+def test_advance_consent_runs_the_restore_without_a_prompt(tmp_path: Path):
+    """CB_ASSUME_YES is the documented way to say yes before being asked."""
+    archive = _write_snapshot(tmp_path, "SELECT 1;\n")
+    env = {**_harness(tmp_path), "CB_ASSUME_YES": "1"}
+    result = subprocess.run(
+        [shutil.which("bash") or "bash", str(RESTORE_SH), str(archive)],
+        input="",
+        env=env,
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, (
+        f"CB_ASSUME_YES did not carry the restore through:\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert (tmp_path / "psql-argv.log").exists(), "the restore never reached psql"
+
+
+def test_advance_consent_is_recorded_in_the_output(tmp_path: Path):
+    """A destructive action taken without a prompt must still say so, or the
+    log of a recovery gives no sign that anyone consented to it."""
+    archive = _write_snapshot(tmp_path, "SELECT 1;\n")
+    env = {**_harness(tmp_path), "CB_ASSUME_YES": "1"}
+    result = subprocess.run(
+        [shutil.which("bash") or "bash", str(RESTORE_SH), str(archive)],
+        input="",
+        env=env,
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    combined = result.stdout + result.stderr
+    assert "CB_ASSUME_YES" in combined, (
+        f"the restore proceeded without recording that consent was pre-given:\n{combined}"
+    )
+
+
+def test_the_tier_invokes_the_rollback_non_interactively():
+    """The harness side of the same defect: the row must actually pass consent,
+    or it stops at the banner exactly as it did on its first execution."""
+    tier = ROOT / "scripts/ci/tier3-artifact.sh"
+    text = tier.read_text(encoding="utf-8")
+    call = re.search(r"^.*circuit-breaker-rollback \"\$BACKUP\".*$", text, re.M)
+    assert call, "the tier no longer executes the shipped rollback wrapper"
+    assert "CB_ASSUME_YES" in call.group(0), (
+        "the tier runs the rollback with no way to answer its confirmation "
+        f"prompt, so the rollback half of Tier 1 can never be evidenced:\n  {call.group(0).strip()}"
+    )
