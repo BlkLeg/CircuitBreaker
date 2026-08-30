@@ -62,3 +62,11 @@ def test_dockerised_trivy_reuses_its_vulnerability_database():
             "the dockerised trivy must mount a persistent cache, or it "
             f"redownloads its 110MB database on every run:\n    {line.strip()}"
         )
+
+
+def test_trivy_excludes_local_virtual_environments():
+    """Generated dependency trees must not turn fixture keys into repo findings."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    skip_dirs = next(line for line in text.splitlines() if line.startswith("TRIVY_SKIP_DIRS="))
+    assert "--skip-dirs .venv " in skip_dirs
+    assert "--skip-dirs .venv-release " in skip_dirs

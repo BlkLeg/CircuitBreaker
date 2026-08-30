@@ -246,7 +246,13 @@ echo "Running Trivy filesystem..."
 TRIVY_RAN=false
 TRIVY_IGNORE=""
 [ -f .trivyignore ] && TRIVY_IGNORE="--ignorefile .trivyignore"
-TRIVY_SKIP_DIRS="--skip-dirs .venv --skip-dirs node_modules --skip-dirs dist"
+# Local environments are build inputs, not repository contents. In particular,
+# .venv-release contains third-party test fixtures (Moto ships example keys)
+# that Trivy's secret scanner correctly recognizes but that cannot be shipped
+# because the directory is gitignored. Keep both common environments out of the
+# native and containerised scans; dependency vulnerabilities are covered below
+# by pip-audit against the committed lock files.
+TRIVY_SKIP_DIRS="--skip-dirs .venv --skip-dirs .venv-release --skip-dirs node_modules --skip-dirs dist"
 
 # Trivy's vulnerability database is ~110MB and `docker run --rm` throws the
 # container away with it, so without a host cache mount every single run
