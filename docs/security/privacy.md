@@ -50,6 +50,13 @@ Complete list. Everything else stays local.
 That is the only unprompted outbound request. Everything below happens because of something you
 configured or ran.
 
+When `CB_AIRGAP=true` or the database `airgap_mode` switch is enabled, the server's central HTTP
+egress gate rejects every public HTTP(S) operation before DNS resolution or socket creation.
+Operator-configured monitors and integrations may still reach private or loopback addresses; every
+DNS answer must be private/loopback, so unresolved and mixed public/private names are rejected.
+SMTP is an explicitly operator-configured, non-HTTP exemption. Air-gap mode governs HTTP(S), not
+every possible outbound protocol or requests made directly by a user's browser.
+
 ### From the server, when you use the feature
 
 | # | Destination | Trigger | What is sent | Notes |

@@ -10,6 +10,7 @@
 # --- Builder: install Python deps (needs gcc for armv7l and other source builds) ---
 FROM python:3.12-slim-bookworm AS deps-builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    age \
     gcc \
     g++ \
     libffi-dev \

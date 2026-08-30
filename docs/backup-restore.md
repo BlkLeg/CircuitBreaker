@@ -158,6 +158,7 @@ any S3-compatible target — AWS S3, MinIO, or Cloudflare R2:
 | Field | Notes |
 |---|---|
 | Bucket | Leave blank to disable S3 upload entirely |
+| age Recipient | Required for S3. One public `age1…` X25519 recipient; no private identity is stored |
 | Endpoint URL | Custom endpoint for MinIO, R2, and similar. Leave blank for AWS S3 |
 | Access Key ID | |
 | Secret Access Key | Stored encrypted in the vault |
@@ -168,6 +169,19 @@ any S3-compatible target — AWS S3, MinIO, or Cloudflare R2:
 
 Older snapshots beyond each retention count are pruned automatically after every run. Use the test
 button in that panel to verify credentials before relying on the schedule.
+
+Generate the off-host encryption identity on an operator-controlled machine:
+
+```bash
+age-keygen -o circuit-breaker-backup-identity.txt
+age-keygen -y circuit-breaker-backup-identity.txt
+```
+
+Put only the printed `age1…` recipient in Settings. Store the identity file offline and test a
+restore. Losing it makes every encrypted remote backup unrecoverable. Local snapshots remain
+`cb-snapshot-*.tar.gz`; S3 receives only `.tar.gz.age` derivatives. If S3 is configured without a
+valid recipient, the local snapshot succeeds but remote upload fails closed—plaintext is never
+uploaded. Existing plaintext remote objects are neither adopted nor automatically deleted.
 
 ### Admin API endpoints
 
@@ -189,6 +203,9 @@ All of these require the **admin** role. There is no restore endpoint — see
 
 ```bash
 cb restore /path/to/cb-snapshot-20260814-020000.tar.gz
+# For an encrypted off-host copy:
+cb restore --identity /secure/circuit-breaker-backup-identity.txt \
+  /path/to/cb-snapshot-20260814-020000.tar.gz.age
 ```
 
 **This is destructive.** It replaces the database, the uploads, and the vault key of the install it
@@ -199,6 +216,7 @@ is run on.
 | `--yes` | Skip the interactive `RESTORE` confirmation |
 | `--force` | Proceed even though the snapshot is from a newer Circuit Breaker version |
 | `--no-safety-snapshot` | Do not take a snapshot of the current state first |
+| `--identity PATH` | Decrypt a `.age` snapshot in private temporary staging before verification |
 
 ### The order, and why it is the order
 

@@ -1531,6 +1531,7 @@ class AppSettings(Base):
     )  # JSON array of CIDRs allowed to connect via WebSocket; empty = allow all
     # Backup / DR settings (migration 0057)
     backup_s3_bucket: Mapped[str | None] = mapped_column(String, nullable=True)
+    backup_age_recipient: Mapped[str | None] = mapped_column(String, nullable=True)
     backup_s3_endpoint_url: Mapped[str | None] = mapped_column(String, nullable=True)
     backup_s3_access_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
     backup_s3_secret_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)

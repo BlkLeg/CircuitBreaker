@@ -1,6 +1,6 @@
 ---
 name: cb-security-hardening
-description: Enforces Circuit Breaker security hardening conventions across backend, frontend, Docker, and nginx. Use when modifying authentication logic, security headers, Docker configuration, credential handling, session management, URL validation, WebSocket auth, or any code in core/security.py, core/rbac.py, middleware/security_headers.py, url_validation.py, docker-compose.yml, nginx.mono.conf, entrypoint-mono.sh, or supervisord.mono.conf.
+description: Enforces Circuit Breaker security hardening conventions across backend, frontend, Docker, and nginx. Use when modifying authentication logic, security headers, Docker configuration, credential handling, session management, URL validation, WebSocket auth, NATS bus auth, agent enrollment, or any code in core/security.py, core/rbac.py, core/agent_crypto.py, core/network_acl.py, middleware/security_headers.py, core/url_validation.py, docker-compose.yml, or docker/{nginx.mono.conf,entrypoint-mono.sh,supervisord.mono.conf}.
 ---
 
 # Circuit Breaker — Security Hardening Conventions
@@ -16,9 +16,9 @@ Authentication cannot be disabled after OOBE. The `auth_enabled` column on `AppS
 - `get_optional_user` returns `None` only when no `jwt_secret` exists (pre-OOBE)
 - `require_write_auth` always raises `401` when `user_id is None`
 - `require_role` / `require_scope` in `core/rbac.py` never return a synthetic admin for unauthenticated requests
-- WebSocket handlers (`ws_discovery.py`, `ws_status.py`, `ws_telemetry.py`) must validate JWT — no anonymous sentinel when `auth_enabled` is `False`
+- WebSocket handlers (`ws_discovery.py`, `ws_telemetry.py`, `ws_topology.py`, `ws_monitors.py`, `ws_agents.py`) must validate JWT — no anonymous sentinel when `auth_enabled` is `False`. The one deliberate exception is the agent `/enroll` and `/link` sockets, mounted without `Depends(require_auth)` because the Noise IK handshake performed inside them *is* that router's authentication (`core/agent_crypto.py`) — do not "fix" it by adding the dependency
 - The `AppSettingsUpdate` schema must not include `auth_enabled`
-- Frontend `AuthContext` has no `authEnabled` state or `setAuthEnabled` — auth is always on
+- Frontend `AuthContext` (`apps/frontend/src`, JavaScript/JSX) has no `authEnabled` state or `setAuthEnabled` — auth is always on
 - Frontend route gating: `!isAuthenticated` redirects to `/login` (not `authEnabled && !isAuthenticated`)
 
 ## 2. Timing-Safe Token Comparison
@@ -68,7 +68,7 @@ This blocks `file://`, `gopher://`, `ftp://`, `dict://`, etc.
 
 ## 5. Security Headers
 
-All responses must include these headers (set in both `middleware/security_headers.py` and `nginx.mono.conf`):
+All responses must include these headers (set in both `middleware/security_headers.py` and `docker/nginx.mono.conf`):
 
 | Header | Value |
 |--------|-------|
@@ -86,7 +86,7 @@ All responses must include these headers (set in both `middleware/security_heade
 
 ## 6. Transport Security — HTTPS Redirect
 
-`nginx.mono.conf` must have two server blocks:
+`docker/nginx.mono.conf` must have two server blocks:
 
 1. **Port 80** — returns `301` redirect to `https://` for all paths except `/api/v1/health` (exempt for Docker healthchecks)
 2. **Port 443** — main HTTPS server with TLS termination
@@ -123,8 +123,8 @@ Only `/data` is a persistent writable bind mount. Never add writable volume moun
 
 Embedded Redis must use `--requirepass`. The password is:
 - Auto-generated at first container start (`openssl rand -base64 32`) to `/data/.redis_pass`
-- Injected into `CB_REDIS_URL` by `entrypoint-mono.sh` when not user-supplied
-- Read by `supervisord.mono.conf` at Redis process start
+- Injected into `CB_REDIS_URL` by `docker/entrypoint-mono.sh` when not user-supplied
+- Read by `docker/supervisord.mono.conf` at Redis process start
 
 Never run Redis without `requirepass` inside the container.
 

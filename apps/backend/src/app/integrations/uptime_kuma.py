@@ -5,10 +5,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.egress import PRIVATE_LAN_HTTP, httpx_get
 from app.core.url_validation import LAN_INTEGRATION_POLICY, validate_outbound_url
 from app.db.models import HardwareLiveMetric, IntegrationMonitor
 from app.integrations.base import ConfigField, IntegrationPlugin, MonitorStatus
@@ -183,7 +183,9 @@ class UptimeKumaPlugin(IntegrationPlugin):
         url = self._status_page_url(config)
         try:
             validated = validate_outbound_url(url, LAN_INTEGRATION_POLICY)
-            resp = httpx.get(validated.url, timeout=10, follow_redirects=False)
+            resp = httpx_get(
+                validated.url, policy=PRIVATE_LAN_HTTP, timeout=10, follow_redirects=False
+            )
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:
@@ -216,7 +218,9 @@ class UptimeKumaPlugin(IntegrationPlugin):
         url = self._status_page_url(config)
         try:
             validated = validate_outbound_url(url, LAN_INTEGRATION_POLICY)
-            resp = httpx.get(validated.url, timeout=5, follow_redirects=False)
+            resp = httpx_get(
+                validated.url, policy=PRIVATE_LAN_HTTP, timeout=5, follow_redirects=False
+            )
             resp.raise_for_status()
             return True, "Connection successful"
         except Exception as exc:

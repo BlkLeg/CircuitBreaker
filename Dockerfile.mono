@@ -97,6 +97,7 @@ WORKDIR /app/backend
 # apt packages is intentionally avoided to keep CVE fixes current.
 # hadolint ignore=DL3008,DL3005
 RUN apt-get update && apt-get upgrade -y --no-install-recommends && apt-get install -y --no-install-recommends \
+    age \
     nginx \
     supervisor \
     postgresql \

@@ -571,9 +571,8 @@ async def _issue_jwt_and_redirect(
 ) -> RedirectResponse:
     """Issue a CB JWT for the user and redirect to frontend with token."""
     from app.core.auth_cookie import set_auth_cookie_on_response
-    from app.services.auth_service import _make_token
+    from app.services.auth_service import issue_session
     from app.services.settings_service import get_or_create_settings
-    from app.services.user_service import record_session
 
     cfg = get_or_create_settings(db)
     if getattr(user, "mfa_enabled", False):
@@ -597,8 +596,7 @@ async def _issue_jwt_and_redirect(
         challenge.headers["Cache-Control"] = "no-store"
         return challenge
 
-    token = _make_token(user, cfg)
-    record_session(db, user, request, token, cfg)
+    token = issue_session(db, user, request, cfg)
     code = await _issue_auth_code(token)
     response = RedirectResponse(url=f"{base_url}/?cb_auth_code={code}", status_code=302)
     response.headers["Cache-Control"] = "no-store"
@@ -621,9 +619,8 @@ async def _bootstrap_redirect_or_none(
     import secrets as _secrets_mod
 
     from app.core.auth_cookie import set_auth_cookie_on_response
-    from app.services.auth_service import _make_token
+    from app.services.auth_service import issue_session
     from app.services.settings_service import get_or_create_settings
-    from app.services.user_service import record_session
 
     cfg = get_or_create_settings(db)
     # Bootstrap is already done — let the normal login flow take over.
@@ -633,8 +630,7 @@ async def _bootstrap_redirect_or_none(
     if not cfg.jwt_secret:
         cfg.jwt_secret = _secrets_mod.token_hex(32)
         db.commit()
-    token = _make_token(user, cfg)
-    record_session(db, user, request, token, cfg)
+    token = issue_session(db, user, request, cfg)
     code = await _issue_auth_code(token)
     response = RedirectResponse(
         url=f"{base_url}/oobe?cb_auth_code={code}&bootstrap=1&provider={provider_name}",

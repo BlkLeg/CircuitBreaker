@@ -46,6 +46,7 @@ class SnapshotListResponse(BaseModel):
 class BackupSettingsResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     backup_s3_bucket: str | None
+    backup_age_recipient: str | None
     backup_s3_endpoint_url: str | None
     backup_s3_access_key_id: str | None
     backup_s3_secret_key_set: bool
@@ -57,6 +58,7 @@ class BackupSettingsResponse(BaseModel):
 
 class BackupSettingsUpdate(BaseModel):
     backup_s3_bucket: str | None = None
+    backup_age_recipient: str | None = None
     backup_s3_endpoint_url: str | None = None
     backup_s3_access_key_id: str | None = None
     backup_s3_secret_key: str | None = None  # plaintext; None = leave unchanged; "" = clear
@@ -217,6 +219,7 @@ def get_backup_settings(
         settings = AppSettings(id=1)
     return BackupSettingsResponse(
         backup_s3_bucket=settings.backup_s3_bucket,
+        backup_age_recipient=settings.backup_age_recipient,
         backup_s3_endpoint_url=settings.backup_s3_endpoint_url,
         backup_s3_access_key_id=settings.backup_s3_access_key_id,
         backup_s3_secret_key_set=bool(settings.backup_s3_secret_key_enc),
@@ -244,6 +247,17 @@ def update_backup_settings(
 
     if update.backup_s3_bucket is not None:
         settings.backup_s3_bucket = update.backup_s3_bucket or None
+    if update.backup_age_recipient is not None:
+        from app.services.backup.age_encryption import validate_age_recipient
+
+        value = update.backup_age_recipient.strip()
+        if value:
+            try:
+                settings.backup_age_recipient = validate_age_recipient(value)
+            except Exception as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        else:
+            settings.backup_age_recipient = None
     if update.backup_s3_endpoint_url is not None:
         endpoint_url = (
             update.backup_s3_endpoint_url.strip() if update.backup_s3_endpoint_url else ""
@@ -271,6 +285,7 @@ def update_backup_settings(
     db.refresh(settings)
     return BackupSettingsResponse(
         backup_s3_bucket=settings.backup_s3_bucket,
+        backup_age_recipient=settings.backup_age_recipient,
         backup_s3_endpoint_url=settings.backup_s3_endpoint_url,
         backup_s3_access_key_id=settings.backup_s3_access_key_id,
         backup_s3_secret_key_set=bool(settings.backup_s3_secret_key_enc),

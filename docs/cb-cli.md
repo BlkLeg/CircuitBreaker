@@ -319,7 +319,7 @@ Restores a full-state snapshot. **Destructive** — it replaces the database, th
 vault key of the install it is run on.
 
 ```
-cb restore <archive.tar.gz> [--yes] [--force] [--no-safety-snapshot]
+cb restore [--identity age-identity.txt] <archive.tar.gz[.age]> [--yes] [--force] [--no-safety-snapshot]
 ```
 
 | Flag | Effect |
@@ -327,6 +327,7 @@ cb restore <archive.tar.gz> [--yes] [--force] [--no-safety-snapshot]
 | `--yes` | Skip the interactive `RESTORE` confirmation |
 | `--force` | Proceed even though the snapshot is from a newer Circuit Breaker version |
 | `--no-safety-snapshot` | Do not take a snapshot of the current state first |
+| `--identity PATH` | Decrypt an age-encrypted off-host snapshot before verifying it |
 
 The order is the safety property: **verify → confirm → safety snapshot → stop → restore → start →
 verify**. The archive is checked by the backend's own verifier before anything is stopped, so an

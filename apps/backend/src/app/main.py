@@ -1825,7 +1825,6 @@ app.include_router(
     tags=["logs"],
     dependencies=[Depends(require_auth)],
 )
-app.include_router(auth.auth_jwt_router, prefix=f"{_V1}/auth/jwt", tags=["auth"])
 app.include_router(
     auth.user_me_router,
     prefix=f"{_V1}/users",

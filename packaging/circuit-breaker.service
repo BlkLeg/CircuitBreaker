@@ -12,6 +12,13 @@ After=network-online.target postgresql.service redis.service nats.service circui
 # first-class. Requires= would make every install run its own broker and turn a
 # clustered deployment into the exception.
 Wants=network-online.target circuit-breaker-nats.service
+Wants=circuit-breaker-discovery.service
+Wants=circuit-breaker-worker@notification.service
+Wants=circuit-breaker-worker@telemetry.service
+Wants=circuit-breaker-worker@integration.service
+Wants=circuit-breaker-worker@monitor_scheduler.service
+Wants=circuit-breaker-worker@monitor_poll.service
+Wants=circuit-breaker-worker@monitor_probe_dispatch.service
 
 [Service]
 Type=exec
@@ -43,6 +50,7 @@ LimitNOFILE=65536
 
 # Environment
 EnvironmentFile=-/etc/circuit-breaker/circuit-breaker.env
+Environment=CB_TOPOLOGY_MODE=api
 
 [Install]
 WantedBy=multi-user.target

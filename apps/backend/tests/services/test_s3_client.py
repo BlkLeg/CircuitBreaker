@@ -38,13 +38,13 @@ def s3_bucket(aws_credentials: None):  # type: ignore[no-untyped-def]
 @pytest.mark.asyncio
 async def test_upload_creates_object(tmp_path: pytest.TempPathFactory, s3_bucket: None) -> None:
     """upload() puts the file into the bucket and returns the S3 key."""
-    snapshot = tmp_path / "cb-snapshot-20260322-020000.tar.gz"
+    snapshot = tmp_path / "cb-snapshot-20260322-020000.tar.gz.age"
     snapshot.write_bytes(b"fake-tarball-content")
 
     client = S3Client(TEST_SETTINGS)
     key = await client.upload(snapshot)
 
-    assert key.endswith("cb-snapshot-20260322-020000.tar.gz")
+    assert key.endswith("cb-snapshot-20260322-020000.tar.gz.age")
     assert TEST_SETTINGS.prefix.rstrip("/") in key
 
 
@@ -54,7 +54,7 @@ async def test_list_snapshots_returns_sorted(
 ) -> None:
     """list_snapshots() returns S3Snapshot objects sorted by last_modified ASC."""
     s3 = boto3.client("s3", region_name="us-east-1")
-    for name in ["cb-snapshot-20260320.tar.gz", "cb-snapshot-20260322.tar.gz"]:
+    for name in ["cb-snapshot-20260320.tar.gz.age", "cb-snapshot-20260322.tar.gz.age"]:
         s3.put_object(
             Bucket=TEST_SETTINGS.bucket,
             Key=f"{TEST_SETTINGS.prefix.rstrip('/')}/{name}",
@@ -106,7 +106,7 @@ async def test_s3_error_on_missing_bucket(aws_credentials: None) -> None:
 
 @pytest.mark.asyncio
 async def test_list_snapshots_ignores_non_snapshot_objects(s3_bucket: None) -> None:
-    """list_snapshots() returns only cb-snapshot-*.tar.gz keys.
+    """list_snapshots() returns only encrypted cb-snapshot-*.tar.gz.age keys.
 
     prune_remote() deletes everything list_snapshots() returns beyond the
     retention count, so anything else living under the configured prefix —
@@ -117,8 +117,11 @@ async def test_list_snapshots_ignores_non_snapshot_objects(s3_bucket: None) -> N
     s3 = boto3.client("s3", region_name="us-east-1")
     prefix = TEST_SETTINGS.prefix.rstrip("/")
     for name in [
-        "cb-snapshot-20260320.tar.gz",
-        "cb-snapshot-20260322.tar.gz",
+        "cb-snapshot-20260320.tar.gz.age",
+        "cb-snapshot-20260322.tar.gz.age",
+        # Legacy plaintext objects remain untouched and are not adopted into
+        # the encrypted retention namespace.
+        "cb-snapshot-legacy.tar.gz",
         ".cb-probe",
         "someone-elses-file.tar",
     ]:
@@ -128,5 +131,5 @@ async def test_list_snapshots_ignores_non_snapshot_objects(s3_bucket: None) -> N
     snapshots = await client.list_snapshots()
 
     assert len(snapshots) == 2
-    assert all(s.key.endswith(".tar.gz") for s in snapshots)
+    assert all(s.key.endswith(".tar.gz.age") for s in snapshots)
     assert all("cb-snapshot-" in s.key.rsplit("/", 1)[-1] for s in snapshots)

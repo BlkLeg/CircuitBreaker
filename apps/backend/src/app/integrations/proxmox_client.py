@@ -12,6 +12,7 @@ from typing import Any, cast
 
 import urllib3
 
+from app.core.egress import PRIVATE_LAN_HTTP, requests_session
 from app.core.retry import run_sync_with_retry
 
 urllib3.disable_warnings()
@@ -57,9 +58,7 @@ class ProxmoxIntegration:
         }
 
         if client_cert and client_key:
-            import requests
-
-            session = requests.Session()
+            session = requests_session(PRIVATE_LAN_HTTP)
             session.cert = (client_cert, client_key)
             if not verify_ssl:
                 session.verify = False

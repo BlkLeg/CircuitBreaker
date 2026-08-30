@@ -262,7 +262,16 @@ def _to_profile(user: User) -> UserProfile:
     )
 
 
-def _make_token(user: User, cfg: AppSettings) -> str:
+def issue_session(
+    db: Session,
+    user: User,
+    request: Any,
+    cfg: AppSettings,
+    *,
+    lifetime_hours: float | None = None,
+    extra_claims: dict[str, Any] | None = None,
+) -> str:
+    """Mint and persist one revocable full session before returning it."""
     if not cfg.jwt_secret:
         raise RuntimeError("JWT secret not configured")
     try:
@@ -273,14 +282,19 @@ def _make_token(user: User, cfg: AppSettings) -> str:
         scopes = []
     de = getattr(user, "demo_expires", None)
     demo_expires = de.isoformat() if de is not None else None
-    return create_token(
+    token = create_token(
         user.id,
         cfg.jwt_secret,
-        cfg.session_timeout_hours,
+        lifetime_hours or cfg.session_timeout_hours,
         role=getattr(user, "role", None),
         scopes=[str(s) for s in scopes if str(s).strip()],
         demo_expires=demo_expires,
+        extra_claims=extra_claims,
     )
+    from app.services.user_service import record_session
+
+    record_session(db, user, request, token, cfg, lifetime_hours=lifetime_hours)
+    return token
 
 
 _CLIENT_HASH_V2_RE = re.compile(r"^v2\.[0-9a-f]{64}$", re.IGNORECASE)
@@ -414,7 +428,6 @@ def vault_reset_password(
     auto_login: bool = True,
 ) -> AuthResponse | User:
     from app.services.log_service import write_log
-    from app.services.user_service import record_session
     from app.services.vault_service import is_vault_key_valid
 
     email_norm = email.strip().lower()
@@ -461,8 +474,7 @@ def vault_reset_password(
     if not auto_login:
         return user
 
-    token = _make_token(user, cfg)
-    record_session(db, user, request, token, cfg)
+    token = issue_session(db, user, request, cfg)
     return AuthResponse(token=token, user=_to_profile(user))
 
 
@@ -551,10 +563,7 @@ def register(
     # `request` is optional and keyword-only so existing positional callers keep
     # working; when it is None the session is still recorded and still revocable,
     # only the IP / User-Agent columns shown in the sessions list are null.
-    from app.services.user_service import record_session
-
-    token = _make_token(user, cfg)
-    record_session(db, user, request, token, cfg)
+    token = issue_session(db, user, request, cfg)
     return AuthResponse(token=token, user=_to_profile(user))
 
 
@@ -775,16 +784,12 @@ def bootstrap_initialize(
         db.rollback()
         raise HTTPException(status_code=409, detail="Email already registered") from None
 
-    token = _make_token(user, cfg)
+    token = issue_session(db, user, None, cfg)
 
     # Record last_login and session for the bootstrapped admin.
     user.last_login = utcnow_iso()
     db.commit()
     db.refresh(user)
-    from app.services.user_service import record_session
-
-    record_session(db, user, None, token, cfg)
-
     # ── Phase 7: Generate and persist the vault key ────────────────────────
     vault_key_plaintext = _generate_and_persist_vault_key(db)
 
@@ -926,15 +931,11 @@ def bootstrap_initialize_oauth(
     db.refresh(user)
 
     # jwt_secret was already set during the OAuth redirect; re-issue a fresh token
-    token = _make_token(user, cfg)
+    token = issue_session(db, user, None, cfg)
 
     user.last_login = utcnow_iso()
     db.commit()
     db.refresh(user)
-    from app.services.user_service import record_session
-
-    record_session(db, user, None, token, cfg)
-
     # Generate/persist the first vault key for OAuth bootstrap too, and return the
     # plaintext copy so the OOBE ceremony can show it to the user.
     vault_key_plaintext = _generate_and_persist_vault_key(db)
@@ -1043,7 +1044,7 @@ def login(
     request: Any = None,
 ) -> AuthResponse:
     from app.services.log_service import write_log
-    from app.services.user_service import record_failed_login, record_session, reset_login_attempts
+    from app.services.user_service import record_failed_login, reset_login_attempts
 
     user = db.query(User).filter(User.email == email.strip().lower()).first()
     # Always call verify_password — even when user is None — to ensure constant-time
@@ -1114,8 +1115,7 @@ def login(
         actor_id=user.id,
     )
 
-    token = _make_token(user, cfg)
-    record_session(db, user, request, token, cfg)
+    token = issue_session(db, user, request, cfg)
     return AuthResponse(token=token, user=_to_profile(user))
 
 

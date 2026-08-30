@@ -20,6 +20,7 @@ from app.core.constants import (
     DNS_FILTERING_SAMPLE_SIZE,
     NETWORK_CHECK_TIMEOUT_S,
 )
+from app.core.egress import PUBLIC_HTTP, httpx_async_client
 from app.services.threat_feed import ThreatFeed
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,9 @@ def _build_result(check_id: str, status: str, evidence: str) -> dict:
 
 async def _fetch_status(url: str) -> tuple[int, bool]:
     """GET a URL without following redirects; returns (status_code, is_redirect)."""
-    async with httpx.AsyncClient(timeout=NETWORK_CHECK_TIMEOUT_S, follow_redirects=False) as client:
+    async with httpx_async_client(
+        PUBLIC_HTTP, timeout=NETWORK_CHECK_TIMEOUT_S, follow_redirects=False
+    ) as client:
         response = await client.get(url)
         return response.status_code, response.is_redirect
 

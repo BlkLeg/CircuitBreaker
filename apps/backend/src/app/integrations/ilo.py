@@ -3,6 +3,7 @@ from typing import Any
 import requests
 import urllib3
 
+from app.core.egress import PRIVATE_LAN_HTTP, requests_session
 from app.core.url_validation import validate_lan_target as _validate_lan_target
 
 urllib3.disable_warnings()
@@ -27,7 +28,7 @@ class ILOClient:
         _validate_lan_target(self.base, "iLO host")
         self.auth = (username, password)
         self.ca_bundle = ca_bundle or self._get_default_ca_bundle()
-        self._session = requests.Session()
+        self._session = requests_session(PRIVATE_LAN_HTTP)
         self._session.auth = self.auth
         self._session.verify = self.ca_bundle if self.ca_bundle else True
         adapter = requests.adapters.HTTPAdapter(

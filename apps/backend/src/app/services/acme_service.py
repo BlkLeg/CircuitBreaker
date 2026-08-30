@@ -29,6 +29,7 @@ from typing import Any
 import httpx
 from cryptography import x509
 
+from app.core.egress import PUBLIC_HTTP, httpx_get
 from app.services.certificate_service import (
     CertificateRenewalError,
     _certbot_tmp_root,
@@ -102,8 +103,9 @@ def _self_check_http01(domain: str) -> tuple[bool, str]:
     probe = challenge_dir / token
     probe.write_text(token, encoding="utf-8")
     try:
-        resp = httpx.get(
+        resp = httpx_get(
             f"http://{domain}/.well-known/acme-challenge/{token}",
+            policy=PUBLIC_HTTP,
             timeout=10.0,
             follow_redirects=False,
         )

@@ -1,0 +1,31 @@
+[Unit]
+Description=Circuit Breaker worker (%i)
+Documentation=https://github.com/BlkLeg/circuitbreaker
+Requires=circuit-breaker.service
+After=circuit-breaker.service network-online.target
+PartOf=circuit-breaker.service
+
+[Service]
+Type=exec
+User=circuitbreaker
+Group=circuitbreaker
+EnvironmentFile=-/etc/circuit-breaker/circuit-breaker.env
+Environment=CB_TOPOLOGY_MODE=worker
+Environment=TMPDIR=/var/lib/circuit-breaker/run/%N
+ExecStartPre=/bin/mkdir -p /var/lib/circuit-breaker/run/%N
+ExecStart=/usr/local/bin/circuit-breaker --worker-type %i
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/circuit-breaker /var/log/circuit-breaker
+LimitNOFILE=65536
+
+[Install]
+WantedBy=circuit-breaker.service

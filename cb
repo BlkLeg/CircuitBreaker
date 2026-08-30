@@ -116,6 +116,16 @@ CB_BINARY_ENV_FILE="${CB_BINARY_ENV_FILE:-/etc/circuit-breaker/circuit-breaker.e
 # invocation of a path that is not there is what produced a raw bash
 # "No such file or directory" and exit 127 instead of an operator-readable error.
 CB_BINARY="${CB_BINARY:-/usr/local/bin/circuit-breaker}"
+CB_PACKAGE_UNITS=(
+  circuit-breaker.service
+  circuit-breaker-discovery.service
+  circuit-breaker-worker@notification.service
+  circuit-breaker-worker@telemetry.service
+  circuit-breaker-worker@integration.service
+  circuit-breaker-worker@monitor_scheduler.service
+  circuit-breaker-worker@monitor_poll.service
+  circuit-breaker-worker@monitor_probe_dispatch.service
+)
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 _require_docker() {
@@ -183,6 +193,7 @@ _CB_APP_PROGRAMS=(
   worker-discovery
   worker-notification
   worker-telemetry
+  worker-integration
   worker-monitor-scheduler
   'worker-monitor-poll:*'
   worker-monitor-probe-dispatch
@@ -225,7 +236,7 @@ cmd_status() {
       ;;
     binary)
       if command -v systemctl >/dev/null 2>&1; then
-        systemctl status circuit-breaker --no-pager -l || true
+        systemctl status "${CB_PACKAGE_UNITS[@]}" --no-pager -l || true
       else
         _warn "systemctl not found — cannot query service status."
       fi
@@ -415,7 +426,10 @@ cmd_logs() {
       command -v journalctl >/dev/null 2>&1 \
         || _fail "journalctl not found."
       # shellcheck disable=SC2086
-      journalctl -u circuit-breaker --no-pager $follow -n 100
+      local -a unit_args=()
+      local unit
+      for unit in "${CB_PACKAGE_UNITS[@]}"; do unit_args+=(-u "$unit"); done
+      journalctl "${unit_args[@]}" --no-pager $follow -n 100
       ;;
   esac
 }
@@ -672,18 +686,36 @@ cmd_backup() {
 # operator who discovers that *after* the service is down has an outage instead
 # of a failed command.
 cmd_restore() {
-  local archive="${1:-}" force="" assume_yes="" safety="1" arg
-  [[ -n "$archive" && "$archive" != -* ]] \
-    || _fail "Usage: cb restore <archive.tar.gz> [--yes] [--force] [--no-safety-snapshot]"
-  [[ -f "$archive" ]] || _fail "Snapshot file not found: $archive"
-
-  for arg in "$@"; do
-    case "$arg" in
-      --yes) assume_yes=1 ;;
-      --force) force=1 ;;
-      --no-safety-snapshot) safety="" ;;
+  local archive="" identity="" force="" assume_yes="" safety="1" arg
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --identity) [[ $# -ge 2 ]] || _fail "--identity requires a file"; identity="$2"; shift 2 ;;
+      --yes) assume_yes=1; shift ;;
+      --force) force=1; shift ;;
+      --no-safety-snapshot) safety=""; shift ;;
+      -*) _fail "Unknown restore option: $1" ;;
+      *) [[ -z "$archive" ]] || _fail "Only one snapshot archive may be restored"; archive="$1"; shift ;;
     esac
   done
+  [[ -n "$archive" ]] \
+    || _fail "Usage: cb restore [--identity age-identity.txt] <archive.tar.gz[.age]> [--yes] [--force] [--no-safety-snapshot]"
+  [[ -f "$archive" ]] || _fail "Snapshot file not found: $archive"
+  local decrypt_dir=""
+  if [[ "$archive" == *.age ]]; then
+    [[ -n "$identity" && -f "$identity" ]] \
+      || _fail "Encrypted snapshots require --identity /path/to/age-identity.txt"
+    command -v age >/dev/null 2>&1 || _fail "age is required to decrypt this snapshot"
+    decrypt_dir=$(mktemp -d "${TMPDIR:-/tmp}/cb-restore.XXXXXX") \
+      || _fail "Could not create a restore staging directory"
+    chmod 700 "$decrypt_dir"
+    trap '[[ -n "${decrypt_dir:-}" ]] && rm -rf -- "$decrypt_dir"' EXIT
+    age --decrypt --identity "$identity" --output "$decrypt_dir/cb-snapshot.tar.gz" "$archive" \
+      || _fail "Snapshot decryption failed — check that this is the matching age identity"
+    chmod 600 "$decrypt_dir/cb-snapshot.tar.gz"
+    archive="$decrypt_dir/cb-snapshot.tar.gz"
+  elif [[ -n "$identity" ]]; then
+    _warn "--identity was ignored because this is a plaintext legacy snapshot."
+  fi
 
   # ── 1. Verify before touching anything ──────────────────────────────────
   # The verifier is services/backup/verify.py, reached through the same CLI in
@@ -1232,7 +1264,7 @@ usage() {
   echo -e "    restart             Restart Circuit Breaker"
   echo -e "    update              Pull latest image and restart  ${GR}(docker mode)${R}"
   echo -e "    backup              Full-state snapshot (database, uploads, config, vault key)"
-  echo -e "    restore <archive>   Restore a snapshot  ${GR}(destructive; --yes --force --no-safety-snapshot)${R}"
+  echo -e "    restore <archive>   Restore a snapshot  ${GR}(--identity for .age; destructive)${R}"
   echo -e "    migrate status      Report the schema revision  ${GR}(exit 3 when behind)${R}"
   echo -e "    migrate upgrade     Apply pending database migrations"
   echo -e "    token ...           Scoped API tokens  ${GR}(create, list, rotate, revoke)${R}"

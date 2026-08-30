@@ -2,6 +2,7 @@
 Description=Circuit Breaker Worker (%i)
 After=circuitbreaker-backend.service
 Requires=circuitbreaker-backend.service
+PartOf=circuitbreaker.target
 
 [Service]
 Type=simple
@@ -16,6 +17,7 @@ ExecStartPre=/bin/sh -c 'umask 077; grep -E "^CB_VAULT_KEY=" /etc/circuitbreaker
 EnvironmentFile=-/run/circuitbreaker/vault.env
 Environment="DB_POOL_SIZE=3"
 Environment="DB_MAX_OVERFLOW=2"
+Environment="CB_TOPOLOGY_MODE=worker"
 
 # AGT-11: the PyInstaller --onefile bundle extracts the whole application into
 # $TMPDIR/_MEI<random> on every start and only removes it on a clean exit, so a

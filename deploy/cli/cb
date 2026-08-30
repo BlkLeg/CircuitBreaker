@@ -33,8 +33,10 @@ SERVICES=(
   "circuitbreaker-worker@discovery"
   "circuitbreaker-worker@notification"
   "circuitbreaker-worker@telemetry"
+  "circuitbreaker-worker@integration"
   "circuitbreaker-worker@monitor_scheduler"
   "circuitbreaker-worker@monitor_poll"
+  "circuitbreaker-worker@monitor_probe_dispatch"
   "nginx"
 )
 [[ "${DOCKER_PROXY_ENABLED:-false}" == "true" ]] && \

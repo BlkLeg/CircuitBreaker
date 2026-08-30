@@ -42,7 +42,7 @@ if [ $# -eq 0 ]; then
     backup_dir="${data_dir}/backups"
     [ -d "$backup_dir" ] || backup_dir="$BACKUP_DIR_DEFAULT"
 
-    echo "Usage: circuit-breaker-rollback <pre-upgrade-*.sql | cb-snapshot-*.tar.gz>"
+    echo "Usage: circuit-breaker-rollback [--identity age-identity.txt] <pre-upgrade-*.sql | cb-snapshot-*.tar.gz[.age]>"
     echo ""
     if compgen -G "$backup_dir/pre-upgrade-*.sql" >/dev/null 2>&1; then
         echo "Pre-upgrade backups in $backup_dir (newest last):"
@@ -56,6 +56,27 @@ if [ $# -eq 0 ]; then
     echo "undoing an upgrade. Reinstall the matching package version first: the dump"
     echo "carries the old schema and the newer binary cannot serve it."
     exit 2
+fi
+
+identity=""
+archive=""
+restore_args=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --identity) [ $# -ge 2 ] || { echo "ERROR: --identity requires a file" >&2; exit 2; }; identity="$2"; shift 2 ;;
+        *) archive="$1"; restore_args+=("$1"); shift ;;
+    esac
+done
+if [[ "$archive" == *.age ]]; then
+    [ -f "$identity" ] || { echo "ERROR: encrypted snapshots require --identity" >&2; exit 2; }
+    command -v age >/dev/null 2>&1 || { echo "ERROR: age is not installed" >&2; exit 1; }
+    stage="$(mktemp -d "${TMPDIR:-/tmp}/cb-rollback.XXXXXX")"
+    chmod 700 "$stage"
+    trap 'rm -rf -- "$stage"' EXIT
+    age --decrypt --identity "$identity" --output "$stage/cb-snapshot.tar.gz" "$archive" \
+        || { echo "ERROR: snapshot decryption failed" >&2; exit 1; }
+    chmod 600 "$stage/cb-snapshot.tar.gz"
+    restore_args=("$stage/cb-snapshot.tar.gz")
 fi
 
 # ── this layout's identities ───────────────────────────────────────────────
@@ -114,4 +135,4 @@ export CB_DB_OWNER="$db_owner"
 export CB_DB_PASSWORD="$db_password"
 export CB_DB_SUPERUSER="${CB_DB_SUPERUSER:-postgres}"
 
-exec "$RESTORE" "$@"
+"$RESTORE" "${restore_args[@]}"

@@ -18,6 +18,7 @@ WORKDIR /app/backend
 # (e.g. arm64/armv7). On amd64 all deps have prebuilt wheels — gcc/cargo are only
 # exercised on ARM where source builds are necessary.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    age \
     gcc \
     g++ \
     libjpeg-dev \

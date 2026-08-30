@@ -11,9 +11,9 @@ import logging
 from datetime import datetime
 from typing import Any
 
-import httpx
 from sqlalchemy import func
 
+from app.core.egress import PUBLIC_HTTP, httpx_client
 from app.core.time import utcnow_iso
 from app.db.cve_session import CVESessionLocal
 from app.db.models import AppSettings, CVEEntry
@@ -143,7 +143,7 @@ def sync_nvd_feed() -> int:
                 "startIndex": start_index,
                 "resultsPerPage": _PAGE_SIZE,
             }
-            with httpx.Client(timeout=_TIMEOUT) as client:
+            with httpx_client(PUBLIC_HTTP, timeout=_TIMEOUT) as client:
                 resp = client.get(NVD_API_BASE, params=params)
                 resp.raise_for_status()
                 data = resp.json()

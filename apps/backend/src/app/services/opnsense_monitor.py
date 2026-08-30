@@ -15,6 +15,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
+from app.core.egress import PRIVATE_LAN_HTTP, httpx_async_client
 from app.core.log_sanitize import safe_log_fragment
 from app.services.stream_faults import record_stream_fault
 
@@ -91,8 +92,6 @@ async def _run_monitor_loop(settings_dict: dict) -> None:
 
 async def _poll_arp(settings_dict: dict) -> None:
     """Fetch ARP table and update Hardware.status for known devices."""
-    import httpx
-
     from app.services.discovery_opnsense import _ARP_PATH, _build_client_kwargs
 
     try:
@@ -104,7 +103,8 @@ async def _poll_arp(settings_dict: dict) -> None:
         return
 
     try:
-        async with httpx.AsyncClient(
+        async with httpx_async_client(
+            PRIVATE_LAN_HTTP,
             auth=(api_key, api_secret),
             verify=verify_ssl,
             timeout=10.0,

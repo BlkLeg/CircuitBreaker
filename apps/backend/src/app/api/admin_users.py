@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.rbac import require_role
-from app.core.security import client_hash_password, create_token, hash_password
+from app.core.security import client_hash_password, hash_password
 from app.db.models import Log, User, UserInvite, UserSession
 from app.db.session import get_db
 from app.services.auth_service import _scopes_for_role
@@ -473,10 +473,14 @@ def masquerade_user(
     if not target.is_active:
         raise HTTPException(status_code=400, detail="Cannot masquerade as inactive user")
     # Short-lived token (15 min) with masquerade claims for audit trail
-    token = create_token(
-        target.id,
-        cfg.jwt_secret,  # type: ignore[arg-type]
-        timeout_hours=15 / 60,  # type: ignore[arg-type]  # 15 minutes as fraction of hour
+    from app.services.auth_service import issue_session
+
+    token = issue_session(
+        db,
+        target,
+        request,
+        cfg,
+        lifetime_hours=15 / 60,
         extra_claims={
             "is_masquerade": True,
             "masquerade_by": user.id,

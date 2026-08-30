@@ -27,6 +27,7 @@ from typing import Any, cast
 
 import httpx
 
+from app.core.egress import PRIVATE_LAN_HTTP, httpx_async_client
 from app.core.log_sanitize import safe_log_fragment
 
 logger = logging.getLogger(__name__)
@@ -776,7 +777,8 @@ async def _run_ssdp_unicast_probe(ip: str, open_ports: list[dict]) -> dict[str, 
     # accept-encoding: identity asks the device not to compress, which keeps the raw
     # cap and the useful cap the same number for a well-behaved peer.  It is only a
     # request — the bound that holds against a host that gzips anyway is _read_capped.
-    async with httpx.AsyncClient(
+    async with httpx_async_client(
+        PRIVATE_LAN_HTTP,
         timeout=_SSDP_TIMEOUT,
         follow_redirects=False,
         headers={"accept-encoding": "identity"},
@@ -1156,7 +1158,8 @@ async def _run_http_fingerprint_probe(ip: str, open_ports: list[dict]) -> dict[s
     # scanner can reach.  The cost is that a device which 302s its landing page
     # elsewhere yields a Server header but no page title; that is a weaker guess,
     # not a broken probe, and _classify_device already copes with partial evidence.
-    async with httpx.AsyncClient(
+    async with httpx_async_client(
+        PRIVATE_LAN_HTTP,
         timeout=_HTTP_TIMEOUT,
         follow_redirects=False,
         headers={"accept-encoding": "identity"},

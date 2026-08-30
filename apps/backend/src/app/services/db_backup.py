@@ -257,8 +257,11 @@ async def run_full_snapshot(db: Session) -> Path:
     )
     prune_local(BACKUP_DIR, keep=keep_local)
 
-    # S3 upload (optional — only if bucket is configured)
+    # S3 upload is always an encrypted derivative. The local v1 tarball remains
+    # available for backward-compatible restores; plaintext never leaves disk.
     if settings.backup_s3_bucket:
+        from app.services.backup.age_encryption import encrypt_for_upload
+
         secret_key = ""
         if settings.backup_s3_secret_key_enc:
             try:
@@ -279,7 +282,11 @@ async def run_full_snapshot(db: Session) -> Path:
             prefix=settings.backup_s3_prefix or "circuitbreaker/backups/",
         )
         client = S3Client(s3_settings)
-        await client.upload(tarball)
+        encrypted = encrypt_for_upload(tarball, settings.backup_age_recipient)
+        try:
+            await client.upload(encrypted)
+        finally:
+            encrypted.unlink(missing_ok=True)
 
         keep_remote = (
             settings.backup_s3_retention_count

@@ -18,6 +18,11 @@ contents:
     file_info:
       mode: 0755
 
+  - src: cb
+    dst: /usr/local/bin/cb
+    file_info:
+      mode: 0755
+
   # Frontend static files
   - src: dist/native/bundle/share/frontend/
     dst: /usr/local/share/circuit-breaker/frontend/
@@ -49,10 +54,23 @@ contents:
     dst: /usr/local/share/circuit-breaker/config.toml.default
     file_info:
       mode: 0644
+  - src: packaging/install.conf
+    dst: /etc/circuit-breaker/install.conf
+    type: config|noreplace
+    file_info:
+      mode: 0644
 
   # systemd unit
   - src: packaging/circuit-breaker.service
     dst: /lib/systemd/system/circuit-breaker.service
+    file_info:
+      mode: 0644
+  - src: packaging/circuit-breaker-worker@.service
+    dst: /lib/systemd/system/circuit-breaker-worker@.service
+    file_info:
+      mode: 0644
+  - src: packaging/circuit-breaker-discovery.service
+    dst: /lib/systemd/system/circuit-breaker-discovery.service
     file_info:
       mode: 0644
 
@@ -144,6 +162,7 @@ rpm:
 overrides:
   deb:
     depends:
+      - age
       - libc6
       - nats-server
     recommends:
@@ -157,6 +176,7 @@ overrides:
       - redis-server
   rpm:
     depends:
+      - age
       - glibc
     recommends:
       - postgresql-server

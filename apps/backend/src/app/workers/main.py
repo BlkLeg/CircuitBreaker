@@ -16,6 +16,7 @@ _TYPE_MAP = {
     "5": "monitor_poll",
     "6": "monitor_poll",
     "7": "monitor_probe_dispatch",
+    "8": "integration",
 }
 
 
@@ -35,6 +36,12 @@ async def _run_telemetry() -> None:
     from app.workers import telemetry_collector
 
     await run_with_graceful_shutdown(telemetry_collector.run_worker)
+
+
+async def _run_integration() -> None:
+    from app.workers import integration_worker
+
+    await run_with_graceful_shutdown(integration_worker.run_integration_worker)
 
 
 async def _run_monitor_scheduler() -> None:
@@ -63,6 +70,8 @@ async def _dispatch(kind: str) -> None:
         await _run_notification()
     elif kind == "telemetry":
         await _run_telemetry()
+    elif kind == "integration":
+        await _run_integration()
     elif kind == "monitor_scheduler":
         await _run_monitor_scheduler()
     elif kind == "monitor_poll":
@@ -106,11 +115,11 @@ def main() -> None:
         "--type",
         required=True,
         help=(
-            "Worker type: discovery, notification, telemetry,"
+            "Worker type: discovery, notification, telemetry, integration,"
             " monitor_scheduler, monitor_poll, monitor_probe_dispatch, or numeric"
             " (0=discovery,2=notification,3=telemetry,"
             "4=monitor_scheduler,5=monitor_poll,6=monitor_poll,"
-            "7=monitor_probe_dispatch)"
+            "7=monitor_probe_dispatch,8=integration)"
         ),
     )
     args = parser.parse_args()

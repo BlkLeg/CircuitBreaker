@@ -22,6 +22,7 @@ import boto3.exceptions
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
+from app.core.egress import PUBLIC_HTTP, boto3_client
 from app.core.url_validation import (
     WEBHOOK_POLICY,
     configured_egress_proxy_url,
@@ -79,7 +80,7 @@ class S3Client:
         proxy_url = configured_egress_proxy_url()
         if proxy_url:
             kwargs["config"] = Config(proxies={"http": proxy_url, "https": proxy_url})
-        self._s3 = boto3.client(**kwargs)
+        self._s3 = boto3_client(policy=PUBLIC_HTTP, **kwargs)
 
     def _upload_file_sync(self, path: Path, key: str) -> None:
         self._s3.upload_file(str(path), self._settings.bucket, key)
@@ -153,7 +154,7 @@ class S3Client:
         results = [
             snap
             for snap in results
-            if fnmatchcase(snap.key.rsplit("/", 1)[-1], "cb-snapshot-*.tar.gz")
+            if fnmatchcase(snap.key.rsplit("/", 1)[-1], "cb-snapshot-*.tar.gz.age")
         ]
         results.sort(key=lambda s: s.last_modified)
         return results

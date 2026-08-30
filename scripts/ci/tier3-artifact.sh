@@ -198,10 +198,13 @@ t3::assert_installed_paths() {
     section "Assert the package installed what it claims"
     for path in \
         /usr/local/bin/circuit-breaker \
+        /usr/local/bin/cb \
         /usr/local/share/circuit-breaker/VERSION \
         /usr/local/share/circuit-breaker/frontend \
         /usr/local/share/circuit-breaker/backend \
         /lib/systemd/system/circuit-breaker.service \
+        /lib/systemd/system/circuit-breaker-worker@.service \
+        /lib/systemd/system/circuit-breaker-discovery.service \
         /etc/circuit-breaker/circuit-breaker.env; do
         [ -e "$path" ] || fail "package did not install $path"
     done
@@ -265,19 +268,9 @@ t3::assert_version_matches() {
 }
 
 t3::record_cb_cli() {
-    # The `cb` CLI is NOT shipped by nfpm.yaml -- contents: installs the
-    # circuit-breaker binary, the frontend and backend trees, VERSION, the agent
-    # binaries, the config template, the unit and (since Phase 3) the rollback
-    # tooling, and nothing else. Recorded rather than asserted: this tier reports
-    # what the package does, and "the operator CLI the docs reference is absent
-    # from the package" is a finding for the phase report, not something to
-    # quietly assert into existence.
-    if [ -x /usr/local/bin/cb ]; then
-        /usr/local/bin/cb --help > "$EVIDENCE/cb-help.txt" 2>&1
-    else
-        printf 'SKIPPED (not shipped by nfpm.yaml): the cb operator CLI\n' \
-            | tee "$EVIDENCE/cb-cli.txt"
-    fi
+    # Phase 1 makes the documented operator CLI part of the package contract.
+    [ -x /usr/local/bin/cb ] || fail "package did not install executable /usr/local/bin/cb"
+    /usr/local/bin/cb --help > "$EVIDENCE/cb-help.txt" 2>&1
 }
 
 t3::start_and_wait_ready() {
@@ -339,6 +332,45 @@ t3::exercise_api() {
     code="$(curl -s -o "$EVIDENCE/api-probe-$label.json" -w '%{http_code}' "$BASE_URL/health")"
     printf 'GET /health -> %s\n' "$code" | tee -a "$EVIDENCE/api-probe.txt"
     [ "$code" = "200" ] || fail "[$label] GET /api/v1/health returned $code"
+}
+
+t3::exercise_scheduled_monitor() {
+    local label=$1 email=tier3-admin@local.invalid password='Tier3Monitor123!'
+    section "Prove the scheduled monitor pipeline ($label)"
+    local status token setup_token data_dir monitor id deadline history
+    status="$(curl -fsS "$BASE_URL/bootstrap/status")"
+    if python3 -c 'import json,sys; raise SystemExit(not json.load(sys.stdin)["needs_bootstrap"])' <<<"$status"; then
+        data_dir="$(sed -n 's/^CB_DATA_DIR=//p' "$ENV_FILE" | tail -n1)"
+        [ -n "$data_dir" ] || data_dir=/var/lib/circuit-breaker
+        setup_token="$(tr -d '\r\n' < "$data_dir/bootstrap-setup-token")"
+        token="$(curl -fsS -H 'Content-Type: application/json' \
+          -d "{\"setup_token\":\"$setup_token\",\"email\":\"$email\",\"password\":\"$password\",\"theme_preset\":\"gruvbox-dark\"}" \
+          "$BASE_URL/bootstrap/initialize" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
+    else
+        token="$(curl -fsS -H 'Content-Type: application/json' \
+          -d "{\"email\":\"$email\",\"password\":\"$password\"}" "$BASE_URL/auth/login" \
+          | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
+    fi
+    monitor="$(curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+      -d '{"name":"tier3-scheduled-tcp-'"$label"'","check_type":"tcp","host":"127.0.0.1","config":{"port":8080},"interval_secs":10,"max_retries":0}' \
+      "$BASE_URL/monitors")"
+    printf '%s\n' "$monitor" > "$EVIDENCE/monitor-$label.json"
+    id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$monitor")"
+    deadline=$(( SECONDS + 20 ))
+    while :; do
+        history="$(curl -fsS -H "Authorization: Bearer $token" "$BASE_URL/monitors/$id/history")"
+        if python3 -c 'import json,sys; raise SystemExit(not any(x.get("metric_name")=="avail" for x in json.load(sys.stdin)))' <<<"$history"; then
+            printf '%s\n' "$history" > "$EVIDENCE/monitor-history-$label.json"
+            break
+        fi
+        [ "$SECONDS" -lt "$deadline" ] || fail "[$label] no scheduled avail sample appeared within 20s"
+        sleep 2
+    done
+    capture "$EVIDENCE/worker-units-$label.txt" systemctl show \
+      circuit-breaker-discovery.service 'circuit-breaker-worker@*.service' \
+      -p Id -p ActiveState -p SubState
+    capture "$EVIDENCE/worker-journal-$label.log" journalctl \
+      -u circuit-breaker-discovery.service -u 'circuit-breaker-worker@*' --no-pager -n 300
 }
 
 # ── database helpers ────────────────────────────────────────────────────────
@@ -425,6 +457,7 @@ t3::alembic_revision > "$EVIDENCE/alembic_version-$START_LABEL.txt"
     || fail "alembic_version is empty — migrations did not run against the packaged database"
 
 t3::exercise_api "$START_LABEL"
+t3::exercise_scheduled_monitor "$START_LABEL"
 
 if [ -z "$PREVIOUS" ]; then
     # Phase 2's contract ends here, and the row that carries it is unchanged.
@@ -504,6 +537,7 @@ curl -fsS "$BASE_URL/readyz" | tee "$EVIDENCE/readyz-upgraded.json"
 
 t3::assert_version_matches upgraded
 t3::exercise_api upgraded
+t3::exercise_scheduled_monitor upgraded
 
 section "Assert the upgrade preserved the data and advanced the schema"
 REVISION_AFTER="$(t3::alembic_revision)"
@@ -571,6 +605,7 @@ printf '%s' "$REVISION_ROLLED_BACK" > "$EVIDENCE/alembic_version-rolledback.txt"
 
 t3::assert_version_matches rolledback tolerate
 t3::exercise_api rolledback
+t3::exercise_scheduled_monitor rolledback
 t3::collect rolledback
 
 readable_evidence

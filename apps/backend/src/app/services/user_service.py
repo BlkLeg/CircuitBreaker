@@ -36,6 +36,8 @@ def record_session(
     request: Request | None,
     token: str,
     cfg: AppSettings | None = None,
+    *,
+    lifetime_hours: float | None = None,
 ) -> UserSession | None:
     """Record a new session for the user. Enforce concurrent_sessions limit."""
     if user.id == 0:
@@ -44,7 +46,7 @@ def record_session(
     ip = request.client.host if request and request.client else None
     ua = (request.headers.get("User-Agent") or "")[:500] if request else None
 
-    expires_at = utcnow() + timedelta(hours=cfg.session_timeout_hours)
+    expires_at = utcnow() + timedelta(hours=lifetime_hours or cfg.session_timeout_hours)
     token_hash = _hash_token(token)
 
     # Enforce concurrent_sessions: revoke oldest

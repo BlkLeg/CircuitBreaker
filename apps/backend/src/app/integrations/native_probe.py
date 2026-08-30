@@ -8,9 +8,9 @@ import subprocess
 import time
 from typing import Any
 
-import httpx
 from sqlalchemy.orm import Session
 
+from app.core.egress import PRIVATE_LAN_HTTP, httpx_get
 from app.db.models import IntegrationMonitor
 from app.integrations.base import ConfigField, IntegrationPlugin, MonitorStatus
 from app.services.ip_reservation import _parse_ports_json
@@ -106,7 +106,7 @@ def _probe_http(target: str, timeout: int = 5) -> tuple[str, float | None]:
     """HTTP probe — "up" if response status < 400."""
     t0 = time.monotonic()
     try:
-        resp = httpx.get(target, timeout=timeout, follow_redirects=True)
+        resp = httpx_get(target, policy=PRIVATE_LAN_HTTP, timeout=timeout, follow_redirects=True)
         latency_ms = (time.monotonic() - t0) * 1000
         status = "up" if resp.status_code < 400 else "down"
         return status, round(latency_ms, 2)

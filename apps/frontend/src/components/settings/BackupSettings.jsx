@@ -5,6 +5,7 @@ import SettingField from './SettingField';
 
 const EMPTY_FORM = {
   backup_s3_bucket: '',
+  backup_age_recipient: '',
   backup_s3_endpoint_url: '',
   backup_s3_access_key_id: '',
   backup_s3_secret_key: '', // plaintext; empty = leave unchanged
@@ -67,6 +68,7 @@ export default function BackupSettings() {
       setSecretKeySet(!!d.backup_s3_secret_key_set);
       setForm({
         backup_s3_bucket: d.backup_s3_bucket ?? '',
+        backup_age_recipient: d.backup_age_recipient ?? '',
         backup_s3_endpoint_url: d.backup_s3_endpoint_url ?? '',
         backup_s3_access_key_id: d.backup_s3_access_key_id ?? '',
         backup_s3_secret_key: '', // never pre-fill the secret
@@ -118,6 +120,7 @@ export default function BackupSettings() {
     // Never send backup_s3_secret_key unless the user typed something
     const payload = {
       backup_s3_bucket: form.backup_s3_bucket || null,
+      backup_age_recipient: form.backup_age_recipient || null,
       backup_s3_endpoint_url: form.backup_s3_endpoint_url || null,
       backup_s3_access_key_id: form.backup_s3_access_key_id || null,
       backup_s3_region: form.backup_s3_region || null,
@@ -294,6 +297,20 @@ export default function BackupSettings() {
             value={form.backup_s3_bucket}
             onChange={(e) => set('backup_s3_bucket', e.target.value)}
             placeholder="my-backups"
+          />
+        </SettingField>
+
+        <SettingField
+          label="age Recipient"
+          hint="Required for S3 uploads. Generate with age-keygen and keep the AGE-SECRET-KEY identity offline; losing it makes remote backups unrecoverable."
+        >
+          <input
+            type="text"
+            style={inputStyle}
+            value={form.backup_age_recipient}
+            onChange={(e) => set('backup_age_recipient', e.target.value)}
+            placeholder="age1..."
+            autoComplete="off"
           />
         </SettingField>
 

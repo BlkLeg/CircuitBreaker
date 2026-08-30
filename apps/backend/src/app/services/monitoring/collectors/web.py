@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
+from app.core.egress import PRIVATE_LAN_HTTP, httpx_request
 from app.core.url_validation import (
     MONITOR_TARGET_POLICY,
     validate_outbound_url,
@@ -28,7 +29,6 @@ _MAX_REDIRECTS = 20
 
 def _request(url: str, params: dict) -> tuple[httpx.Response, float]:
     """One HTTP request. Returns (response, latency_ms). Mocked in tests."""
-    import httpx
 
     # SEC-12: a monitor URL is attacker-influenced input — whoever can create a
     # monitor chooses the host, method, headers and body. Checking it here rather
@@ -59,9 +59,10 @@ def _request(url: str, params: dict) -> tuple[httpx.Response, float]:
     elif auth_type == "bearer" and params.get("token"):
         headers["Authorization"] = f"Bearer {params['token']}"
     t0 = time.monotonic()
-    resp = httpx.request(
+    resp = httpx_request(
         method,
         url,
+        policy=PRIVATE_LAN_HTTP,
         headers=headers or None,
         content=params.get("body") or None,
         timeout=float(params.get("timeout", 10.0)),
@@ -79,9 +80,10 @@ def _request(url: str, params: dict) -> tuple[httpx.Response, float]:
                 resp.headers.get("location", ""),
                 MONITOR_TARGET_POLICY,
             )
-            resp = httpx.request(
+            resp = httpx_request(
                 method,
                 target.url,
+                policy=PRIVATE_LAN_HTTP,
                 headers=headers or None,
                 content=params.get("body") or None,
                 timeout=float(params.get("timeout", 10.0)),

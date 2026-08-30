@@ -13,6 +13,8 @@ from typing import Any
 
 import httpx
 
+from app.core.egress import PRIVATE_LAN_HTTP, httpx_async_client
+
 logger = logging.getLogger(__name__)
 
 
@@ -104,7 +106,8 @@ async def fetch_opnsense_devices(
         return [], f"OPNsense: failed to decrypt credentials — {exc}"
 
     try:
-        async with httpx.AsyncClient(
+        async with httpx_async_client(
+            PRIVATE_LAN_HTTP,
             auth=(api_key, api_secret),
             verify=verify_ssl,
             timeout=10.0,
@@ -183,7 +186,8 @@ async def fetch_opnsense_stats(
         return {}, str(exc)
 
     try:
-        async with httpx.AsyncClient(
+        async with httpx_async_client(
+            PRIVATE_LAN_HTTP,
             auth=(api_key, api_secret),
             verify=verify_ssl,
             timeout=10.0,
@@ -260,7 +264,8 @@ async def ping_via_opnsense(
         return {}, str(exc)
 
     try:
-        async with httpx.AsyncClient(
+        async with httpx_async_client(
+            PRIVATE_LAN_HTTP,
             auth=(api_key, api_secret),
             verify=verify_ssl,
             timeout=15.0,
@@ -313,7 +318,8 @@ async def test_opnsense_connection(
         return {"ok": False, "error": str(exc)}
 
     try:
-        async with httpx.AsyncClient(
+        async with httpx_async_client(
+            PRIVATE_LAN_HTTP,
             auth=(api_key, api_secret),
             verify=verify_ssl,
             timeout=10.0,

@@ -260,16 +260,17 @@ The full destination list, the enrollment limits, and what the agent sends to yo
 
 Two different things are often called "air-gapped". Circuit Breaker supports one of them.
 
-**Air-gapped operation — supported.** A running instance can be told never to make an outbound
-request of its own:
+**Public-HTTP air-gapped operation — supported.** A running instance can be told never to make an
+outbound public HTTP(S) request of its own:
 
 ```env
 CB_AIRGAP=true
 ```
 
-or the `airgap_mode` switch in **Settings** — either is enough. That refuses network scans with
-`403` and stops the release check opening a socket at all. `CB_UPDATE_CHECK=false` turns off the
-release check alone, for an operator who wants scanning egress but no contact with GitHub.
+or the `airgap_mode` switch in **Settings** — either is enough. Public HTTP is rejected centrally
+before DNS or socket creation. Private-LAN/loopback monitoring and integrations remain available,
+but unresolved names and names with any public answer are rejected. SMTP is an explicitly
+configured non-HTTP exemption. `CB_UPDATE_CHECK=false` turns off the release check alone.
 
 What still requires egress when you use the feature, and what to disable if you have none:
 

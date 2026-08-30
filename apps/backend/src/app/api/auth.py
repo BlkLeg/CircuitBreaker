@@ -49,7 +49,7 @@ from app.core.security import (
 )
 from app.core.time import utcnow, utcnow_iso
 from app.core.token_scopes import GRANTABLE_SCOPES, SCOPE_PRESETS
-from app.core.users import auth_backend, fastapi_users
+from app.core.users import fastapi_users
 from app.db.models import APIToken, User
 from app.db.session import get_db
 from app.schemas.auth import (
@@ -66,13 +66,10 @@ from app.services.settings_service import get_or_create_settings
 _logger = logging.getLogger(__name__)
 router = APIRouter(tags=["auth"])
 
-
-# ---------------------------------------------------------------------------
-# FastAPI-Users routers (mounted in main.py with their own prefixes)
-# ---------------------------------------------------------------------------
-
-auth_jwt_router = fastapi_users.get_auth_router(auth_backend)
+# FastAPI-Users remains the user-management implementation. Its parallel JWT
+# login router is intentionally not exposed; /api/v1/auth/login is canonical.
 users_router = fastapi_users.get_users_router(UserRead, UserUpdate)
+
 
 # Phase 6.5: Self-service sessions and password (mounted at /api/v1/users)
 user_me_router = APIRouter(tags=["users"])
@@ -114,10 +111,9 @@ def accept_invite_endpoint(
 ) -> Response:
     """Claim an invite and create a user account. Public endpoint."""
     from app.schemas.auth import AuthResponse
-    from app.services.auth_service import _make_token, _to_profile
+    from app.services.auth_service import _to_profile, issue_session
     from app.services.settings_service import get_or_create_settings
     from app.services.user_service import accept_invite as svc_accept_invite
-    from app.services.user_service import record_session
 
     password_or_hash = (
         payload.password_hash if payload.password_hash is not None else payload.password
@@ -126,7 +122,7 @@ def accept_invite_endpoint(
         raise HTTPException(status_code=422, detail="password or password_hash is required")
     user = svc_accept_invite(db, payload.token, password_or_hash, payload.display_name)
     cfg = get_or_create_settings(db)
-    token = _make_token(user, cfg)
+    token = issue_session(db, user, request, cfg)
     # Revocation in this codebase is table-driven: `is_session_revoked` looks the
     # raw JWT up by hash in `user_sessions`, and `revoke_all_sessions` flips the
     # flag on rows that are already there. A token minted without a row is
@@ -142,7 +138,6 @@ def accept_invite_endpoint(
     # its own `_make_token`, and the regression test called the service
     # directly so it never noticed. Invites are the normal way a second user
     # joins an instance, so this is the larger half of the finding in practice.
-    record_session(db, user, request, token, cfg)
     body = AuthResponse(token=token, user=_to_profile(user)).model_dump()
     return auth_response_with_cookie(request, token, body, cfg.session_timeout_hours)
 
@@ -269,14 +264,9 @@ def create_demo_session(
     db.commit()
     db.refresh(demo_user)
 
-    token = create_token(
-        demo_user.id,
-        cfg.jwt_secret,
-        1,
-        role="demo",
-        scopes=["read:*"],
-        demo_expires=expires_at.isoformat(),
-    )
+    from app.services.auth_service import issue_session
+
+    token = issue_session(db, demo_user, request, cfg, lifetime_hours=1)
     body = DemoAuthResponse(
         token=token, user=_to_profile(demo_user), expires_at=expires_at.isoformat()
     ).model_dump()
@@ -416,8 +406,7 @@ def force_change_password(
         raise HTTPException(status_code=401, detail="User not found or inactive")
     _reject_if_locked_out(user)
 
-    from app.services.auth_service import _make_token, _to_profile
-    from app.services.user_service import record_session
+    from app.services.auth_service import _to_profile, issue_session
 
     new_password_or_hash = (
         payload.new_password_hash if payload.new_password_hash is not None else payload.new_password
@@ -427,8 +416,7 @@ def force_change_password(
     reset_local_user_password(
         db, user, new_password_or_hash, source="force_change", update_last_login=True
     )
-    token = _make_token(user, cfg)
-    record_session(db, user, request, token, cfg)
+    token = issue_session(db, user, request, cfg)
     from app.schemas.auth import AuthResponse
 
     body = AuthResponse(token=token, user=_to_profile(user)).model_dump()
@@ -1160,8 +1148,8 @@ def mfa_activate(
     db: Session = Depends(get_db),
 ) -> Response:
     """Confirm a newly generated TOTP secret and enable MFA."""
-    from app.services.auth_service import _make_token, _to_profile
-    from app.services.user_service import record_session, revoke_token_session
+    from app.services.auth_service import _to_profile, issue_session
+    from app.services.user_service import revoke_token_session
 
     user = db.get(User, user_id)
     if not user:
@@ -1183,11 +1171,10 @@ def mfa_activate(
     user.mfa_enabled = True
     db.commit()
 
-    token = _make_token(user, cfg)
+    token = issue_session(db, user, request, cfg)
     current_token = _extract_token(request)
     if current_token:
         revoke_token_session(db, current_token.strip())
-    record_session(db, user, request, token, cfg)
     from app.core.audit import log_audit
 
     log_audit(db, request, user_id=user.id, action="mfa_enabled", resource="auth", status="ok")
@@ -1211,10 +1198,9 @@ def mfa_verify(
     Also used to *activate* MFA after a fresh /mfa/setup call: if the user is
     not yet fully authenticated, the mfa_token from /login is required.
     """
-    from app.services.auth_service import _make_token, _to_profile
+    from app.services.auth_service import _to_profile, issue_session
     from app.services.user_service import (
         record_failed_login,
-        record_session,
         reset_login_attempts,
     )
 
@@ -1250,8 +1236,7 @@ def mfa_verify(
             # A completed second factor ends the login attempt, so the counter
             # that the failures below feed is cleared here.
             reset_login_attempts(db, user)
-            token = _make_token(user, cfg)
-            record_session(db, user, request, token, cfg)
+            token = issue_session(db, user, request, cfg)
             from app.schemas.auth import AuthResponse
 
             body = AuthResponse(token=token, user=_to_profile(user)).model_dump()
@@ -1268,8 +1253,7 @@ def mfa_verify(
                 user.backup_codes = json.dumps(stored)
                 db.commit()
                 reset_login_attempts(db, user)
-                token = _make_token(user, cfg)
-                record_session(db, user, request, token, cfg)
+                token = issue_session(db, user, request, cfg)
                 from app.schemas.auth import AuthResponse
 
                 body = AuthResponse(token=token, user=_to_profile(user)).model_dump()

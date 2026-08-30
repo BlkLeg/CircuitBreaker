@@ -172,6 +172,17 @@ def _resolve_host(host: str, port: int, policy: OutboundPolicy) -> tuple[str, ..
 
 
 def validate_outbound_url(url: str, policy: OutboundPolicy = WEBHOOK_POLICY) -> ValidatedURL:
+    from app.core.egress import (
+        PRIVATE_LAN_HTTP,
+        PUBLIC_HTTP,
+        enforce_before_resolution,
+        enforce_resolved,
+    )
+
+    egress_policy = (
+        PRIVATE_LAN_HTTP if (policy.allow_private or policy.allow_local) else PUBLIC_HTTP
+    )
+    enforce_before_resolution(egress_policy)
     parsed = urlparse((url or "").strip())
     scheme = (parsed.scheme or "").lower()
     if scheme not in policy.allowed_schemes:
@@ -181,6 +192,7 @@ def validate_outbound_url(url: str, policy: OutboundPolicy = WEBHOOK_POLICY) -> 
     host = _validate_host(parsed)
     port = parsed.port or _default_port(scheme)
     addresses = _resolve_host(host, port, policy)
+    enforce_resolved(egress_policy, addresses)
 
     for address in addresses:
         if _is_forbidden_address(address, policy):
@@ -388,7 +400,9 @@ def outbound_async_client(**kwargs: Any) -> httpx.AsyncClient:
     if proxy_url:
         kwargs["proxy"] = proxy_url
         kwargs["trust_env"] = False
-    return httpx.AsyncClient(**kwargs)
+    from app.core.egress import PUBLIC_HTTP, httpx_async_client
+
+    return httpx_async_client(PUBLIC_HTTP, **kwargs)
 
 
 def validate_lan_target(url: str, label: str) -> None:
