@@ -59,6 +59,11 @@ CB_ALEMBIC_INI=/usr/local/share/circuit-breaker/backend/alembic.ini
 CB_AGENT_BINARIES_DIR=/usr/local/share/circuit-breaker/agent-binaries
 CB_DATA_DIR=/var/lib/circuit-breaker
 UPLOADS_DIR=/var/lib/circuit-breaker/uploads
+# No forward proxy on a single-node host, and an empty CB_EGRESS_PROXY_URL is
+# indistinguishable from an operator who meant to set one. The waiver records
+# that running without a proxy is a decision; it waives that requirement alone.
+CB_EGRESS_PROXY_URL=
+CB_ALLOW_DIRECT_EGRESS=true
 EOF
   chmod 600 /etc/circuit-breaker/circuit-breaker.env
   chown root:circuitbreaker /etc/circuit-breaker/circuit-breaker.env
@@ -85,9 +90,21 @@ fi
 # against the working directory -- and the unit sets none, so systemd runs the
 # service from `/`. A relative default is invisible in review and fatal on a
 # packaged host.
+#
+# CB_ALLOW_DIRECT_EGRESS is the third of the same kind, found by the first run of
+# the Phase 3 tree: validate_core_dependencies() refuses to boot when
+# CB_EGRESS_PROXY_URL is empty and the waiver is unset, so a host whose env file
+# predates the gate stops starting the moment it upgrades onto a version that
+# has it. Backfilling does not change what the host does -- it had no proxy
+# before and made direct egress anyway -- it records that as the decision the
+# gate asks for, which is the default deploy/setup.sh, docker-compose.yml and
+# every shipped .env template already use. Each line added is echoed below, so
+# the operator sees what was written rather than having it happen silently.
 for _kv in \
   "CB_DATA_DIR=/var/lib/circuit-breaker" \
-  "UPLOADS_DIR=/var/lib/circuit-breaker/uploads"; do
+  "UPLOADS_DIR=/var/lib/circuit-breaker/uploads" \
+  "CB_EGRESS_PROXY_URL=" \
+  "CB_ALLOW_DIRECT_EGRESS=true"; do
   _key="${_kv%%=*}"
   if [ -f /etc/circuit-breaker/circuit-breaker.env ] \
      && ! grep -q "^${_key}=" /etc/circuit-breaker/circuit-breaker.env; then
