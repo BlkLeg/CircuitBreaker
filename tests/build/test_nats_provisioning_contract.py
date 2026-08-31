@@ -43,14 +43,18 @@ that packager.
 
 from __future__ import annotations
 
+import importlib.util
 import re
 from pathlib import Path
+from types import ModuleType
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PIN = REPO_ROOT / "packaging" / "nats-server.pin"
 NFPM = REPO_ROOT / "nfpm.yaml"
 NFPM_NATS = REPO_ROOT / "packaging" / "nfpm-nats.yaml"
 SETUP = REPO_ROOT / "deploy" / "setup.sh"
+INSTALLER = REPO_ROOT / "install.sh"
+BUILD_SCRIPT = REPO_ROOT / "scripts" / "build_native_release.py"
 UNIT = REPO_ROOT / "packaging" / "circuit-breaker.service"
 
 
@@ -83,6 +87,99 @@ def test_setup_sh_no_longer_resolves_latest_from_the_network():
         "packaging/nats-server.pin, not whatever the GitHub API returns"
     )
     assert "nats-server.pin" in text, "setup.sh must read the shared pin"
+
+
+def _load_build_script() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("cb_build_native_release", BUILD_SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _resolver_candidates() -> list[str]:
+    """The paths cb_resolve_nats_pin() will accept, in order."""
+    text = SETUP.read_text(encoding="utf-8")
+    body = re.search(r"cb_resolve_nats_pin\(\)\s*\{(.*?)\n\}", text, re.DOTALL)
+    assert body, "deploy/setup.sh no longer defines cb_resolve_nats_pin"
+    block = re.search(r"local candidates=\(\s*(.*?)\n\s*\)", body.group(1), re.DOTALL)
+    assert block, "cb_resolve_nats_pin no longer declares a candidates array"
+    return re.findall(r'"([^"]+)"', block.group(1))
+
+
+def test_the_bundle_ships_the_pin_that_setup_sh_refuses_to_install_without(tmp_path):
+    """A release tarball that omits the pin cannot install NATS on any host.
+
+    stage_bundle() cherry-picks individual files out of packaging/ rather than
+    copying the tree, so a file the installer requires can be added to the repo,
+    referenced by setup.sh, covered by a test that greps setup.sh for its name —
+    and still never leave the build machine. That is what happened: v0.4.0's
+    tarball had no pin anywhere in it, and every native install died at
+    "Cannot find packaging/nats-server.pin" with the broker unprovisioned.
+    """
+    build = _load_build_script()
+
+    fake_binary = tmp_path / "circuit-breaker"
+    fake_binary.write_bytes(b"#!/bin/sh\nexit 0\n")
+    frontend = tmp_path / "frontend"
+    frontend.mkdir()
+    (frontend / "index.html").write_text("<!doctype html>", encoding="utf-8")
+
+    bundle_dir, manifest = build.stage_bundle(
+        binary_path=fake_binary,
+        version="0.0.0-test",
+        target_os="linux",
+        target_arch="amd64",
+        frontend_dir=frontend,
+        work_dir=tmp_path / "work",
+    )
+
+    staged = bundle_dir / "share" / "nats-server.pin"
+    assert staged.is_file(), (
+        "the bundle must ship packaging/nats-server.pin. deploy/setup.sh reads it "
+        "to learn which NATS version to install and which digest to verify, and "
+        "cb_fail()s the whole install when it is missing."
+    )
+    assert staged.read_text(encoding="utf-8") == PIN.read_text(encoding="utf-8"), (
+        "the staged pin must be the repo's pin verbatim — a bundle that installs a "
+        "different broker version than the deb defeats the point of sharing one file"
+    )
+    assert manifest["resources"].get("nats_pin") == "share/nats-server.pin", (
+        "manifest.json must name the pin like every other installed resource"
+    )
+
+
+def test_every_installed_path_the_resolver_trusts_is_one_the_installer_creates():
+    """The contract that actually broke: resolver paths and installer paths agreed
+    on nothing.
+
+    cb_resolve_nats_pin() searched /opt/circuitbreaker/packaging/ (and
+    deploy/../packaging/, which is the same directory once installed), while
+    stage0_install_bundle() only ever populates bin/, share/, deploy/ and
+    agent-binaries/. Nothing in the product creates /opt/circuitbreaker/packaging,
+    so both candidates were dead on arrival for every tarball install.
+    """
+    installer = INSTALLER.read_text(encoding="utf-8")
+    installed_candidates = [
+        c for c in _resolver_candidates() if c.startswith("/opt/circuitbreaker/")
+    ]
+    assert installed_candidates, (
+        "cb_resolve_nats_pin must have at least one candidate under "
+        "/opt/circuitbreaker — that is the only layout a released install has"
+    )
+
+    def _copied_from_bundle(candidate: str) -> bool:
+        subdir = candidate.removeprefix("/opt/circuitbreaker/").split("/")[0]
+        return (
+            f'"${{CB_BUNDLE_DIR}}/{subdir}/." /opt/circuitbreaker/{subdir}/' in installer
+        )
+
+    reachable = [c for c in installed_candidates if _copied_from_bundle(c)]
+    assert reachable, (
+        f"none of {installed_candidates} live in a directory install.sh copies out "
+        f"of the bundle. stage0_install_bundle populates only the subdirectories it "
+        f"names explicitly, so a resolver candidate outside them can never resolve."
+    )
 
 
 def test_setup_sh_verifies_what_it_downloads():

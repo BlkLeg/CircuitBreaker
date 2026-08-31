@@ -9,7 +9,7 @@ User=postgres
 Group=postgres
 Environment=PGDATA=${CB_DATA_DIR}/postgres
 ExecStart=${PG_BIN_DIR}/postgres -D ${CB_DATA_DIR}/postgres
-ExecReload=/bin/kill -HUP \$MAINPID
+ExecReload=/bin/kill -HUP $MAINPID
 KillMode=mixed
 KillSignal=SIGINT
 TimeoutSec=0

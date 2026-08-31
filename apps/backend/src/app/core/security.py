@@ -231,7 +231,7 @@ def _log_api_token_deprecation() -> None:
     """Emit a one-shot deprecation warning if CB_API_TOKEN is still set."""
     if os.getenv("CB_API_TOKEN"):
         _logger.warning(
-            "DEPRECATION: CB_API_TOKEN is deprecated and will be removed in v0.4.0. "
+            "DEPRECATION: CB_API_TOKEN is deprecated and will be removed in v0.5.0. "
             "Migrate to service accounts (POST /api/v1/auth/service-account)."
         )
 

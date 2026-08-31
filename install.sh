@@ -5,6 +5,24 @@ set -euo pipefail
 # Downloads a pre-built bundle from GitHub Releases and installs it.
 # Usage: curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | sudo bash
 
+# Every package operation in this installer sends its output to the install log,
+# so anything that stops to ask a question stops *invisibly*: the prompt text
+# goes to the log and the installer sits on a terminal that shows nothing but
+# the last "▸ Installing ..." line. There is no timeout and no way for the
+# operator to know what is being asked.
+#
+# Two things ask. debconf prompts on config-file conflicts and service
+# restarts unless the frontend is noninteractive. needrestart, installed by
+# default on Ubuntu Server since 22.04, hooks DPkg::Post-Invoke and asks which
+# services to restart whenever it finds processes running against upgraded
+# libraries — which is the normal state of a machine that has been updated but
+# not rebooted, i.e. the machine most people install onto.
+#
+# Exported, so the setup.sh sourced later and every child process inherits them.
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+export NEEDRESTART_SUSPEND=1
+
 # Color codes
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -26,6 +44,22 @@ CB_CERT_TYPE="self-signed"
 CB_EMAIL=""
 CB_VERSION=""
 CB_LOCAL_BUNDLE=""
+# Air-gap mode. Seeded from the environment so `CB_AIRGAP=true bash install.sh`
+# and `--airgap` mean the same thing, and so the variable that governs the
+# running application also governs the installer that writes its config.
+#
+# The contract is deliberately absolute: in air-gap mode this installer makes no
+# outbound request of any kind. It installs no packages, adds no apt/dnf
+# repository, downloads no binary, and pulls no container image. It verifies
+# that what it needs is already present and stops with an exact list of what is
+# not. Anything softer would be a claim it cannot keep — "mostly offline" is the
+# failure mode air-gapped operators are trying to avoid.
+_cb_airgap_from_env="${CB_AIRGAP:-}"
+CB_AIRGAP=false
+case "$_cb_airgap_from_env" in
+  true|True|TRUE|1|yes|on) CB_AIRGAP=true ;;
+esac
+unset _cb_airgap_from_env
 UNATTENDED=false
 UPGRADE_MODE=false
 NO_TLS=false
@@ -41,7 +75,12 @@ cb_version() {
 }
 
 cb_header() {
-  clear
+  # `clear` exits 1 when TERM is unset, and under `set -e` that aborts the whole
+  # installer before it has printed a single line — the least diagnosable failure
+  # this script can produce. TERM is unset in exactly the environments
+  # --unattended exists for: Proxmox LXC provisioning, cloud-init, Ansible, CI,
+  # and `ssh host 'bash install.sh'` without -t.
+  clear 2>/dev/null || true
   echo -e "${CYAN}${BOLD}"
   echo "  ╔══════════════════════════════════════════╗"
   echo "  ║         Circuit Breaker Installer        ║"
@@ -98,7 +137,11 @@ cb_run_diagnostics() {
     _label="${_entry%%::*}"
     _cmd="${_entry#*::}"
     echo -e "\n  ${CYAN}▸${RESET} ${_label}"
-    echo -e "    ${DIM}\$ ${_cmd}${RESET}"
+    # printf, not echo -e: a diagnostic command can legitimately contain a
+    # backslash escape (printf '%s\n' in a loop, a sed expression), and echo -e
+    # would interpret it here and print the command across several lines,
+    # mangling the one thing an operator might want to copy.
+    printf '    %b$ %s%b\n' "${DIM}" "${_cmd}" "${RESET}"
     _out="$(eval "${_cmd}" 2>&1 | tail -n "${CB_DIAG_LINES}")" || true
     if [[ -z "${_out}" ]]; then
       echo -e "    ${DIM}(no output)${RESET}"
@@ -158,12 +201,73 @@ cb_section() {
   echo "  $(printf '─%.0s' {1..42})"
 }
 
+# The names a template asks the installer to fill in: ${NAME}, braced, nothing else.
+cb_template_vars() {
+  grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' "$1" | sed 's/^\${//; s/}$//' | sort -u
+}
+
+# Literal find/replace, used by cb_render_template.
+#
+# Bash's own ${v//pat/rep} is not usable here: since 5.2 it treats `&` in the
+# replacement as the matched text, so a value containing an ampersand — a proxy
+# URL, an email — renders differently on Ubuntu 22.04 (bash 5.1) than on 24.04+
+# (5.2+). The quoted ${rest%%"$needle"*} form below is literal on every version.
+cb_replace_all() {
+  local -n _buf="$1"
+  local needle="$2" rep="$3" out="" rest="$_buf"
+  while [[ "$rest" == *"$needle"* ]]; do
+    out+="${rest%%"$needle"*}$rep"
+    rest="${rest#*"$needle"}"
+  done
+  _buf="$out$rest"
+}
+
+# Render a template by substituting ${NAME}, copying every other byte through
+# untouched.
+#
+# This replaced an `eval "cat <<EOF\n$(cat "$src")\nEOF"`, which expanded the
+# ENTIRE file as shell — comments included. Two things followed from that, both
+# of which shipped in v0.4.0:
+#
+#   * Backticks in prose executed as root. The nginx configs documented their
+#     routing with `curl https://cb.example.com/install-agent.sh` and
+#     `sha256sum -c`, so every install ran both — an outbound request on a
+#     platform whose air-gap contract forbids one, and a `sha256sum -c` with no
+#     argument, which reads stdin and blocks.
+#   * An unset variable killed the installer. Under `set -u`, AGT-11's comment
+#     "$TMPDIR/_MEI<random>" aborted every install on a host where TMPDIR was
+#     unset, with `line 164: TMPDIR: unbound variable` and a half-written
+#     systemd tree.
+#
+# The only defence an eval allowed was backslash-escaping every literal $ in
+# every template (\$MAINPID, \$host). That is invisible to anyone editing a
+# config file, unenforceable, and was already wrong in four files. Substitution
+# needs no escaping: `$host`, `$MAINPID` and backticks are ordinary text now.
 cb_render_template() {
-  local src="$1"
-  local dest="$2"
-  eval "cat <<__CB_TEMPLATE_EOF__
-$(cat "$src")
-__CB_TEMPLATE_EOF__" > "$dest"
+  local src="$1" dest="$2" content name
+  local missing=()
+
+  content="$(cat "$src")"
+
+  # A template asking for a variable the installer never set is a packaging bug.
+  # Refusing beats rendering a config with a blank password or an empty data
+  # directory, and naming the file and the variable beats `unbound variable`
+  # pointing at a line number inside the renderer.
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    [[ -n "${!name+set}" ]] || missing+=("$name")
+  done < <(cb_template_vars "$src")
+  if (( ${#missing[@]} > 0 )); then
+    cb_fail "Template ${src} needs variables the installer never set: ${missing[*]}" \
+            "This is a packaging bug — the template and deploy/setup.sh disagree"
+  fi
+
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    cb_replace_all content "\${$name}" "${!name}"
+  done < <(cb_template_vars "$src")
+
+  printf '%s\n' "$content" > "$dest"
 }
 
 cb_require_native_root() {
@@ -521,6 +625,18 @@ stage0_bootstrap_preflight() {
     fi
   done
 
+  # This preflight runs before stage2, so it is the first place an air-gapped
+  # install could quietly reach for a package mirror. It must not: report what
+  # is missing and stop, the same way cb_airgap_verify_dependencies does later.
+  if [[ "$need_install" == "true" ]] && [[ "$CB_AIRGAP" == "true" ]]; then
+    local _missing_core=()
+    for tool in curl jq openssl; do
+      command -v "$tool" &>/dev/null || _missing_core+=("$tool")
+    done
+    cb_fail "Air-gap install needs these before it can start, and they are not present: ${_missing_core[*]}" \
+            "Install them from your local mirror or media, then re-run — air-gap mode installs nothing"
+  fi
+
   if [[ "$need_install" == "true" ]]; then
     cb_step "Installing curl, jq, and openssl"
     if [[ "$PKG_MGR" == "apt-get" ]]; then
@@ -800,7 +916,12 @@ show_help() {
   echo "  --upgrade              Force upgrade mode even if install not detected"
   echo "  --force-deps           Force reinstall dependencies in upgrade mode"
   echo "  --docker               Compose-only deployment (installs Docker if missing)"
-  echo "  --skip-checksum        Skip SHA256 bundle verification (for air-gapped or local bundle use)"
+  echo "  --skip-checksum        Skip SHA256 bundle verification (for a local bundle you already trust)"
+  echo "  --airgap               Offline install: make no outbound request at all."
+  echo "                         Installs no packages, adds no repository, downloads"
+  echo "                         nothing. Requires --local-bundle and every dependency"
+  echo "                         already present; lists what is missing and stops."
+  echo "                         Also enabled by CB_AIRGAP=true in the environment."
   echo "  --help                 Show this help message"
   echo ""
   exit 0
@@ -844,6 +965,10 @@ while [[ $# -gt 0 ]]; do
       CB_LOCAL_BUNDLE="$2"
       shift 2
       ;;
+    --airgap)
+      CB_AIRGAP=true
+      shift
+      ;;
     --unattended)
       UNATTENDED=true
       shift
@@ -874,6 +999,34 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Air-gap mode promises no outbound request, and resolving a release from the
+# GitHub API is one. Checked here, before anything is created, so an operator who
+# forgot to stage a bundle is told immediately rather than after a user, a
+# directory tree and a set of secrets already exist on the host.
+if [[ "$CB_AIRGAP" == "true" ]] && [[ -z "$CB_LOCAL_BUNDLE" ]]; then
+  echo "  --airgap requires --local-bundle <path>." >&2
+  echo "  Air-gap mode downloads nothing, so the release tarball must already be" >&2
+  echo "  on this host. Copy circuit-breaker_<version>_linux_<arch>.tar.gz across" >&2
+  echo "  and re-run with --local-bundle /path/to/that/tarball." >&2
+  exit 1
+fi
+
+# Compose deployment is an outbound path by construction: it fetches the compose
+# files from raw.githubusercontent.com and `docker compose up -d` pulls images
+# from ghcr.io. There is no honest way to run it with no network, so refuse the
+# combination rather than run it and call the result air-gapped.
+if [[ "$CB_AIRGAP" == "true" ]] && [[ "$DOCKER_MODE" == "true" ]]; then
+  echo "  --airgap cannot be combined with --docker." >&2
+  echo "  Compose deployment downloads the compose files and pulls container" >&2
+  echo "  images, both of which air-gap mode forbids. Use the native install" >&2
+  echo "  (drop --docker) with --local-bundle, or mirror the images yourself" >&2
+  echo "  and run docker compose by hand." >&2
+  exit 1
+fi
+# Sourced setup.sh shares this shell, but exporting keeps the value consistent
+# for anything the installer runs as a child process.
+export CB_AIRGAP
 
 # Global vars set during execution
 PKG_MGR=""
@@ -935,16 +1088,32 @@ main() {
     CB_STAGE_HINTS=()
     CB_STAGE_DIAGS=()
 
-    CB_STAGE_HINTS=(
-      "Full log: tail -50 ${CB_DATA_DIR}/logs/install.log"
-      "Check internet: curl -I https://github.com"
-      "Retry with fresh deps: bash install.sh --force-deps"
-      "Manual package check: ${PKG_MGR} install -y postgresql-15 redis nginx pgbouncer"
-    )
-    CB_STAGE_DIAGS=(
-      "Install log (tail)::tail -n 50 ${LOG_FILE}"
-      "Network reachability::curl -sS -o /dev/null -w 'github.com -> HTTP %{http_code} in %{time_total}s\\n' -m 10 https://github.com"
-    )
+    # The dependency stage fails for opposite reasons in the two modes, and its
+    # diagnostics are executed, not just printed -- so the networked hints and
+    # the reachability probe must not arm in air-gap mode, where making that
+    # request would itself break the contract the flag promises.
+    if [[ "$CB_AIRGAP" == "true" ]]; then
+      CB_STAGE_HINTS=(
+        "Full log: tail -50 ${CB_DATA_DIR}/logs/install.log"
+        "Air-gap installs nothing: stage the listed packages from your local mirror or media, then re-run"
+        "The nats-server binary ships as the circuit-breaker-nats package published beside the release tarball"
+      )
+      CB_STAGE_DIAGS=(
+        "Install log (tail)::tail -n 50 ${LOG_FILE}"
+        "Dependencies found locally::for b in curl jq openssl git wget gpg lsof nc setcap pgbouncer redis-server nginx nmap nats-server pg_ctl; do printf '%-16s %s\\n' \"\$b\" \"\$(command -v \"\$b\" || echo MISSING)\"; done"
+      )
+    else
+      CB_STAGE_HINTS=(
+        "Full log: tail -50 ${CB_DATA_DIR}/logs/install.log"
+        "Check internet: curl -I https://github.com"
+        "Retry with fresh deps: bash install.sh --force-deps"
+        "Manual package check: ${PKG_MGR} install -y postgresql-15 redis nginx pgbouncer"
+      )
+      CB_STAGE_DIAGS=(
+        "Install log (tail)::tail -n 50 ${LOG_FILE}"
+        "Network reachability::curl -sS -o /dev/null -w 'github.com -> HTTP %{http_code} in %{time_total}s\\n' -m 10 https://github.com"
+      )
+    fi
     stage2_dependencies
     CB_STAGE_HINTS=()
     CB_STAGE_DIAGS=()

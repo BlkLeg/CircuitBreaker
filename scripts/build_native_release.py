@@ -478,6 +478,19 @@ def stage_bundle(
     if plist_template.exists():
         shutil.copy2(plist_template, share_dir / "com.blkleg.circuitbreaker.plist")
 
+    # The NATS pin, unguarded: deploy/setup.sh reads it to learn which broker
+    # version to fetch and which digest to check, and aborts the install when it
+    # cannot find one. Every other packaging/ file above is optional and copied
+    # `if exists`; this one is load-bearing for the tarball install path, so a
+    # missing pin must break the build here rather than ship a tarball that dies
+    # on the user's host at "Cannot find packaging/nats-server.pin".
+    #
+    # It goes in share/ rather than a new top-level packaging/ because share/ is
+    # already the directory install.sh copies wholesale into /opt/circuitbreaker.
+    # A bundle-only packaging/ would land nowhere: stage0_install_bundle copies
+    # the subdirectories it names and no others.
+    shutil.copy2(REPO_ROOT / "packaging" / "nats-server.pin", share_dir / "nats-server.pin")
+
     # Bundle installer infrastructure for curl-pipe / Proxmox installs
     deploy_src = REPO_ROOT / "deploy"
     deploy_dst = bundle_dir / "deploy"
@@ -504,6 +517,7 @@ def stage_bundle(
             "frontend": "share/frontend",
             "alembic_ini": "share/backend/alembic.ini",
             "migrations": "share/backend/migrations",
+            "nats_pin": "share/nats-server.pin",
             "deploy": "deploy",
             "installer": "install.sh",
             "agent_binaries": "agent-binaries",

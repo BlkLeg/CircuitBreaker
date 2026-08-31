@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# install.sh exports these before sourcing this file; they are repeated here so
+# that the ~30 package operations below cannot block on an invisible prompt if
+# this file is ever sourced by anything else. See the comment in install.sh for
+# why an interactive debconf or needrestart prompt is unrecoverable here: every
+# package command redirects to $LOG_FILE, so the question is asked where the
+# operator cannot see it and the install hangs with no output and no timeout.
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+export NEEDRESTART_SUSPEND=1
+
 cb_resolve_env_template() {
   local setup_dir
   setup_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,7 +31,14 @@ cb_resolve_env_template() {
 cb_resolve_nats_pin() {
   local setup_dir
   setup_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # share/ first: that is where a released install actually has the pin, because
+  # share/ is the one directory install.sh copies wholesale out of the bundle.
+  # The packaging/ paths below only ever resolve in a git checkout — they were
+  # the only two candidates in v0.4.0, which is why every tarball install failed
+  # here with the broker unprovisioned.
   local candidates=(
+    "/opt/circuitbreaker/share/nats-server.pin"
+    "${setup_dir}/../share/nats-server.pin"
     "/opt/circuitbreaker/packaging/nats-server.pin"
     "${setup_dir}/../packaging/nats-server.pin"
   )
@@ -82,8 +99,9 @@ NATS_AUTH_TOKEN=${CB_NATS_TOKEN}
 # ===== Application =====
 CB_PORT=${CB_PORT}
 CB_FQDN=${CB_FQDN}
-CB_APP_URL=http://${CB_FQDN:-$CB_DETECTED_IP}
+CB_APP_URL=http://${CB_APP_HOST}
 CB_ENV=production
+CB_AIRGAP=${CB_AIRGAP}
 EOF
   chmod 600 "$fallback_template"
   echo "$fallback_template"
@@ -286,6 +304,13 @@ stage1_bootstrap() {
     # CB_TLS_EMAIL. Exporting it here is what connects the two -- without it an operator
     # who passed --email is still told the email is unset when they request a certificate.
     export CB_EMAIL="${CB_EMAIL:-}"
+
+    # Computed here rather than written as shell into .env.template. The template
+    # renderer substitutes ${NAME} and nothing else — it does not evaluate its
+    # input — so a `$(date)` or a `${CB_FQDN:-$CB_DETECTED_IP}` in a template is
+    # now inert text. Anything that needs shell is worked out in the shell.
+    export CB_INSTALL_DATE="$(date)"
+    export CB_APP_HOST="${CB_FQDN:-$CB_DETECTED_IP}"
 
     local env_template_path
     if ! env_template_path="$(cb_resolve_env_template)"; then
@@ -792,6 +817,14 @@ stage3_configure_nginx() {
 
   # TLS certificate generation
   if [[ "$NO_TLS" == "false" ]]; then
+    # Let's Encrypt cannot be issued without reaching the ACME servers, and even
+    # the prerequisite check below is a DNS query off this host. Air-gap mode
+    # makes neither, so downgrade here and say so rather than probing.
+    if [[ "$CB_CERT_TYPE" == "letsencrypt" ]] && [[ "${CB_AIRGAP:-false}" == "true" ]]; then
+      cb_warn "Air-gap mode cannot reach an ACME server or resolve DNS — using a self-signed certificate"
+      CB_CERT_TYPE="self-signed"
+    fi
+
     if [[ "$CB_CERT_TYPE" == "letsencrypt" ]]; then
       if [[ -n "$CB_FQDN" ]] && [[ -n "$CB_EMAIL" ]]; then
         cb_step "Validating Let's Encrypt prerequisites for $CB_FQDN"
@@ -968,12 +1001,40 @@ stage3_configure_docker_proxy() {
 
   cb_section "Configuring Docker Socket Proxy"
 
-  # Pull the proxy image
-  cb_step "Pulling docker-socket-proxy image"
-  docker pull tecnativa/docker-socket-proxy:latest >> "$LOG_FILE" 2>&1 || \
-    cb_fail "Failed to pull docker-socket-proxy image" \
-            "Check: docker pull tecnativa/docker-socket-proxy"
-  cb_ok "Image pulled"
+  # Pull the proxy image. A failed pull degrades rather than aborts, which is
+  # what every other step of this optional feature already does: Docker not
+  # installed warns and returns (above), the Docker CE install "never lets a
+  # failure abort the installer", and a proxy that will not START warns and
+  # flips DOCKER_PROXY_ENABLED=false (stage8_start_services). Only the pull was
+  # fatal, so an unreachable registry failed an install whose core path never
+  # needed the image — and it is unreachable in ordinary conditions: an air-
+  # gapped host (CB_AIRGAP is a first-class deployment, not an edge case), an
+  # unauthenticated Docker Hub rate limit, or an egress-proxied network.
+  # Air-gap only reaches this stage when the image was already verified local,
+  # so there is nothing to pull and no request to make.
+  if [[ "${CB_AIRGAP:-false}" == "true" ]]; then
+    cb_ok "Using preloaded docker-socket-proxy image (air-gap: no pull)"
+  else
+    cb_step "Pulling docker-socket-proxy image"
+    if ! docker pull tecnativa/docker-socket-proxy:latest >> "$LOG_FILE" 2>&1; then
+      cb_warn "Could not pull docker-socket-proxy image — container telemetry disabled"
+      cb_warn "Enable it later: docker pull tecnativa/docker-socket-proxy && bash install.sh --upgrade"
+      # stage4 already wrote and enabled the unit on the strength of Docker being
+      # present; leaving it enabled would fail the unit on every boot for an image
+      # that is not there.
+      systemctl disable circuitbreaker-docker-proxy >> "$LOG_FILE" 2>&1 || true
+      DOCKER_AVAILABLE=false
+      if grep -q "^DOCKER_PROXY_ENABLED=" /etc/circuitbreaker/.env; then
+        sed -i 's/^DOCKER_PROXY_ENABLED=true/DOCKER_PROXY_ENABLED=false/' /etc/circuitbreaker/.env
+        sed -i 's|^DOCKER_HOST=tcp://127.0.0.1:2375|DOCKER_HOST=|' /etc/circuitbreaker/.env
+      else
+        printf '\n# ===== Docker socket proxy =====\nDOCKER_HOST=\nDOCKER_PROXY_ENABLED=false\n' \
+          >> /etc/circuitbreaker/.env
+      fi
+      return
+    fi
+    cb_ok "Image pulled"
+  fi
 
   # Write proxy allowlist env file — only permits read-only telemetry endpoints
   cb_step "Writing Docker proxy allowlist"
@@ -1342,7 +1403,7 @@ stage10_final_output() {
   fi
 
   echo -e "  ${YELLOW}${BOLD}⚠  SECURITY ADVISORY: CB_API_TOKEN is deprecated${RESET}"
-  echo -e "     Static bearer tokens via CB_API_TOKEN will be removed in v0.4.0."
+  echo -e "     Static bearer tokens via CB_API_TOKEN will be removed in v0.5.0."
   echo -e "     Migrate your scripts to Service Accounts (POST /api/v1/auth/service-account)."
   echo ""
   
@@ -1394,6 +1455,102 @@ https://download.docker.com/linux/${docker_distro} $(. /etc/os-release && echo "
   return 0
 }
 
+# Find an already-installed PostgreSQL 15 without adding a repository or
+# installing anything. The non-air-gap path learns PG_BIN_DIR by installing the
+# PGDG packages itself; air-gap has to discover what the operator staged.
+cb_airgap_find_pg_bin_dir() {
+  local candidate
+  for candidate in \
+    /usr/lib/postgresql/15/bin \
+    /usr/pgsql-15/bin \
+    /usr/local/pgsql/bin \
+    /usr/bin
+  do
+    if [[ -x "$candidate/pg_ctl" ]] && "$candidate/pg_ctl" --version 2>/dev/null | grep -q " 15"; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Air-gap dependency gate.
+#
+# In air-gap mode the installer installs nothing, so this is where the promise is
+# either kept or broken. It checks everything the non-air-gap path would have
+# installed and reports every missing piece at once with the package that
+# provides it — one list, one pass. Reporting them one at a time would make an
+# offline operator, who cannot simply re-run and let apt fix it, walk the same
+# loop once per dependency.
+cb_airgap_verify_dependencies() {
+  cb_section "Verifying Dependencies (air-gap)"
+  echo "    Air-gap mode: nothing will be installed or downloaded."
+
+  local missing=()
+  local tool
+
+  # Base tools. `nc` covers netcat-openbsd/nmap-ncat, whose binary name differs
+  # by distro; gpg covers gnupg/gnupg2 for the same reason.
+  for tool in curl jq openssl git wget gpg lsof nc setcap; do
+    command -v "$tool" &>/dev/null || missing+=("$tool")
+  done
+
+  # Services. nats-server has no distro package on Ubuntu 22.04 or Fedora, which
+  # is exactly why the circuit-breaker-nats companion package is published beside
+  # the tarball — name it explicitly rather than leaving the operator to guess.
+  for tool in pgbouncer redis-server nginx nmap nats-server; do
+    command -v "$tool" &>/dev/null || missing+=("$tool")
+  done
+
+  if ! PG_BIN_DIR="$(cb_airgap_find_pg_bin_dir)"; then
+    PG_BIN_DIR=""
+    missing+=("postgresql-15")
+  fi
+
+  if (( ${#missing[@]} > 0 )); then
+    cb_warn "Air-gap install needs these already present, and they are not:"
+    for tool in "${missing[@]}"; do
+      case "$tool" in
+        postgresql-15)
+          echo "      postgresql-15    — PostgreSQL 15 server + client (no other major version)" ;;
+        nats-server)
+          echo "      nats-server      — install the circuit-breaker-nats package published with this release" ;;
+        nc)
+          echo "      nc               — netcat-openbsd (deb/apk) or nmap-ncat (rpm)" ;;
+        gpg)
+          echo "      gpg              — gnupg2" ;;
+        setcap)
+          echo "      setcap           — libcap2-bin (deb) or libcap (rpm/apk/pacman)" ;;
+        redis-server)
+          echo "      redis-server     — redis (redis-server on deb)" ;;
+        *)
+          echo "      ${tool}" ;;
+      esac
+    done
+    cb_fail "Air-gap install cannot continue" \
+            "Install the packages above from your local mirror or media, then re-run"
+  fi
+
+  echo "    PostgreSQL: $PG_BIN_DIR"
+  echo "    NATS: $(command -v nats-server)"
+
+  # Container telemetry is optional everywhere. In air-gap it additionally
+  # requires the proxy image to be on the host already, because pulling it is an
+  # outbound request this mode does not make. Detecting rather than blanket-
+  # disabling means an operator who staged the image gets the feature.
+  if command -v docker &>/dev/null \
+     && docker image inspect tecnativa/docker-socket-proxy:latest &>/dev/null; then
+    DOCKER_AVAILABLE=true
+    echo "    Docker: present, docker-socket-proxy image already local"
+  else
+    DOCKER_AVAILABLE=false
+    cb_warn "Container telemetry disabled — air-gap needs Docker plus a preloaded"
+    cb_warn "tecnativa/docker-socket-proxy image (docker save/load it, then --upgrade)"
+  fi
+
+  cb_ok "All dependencies present — nothing installed, nothing downloaded"
+}
+
 cb_deps_present() {
   # Real presence check, not a flag — lets upgrade mode tell a genuinely
   # complete prior install (safe to skip) apart from a partial/broken one
@@ -1408,6 +1565,14 @@ cb_deps_present() {
 }
 
 stage2_dependencies() {
+  # Air-gap takes precedence over every other mode here: this whole function is
+  # package installs, repository keys and binary downloads, and in air-gap mode
+  # none of them may happen.
+  if [[ "${CB_AIRGAP:-false}" == "true" ]]; then
+    cb_airgap_verify_dependencies
+    return
+  fi
+
   if [[ "$UPGRADE_MODE" == "true" ]] && [[ "$FORCE_DEPS" == "false" ]]; then
     cb_section "Dependencies"
     if cb_deps_present; then
@@ -1701,12 +1866,20 @@ run_upgrade() {
 
   # Docker install + detection must run BEFORE stage4 writes conditional systemd units
   # (stage4 checks DOCKER_AVAILABLE to decide whether to write the docker-proxy unit)
+  # cb_try_install_docker_ce adds a repository and installs packages, so it is
+  # off the table in air-gap mode. An operator who wants container telemetry on
+  # an offline host installs Docker from their own mirror first; the upgrade
+  # then picks it up through the command -v check below.
   if [[ "$INSTALL_DOCKER" == "true" ]] && ! command -v docker &>/dev/null; then
-    cb_step "Installing Docker CE"
-    if cb_try_install_docker_ce; then
-      cb_ok "Docker CE installed"
+    if [[ "${CB_AIRGAP:-false}" == "true" ]]; then
+      cb_warn "Docker not installed — air-gap mode installs nothing, so container telemetry stays off"
     else
-      cb_warn "Docker installation failed — container telemetry will be unavailable"
+      cb_step "Installing Docker CE"
+      if cb_try_install_docker_ce; then
+        cb_ok "Docker CE installed"
+      else
+        cb_warn "Docker installation failed — container telemetry will be unavailable"
+      fi
     fi
   fi
 
@@ -1718,6 +1891,13 @@ run_upgrade() {
 
   # --- Caddy → Nginx migration (one-time) ---
   if ! command -v nginx &>/dev/null; then
+    # Nginx is not optional — it terminates TLS and fronts the API — so an
+    # air-gapped host without it cannot be upgraded silently into a broken
+    # state. Stop and say exactly what to install instead of reaching out.
+    if [[ "${CB_AIRGAP:-false}" == "true" ]]; then
+      cb_fail "Air-gap upgrade needs nginx already installed, and it is not" \
+              "Install nginx from your local mirror or media, then re-run this upgrade"
+    fi
     cb_step "Installing Nginx (replacing Caddy)"
     if [[ "$PKG_MGR" == "apt-get" ]]; then
       $PKG_MGR install -y -q nginx >> "$LOG_FILE" 2>&1
