@@ -74,6 +74,83 @@ cb_version() {
   cat /opt/circuitbreaker/share/VERSION 2>/dev/null || echo "installing"
 }
 
+# True when stdout is a terminal at least $1 columns wide.
+#
+# Call it directly, never as "$(cb_term_at_least ...)": command substitution
+# replaces stdout with a pipe, and then `-t 1` is false however wide the real
+# terminal is — which is how this check silently answered "too narrow"
+# everywhere the first time round.
+#
+# tput is asked first because `curl | sudo bash` leaves stdin a pipe and stdout
+# a terminal, which is the documented entry point and the case stty cannot
+# measure. stty covers the minimal images that ship no ncurses-bin. Neither is
+# ever written on a line of its own: without TERM tput exits non-zero, and
+# `set -e` would turn that into an install that dies before its first line.
+cb_term_at_least() {
+  local want="$1" cols=""
+  [[ -t 1 ]] || return 1
+  cols="$(tput cols 2>/dev/null || true)"
+  [[ -n "$cols" ]] || cols="$(stty size <&1 2>/dev/null | cut -d' ' -f2 || true)"
+  [[ -n "$cols" ]] || cols="${COLUMNS:-}"
+  [[ "$cols" =~ ^[0-9]+$ ]] || return 1
+  (( cols >= want ))
+}
+
+# The installer banner: a hooded figure at a desk, drawn as a foreground
+# silhouette over the topology view on the monitor behind it. 64 columns wide.
+#
+# printf '%s\n', not echo -e: the artwork is mostly backslashes and echo -e
+# would eat them as escape sequences, tearing holes in the picture. The colours
+# are therefore real escape characters ($'...') rather than the literal
+# '\033[...' strings the rest of this installer hands to echo -e.
+cb_logo() {
+  local orange=$'\033[38;5;209m'
+  local purple=$'\033[38;5;141m'
+  local violet=$'\033[38;5;99m'
+  local shade=$'\033[38;5;238m'
+  local dim=$'\033[2m'
+  local bold=$'\033[1m'
+  local reset=$'\033[0m'
+
+  printf '\n'
+  printf '%s\n' "          ${purple}.--------------------------------------------.${reset}"
+  printf '%s\n' "          ${purple}| ${dim}> topology --live          24 up  31 links ${purple}|${reset}"
+  printf '%s\n' "          ${purple}|                                            |${reset}"
+  printf '%s\n' "          ${purple}|    ${orange}o---o---o                  o---o---o    ${purple}|${reset}"
+  printf '%s\n' "          ${purple}|     ${orange}\\  |  /                    \\  |  /     ${purple}|${reset}"
+  printf '%s\n' "          ${purple}|        ${orange}o--------${violet}##########${orange}--------o        ${purple}|${reset}"
+  printf '%s\n' "          ${purple}|       ${orange}/      ${violet}#${shade}##############${violet}#      ${orange}\\       ${purple}|${reset}"
+  printf '%s\n' "          ${purple}|      ${orange}o     ${violet}#${shade}##################${violet}#     ${orange}o      ${purple}|${reset}"
+  printf '%s\n' "          ${purple}|     ${orange}/     ${violet}#${shade}####################${violet}#     ${orange}\\     ${purple}|${reset}"
+  printf '%s\n' "          ${purple}|    ${orange}o    ${violet}(#${shade}######################${violet}#)    ${orange}o    ${purple}|${reset}"
+  printf '%s\n' "          ${purple}|         ${violet}(#${shade}######################${violet}#)         ${purple}|   ${dim}~${reset}"
+  printf '%s\n' "          ${purple}'----------${violet}#${shade}######################${violet}#${purple}----------'  ${dim}(_)${reset}"
+  printf '%s\n' "  ${dim}------------------${violet}#${shade}########################${violet}#${dim}------------------${reset}"
+  printf '%s\n' "                   ${violet}============================${reset}"
+  printf '%s\n' "              ${violet}#${shade}####################################${violet}#${reset}"
+  printf '%s\n' "          ${violet}#${shade}############################################${violet}#${reset}"
+  printf '%s\n' "        ${violet}#${shade}################################################${violet}#${reset}"
+  printf '%s\n' "       ${violet}#${shade}##################################################${violet}#${reset}"
+  printf '\n'
+  printf '%s\n' "${bold}${orange}                  C I R C U I T _ B R E A K E R${reset}"
+
+  # cb_version reports "installing" on a fresh host, where "Installer
+  # installing" is not a version line worth printing.
+  local ver sub
+  ver="$(cb_version)"
+  if [[ "$ver" == "installing" ]]; then
+    ver=""
+  fi
+  sub="Installer"
+  if [[ -n "$ver" ]]; then
+    sub="Installer  v${ver}"
+  fi
+  # 66, not the 64 columns of ink: the figure is centred on a 66-wide canvas,
+  # and these two lines have to sit under its axis rather than under the
+  # widest row.
+  printf '%*s%s%s%s\n\n' "$(( (66 - ${#sub}) / 2 ))" "" "${dim}" "$sub" "${reset}"
+}
+
 cb_header() {
   # `clear` exits 1 when TERM is unset, and under `set -e` that aborts the whole
   # installer before it has printed a single line — the least diagnosable failure
@@ -81,6 +158,15 @@ cb_header() {
   # --unattended exists for: Proxmox LXC provisioning, cloud-init, Ansible, CI,
   # and `ssh host 'bash install.sh'` without -t.
   clear 2>/dev/null || true
+
+  # cb_logo needs 64 columns. Narrower than that and every line of it wraps into
+  # rubble; a piped or TTY-less install has no width to ask about at all. Both
+  # fall back to the box, which fits in 46.
+  if cb_term_at_least 66; then
+    cb_logo
+    return 0
+  fi
+
   echo -e "${CYAN}${BOLD}"
   echo "  ╔══════════════════════════════════════════╗"
   echo "  ║         Circuit Breaker Installer        ║"
