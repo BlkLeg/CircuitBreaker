@@ -44,8 +44,8 @@ TEST_WORKFLOWS = ("ci.yml", "dev-ci.yml")
 # Jobs that execute a suite, and therefore owe evidence. Keyed by workflow so a
 # job renamed in one file cannot silently drop the requirement in the other.
 EVIDENCE_OWING_JOBS = {
-    "ci.yml": ("lint", "backend-tests", "test", "browser-e2e"),
-    "dev-ci.yml": ("lint", "backend-tests", "test"),
+    "ci.yml": ("lint", "backend-tests", "fresh-install-migrations", "test", "browser-e2e"),
+    "dev-ci.yml": ("lint", "backend-tests", "fresh-install-migrations", "test"),
 }
 
 

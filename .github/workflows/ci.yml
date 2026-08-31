@@ -319,6 +319,120 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # ── Fresh-install migrations ─────────────────────────────────────────────────
+  # Nothing in this repo ran `alembic upgrade head` against an empty database.
+  # Both pytest conftests build their schema with Base.metadata.create_all(),
+  # and tests/integration/conftest.py sets CB_AUTO_MIGRATE=false on top, so the
+  # path every real install takes was exercised only on a user's machine. That
+  # shipped a v0.4.0 whose backend could not start: 0001_init bootstraps a fresh
+  # schema straight from live app.db.models, and 0105_backup_age_recipient then
+  # re-added a column that bootstrap had already created.
+  #
+  # Separate from backend-tests rather than folded into it, for two reasons that
+  # are both about the database. That job shards apps/backend/tests only —
+  # tests/build/backend_shard.py enumerates that directory, so tests/integration
+  # is invisible to it — and it takes its database from a testcontainer that the
+  # session fixture has already populated with create_all(). This check needs
+  # one it can create, drop, and start genuinely empty.
+  #
+  # Artifact Smoke does not cover this either. It installs the candidate .deb on
+  # a clean host and asserts version, shipped files and broker resolution, but
+  # never starts the service, so no migration runs there.
+  fresh-install-migrations:
+    name: Fresh-install migrations
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: cb_ci
+          POSTGRES_PASSWORD: cb_ci
+          POSTGRES_DB: cb_ci
+        ports:
+          - 5432:5432
+        # Health-gated because the step below gets one attempt: the fixture
+        # connects to create its scratch database and fails the job if it
+        # cannot, which is the correct behaviour for a real fault and a flake
+        # for a container that is merely still booting.
+        options: >-
+          --health-cmd "pg_isready -U cb_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Python deps
+        run: |
+          python3.12 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e "apps/backend/[dev]"
+
+      - name: Record the run manifest
+        run: |
+          mkdir -p artifacts/junit artifacts/logs artifacts/diagnostics
+          {
+            echo "commit=${GITHUB_SHA}"
+            echo "workflow=${GITHUB_WORKFLOW}"
+            echo "job=fresh-install-migrations"
+            echo "runner=${RUNNER_OS}/${RUNNER_ARCH}"
+            echo "python=$(.venv/bin/python -V 2>&1)"
+            echo "postgres=postgres:16 (service container)"
+            echo "PYTHONHASHSEED=${PYTHONHASHSEED}"
+            echo "CB_TEST_SEED=${CB_TEST_SEED}"
+          } | tee artifacts/run-manifest.txt
+
+      # Invoked the way `make test-backend` invokes it: from apps/backend, with
+      # the path passed explicitly. pytest takes its rootdir from the argument,
+      # so /pytest.ini governs this run — which is where `filterwarnings = error`
+      # lives, and why the backend's own --cov-fail-under does not apply to a
+      # two-test file.
+      #
+      # No frontend build and no Redis or NATS: the fixture talks to PostgreSQL
+      # and runs alembic in a subprocess. CB_ALLOW_DEGRADED_DEPENDENCIES matches
+      # the Makefile so importing app.main at collection time does not demand a
+      # broker this job has no reason to run.
+      - name: Fresh-install migration chain
+        shell: bash
+        env:
+          CB_TEST_DB_URL: postgresql://cb_ci:cb_ci@127.0.0.1:5432/cb_ci
+          CB_ALLOW_DEGRADED_DEPENDENCIES: "true"
+          CB_ALLOW_DIRECT_EGRESS: "true"
+        run: |
+          cd apps/backend
+          PYTHONPATH=src ../../.venv/bin/pytest \
+            ../../tests/integration/test_fresh_install_migration_chain.py \
+            --junitxml="${GITHUB_WORKSPACE}/artifacts/junit/fresh-install-migrations.xml" \
+            -p no:cacheprovider \
+            2>&1 | tee "${GITHUB_WORKSPACE}/artifacts/logs/fresh-install-migrations.log"
+
+      # What the server still holds after the run. On a failure the scratch
+      # database is the thing to look at, and the fixture drops it on the way
+      # out, so this records what survived rather than requiring a re-run.
+      - name: Collect database diagnostics
+        if: always()
+        env:
+          PGPASSWORD: cb_ci
+        run: |
+          mkdir -p artifacts/diagnostics
+          psql -h 127.0.0.1 -U cb_ci -d postgres -c '\l' \
+            > artifacts/diagnostics/databases.txt 2>&1 || true
+          docker ps -a > artifacts/diagnostics/containers.txt 2>&1 || true
+
+      - name: Upload fresh-install evidence
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: fresh-install-migrations
+          path: artifacts/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
   test:
     name: Test
     runs-on: ubuntu-22.04
