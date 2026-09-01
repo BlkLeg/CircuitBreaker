@@ -29,10 +29,13 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: down through every call signature.
 request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
 
-#: The header this middleware reads from an inbound request and sets on every
-#: outgoing response.
+#: The canonical spelling of this header — the one other modules (and, per
+#: the phase-2 route, Task 2's frontend) should reference or document,
+#: e.g. in a CORS `allow_headers` list or a docstring. `_REQUEST_ID_HEADER_BYTES`
+#: below is derived from it and is what is actually read from the ASGI scope
+#: and written onto the wire, since ASGI header names are lower-cased.
 REQUEST_ID_HEADER = "X-Request-ID"
-_REQUEST_ID_HEADER_BYTES = b"x-request-id"  # ASGI scope/response headers are lower-cased
+_REQUEST_ID_HEADER_BYTES = REQUEST_ID_HEADER.lower().encode("latin-1")
 
 #: An inbound value is echoed back only when it satisfies this: at most 64
 #: characters from a safe charset. Anything else (a newline, a control

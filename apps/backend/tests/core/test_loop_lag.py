@@ -28,6 +28,15 @@ def _family_names(exposition_text: str) -> set[str]:
     return names
 
 
+def _metric_value(exposition_text: str, name: str) -> float:
+    """The value of an unlabelled series (a bare `name value` line)."""
+    prefix = f"{name} "
+    for line in exposition_text.splitlines():
+        if line.startswith(prefix):
+            return float(line[len(prefix) :])
+    raise AssertionError(f"{name!r} not found in exposition:\n{exposition_text}")
+
+
 async def _run_sampler_briefly() -> asyncio.Task:
     task = asyncio.create_task(slo_metrics.run_event_loop_lag_sampler())
     # Let it complete at least one full 100ms sample cycle.
@@ -44,13 +53,25 @@ async def _cancel_and_await(task: asyncio.Task) -> None:
 
 
 async def test_the_sampler_records_a_sample_onto_the_gauge_and_histogram():
-    before_count = slo_metrics.event_loop_lag_seconds_hist._sum.get()  # type: ignore[attr-defined]
+    """Asserts on the histogram's *observation count*, not its sum: a
+    healthy sample's lag is ~0.0, so the sum barely moves even when the
+    sampler runs — the count is the only series that provably distinguishes
+    "the sampler ran" from "the sampler never ran"."""
+    before_count = _metric_value(
+        slo_metrics.exposition().decode(), "circuitbreaker_event_loop_lag_seconds_hist_count"
+    )
     task = await _run_sampler_briefly()
     try:
         gauge_value = slo_metrics.event_loop_lag_seconds._value.get()  # type: ignore[attr-defined]
         assert gauge_value >= 0.0
-        after_count = slo_metrics.event_loop_lag_seconds_hist._sum.get()  # type: ignore[attr-defined]
-        assert after_count >= before_count  # the histogram gained at least one observation
+
+        after_count = _metric_value(
+            slo_metrics.exposition().decode(), "circuitbreaker_event_loop_lag_seconds_hist_count"
+        )
+        assert after_count > before_count, (
+            "the histogram's observation count did not increase — the sampler "
+            "may not have recorded anything"
+        )
     finally:
         await _cancel_and_await(task)
 
