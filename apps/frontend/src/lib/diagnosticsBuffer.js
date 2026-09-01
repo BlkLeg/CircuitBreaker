@@ -88,6 +88,14 @@ function createRing(capacity) {
 const requestRing = createRing(CAPACITY);
 const navRing = createRing(CAPACITY);
 
+// Route-chunk fetches get their own ring for the same reason navs do: there are
+// at most ~25 of them in the app's whole lifetime (one per lazy route, plus
+// retries), and they are the single most load-bearing record in §4.4's decision
+// tree — its first YES branch is "chunk fetch pending/failed at wedge time".
+// Sharing a ring with requests would let ordinary polling evict the one record
+// that separates H1 from H4.
+const chunkRing = createRing(CAPACITY);
+
 function nowIso() {
   try {
     return new Date().toISOString();
@@ -202,10 +210,79 @@ export function closeNav(id, updates) {
   }
 }
 
-/** Returns a snapshot array of retained entries (both kinds), oldest first / newest last. */
+// A unique id per chunk entry, so `closeChunk` can find its record by identity
+// the way `closeNav` does rather than holding a reference across an await.
+let chunkIdCounter = 0;
+function nextChunkId() {
+  chunkIdCounter += 1;
+  return `chunk-${chunkIdCounter}`;
+}
+
+/**
+ * Opens one lazy-route chunk fetch with `pending: true` and an `id`.
+ *
+ * Route §4.2 asks for exactly this ("wrap `React.lazy` in a helper that records
+ * fetch start/settle per chunk") because §4.4 cannot otherwise be walked: its
+ * first YES branch, and the whole of hypothesis H1, turn on whether the chunk
+ * for the incoming route was still in flight when the page wedged. A `pending`
+ * chunk entry sitting beside a `pending` nav entry is what confirms H1; a
+ * settled chunk entry beside the same pending nav rules it out and points at
+ * H4 or the framer-motion exit instead.
+ *
+ * @param {object} entry
+ * @param {string} [entry.chunk] The route/component name, never a URL.
+ * @returns {object|undefined} The stored entry (carries `id`), or undefined on failure.
+ */
+export function recordChunk(entry) {
+  try {
+    const safeEntry = {
+      kind: 'chunk',
+      id: nextChunkId(),
+      seq: nextSeq(),
+      timestamp: nowIso(),
+      chunk: entry?.chunk != null ? String(entry.chunk) : 'unknown',
+      pending: true,
+      durationMs: null,
+      status: 'pending',
+      attempt: typeof entry?.attempt === 'number' ? entry.attempt : 1,
+    };
+    return chunkRing.push(safeEntry);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Settles a previously-opened chunk entry by id, if it is still retained.
+ *
+ * @param {string} id
+ * @param {object} [updates]
+ * @param {'loaded'|'failed'} [updates.status]
+ * @param {number} [updates.durationMs]
+ * @param {string} [updates.error] Error *name* only — never a message, which
+ *   can carry a URL with a query string.
+ * @returns {boolean} Whether the entry was still present and updated.
+ */
+export function closeChunk(id, updates) {
+  try {
+    const entry = chunkRing.findById(id);
+    if (!entry) return false;
+    if (typeof updates?.durationMs === 'number') entry.durationMs = updates.durationMs;
+    if (updates?.status === 'loaded' || updates?.status === 'failed') {
+      entry.status = updates.status;
+    }
+    if (updates?.error != null) entry.error = String(updates.error);
+    entry.pending = false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Returns a snapshot array of retained entries (all kinds), oldest first / newest last. */
 export function getEntries() {
   try {
-    const merged = [...navRing.entries(), ...requestRing.entries()];
+    const merged = [...navRing.entries(), ...requestRing.entries(), ...chunkRing.entries()];
     merged.sort((a, b) => (a?.seq ?? 0) - (b?.seq ?? 0));
     return merged;
   } catch {
@@ -213,11 +290,12 @@ export function getEntries() {
   }
 }
 
-/** Clears all retained entries (both kinds). */
+/** Clears all retained entries (all kinds). */
 export function clearEntries() {
   try {
     requestRing.clear();
     navRing.clear();
+    chunkRing.clear();
   } catch {
     // Diagnostics must never throw into a caller.
   }

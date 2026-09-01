@@ -19,6 +19,7 @@ import LoginPage from './pages/LoginPage';
 import OOBEWizardPage from './pages/OOBEWizardPage';
 import { useDiscoveryStream, discoveryEmitter } from './hooks/useDiscoveryStream.js';
 import { useNavigationTiming, useNavigationMountSignal } from './hooks/useNavigationTiming.js';
+import { lazyRoute } from './lib/lazyRoute.js';
 import { connectSSE, disconnectSSE } from './lib/sseClient.js';
 import ConnectionStatus from './components/ConnectionStatus.jsx';
 import MasqueradeBanner from './components/MasqueradeBanner.jsx';
@@ -41,34 +42,42 @@ export function DiscoveryHistoryRedirect() {
   return <Navigate to={{ pathname: '/discovery', search }} replace />;
 }
 
-// Heavy pages lazy-loaded so their chunks are only downloaded when first visited.
-const DocsPage = React.lazy(() => import('./pages/DocsPage'));
-const SettingsPage = React.lazy(() => import('./pages/SettingsPage'));
-const MapPage = React.lazy(() => import('./pages/MapPage'));
-const DiscoveryPage = React.lazy(() => import('./pages/DiscoveryPage'));
-const HardwarePage = React.lazy(() => import('./pages/HardwarePage'));
-const ComputeUnitsPage = React.lazy(() => import('./pages/ComputeUnitsPage'));
-const ServicesPage = React.lazy(() => import('./pages/ServicesPage'));
-const StoragePage = React.lazy(() => import('./pages/StoragePage'));
-const LogsPage = React.lazy(() => import('./pages/LogsPage'));
-const ExternalNodesPage = React.lazy(() => import('./pages/ExternalNodesPage'));
-const AdminUsersPage = React.lazy(() => import('./pages/AdminUsersPage'));
-const AccessTokensPage = React.lazy(() => import('./pages/AccessTokensPage'));
-const UserActionsPage = React.lazy(() => import('./pages/UserActionsPage'));
-const InviteAcceptPage = React.lazy(() => import('./pages/InviteAcceptPage'));
-const ForceChangePasswordPage = React.lazy(() => import('./pages/ForceChangePasswordPage'));
-const ResetPasswordPage = React.lazy(() => import('./pages/ResetPasswordPage'));
-const VaultResetPage = React.lazy(() => import('./pages/VaultResetPage.jsx'));
-const IPAMPage = React.lazy(() => import('./pages/IPAMPage'));
+// Heavy pages lazy-loaded so their chunks are only downloaded when first
+// visited. `lazyRoute` is `React.lazy` plus the per-chunk fetch record route
+// §4.2 asks for and a single retry on a failed import — see lib/lazyRoute.js
+// for why both live in one wrapper. Do not reintroduce a bare `React.lazy`
+// here: a route without a chunk record is a hole in §4.4's decision tree, and
+// tests/build has a check that fails the build for one.
+const DocsPage = lazyRoute('DocsPage', () => import('./pages/DocsPage'));
+const SettingsPage = lazyRoute('SettingsPage', () => import('./pages/SettingsPage'));
+const MapPage = lazyRoute('MapPage', () => import('./pages/MapPage'));
+const DiscoveryPage = lazyRoute('DiscoveryPage', () => import('./pages/DiscoveryPage'));
+const HardwarePage = lazyRoute('HardwarePage', () => import('./pages/HardwarePage'));
+const ComputeUnitsPage = lazyRoute('ComputeUnitsPage', () => import('./pages/ComputeUnitsPage'));
+const ServicesPage = lazyRoute('ServicesPage', () => import('./pages/ServicesPage'));
+const StoragePage = lazyRoute('StoragePage', () => import('./pages/StoragePage'));
+const LogsPage = lazyRoute('LogsPage', () => import('./pages/LogsPage'));
+const ExternalNodesPage = lazyRoute('ExternalNodesPage', () => import('./pages/ExternalNodesPage'));
+const AdminUsersPage = lazyRoute('AdminUsersPage', () => import('./pages/AdminUsersPage'));
+const AccessTokensPage = lazyRoute('AccessTokensPage', () => import('./pages/AccessTokensPage'));
+const UserActionsPage = lazyRoute('UserActionsPage', () => import('./pages/UserActionsPage'));
+const InviteAcceptPage = lazyRoute('InviteAcceptPage', () => import('./pages/InviteAcceptPage'));
+const ForceChangePasswordPage = lazyRoute(
+  'ForceChangePasswordPage',
+  () => import('./pages/ForceChangePasswordPage')
+);
+const ResetPasswordPage = lazyRoute('ResetPasswordPage', () => import('./pages/ResetPasswordPage'));
+const VaultResetPage = lazyRoute('VaultResetPage', () => import('./pages/VaultResetPage.jsx'));
+const IPAMPage = lazyRoute('IPAMPage', () => import('./pages/IPAMPage'));
 
-const CertificatesPage = React.lazy(() => import('./pages/CertificatesPage'));
-const MonitorsPage = React.lazy(() => import('./pages/MonitorsPage'));
-const MonitorDetailPage = React.lazy(() => import('./pages/MonitorDetailPage'));
-const AgentsPage = React.lazy(() => import('./pages/AgentsPage'));
-const AgentDetailPage = React.lazy(() => import('./pages/AgentDetailPage'));
-const PrivacyPage = React.lazy(() => import('./pages/PrivacyPage'));
-const NotificationsPage = React.lazy(() => import('./pages/NotificationsPage'));
-const IntelPage = React.lazy(() => import('./pages/IntelPage'));
+const CertificatesPage = lazyRoute('CertificatesPage', () => import('./pages/CertificatesPage'));
+const MonitorsPage = lazyRoute('MonitorsPage', () => import('./pages/MonitorsPage'));
+const MonitorDetailPage = lazyRoute('MonitorDetailPage', () => import('./pages/MonitorDetailPage'));
+const AgentsPage = lazyRoute('AgentsPage', () => import('./pages/AgentsPage'));
+const AgentDetailPage = lazyRoute('AgentDetailPage', () => import('./pages/AgentDetailPage'));
+const PrivacyPage = lazyRoute('PrivacyPage', () => import('./pages/PrivacyPage'));
+const NotificationsPage = lazyRoute('NotificationsPage', () => import('./pages/NotificationsPage'));
+const IntelPage = lazyRoute('IntelPage', () => import('./pages/IntelPage'));
 
 function AppInner() {
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -147,6 +156,7 @@ function AppInner() {
             <AnimatePresence mode="wait">
               <motion.div
                 key={location.pathname}
+                data-route-path={location.pathname}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}

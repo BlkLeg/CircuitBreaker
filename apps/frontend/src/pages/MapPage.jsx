@@ -77,9 +77,10 @@ export { MapEdgeCallbacksContext, MapViewOptionsContext };
 import MapToolbar from '../components/MapToolbar';
 // Sigma (WebGL renderer) is only used when useSigma=true; lazy-load to defer
 // ~100 KB of sigma/graphology parsing until the user explicitly enables WebGL mode.
-const SigmaMap = React.lazy(() => import('../components/map/SigmaMap'));
+const SigmaMap = lazyRoute('SigmaMap', () => import('../components/map/SigmaMap'));
 import { groupNodesIntoCloud, restoreFromCloudView } from '../utils/cloudView';
 import { viewportFit } from '../utils/viewportFit';
+import { lazyRoute } from '../lib/lazyRoute';
 
 // ── Extracted modules ────────────────────────────────────────────────────────
 import {
