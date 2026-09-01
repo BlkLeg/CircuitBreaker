@@ -104,6 +104,7 @@ from app.middleware.csrf import CSRFMiddleware
 from app.middleware.legacy_token import LegacyTokenMiddleware
 from app.middleware.logging_middleware import LoggingMiddleware
 from app.middleware.rate_limit_middleware import TenantRateLimitMiddleware
+from app.middleware.request_id import RequestIdMiddleware, install_request_id_log_filter
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.tenant_middleware import TenantMiddleware
 
@@ -134,6 +135,11 @@ class _OAuthScrubFilter(logging.Filter):
 
 logging.getLogger("uvicorn.access").addFilter(_OAuthScrubFilter())
 install_global_log_redaction()
+# Task 1b (observability phase 2): attaches record.request_id to every log
+# record on the same logger set redaction runs on. A parallel installer, not
+# a change to install_global_log_redaction — redaction keeps running exactly
+# as before, this adds a filter alongside it rather than replacing one.
+install_request_id_log_filter()
 
 _DOCS_SEED_FILENAME = "DocsPage.md"
 _ALEMBIC_INI_FILENAME = "alembic.ini"
@@ -1552,6 +1558,18 @@ async def lifespan(app: FastAPI):
     except Exception:
         _logger.warning("Discovery readiness logging failed at startup", exc_info=True)
 
+    # ── Task 1c: event-loop lag sampler (observability phase 2) ────────────
+    # A 100ms sleep loop is free, so this runs by default. Appended to
+    # _worker_tasks so the cancel-and-gather shutdown below stops it the same
+    # way it stops the update-check loop — return_exceptions=True there means
+    # a cancelled or failed sampler never raises into this lifespan.
+    if os.environ.get("CB_LOOP_LAG_SAMPLER", "true").strip().lower() not in {"false", "0", "no"}:
+        from app.core.slo_metrics import run_event_loop_lag_sampler
+
+        _worker_tasks.append(asyncio.create_task(run_event_loop_lag_sampler()))
+    else:
+        _logger.info("[lifecycle] event loop lag sampler disabled via CB_LOOP_LAG_SAMPLER=false")
+
     set_state(ServerState.READY)
     _logger.info("[lifecycle] server state → READY")
 
@@ -1698,11 +1716,17 @@ app.add_middleware(WriteAdmissionMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(TenantRateLimitMiddleware)
 app.add_middleware(TenantMiddleware)
-# RC-05: the availability and latency indicators. Added last, so it is the
-# outermost layer and measures what a client actually experienced — including
-# the time spent in every middleware above, and responses they produce
-# themselves (a rate-limit 429, a readiness 503).
+# RC-05: the availability and latency indicators. Measures what a client
+# actually experienced — including the time spent in every middleware above,
+# and responses they produce themselves (a rate-limit 429, a readiness 503).
 app.add_middleware(HttpMetricsMiddleware)
+# Task 1a (observability phase 2): correlates a browser navigation with the
+# server work it caused. Added last of all, so it is now the true outermost
+# layer — including outside HttpMetricsMiddleware — because the request ID
+# must exist before anything else runs: a request ID minted inside the
+# metrics layer could never appear in the metrics layer's own log lines, or
+# in any log line any middleware above emits while handling this request.
+app.add_middleware(RequestIdMiddleware)
 
 # ── Global error handlers ──────────────────────────────────────────────────
 

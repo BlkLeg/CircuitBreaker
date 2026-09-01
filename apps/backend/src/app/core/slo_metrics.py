@@ -30,10 +30,14 @@ survive across scrapes.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 from typing import TYPE_CHECKING
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
+
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -52,6 +56,19 @@ _HEALTH_STATES = ("starting", "ready", "degraded", "not_ready", "stopping")
 _LATENCY_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
 
 _UNMATCHED_ROUTE = "unmatched"
+
+#: Task 1c (observability phase 2): buckets small enough to distinguish a
+#: healthy loop (sub-millisecond) from one that is starting to starve, since
+#: this histogram exists specifically to answer "how blocked does it get",
+#: not just "is it blocked".
+_LOOP_LAG_BUCKETS = (0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0)
+
+#: How often the sampler in `run_event_loop_lag_sampler` sleeps between
+#: samples, and therefore also the sleep duration the observed lag is measured
+#: against. A 100ms cadence is cheap enough to run unconditionally in
+#: production and fine-grained enough to catch a blocking call in the seconds
+#: after it starts.
+_LOOP_LAG_SAMPLE_INTERVAL_SECONDS = 0.1
 
 http_requests_total = Counter(
     "circuitbreaker_http_requests_total",
@@ -95,6 +112,19 @@ process_uptime_seconds = Gauge(
     registry=REGISTRY,
 )
 
+event_loop_lag_seconds = Gauge(
+    "circuitbreaker_event_loop_lag_seconds",
+    "Most recently observed asyncio event loop scheduling lag, in seconds",
+    registry=REGISTRY,
+)
+
+event_loop_lag_seconds_hist = Histogram(
+    "circuitbreaker_event_loop_lag_seconds_hist",
+    "Distribution of observed asyncio event loop scheduling lag, in seconds",
+    buckets=_LOOP_LAG_BUCKETS,
+    registry=REGISTRY,
+)
+
 _PROCESS_START = time.monotonic()
 
 for _state in _HEALTH_STATES:
@@ -121,6 +151,41 @@ def record_job_run(job_id: str, outcome: str) -> None:
 
 def refresh_process_gauges() -> None:
     process_uptime_seconds.set(time.monotonic() - _PROCESS_START)
+
+
+def record_loop_lag(lag_seconds: float) -> None:
+    """Record one event-loop-lag sample onto both the gauge and the histogram."""
+    event_loop_lag_seconds.set(lag_seconds)
+    event_loop_lag_seconds_hist.observe(lag_seconds)
+
+
+async def run_event_loop_lag_sampler() -> None:
+    """Sample asyncio event-loop scheduling lag until cancelled.
+
+    Sleeps for `_LOOP_LAG_SAMPLE_INTERVAL_SECONDS` and measures how much
+    longer the sleep actually took than requested with
+    `time.perf_counter()` — the amount of time the loop spent doing something
+    else instead of waking this task on schedule, which is a direct measure
+    of whether the event loop is being blocked by synchronous work.
+
+    Meant to run as a background `asyncio.Task` for the life of the process
+    (started from the FastAPI lifespan in `main.py`). Cancellation is the
+    normal way to stop it: `asyncio.CancelledError` is deliberately not
+    caught here, so `task.cancel()` followed by `await task` behaves exactly
+    like cancelling any other task and the caller decides how to swallow it.
+    Any other exception is logged and the loop continues — a broken sampler
+    must not take the rest of the process down with it, and must not stop
+    producing samples over one bad measurement.
+    """
+    while True:
+        started = time.perf_counter()
+        await asyncio.sleep(_LOOP_LAG_SAMPLE_INTERVAL_SECONDS)
+        try:
+            elapsed = time.perf_counter() - started
+            lag = max(0.0, elapsed - _LOOP_LAG_SAMPLE_INTERVAL_SECONDS)
+            record_loop_lag(lag)
+        except Exception as exc:  # noqa: BLE001 - a broken sampler must not crash the process
+            _logger.warning("[slo_metrics] event loop lag sample failed: %s", exc)
 
 
 def exposition() -> bytes:
