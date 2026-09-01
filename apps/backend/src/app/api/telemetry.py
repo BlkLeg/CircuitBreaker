@@ -8,6 +8,7 @@ from typing import Annotated, Any, cast
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.core.audit import log_audit
 from app.core.rate_limit import get_limit, limiter
@@ -29,6 +30,11 @@ router = APIRouter(tags=["telemetry"])
 _DEVICE_TIMEOUT_ENV = "CB_TELEMETRY_DEVICE_TIMEOUT_SECONDS"
 _DEFAULT_DEVICE_TIMEOUT_SECONDS = 20
 _MIN_DEVICE_TIMEOUT_SECONDS = 5
+
+# Cap on ids accepted by GET /telemetry/batch (H5). The map's fallback poll
+# chunks its due-node set to this size, so raising it changes both sides of
+# one contract; keep it a named constant rather than a literal in two places.
+_TELEMETRY_BATCH_MAX_IDS = 50
 
 
 def _device_timeout_seconds() -> int:
@@ -103,6 +109,101 @@ async def get_telemetry(
     if hw is None:
         raise HTTPException(status_code=404, detail="Hardware not found")
     return await get_telemetry_for_hardware(hardware_id, db)
+
+
+def _parse_batch_hardware_ids(raw: str) -> list[int]:
+    """Parse the ``hardware_ids`` query param into a de-duplicated int list.
+
+    Anything that is not a clean comma-separated list of positive integers —
+    empty, whitespace-only, or containing a non-numeric token — is a 400. That
+    keeps a malformed value from either surfacing as a generic 422 or, worse,
+    silently resolving to an empty/partial id set.
+    """
+    stripped = raw.strip()
+    if not stripped:
+        raise HTTPException(status_code=400, detail="hardware_ids must not be empty.")
+
+    ids: list[int] = []
+    seen: set[int] = set()
+    for token in stripped.split(","):
+        candidate = token.strip()
+        if not candidate.isdigit():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "hardware_ids must be a comma-separated list of positive integers; "
+                    f"got {candidate!r}."
+                ),
+            )
+        parsed_id = int(candidate)
+        if parsed_id not in seen:
+            seen.add(parsed_id)
+            ids.append(parsed_id)
+    return ids
+
+
+def _visible_hardware_ids(db: Session, hardware_ids: list[int]) -> set[int]:
+    """Return the subset of *hardware_ids* the current caller may see.
+
+    This is the batch endpoint's per-id authorization boundary, and it is the
+    same check the single-node ``GET /{hardware_id}/telemetry`` route performs
+    on its own `hardware_id` before calling `get_telemetry_for_hardware` —
+    existence. An id the caller may not see and an id that simply does not
+    exist both land here as "not visible", and both are omitted from the
+    batch response the identical way, so the endpoint cannot be used to probe
+    which ids exist versus which are forbidden.
+
+    Deliberately one query (`IN`) rather than N round trips — see the module
+    docstring note on batching — but the membership test below is still
+    applied per id: nothing here authorizes the request as a whole and then
+    hands back every id that was asked for.
+
+    This runs the blocking `Session` work off the event loop via
+    `run_in_threadpool` at the call site; kept synchronous here so the
+    threadpool wrapping stays in one obvious place.
+    """
+    rows = db.query(Hardware.id).filter(Hardware.id.in_(hardware_ids)).all()
+    return {row[0] for row in rows}
+
+
+@router.get("/telemetry/batch", response_model=dict[int, TelemetryResponse])
+@limiter.limit(lambda: get_limit("telemetry_batch"))
+async def get_telemetry_batch(
+    request: Request,
+    response: Response,
+    hardware_ids: str,
+    db: Annotated[Session, Depends(get_db)],
+    _user_id: int = Depends(require_auth_always),
+) -> dict[int, TelemetryResponse]:
+    """One request for N nodes' telemetry (H5).
+
+    Mounted twice like every other route on this router (main.py), so this
+    path is chosen to be unreachable as `/{hardware_id}/telemetry` under
+    either mount: `hardware_id` is typed `int` and "telemetry" cannot parse as
+    one, so this route's own first segment never matches that pattern.
+
+    Returns the same `TelemetryResponse` shape the single-node endpoint
+    returns, keyed by hardware id, so the frontend needs one parser for both.
+    An id the caller may not see, or that does not exist, is omitted from the
+    mapping rather than failing the whole batch — see `_visible_hardware_ids`.
+    """
+    ids = _parse_batch_hardware_ids(hardware_ids)
+    if len(ids) > _TELEMETRY_BATCH_MAX_IDS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"hardware_ids accepts at most {_TELEMETRY_BATCH_MAX_IDS} ids; got {len(ids)}."
+            ),
+        )
+
+    visible_ids = await run_in_threadpool(_visible_hardware_ids, db, ids)
+
+    result: dict[int, TelemetryResponse] = {}
+    for hardware_id in ids:
+        if hardware_id not in visible_ids:
+            continue
+        result[hardware_id] = await get_telemetry_for_hardware(hardware_id, db)
+    return result
 
 
 @router.post("/{hardware_id}/telemetry/config")
