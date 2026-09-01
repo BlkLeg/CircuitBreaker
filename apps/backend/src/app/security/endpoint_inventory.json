@@ -1,6 +1,6 @@
 {
   "generated_by": "apps/backend/scripts/generate_endpoint_inventory.py",
-  "route_count": 435,
+  "route_count": 437,
   "routes": [
     {
       "auth_policy": "authenticated",
@@ -4416,6 +4416,26 @@
     {
       "auth_policy": "authenticated",
       "dependency_calls": [
+        "app.api.telemetry.get_telemetry_batch",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.telemetry",
+      "endpoint_name": "get_telemetry_batch",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_telemetry_batch",
+      "path": "/api/v1/hardware/telemetry/batch",
+      "rbac_policy": "authenticated-session",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
         "app.api.hardware.delete_hardware",
         "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
@@ -8188,6 +8208,26 @@
       "name": "get_entity_telemetry",
       "path": "/api/v1/telemetry/entity/{entity_type}/{entity_id}",
       "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.telemetry.get_telemetry_batch",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.telemetry",
+      "endpoint_name": "get_telemetry_batch",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_telemetry_batch",
+      "path": "/api/v1/telemetry/telemetry/batch",
+      "rbac_policy": "authenticated-session",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
