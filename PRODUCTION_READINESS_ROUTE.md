@@ -30,7 +30,7 @@ This route deliberately builds on the verification program the repo already has 
 |---|---|---|
 | Monitor scheduling lag | < shortest supported poll interval, sustained at Tier C workload (§5) | Defensible now (assessment) |
 | Topology load p95 | < ~2 s at 500 entities | Defensible now (assessment) |
-| Navigation wedge rate | To be set from the §4 repro harness; provisional ambition: 0 wedges / 500 navigations under the contention scenario | **Needs runtime validation** — but no longer needs a harness built first: two in-tree Playwright specs now reproduce it on ordinary CI runners (§4, 2026-08-30) |
+| Navigation wedge rate | Provisional ambition: 0 wedges / 500 navigations under the contention scenario | **Measured 2026-09-01: 12 / 30 (40%) at 6× CPU throttle**, all leaving `/map`, all on the H1 branch. `make nav-wedge` reproduces it; the number is the before-baseline R1 has to move |
 | Event-loop lag p99 | To be set after the loop-lag gauge exists; collect 4 weeks at Tier B/C before fixing | Needs measurement |
 | Backup restore | Every release rehearses a full restore from an encrypted snapshot in Tier 3 | Procedural, no number needed |
 | Background-job failure visibility | 0 silent poison-message loops: every JetStream max-deliver exhaustion produces an operator-visible record | Procedural | 
@@ -113,6 +113,78 @@ Four phases, ordered by risk reduction and dependency. Scoring model per work it
 
 ### Phase 2 — Instrument, reproduce navigation stickiness, baseline
 
+#### Implementation progress (updated 2026-09-01, revised after a verification pass)
+
+A verification pass against the checkout on 2026-09-01 found that three of these
+items were checked on work that could not do what was claimed. The corrections are
+recorded here rather than silently amended, because in each case the *shape* of the
+mistake — an instrument reporting a clean number it had no way to measure — is the
+thing worth not repeating.
+
+- [x] Request correlation, slow-query correlation, event-loop-lag metrics, and the
+  browser diagnostics/navigation ring buffer are implemented and covered.
+  **Corrected:** `longTaskTotalMs` was totalled at close while the stored
+  `longTasks` array kept growing (the observer callback fires after the task it
+  reports), so a captured nav read `longTasks: [123ms, 122ms], longTaskTotalMs: 0`.
+  §4.4 branches on "longtask >1s present". The entry now stores a copy and the
+  observer stops attributing to a closed nav.
+- [x] Per-chunk fetch telemetry (§4.2) now exists — it did not before. All 28 lazy
+  imports go through `lib/lazyRoute.js`, which records fetch start/settle per chunk
+  and retries a failed import once before the ErrorBoundary. Without it §4.4's first
+  YES branch ("chunk fetch pending/failed at wedge time") was unobservable, so H1
+  could only ever be reached by elimination. `tests/build/test_chunk_telemetry_contract.py`
+  forbids a bare `React.lazy` from reappearing.
+- [x] H5, H6, and H7 are fixed: map fallback telemetry is batched, lifecycle
+  health requires consecutive failures, and map-tab loading has an error path.
+- [x] The nav-critical handlers run their blocking sections off the event loop.
+  **Corrected:** `get_telemetry_for_hardware` — which the new batch endpoint calls
+  once per id, up to 50 — still ran two synchronous `Session` reads on the loop, so
+  the batch endpoint added more on-loop database work than slice 2.5 removed. The
+  old T0 test could not see it: it asserted `run_in_threadpool` appeared somewhere
+  in the handler. The rule is now the absence of the thing that blocks — no direct
+  `Session` call in an async nav-path function — and it covers the service function
+  too.
+- [x] The A/B/C load generator, safe prefix-scoped seed/cleanup, JSON result
+  contract, non-blocking target evaluation, Make target, and nightly retained-
+  evidence workflow are implemented. Deferred agent/telemetry axes are named in
+  every result rather than silently omitted. **Corrected, three ways:** the scrape
+  path was `/api/v1/metrics`, which 404s (the route is `/api/v1/metrics/metrics`,
+  documented as a trap in `docs/metrics.md`), so every server-side field was null in
+  every report; the `db_pool` block read two metric names the backend never
+  exported, and those gauges plus a `pool_timeout` counter now exist; and the
+  nightly job ran Tiers A and B only, while **both** defensible §5 targets are Tier C
+  claims — it archived `applicable: false` for both, nightly. The job now runs A, B
+  and C, the HTTP driver is paced to the tier's stated concurrency instead of
+  hammering, WS clients verify their handshake instead of sleeping through a refused
+  subscription, and `tests/build/` pins the scrape path, the tier loop, and that
+  every metric read is one the backend exports.
+- [x] The opt-in Chromium 6× CPU navigation harness is implemented and excluded from
+  normal browser shards. **The earlier result is withdrawn.** That harness navigated
+  by `history.pushState` plus a synthetic `PopStateEvent`, and located the rendered
+  route as the first child `div` of `.page-content` — which is the update banner or
+  the Suspense fallback whenever either is showing. Its own evidence file contained
+  **no nav entry at all** for either wedged target, so the claim that both failures
+  "left the requested navigation pending" was not what the data showed. The harness
+  now clicks real dock `<NavLink>`s, finds the route by `[data-route-path]`, proves
+  the URL moved before judging anything, and classifies each wedge into a §4.4 branch.
+- [x] **Wedge reproduced and localized, 2026-09-01.** 30 navigations at 6× CPU
+  throttle: **12 wedges (40%), 0 harness failures, 0 loading fallbacks.** All 12 took
+  the same branch — the URL advanced through a real `navigate()` but `useLocation`
+  never updated, so the route tree never re-rendered, the lazy import never started,
+  and the outgoing page stayed at opacity 1. That is H1's mechanism (react-router v7
+  wraps `navigate()` in `React.startTransition`; React withholds a transition's
+  location update from every consumer until it can commit without a fallback),
+  reached by positive evidence rather than by elimination. **Every one of the 12 was
+  a navigation away from `/map`; none of the 18 navigations from other routes
+  wedged** — consistent with `known_bugs` item 1's note that leaving the React Flow
+  canvas is what wedges. Note that §4.4's literal H1 test ("chunk fetch pending at
+  wedge time") reads *false* here, because the import never starts; the decision tree
+  needs that branch added.
+- [ ] Runtime baseline evidence still requires the scheduled run. The harness defects
+  above mean no previously recorded baseline carries server-side numbers. The
+  workflow's supported Python 3.12 environment is the source of record; its first
+  `workflow_dispatch` is the evidence, and it is now capable of producing one.
+
 **Objective:** measurement exists before optimization; the one user-visible quality symptom is root-caused and the verified adjacent defects are fixed. **Risk addressed:** flying blind; a flagship UI that feels broken.
 **Findings:** F18, F12 (nav-critical subset), plus the §4 verified defects. **Complexity: M.**
 
@@ -177,7 +249,7 @@ Both failed again on retry. Neither ran under contention — these are ordinary 
 
 | # | Hypothesis | Status | Mechanism evidence |
 |---|---|---|---|
-| H1 | Router `startTransition` + lazy route suspension keeps the old page on screen with no fallback while a chunk request stalls → the exact observed wedge shape | **Plausible** (mechanism Verified in code; causation unproven) | `App.jsx:44-70,137-154`; React 18 transition semantics; matches known_bugs shape and its "vanishes when DevTools network listeners attach" timing sensitivity |
+| H1 | Router `startTransition` + lazy route suspension keeps the old page on screen with no fallback → the exact observed wedge shape | **Confirmed** (2026-09-01, 12/30 navigations at 6× throttle) | `App.jsx:44-70,137-154`; the harness records the URL advancing through a real `navigate()` while `useLocation` never updates, so the route tree never re-renders and the lazy import never starts. Note the refinement: the chunk is not *stalled*, it is never *requested* — React withholds the transition's location update from every consumer, so §4.4's "chunk fetch pending" test reads false while the mechanism is still H1's. Every observed instance was a navigation away from `/map`, matching known_bugs item 1 |
 | H2 | Backend event-loop blocking makes chunk/API responses slow enough to expose H1: all request auth runs sync on the loop (`core/security.py:596-602` → per-request `db.get(AppSettings,1)` + sync Redis MGET; Redis down ⇒ full DB validation per request), plus 48 sync-Session `async def` endpoints, several on the nav path (`api/discovery.py:220` "always compute fresh", `api/capabilities.py:24`, `api/agents.py:426`), ×2 uvicorn workers | **Plausible** (pattern Verified; contribution needs runtime validation) | Matches "only reproduces under CPU contention" |
 | H3 | Shell re-render storm: `useDiscoveryStream()` lives in `AppInner`, which renders Header + the whole `Routes` subtree; per-host `result_added` events and reconnect flaps re-render the mounted page including ReactFlow | **Plausible** (Verified mechanism; wedge causation unproven) | `App.jsx:81`, `useDiscoveryStream.js:100-102,246-252,316-335` |
 | H4 | Main-thread blocking around `/map`: synchronous dagre layout (`utils/layouts.js:143`), ELK non-worker fallback (`vite.config.ts:41-46`), heaviest unmount on exit — known_bugs notes "navigating away from the rendered React Flow canvas is what wedges" | **Plausible** (Verified mechanism) | 8 memo sites in 3,019 lines; 27 effects |
@@ -213,6 +285,10 @@ Wedge reproduced?
 │   check nav ring buffer p95 → dominated by API time? → server side (below)
 │                              → dominated by longtasks? → H4: profile /map unmount + dagre
 ├─ YES → inspect the wedged navigation's ring buffer entry:
+│   ├─ NO nav entry for the target, but the URL advanced → the router's location
+│   │   update never reached useLocation: H1 CONFIRMED (this is the branch all 12
+│   │   observed wedges took on 2026-09-01; the lazy import never starts, so the
+│   │   chunk test below reads false) → R1
 │   ├─ chunk fetch pending/failed at wedge time → H1 CONFIRMED → R1
 │   ├─ chunk resolved, mount never ran, longtask >1s present → H4 → R4
 │   ├─ chunk resolved, React committed but old tree visible → framer-motion exit

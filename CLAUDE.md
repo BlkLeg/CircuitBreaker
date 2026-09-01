@@ -47,6 +47,9 @@ may assume internet access.
   modules. All HTTP goes through the axios client in `src/api/client.jsx` — no inline
   `fetch`. Always render loading and error states.
 - **API**: snake_case JSON, errors as `{"detail": "..."}`, correct HTTP codes.
+- **Secrets**: never hardcode credentials, tokens, signing material, JWT secrets, or
+  vault keys — including in CI workflows, tests, examples, and fixtures. Generate
+  ephemeral values at runtime or inject them through the platform's secret store.
 - **Commits**: `feat:` / `fix:` / `chore:` / `docs:`.
 
 ## Before pushing
