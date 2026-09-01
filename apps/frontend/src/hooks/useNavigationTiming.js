@@ -45,7 +45,7 @@ function longtaskObserverSupported() {
 // `path` below means a stale close from an abandoned navigation (the user
 // clicked twice before the first one's chunk resolved) can't clobber the one
 // that superseded it.
-let openNav = null; // { id, path, startTime, longTasks }
+let openNav = null; // { id, path, startTime, longTasks, closed }
 
 /**
  * Marks the start and end of every route navigation and records a `'nav'`
@@ -70,7 +70,16 @@ export function useNavigationTiming() {
     if (!longtaskObserverSupported()) return undefined;
     try {
       const observer = new PerformanceObserver((list) => {
-        if (!openNav) return;
+        // `closed` is the whole reason this guard exists. The observer callback
+        // is queued by the browser and runs *after* the task it is reporting,
+        // which routinely lands after the navigation it belongs to has already
+        // mounted and closed. Without this, those late entries were pushed into
+        // the array the closed entry had already been handed, so a recorded nav
+        // could read `longTasks: [123ms, 122ms], longTaskTotalMs: 0` — the total
+        // snapshotted at close, the list still growing afterwards. §4.4's
+        // decision tree branches on "longtask > 1s present", so an inconsistent
+        // pair there is instrumentation that misdirects the investigation.
+        if (!openNav || openNav.closed) return;
         for (const perfEntry of list.getEntries()) {
           if (perfEntry.startTime < openNav.startTime) continue;
           openNav.longTasks.push({ startTime: perfEntry.startTime, duration: perfEntry.duration });
@@ -96,7 +105,7 @@ export function useNavigationTiming() {
     const startTime = nowMs();
     safeMark(`nav:start:${path}`);
     const entry = recordNav({ path, pending: true });
-    openNav = entry ? { id: entry.id, path, startTime, longTasks: [] } : null;
+    openNav = entry ? { id: entry.id, path, startTime, longTasks: [], closed: false } : null;
   }, [location.pathname]);
 }
 
@@ -134,8 +143,13 @@ export function useNavigationMountSignal() {
     if (!nav || nav.path !== path) return;
     safeMark(`nav:end:${path}`);
     const durationMs = nowMs() - nav.startTime;
-    const longTaskTotalMs = nav.longTasks.reduce((sum, t) => sum + (t.duration || 0), 0);
-    closeNav(nav.id, { durationMs, longTasks: nav.longTasks, longTaskTotalMs });
+    // Copy, then total the copy. The stored entry must not keep a reference to
+    // an array anything else can still append to, or the two fields drift apart
+    // the moment a long task is reported late (see the observer above).
+    const longTasks = nav.longTasks.slice();
+    const longTaskTotalMs = longTasks.reduce((sum, task) => sum + (task.duration || 0), 0);
+    nav.closed = true;
+    closeNav(nav.id, { durationMs, longTasks, longTaskTotalMs });
     // Intentionally no cleanup: this effect fires exactly once per fresh
     // mount (a new component instance every navigation, via the ancestor's
     // `key`), and `closeNav` is itself idempotent/safe to call once.
