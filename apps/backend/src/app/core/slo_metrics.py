@@ -125,6 +125,45 @@ event_loop_lag_seconds_hist = Histogram(
     registry=REGISTRY,
 )
 
+# ── Connection-pool saturation (route §5: "DB pool utilization + pool_timeout
+# events") ─────────────────────────────────────────────────────────────────
+# These live here rather than in `app.api.metrics` because the timeout counter
+# has to survive across scrapes, and splitting a pool's utilization gauges from
+# its exhaustion counter across two registries would mean reading two different
+# exposition blocks to answer one question. The gauges are refreshed from the
+# live engine pool in `exposition()`, so they are point-in-time reads that
+# happen to be published from the process-lifetime registry.
+
+db_pool_size = Gauge(
+    "circuitbreaker_db_pool_size",
+    "Configured size of the synchronous SQLAlchemy connection pool",
+    registry=REGISTRY,
+)
+
+db_pool_checked_out = Gauge(
+    "circuitbreaker_db_pool_checked_out",
+    "Connections currently checked out of the synchronous pool",
+    registry=REGISTRY,
+)
+
+db_pool_checked_in = Gauge(
+    "circuitbreaker_db_pool_checked_in",
+    "Connections currently idle in the synchronous pool",
+    registry=REGISTRY,
+)
+
+db_pool_overflow = Gauge(
+    "circuitbreaker_db_pool_overflow",
+    "Overflow connections beyond the configured pool size (negative until the pool is full)",
+    registry=REGISTRY,
+)
+
+db_pool_timeouts_total = Counter(
+    "circuitbreaker_db_pool_timeouts_total",
+    "Requests that failed because the connection pool did not free a slot within pool_timeout",
+    registry=REGISTRY,
+)
+
 _PROCESS_START = time.monotonic()
 
 for _state in _HEALTH_STATES:
@@ -151,6 +190,43 @@ def record_job_run(job_id: str, outcome: str) -> None:
 
 def refresh_process_gauges() -> None:
     process_uptime_seconds.set(time.monotonic() - _PROCESS_START)
+
+
+def record_db_pool_timeout() -> None:
+    """Count one connection-pool exhaustion (`pool_timeout` elapsed)."""
+    db_pool_timeouts_total.inc()
+
+
+def refresh_db_pool_gauges() -> None:
+    """Read the live pool's occupancy onto the gauges, best-effort.
+
+    Imported lazily because `app.db.session` builds the engine at import time
+    and raises when `CB_DB_URL` is unset — a metrics scrape must not be what
+    turns a configuration problem into an import error, and `core` must not
+    take a load-time dependency on `db`.
+
+    Only `QueuePool` keeps occupancy counters. A `NullPool` — which some test
+    configurations substitute — has nothing to report, and the gauges are left
+    at whatever they last held rather than being zeroed: an unmeasurable pool is
+    not an empty one, and publishing zeros would be a false reading.
+    """
+    try:
+        from sqlalchemy.pool import QueuePool
+
+        from app.db.session import engine
+
+        pool = engine.pool
+        if not isinstance(pool, QueuePool):
+            _logger.debug(
+                "[slo_metrics] %s does not expose occupancy counters", type(pool).__name__
+            )
+            return
+        db_pool_size.set(pool.size())
+        db_pool_checked_out.set(pool.checkedout())
+        db_pool_checked_in.set(pool.checkedin())
+        db_pool_overflow.set(pool.overflow())
+    except Exception as exc:  # noqa: BLE001 - a scrape must never fail on instrumentation
+        _logger.warning("[slo_metrics] db pool gauge refresh failed: %s", exc)
 
 
 def record_loop_lag(lag_seconds: float) -> None:
@@ -193,6 +269,7 @@ def exposition() -> bytes:
     from prometheus_client import generate_latest
 
     refresh_process_gauges()
+    refresh_db_pool_gauges()
     return generate_latest(REGISTRY)
 
 

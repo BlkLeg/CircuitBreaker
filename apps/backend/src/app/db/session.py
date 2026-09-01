@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from sqlalchemy import MetaData, create_engine, event
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import settings
@@ -167,12 +168,33 @@ class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=naming_convention)
 
 
+def _count_if_pool_timeout(exc: BaseException) -> None:
+    """Record a pool exhaustion on the way past, then leave the exception alone.
+
+    `pool_timeout=5` above makes exhaustion fail fast rather than block, which
+    turns a saturated pool into a burst of 500s that looks like an application
+    fault unless it is counted somewhere. Both session entry points funnel their
+    failures through here so route §5's "pool_timeout events" has a single
+    source, and so the count is not silently missing from whichever of the two
+    a future caller happens to use.
+
+    `SQLAlchemyTimeoutError` is the pool's own exhaustion error, distinct from
+    the builtin `TimeoutError` and from a statement timeout raised by the
+    server. Anything else is somebody else's failure and is not counted.
+    """
+    if isinstance(exc, SQLAlchemyTimeoutError):
+        from app.core.slo_metrics import record_db_pool_timeout
+
+        record_db_pool_timeout()
+
+
 def get_db() -> Generator[Session, None, None]:
     """FastAPI dependency: yields a database session and ensures cleanup."""
     db = SessionLocal()
     try:
         yield db
-    except Exception:
+    except Exception as exc:
+        _count_if_pool_timeout(exc)
         db.rollback()
         raise
     finally:
@@ -188,7 +210,8 @@ def get_session_context() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
         yield db
-    except Exception:
+    except Exception as exc:
+        _count_if_pool_timeout(exc)
         db.rollback()
         raise
     finally:
