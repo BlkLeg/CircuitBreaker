@@ -2992,11 +2992,22 @@ export default function MapPage() {
     maps,
     activeMapId,
     loading: mapsLoading,
+    error: mapsError,
+    retry: retryMaps,
     switchMap,
     createMap,
     renameMap,
     deleteMap,
   } = useMapTabs();
+
+  if (mapsError) {
+    return (
+      <div style={{ padding: 32, color: 'var(--text-muted)' }}>
+        <p>Could not load maps. Check your connection and try again.</p>
+        <button onClick={retryMaps}>Retry</button>
+      </div>
+    );
+  }
 
   if (mapsLoading || activeMapId == null) {
     return <div style={{ padding: 32, color: 'var(--text-muted)' }}>Loading maps…</div>;
