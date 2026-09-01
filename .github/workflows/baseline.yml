@@ -1,0 +1,93 @@
+name: Nightly performance baseline
+
+# Measurement only: this scheduled workflow establishes a trailing baseline;
+# Phase 4 decides when enough history exists to make regression limits blocking.
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    timeout-minutes: 45
+    env:
+      CB_REDIS_URL: redis://127.0.0.1:6379/0
+      CB_NATS_URL: nats://127.0.0.1:4222
+      CB_ALLOW_DIRECT_EGRESS: "true"
+      CB_ALLOW_DEGRADED_DEPENDENCIES: "true"
+      CB_AUTO_MIGRATE: "true"
+      CB_DATA_DIR: /tmp/cb-baseline
+      PYTHONPATH: apps/backend/src
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install backend
+        run: pip install -e "apps/backend/[dev]"
+      - name: Generate ephemeral secrets and start dependencies
+        shell: bash
+        run: |
+          db_password=$(openssl rand -hex 24)
+          jwt_secret=$(openssl rand -hex 32)
+          vault_key=$(openssl rand -base64 32 | tr -d '\n')
+          baseline_password="Aa1!$(openssl rand -hex 16)"
+          echo "CB_DB_URL=postgresql://breaker:${db_password}@127.0.0.1:5432/circuitbreaker_loadgen" >> "$GITHUB_ENV"
+          echo "CB_JWT_SECRET=${jwt_secret}" >> "$GITHUB_ENV"
+          echo "CB_VAULT_KEY=${vault_key}" >> "$GITHUB_ENV"
+          echo "CB_BASELINE_PASSWORD=${baseline_password}" >> "$GITHUB_ENV"
+          docker run -d --name baseline-postgres --network host \
+            -e POSTGRES_USER=breaker -e POSTGRES_PASSWORD="$db_password" \
+            -e POSTGRES_DB=circuitbreaker_loadgen postgres:16-alpine
+          docker run -d --name baseline-redis --network host redis:7-alpine
+          docker run -d --name baseline-nats --network host nats:2.10-alpine -js
+          for i in $(seq 1 30); do
+            docker exec baseline-postgres pg_isready -U breaker -d circuitbreaker_loadgen && break
+            sleep 1
+          done
+      - name: Migrate and start API
+        run: |
+          cd apps/backend
+          alembic upgrade head
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 > ../../artifacts-baseline-server.log 2>&1 &
+          CB_TOPOLOGY_MODE=worker python -m app.workers.main --type=monitor_scheduler > ../../artifacts-monitor-scheduler.log 2>&1 &
+          CB_TOPOLOGY_MODE=worker python -m app.workers.main --type=monitor_poll > ../../artifacts-monitor-poll.log 2>&1 &
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8000/api/v1/livez && break; sleep 1; done
+      - name: Bootstrap baseline operator
+        id: auth
+        run: |
+          setup_token=$(tr -d '\r\n' < /tmp/cb-baseline/bootstrap-setup-token)
+          token=$(curl -fsS -H 'Content-Type: application/json' -d "{\"setup_token\":\"$setup_token\",\"email\":\"baseline@example.test\",\"password\":\"$CB_BASELINE_PASSWORD\",\"theme_preset\":\"gruvbox-dark\"}" http://127.0.0.1:8000/api/v1/bootstrap/initialize | python -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+      # All three tiers, not just A and B. Route §5's two defensible targets are
+      # both Tier C claims — topology load "at 500 entities" and monitor lag "at
+      # Tier C" — so a nightly job that stops at B evidences neither of them, and
+      # every `targets` block it archives reads `applicable: false`.
+      - name: Run Tier A, B and C baselines
+        env:
+          CB_LOADGEN_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          mkdir -p artifacts/baselines
+          for tier in A B C; do
+            python scripts/loadgen/seed.py seed --tier "$tier" --db-url "$CB_DB_URL"
+            python scripts/loadgen/run.py --tier "$tier" --duration 120 --token "$CB_LOADGEN_TOKEN" --output "artifacts/baselines/${tier}.json"
+            python scripts/loadgen/seed.py cleanup --tier "$tier" --db-url "$CB_DB_URL"
+          done
+      - name: Baseline summary
+        if: always()
+        run: python scripts/loadgen/summarize.py artifacts/baselines >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload baseline evidence
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: phase2-baselines
+          path: |
+            artifacts/baselines/
+            artifacts-baseline-server.log
+            artifacts-monitor-*.log
+          retention-days: 30

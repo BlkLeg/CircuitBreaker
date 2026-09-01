@@ -246,7 +246,15 @@ security-check: ## Run security scans (gate mode — fails on HIGH/CRIT)
 security-report: ## Run full security scan report (non-blocking)
 	./scripts/security_scan.sh
 
-.PHONY: lint format test test-db test-backend test-frontend security-check security-report verify-fast verify verify-full verify-fleet verify-fleet-upgrade
+.PHONY: lint format test test-db test-backend test-frontend security-check security-report verify-fast verify verify-full verify-fleet verify-fleet-upgrade loadgen nav-wedge
+
+loadgen: ## Seed and run a non-blocking Phase-2 baseline (TIER=A, CB_LOADGEN_TOKEN required)
+	$(CURDIR)/.venv/bin/python scripts/loadgen/seed.py seed --tier "$(or $(TIER),A)" --db-url "$(CB_TEST_DB_URL)"
+	$(CURDIR)/.venv/bin/python scripts/loadgen/run.py --tier "$(or $(TIER),A)" --token "$(CB_LOADGEN_TOKEN)" --output "artifacts/baselines/$$(date -u +%Y%m%dT%H%M%SZ)-$(or $(TIER),A).json"
+	$(CURDIR)/.venv/bin/python scripts/loadgen/seed.py cleanup --tier "$(or $(TIER),A)" --db-url "$(CB_TEST_DB_URL)"
+
+nav-wedge: ## Opt-in Chromium navigation wedge-rate run (NAV_WEDGE_REPEATS defaults to 30)
+	cd $(FRONTEND_DIR) && npx playwright test --project=nav-wedge
 
 # This target is NOT `scripts/ci/tier0-static.sh`, and that is deliberate
 # rather than an oversight: lint-staged (root package.json) runs `make lint`
@@ -262,6 +270,12 @@ security-report: ## Run full security scan report (non-blocking)
 lint: ## Run backend and frontend linters (fast subset for pre-commit; see comment)
 	cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/ruff check src/app
 	cd $(BACKEND_DIR) && PYTHONPATH=src $(CURDIR)/.venv/bin/mypy src/app
+# The load generator lives outside src/app and so escaped both gates entirely
+# until it was added here. It is the instrument the Phase 2 baselines are read
+# from; an untyped, unlinted measurement tool is the one place a silent mistake
+# is hardest to notice, because its output is a number nobody can check by eye.
+	$(CURDIR)/.venv/bin/ruff check scripts/loadgen
+	MYPYPATH=$(CURDIR):$(BACKEND_DIR)/src $(CURDIR)/.venv/bin/mypy --explicit-package-bases scripts/loadgen
 	cd $(FRONTEND_DIR) && npm run lint
 
 format: ## Format backend and frontend code
