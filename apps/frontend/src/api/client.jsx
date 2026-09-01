@@ -186,8 +186,14 @@ client.interceptors.response.use(
       return client(config);
     }
 
-    // Single auto-retry for 429 after retry-after delay (before surfacing to user)
-    if (error.response?.status === 429 && !config._retried429) {
+    // Single auto-retry for 429 after retry-after delay (before surfacing to user).
+    // Background pollers (e.g. the map's telemetry batch poll) opt out via
+    // `_noRateLimitRetry`: a hidden multi-second sleep inside the client is
+    // the wrong handler for those callers — they already run their own
+    // per-node backoff and need the 429 immediately to drive it. The opt-out
+    // only skips this sleep-and-retry; the `status === 429` branch further
+    // down still runs and still records exactly one ring-buffer entry.
+    if (error.response?.status === 429 && !config._retried429 && !config._noRateLimitRetry) {
       const retryAfter = Number.parseInt(error.response.headers?.['retry-after'] || '5', 10);
       config._retried429 = true;
       await new Promise((r) => setTimeout(r, retryAfter * 1000));
@@ -518,6 +524,18 @@ export const telemetryApi = {
   pollNow: (id) => client.post(`/hardware/${id}/telemetry/poll`).then((r) => r.data),
   getEntity: (entityType, entityId) =>
     client.get(`/telemetry/entity/${entityType}/${entityId}`).then((r) => r.data),
+  // H5: one request for N nodes instead of one per node. `_noRateLimitRetry`
+  // opts this background-poll call out of the client's silent Retry-After
+  // sleep on 429 — the caller's own backoff (useMapRealTimeUpdates) is the
+  // right handler, and it needs the 429 immediately to drive that backoff
+  // rather than have it hidden inside a multi-second sleep here.
+  getBatch: (ids) =>
+    client
+      .get('/hardware/telemetry/batch', {
+        params: { hardware_ids: ids.join(',') },
+        _noRateLimitRetry: true,
+      })
+      .then((r) => r.data),
 };
 
 export const categoriesApi = {

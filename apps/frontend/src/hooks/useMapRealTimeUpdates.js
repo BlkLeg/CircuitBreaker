@@ -92,6 +92,13 @@ export function useMapRealTimeUpdates({
   }, [setNodes, nodesRef, unmountedRef, telemetryConnected]);
 
   // Fallback: telemetry polling with exponential backoff (only when WS telemetry is NOT connected)
+  //
+  // H5: this used to fan one HTTP request out per due node (Promise.allSettled
+  // over telemetryApi.get(n._refId)). At >=8 nodes that alone wanted more
+  // requests/minute than the "telemetry" rate-limit budget allows, and every
+  // node is due on mount, so the first tick fired one burst per node. Batched
+  // via telemetryApi.getBatch() instead: one request per chunk of due nodes,
+  // chunked at the batch endpoint's own id cap.
   useEffect(() => {
     if (telemetryConnected) return;
 
@@ -100,6 +107,11 @@ export function useMapRealTimeUpdates({
     const LOOP_DELAY = 5_000;
     const PAUSE_AFTER_ERRORS = 3;
     const PAUSE_WINDOW = 5 * 60 * 1000;
+    // Mirrors _TELEMETRY_BATCH_MAX_IDS in apps/backend/src/app/api/telemetry.py —
+    // GET /hardware/telemetry/batch rejects a request over this many ids with
+    // a 400, so a due set larger than this is split across multiple batched
+    // calls rather than sent as one oversized one.
+    const TELEMETRY_BATCH_MAX_IDS = 50;
 
     // Node-level state
     const nextPollAt = {};
@@ -109,6 +121,70 @@ export function useMapRealTimeUpdates({
     const unconfiguredNodes = new Set();
 
     let timer = null;
+
+    const applyNodeError = (n, status) => {
+      const currentBackoff = backoffByNode[n.id] ?? BASE_DELAY;
+      const nextBackoff = Math.min(Math.round(currentBackoff * 1.5), MAX_DELAY);
+      backoffByNode[n.id] = nextBackoff;
+      nextPollAt[n.id] = Date.now() + nextBackoff;
+      errorCounts[n.id] = (errorCounts[n.id] ?? 0) + 1;
+
+      if (errorCounts[n.id] >= PAUSE_AFTER_ERRORS) {
+        pausedUntil[n.id] = Date.now() + PAUSE_WINDOW;
+      }
+
+      if (status >= 500 && !unmountedRef?.current) {
+        setNodes((prev) =>
+          prev.map((node) =>
+            node.id === n.id
+              ? { ...node, data: { ...node.data, telemetry_status: 'offline' } }
+              : node
+          )
+        );
+      }
+    };
+
+    const applyNodeSuccess = (n, res) => {
+      if (res?.status === 'unconfigured') {
+        unconfiguredNodes.add(n.id);
+        return;
+      }
+      errorCounts[n.id] = 0;
+      backoffByNode[n.id] = BASE_DELAY;
+      nextPollAt[n.id] = Date.now() + BASE_DELAY;
+      setNodes(applyTelemetryUpdate(nodesRef.current, n.id, res));
+    };
+
+    // A node absent from the batch response is a miss (deleted between the
+    // poll and the request, or not visible to this caller) — not an error.
+    // Reschedule it at the normal cadence without touching its error count.
+    const applyNodeMiss = (n) => {
+      backoffByNode[n.id] = BASE_DELAY;
+      nextPollAt[n.id] = Date.now() + BASE_DELAY;
+    };
+
+    const pollChunk = async (chunk) => {
+      let batch;
+      try {
+        batch = await telemetryApi.getBatch(chunk.map((n) => n._refId));
+      } catch (err) {
+        // A batch failure backs off every node in the chunk, same as a
+        // per-node failure did before batching.
+        const status = err?.statusCode || err?.response?.status;
+        chunk.forEach((n) => applyNodeError(n, status));
+        console.warn('Telemetry batch polling failed for', chunk.length, 'node(s)', err);
+        return;
+      }
+      if (unmountedRef?.current) return;
+      chunk.forEach((n) => {
+        const res = batch?.[n._refId];
+        if (res === undefined) {
+          applyNodeMiss(n);
+        } else {
+          applyNodeSuccess(n, res);
+        }
+      });
+    };
 
     const doPoll = async () => {
       if (unmountedRef?.current) return;
@@ -126,46 +202,12 @@ export function useMapRealTimeUpdates({
         return true;
       });
 
-      await Promise.allSettled(
-        dueNodes.map(async (n) => {
-          try {
-            const res = await telemetryApi.get(n._refId);
-            if (unmountedRef?.current) return;
+      const chunks = [];
+      for (let i = 0; i < dueNodes.length; i += TELEMETRY_BATCH_MAX_IDS) {
+        chunks.push(dueNodes.slice(i, i + TELEMETRY_BATCH_MAX_IDS));
+      }
 
-            if (res?.status === 'unconfigured') {
-              unconfiguredNodes.add(n.id);
-              return;
-            }
-
-            errorCounts[n.id] = 0;
-            backoffByNode[n.id] = BASE_DELAY;
-            nextPollAt[n.id] = Date.now() + BASE_DELAY;
-            setNodes(applyTelemetryUpdate(nodesRef.current, n.id, res));
-          } catch (err) {
-            const status = err?.statusCode || err?.response?.status;
-            const currentBackoff = backoffByNode[n.id] ?? BASE_DELAY;
-            const nextBackoff = Math.min(Math.round(currentBackoff * 1.5), MAX_DELAY);
-            backoffByNode[n.id] = nextBackoff;
-            nextPollAt[n.id] = Date.now() + nextBackoff;
-            errorCounts[n.id] = (errorCounts[n.id] ?? 0) + 1;
-
-            if (errorCounts[n.id] >= PAUSE_AFTER_ERRORS) {
-              pausedUntil[n.id] = Date.now() + PAUSE_WINDOW;
-            }
-
-            if (status >= 500 && !unmountedRef?.current) {
-              setNodes((prev) =>
-                prev.map((node) =>
-                  node.id === n.id
-                    ? { ...node, data: { ...node.data, telemetry_status: 'offline' } }
-                    : node
-                )
-              );
-            }
-            console.warn('Telemetry polling failed for node', n.id, err);
-          }
-        })
-      );
+      await Promise.allSettled(chunks.map(pollChunk));
 
       timer = setTimeout(doPoll, LOOP_DELAY);
     };

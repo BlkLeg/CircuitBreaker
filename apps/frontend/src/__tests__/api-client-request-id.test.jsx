@@ -54,6 +54,19 @@ function networkError(config) {
   return Promise.reject(error);
 }
 
+function rateLimitedResponse(config, retryAfterSeconds) {
+  const error = new Error('Request failed with status code 429');
+  error.config = config;
+  error.response = {
+    status: 429,
+    statusText: 'Too Many Requests',
+    headers: { date: new Date().toUTCString(), 'retry-after': String(retryAfterSeconds) },
+    data: { detail: 'Too many requests' },
+    config,
+  };
+  return Promise.reject(error);
+}
+
 beforeEach(() => {
   clearEntries();
   document.cookie = 'cb_csrf=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
@@ -159,6 +172,82 @@ describe('CSRF injection regression guard', () => {
 
     expect(seenCsrf).toBe('test-csrf-token');
     expect(seenRequestId).toEqual(expect.any(String));
+  });
+});
+
+describe('429 handling (H5 / _noRateLimitRetry)', () => {
+  // These tests need the fake-timer clock: the default 429 path sleeps
+  // Retry-After before retrying, and the opt-out's entire point is that it
+  // does not — asserting that with real timers would just make the "no
+  // sleep" case pass trivially instead of proving it.
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('still sleeps Retry-After and retries once for a normal (foreground) request', async () => {
+    let attempts = 0;
+    client.defaults.adapter = (config) => {
+      attempts += 1;
+      if (attempts === 1) return rateLimitedResponse(config, 2);
+      return successResponse(config, { status: 200, data: { ok: true } });
+    };
+
+    const promise = client.get('/hardware');
+    await vi.advanceTimersByTimeAsync(2000);
+    const res = await promise;
+
+    expect(res.status).toBe(200);
+    expect(attempts).toBe(2);
+
+    // The 429 retry uses its own `_retried429` flag, not `_retryCount` (that
+    // counter is for the separate 5xx/network-error retry path) — one entry,
+    // `wasRateLimited: true` is the signal that the sleep-and-retry ran.
+    const entries = getEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ status: 200, retryCount: 0, wasRateLimited: true });
+  });
+
+  it('surfaces a 429 immediately for a background poll opted out via _noRateLimitRetry, no sleep needed', async () => {
+    let attempts = 0;
+    client.defaults.adapter = (config) => {
+      attempts += 1;
+      return rateLimitedResponse(config, 5);
+    };
+
+    // No vi.advanceTimersByTimeAsync at all: if this needed the 5s
+    // Retry-After sleep to settle, this call would hang forever under fake
+    // timers and the test would time out rather than pass.
+    await expect(client.get('/hardware', { _noRateLimitRetry: true })).rejects.toMatchObject({
+      isRateLimited: true,
+      statusCode: 429,
+    });
+
+    expect(attempts).toBe(1);
+
+    // The opt-out still records exactly one diagnostics entry — Task 2's
+    // one-entry-per-logical-request guarantee holds for this path too.
+    const entries = getEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ status: 429, retryCount: 0 });
+  });
+
+  it('does not disturb the default retry path for a caller that never sets the flag', async () => {
+    let attempts = 0;
+    client.defaults.adapter = (config) => {
+      attempts += 1;
+      if (attempts === 1) return rateLimitedResponse(config, 1);
+      return successResponse(config, { status: 200, data: {} });
+    };
+
+    const promise = client.post('/hardware', { name: 'x' });
+    await vi.advanceTimersByTimeAsync(1000);
+    await promise;
+
+    expect(attempts).toBe(2);
   });
 });
 
