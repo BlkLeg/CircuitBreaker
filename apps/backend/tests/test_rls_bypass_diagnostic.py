@@ -24,17 +24,37 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 
 import pytest
 import sqlalchemy as sa
 
-TEST_DB_URL = os.environ.get(
-    "CB_TEST_DB_URL", "postgresql://breaker:breaker@localhost:5432/circuitbreaker_test"
+# `CB_DB_URL` first, because `conftest.pytest_configure` sets it from the
+# TimescaleDB testcontainer before collection imports this module — which makes
+# it the only URL guaranteed to point at a running server for this suite.
+#
+# Reading `CB_TEST_DB_URL` first was a silent CI break for four days. That
+# variable is set for the `tests/integration` job, which has a `services:
+# postgres`; the backend shard job has neither the variable nor the service, so
+# this module fell through to the localhost default, found nothing on 5432, and
+# errored at fixture setup on every run since 2026-08-30. It passed locally the
+# whole time, because a dev workstation does have Postgres there — which is
+# exactly the shape of failure that only CI can see.
+#
+# `CB_TEST_DB_URL` is kept as a fallback for anyone running this file against a
+# standalone database, and the localhost default for the documented dev setup.
+TEST_DB_URL = (
+    os.environ.get("CB_DB_URL")
+    or os.environ.get("CB_TEST_DB_URL")
+    or "postgresql://breaker:breaker@localhost:5432/circuitbreaker_test"
 )
 
 
 PROBE_ROLE = "rls_diag_owner"
-PROBE_PASSWORD = "rls_diag_probe_pw"  # noqa: S105 - throwaway, local test role
+# Generated per run, never a literal: CLAUDE.md's secrets rule covers tests and
+# fixtures, and a checked-in password is a checked-in password even when the
+# role it opens is a throwaway. Hex so it cannot need SQL quoting.
+PROBE_PASSWORD = secrets.token_hex(16)
 
 
 @pytest.fixture()
@@ -50,10 +70,17 @@ def rls_table():
     admin = sa.create_engine(TEST_DB_URL)
     with admin.begin() as conn:
         conn.execute(sa.text("DROP TABLE IF EXISTS rls_diag_probe"))
+        # Create-or-reset rather than create-if-absent. The password is now
+        # generated per run, so a role surviving from an earlier run against a
+        # persistent database would still carry the *old* one and every login
+        # below would fail; ALTER makes the fixture idempotent in the only way
+        # that stays correct.
         conn.execute(
             sa.text(
-                f"DO $$ BEGIN IF NOT EXISTS "
+                f"DO $$ BEGIN IF EXISTS "
                 f"(SELECT 1 FROM pg_roles WHERE rolname = '{PROBE_ROLE}') THEN "
+                f"ALTER ROLE {PROBE_ROLE} LOGIN PASSWORD '{PROBE_PASSWORD}'; "
+                f"ELSE "
                 f"CREATE ROLE {PROBE_ROLE} LOGIN PASSWORD '{PROBE_PASSWORD}'; "
                 f"END IF; END $$"
             )
