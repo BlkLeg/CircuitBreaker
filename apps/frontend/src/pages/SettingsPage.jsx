@@ -31,6 +31,7 @@ import VaultStatusPanel from '../components/settings/VaultStatusPanel.jsx';
 import DbStatusPanel from '../components/settings/DbStatusPanel.jsx';
 import UpdateStatusPanel from '../components/settings/UpdateStatusPanel.jsx';
 import HostStatsPanel from '../components/settings/HostStatsPanel.jsx';
+import DiagnosticsPanel from '../components/settings/DiagnosticsPanel.jsx';
 import BackupSettings from '../components/settings/BackupSettings.jsx';
 import IntegrationsManager from '../components/settings/IntegrationsManager';
 import OpnsenseIntegrationSection from '../components/opnsense/OpnsenseIntegrationSection.jsx';
@@ -1772,6 +1773,7 @@ export default function SettingsPage() {
                 {isAdmin && (
                   <SettingSection title="Host Diagnostics">
                     <HostStatsPanel />
+                    <DiagnosticsPanel />
                   </SettingSection>
                 )}
 
