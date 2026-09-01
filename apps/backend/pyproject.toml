@@ -116,7 +116,7 @@ dev = [
     "pip-audit>=2.7.0",
     # Security floors for transitive packages retained in the all-groups lock.
     "msgpack>=1.2.1",
-    "nltk>=3.10.0",
+    "nltk>=3.10.3",
     "pip>=26.1.2",
     "pymdown-extensions>=11.0.1",
     "setuptools>=83.0.0",
