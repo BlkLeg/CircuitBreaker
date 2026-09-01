@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from slowapi.util import get_remote_address
 from sqlalchemy import and_, case, func, select
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.core import agent_crypto, agent_scope
 from app.core.rate_limit import get_limit, limiter
@@ -422,6 +423,52 @@ def _latest_samples(db: Session, agent_ids: list[int]) -> dict[int, AgentLatestS
     }
 
 
+def _load_presence_agents(db: Session, ids: list[int] | None) -> list[Agent]:
+    """The fleet (or the explicit `ids` subset) for `GET /agents/presence`.
+
+    Split out of the handler so the blocking `Session` read runs in the
+    threadpool instead of on the event loop (route slice 2.5). Same single
+    statement it always was.
+    """
+    stmt = select(Agent)
+    if ids is not None:
+        stmt = stmt.where(Agent.id.in_(ids))
+    return list(db.execute(stmt).scalars())
+
+
+def _load_presence_context(
+    db: Session, agents: list[Agent]
+) -> tuple[
+    dict[int, dict[str, dict[str, Any]]],
+    dict[int, AgentLatestSample],
+    dict[int, Hardware],
+]:
+    """Grants, newest host sample, and linked hardware for a loaded fleet.
+
+    Everything `GET /agents/presence` still needs from the database once
+    presence itself has been resolved out of Redis. Extracted so it can run in
+    the threadpool, and deliberately kept to a **fixed** statement count
+    regardless of fleet size — `test_presence_query_count_does_not_scale_with_
+    fleet_size` asserts exactly that, so a rewrite into per-agent reads here
+    would be caught rather than merely slow.
+    """
+    agent_ids = [agent.id for agent in agents]
+    grants = agent_registry.bulk_structured_grants_dict(db, agent_ids)
+    # One DISTINCT ON for the whole fleet, hoisted out of the response
+    # comprehension so the head metric values cost one query rather than one
+    # per row.
+    latest_by_agent = _latest_samples(db, agent_ids)
+
+    hardware_ids = {agent.hardware_id for agent in agents if agent.hardware_id is not None}
+    hardware_by_id: dict[int, Hardware] = {}
+    if hardware_ids:
+        hardware_by_id = {
+            hw.id: hw
+            for hw in db.execute(select(Hardware).where(Hardware.id.in_(hardware_ids))).scalars()
+        }
+    return grants, latest_by_agent, hardware_by_id
+
+
 @router.get("/presence", response_model=list[AgentPresenceRead])
 async def get_agents_presence(
     db: Annotated[Session, Depends(get_db)],
@@ -442,25 +489,18 @@ async def get_agents_presence(
     if ids is not None and not ids:
         return []
 
-    stmt = select(Agent)
-    if ids is not None:
-        stmt = stmt.where(Agent.id.in_(ids))
-    agents = list(db.execute(stmt).scalars())
+    agents = await run_in_threadpool(_load_presence_agents, db, ids)
     agent_ids = [agent.id for agent in agents]
 
     presence = await agent_registry.bulk_presence(agent_ids)
-    grants = agent_registry.bulk_structured_grants_dict(db, agent_ids)
-    # One DISTINCT ON for the whole fleet, hoisted out of the comprehension
-    # below so the head metric values cost one query rather than one per row.
-    latest_by_agent = _latest_samples(db, agent_ids)
 
-    hardware_ids = {agent.hardware_id for agent in agents if agent.hardware_id is not None}
-    hardware_by_id: dict[int, Hardware] = {}
-    if hardware_ids:
-        hardware_by_id = {
-            hw.id: hw
-            for hw in db.execute(select(Hardware).where(Hardware.id.in_(hardware_ids))).scalars()
-        }
+    # The three remaining reads run as one threadpool hop rather than three:
+    # they are sequential against the same `Session`, which is not safe to use
+    # concurrently, so there is nothing to gain from splitting them and one
+    # hop costs one context switch instead of three.
+    grants, latest_by_agent, hardware_by_id = await run_in_threadpool(
+        _load_presence_context, db, agents
+    )
 
     return [
         AgentPresenceRead(

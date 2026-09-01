@@ -96,6 +96,22 @@ def _safe_json(val: Any) -> dict[str, Any] | None:
     return None
 
 
+def _load_hardware(db: Session, hardware_id: int) -> Hardware | None:
+    """The `Hardware` row behind the single-node route's 404 gate, or `None`.
+
+    A synchronous `Session` read, so the handler runs it through
+    `run_in_threadpool` (route slice 2.5) rather than blocking the event loop
+    on it.
+
+    Loads the whole entity rather than just the id on purpose: the caller goes
+    straight on to `get_telemetry_for_hardware`, whose own `db.get(Hardware,
+    ...)` is then served from this Session's identity map. Narrowing this to a
+    `Hardware.id` select would answer the same question and silently turn one
+    query into two.
+    """
+    return db.query(Hardware).filter(Hardware.id == hardware_id).first()
+
+
 @router.get("/{hardware_id}/telemetry", response_model=TelemetryResponse)
 @limiter.limit(lambda: get_limit("telemetry"))
 async def get_telemetry(
@@ -105,8 +121,7 @@ async def get_telemetry(
     db: Annotated[Session, Depends(get_db)],
     _user_id: int = Depends(require_auth_always),
 ) -> TelemetryResponse:
-    hw = db.query(Hardware).filter(Hardware.id == hardware_id).first()
-    if hw is None:
+    if await run_in_threadpool(_load_hardware, db, hardware_id) is None:
         raise HTTPException(status_code=404, detail="Hardware not found")
     return await get_telemetry_for_hardware(hardware_id, db)
 

@@ -217,7 +217,18 @@ def get_readiness(db: Session = Depends(get_db), user: User = require_role("admi
 
 
 @router.get("/status", response_model=DiscoveryStatusOut)
-async def get_discovery_status(db: Session = Depends(get_db)):
+def get_discovery_status(db: Session = Depends(get_db)) -> DiscoveryStatusOut:
+    """Current discovery state — the heaviest read on the navigation path.
+
+    Deliberately a **sync** handler (route slice 2.5). It awaits nothing, and
+    `_compute_discovery_status` is all blocking work: several ORM queries, an
+    APScheduler introspection, and a Docker socket probe that can stat a path
+    on a stalled mount. Declared `async def`, every one of those ran on the
+    event loop and stalled every other request the worker was serving; as a
+    plain `def`, FastAPI runs it in the threadpool instead. A later refactor
+    must not put it back — `tests/build/test_nav_endpoints_off_loop.py` asserts
+    this function is not a coroutine function.
+    """
     # Always compute fresh so docker_available reflects current socket (e.g. after compose up).
     return _compute_discovery_status(db)
 
