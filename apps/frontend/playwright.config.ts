@@ -42,14 +42,22 @@ export default defineConfig({
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
-      testIgnore: /visual\.spec\.ts/,
+      testIgnore: /(visual|nav-wedge)\.spec\.ts/,
     },
-    { name: 'firefox', use: { ...devices['Desktop Firefox'] }, testIgnore: /visual\.spec\.ts/ },
-    { name: 'webkit', use: { ...devices['Desktop Safari'] }, testIgnore: /visual\.spec\.ts/ },
+    {
+      name: 'firefox',
+      use: { ...devices['Desktop Firefox'] },
+      testIgnore: /(visual|nav-wedge)\.spec\.ts/,
+    },
+    {
+      name: 'webkit',
+      use: { ...devices['Desktop Safari'] },
+      testIgnore: /(visual|nav-wedge)\.spec\.ts/,
+    },
     {
       name: 'mobile-chrome',
       use: { ...devices['Pixel 5'] },
-      testIgnore: /visual\.spec\.ts/,
+      testIgnore: /(visual|nav-wedge)\.spec\.ts/,
     },
 
     // REL-18 visual regression. Baselines must be generated in the CI
@@ -64,6 +72,15 @@ export default defineConfig({
       name: 'visual-mobile',
       testMatch: /visual\.spec\.ts/,
       use: { ...devices['Pixel 5'] },
+    },
+    // Opt-in diagnostic: deliberately slow and statistical, never part of PR shards.
+    {
+      name: 'nav-wedge',
+      testMatch: /nav-wedge\.spec\.ts/,
+      use: { ...devices['Desktop Chrome'], trace: 'on', screenshot: 'on', video: 'on' },
+      workers: 1,
+      retries: 0,
+      timeout: 15 * 60_000,
     },
   ],
   webServer: {
