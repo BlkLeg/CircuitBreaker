@@ -3,6 +3,52 @@ import logger from '../utils/logger';
 import { safeSet } from '../utils/safeAccess';
 import { hashPasswordForAuth } from '../utils/passwordHash';
 import { recordServerDate } from '../utils/serverClock';
+import { recordRequest } from '../lib/diagnosticsBuffer';
+
+// Task 1 (server) mints a UUID4 for any inbound `X-Request-ID` that doesn't
+// pass its filter (<=64 chars of [A-Za-z0-9_.-]); a crypto.randomUUID() value
+// passes unchanged, so the ID minted here is the one that comes back on the
+// response and lands in server logs / slow-query warnings.
+function generateRequestId() {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+  } catch {
+    // Fall through to the manual fallback below.
+  }
+  // Math.random-based RFC4122-ish v4 fallback for jsdom / older browsers
+  // without crypto.randomUUID.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+function now() {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+}
+
+// Records one *logical* request (post-retries) into the diagnostics ring
+// buffer. Never called from inside a retry branch — only at a terminal point
+// of the response interceptor — so a request retried N times still produces
+// exactly one entry, with `retryCount: N`, not one entry per attempt.
+function recordCompletedRequest(config, status) {
+  const startedAt = config?._startedAt;
+  const durationMs = typeof startedAt === 'number' ? now() - startedAt : null;
+  recordRequest({
+    requestId: config?._requestId,
+    method: config?.method,
+    path: config?.url,
+    status,
+    durationMs,
+    retryCount: config?._retryCount ?? 0,
+    wasRateLimited: Boolean(config?._retried429),
+  });
+}
 
 const AUTH_ROUTE_PREFIXES = [
   '/auth/login',
@@ -91,6 +137,18 @@ client.interceptors.request.use((config) => {
     if (csrf) config.headers['X-CSRF-Token'] = csrf;
   }
 
+  // Stamp a request ID and start timestamp once per logical request. A retry
+  // re-enters this interceptor with the *same* config object (see the
+  // `_retryCount` / `_retried429` convention below), so both are only
+  // generated the first time through — reused, not replaced, across retries.
+  if (!config._requestId) {
+    config._requestId = generateRequestId();
+  }
+  if (typeof config._startedAt !== 'number') {
+    config._startedAt = now();
+  }
+  config.headers['X-Request-ID'] = config._requestId;
+
   return config;
 });
 
@@ -104,6 +162,7 @@ client.interceptors.response.use(
     // already flowing past here — recording it costs no request. See
     // utils/serverClock.js.
     recordServerDate(response.headers);
+    recordCompletedRequest(response.config, response.status);
     return response;
   },
   async (error) => {
@@ -137,6 +196,7 @@ client.interceptors.response.use(
 
     // Network / timeout — backend unreachable
     if (!error.response) {
+      recordCompletedRequest(config, 0);
       const networkErr = new Error('Cannot reach the server. Check your network connection.');
       networkErr.isNetworkError = true;
       logger.error('Network error:', error.message);
@@ -159,6 +219,7 @@ client.interceptors.response.use(
 
     // Rate limited — surface retry-after info
     if (status === 429) {
+      recordCompletedRequest(config, status);
       const retryAfter = error.response.headers?.['retry-after'];
       const msg = retryAfter
         ? `Too many requests. Try again in ${retryAfter} seconds.`
@@ -178,6 +239,7 @@ client.interceptors.response.use(
     const fieldErrors = extractFieldErrors(status, data);
     if (fieldErrors) err.fieldErrors = fieldErrors;
 
+    recordCompletedRequest(config, status);
     throw err;
   }
 );
