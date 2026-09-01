@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
@@ -84,6 +85,60 @@ def _set_tenant_on_checkout(dbapi_conn: Any, connection_record: Any, connection_
             context={"tenant_id": tid},
             level=logging.WARNING,
         )
+
+
+# ── Task 1d: slow-query logging (observability phase 2) ────────────────────
+# Threshold read once at import, matching every other CB_* value this module
+# reads (db_url, pool sizes) above. Set CB_SLOW_QUERY_MS=0 to disable.
+_SLOW_QUERY_THRESHOLD_MS = float(os.environ.get("CB_SLOW_QUERY_MS", "100"))
+_QUERY_START_TIMES_KEY = "_cb_query_start_times"
+
+
+@event.listens_for(engine, "before_cursor_execute")
+def _record_query_start(
+    conn: Any, cursor: Any, statement: str, parameters: Any, context: Any, executemany: bool
+) -> None:
+    """Stash a start time on the connection so `_log_slow_query` can measure it.
+
+    A list rather than a single value: a connection can have more than one
+    cursor executing in sequence before `after_cursor_execute` fires for the
+    first one (e.g. a driver that issues setup statements around the
+    caller's own), so this has to behave as a stack, not a single slot.
+    """
+    if _SLOW_QUERY_THRESHOLD_MS <= 0:
+        return
+    conn.info.setdefault(_QUERY_START_TIMES_KEY, []).append(time.perf_counter())
+
+
+@event.listens_for(engine, "after_cursor_execute")
+def _log_slow_query(
+    conn: Any, cursor: Any, statement: str, parameters: Any, context: Any, executemany: bool
+) -> None:
+    """Log any statement that exceeded CB_SLOW_QUERY_MS, at WARNING.
+
+    Logs the statement text only — never `parameters` — because parameters
+    carry user data and the log-redaction filter is a regex net over free
+    text, not a guarantee against every shape a value can take.
+    """
+    if _SLOW_QUERY_THRESHOLD_MS <= 0:
+        return
+    start_times = conn.info.get(_QUERY_START_TIMES_KEY)
+    if not start_times:
+        return
+    started = start_times.pop()
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    if elapsed_ms < _SLOW_QUERY_THRESHOLD_MS:
+        return
+
+    from app.middleware.request_id import request_id_var
+
+    _logger.warning(
+        "[slow_query] %.1fms (threshold %.0fms) request_id=%s statement=%s",
+        elapsed_ms,
+        _SLOW_QUERY_THRESHOLD_MS,
+        request_id_var.get() or "-",
+        statement,
+    )
 
 
 naming_convention = {
