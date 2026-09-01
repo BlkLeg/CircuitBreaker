@@ -18,7 +18,7 @@ import MiscPage from './pages/MiscPage';
 import LoginPage from './pages/LoginPage';
 import OOBEWizardPage from './pages/OOBEWizardPage';
 import { useDiscoveryStream, discoveryEmitter } from './hooks/useDiscoveryStream.js';
-import { useNavigationTiming } from './hooks/useNavigationTiming.js';
+import { useNavigationTiming, useNavigationMountSignal } from './hooks/useNavigationTiming.js';
 import { connectSSE, disconnectSSE } from './lib/sseClient.js';
 import ConnectionStatus from './components/ConnectionStatus.jsx';
 import MasqueradeBanner from './components/MasqueradeBanner.jsx';
@@ -134,135 +134,135 @@ function AppInner() {
         }
       >
         <UpdateBanner />
-        {/*
-          Static anchor for hooks/useNavigationTiming.js: it is mounted once,
-          above this route tree, and needs a stable DOM node scoped to
-          exactly what the router renders — not the whole page (header clock,
-          toasts, dock badges) — to tell a real navigation apart from
-          unrelated re-renders elsewhere.
-        */}
-        <div id="cb-route-outlet">
-          <ErrorBoundary>
-            <React.Suspense fallback={<LoadingScreen />}>
-              {/*
-                known_bugs-v1.0.0-rc.1.md item 1 reproduces from this route tree
-                (see e2e/navigation.spec.ts), but mode is NOT the cause: measured
-                on Firefox under 8-way load, "wait" wedged 2 times in 48 and
-                "sync" 1 in 48 — no difference. Left on "wait", the value
-                8bb0ee25 shipped. Do not switch it speculatively; the numbers are
-                in known_bugs.
-              */}
-              <AnimatePresence mode="wait">
-                <motion.div
-                  key={location.pathname}
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.15 }}
-                >
-                  <Routes location={location}>
-                    <Route path="/" element={<Navigate to="/map" replace />} />
-                    <Route path="/hardware" element={<HardwarePage />} />
-                    <Route path="/compute-units" element={<ComputeUnitsPage />} />
-                    <Route path="/services" element={<ServicesPage />} />
-                    <Route path="/storage" element={<StoragePage />} />
-                    <Route path="/networks" element={<Navigate to="/ipam" replace />} />
-                    <Route
-                      path="/certificates"
-                      element={
-                        <Guarded path="/certificates">
-                          <CertificatesPage />
-                        </Guarded>
-                      }
-                    />
-                    <Route path="/monitors" element={<MonitorsPage />} />
-                    <Route path="/monitors/:id" element={<MonitorDetailPage />} />
-                    <Route path="/privacy" element={<PrivacyPage />} />
-                    <Route
-                      path="/notifications"
-                      element={
-                        <Guarded path="/notifications">
-                          <NotificationsPage />
-                        </Guarded>
-                      }
-                    />
-                    <Route path="/tenants" element={<Navigate to="/map" replace />} />
-                    <Route path="/external-nodes" element={<ExternalNodesPage />} />
-                    <Route path="/misc" element={<MiscPage />} />
-                    <Route path="/docs" element={<DocsPage />} />
-                    <Route path="/map" element={<MapPage />} />
-                    <Route
-                      path="/ipam"
-                      element={
-                        <Guarded path="/ipam">
-                          <IPAMPage />
-                        </Guarded>
-                      }
-                    />
-                    <Route path="/ip-addresses" element={<Navigate to="/ipam" replace />} />
-                    <Route path="/intel" element={<IntelPage />} />
-                    <Route
-                      path="/logs"
-                      element={
-                        <Guarded path="/logs">
-                          <LogsPage />
-                        </Guarded>
-                      }
-                    />
-                    <Route
-                      path="/logs/audit"
-                      element={
-                        <Guarded path="/logs/audit">
-                          <LogsPage auditMode />
-                        </Guarded>
-                      }
-                    />
-                    <Route
-                      path="/settings"
-                      element={
-                        <Guarded path="/settings">
-                          <SettingsPage />
-                        </Guarded>
-                      }
-                    />
-                    <Route path="/discovery" element={<DiscoveryPage />} />
-                    <Route path="/discovery/history" element={<DiscoveryHistoryRedirect />} />
-                    <Route path="/agents" element={<AgentsPage />} />
-                    <Route path="/agents/enroll" element={<AgentsPage />} />
-                    <Route path="/agents/:id" element={<AgentDetailPage />} />
-                    <Route
-                      path="/admin/users"
-                      element={
-                        <Guarded path="/admin/users">
-                          <AdminUsersPage />
-                        </Guarded>
-                      }
-                    />
-                    <Route
-                      path="/admin/users/:id/actions"
-                      element={
-                        <Guarded path="/admin/users/:id/actions">
-                          <UserActionsPage />
-                        </Guarded>
-                      }
-                    />
-                    <Route
-                      path="/admin/tokens"
-                      element={
-                        <Guarded path="/admin/tokens">
-                          <AccessTokensPage />
-                        </Guarded>
-                      }
-                    />
-                    <Route path="/invite/accept" element={<InviteAcceptPage />} />
-                    <Route path="/auth/change-password" element={<ForceChangePasswordPage />} />
-                    <Route path="/reset-password" element={<ResetPasswordPage />} />
-                  </Routes>
-                </motion.div>
-              </AnimatePresence>
-            </React.Suspense>
-          </ErrorBoundary>
-        </div>
+        <ErrorBoundary>
+          <React.Suspense fallback={<LoadingScreen />}>
+            {/*
+              known_bugs-v1.0.0-rc.1.md item 1 reproduces from this route tree
+              (see e2e/navigation.spec.ts), but mode is NOT the cause: measured
+              on Firefox under 8-way load, "wait" wedged 2 times in 48 and
+              "sync" 1 in 48 — no difference. Left on "wait", the value
+              8bb0ee25 shipped. Do not switch it speculatively; the numbers are
+              in known_bugs.
+            */}
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={location.pathname}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+              >
+                {/*
+                  Mounted fresh every navigation (this element's ancestor is
+                  keyed by location.pathname, so it fully remounts rather than
+                  updating) and gated by the same Suspense boundary as
+                  <Routes> below, so its mount effect fires exactly when the
+                  incoming route has actually rendered — see
+                  hooks/useNavigationTiming.js.
+                */}
+                <NavigationMountSignal />
+                <Routes location={location}>
+                  <Route path="/" element={<Navigate to="/map" replace />} />
+                  <Route path="/hardware" element={<HardwarePage />} />
+                  <Route path="/compute-units" element={<ComputeUnitsPage />} />
+                  <Route path="/services" element={<ServicesPage />} />
+                  <Route path="/storage" element={<StoragePage />} />
+                  <Route path="/networks" element={<Navigate to="/ipam" replace />} />
+                  <Route
+                    path="/certificates"
+                    element={
+                      <Guarded path="/certificates">
+                        <CertificatesPage />
+                      </Guarded>
+                    }
+                  />
+                  <Route path="/monitors" element={<MonitorsPage />} />
+                  <Route path="/monitors/:id" element={<MonitorDetailPage />} />
+                  <Route path="/privacy" element={<PrivacyPage />} />
+                  <Route
+                    path="/notifications"
+                    element={
+                      <Guarded path="/notifications">
+                        <NotificationsPage />
+                      </Guarded>
+                    }
+                  />
+                  <Route path="/tenants" element={<Navigate to="/map" replace />} />
+                  <Route path="/external-nodes" element={<ExternalNodesPage />} />
+                  <Route path="/misc" element={<MiscPage />} />
+                  <Route path="/docs" element={<DocsPage />} />
+                  <Route path="/map" element={<MapPage />} />
+                  <Route
+                    path="/ipam"
+                    element={
+                      <Guarded path="/ipam">
+                        <IPAMPage />
+                      </Guarded>
+                    }
+                  />
+                  <Route path="/ip-addresses" element={<Navigate to="/ipam" replace />} />
+                  <Route path="/intel" element={<IntelPage />} />
+                  <Route
+                    path="/logs"
+                    element={
+                      <Guarded path="/logs">
+                        <LogsPage />
+                      </Guarded>
+                    }
+                  />
+                  <Route
+                    path="/logs/audit"
+                    element={
+                      <Guarded path="/logs/audit">
+                        <LogsPage auditMode />
+                      </Guarded>
+                    }
+                  />
+                  <Route
+                    path="/settings"
+                    element={
+                      <Guarded path="/settings">
+                        <SettingsPage />
+                      </Guarded>
+                    }
+                  />
+                  <Route path="/discovery" element={<DiscoveryPage />} />
+                  <Route path="/discovery/history" element={<DiscoveryHistoryRedirect />} />
+                  <Route path="/agents" element={<AgentsPage />} />
+                  <Route path="/agents/enroll" element={<AgentsPage />} />
+                  <Route path="/agents/:id" element={<AgentDetailPage />} />
+                  <Route
+                    path="/admin/users"
+                    element={
+                      <Guarded path="/admin/users">
+                        <AdminUsersPage />
+                      </Guarded>
+                    }
+                  />
+                  <Route
+                    path="/admin/users/:id/actions"
+                    element={
+                      <Guarded path="/admin/users/:id/actions">
+                        <UserActionsPage />
+                      </Guarded>
+                    }
+                  />
+                  <Route
+                    path="/admin/tokens"
+                    element={
+                      <Guarded path="/admin/tokens">
+                        <AccessTokensPage />
+                      </Guarded>
+                    }
+                  />
+                  <Route path="/invite/accept" element={<InviteAcceptPage />} />
+                  <Route path="/auth/change-password" element={<ForceChangePasswordPage />} />
+                  <Route path="/reset-password" element={<ResetPasswordPage />} />
+                </Routes>
+              </motion.div>
+            </AnimatePresence>
+          </React.Suspense>
+        </ErrorBoundary>
       </div>
       <MacOSDOCK pendingCount={pendingCount} wsStatus={wsStatus} />
       <AuthModal isOpen={authModalOpen} onClose={() => setAuthModalOpen(false)} />
@@ -278,6 +278,15 @@ function AppInner() {
 // storm; this renders nothing, so it adds no re-render surface there.
 function NavigationTimingWatcher() {
   useNavigationTiming();
+  return null;
+}
+
+// Mounted once, as a sibling of <Routes> inside the Suspense boundary that
+// wraps it (see AppInner below) — the other half of useNavigationTiming.js.
+// Renders nothing; its only job is the mount effect useNavigationMountSignal
+// runs, which closes out whatever nav useNavigationTiming() opened.
+function NavigationMountSignal() {
+  useNavigationMountSignal();
   return null;
 }
 

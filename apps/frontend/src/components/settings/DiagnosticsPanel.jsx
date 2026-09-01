@@ -10,14 +10,16 @@ import { getEntries, clearEntries, exportJson } from '../../lib/diagnosticsBuffe
  *
  * Lives inside the "Host Diagnostics" `SettingSection` in SettingsPage.jsx,
  * admin-gated exactly as that section already is.
+ *
+ * No loading state: both actions below are local/synchronous (the buffer
+ * lives in memory, in this tab — neither goes through the axios client), so
+ * there is no async window to show one for.
  */
 export default function DiagnosticsPanel() {
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [entryCount, setEntryCount] = useState(() => getEntries().length);
 
   const handleExport = () => {
-    setBusy(true);
     setError(null);
     try {
       const json = exportJson();
@@ -30,21 +32,16 @@ export default function DiagnosticsPanel() {
       URL.revokeObjectURL(url);
     } catch (err) {
       setError(err.message || 'Failed to export diagnostics.');
-    } finally {
-      setBusy(false);
     }
   };
 
   const handleClear = () => {
-    setBusy(true);
     setError(null);
     try {
       clearEntries();
       setEntryCount(getEntries().length);
     } catch (err) {
       setError(err.message || 'Failed to clear diagnostics.');
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -57,21 +54,11 @@ export default function DiagnosticsPanel() {
         }, correlated to server logs by X-Request-ID. No request/response bodies, headers, or query strings are recorded.`}
       >
         <div style={{ display: 'flex', gap: 8 }}>
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            onClick={handleExport}
-            disabled={busy}
-          >
-            {busy ? 'Working…' : 'Download Diagnostics'}
+          <button type="button" className="btn btn-secondary btn-sm" onClick={handleExport}>
+            Download Diagnostics
           </button>
-          <button
-            type="button"
-            className="btn btn-danger btn-sm"
-            onClick={handleClear}
-            disabled={busy}
-          >
-            {busy ? 'Working…' : 'Clear Diagnostics'}
+          <button type="button" className="btn btn-danger btn-sm" onClick={handleClear}>
+            Clear Diagnostics
           </button>
         </div>
       </SettingField>

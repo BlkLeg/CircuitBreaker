@@ -14,23 +14,79 @@
  * or query strings (Global Constraint 8 — those can carry tokens and search
  * terms). Failure inside this module can never break a page render or an
  * HTTP call.
+ *
+ * Two separate rings, not one shared one (review fix, Task 2): requests
+ * vastly outnumber navs, and a nav can legitimately stay open for a long
+ * time — that's the wedge signal. Sharing one 200-slot buffer meant a busy
+ * page (background polling, SSE-driven lists) could push 200 *request*
+ * entries while a single slow or wedged navigation was still open, evicting
+ * its slot before `useNavigationTiming` ever closed it — the entry then
+ * vanished from `getEntries()` entirely, showing neither `pending: true` nor
+ * a closed record, in exactly the slow-navigation case Task 8 most needs
+ * evidence for. Giving navs their own ring removes request volume as a
+ * threat to that evidence.
  */
 
 const CAPACITY = 200;
 
-// A fixed-size array with a write index — memory-bounded by construction,
-// never an array that grows and gets sliced.
-const buffer = new Array(CAPACITY).fill(null);
-let writeIndex = 0;
-let count = 0;
-
-function push(entry) {
-  // eslint-disable-next-line security/detect-object-injection -- writeIndex is modulo-bounded, not input-derived
-  buffer[writeIndex] = entry;
-  writeIndex = (writeIndex + 1) % CAPACITY;
-  if (count < CAPACITY) count += 1;
-  return entry;
+// A single counter stamped on every entry (both kinds) at push time, purely
+// so `getEntries()` can interleave the two rings back into one chronological
+// list — never exposed as anything but an ordering key.
+let seqCounter = 0;
+function nextSeq() {
+  seqCounter += 1;
+  return seqCounter;
 }
+
+// A unique id per nav entry so a deferred close can look the entry up by
+// identity instead of trusting a held object reference — see `closeNav`.
+let navIdCounter = 0;
+function nextNavId() {
+  navIdCounter += 1;
+  return `nav-${navIdCounter}`;
+}
+
+/** A fixed-size array with a write index — memory-bounded by construction, never an array that grows and gets sliced. */
+function createRing(capacity) {
+  const items = new Array(capacity).fill(null);
+  let writeIndex = 0;
+  let count = 0;
+  return {
+    push(entry) {
+      // eslint-disable-next-line security/detect-object-injection -- writeIndex is modulo-bounded, not input-derived
+      items[writeIndex] = entry;
+      writeIndex = (writeIndex + 1) % capacity;
+      if (count < capacity) count += 1;
+      return entry;
+    },
+    entries() {
+      const result = [];
+      const start = count < capacity ? 0 : writeIndex;
+      for (let i = 0; i < count; i++) {
+        result.push(items[(start + i) % capacity]);
+      }
+      return result;
+    },
+    clear() {
+      // eslint-disable-next-line security/detect-object-injection -- numeric loop index over the fixed-size buffer
+      for (let i = 0; i < capacity; i++) items[i] = null;
+      writeIndex = 0;
+      count = 0;
+    },
+    /** Finds a still-live entry by id, or undefined once its slot has been reused. */
+    findById(id) {
+      for (let i = 0; i < capacity; i++) {
+        // eslint-disable-next-line security/detect-object-injection -- numeric loop index over the fixed-size buffer
+        const item = items[i];
+        if (item && item.id === id) return item;
+      }
+      return undefined;
+    },
+  };
+}
+
+const requestRing = createRing(CAPACITY);
+const navRing = createRing(CAPACITY);
 
 function nowIso() {
   try {
@@ -68,6 +124,7 @@ export function recordRequest(entry) {
   try {
     const safeEntry = {
       kind: 'request',
+      seq: nextSeq(),
       timestamp: nowIso(),
       requestId: entry?.requestId != null ? String(entry.requestId) : null,
       method: entry?.method != null ? String(entry.method).toLowerCase() : null,
@@ -77,70 +134,90 @@ export function recordRequest(entry) {
       retryCount: typeof entry?.retryCount === 'number' ? entry.retryCount : 0,
       wasRateLimited: Boolean(entry?.wasRateLimited),
     };
-    return push(safeEntry);
+    return requestRing.push(safeEntry);
   } catch {
     return undefined;
   }
 }
 
 /**
- * Records (or, via the returned reference, later updates) one navigation
- * entry.
- *
- * Call once when a navigation starts, with `pending: true`. The returned
- * object is the live reference stored in the buffer, so the caller (see
- * `hooks/useNavigationTiming.js`) can mutate it in place — clearing
- * `pending`, setting `durationMs`, and attaching `longTasks` — when the
- * newly-routed page mounts, without creating a second buffer entry for the
- * same navigation. A navigation that never closes keeps `pending: true`
- * forever — that is the wedge signal Task 8 counts.
+ * Opens one navigation entry with `pending: true` and an `id`. Close it out
+ * later with `closeNav(id, updates)` — never by mutating this returned
+ * object directly, which is what let a since-evicted nav silently vanish
+ * (see the module doc comment).
  *
  * @param {object} entry
  * @param {string} [entry.path] Recorded with any query string stripped.
  * @param {boolean} [entry.pending]
- * @param {number|null} [entry.durationMs]
- * @param {Array<{startTime:number, duration:number}>} [entry.longTasks]
- * @param {number} [entry.longTaskTotalMs]
- * @returns {object|undefined} The stored (mutable) entry, or undefined on failure.
+ * @returns {object|undefined} The stored entry (carries `id`), or undefined on failure.
  */
 export function recordNav(entry) {
   try {
     const safeEntry = {
       kind: 'nav',
+      id: nextNavId(),
+      seq: nextSeq(),
       timestamp: nowIso(),
       path: toPathOnly(entry?.path),
       pending: entry?.pending !== false,
-      durationMs: typeof entry?.durationMs === 'number' ? entry.durationMs : null,
-      longTasks: Array.isArray(entry?.longTasks) ? entry.longTasks.slice() : [],
-      longTaskTotalMs: typeof entry?.longTaskTotalMs === 'number' ? entry.longTaskTotalMs : 0,
+      durationMs: null,
+      longTasks: [],
+      longTaskTotalMs: 0,
     };
-    return push(safeEntry);
+    return navRing.push(safeEntry);
   } catch {
     return undefined;
   }
 }
 
-/** Returns a snapshot array of retained entries, oldest first / newest last. */
+/**
+ * Closes a previously-opened nav entry by id, updating it in place — but
+ * only if it is still present in the buffer. A nav can stay open for a long
+ * time (that's the wedge signal), and the nav ring is finite, so by the time
+ * a slow or truly-wedged navigation is ready to close, its own entry could
+ * already have been evicted by newer navigations. Looking it up by id
+ * (rather than trusting a held object reference) makes that eviction safe: a
+ * stale close silently no-ops instead of writing into an orphaned object
+ * nothing reads any more.
+ *
+ * @param {string} id
+ * @param {object} [updates]
+ * @param {number} [updates.durationMs]
+ * @param {Array<{startTime:number, duration:number}>} [updates.longTasks]
+ * @param {number} [updates.longTaskTotalMs]
+ * @returns {boolean} Whether the entry was still present and updated.
+ */
+export function closeNav(id, updates) {
+  try {
+    const entry = navRing.findById(id);
+    if (!entry) return false;
+    if (typeof updates?.durationMs === 'number') entry.durationMs = updates.durationMs;
+    if (Array.isArray(updates?.longTasks)) entry.longTasks = updates.longTasks;
+    if (typeof updates?.longTaskTotalMs === 'number')
+      entry.longTaskTotalMs = updates.longTaskTotalMs;
+    entry.pending = false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Returns a snapshot array of retained entries (both kinds), oldest first / newest last. */
 export function getEntries() {
   try {
-    const result = [];
-    const start = count < CAPACITY ? 0 : writeIndex;
-    for (let i = 0; i < count; i++) {
-      result.push(buffer[(start + i) % CAPACITY]);
-    }
-    return result;
+    const merged = [...navRing.entries(), ...requestRing.entries()];
+    merged.sort((a, b) => (a?.seq ?? 0) - (b?.seq ?? 0));
+    return merged;
   } catch {
     return [];
   }
 }
 
-/** Clears all retained entries. */
+/** Clears all retained entries (both kinds). */
 export function clearEntries() {
   try {
-    // eslint-disable-next-line security/detect-object-injection -- numeric loop index over the fixed-size buffer
-    for (let i = 0; i < CAPACITY; i++) buffer[i] = null;
-    writeIndex = 0;
-    count = 0;
+    requestRing.clear();
+    navRing.clear();
   } catch {
     // Diagnostics must never throw into a caller.
   }
@@ -159,9 +236,9 @@ export function exportJson() {
 // Task 8's Playwright spec reads this buffer via `page.evaluate(...)` to
 // diagnose a captured wedge, so it has to be reachable from the page. Only
 // the two read functions are exposed — automation reads, it never writes, so
-// `recordRequest` / `recordNav` / `clearEntries` are deliberately withheld.
-// Guarded so importing this module is a no-op wherever `window` is undefined
-// (SSR, non-browser test contexts).
+// `recordRequest` / `recordNav` / `closeNav` / `clearEntries` are
+// deliberately withheld. Guarded so importing this module is a no-op
+// wherever `window` is undefined (SSR, non-browser test contexts).
 if (typeof window !== 'undefined') {
   try {
     window.__cbDiagnostics = { getEntries, exportJson };

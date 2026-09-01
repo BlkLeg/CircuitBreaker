@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import {
   recordRequest,
   recordNav,
+  closeNav,
   getEntries,
   clearEntries,
   exportJson,
@@ -10,10 +11,11 @@ import {
 /**
  * The ring buffer is instrumentation for Route §4.2's browser-half of the
  * request-correlation path (nav-ID → request-IDs → server logs → slow
- * queries). Its two hard requirements are covered here: it must never grow
- * past its fixed capacity, and it must never throw into a caller — a bad
- * argument here can never be the thing that breaks a page render or an HTTP
- * call.
+ * queries). Its hard requirements are covered here: it must never grow past
+ * its fixed capacity, it must never throw into a caller — a bad argument
+ * here can never be the thing that breaks a page render or an HTTP call —
+ * and (review fix) a pending nav must never be silently lost to eviction by
+ * unrelated request volume, nor corrupted if its own slot is ever reused.
  */
 
 beforeEach(() => {
@@ -21,7 +23,7 @@ beforeEach(() => {
 });
 
 describe('capacity', () => {
-  it('holds exactly 200 entries under 500 writes, retaining the newest 200 in order', () => {
+  it('holds exactly 200 request entries under 500 writes, retaining the newest 200 in order', () => {
     for (let i = 0; i < 500; i++) {
       recordRequest({ requestId: `req-${i}`, method: 'get', path: `/x/${i}`, status: 200 });
     }
@@ -35,6 +37,20 @@ describe('capacity', () => {
       // eslint-disable-next-line security/detect-object-injection -- numeric loop index over a test array
       expect(entries[i].requestId).toBe(`req-${300 + i}`);
     }
+  });
+
+  it('request volume does not evict a still-open nav entry (review Finding 2)', () => {
+    // Nav and request kinds live in separate rings specifically so a busy
+    // page (background polling, SSE-driven lists) cannot push a pending
+    // navigation's entry out of the buffer just by making a lot of requests.
+    const nav = recordNav({ path: '/map', pending: true });
+    for (let i = 0; i < 500; i++) {
+      recordRequest({ requestId: `req-${i}`, method: 'get', path: `/x/${i}`, status: 200 });
+    }
+    const entries = getEntries();
+    const stillThere = entries.find((e) => e.kind === 'nav' && e.id === nav.id);
+    expect(stillThere).toBeDefined();
+    expect(stillThere.pending).toBe(true);
   });
 });
 
@@ -52,6 +68,12 @@ describe('never throws', () => {
     const circular = { path: '/map' };
     circular.self = circular;
     expect(() => recordNav(circular)).not.toThrow();
+  });
+
+  it('closeNav does not throw for an unknown or malformed id', () => {
+    expect(() => closeNav('does-not-exist', { durationMs: 1 })).not.toThrow();
+    expect(() => closeNav(undefined, {})).not.toThrow();
+    expect(closeNav('does-not-exist', { durationMs: 1 })).toBe(false);
   });
 
   it('getEntries, clearEntries, and exportJson never throw', () => {
@@ -94,15 +116,38 @@ describe('exportJson', () => {
   });
 });
 
-describe('recordNav in-place close', () => {
-  it('returns a live reference so the caller can close the entry without a second write', () => {
-    const entry = recordNav({ path: '/agents', pending: true });
-    expect(entry.pending).toBe(true);
-    entry.pending = false;
-    entry.durationMs = 42;
+describe('closeNav', () => {
+  it('closes an open nav entry by id, in place, without a second buffer write', () => {
+    const nav = recordNav({ path: '/agents', pending: true });
+    expect(nav.pending).toBe(true);
+
+    const closed = closeNav(nav.id, { durationMs: 42, longTasks: [], longTaskTotalMs: 0 });
+    expect(closed).toBe(true);
+
     const [stored] = getEntries();
     expect(stored.pending).toBe(false);
     expect(stored.durationMs).toBe(42);
     expect(getEntries()).toHaveLength(1);
+  });
+
+  it('no-ops instead of corrupting or resurrecting an evicted nav entry (review Finding 2)', () => {
+    const nav = recordNav({ path: '/logs', pending: true });
+
+    // Push this nav's own slot out of the (separate) nav ring before it closes.
+    for (let i = 0; i < 200; i++) {
+      recordNav({ path: `/x/${i}`, pending: true });
+    }
+    expect(getEntries().some((e) => e.id === nav.id)).toBe(false);
+
+    const closed = closeNav(nav.id, { durationMs: 999 });
+    expect(closed).toBe(false);
+
+    // The evicted nav does not reappear, and nothing else in the buffer was
+    // touched by the stale close — every entry is still one of the 200
+    // replacements, each still legitimately pending.
+    const entries = getEntries();
+    expect(entries).toHaveLength(200);
+    expect(entries.every((e) => e.kind === 'nav' && e.pending === true)).toBe(true);
+    expect(entries.some((e) => e.durationMs === 999)).toBe(false);
   });
 });
