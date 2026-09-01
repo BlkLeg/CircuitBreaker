@@ -30,6 +30,11 @@ export const HEALTH_POLL_INTERVAL_STOPPING_MS = 1_000; // stopping — fastest
 export const HEALTH_POLL_INTERVAL_OFFLINE_MS = 2_000; // offline — retry freq
 export const HEALTH_REQUEST_TIMEOUT_MS = 3_000; // per-request abort timeout
 export const MAX_OFFLINE_BEFORE_NOTIFY_MS = 10_000; // delay before showing offline banner
+// Consecutive failed health polls required before resolving to 'offline'. A single
+// aborted/refused/network-error poll is not conclusive on its own; this tolerates one
+// or two transient failures without flipping state. Does not apply to a successful
+// response reporting 'starting'/'stopping' — those take effect immediately.
+export const HEALTH_FAILURES_BEFORE_OFFLINE = 3;
 
 // Discovery / scan
 export const MAX_NETWORKS_PER_SCAN = 10;
