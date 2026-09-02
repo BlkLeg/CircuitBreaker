@@ -204,6 +204,13 @@ def test_no_publisher_exists_for_the_subject_the_worker_consumes() -> None:
             "--exclude-dir=.venv",
             "--exclude-dir=node_modules",
             "--exclude-dir=.git",
+            # Registered git worktrees live under .claude/ and hold FULL
+            # copies of the source tree, so without this the scan reports
+            # workers/discovery.py once per worktree — as a "publisher",
+            # against paths that are not this checkout. Unrelated to slice
+            # 4.x; the same hazard is why the Phase 4 ratchets ask git what
+            # is tracked instead of walking the filesystem.
+            "--exclude-dir=.claude",
             '"discovery.jobs"',
             str(_REPO),
         ],
