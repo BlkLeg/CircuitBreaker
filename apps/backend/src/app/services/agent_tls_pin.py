@@ -162,3 +162,29 @@ def complete_tls_pin_rotation(db: Session) -> None:
         )
     )
     db.commit()
+
+
+def convergence_counts(db: Session, state: TLSPinRotationState) -> tuple[int, int]:
+    """(converged, unconverged) across `active` agents for the running rotation.
+
+    An agent counts as converged only when it reported matching the successor
+    policy *after* the rotation started — an older timestamp describes some
+    previous rotation, not this one.
+
+    Returns (0, 0) when no rotation is running. There is nothing to converge
+    on then, and counting the whole fleet as unconverged would make the
+    activation gate refuse every activation on an install that never rotates.
+    """
+    from app.services import agent_registry
+
+    if not state.rotation_active or state.started_at is None:
+        return 0, 0
+    converged = 0
+    unconverged = 0
+    for agent in agent_registry.list_agents(db, status="active"):
+        pinned = agent.tls_pin_successor_pinned_at
+        if pinned is not None and pinned >= state.started_at:
+            converged += 1
+        else:
+            unconverged += 1
+    return converged, unconverged

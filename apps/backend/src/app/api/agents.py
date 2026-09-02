@@ -54,6 +54,9 @@ from app.schemas.agents import (
     ServerKeyFleetAdoption,
     ServerKeyPendingAgent,
     ServerKeyRotationStatus,
+    TLSPinPendingAgent,
+    TLSPinRotateRequest,
+    TLSPinRotationStatus,
     UpdateRequest,
 )
 from app.schemas.discovery import (
@@ -74,7 +77,9 @@ from app.services import (
     agent_discovery,
     agent_enrollment,
     agent_registry,
+    agent_tls_pin,
     agent_update,
+    certificate_service,
     discovery_eligibility,
     discovery_service,
     monitor_service,
@@ -380,6 +385,95 @@ def get_server_key_pending_agents(
         )
         for r in rows
     ]
+
+
+def _tls_pin_status(db: Session, state: agent_tls_pin.TLSPinRotationState) -> TLSPinRotationStatus:
+    """Shape one rotation state for the admin surface, including the fleet
+    convergence counts the certificate-activation gate reads."""
+    converged, unconverged = agent_tls_pin.convergence_counts(db, state)
+    fingerprint: str | None = None
+    if state.successor_pin:
+        fingerprint = hashlib.sha256(state.successor_pin.encode()).hexdigest()[:32]
+    return TLSPinRotationStatus(
+        active=state.rotation_active,
+        successor_mode=state.successor_mode,
+        successor_pin_fingerprint=fingerprint,
+        started_at=state.started_at,
+        overlap_expires_at=state.overlap_expires_at,
+        converged=converged,
+        unconverged=unconverged,
+    )
+
+
+@router.get("/tls-pin/status", response_model=TLSPinRotationStatus)
+def get_tls_pin_rotation_status(
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("admin")],
+) -> Any:
+    """Slice 4.1: the advertised successor TLS trust policy and how much of
+    the fleet has confirmed it. Never returns the pin itself."""
+    return _tls_pin_status(db, agent_tls_pin.load_tls_pin_rotation_state(db))
+
+
+@router.post("/tls-pin/rotate", response_model=TLSPinRotationStatus, status_code=201)
+async def post_tls_pin_rotate(
+    body: TLSPinRotateRequest,
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("admin")],
+) -> Any:
+    """Slice 4.1: advertise a staged certificate's trust policy as the
+    successor, so the fleet accepts either leaf across the cutover.
+
+    Start this *before* activating the certificate. Activation is gated on
+    convergence (see `api/certificates.py`) precisely so the wrong order
+    fails loudly instead of stranding agents.
+
+    Rejects with 409 while a prior rotation is still advertised — one
+    rotation in flight, matching the server-key endpoint beside this one.
+    """
+    cert = certificate_service.get_certificate(db, body.certificate_id)
+    if cert is None:
+        raise HTTPException(status_code=404, detail="Certificate not found")
+
+    state = agent_tls_pin.start_tls_pin_rotation(db, cert)
+    if state is None:
+        raise HTTPException(
+            status_code=409,
+            detail="A TLS pin rotation is already active (overlap window in progress)",
+        )
+    await agent_registry.broadcast_tls_pin_rotate(db, state)
+    return _tls_pin_status(db, state)
+
+
+@router.get("/tls-pin/pending", response_model=list[TLSPinPendingAgent])
+def get_tls_pin_pending_agents(
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("admin")],
+) -> Any:
+    """Slice 4.1: the active agents that have not confirmed the successor
+    policy — the ones activating the certificate would strand. Capped like
+    the other fleet drill-downs; a longer list is a rollout problem."""
+    state = agent_tls_pin.load_tls_pin_rotation_state(db)
+    if not state.rotation_active or state.started_at is None:
+        return []
+    pending: list[TLSPinPendingAgent] = []
+    for agent in agent_registry.list_agents(db, status="active"):
+        pinned = agent.tls_pin_successor_pinned_at
+        if pinned is not None and pinned >= state.started_at:
+            continue
+        seen = agent.tls_pin_current_pinned_at
+        pending.append(
+            TLSPinPendingAgent(
+                id=agent.id,
+                hostname=agent.hostname,
+                name=agent.name,
+                last_seen_at=agent.last_seen_at,
+                bucket=("current" if seen is not None and seen >= state.started_at else "unseen"),
+            )
+        )
+        if len(pending) >= _PENDING_AGENT_LIMIT:
+            break
+    return pending
 
 
 def _latest_samples(db: Session, agent_ids: list[int]) -> dict[int, AgentLatestSample]:

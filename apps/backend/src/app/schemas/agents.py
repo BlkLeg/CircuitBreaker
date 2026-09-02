@@ -316,3 +316,45 @@ class ServerKeyRotationStatus(BaseModel):
     started_at: datetime | None = None
     overlap_expires_at: datetime | None = None
     fleet: ServerKeyFleetAdoption | None = None
+
+
+class TLSPinPendingAgent(BaseModel):
+    """One active agent that has not confirmed the successor TLS policy.
+
+    `bucket` mirrors `ServerKeyPendingAgent`'s naming: "current" means the
+    agent has dialed since the rotation began but matched the outgoing
+    policy; "unseen" means it has not reported a policy at all — either it
+    has not dialed, or it predates the `tls_pin_kind` field entirely. Both
+    buckets block activation, because both describe an agent the cutover
+    would strand.
+    """
+
+    id: int
+    hostname: str | None
+    name: str | None
+    last_seen_at: datetime | None
+    bucket: str
+
+
+class TLSPinRotationStatus(BaseModel):
+    """Slice 4.1: the TLS trust rotation's state, as surfaced to admins.
+
+    `successor_pin_fingerprint` is a truncated digest of the successor pin,
+    never the pin itself — matching `ServerKeyRotationStatus`'s convention
+    that this endpoint family returns no key material. It is None for a
+    public-mode successor, which has no pin by definition.
+    """
+
+    active: bool
+    successor_mode: str | None = None
+    successor_pin_fingerprint: str | None = None
+    started_at: datetime | None = None
+    overlap_expires_at: datetime | None = None
+    converged: int = 0
+    unconverged: int = 0
+
+
+class TLSPinRotateRequest(BaseModel):
+    """The certificate whose trust policy becomes the advertised successor."""
+
+    certificate_id: int
