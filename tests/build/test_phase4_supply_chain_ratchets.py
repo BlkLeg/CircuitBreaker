@@ -7,6 +7,7 @@ after being fixed once.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -76,3 +77,72 @@ def test_every_dialer_and_transport_call_takes_a_resolved_trust() -> None:
         "tlsdial.Trust literal — a literal cannot pick up an advertised "
         "successor:\n  " + "\n  ".join(offenders)
     )
+
+
+# The exact set of agent events that carry a hash-chained audit entry.
+# Changing this requires changing the test, which is the point: adding an
+# authorization event without chaining it is the F17 defect returning, and
+# adding a high-volume one puts it behind the global audit advisory lock.
+_EXPECTED_CHAINED_EVENTS = {
+    "enrolled",
+    "approved",
+    "rejected",
+    "revoked",
+    "capability_changed",
+    "key_rotation_started",
+    "key_rotated",
+    "key_rotation_rejected",
+    "key_rotation_expired",
+    "update_queued",
+}
+
+
+def _chained_event_types() -> set[str]:
+    """Read `CHAINED_EVENT_TYPES` out of the source with AST rather than by
+    importing it.
+
+    This is a Tier 0 gate: importing `app.services.agent_registry` pulls in
+    `app.db.session`, which refuses to load without a `CB_DB_URL`. A static
+    gate that needs a database is not a static gate — and the rest of this
+    tier reads source for the same reason (see tests/build/_ast_helpers.py).
+    """
+    source = (
+        REPO_ROOT / "apps" / "backend" / "src" / "app" / "services" / "agent_registry.py"
+    ).read_text()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Assign):
+            continue
+        targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        if "CHAINED_EVENT_TYPES" not in targets:
+            continue
+        # frozenset({...}) — the literal set is the single call argument.
+        assert isinstance(node.value, ast.Call), "CHAINED_EVENT_TYPES must stay a literal"
+        return {ast.literal_eval(elt) for elt in node.value.args[0].elts}
+    raise AssertionError("CHAINED_EVENT_TYPES not found in agent_registry.py")
+
+
+def test_chained_agent_event_set_is_pinned() -> None:
+    """F17: agent authorization decisions must be tamper-evident, and only
+    those — the audit chain serializes on a global advisory lock, so a
+    high-volume event type added here becomes an instance-wide contention
+    point."""
+    assert _chained_event_types() == _EXPECTED_CHAINED_EVENTS
+
+
+def test_high_volume_events_are_never_chained() -> None:
+    """Named individually rather than left to the set comparison above, so
+    the reason each one is excluded survives a future edit to that set."""
+    chained = _chained_event_types()
+
+    for event in (
+        "connected",
+        "disconnected",
+        "version_changed",
+        "capability_violation",
+        "protocol_violation",
+        "host_link_changed",
+    ):
+        assert event not in chained, (
+            f"{event!r} is high-volume or not an authorization decision; "
+            "chaining it serializes it behind the global audit lock"
+        )

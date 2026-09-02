@@ -1141,6 +1141,42 @@ def has_duplicate_machine_id(db: Session, agent: Agent) -> bool:
     )
 
 
+# Slice 4.3 (F17): the agent events that also get a hash-chained audit entry.
+#
+# These are the decisions that change who an agent is, what it may do, or
+# what code it runs — the ones ledger row AGT-16 requires be audited with
+# actor, target and outcome. Every member is low-volume and all but
+# `enrolled` and the key-rotation lifecycle are admin-initiated.
+#
+# Deliberately narrow. `audit_chain.lock_audit_chain` takes a *global*
+# pg_advisory_xact_lock per write, so every chained event serializes against
+# every other audit write in the instance. `connected`/`disconnected`,
+# `version_changed`, `capability_violation` and `protocol_violation` are
+# agent-initiated and high-volume — `protocol_violation` needed throttling
+# under route finding F24 precisely for that reason — and routing them
+# through a global lock would trade a write-amplification problem for a
+# contention one. `host_link_changed` is excluded on different grounds: it is
+# an inventory association, not a permission change.
+#
+# tests/build/test_phase4_supply_chain_ratchets.py pins this set, so adding
+# a new authorization event forces a deliberate decision about whether it
+# chains rather than defaulting to silence.
+CHAINED_EVENT_TYPES = frozenset(
+    {
+        "enrolled",
+        "approved",
+        "rejected",
+        "revoked",
+        "capability_changed",
+        "key_rotation_started",
+        "key_rotated",
+        "key_rotation_rejected",
+        "key_rotation_expired",
+        "update_queued",
+    }
+)
+
+
 def record_event(
     db: Session,
     agent_id: int,
@@ -1149,11 +1185,37 @@ def record_event(
     actor_user_id: int | None = None,
     detail: dict | None = None,
 ) -> AgentEvent:
+    """Append one entry to an agent's timeline.
+
+    Members of `CHAINED_EVENT_TYPES` additionally get a hash-chained audit
+    entry (F17). That is an *additional* write, never a replacement: the
+    agent timeline UI reads `agent_events`, and moving these rows would
+    break it. `log_service.write_log` owns the hashing, the advisory lock and
+    the never-raises contract, so no chain machinery is duplicated here.
+    """
     event = AgentEvent(
         agent_id=agent_id, event_type=event_type, actor_user_id=actor_user_id, detail=detail
     )
     db.add(event)
     db.flush()
+    if event_type in CHAINED_EVENT_TYPES:
+        from app.services.log_service import write_log
+
+        # write_log never raises and never aborts the parent transaction
+        # (see its docstring), so a chain failure degrades to a logged error
+        # rather than losing the authorization decision itself.
+        write_log(
+            db,
+            action=f"agent_{event_type}",
+            entity_type="agent",
+            entity_id=agent_id,
+            diff=detail,
+            actor_id=actor_user_id,
+            # "audit" is this codebase's category for security-relevant
+            # entries (app/core/audit.py), not "security".
+            category="audit",
+            severity="info",
+        )
     return event
 
 
