@@ -120,8 +120,8 @@ func TestHandleTLSPinRotate_PersistsAPublicCutover(t *testing.T) {
 // retry the rotation.
 func TestHandleTLSPinRotate_DropsMalformedAndUnknownModes(t *testing.T) {
 	for name, payload := range map[string]string{
-		"malformed json": `{not json`,
-		"unknown mode":   `{"mode":"whatever","successor_pin":"X","expiry":"2026-09-08T10:00:00Z"}`,
+		"malformed json":          `{not json`,
+		"unknown mode":            `{"mode":"whatever","successor_pin":"X","expiry":"2026-09-08T10:00:00Z"}`,
 		"self_signed with no pin": `{"mode":"self_signed","successor_pin":"","expiry":"2026-09-08T10:00:00Z"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -426,5 +426,81 @@ func TestDialWithTrust_RetryFailureSurfacesTheOriginalError(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&cl.accepts); got != 2 {
 		t.Errorf("accepted connections = %d, want 2 (the original dial plus one retry)", got)
+	}
+}
+
+// ── Defect B: promotion must survive the reconnect after it ───────────────
+
+func TestPromoteTrust_SuccessorBecomesTheEffectivePolicy(t *testing.T) {
+	// Clearing the rotation on promotion without recording the successor
+	// anywhere left ResolveTrust falling back to agent.toml's tls_pin — the
+	// pin of the certificate that had just been replaced. The agent survived
+	// exactly one connection past the cutover and stranded on the next
+	// reconnect, which is the failure F4 exists to eliminate.
+	dir := t.TempDir()
+	if err := config.SaveTLSPinRotation(dir, config.TLSPinRotation{
+		Mode: "self_signed", SuccessorPin: "PIN-B", Expiry: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveTLSPinRotation: %v", err)
+	}
+	cfg := &config.Config{TLSPin: "PIN-A"}
+
+	if _, err := PromoteTrust(cfg, dir, 1); err != nil {
+		t.Fatalf("PromoteTrust: %v", err)
+	}
+
+	got := ResolveTrust(cfg, dir)
+	if got.Mode != tlsdial.ModeSelfSigned {
+		t.Fatalf("Mode = %q, want %q", got.Mode, tlsdial.ModeSelfSigned)
+	}
+	if len(got.Pins) != 1 || got.Pins[0] != "PIN-B" {
+		t.Errorf("Pins = %v, want [PIN-B] — the promoted successor, not agent.toml's replaced pin", got.Pins)
+	}
+}
+
+func TestPromoteTrust_PublicSuccessorBecomesTheEffectivePolicy(t *testing.T) {
+	// The cross-mode direction: after a self_signed -> public cutover the
+	// agent must stop pinning entirely, or every later dial fails against a
+	// publicly-trusted leaf it holds no digest for.
+	dir := t.TempDir()
+	if err := config.SaveTLSPinRotation(dir, config.TLSPinRotation{
+		Mode: "public", Expiry: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveTLSPinRotation: %v", err)
+	}
+	cfg := &config.Config{TLSPin: "PIN-A"}
+
+	if _, err := PromoteTrust(cfg, dir, successorRetryIndex); err != nil {
+		t.Fatalf("PromoteTrust: %v", err)
+	}
+
+	got := ResolveTrust(cfg, dir)
+	if got.Mode != tlsdial.ModePublic {
+		t.Errorf("Mode = %q, want %q after promoting a public successor", got.Mode, tlsdial.ModePublic)
+	}
+	if len(got.Pins) != 0 {
+		t.Errorf("Pins = %v, want none in public mode", got.Pins)
+	}
+}
+
+func TestResolveTrust_APromotedPolicyStillAcceptsANewSuccessor(t *testing.T) {
+	// A second rotation after a first has been promoted must still produce a
+	// two-candidate set, or an install can only ever rotate once.
+	dir := t.TempDir()
+	cfg := &config.Config{TLSPin: "PIN-A"}
+	if err := config.SaveEffectiveTLSTrust(dir, config.TLSTrustPolicy{
+		Mode: "self_signed", Pin: "PIN-B",
+	}); err != nil {
+		t.Fatalf("SaveEffectiveTLSTrust: %v", err)
+	}
+	if err := config.SaveTLSPinRotation(dir, config.TLSPinRotation{
+		Mode: "self_signed", SuccessorPin: "PIN-C", Expiry: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveTLSPinRotation: %v", err)
+	}
+
+	got := ResolveTrust(cfg, dir)
+	if len(got.Pins) != 2 || got.Pins[0] != "PIN-B" || got.Pins[1] != "PIN-C" {
+		t.Errorf("Pins = %v, want [PIN-B PIN-C]", got.Pins)
 	}
 }

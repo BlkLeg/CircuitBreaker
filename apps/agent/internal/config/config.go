@@ -170,8 +170,14 @@ func SaveTLSPinRotation(stateDir string, state TLSPinRotation) error {
 	if err != nil {
 		return fmt.Errorf("config: encode tls pin rotation: %w", err)
 	}
-	path := tlsPinRotationPath(stateDir)
-	tmp, err := os.CreateTemp(stateDir, ".tmp-tls-pin-rotation-*")
+	return writeStateFileAtomically(stateDir, tlsPinRotationPath(stateDir), ".tmp-tls-pin-rotation-*", data)
+}
+
+// writeStateFileAtomically writes data to path via a temp-file-then-rename,
+// so a crash between writing and the next read can never leave a corrupt,
+// unparseable trust file behind. Shared by both TLS trust state files.
+func writeStateFileAtomically(stateDir, path, pattern string, data []byte) error {
+	tmp, err := os.CreateTemp(stateDir, pattern)
 	if err != nil {
 		return fmt.Errorf("config: create temp file: %w", err)
 	}
@@ -212,4 +218,60 @@ func ClearTLSPinRotation(stateDir string) error {
 		return fmt.Errorf("config: clear tls pin rotation: %w", err)
 	}
 	return nil
+}
+
+// TLSTrustPolicy is the trust policy this agent currently honors, once a
+// rotation has actually completed — the successor it promoted after dialing
+// against it successfully.
+//
+// This file exists because promotion cannot be expressed by deleting the
+// rotation alone. agent.toml is root-owned and never rewritten (see
+// TLSPinRotation), so its tls_pin still names the *replaced* certificate
+// after a cutover. An agent that cleared the rotation and fell back to it
+// would verify against the old leaf on its very next reconnect and strand —
+// surviving exactly one connection past the cutover, which is the failure
+// slice 4.1 exists to eliminate.
+//
+// Absent on every agent that has never completed a rotation, which is the
+// overwhelmingly common case. Mode/Pin use the same vocabulary as
+// TLSPinRotation: "self_signed" with a base64 SHA-256 SPKI digest, or
+// "public" with an empty pin.
+type TLSTrustPolicy struct {
+	Mode string `json:"mode"`
+	Pin  string `json:"pin"`
+}
+
+func effectiveTLSTrustPath(stateDir string) string {
+	return filepath.Join(stateDir, "tls_trust.json")
+}
+
+// LoadEffectiveTLSTrust reads the promoted trust policy, if any. Returns
+// (nil, nil) — not an error — when this agent has never completed a
+// rotation, in which case agent.toml's tls_pin is still the effective
+// policy.
+func LoadEffectiveTLSTrust(stateDir string) (*TLSTrustPolicy, error) {
+	data, err := os.ReadFile(effectiveTLSTrustPath(stateDir))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("config: load effective tls trust: %w", err)
+	}
+	var policy TLSTrustPolicy
+	if err := json.Unmarshal(data, &policy); err != nil {
+		return nil, fmt.Errorf("config: decode effective tls trust: %w", err)
+	}
+	return &policy, nil
+}
+
+// SaveEffectiveTLSTrust durably records the policy this agent promoted,
+// through the same temp-file-then-rename write SaveTLSPinRotation uses.
+func SaveEffectiveTLSTrust(stateDir string, policy TLSTrustPolicy) error {
+	data, err := json.Marshal(policy)
+	if err != nil {
+		return fmt.Errorf("config: encode effective tls trust: %w", err)
+	}
+	return writeStateFileAtomically(
+		stateDir, effectiveTLSTrustPath(stateDir), ".tmp-tls-trust-*", data,
+	)
 }

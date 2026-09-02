@@ -2,14 +2,17 @@ package link
 
 import (
 	"log"
+	"slices"
 
 	"circuitbreaker.dev/cb-agent/internal/config"
 	"circuitbreaker.dev/cb-agent/internal/tlsdial"
 )
 
 // ResolveTrust returns the TLS trust policy every dial in this agent should
-// honor: agent.toml's tls_pin as the effective policy, plus any successor a
-// `tls.pin.rotate` frame advertised and internal/config durably persisted.
+// honor: the effective policy — a previously promoted successor
+// (config.TLSTrustPolicy) if one exists, otherwise agent.toml's tls_pin —
+// plus any successor a `tls.pin.rotate` frame advertised and internal/config
+// durably persisted.
 //
 // This is the single resolver. All four dial sites — enrollment
 // (internal/enroll), the /link websocket and its re-dial (internal/link), and
@@ -19,9 +22,9 @@ import (
 // download path makes every other stranding unrecoverable.
 // tests/build/test_phase4_supply_chain_ratchets.py enforces it.
 //
-// stateDir == "" skips the persisted-rotation lookup entirely and returns
-// just the configured policy, unchanged from this function's absence —
-// matching serverKeyCandidates' handling of the same case.
+// stateDir == "" skips both persisted lookups entirely and returns just the
+// configured policy, unchanged from this function's absence — matching
+// serverKeyCandidates' handling of the same case.
 func ResolveTrust(cfg *config.Config, stateDir string) tlsdial.Trust {
 	trust := tlsdial.Trust{Mode: tlsdial.ModeSelfSigned, Pins: []string{cfg.TLSPin}}
 	if cfg.TLSPin == "" {
@@ -29,6 +32,17 @@ func ResolveTrust(cfg *config.Config, stateDir string) tlsdial.Trust {
 	}
 	if stateDir == "" {
 		return trust
+	}
+	// A previously promoted policy replaces agent.toml's, which names the
+	// certificate that rotation retired. See config.TLSTrustPolicy.
+	if promoted, err := config.LoadEffectiveTLSTrust(stateDir); err != nil {
+		log.Printf("link: reading promoted tls trust policy: %v", err)
+	} else if promoted != nil {
+		if promoted.Mode == tlsdial.ModePublic {
+			trust = tlsdial.Trust{Mode: tlsdial.ModePublic}
+		} else if promoted.Pin != "" {
+			trust = tlsdial.Trust{Mode: tlsdial.ModeSelfSigned, Pins: []string{promoted.Pin}}
+		}
 	}
 	rotation, err := config.LoadTLSPinRotation(stateDir)
 	if err != nil {
@@ -42,7 +56,10 @@ func ResolveTrust(cfg *config.Config, stateDir string) tlsdial.Trust {
 		trust.PublicSuccessorPending = true
 		return trust
 	}
-	if rotation.SuccessorPin != "" && rotation.SuccessorPin != cfg.TLSPin {
+	// Compared against the *effective* pin rather than cfg.TLSPin: after one
+	// promotion those differ, and comparing against the retired pin would
+	// re-append a successor the agent is already serving under.
+	if rotation.SuccessorPin != "" && !slices.Contains(trust.Pins, rotation.SuccessorPin) {
 		trust.Pins = append(trust.Pins, rotation.SuccessorPin)
 	}
 	return trust
@@ -54,9 +71,14 @@ func ResolveTrust(cfg *config.Config, stateDir string) tlsdial.Trust {
 // matchedIndex is the candidate index tlsdial.Trust.Matches returned. Index 0
 // is the effective policy ("current"); anything above it is the advertised
 // successor. A successor match means the server is now serving the new
-// certificate, so the rotation has completed from this agent's point of view
-// and the file is cleared — leaving cfg.TLSPin plus whatever the operator's
-// next install writes as the resolved policy from then on.
+// certificate, so the rotation has completed from this agent's point of view:
+// the successor is recorded as the effective policy and the rotation file is
+// cleared.
+//
+// Recording it is not optional. agent.toml is root-owned and never rewritten,
+// so its tls_pin still names the certificate the rotation retired; an agent
+// that only cleared the rotation would fall back to that retired pin and
+// strand on its very next reconnect, one connection past the cutover.
 //
 // A current match deliberately keeps the rotation: the cutover has not
 // happened yet, and dropping the successor here would mean the agent has to
@@ -76,6 +98,27 @@ func PromoteTrust(cfg *config.Config, stateDir string, matchedIndex int) (string
 	}
 	if stateDir == "" {
 		return "successor", nil
+	}
+	rotation, err := config.LoadTLSPinRotation(stateDir)
+	if err != nil {
+		return "successor", err
+	}
+	if rotation == nil {
+		// Nothing was advertised, so there is no policy to promote. The
+		// caller still matched above index 0, which cannot happen without a
+		// successor candidate — treat it as already promoted rather than
+		// writing a policy this agent was never told about.
+		return "successor", nil
+	}
+	// Recorded BEFORE the clear, and this order is the whole fix: the
+	// rotation file is the only record of what was promoted, so clearing it
+	// first and failing here would leave the agent resolving agent.toml's
+	// retired pin against the certificate now being served.
+	if err := config.SaveEffectiveTLSTrust(stateDir, config.TLSTrustPolicy{
+		Mode: rotation.Mode,
+		Pin:  rotation.SuccessorPin,
+	}); err != nil {
+		return "successor", err
 	}
 	if err := config.ClearTLSPinRotation(stateDir); err != nil {
 		return "successor", err
