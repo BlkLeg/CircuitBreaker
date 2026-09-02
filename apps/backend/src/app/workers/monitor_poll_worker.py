@@ -16,7 +16,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from nats.js.api import ConsumerConfig
+
 from app.core.nats_client import nats_client
+from app.db.session import get_session_context
 from app.services.monitoring.collectors import COLLECTORS, CheckResult, Sample
 from app.services.monitoring.result_service import (
     OUTCOME_COMPLETED,
@@ -25,6 +28,7 @@ from app.services.monitoring.result_service import (
     process_results,
 )
 from app.services.monitoring.writer import SampleRow
+from app.workers.dead_letter import handle_failed_delivery
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +37,11 @@ _MAX_PARALLEL = int(os.getenv("CB_MONITOR_POLL_PARALLEL", "50"))
 _FETCH_BATCH = int(os.getenv("CB_MONITOR_POLL_FETCH", "50"))
 _JS_STREAM = "MONITOR_POLL"
 _JS_DURABLE = "monitor_pollers"
+#: Delivery budget before a message is parked (route F14). Five attempts across
+#: the ack-wait window is long enough to ride out a transient database or NATS
+#: blip, and short enough that a genuinely poisoned message stops blocking its
+#: batch within minutes rather than never.
+_MAX_DELIVER = 5
 _sema = asyncio.Semaphore(_MAX_PARALLEL)
 
 # What one collector run yields, before it is turned into a MonitorResult:
@@ -123,7 +132,12 @@ async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
 
     await nats_client.ensure_monitor_poll_stream()
     js = nats_client._nc.jetstream()
-    psub = await js.pull_subscribe("mon.poll.item", durable=_JS_DURABLE, stream=_JS_STREAM)
+    psub = await js.pull_subscribe(
+        "mon.poll.item",
+        durable=_JS_DURABLE,
+        stream=_JS_STREAM,
+        config=ConsumerConfig(max_deliver=_MAX_DELIVER),
+    )
     logger.info("monitor-poll worker subscribed (durable=%s)", _JS_DURABLE)
     _touch_healthy()
 
@@ -148,8 +162,18 @@ async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
                 await process_batch(items, SessionLocal)
             except Exception as exc:  # noqa: BLE001
                 logger.error("monitor-poll batch failed: %s", exc, exc_info=True)
+                # Per message, not per batch. This loop naks the whole batch on
+                # one failure, so without the budget check a single poisoned
+                # message blocks every good message beside it forever (F14).
                 for m in msgs:
-                    await _safe_nak(m)
+                    await handle_failed_delivery(
+                        m,
+                        stream=_JS_STREAM,
+                        consumer=_JS_DURABLE,
+                        error=f"{type(exc).__name__}: {exc}",
+                        max_deliver=_MAX_DELIVER,
+                        session_factory=get_session_context,
+                    )
                 continue
 
         for m in msgs:
