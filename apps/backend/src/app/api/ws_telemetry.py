@@ -34,15 +34,13 @@ from starlette.websockets import WebSocketState
 
 import app.db.session as _db_session
 from app.api.ws_discovery import trusted_ws_client_ip
+from app.api.ws_session import resolve_ws_session_user
 from app.core.auth_cookie import is_websocket_secure, token_from_websocket_scope, ws_require_wss
 from app.core.network_acl import is_ip_in_cidrs as _is_ip_in_cidrs
 from app.core.redis import get_redis
-from app.core.security import decode_token
-from app.core.time import utcnow, utcnow_iso
-from app.db.models import User
+from app.core.time import utcnow_iso
 from app.services.settings_service import get_or_create_settings
 from app.services.stream_faults import close_stream_socket, record_stream_fault
-from app.services.user_service import is_session_revoked
 
 logger = logging.getLogger(__name__)
 
@@ -217,22 +215,7 @@ async def telemetry_stream(websocket: WebSocket) -> None:
         authenticated = False
 
         with _db_session.SessionLocal() as db:
-            cfg = get_or_create_settings(db)
-            if cfg.jwt_secret:
-                if is_session_revoked(db, raw_token):
-                    authenticated = False
-                else:
-                    uid = decode_token(raw_token, cfg.jwt_secret)
-                    if uid is not None:
-                        u = db.get(User, uid)
-                        if u and u.is_active:
-                            if not (u.locked_until and u.locked_until > utcnow()):
-                                if not (
-                                    u.role == "demo"
-                                    and u.demo_expires
-                                    and u.demo_expires <= utcnow()
-                                ):
-                                    authenticated = True
+            authenticated = resolve_ws_session_user(db, raw_token) is not None
 
         if not authenticated:
             logger.warning("Telemetry WS auth failed (ip=%s)", client_ip)

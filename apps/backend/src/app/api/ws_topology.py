@@ -40,15 +40,12 @@ from starlette.websockets import WebSocketState
 
 import app.db.session as _db_session
 from app.api.ws_discovery import trusted_ws_client_ip
+from app.api.ws_session import resolve_ws_session_user
 from app.core.auth_cookie import is_websocket_secure, token_from_websocket_scope, ws_require_wss
 from app.core.log_sanitize import safe_log_fragment
 from app.core.rbac import require_role
-from app.core.security import decode_token
-from app.core.time import utcnow, utcnow_iso
-from app.db.models import User
-from app.services.settings_service import get_or_create_settings
+from app.core.time import utcnow_iso
 from app.services.stream_faults import FAULT_DECODE, record_stream_fault
-from app.services.user_service import is_session_revoked
 
 logger = logging.getLogger(__name__)
 
@@ -258,23 +255,10 @@ async def topology_stream(websocket: WebSocket) -> None:
         user_id: int | None = None
 
         with _db_session.SessionLocal() as db:
-            cfg = get_or_create_settings(db)
-            if cfg.jwt_secret:
-                if is_session_revoked(db, raw_token):
-                    authenticated = False
-                else:
-                    uid = decode_token(raw_token, cfg.jwt_secret)
-                    if uid is not None:
-                        u = db.get(User, uid)
-                        if u and u.is_active:
-                            if not (u.locked_until and u.locked_until > utcnow()):
-                                if not (
-                                    u.role == "demo"
-                                    and u.demo_expires
-                                    and u.demo_expires <= utcnow()
-                                ):
-                                    authenticated = True
-                                    user_id = uid
+            _ws_user = resolve_ws_session_user(db, raw_token)
+            if _ws_user is not None:
+                authenticated = True
+                user_id = _ws_user.id
 
         if not authenticated:
             logger.warning("Topology WS auth failed (ip=%s)", client_ip)

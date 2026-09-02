@@ -46,23 +46,36 @@ _PERCENT_FIELDS = {"cpu_pct", "mem_pct", "swap_pct", "root_disk_pct"}
 # Slice 3 probe collectors and slice 4 discovery collectors reuse these four.
 _READINESS_STATES = frozenset({"ready", "degraded", "unavailable", "disabled"})
 _violation_lock = threading.Lock()
-_violations: dict[int, tuple[float, int]] = {}
+#: Keyed by (agent_id, kind). Keying on the agent alone would collapse two
+#: *different* violations into one suppressed count — a flood of identical
+#: frames is noise worth throttling, but two distinct failure reasons are two
+#: distinct diagnostic signals and an operator needs both.
+_violations: dict[tuple[int, str], tuple[float, int]] = {}
 
 
 class InvalidHostTelemetry(ValueError):
     pass
 
 
-def recordable_violation(agent_id: int) -> tuple[bool, int]:
-    """Rate-limit payload-free audit events while retaining repeat counts."""
+def recordable_violation(agent_id: int, kind: str = "") -> tuple[bool, int]:
+    """Rate-limit payload-free audit events while retaining repeat counts.
+
+    *kind* separates the throttle windows. Passing it means a burst of one
+    violation cannot hide a different violation that happens during the same
+    minute, which `test_link_rejects_replayed_and_invalid_sequences_but_stays_connected`
+    asserts end to end: a duplicate sequence and an unsupported version must
+    both be recorded. The default empty kind preserves the original
+    agent-wide behaviour for callers that do not distinguish.
+    """
     now = time.monotonic()
+    key = (agent_id, kind)
     with _violation_lock:
-        last, count = _violations.get(agent_id, (0.0, 0))
+        last, count = _violations.get(key, (0.0, 0))
         count += 1
         if now - last >= 60:
-            _violations[agent_id] = (now, 0)
+            _violations[key] = (now, 0)
             return True, count
-        _violations[agent_id] = (last, count)
+        _violations[key] = (last, count)
         return False, count
 
 

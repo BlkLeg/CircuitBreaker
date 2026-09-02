@@ -441,7 +441,7 @@ def _record_protocol_violation(db: Session, agent: Agent, *, reason: str, detail
     the log is as unreadable as one that fills the table, and `repeated` carries
     the magnitude either way.
     """
-    record, count = agent_telemetry.recordable_violation(agent.id)
+    record, count = agent_telemetry.recordable_violation(agent.id, reason)
     if not record:
         return
     _logger.warning("agent %s: protocol violation (%s): %s", agent.id, reason, detail)

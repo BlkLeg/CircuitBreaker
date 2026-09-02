@@ -166,8 +166,14 @@ def telemetry_handler(monkeypatch):
             "get_or_create_settings",
             lambda db: SimpleNamespace(jwt_secret="secret", ws_allowed_cidrs=ws_allowed_cidrs),
         )
-        monkeypatch.setattr(ws_telemetry, "is_session_revoked", lambda db, tok: False)
-        monkeypatch.setattr(ws_telemetry, "decode_token", lambda tok, secret: 1)
+        # Auth is stubbed so this fixture can isolate the forwarded-header and
+        # CIDR logic it exists to test. It patches the one seam the stream now
+        # uses — `resolve_ws_session_user` (F10 consolidation) — rather than the
+        # `is_session_revoked` + `decode_token` pair the inlined handshake used
+        # to call directly.
+        monkeypatch.setattr(
+            ws_telemetry, "resolve_ws_session_user", lambda db, tok: SimpleNamespace(id=1)
+        )
         monkeypatch.setattr(ws_telemetry, "get_redis", _no_redis)
 
     ws_telemetry._connections.clear()

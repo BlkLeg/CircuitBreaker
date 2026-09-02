@@ -21,7 +21,7 @@ from app.services import agent_link
 def test_repeated_violations_record_once_and_count_the_rest(monkeypatch) -> None:
     calls: list[int] = []
 
-    def fake_recordable(agent_id: int) -> tuple[bool, int]:
+    def fake_recordable(agent_id: int, kind: str = "") -> tuple[bool, int]:
         calls.append(agent_id)
         # Mirrors the real window behaviour: the first call inside a window
         # records, the rest are folded into the repeat count.
@@ -62,7 +62,7 @@ def test_the_suppressed_violations_still_advance_the_repeat_count(monkeypatch) -
     """
     calls: list[int] = []
 
-    def fake_recordable(agent_id: int) -> tuple[bool, int]:
+    def fake_recordable(agent_id: int, kind: str = "") -> tuple[bool, int]:
         calls.append(agent_id)
         # Record on the 1st and 4th, as a real 60s window boundary would.
         return (len(calls) in (1, 4), len(calls))
@@ -83,3 +83,47 @@ def test_the_suppressed_violations_still_advance_the_repeat_count(monkeypatch) -
         agent_link._record_protocol_violation(db, agent, reason="bad_frame", detail={})
 
     assert [entry["repeated"] for entry in recorded] == [1, 4]
+
+
+def test_two_different_violations_are_both_recorded(monkeypatch) -> None:
+    """Throttling must suppress repeats, not distinct diagnostic signals.
+
+    The first version of this throttle keyed only on the agent, so an
+    `unsupported_version` arriving in the same minute as a `duplicate_sequence`
+    was silently folded into the first one's repeat count. That collapsed two
+    different failure modes into one record and broke
+    `test_link_rejects_replayed_and_invalid_sequences_but_stays_connected`,
+    which asserts end to end that both survive. The window is per (agent, kind).
+    """
+    seen: list[tuple[int, str]] = []
+
+    def fake_recordable(agent_id: int, kind: str = "") -> tuple[bool, int]:
+        seen.append((agent_id, kind))
+        # Real behaviour: first occurrence of each distinct kind records.
+        return (seen.count((agent_id, kind)) == 1, seen.count((agent_id, kind)))
+
+    monkeypatch.setattr(agent_link.agent_telemetry, "recordable_violation", fake_recordable)
+    recorded: list[dict] = []
+    monkeypatch.setattr(
+        agent_link.agent_registry,
+        "record_event",
+        lambda db, agent_id, kind, detail: recorded.append(detail),
+    )
+
+    db = MagicMock()
+    agent = MagicMock()
+    agent.id = 11
+
+    agent_link._record_protocol_violation(db, agent, reason="duplicate_sequence", detail={})
+    agent_link._record_protocol_violation(db, agent, reason="duplicate_sequence", detail={})
+    agent_link._record_protocol_violation(db, agent, reason="unsupported_version", detail={})
+
+    assert [entry["reason"] for entry in recorded] == [
+        "duplicate_sequence",
+        "unsupported_version",
+    ], "a repeat was suppressed (right) but a distinct reason was too (wrong)"
+    assert seen == [
+        (11, "duplicate_sequence"),
+        (11, "duplicate_sequence"),
+        (11, "unsupported_version"),
+    ], "the reason must be passed through as the throttle key"

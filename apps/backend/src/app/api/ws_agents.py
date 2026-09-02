@@ -23,6 +23,7 @@ from sqlalchemy import text
 from starlette.websockets import WebSocketState
 
 from app.api.ws_discovery import trusted_ws_client_ip
+from app.api.ws_session import resolve_ws_session_user
 from app.core import agent_crypto
 from app.core.agent_crypto import (
     REKEY_DIRECTION_OUTBOUND,
@@ -32,9 +33,7 @@ from app.core.agent_crypto import (
     check_clock_skew,
 )
 from app.core.auth_cookie import is_websocket_secure, token_from_websocket_scope, ws_require_wss
-from app.core.security import decode_token
 from app.core.time import utcnow, utcnow_iso
-from app.db.models import User
 from app.db.session import SessionLocal
 from app.schemas.agent_frame import (
     TYPE_CAPABILITIES_SET,
@@ -55,13 +54,11 @@ from app.services import (
     agent_registry,
     agent_update,
 )
-from app.services.settings_service import get_or_create_settings
 from app.services.stream_faults import (
     FAULT_DECODE,
     close_stream_socket,
     record_stream_fault,
 )
-from app.services.user_service import is_session_revoked
 
 _logger = logging.getLogger(__name__)
 
@@ -1057,18 +1054,10 @@ async def agent_presence_stream(websocket: WebSocket) -> None:
         user_id: int | None = None
 
         with SessionLocal() as db:
-            cfg = get_or_create_settings(db)
-            if cfg.jwt_secret and not is_session_revoked(db, raw_token):
-                uid = decode_token(raw_token, cfg.jwt_secret)
-                if uid is not None:
-                    u = db.get(User, uid)
-                    if u and u.is_active:
-                        if not (u.locked_until and u.locked_until > utcnow()):
-                            if not (
-                                u.role == "demo" and u.demo_expires and u.demo_expires <= utcnow()
-                            ):
-                                authenticated = True
-                                user_id = uid
+            _ws_user = resolve_ws_session_user(db, raw_token)
+            if _ws_user is not None:
+                authenticated = True
+                user_id = _ws_user.id
 
         if not authenticated:
             _logger.warning("Agent presence WS auth failed (ip=%s)", client_ip)
