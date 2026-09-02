@@ -546,3 +546,93 @@ def nmap_enabled(db_session):
     cfg.nmap_enabled = True
     db_session.flush()
     return cfg
+
+
+# ── Certificate fixtures (Slice 4.1: TLS trust rotation) ──────────────────────
+#
+# Shared here rather than under tests/services/ so a later task's tests/api/
+# suite (the activation route) can see the same two fixtures.
+
+
+def _leaf_pem() -> str:
+    """A freshly generated self-signed leaf. Generated per-test rather than
+    fixtured as a constant: Global Constraints forbid checked-in key
+    material, including in fixtures."""
+    import datetime as dt
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "cb-test")])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(dt.datetime.now(dt.UTC) - dt.timedelta(hours=1))
+        .not_valid_after(dt.datetime.now(dt.UTC) + dt.timedelta(hours=1))
+        .sign(key, hashes.SHA256())
+    )
+    return cert.public_bytes(serialization.Encoding.PEM).decode()
+
+
+def _leaf_key_pem() -> str:
+    """The private key paired with `_leaf_pem`'s convention — a fresh EC key
+    per call, never persisted or reused across fixtures."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    return key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+
+
+@pytest.fixture
+def self_signed_certificate(db_session):
+    """A `Certificate` row of type "selfsigned" (the model's wire value —
+    distinct from the "self_signed" mode string `_tls_mode_and_pin` returns
+    for it)."""
+    from datetime import timedelta
+
+    from app.core.time import utcnow
+    from app.db.models import Certificate
+
+    cert = Certificate(
+        domain="self-signed.cb-test.invalid",
+        type="selfsigned",
+        cert_pem=_leaf_pem(),
+        key_pem=_leaf_key_pem(),
+        expires_at=utcnow() + timedelta(hours=1),
+    )
+    db_session.add(cert)
+    db_session.flush()
+    return cert
+
+
+@pytest.fixture
+def letsencrypt_certificate(db_session):
+    """A `Certificate` row of type "letsencrypt" — the only type
+    `agent_install._tls_mode_and_pin` maps to the "public" mode with an
+    empty pin."""
+    from datetime import timedelta
+
+    from app.core.time import utcnow
+    from app.db.models import Certificate
+
+    cert = Certificate(
+        domain="letsencrypt.cb-test.invalid",
+        type="letsencrypt",
+        cert_pem=_leaf_pem(),
+        key_pem=_leaf_key_pem(),
+        expires_at=utcnow() + timedelta(hours=1),
+    )
+    db_session.add(cert)
+    db_session.flush()
+    return cert
