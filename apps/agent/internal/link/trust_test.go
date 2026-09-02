@@ -74,3 +74,67 @@ func TestResolveTrust_EmptyStateDirSkipsTheLookup(t *testing.T) {
 		t.Errorf("Pins = %v, want just the configured pin", got.Pins)
 	}
 }
+
+func TestHandleTLSPinRotate_PersistsTheSuccessor(t *testing.T) {
+	dir := t.TempDir()
+	payload := []byte(`{"mode":"self_signed","successor_pin":"PIN-B","expiry":"2026-09-08T10:00:00Z"}`)
+
+	handleTLSPinRotate(Options{StateDir: dir}, payload)
+
+	got, err := config.LoadTLSPinRotation(dir)
+	if err != nil {
+		t.Fatalf("LoadTLSPinRotation: %v", err)
+	}
+	if got == nil {
+		t.Fatal("LoadTLSPinRotation = nil, want the advertised rotation")
+	}
+	if got.Mode != "self_signed" || got.SuccessorPin != "PIN-B" {
+		t.Errorf("persisted = %+v, want mode=self_signed pin=PIN-B", *got)
+	}
+}
+
+func TestHandleTLSPinRotate_PersistsAPublicCutover(t *testing.T) {
+	dir := t.TempDir()
+	payload := []byte(`{"mode":"public","successor_pin":"","expiry":"2026-09-08T10:00:00Z"}`)
+
+	handleTLSPinRotate(Options{StateDir: dir}, payload)
+
+	got, err := config.LoadTLSPinRotation(dir)
+	if err != nil {
+		t.Fatalf("LoadTLSPinRotation: %v", err)
+	}
+	if got == nil || got.Mode != "public" {
+		t.Errorf("persisted = %+v, want a present public-mode rotation", got)
+	}
+}
+
+// A malformed or unknown-mode frame must be dropped, not persisted. Writing
+// garbage into the trust file would be worse than ignoring the frame: the
+// agent still reaches the server on its current pin, and an operator can
+// retry the rotation.
+func TestHandleTLSPinRotate_DropsMalformedAndUnknownModes(t *testing.T) {
+	for name, payload := range map[string]string{
+		"malformed json": `{not json`,
+		"unknown mode":   `{"mode":"whatever","successor_pin":"X","expiry":"2026-09-08T10:00:00Z"}`,
+		"self_signed with no pin": `{"mode":"self_signed","successor_pin":"","expiry":"2026-09-08T10:00:00Z"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			handleTLSPinRotate(Options{StateDir: dir}, []byte(payload))
+			got, err := config.LoadTLSPinRotation(dir)
+			if err != nil {
+				t.Fatalf("LoadTLSPinRotation: %v", err)
+			}
+			if got != nil {
+				t.Errorf("persisted = %+v, want nothing written", *got)
+			}
+		})
+	}
+}
+
+// StateDir unset means there is nowhere durable to record the successor.
+// Logging and dropping is correct; panicking or writing to the process CWD
+// would both be worse.
+func TestHandleTLSPinRotate_NoStateDirIsANoOp(t *testing.T) {
+	handleTLSPinRotate(Options{}, []byte(`{"mode":"public","expiry":"2026-09-08T10:00:00Z"}`))
+}

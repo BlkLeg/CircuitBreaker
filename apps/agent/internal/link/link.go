@@ -878,6 +878,8 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 				}
 			case frame.TypeKeyRotate:
 				handleKeyRotate(opts, f.Payload)
+			case frame.TypeTLSPinRotate:
+				handleTLSPinRotate(opts, f.Payload)
 			}
 		case <-ticker.C:
 			if err := sendHeartbeat(); err != nil {
@@ -930,6 +932,53 @@ func handleKeyRotate(opts Options, payload json.RawMessage) {
 		return
 	}
 	log.Printf("link: persisted successor server key from key.rotate — will be trusted alongside the current key on future connections")
+}
+
+// handleTLSPinRotate processes one inbound `tls.pin.rotate` frame: the TLS
+// trust policy this server is about to start serving, advertised ahead of
+// the certificate actually changing so the agent can accept either leaf
+// across the cutover. Persisted (never applied immediately) — see
+// config.TLSPinRotation and ResolveTrust for why both policies stay live
+// until a dial actually succeeds against the successor.
+//
+// Every rejection path here logs and returns rather than persisting.
+// Recording a policy the agent cannot act on is strictly worse than
+// ignoring the frame: the agent still reaches the server on its current
+// pin, and the operator can retry the rotation.
+func handleTLSPinRotate(opts Options, payload json.RawMessage) {
+	var rotate frame.TLSPinRotatePayload
+	if err := json.Unmarshal(payload, &rotate); err != nil {
+		log.Printf("link: malformed tls.pin.rotate payload: %v", err)
+		return
+	}
+	switch rotate.Mode {
+	case tlsdial.ModeSelfSigned:
+		if rotate.SuccessorPin == "" {
+			log.Printf("link: ignoring tls.pin.rotate with mode=self_signed and no successor pin")
+			return
+		}
+	case tlsdial.ModePublic:
+		// A public successor carries no pin by definition.
+	default:
+		log.Printf("link: ignoring tls.pin.rotate with unknown mode %q", rotate.Mode)
+		return
+	}
+	if opts.StateDir == "" {
+		log.Printf("link: received tls.pin.rotate but StateDir is unset — successor policy not persisted")
+		return
+	}
+	state := config.TLSPinRotation{
+		Mode:         rotate.Mode,
+		SuccessorPin: rotate.SuccessorPin,
+		Expiry:       rotate.Expiry,
+	}
+	if err := config.SaveTLSPinRotation(opts.StateDir, state); err != nil {
+		log.Printf("link: persisting tls pin rotation: %v", err)
+		return
+	}
+	log.Printf("link: persisted successor TLS trust policy (mode=%s) from tls.pin.rotate — "+
+		"both the current and successor certificates will be accepted until one is promoted",
+		rotate.Mode)
 }
 
 // applyInboundRekey validates one decrypted server->agent `transport.rekey`
