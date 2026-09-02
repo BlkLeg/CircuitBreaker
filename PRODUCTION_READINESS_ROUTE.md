@@ -229,7 +229,7 @@ thing worth not repeating.
 #### Implementation progress (updated 2026-09-02)
 
 - [x] **4.1 (F4)** complete and E2E-green. See the slice row above for the four defects found building it; the shape they share is worth carrying forward — every one of them was a mechanism that *looked* correct, raised nothing, and silently did nothing. Three were found by asking a test to assert the consequence rather than the call, and the fourth only by running the whole thing against a real certificate change.
-- [x] **4.2 (F3)** complete, shipping in **warn** mode with enforcement announced for 0.6.0. E2E refuses a binary whose signature is valid over different bytes — the actual threat model, since a server that can serve a binary can serve a matching digest too.
+- [x] **4.2 (F3)** complete, shipping in **warn** mode with enforcement announced for 0.6.0. E2E refuses a binary whose signature is valid over different bytes — the actual threat model, since a server that can serve a binary can serve a matching digest too. `test_tampered_agent_binary_is_refused` green (85s), with the enforcing keypair generated per run and reaching the agent through a Dockerfile build arg, so no signing material is committed.
 - [x] **4.3 (F17)** complete: ten authorization events chained, the set frozen by a T0 ratchet, and the CLI's duplicate audit rows removed so one decision produces one entry.
 - [ ] **4.4 performance remediation** is unstarted and remains correctly blocked on Phase 2's baseline evidence, which needs the nightly job's first `workflow_dispatch`. Nothing here should be attempted before that data exists — that was the point of ordering it last.
 - [ ] **4.5 perf-gate promotion** likewise waits on ≥4 weeks of stable baselines and a defined reference hardware profile.
