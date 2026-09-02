@@ -1857,6 +1857,35 @@ async def post_update(
 binary_router = APIRouter(tags=["agents-binary"])
 
 
+# Registered BEFORE get_binary, and the order is load-bearing. Starlette
+# matches in registration order and a `{str}` path parameter accepts dots, so
+# `/binary/1.2.3/linux/amd64.sig` matches the route below with
+# arch="amd64.sig" if that route is reached first. `binary_path` would then
+# resolve the .sig file quite happily, so this endpoint would *appear* to
+# work while being dead code — and its 404-on-missing-signature behavior,
+# which is what tells an agent "this build is unsigned" rather than "this
+# version does not exist", would never run.
+@binary_router.get("/binary/{version}/{os_name}/{arch}.sig")
+def get_binary_signature(version: str, os_name: str, arch: str) -> FileResponse:
+    """Slice 4.2: the detached Ed25519 signature over the binary below.
+
+    Unauthenticated, like the binary route beside it, and for a stronger
+    reason: the signature *is* the integrity mechanism. Route auth would add
+    nothing an attacker who can serve the binary could not also defeat, and
+    the agent has no user session to present.
+    """
+    try:
+        path = agent_update.binary_signature_path(version, os_name, arch)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Signature not found") from None
+    if not path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"No signature for {os_name}/{arch} at version {version}",
+        )
+    return FileResponse(path, media_type="application/octet-stream", filename=path.name)
+
+
 @binary_router.get("/binary/{version}/{os_name}/{arch}")
 def get_binary(version: str, os_name: str, arch: str) -> FileResponse:
     try:

@@ -134,7 +134,16 @@ def build_agent_binaries(version: str, work_dir: Path) -> Path:
     subprocess.run(
         ["make", "manifest"],
         cwd=AGENT_ROOT,
-        env={**os.environ, "VERSION": version, "DIST": str(agent_dist / version)},
+        # PYTHON: gen_manifest.py's signing step imports `cryptography`,
+        # which lives in this interpreter's environment and not necessarily
+        # in whatever bare `python3` the agent Makefile would otherwise
+        # resolve to.
+        env={
+            **os.environ,
+            "VERSION": version,
+            "DIST": str(agent_dist / version),
+            "PYTHON": sys.executable,
+        },
         check=True,
     )
     return agent_dist

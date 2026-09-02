@@ -48,6 +48,17 @@ def binary_path(version: str, os_name: str, arch: str) -> Path:
     return path
 
 
+def binary_signature_path(version: str, os_name: str, arch: str) -> Path:
+    """The detached signature beside the binary `binary_path` resolves.
+
+    Reuses `binary_path`'s traversal guard rather than repeating it: the
+    three segments reach here from an unauthenticated URL, and one guard with
+    two callers cannot drift the way two copies can.
+    """
+    path = binary_path(version, os_name, arch)
+    return path.with_name(path.name + ".sig")
+
+
 _SEMVER_COMPONENT = re.compile(r"\d+")
 
 
