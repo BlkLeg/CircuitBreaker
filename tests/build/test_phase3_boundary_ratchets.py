@@ -20,7 +20,7 @@ _REPO_ROOT_FOR_IMPORT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT_FOR_IMPORT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT_FOR_IMPORT))
 
-from tests.build._ast_helpers import core_to_services_imports
+from tests.build._ast_helpers import core_to_services_imports, session_op_calls
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _APP_ROOT = _REPO_ROOT / "apps/backend/src/app"
@@ -72,4 +72,29 @@ def test_deferred_core_to_services_imports_do_not_grow() -> None:
         f"deferred `core -> services` imports rose to {total}, above the frozen "
         f"{_MAX_DEFERRED_CORE_TO_SERVICES}. Current spread: {per_file}. This ratchet "
         "only ever goes down: remove an inversion rather than raising the number."
+    )
+
+
+#: Direct session operations inside `api/`. Route F6: routes should stay thin and
+#: delegate to services. Measured at 581 across 43 files on 2026-09-01.
+#: MAY ONLY DECREASE.
+_MAX_DIRECT_DB_CALLS_IN_API = 581
+
+
+def test_direct_db_access_in_api_does_not_grow() -> None:
+    total = 0
+    per_file: dict[str, int] = {}
+    for path in sorted(_API_ROOT.rglob("*.py")):
+        calls = session_op_calls(path)
+        if calls:
+            per_file[str(path.relative_to(_API_ROOT))] = len(calls)
+            total += len(calls)
+
+    worst = sorted(per_file.items(), key=lambda kv: -kv[1])[:5]
+    assert total <= _MAX_DIRECT_DB_CALLS_IN_API, (
+        f"direct database calls in api/ rose to {total}, above the frozen "
+        f"{_MAX_DIRECT_DB_CALLS_IN_API}. Heaviest files: {worst}. Routes stay thin "
+        "(CLAUDE.md): put the query in a service and call it from the route. This "
+        "ratchet only ever goes down \u2014 lower the constant when you remove calls, "
+        "never raise it to accommodate new ones."
     )
