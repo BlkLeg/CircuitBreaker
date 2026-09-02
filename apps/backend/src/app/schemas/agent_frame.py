@@ -119,6 +119,7 @@ class HelloPayload(BaseModel):
     networks: list[NetworkFacts] = Field(default_factory=list)
     spool_depth: int = 0
     capability_schema: int = 1
+    tls_pin_kind: str | None = None
 
 
 class HelloAckPayload(BaseModel):

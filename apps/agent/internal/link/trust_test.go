@@ -138,3 +138,151 @@ func TestHandleTLSPinRotate_DropsMalformedAndUnknownModes(t *testing.T) {
 func TestHandleTLSPinRotate_NoStateDirIsANoOp(t *testing.T) {
 	handleTLSPinRotate(Options{}, []byte(`{"mode":"public","expiry":"2026-09-08T10:00:00Z"}`))
 }
+
+func TestPromoteTrust_MatchingTheCurrentPinReportsCurrentAndKeepsTheRotation(t *testing.T) {
+	dir := t.TempDir()
+	if err := config.SaveTLSPinRotation(dir, config.TLSPinRotation{
+		Mode: "self_signed", SuccessorPin: "PIN-B", Expiry: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveTLSPinRotation: %v", err)
+	}
+
+	kind, err := PromoteTrust(&config.Config{TLSPin: "PIN-A"}, dir, 0)
+	if err != nil {
+		t.Fatalf("PromoteTrust: %v", err)
+	}
+	if kind != "current" {
+		t.Errorf("kind = %q, want current", kind)
+	}
+	got, err := config.LoadTLSPinRotation(dir)
+	if err != nil {
+		t.Fatalf("LoadTLSPinRotation: %v", err)
+	}
+	if got == nil {
+		t.Error("rotation was cleared on a current-pin match, want it kept — the cutover has not happened yet")
+	}
+}
+
+func TestPromoteTrust_MatchingTheSuccessorClearsTheRotation(t *testing.T) {
+	dir := t.TempDir()
+	if err := config.SaveTLSPinRotation(dir, config.TLSPinRotation{
+		Mode: "self_signed", SuccessorPin: "PIN-B", Expiry: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveTLSPinRotation: %v", err)
+	}
+
+	kind, err := PromoteTrust(&config.Config{TLSPin: "PIN-A"}, dir, 1)
+	if err != nil {
+		t.Fatalf("PromoteTrust: %v", err)
+	}
+	if kind != "successor" {
+		t.Errorf("kind = %q, want successor", kind)
+	}
+	got, err := config.LoadTLSPinRotation(dir)
+	if err != nil {
+		t.Fatalf("LoadTLSPinRotation: %v", err)
+	}
+	if got != nil {
+		t.Errorf("rotation = %+v after promotion, want it cleared", *got)
+	}
+}
+
+func TestPromoteTrust_NoRotationReportsCurrent(t *testing.T) {
+	kind, err := PromoteTrust(&config.Config{TLSPin: "PIN-A"}, t.TempDir(), 0)
+	if err != nil {
+		t.Fatalf("PromoteTrust: %v", err)
+	}
+	if kind != "current" {
+		t.Errorf("kind = %q, want current", kind)
+	}
+}
+
+// The self-signed -> Let's Encrypt cutover. The pinned dial fails because the
+// new leaf is publicly trusted rather than pinned; because a public successor
+// was advertised, one standard-verification retry is warranted.
+func TestSuccessorRetry_SelfSignedToPublic(t *testing.T) {
+	pinned := tlsdial.Trust{Mode: tlsdial.ModeSelfSigned, Pins: []string{"PIN-A"}}
+
+	if _, ok := successorRetryTrust(pinned, nil); ok {
+		t.Error("successorRetryTrust with no advertised successor = true, want false")
+	}
+
+	retry, ok := successorRetryTrust(pinned, &config.TLSPinRotation{Mode: "public"})
+	if !ok {
+		t.Fatal("successorRetryTrust with an advertised public successor = false, want true")
+	}
+	if retry.Mode != tlsdial.ModePublic {
+		t.Errorf("retry mode = %q, want public", retry.Mode)
+	}
+}
+
+// The reverse cutover, Let's Encrypt -> self-signed. The agent holds no pin and
+// does standard verification, which a self-signed leaf can never pass — the
+// mirror image of the case above, and equally fleet-fatal without a retry.
+func TestSuccessorRetry_PublicToSelfSigned(t *testing.T) {
+	unpinned := tlsdial.Trust{Mode: tlsdial.ModePublic}
+
+	retry, ok := successorRetryTrust(unpinned, &config.TLSPinRotation{
+		Mode: "self_signed", SuccessorPin: "PIN-B",
+	})
+	if !ok {
+		t.Fatal("successorRetryTrust with an advertised self-signed successor = false, want true")
+	}
+	if retry.Mode != tlsdial.ModeSelfSigned {
+		t.Errorf("retry mode = %q, want self_signed", retry.Mode)
+	}
+	if len(retry.Pins) != 1 || retry.Pins[0] != "PIN-B" {
+		t.Errorf("retry pins = %v, want [PIN-B]", retry.Pins)
+	}
+}
+
+// A same-mode successor is not a cross-mode cutover: ResolveTrust already
+// carries it as an extra pin candidate, so the first dial covers it and a
+// retry would be redundant.
+func TestSuccessorRetry_NotOfferedForASameModeSuccessor(t *testing.T) {
+	pinned := tlsdial.Trust{Mode: tlsdial.ModeSelfSigned, Pins: []string{"PIN-A", "PIN-B"}}
+
+	if _, ok := successorRetryTrust(pinned, &config.TLSPinRotation{
+		Mode: "self_signed", SuccessorPin: "PIN-B",
+	}); ok {
+		t.Error("successorRetryTrust for a same-mode successor = true, want false")
+	}
+}
+
+// A self-signed successor with no pin is malformed; there is nothing to retry
+// against and it must not produce an empty pin set, which tlsdial fails closed
+// on anyway.
+func TestSuccessorRetry_RefusesASelfSignedSuccessorWithNoPin(t *testing.T) {
+	if _, ok := successorRetryTrust(tlsdial.Trust{Mode: tlsdial.ModePublic},
+		&config.TLSPinRotation{Mode: "self_signed"}); ok {
+		t.Error("successorRetryTrust with a pinless self-signed successor = true, want false")
+	}
+}
+
+// After a successful public retry the agent promotes: the advertised policy is
+// now the served one, so the rotation file is cleared and the connection
+// reports "successor" — which is what lets convergence reach zero and the
+// operator's activation gate open.
+func TestPromoteTrust_PublicRetryReportsSuccessorAndClears(t *testing.T) {
+	dir := t.TempDir()
+	if err := config.SaveTLSPinRotation(dir, config.TLSPinRotation{
+		Mode: "public", Expiry: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveTLSPinRotation: %v", err)
+	}
+
+	kind, err := PromoteTrust(&config.Config{TLSPin: "PIN-A"}, dir, successorRetryIndex)
+	if err != nil {
+		t.Fatalf("PromoteTrust: %v", err)
+	}
+	if kind != "successor" {
+		t.Errorf("kind = %q, want successor", kind)
+	}
+	got, err := config.LoadTLSPinRotation(dir)
+	if err != nil {
+		t.Fatalf("LoadTLSPinRotation: %v", err)
+	}
+	if got != nil {
+		t.Errorf("rotation = %+v after a public promotion, want it cleared", *got)
+	}
+}

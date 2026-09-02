@@ -212,6 +212,13 @@ type HelloPayload struct {
 	SpoolDepth       int            `json:"spool_depth,omitempty"`
 	CapabilitySchema int            `json:"capability_schema,omitempty"`
 	Networks         []NetworkFacts `json:"networks,omitempty"`
+
+	// TLSPinKind reports which TLS trust policy this connection's handshake
+	// actually matched — "current" or "successor" — so the server can show
+	// an operator how much of the fleet has already accepted an advertised
+	// successor certificate. Purely observational, and omitted entirely by
+	// agents predating the tls.pin.rotate mechanism.
+	TLSPinKind string `json:"tls_pin_kind,omitempty"`
 }
 
 // HelloAckPayload is the server -> agent `hello.ack` payload's structured shape for the

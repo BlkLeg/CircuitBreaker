@@ -407,42 +407,95 @@ func serverKeyCandidates(cfg *config.Config, stateDir string) []string {
 	return candidates
 }
 
+// dialWithTrust dials u under cfg's currently resolved TLS trust policy and
+// reports the tls_pin_kind this connection's handshake matched.
+//
+// When the first dial fails, it consults the persisted rotation and, only
+// when successorRetryTrust says a cross-mode cutover was actually
+// advertised, retries once under that policy — see successorRetryTrust's
+// doc comment for why the retry is symmetric and why it cannot be triggered
+// by an attacker merely causing dials to fail. A successful retry is itself
+// proof the server is serving the advertised policy, so it promotes exactly
+// like a first-dial successor match does.
+//
+// On failure — no retry warranted, or the retry also failing — the returned
+// error is always the *original* current-policy dial's error, since that is
+// what actually describes what the operator has to fix; a doomed retry's own
+// failure would only be noise on top of it.
+func dialWithTrust(ctx context.Context, opts Options, u string) (*websocket.Conn, string, error) {
+	trust := ResolveTrust(opts.Config, opts.StateDir)
+	conn, resp, dialErr := tlsdial.NewDialer(trust).DialContext(ctx, u, nil)
+	if dialErr == nil {
+		tlsPinKind := ""
+		if resp != nil && resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
+			if idx, ok := trust.Matches(resp.TLS.PeerCertificates[0]); ok {
+				kind, promoteErr := PromoteTrust(opts.Config, opts.StateDir, idx)
+				if promoteErr != nil {
+					log.Printf("link: promoting tls trust: %v", promoteErr)
+				}
+				tlsPinKind = kind
+			}
+		}
+		return conn, tlsPinKind, nil
+	}
+
+	rotation, rotErr := config.LoadTLSPinRotation(opts.StateDir)
+	if rotErr != nil {
+		log.Printf("link: reading persisted tls pin rotation for cutover retry: %v", rotErr)
+		return nil, "", fmt.Errorf("link: dial: %w", dialErr)
+	}
+	retryTrust, ok := successorRetryTrust(trust, rotation)
+	if !ok {
+		return nil, "", fmt.Errorf("link: dial: %w", dialErr)
+	}
+	retryConn, _, retryErr := tlsdial.NewDialer(retryTrust).DialContext(ctx, u, nil)
+	if retryErr != nil {
+		return nil, "", fmt.Errorf("link: dial: %w", dialErr)
+	}
+	kind, promoteErr := PromoteTrust(opts.Config, opts.StateDir, successorRetryIndex)
+	if promoteErr != nil {
+		log.Printf("link: promoting tls trust: %v", promoteErr)
+	}
+	return retryConn, kind, nil
+}
+
 // dialAndHandshake dials u and completes the Noise IK handshake against
-// remotePKHex, returning the live connection and initiator session on
-// success. A handshake failure (ReadHandshakeMessage returning an error —
-// the signal that remotePKHex was the wrong server key: the derived shared
-// secret doesn't match, so msg2's AEAD payload fails to decrypt/verify)
-// closes conn itself before returning, so runOnce's candidate loop can
-// simply try the next key with no leaked socket. A dial failure never
-// reaches that point at all — there's nothing to close.
+// remotePKHex, returning the live connection, initiator session, and the
+// tls_pin_kind the dial matched (see dialWithTrust) on success. A handshake
+// failure (ReadHandshakeMessage returning an error — the signal that
+// remotePKHex was the wrong server key: the derived shared secret doesn't
+// match, so msg2's AEAD payload fails to decrypt/verify) closes conn itself
+// before returning, so runOnce's candidate loop can simply try the next key
+// with no leaked socket. A dial failure never reaches that point at all —
+// there's nothing to close.
 func dialAndHandshake(
 	ctx context.Context, opts Options, u string, remotePKHex string,
-) (*websocket.Conn, *noiseconn.Session, error) {
+) (*websocket.Conn, *noiseconn.Session, string, error) {
 	remotePub, err := hex.DecodeString(remotePKHex)
 	if err != nil || len(remotePub) != 32 {
-		return nil, nil, fmt.Errorf("link: invalid server_static_pk: %w", err)
+		return nil, nil, "", fmt.Errorf("link: invalid server_static_pk: %w", err)
 	}
 	var remotePubArr [32]byte
 	copy(remotePubArr[:], remotePub)
 
 	session, err := noiseconn.NewInitiator(opts.Key.Private, opts.Key.Public, remotePubArr)
 	if err != nil {
-		return nil, nil, fmt.Errorf("link: %w", err)
+		return nil, nil, "", fmt.Errorf("link: %w", err)
 	}
 
-	conn, _, err := tlsdial.NewDialer(ResolveTrust(opts.Config, opts.StateDir)).DialContext(ctx, u, nil)
+	conn, tlsPinKind, err := dialWithTrust(ctx, opts, u)
 	if err != nil {
-		return nil, nil, fmt.Errorf("link: dial: %w", err)
+		return nil, nil, "", err
 	}
 
 	msg1, err := session.WriteHandshakeMessage()
 	if err != nil {
 		conn.Close()
-		return nil, nil, fmt.Errorf("link: %w", err)
+		return nil, nil, "", fmt.Errorf("link: %w", err)
 	}
 	if err := conn.WriteMessage(websocket.BinaryMessage, msg1); err != nil {
 		conn.Close()
-		return nil, nil, fmt.Errorf("link: send handshake: %w", err)
+		return nil, nil, "", fmt.Errorf("link: send handshake: %w", err)
 	}
 	// Bounded: see handshakeTimeout. Cleared before returning so the
 	// steady-state loop's own per-read deadline is the only one in force on
@@ -451,14 +504,14 @@ func dialAndHandshake(
 	_, msg2, err := conn.ReadMessage()
 	if err != nil {
 		conn.Close()
-		return nil, nil, fmt.Errorf("link: read handshake response: %w", err)
+		return nil, nil, "", fmt.Errorf("link: read handshake response: %w", err)
 	}
 	_ = conn.SetReadDeadline(time.Time{})
 	if err := session.ReadHandshakeMessage(msg2); err != nil {
 		conn.Close()
-		return nil, nil, fmt.Errorf("link: %w", err)
+		return nil, nil, "", fmt.Errorf("link: %w", err)
 	}
-	return conn, session, nil
+	return conn, session, tlsPinKind, nil
 }
 
 // runOnce dials, handshakes, and serves one /link connection until it drops
@@ -485,13 +538,14 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 	// this loop existed.
 	var conn *websocket.Conn
 	var session *noiseconn.Session
+	var tlsPinKind string
 	for _, candidate := range serverKeyCandidates(opts.Config, opts.StateDir) {
-		c, s, dialErr := dialAndHandshake(ctx, opts, u.String(), candidate)
+		c, s, kind, dialErr := dialAndHandshake(ctx, opts, u.String(), candidate)
 		if dialErr != nil {
 			err = dialErr
 			continue
 		}
-		conn, session = c, s
+		conn, session, tlsPinKind = c, s, kind
 		break
 	}
 	if conn == nil {
@@ -523,6 +577,12 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 	// the same numbers live, which is what lets a server-side catch-up
 	// indicator clear without waiting for a reconnect.
 	helloPayload.SpoolDepth, _ = spoolStats()
+	// Which TLS trust policy this connection's own handshake matched (F4) —
+	// "current", "successor", or "" for a plain ws:// dial with no
+	// certificate to classify (dev/test). Reported so the server can show an
+	// operator how much of the fleet has converged on an advertised
+	// successor.
+	helloPayload.TLSPinKind = tlsPinKind
 	helloFrame := frame.Frame{V: 1, Type: frame.TypeHello, Seq: 0, TS: time.Now().UTC()}
 	helloFrame.Payload, err = json.Marshal(helloPayload)
 	if err != nil {

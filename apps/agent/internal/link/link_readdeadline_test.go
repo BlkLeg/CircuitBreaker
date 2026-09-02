@@ -340,7 +340,7 @@ func TestDialAndHandshake_SilentServerTripsHandshakeReadDeadline(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	_, _, err = dialAndHandshake(ctx, opts, wsURL, hex.EncodeToString(serverPub[:]))
+	_, _, _, err = dialAndHandshake(ctx, opts, wsURL, hex.EncodeToString(serverPub[:]))
 	elapsed := time.Since(start)
 
 	if err == nil {
