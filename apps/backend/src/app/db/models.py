@@ -2845,3 +2845,12 @@ class KbHostname(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
     )
+
+
+# `FailedMessage` lives in its own module (`models_failed_message`) so the parked
+# JetStream table does not add to this file, which F8 already flags as a
+# 2,846-line monolith. It must be imported *here* regardless: `migrations/env.py`
+# reads `Base.metadata` via `from app.db.models import Base`, and the test
+# fixtures build the schema with `create_all`, so a model this module never
+# imports is a table that silently does not exist in either.
+from app.db.models_failed_message import FailedMessage  # noqa: E402,F401
