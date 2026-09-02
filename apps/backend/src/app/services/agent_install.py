@@ -235,6 +235,27 @@ def _tls_mode_and_pin(cert: Certificate | None) -> tuple[str, str]:
     )
 
 
+def tls_policy_for_certificate(cert: Certificate) -> tuple[str, str]:
+    """The wire trust policy `cert` implies, derived from the row alone.
+
+    Deliberately *not* `_tls_mode_and_pin`. That function prefers the live
+    nginx certificate over the row it is handed, which is right for the
+    install command — a new agent must be given the pin its very next
+    handshake will see. It is wrong for a successor: on any real install
+    `{CB_DATA_DIR}/tls/fullchain.pem` exists, so deriving a slice 4.1
+    successor through it would advertise the pin the fleet already trusts.
+    Every agent would report convergence on a policy nothing changed, and
+    the activation gate would wave through the cutover that strands them.
+
+    Lives here rather than in `agent_tls_pin` so the DB `type` -> wire mode
+    mapping ("selfsigned" -> "self_signed", "letsencrypt" -> "public") has
+    exactly one implementation, next to the other one that needs it.
+    """
+    if cert.type == "letsencrypt":
+        return "public", ""
+    return "self_signed", _spki_pin(cert.cert_pem)
+
+
 def render_install_script(
     *,
     server_url: str,

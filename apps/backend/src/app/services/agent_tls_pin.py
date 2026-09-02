@@ -15,9 +15,9 @@ rotation: one rotation in flight, a conditional UPDATE rather than a
 check-then-write, and a status surface that never returns key material.
 
 The rotated unit is a policy `(mode, pin)`, not a digest.
-`agent_install._tls_mode_and_pin` returns an empty pin for a letsencrypt
-certificate and an SPKI digest otherwise, and the agent's tlsdial branches on
-which kind of verification applies — so a server moving between the two modes
+`agent_install.tls_policy_for_certificate` returns an empty pin for a
+letsencrypt certificate and an SPKI digest otherwise, and the agent's tlsdial
+branches on which kind of verification applies — so a server moving between the two modes
 in either direction breaks every agent that only ever learned a digest. A
 pin-only advertisement cannot say "stop pinning".
 """
@@ -110,13 +110,13 @@ def start_tls_pin_rotation(
     it had seen an active rotation to begin with. A plain check-then-write
     would let both callers "win" and the second silently overwrite the first.
     """
-    from app.services.agent_install import _tls_mode_and_pin
+    from app.services.agent_install import tls_policy_for_certificate
 
     reference = now if now is not None else utcnow()
     if load_tls_pin_rotation_state(db).rotation_active:
         return None
 
-    mode, pin = _tls_mode_and_pin(cert)
+    mode, pin = tls_policy_for_certificate(cert)
     window = overlap_seconds if overlap_seconds is not None else TLS_PIN_OVERLAP_SECONDS
     expiry = reference + timedelta(seconds=window)
 

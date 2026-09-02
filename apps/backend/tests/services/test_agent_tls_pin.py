@@ -8,6 +8,36 @@ from app.core.time import utcnow
 from app.services import agent_tls_pin
 
 
+def _make_unrelated_cert_pem() -> str:
+    """A throwaway leaf, generated at import time rather than committed —
+    key material never lives in the repo (CLAUDE.md). Only its public half
+    is ever used here, but generating it keeps the rule uniform."""
+    from datetime import timedelta
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "served.cb-test.invalid")])
+    now = utcnow()
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=5))
+        .not_valid_after(now + timedelta(hours=1))
+        .sign(key, hashes.SHA256())
+    )
+    return cert.public_bytes(serialization.Encoding.PEM).decode()
+
+
+_UNRELATED_CERT_PEM = _make_unrelated_cert_pem()
+
+
 def test_no_rotation_reads_as_inactive(db_session):
     state = agent_tls_pin.load_tls_pin_rotation_state(db_session)
     assert state.rotation_active is False
@@ -119,3 +149,32 @@ async def test_broadcast_pushes_only_to_online_active_agents(
 
     assert pushed == [online.id]
     assert count == 1
+
+
+def test_successor_is_the_staged_certificate_not_the_one_nginx_serves(
+    db_session, self_signed_certificate, monkeypatch, tmp_path
+):
+    """The whole point of a successor is that it differs from what is being
+    served right now.
+
+    `agent_install._tls_mode_and_pin` deliberately prefers the live nginx
+    certificate over the `Certificate` row it is handed — correct for the
+    install command, which must hand a new agent the pin its very next
+    handshake will see. It is wrong here: on any real install
+    `{CB_DATA_DIR}/tls/fullchain.pem` exists, so deriving the successor
+    through it would advertise the pin the fleet already trusts, every agent
+    would "converge" on a policy nothing changed, and the activation gate
+    would wave through the cutover that strands them all.
+    """
+    from app.services.agent_install import _spki_pin
+
+    served = tmp_path / "tls"
+    served.mkdir()
+    (served / "fullchain.pem").write_text(_UNRELATED_CERT_PEM)
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path))
+
+    state = agent_tls_pin.start_tls_pin_rotation(db_session, self_signed_certificate)
+
+    assert state is not None
+    assert state.successor_pin == _spki_pin(self_signed_certificate.cert_pem)
+    assert state.successor_pin != _spki_pin(_UNRELATED_CERT_PEM)
