@@ -5814,6 +5814,11 @@ def test_certificate_rotation_does_not_strand_the_fleet():
         finally:
             stream.close()
     finally:
+        # Closed explicitly: these scenarios open more TLS connections than
+        # the older ones, and a socket finalized by the collector mid-run
+        # trips pytest's unraisable-exception hook and fails the test on
+        # teardown noise rather than on anything it asserted.
+        client.close()
         _down()
         (E2E_DIR / "agent.toml").unlink(missing_ok=True)
 
@@ -5862,6 +5867,7 @@ def test_activation_is_refused_while_an_agent_cannot_confirm():
         finally:
             stream.close()
     finally:
+        client.close()
         _down()
         (E2E_DIR / "agent.toml").unlink(missing_ok=True)
 
@@ -6001,5 +6007,6 @@ def test_tampered_agent_binary_is_refused():
         finally:
             stream.close()
     finally:
+        client.close()
         _down(env=enforce_env)
         (E2E_DIR / "agent.toml").unlink(missing_ok=True)
