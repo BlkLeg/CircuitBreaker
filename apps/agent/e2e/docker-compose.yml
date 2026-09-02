@@ -205,6 +205,13 @@ services:
     build:
       context: ..
       dockerfile: e2e/Dockerfile
+      args:
+        # Slice 4.2 (F3). Empty for every scenario but the signature-refusal
+        # one, which sets CB_AGENT_SIGNING_PUBKEY in its environment to a
+        # keypair it generates at runtime — no signing material is committed.
+        # An empty key builds a warn-mode agent, which is what the other
+        # update scenarios need.
+        SIGNING_PUBKEY: ${CB_AGENT_SIGNING_PUBKEY:-}
     depends_on:
       - circuitbreaker
     # Mirrors the real systemd unit's Restart=on-failure/RestartSec=5s
@@ -222,6 +229,10 @@ services:
       - ./agent.toml:/etc/circuit-breaker/agent.toml:ro
     environment:
       - CB_AGENT_TEST_REKEY_INTERVAL_SECONDS=${CB_AGENT_TEST_REKEY_INTERVAL_SECONDS:-}
+      # Slice 4.2 (F3): refuse an update whose signature does not verify,
+      # rather than warning. Unset for every other scenario, so they keep the
+      # warn-mode behaviour this release ships with.
+      - CB_AGENT_UPDATE_ENFORCE_SIGNATURE=${CB_AGENT_UPDATE_ENFORCE_SIGNATURE:-}
       # Test-only re-exec delay override (Bug-1-fix step 7b) — read only if
       # set; absent from every non-e2e deployment. On a local Docker bridge
       # network a freshly re-exec'd daemon can reconnect and self-confirm an

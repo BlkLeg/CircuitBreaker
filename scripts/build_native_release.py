@@ -143,6 +143,12 @@ def build_agent_binaries(version: str, work_dir: Path) -> Path:
             "VERSION": version,
             "DIST": str(agent_dist / version),
             "PYTHON": sys.executable,
+            # Slice 4.2 (F3): the ldflag that embeds the verifying key in the
+            # built binaries. os.environ already carries it, but naming it
+            # here keeps the two halves of the signing contract — the private
+            # key gen_manifest.py reads and the public key build-all embeds —
+            # visible in one place.
+            "SIGNING_PUBKEY": os.environ.get("SIGNING_PUBKEY", ""),
         },
         check=True,
     )

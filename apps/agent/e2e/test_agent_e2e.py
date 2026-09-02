@@ -142,6 +142,7 @@ full stack, so failures/timing in one scenario can't leak into another:
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import hashlib
 import ipaddress
@@ -5773,15 +5774,28 @@ def test_certificate_rotation_does_not_strand_the_fleet():
             )
             assert _tls_pin_status(client)["active"] is False
 
-            # The second half. Promotion clears the advertised successor, so
-            # a reconnect from here resolves the agent's *promoted* policy
-            # alone. Force one and require the agent back: the earlier defect
-            # survived exactly the connection above and stranded on this one.
+            # The agent above is still on the socket it opened before the
+            # cutover — an nginx reload does not drop established
+            # connections — so nothing has yet re-verified anything. Force a
+            # re-dial: this is the first handshake against the new leaf, and
+            # it can only succeed via the advertised successor candidate.
+            subprocess.run([*COMPOSE, "restart", "cb-agent"], check=True, cwd=E2E_DIR)
+            _wait_until(
+                lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
+                timeout=120,
+                interval=2.0,
+            )
             _wait_until(
                 lambda: "promoted the successor TLS trust policy" in _agent_logs(),
                 timeout=90,
                 interval=2.0,
             )
+
+            # And the second half, which is a distinct failure. Promotion
+            # clears the advertised successor, so every dial from here
+            # resolves the agent's *promoted* policy alone — agent.toml still
+            # names the retired certificate. The original defect survived
+            # exactly the one connection above and stranded on this one.
             subprocess.run([*COMPOSE, "restart", "cb-agent"], check=True, cwd=E2E_DIR)
             _wait_until(
                 lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
@@ -5840,4 +5854,143 @@ def test_activation_is_refused_while_an_agent_cannot_confirm():
             stream.close()
     finally:
         _down()
+        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Slice 4.2 (F3): a tampered update binary is refused
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _generate_signing_keypair() -> tuple[str, str]:
+    """One throwaway Ed25519 keypair, base64 (private, public).
+
+    Generated per run rather than committed: no signing material may live in
+    this repository, tests and fixtures included.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    key = ed25519.Ed25519PrivateKey.generate()
+    private = key.private_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    public = key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    return base64.b64encode(private).decode(), base64.b64encode(public).decode()
+
+
+def _inject_signature(version: str, signature: bytes) -> None:
+    """Place a detached signature beside an already-injected binary, where
+    `GET /agents/binary/{version}/{os}/{arch}.sig` serves it from."""
+    container = subprocess.run(
+        [*COMPOSE, "ps", "-q", "circuitbreaker"],
+        cwd=E2E_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    with tempfile.NamedTemporaryFile("wb", suffix=".sig", delete=False) as tmp:
+        tmp.write(signature)
+        tmp_path = tmp.name
+    try:
+        subprocess.run(
+            [
+                "docker",
+                "cp",
+                tmp_path,
+                f"{container}:/opt/circuitbreaker/agent-binaries/{version}/"
+                f"cb-agent-linux-amd64.sig",
+            ],
+            check=True,
+        )
+    finally:
+        os.unlink(tmp_path)
+
+
+def test_tampered_agent_binary_is_refused():
+    """F3 end to end: with enforcement on, a binary whose bytes do not match
+    its signature must not be installed, and the running agent must survive
+    the refusal rather than being left half-updated.
+
+    The signature here is valid — over *different* bytes. That is the actual
+    threat model: a server that can serve a binary can also serve a matching
+    SHA-256, so the digest check passes and only the signature refuses.
+    """
+    private_b64, public_b64 = _generate_signing_keypair()
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    signer = ed25519.Ed25519PrivateKey.from_private_bytes(base64.b64decode(private_b64))
+
+    # Both are read by docker compose: the build arg embeds the verifying key
+    # in the agent, the env var turns warn mode into refusal.
+    enforce_env = {
+        **os.environ,
+        "CB_AGENT_SIGNING_PUBKEY": public_b64,
+        "CB_AGENT_UPDATE_ENFORCE_SIGNATURE": "1",
+    }
+    _up_server(env=enforce_env)
+    try:
+        client = _new_client()
+        _wait_until(lambda: client.get("/api/v1/bootstrap/status").status_code == 200, timeout=60)
+        token = _bootstrap_admin(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        client.headers.update(headers)
+
+        material = _fetch_install_material(client, headers)
+        _write_agent_toml(material["server_pk"], material["tls_pin"])
+
+        agent_id, stream = _enroll_agent(client, headers, env=enforce_env)
+        try:
+            subprocess.run(
+                [*COMPOSE, "up", "-d", "--build", "cb-agent"],
+                check=True,
+                cwd=E2E_DIR,
+                env=enforce_env,
+            )
+            _wait_until(
+                lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
+                timeout=30,
+            )
+            running_version = _agent_status(env=enforce_env)["version"]
+
+            tampered_version = "9.9.9-e2e-tampered"
+            with tempfile.TemporaryDirectory() as tmp:
+                binary = _build_test_agent_binary(tampered_version, Path(tmp))
+                # Sign OTHER bytes, then publish the real binary with a
+                # digest that matches it. Digest check passes; signature
+                # cannot.
+                signature = signer.sign(b"a different binary entirely")
+                _inject_binary_version(tampered_version, binary)
+                _inject_signature(tampered_version, base64.b64encode(signature))
+
+            update = client.post(
+                f"/api/v1/agents/{agent_id}/update",
+                json={"version": tampered_version},
+                headers=headers,
+            )
+            assert update.status_code == 200, update.text
+
+            _wait_until(
+                lambda: "signature does not verify" in _agent_logs(env=enforce_env),
+                timeout=60,
+                interval=1.0,
+            )
+
+            # Nothing was installed and nothing was left half-done: the
+            # refusal happens before the rollback marker is written, so there
+            # is no marker and no swap to undo.
+            assert _agent_status(env=enforce_env)["version"] == running_version
+            _wait_until(
+                lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
+                timeout=30,
+            )
+        finally:
+            stream.close()
+    finally:
+        _down(env=enforce_env)
         (E2E_DIR / "agent.toml").unlink(missing_ok=True)

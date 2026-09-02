@@ -12,7 +12,15 @@ WORKDIR /src
 # that context root, not to this Dockerfile's location, so `.` is correct
 # here (not `..`, which Docker rejects as outside the build context).
 COPY . .
-RUN go build -o /cb-agent ./cmd/cb-agent
+# Slice 4.2 (F3): the update-signing public key to embed. Empty by default,
+# which is what every existing e2e scenario wants — a warn-mode agent that
+# installs updates whether or not they verify. The signature-refusal
+# scenario overrides it with a keypair generated inside the test, because no
+# signing material may be committed to this repository.
+ARG SIGNING_PUBKEY=""
+RUN go build \
+      -ldflags "-X circuitbreaker.dev/cb-agent/internal/update.SigningPublicKey=$SIGNING_PUBKEY" \
+      -o /cb-agent ./cmd/cb-agent
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*

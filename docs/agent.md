@@ -400,13 +400,58 @@ that push is missed, the agent picks it up from a Redis-queued fallback the link
 1. Downloads from `https://your-server/api/v1/agents/binary/{version}/{os}/{arch}` through the
    same pinned-TLS transport the link uses. Responses larger than 256 MiB are rejected.
 2. Verifies the SHA-256 against the digest that arrived over the encrypted channel, using a
-   constant-time comparison. **The channel is the trust anchor** — there is no separate release
-   signing key.
-3. Writes a durable marker, `fsync`s the new binary into
+   constant-time comparison.
+3. Fetches the detached signature from the same URL with a `.sig` suffix and verifies it against
+   a public key embedded in the agent at build time. See **Signed updates** below.
+4. Writes a durable marker, `fsync`s the new binary into
    `/var/lib/cb-agent/versions/<version>/cb-agent`, atomically re-points
    `/var/lib/cb-agent/current`, and re-execs itself.
-4. Reports `started`, then `succeeded` / `failed` / `rolled_back` back to the server as
+5. Reports `started`, then `succeeded` / `failed` / `rolled_back` back to the server as
    `update.status` frames, which appear in the agent's event log.
+
+### Signed updates
+
+The SHA-256 above proves the download matches what **the server said**. That is worth nothing
+if the server itself is compromised: whoever controls it can serve any binary along with a
+matching digest, and every agent in the fleet would install it. Agent binaries are therefore
+signed with an Ed25519 key that lives only in the release pipeline.
+
+The verifying public key is compiled into the agent with an `-ldflags -X` at build time. It is
+deliberately **not** configurable at runtime, not delivered by the server, and not read from
+disk — a key the server can influence would reproduce exactly the problem signing solves. The
+private half never exists in the application runtime, in this repository, or in any container
+image.
+
+**This release verifies in warn mode.** A binary that fails verification is installed, and the
+agent logs a warning naming the reason. That is the migration, not the destination: agents
+running today have no embedded key and binaries built before this change carry no signature at
+all, so defaulting to refusal would break every in-flight fleet. Enforcement becomes the
+default in **0.6.0**.
+
+To enforce now, set on the agent host:
+
+```
+CB_AGENT_UPDATE_ENFORCE_SIGNATURE=1
+```
+
+An update whose signature does not verify is then refused before anything is written: no
+rollback marker, no swap, and an `update.status` of `failed` naming the reason.
+
+**Agents you built yourself are unsigned by default.** `make build-from-source` has no access
+to the release private key, so it produces a warn-mode binary with no embedded key — and a
+binary with no embedded key stays in warn mode *even with the flag set*, because it has nothing
+to verify against. Refusing there would strand every self-built agent the moment enforcement
+defaults on. To sign your own builds:
+
+```
+make agent-signing-key                    # writes a private key, prints the public one
+cd apps/agent && make build-all SIGNING_PUBKEY=<the printed key>
+make verify-signing-key SIGNING_PUBKEY=<the printed key>   # proves the ldflag landed
+```
+
+Then set `AGENT_SIGNING_PRIVATE_KEY` when generating the manifest, and keep the private key in
+your own secret store. `cb-agent signing-key` prints whichever key a given binary carries, or
+nothing for a warn-mode build.
 
 ### Automatic rollback
 

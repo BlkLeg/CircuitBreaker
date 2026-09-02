@@ -52,6 +52,14 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       version: ${{ needs.version.outputs.version }}
+      # Slice 4.2 (F3). Passed explicitly rather than with `secrets: inherit`
+      # so the build job receives this one secret and nothing else. The
+      # public half is a repository variable, not a secret: it is public by
+      # construction, and keeping it out of the secret store lets a fork see
+      # which key the official builds use.
+      signing_pubkey: ${{ vars.AGENT_SIGNING_PUBLIC_KEY }}
+    secrets:
+      AGENT_SIGNING_PRIVATE_KEY: ${{ secrets.AGENT_SIGNING_PRIVATE_KEY }}
 
   # ── Installed-artifact gate (GOV-20) ─────────────────────────────────────────
   # Nothing may be published until the exact built candidate has been installed
