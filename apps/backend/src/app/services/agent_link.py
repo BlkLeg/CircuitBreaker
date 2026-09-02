@@ -428,10 +428,28 @@ _HANDLERS: dict[str, Handler] = {
 def _record_protocol_violation(db: Session, agent: Agent, *, reason: str, detail: dict) -> None:
     """Security-relevant-rejection record for one dropped inbound frame,
     reusing the same agent_events audit trail dispatch_frame's
-    capability_violation uses below."""
+    capability_violation uses below.
+
+    Rate-limited through `recordable_violation`, exactly as the
+    capability_violation path above is: the first violation in a window writes a
+    row and every later one only advances `repeated`. An agent that sends
+    malformed frames in a loop would otherwise commit once per frame (route
+    F24), and the cost is not disk — it is that thousands of identical rows bury
+    the audit trail an operator would need to read.
+
+    The log line is inside the throttle for the same reason. A flood that fills
+    the log is as unreadable as one that fills the table, and `repeated` carries
+    the magnitude either way.
+    """
+    record, count = agent_telemetry.recordable_violation(agent.id)
+    if not record:
+        return
     _logger.warning("agent %s: protocol violation (%s): %s", agent.id, reason, detail)
     agent_registry.record_event(
-        db, agent.id, "protocol_violation", detail={"reason": reason, **detail}
+        db,
+        agent.id,
+        "protocol_violation",
+        detail={"reason": reason, "repeated": count, **detail},
     )
     db.commit()
 

@@ -20,7 +20,11 @@ _REPO_ROOT_FOR_IMPORT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT_FOR_IMPORT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT_FOR_IMPORT))
 
-from tests.build._ast_helpers import core_to_services_imports, session_op_calls
+from tests.build._ast_helpers import (
+    core_to_services_imports,
+    session_op_calls,
+    silent_handlers,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _APP_ROOT = _REPO_ROOT / "apps/backend/src/app"
@@ -97,4 +101,28 @@ def test_direct_db_access_in_api_does_not_grow() -> None:
         "(CLAUDE.md): put the query in a service and call it from the route. This "
         "ratchet only ever goes down \u2014 lower the constant when you remove calls, "
         "never raise it to accommodate new ones."
+    )
+
+
+#: `except: pass` handlers across the whole backend app. Route F13. Measured at
+#: 119 across 45 files on 2026-09-01. MAY ONLY DECREASE.
+_MAX_SILENT_EXCEPT_HANDLERS = 119
+
+
+def test_silent_exception_handlers_do_not_grow() -> None:
+    total = 0
+    per_file: dict[str, int] = {}
+    for path in sorted(_APP_ROOT.rglob("*.py")):
+        handlers = silent_handlers(path)
+        if handlers:
+            per_file[str(path.relative_to(_APP_ROOT))] = len(handlers)
+            total += len(handlers)
+
+    worst = sorted(per_file.items(), key=lambda kv: -kv[1])[:5]
+    assert total <= _MAX_SILENT_EXCEPT_HANDLERS, (
+        f"silent exception handlers rose to {total}, above the frozen "
+        f"{_MAX_SILENT_EXCEPT_HANDLERS}. Heaviest files: {worst}. A handler that "
+        "only passes turns a failure into silence, which is what makes production "
+        "problems unfindable. Log it, record it, or let it raise. This ratchet only "
+        "ever goes down."
     )
