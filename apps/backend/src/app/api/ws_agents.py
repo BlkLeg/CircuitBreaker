@@ -42,6 +42,7 @@ from app.schemas.agent_frame import (
     TYPE_HELLO_ACK,
     TYPE_KEY_ROTATE,
     TYPE_PING,
+    TYPE_TLS_PIN_ROTATE,
     TYPE_TRANSPORT_REKEY,
     TYPE_UPDATE,
     HelloPayload,
@@ -52,6 +53,7 @@ from app.services import (
     agent_enrollment,
     agent_link,
     agent_registry,
+    agent_tls_pin,
     agent_update,
 )
 from app.services.stream_faults import (
@@ -374,6 +376,35 @@ def _key_rotate_bytes(
     return responder.encrypt(json.dumps(frame).encode())
 
 
+def _tls_pin_rotate_bytes(
+    responder: NoiseIKResponder,
+    mode: str,
+    successor_pin: str,
+    expiry: datetime,
+    seq: int,
+) -> bytes:
+    """Wire-encode one server -> agent `tls.pin.rotate` frame — slice 4.1's
+    advertisement of the TLS trust policy this install is about to serve.
+
+    Sent on every accepted hello.ack for as long as a rotation is active, the
+    same durability fallback `_key_rotate_bytes` provides for the server-key
+    rotation: a connection this worker did not hold at broadcast time still
+    learns the successor policy the moment it completes its own hello.ack.
+    """
+    frame = {
+        "v": 1,
+        "type": TYPE_TLS_PIN_ROTATE,
+        "seq": seq,
+        "ts": utcnow().isoformat(),
+        "payload": {
+            "mode": mode,
+            "successor_pin": successor_pin,
+            "expiry": expiry.isoformat(),
+        },
+    }
+    return responder.encrypt(json.dumps(frame).encode())
+
+
 class _OutboundSeq:
     """Per-connection strictly-increasing sequence counter for frames the
     server sends down one /link session (capabilities.set, update, ...),
@@ -589,6 +620,10 @@ async def link_stream(websocket: WebSocket) -> None:
         # rotation's key.rotate frame, the durability fallback for
         # agent_registry.broadcast_server_key_rotate's live push.
         rotation_state = agent_crypto.load_server_key_rotation_state(db)
+        # Slice 4.1: the same read, for the same reason, for the TLS trust
+        # rotation. Read here rather than at the resend site below because
+        # this is the only place in link_stream that holds an open session.
+        tls_pin_state = agent_tls_pin.load_tls_pin_rotation_state(db)
         capability_schema = 1
         # Slice 4 D-16: a hello whose `networks` moved the agent's scope closes
         # the dispatches that scope no longer authorizes. `update_hello_metadata`
@@ -607,6 +642,12 @@ async def link_stream(websocket: WebSocket) -> None:
             _logger.warning("agent %s: malformed hello payload: %s", agent_id, exc)
         else:
             capability_schema = hello_payload.capability_schema
+            # Slice 4.1: which of the two advertised TLS trust policies this
+            # agent's dial actually matched. An agent predating the mechanism
+            # reports nothing and records nothing — see
+            # agent_registry.record_tls_pin's docstring on why that is not
+            # folded into "current".
+            agent_registry.record_tls_pin(db, agent, hello_payload.tls_pin_kind or "")
             hello_cancellation = agent_registry.update_hello_metadata(db, agent, hello_payload)
         grants = agent_registry.structured_grants_dict(db, agent_id)
         agent_registry.record_event(db, agent_id, "connected")
@@ -691,6 +732,18 @@ async def link_stream(websocket: WebSocket) -> None:
                 responder,
                 rotation_state.successor_pub.hex(),
                 rotation_state.overlap_expires_at,
+                outbound_seq.next(),
+            )
+        )
+    # Slice 4.1: the same durability fallback for the TLS trust rotation.
+    # A no-op the overwhelming majority of the time.
+    if tls_pin_state.rotation_active and tls_pin_state.overlap_expires_at is not None:
+        await websocket.send_bytes(
+            _tls_pin_rotate_bytes(
+                responder,
+                tls_pin_state.successor_mode or "",
+                tls_pin_state.successor_pin or "",
+                tls_pin_state.overlap_expires_at,
                 outbound_seq.next(),
             )
         )

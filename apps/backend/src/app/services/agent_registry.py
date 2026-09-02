@@ -26,7 +26,12 @@ from sqlalchemy.orm import Session
 from app.core import agent_crypto
 from app.core.time import utcnow
 from app.db.models import Agent, AgentCapabilityGrant, AgentEvent, AgentNetwork, Hardware
-from app.schemas.agent_frame import TYPE_KEY_ROTATE, HelloPayload, NetworkFacts
+from app.schemas.agent_frame import (
+    TYPE_KEY_ROTATE,
+    TYPE_TLS_PIN_ROTATE,
+    HelloPayload,
+    NetworkFacts,
+)
 from app.services.agent_capabilities import (
     CAPABILITY_DEFINITIONS,
     default_config_for,
@@ -39,6 +44,11 @@ if TYPE_CHECKING:
     # runtime import of the scope-cancellation trigger below is function-local.
     # Only the annotation is needed up here.
     from app.services.agent_discovery import DiscoveryCancellation
+
+    # `agent_tls_pin` is a sibling service; a runtime import here would make
+    # the pair a services<->services cycle. Only the annotation on
+    # `broadcast_tls_pin_rotate` needs the name.
+    from app.services.agent_tls_pin import TLSPinRotationState
 
 _logger = logging.getLogger(__name__)
 
@@ -804,6 +814,34 @@ def record_server_key_pin(
     db.flush()
 
 
+def record_tls_pin(
+    db: Session, agent: Agent, pin_kind: str, *, now: datetime | None = None
+) -> None:
+    """Record which TLS trust policy `agent`'s most recent successful dial
+    matched — `pin_kind` is the `tls_pin_kind` its hello reported ("current"
+    or "successor").
+
+    Unlike `record_server_key_pin` beside it, this is not purely
+    observational: `api/certificates.py`'s activation gate reads these two
+    columns to decide whether activating a certificate would strand anyone.
+
+    An unrecognized or absent `pin_kind` writes nothing. Agents predating
+    this mechanism omit the field entirely, and defaulting them into the
+    "current" bucket would report an agent that *cannot* converge as one
+    that simply has not yet — precisely the agent the gate exists to
+    protect. This is the one place where diverging from
+    `record_server_key_pin`'s treat-unknown-as-current bias is deliberate.
+    """
+    reference = now if now is not None else utcnow()
+    if pin_kind == "successor":
+        agent.tls_pin_successor_pinned_at = reference
+    elif pin_kind == "current":
+        agent.tls_pin_current_pinned_at = reference
+    else:
+        return
+    db.flush()
+
+
 async def broadcast_server_key_rotate(
     db: Session, state: agent_crypto.ServerKeyRotationState
 ) -> int:
@@ -859,6 +897,56 @@ async def broadcast_server_key_rotate(
         if not presence.get(agent_id, {}).get("online", False):
             continue
         await publish_agent_control_frame(agent_id, {"type": TYPE_KEY_ROTATE, "payload": payload})
+        pushed += 1
+    return pushed
+
+
+async def broadcast_tls_pin_rotate(db: Session, state: TLSPinRotationState) -> int:
+    """Push a `tls.pin.rotate` control frame — the successor TLS trust policy
+    a slice 4.1 rotation just advertised — to every currently connected
+    `active` agent, over the same cross-worker control-frame delivery path
+    `broadcast_server_key_rotate` uses.
+
+    Proactive, not lazy, for the same reason: an agent holding a live `/link`
+    socket that never drops for the whole overlap would otherwise never learn
+    the successor policy, and would then be stranded by the very certificate
+    activation this advertisement exists to make safe. `ws_agents.py`'s
+    `link_stream` separately resends on every accepted hello.ack while the
+    rotation stays active, as the durability fallback.
+
+    Caller's responsibility, not this function's: `state.rotation_active` must
+    already be true — asserted rather than silently no-op'd, since a caller
+    reaching here with an inactive state is a caller bug.
+
+    Returns the number of agents online at the moment of the call —
+    informational only, never a delivery guarantee. The authoritative signal
+    is per-agent convergence (`record_tls_pin`), which is what the activation
+    gate reads.
+    """
+    assert state.rotation_active
+    assert state.successor_mode is not None
+
+    active_agents = list_agents(db, status="active")
+    if not active_agents:
+        return 0
+    agent_ids = [agent.id for agent in active_agents]
+    presence = await bulk_presence(agent_ids)
+
+    payload = {
+        "mode": state.successor_mode,
+        "successor_pin": state.successor_pin or "",
+        "expiry": (state.overlap_expires_at.isoformat() if state.overlap_expires_at else ""),
+    }
+    pushed = 0
+    for agent_id in agent_ids:
+        # A presence backend may legitimately omit an agent that disappeared
+        # between the database query and the bulk lookup. Treat that race as
+        # offline instead of aborting broadcasts for the remaining agents.
+        if not presence.get(agent_id, {}).get("online", False):
+            continue
+        await publish_agent_control_frame(
+            agent_id, {"type": TYPE_TLS_PIN_ROTATE, "payload": payload}
+        )
         pushed += 1
     return pushed
 
