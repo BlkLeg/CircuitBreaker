@@ -286,6 +286,22 @@ type CapabilityReadinessPayload struct {
 type HeartbeatPayload struct {
 	SpoolDepth int   `json:"spool_depth"`
 	SpoolBytes int64 `json:"spool_bytes"`
+
+	// TLSPinSuccessorReady repeats hello's field of the same name on every
+	// heartbeat, and that repetition is the point rather than redundancy.
+	//
+	// hello is sent once per connection, so an agent holding a live socket
+	// when a `tls.pin.rotate` arrives has no way to say it applied the
+	// policy until it next reconnects — which may be days. The server's
+	// certificate-activation gate waits on exactly that signal, so without
+	// this the operator watches `unconverged` sit at the fleet size while
+	// every agent is in fact ready, and the only way through is to force.
+	//
+	// Repeating rather than acking once is deliberate: an ack is one frame
+	// that can be lost with nothing to retry it, whereas this re-asserts the
+	// truth every heartbeat interval, which is the same durability
+	// reasoning behind resending the rotation frame on every hello.ack.
+	TLSPinSuccessorReady bool `json:"tls_pin_successor_ready"`
 }
 
 type HostSummary struct {

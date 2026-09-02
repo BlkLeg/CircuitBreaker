@@ -194,6 +194,12 @@ class HeartbeatPayload(BaseModel):
 
     spool_depth: int = 0
     spool_bytes: int = 0
+    # Repeats hello's field of the same name on every heartbeat. hello is
+    # sent once per connection, so an agent holding a live socket when a
+    # `tls.pin.rotate` arrives could not otherwise tell the server it applied
+    # the policy until its next reconnect — which may be days, while the
+    # certificate-activation gate waits on exactly that signal.
+    tls_pin_successor_ready: bool = False
 
 
 class HostTelemetryPayload(BaseModel):

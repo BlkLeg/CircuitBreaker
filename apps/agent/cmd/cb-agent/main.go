@@ -358,7 +358,11 @@ func runDaemon() {
 		if err := send(instr.Version, "started", ""); err != nil {
 			log.Printf("cb-agent: send started update.status: %v", err)
 		}
-		tmpPath, err := update.Download(cfg, link.ResolveTrust(cfg, config.StateDir()), instr)
+		// Resolved once and reused for the signature fetch below: two calls
+		// could straddle an inbound tls.pin.rotate and fetch the binary and
+		// its signature under different trust policies.
+		trust := link.ResolveTrust(cfg, config.StateDir())
+		tmpPath, err := update.Download(cfg, trust, instr)
 		if err != nil {
 			if sendErr := send(instr.Version, "failed", err.Error()); sendErr != nil {
 				log.Printf("cb-agent: send failed update.status: %v", sendErr)
@@ -371,6 +375,35 @@ func runDaemon() {
 				log.Printf("cb-agent: send failed update.status: %v", sendErr)
 			}
 			return err
+		}
+		// Slice 4.2 (F3): the SHA-256 above proves the download matches what
+		// the *server* said. That is worth nothing against a compromised
+		// server, which can serve any binary along with a matching digest.
+		// The detached signature is checked against a key embedded at build
+		// time, which the server cannot influence.
+		//
+		// Placed before WriteMarker deliberately: a refused update must
+		// leave no rollback marker behind, because nothing was installed.
+		sigPath, sigErr := update.DownloadSignature(cfg, trust, instr)
+		if sigPath != "" {
+			defer os.Remove(sigPath)
+		}
+		verifyErr := sigErr
+		if verifyErr == nil {
+			verifyErr = update.VerifySignature(tmpPath, sigPath)
+		}
+		switch update.UpdateDecision(verifyErr, update.SignatureEnforced()) {
+		case update.DecisionRefuse:
+			os.Remove(tmpPath)
+			if sendErr := send(instr.Version, "failed", verifyErr.Error()); sendErr != nil {
+				log.Printf("cb-agent: send failed update.status: %v", sendErr)
+			}
+			return verifyErr
+		case update.DecisionWarn:
+			log.Printf("cb-agent: WARNING: update to %s was installed without a "+
+				"verified signature (%v). Set CB_AGENT_UPDATE_ENFORCE_SIGNATURE=1 to "+
+				"refuse instead; see `make agent-signing-key` if this build has no "+
+				"embedded key.", instr.Version, verifyErr)
 		}
 		// Task 25: the rollback marker must be durably written *before* the
 		// binary is actually replaced, not after. If a crash lands between

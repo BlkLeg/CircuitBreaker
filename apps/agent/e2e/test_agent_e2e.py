@@ -5674,3 +5674,170 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
     finally:
         _down()
         (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Slice 4.1 (F4): a certificate change must not strand the fleet
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _tls_pin_status(client: httpx.Client) -> dict:
+    resp = client.get("/api/v1/agents/tls-pin/status")
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _create_selfsigned_certificate(client: httpx.Client, domain: str) -> int:
+    """Stage a new self-signed certificate without activating it. The server
+    generates a fresh keypair, so its SPKI digest genuinely differs from the
+    one nginx is serving — which is what makes this a real cutover rather
+    than a re-advertisement of the pin the agent already holds."""
+    resp = client.post(
+        "/api/v1/certificates",
+        json={"domain": domain, "type": "selfsigned", "auto_renew": False},
+    )
+    assert resp.status_code == 200, resp.text
+    return int(resp.json()["id"])
+
+
+def test_certificate_rotation_does_not_strand_the_fleet():
+    """F4 end to end: replace the server certificate, and the enrolled agent
+    must still be there afterwards — and still be there on the reconnect
+    after that.
+
+    This is the scenario that made F4 fleet-bricking rather than
+    inconvenient: the agent's pin gates its update download too, so an agent
+    stranded here cannot be repaired by pushing it a new binary. Both halves
+    are asserted, because each was independently broken:
+
+      * activation is refused until the fleet holds the successor, and
+      * a promoted agent keeps working past the single connection that
+        immediately follows the cutover.
+    """
+    _up_server()
+    try:
+        client = _new_client()
+        _wait_until(lambda: client.get("/api/v1/bootstrap/status").status_code == 200, timeout=60)
+        token = _bootstrap_admin(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        client.headers.update(headers)
+
+        material = _fetch_install_material(client, headers)
+        _write_agent_toml(material["server_pk"], material["tls_pin"])
+
+        agent_id, stream = _enroll_agent(client, headers)
+        try:
+            subprocess.run([*COMPOSE, "up", "-d", "cb-agent"], check=True, cwd=E2E_DIR)
+            _wait_until(
+                lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
+                timeout=30,
+            )
+
+            new_cert_id = _create_selfsigned_certificate(client, "rotated.cb-e2e.invalid")
+
+            # Before the advertisement, activation must be refused. Nothing
+            # has told the agent about the leaf it is about to be handed, and
+            # this is the likeliest way to hit F4 in the field: swapping the
+            # certificate without knowing the mechanism exists at all.
+            premature = client.post(f"/api/v1/certificates/{new_cert_id}/activate")
+            assert premature.status_code == 409, (
+                f"activation was allowed with an unprepared fleet: "
+                f"{premature.status_code} {premature.text}"
+            )
+            assert "no rotation has advertised" in premature.json()["detail"]
+
+            rotate = client.post(
+                "/api/v1/agents/tls-pin/rotate", json={"certificate_id": new_cert_id}
+            )
+            assert rotate.status_code == 201, rotate.text
+
+            # The agent confirms it holds the successor while the OLD
+            # certificate is still being served — the whole point of the
+            # readiness signal. A live socket is pushed the frame directly,
+            # so this does not wait on a reconnect.
+            _wait_until(
+                lambda: _tls_pin_status(client)["unconverged"] == 0,
+                timeout=90,
+                interval=2.0,
+            )
+            assert _tls_pin_status(client)["converged"] == 1
+
+            activate = client.post(f"/api/v1/certificates/{new_cert_id}/activate")
+            assert activate.status_code == 200, activate.text
+
+            # nginx now serves a leaf the agent was never installed with.
+            _wait_until(
+                lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
+                timeout=120,
+                interval=2.0,
+            )
+            assert _tls_pin_status(client)["active"] is False
+
+            # The second half. Promotion clears the advertised successor, so
+            # a reconnect from here resolves the agent's *promoted* policy
+            # alone. Force one and require the agent back: the earlier defect
+            # survived exactly the connection above and stranded on this one.
+            _wait_until(
+                lambda: "promoted the successor TLS trust policy" in _agent_logs(),
+                timeout=90,
+                interval=2.0,
+            )
+            subprocess.run([*COMPOSE, "restart", "cb-agent"], check=True, cwd=E2E_DIR)
+            _wait_until(
+                lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
+                timeout=120,
+                interval=2.0,
+            )
+        finally:
+            stream.close()
+    finally:
+        _down()
+        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+
+
+def test_activation_is_refused_while_an_agent_cannot_confirm():
+    """The gate itself: an agent that is not running cannot be told about the
+    successor, so activating would strand it. The refusal is what makes the
+    ordering in docs/tls-trust-rotation.md enforceable rather than advisory."""
+    _up_server()
+    try:
+        client = _new_client()
+        _wait_until(lambda: client.get("/api/v1/bootstrap/status").status_code == 200, timeout=60)
+        token = _bootstrap_admin(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        client.headers.update(headers)
+
+        material = _fetch_install_material(client, headers)
+        _write_agent_toml(material["server_pk"], material["tls_pin"])
+
+        agent_id, stream = _enroll_agent(client, headers)
+        try:
+            subprocess.run([*COMPOSE, "up", "-d", "cb-agent"], check=True, cwd=E2E_DIR)
+            _wait_until(
+                lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
+                timeout=30,
+            )
+
+            new_cert_id = _create_selfsigned_certificate(client, "ungated.cb-e2e.invalid")
+            subprocess.run([*COMPOSE, "stop", "cb-agent"], check=True, cwd=E2E_DIR)
+
+            rotate = client.post(
+                "/api/v1/agents/tls-pin/rotate", json={"certificate_id": new_cert_id}
+            )
+            assert rotate.status_code == 201, rotate.text
+
+            resp = client.post(f"/api/v1/certificates/{new_cert_id}/activate")
+            assert resp.status_code == 409, f"{resp.status_code} {resp.text}"
+
+            pending = client.get("/api/v1/agents/tls-pin/pending").json()
+            assert [row["id"] for row in pending] == [agent_id]
+
+            # And the override is available, audited, for the operator who
+            # decides the stranded agent is acceptable collateral.
+            forced = client.post(f"/api/v1/certificates/{new_cert_id}/activate?force=true")
+            assert forced.status_code == 200, forced.text
+        finally:
+            stream.close()
+    finally:
+        _down()
+        (E2E_DIR / "agent.toml").unlink(missing_ok=True)

@@ -5,9 +5,15 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"circuitbreaker.dev/cb-agent/internal/config"
+	"circuitbreaker.dev/cb-agent/internal/tlsdial"
 )
 
 // signedFixture writes a binary and a valid detached signature over it, and
@@ -115,4 +121,96 @@ func withSigningKey(pub string) func() {
 	previous := SigningPublicKey
 	SigningPublicKey = pub
 	return func() { SigningPublicKey = previous }
+}
+
+func TestDownloadSignature_FetchesTheSigBesideTheBinary(t *testing.T) {
+	var requested string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested = r.URL.Path
+		w.Write([]byte("c2lnbmF0dXJlLWJ5dGVz"))
+	}))
+	defer srv.Close()
+
+	path, err := DownloadSignature(
+		&config.Config{ServerURL: srv.URL},
+		tlsdial.Trust{Mode: tlsdial.ModePublic},
+		Instruction{Version: "1.2.3", Arch: "amd64", OS: "linux"},
+	)
+	if err != nil {
+		t.Fatalf("DownloadSignature = %v", err)
+	}
+	defer os.Remove(path)
+
+	if !strings.HasSuffix(requested, ".sig") {
+		t.Errorf("requested %q, want a path ending in .sig", requested)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read downloaded signature: %v", err)
+	}
+	if string(got) != "c2lnbmF0dXJlLWJ5dGVz" {
+		t.Errorf("downloaded %q, want the served signature", got)
+	}
+}
+
+// A signature is 88 base64 characters. Reusing maxDownloadBytes would let a
+// hostile server stream gigabytes into a client expecting a fixed-size blob.
+func TestDownloadSignature_RefusesAnOversizedResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(make([]byte, maxSignatureBytes+1))
+	}))
+	defer srv.Close()
+
+	if _, err := DownloadSignature(
+		&config.Config{ServerURL: srv.URL},
+		tlsdial.Trust{Mode: tlsdial.ModePublic},
+		Instruction{Version: "1.2.3", Arch: "amd64", OS: "linux"},
+	); err == nil {
+		t.Error("DownloadSignature on an oversized response = nil, want an error")
+	}
+}
+
+func TestDownloadSignature_MissingSignatureIsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	if _, err := DownloadSignature(
+		&config.Config{ServerURL: srv.URL},
+		tlsdial.Trust{Mode: tlsdial.ModePublic},
+		Instruction{Version: "1.2.3", Arch: "amd64", OS: "linux"},
+	); err == nil {
+		t.Error("DownloadSignature on a 404 = nil, want an error")
+	}
+}
+
+// UpdateDecision is the branch the update path takes for one verification
+// outcome. Testing it here keeps the warn->enforce policy verifiable without
+// standing up a download, a swap and a re-exec.
+func TestUpdateDecision(t *testing.T) {
+	cases := []struct {
+		name      string
+		verifyErr error
+		enforced  bool
+		want      string
+	}{
+		{"verified", nil, true, DecisionProceed},
+		{"verified, warn mode", nil, false, DecisionProceed},
+		{"no embedded key, warn mode", ErrNoSigningKey, false, DecisionWarn},
+		// A build with no embedded key has nothing to verify against.
+		// Refusing here would strand every self-built agent the moment
+		// enforcement defaults on.
+		{"no embedded key, enforce mode", ErrNoSigningKey, true, DecisionWarn},
+		{"bad signature, warn mode", errors.New("bad sig"), false, DecisionWarn},
+		{"bad signature, enforce mode", errors.New("bad sig"), true, DecisionRefuse},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := UpdateDecision(tc.verifyErr, tc.enforced); got != tc.want {
+				t.Errorf("UpdateDecision(%v, %v) = %q, want %q",
+					tc.verifyErr, tc.enforced, got, tc.want)
+			}
+		})
+	}
 }

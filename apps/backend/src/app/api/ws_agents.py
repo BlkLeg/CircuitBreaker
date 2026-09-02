@@ -45,6 +45,7 @@ from app.schemas.agent_frame import (
     TYPE_TLS_PIN_ROTATE,
     TYPE_TRANSPORT_REKEY,
     TYPE_UPDATE,
+    HeartbeatPayload,
     HelloPayload,
     TransportRekeyPayload,
 )
@@ -942,6 +943,22 @@ async def link_stream(websocket: WebSocket) -> None:
                     # registry entry has to be scoped per-connection, not
                     # per-worker-process.
                     await agent_registry.refresh_agent_connection(agent_id, worker_id=connection_id)
+                    # Slice 4.1: the heartbeat is how a rotation applied on an
+                    # already-live socket reaches the convergence view. hello
+                    # carries the same field, but only at connect time, and
+                    # the activation gate cannot wait for a reconnect that may
+                    # be days away.
+                    try:
+                        beat = HeartbeatPayload.model_validate(agent_frame.payload)
+                    except ValidationError:
+                        # Malformed spool/readiness metadata is not worth
+                        # tearing down a link over — the heartbeat's real job,
+                        # refreshing the deadline above, is already done.
+                        pass
+                    else:
+                        if beat.tls_pin_successor_ready:
+                            agent_registry.record_tls_pin(db, fresh, "", successor_ready=True)
+                            db.commit()
                 if agent_frame.type == TYPE_TRANSPORT_REKEY:
                     # Applied here, inline, rather than through
                     # agent_link.dispatch_frame: the swap has to land before

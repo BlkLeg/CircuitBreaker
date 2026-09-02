@@ -89,3 +89,33 @@ func SignatureEnforced() bool {
 		return false
 	}
 }
+
+// Decision outcomes for one signature-verification result.
+const (
+	DecisionProceed = "proceed"
+	DecisionWarn    = "warn"
+	DecisionRefuse  = "refuse"
+)
+
+// UpdateDecision maps a verification outcome and the enforcement flag onto
+// what the update path should do. Split out from the update path itself so
+// the policy — which is the whole of slice 4.2's warn->enforce migration —
+// is testable without a download, a swap and a re-exec.
+//
+// ErrNoSigningKey warns under *both* modes on purpose: a binary built with
+// no embedded key has nothing to verify against, and `make
+// build-from-source` produces exactly such a binary. Refusing it under
+// enforce would strand every self-built agent the moment the flag defaults
+// on, which would make enforcement unshippable.
+func UpdateDecision(verifyErr error, enforced bool) string {
+	switch {
+	case verifyErr == nil:
+		return DecisionProceed
+	case errors.Is(verifyErr, ErrNoSigningKey):
+		return DecisionWarn
+	case enforced:
+		return DecisionRefuse
+	default:
+		return DecisionWarn
+	}
+}

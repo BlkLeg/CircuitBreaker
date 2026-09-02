@@ -733,7 +733,14 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 	// its columns NULL for it. See frame.HeartbeatPayload.
 	sendHeartbeat := func() error {
 		depth, bytes := spoolStats()
-		payload, err := json.Marshal(frame.HeartbeatPayload{SpoolDepth: depth, SpoolBytes: bytes})
+		payload, err := json.Marshal(frame.HeartbeatPayload{
+			SpoolDepth: depth,
+			SpoolBytes: bytes,
+			// Re-asserted every interval so a rotation applied on a live
+			// socket reaches the server without waiting for a reconnect —
+			// see the field's own doc comment.
+			TLSPinSuccessorReady: SuccessorReady(opts.StateDir),
+		})
 		if err != nil {
 			return fmt.Errorf("link: encode heartbeat payload: %w", err)
 		}

@@ -664,8 +664,15 @@ func TestHeartbeatReportsAnEmptySpoolAsExplicitZeros(t *testing.T) {
 		return srv.countOfType(frame.TypeHeartbeat) > 0
 	})
 
-	payload := srv.payloadsOfType(frame.TypeHeartbeat)[0]
-	if got := string(payload); got != `{"spool_depth":0,"spool_bytes":0}` {
-		t.Errorf("heartbeat payload = %s, want {\"spool_depth\":0,\"spool_bytes\":0}", got)
+	// Asserted on the raw JSON rather than the decoded struct: the property
+	// under test is that the zeros are *present on the wire*, which a decode
+	// would supply from the zero value whether they were sent or not. Both
+	// keys are checked individually so an additive field elsewhere in the
+	// payload does not fail a test that is not about it.
+	payload := string(srv.payloadsOfType(frame.TypeHeartbeat)[0])
+	for _, want := range []string{`"spool_depth":0`, `"spool_bytes":0`} {
+		if !strings.Contains(payload, want) {
+			t.Errorf("heartbeat payload = %s, want it to contain %s", payload, want)
+		}
 	}
 }

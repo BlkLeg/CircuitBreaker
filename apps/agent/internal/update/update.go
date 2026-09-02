@@ -93,12 +93,23 @@ var maxDownloadBytes int64 = 256 * 1024 * 1024
 // enforced for the download and not just the control connection. trust is
 // resolved by the caller via link.ResolveTrust: cfg is kept here only
 // because the URL above is built from cfg.ServerURL.
-func Download(cfg *config.Config, trust tlsdial.Trust, instr Instruction) (string, error) {
-	url := fmt.Sprintf(
+// binaryURL is where instr's binary lives on cfg.ServerURL. Shared with
+// DownloadSignature, which appends ".sig" to exactly this.
+func binaryURL(cfg *config.Config, instr Instruction) string {
+	return fmt.Sprintf(
 		"%s/api/v1/agents/binary/%s/%s/%s",
 		strings.TrimRight(cfg.ServerURL, "/"), instr.Version, instr.OS, instr.Arch,
 	)
+}
 
+// downloadTo fetches url through trust's pinned transport into a new temp
+// file named with prefix, refusing any response larger than limit, and
+// returns the temp file's path. Shared by Download and DownloadSignature so
+// the status, Content-Length and size-limit handling cannot drift between
+// the binary and the signature that authenticates it.
+func downloadTo(
+	trust tlsdial.Trust, url, prefix string, limit int64, mode os.FileMode,
+) (string, error) {
 	client := &http.Client{
 		Transport: tlsdial.NewTransport(trust),
 		Timeout:   downloadTimeout,
@@ -111,14 +122,14 @@ func Download(cfg *config.Config, trust tlsdial.Trust, instr Instruction) (strin
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("update: download %s: status %d", url, resp.StatusCode)
 	}
-	if resp.ContentLength > maxDownloadBytes {
+	if resp.ContentLength > limit {
 		return "", fmt.Errorf(
 			"update: download %s: content-length %d exceeds limit %d bytes",
-			url, resp.ContentLength, maxDownloadBytes,
+			url, resp.ContentLength, limit,
 		)
 	}
 
-	tmp, err := os.CreateTemp("", "cb-agent-update-*")
+	tmp, err := os.CreateTemp("", prefix)
 	if err != nil {
 		return "", fmt.Errorf("update: create temp file: %w", err)
 	}
@@ -127,20 +138,50 @@ func Download(cfg *config.Config, trust tlsdial.Trust, instr Instruction) (strin
 	// Read one byte past the limit so an over-limit response can be told
 	// apart from one landing exactly at it, without trusting Content-Length
 	// (checked above only as an early rejection when present and honest).
-	n, err := io.Copy(tmp, io.LimitReader(resp.Body, maxDownloadBytes+1))
+	n, err := io.Copy(tmp, io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		os.Remove(tmp.Name())
 		return "", fmt.Errorf("update: write temp file: %w", err)
 	}
-	if n > maxDownloadBytes {
+	if n > limit {
 		os.Remove(tmp.Name())
-		return "", fmt.Errorf("update: download %s: response exceeded size limit %d bytes", url, maxDownloadBytes)
+		return "", fmt.Errorf(
+			"update: download %s: response exceeded size limit %d bytes", url, limit,
+		)
 	}
-	if err := tmp.Chmod(0o755); err != nil {
+	if err := tmp.Chmod(mode); err != nil {
 		os.Remove(tmp.Name())
 		return "", fmt.Errorf("update: chmod temp file: %w", err)
 	}
 	return tmp.Name(), nil
+}
+
+func Download(cfg *config.Config, trust tlsdial.Trust, instr Instruction) (string, error) {
+	return downloadTo(
+		trust, binaryURL(cfg, instr), "cb-agent-update-*", maxDownloadBytes, 0o755,
+	)
+}
+
+// maxSignatureBytes bounds a detached signature download. An Ed25519
+// signature is 64 raw bytes, 88 base64 characters — this leaves generous
+// headroom while keeping a hostile server from streaming an unbounded
+// response into a client expecting a fixed-size blob. Deliberately not
+// maxDownloadBytes, which is sized for a binary.
+const maxSignatureBytes = 4096
+
+// DownloadSignature fetches the detached signature published beside the
+// binary Download fetches — the same URL with a .sig suffix — through the
+// same pinned transport.
+func DownloadSignature(
+	cfg *config.Config, trust tlsdial.Trust, instr Instruction,
+) (string, error) {
+	return downloadTo(
+		trust,
+		binaryURL(cfg, instr)+".sig",
+		"cb-agent-update-sig-*",
+		maxSignatureBytes,
+		0o600,
+	)
 }
 
 func VerifySHA256(path, want string) error {
