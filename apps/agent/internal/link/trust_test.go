@@ -1,6 +1,12 @@
 package link
 
 import (
+	"context"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -284,5 +290,141 @@ func TestPromoteTrust_PublicRetryReportsSuccessorAndClears(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("rotation = %+v after a public promotion, want it cleared", *got)
+	}
+}
+
+// countingListener counts every accepted connection, so a test can assert a
+// dial attempted exactly one TCP connection (no retry) or two (one retry).
+type countingListener struct {
+	net.Listener
+	accepts int32
+}
+
+func (c *countingListener) Accept() (net.Conn, error) {
+	conn, err := c.Listener.Accept()
+	if err == nil {
+		// Only a genuine accepted connection counts. Accept also returns an
+		// error every time — including at t.Cleanup's srv.Close(), whose
+		// Listener.Close unblocks the server's own blocking Accept call with
+		// "use of closed network connection" — and counting that would
+		// inflate every test's total by one regardless of how many dials it
+		// actually made.
+		atomic.AddInt32(&c.accepts, 1)
+	}
+	return conn, err
+}
+
+// newCountingTLSServer starts an httptest TLS server whose accepted
+// connection count is observable, so dialWithTrust's retry decisions can be
+// asserted on the wire rather than inferred from its return values alone.
+func newCountingTLSServer(t *testing.T) (*httptest.Server, *countingListener) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	cl := &countingListener{Listener: ln}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	srv.Listener = cl
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return srv, cl
+}
+
+func wsURL(t *testing.T, srv *httptest.Server) string {
+	t.Helper()
+	return strings.Replace(srv.URL, "https://", "wss://", 1)
+}
+
+// A pin failure with no persisted rotation at all is the overwhelmingly
+// common case (no cutover has ever been advertised to this agent). It must
+// not attempt a second dial: successorRetryTrust has nothing to say yes to,
+// so dialWithTrust should fail on the very first (and only) connection.
+func TestDialWithTrust_NoRotationPerformsNoSecondDial(t *testing.T) {
+	srv, cl := newCountingTLSServer(t)
+
+	opts := Options{
+		Config:   &config.Config{TLSPin: "WRONG-PIN"},
+		StateDir: t.TempDir(), // no rotation ever saved here
+	}
+	conn, promote, err := dialWithTrust(context.Background(), opts, wsURL(t, srv))
+	if err == nil {
+		if conn != nil {
+			conn.Close()
+		}
+		t.Fatal("dialWithTrust succeeded against a server presenting an unpinned certificate")
+	}
+	if promote != nil {
+		t.Error("promote func = non-nil on a failed dial, want nil")
+	}
+	if got := atomic.LoadInt32(&cl.accepts); got != 1 {
+		t.Errorf("accepted connections = %d, want 1 (no retry dial)", got)
+	}
+}
+
+// opts.StateDir == "" must skip the retry path entirely rather than falling
+// back to LoadTLSPinRotation's process-relative default location — every
+// other stateDir-gated lookup in this package (ResolveTrust,
+// serverKeyCandidates, handleTLSPinRotate) guards this case explicitly, and
+// this is the one path where reading a file an attacker could plant in the
+// process's working directory would matter most.
+func TestDialWithTrust_NoStateDirPerformsNoSecondDial(t *testing.T) {
+	srv, cl := newCountingTLSServer(t)
+
+	opts := Options{
+		Config:   &config.Config{TLSPin: "WRONG-PIN"},
+		StateDir: "",
+	}
+	conn, promote, err := dialWithTrust(context.Background(), opts, wsURL(t, srv))
+	if err == nil {
+		if conn != nil {
+			conn.Close()
+		}
+		t.Fatal("dialWithTrust succeeded against a server presenting an unpinned certificate")
+	}
+	if promote != nil {
+		t.Error("promote func = non-nil on a failed dial, want nil")
+	}
+	if got := atomic.LoadInt32(&cl.accepts); got != 1 {
+		t.Errorf("accepted connections = %d, want 1 (no retry dial with StateDir unset)", got)
+	}
+}
+
+// When a cross-mode retry is warranted but the retry dial fails too (here:
+// the advertised "public" successor is retried with standard verification
+// against a still-self-signed leaf, which can never pass), the error
+// reported to the caller must be the *original* pin-mismatch error, not the
+// retry's own failure — the original is what actually describes what the
+// operator has to fix.
+func TestDialWithTrust_RetryFailureSurfacesTheOriginalError(t *testing.T) {
+	srv, cl := newCountingTLSServer(t)
+	dir := t.TempDir()
+	if err := config.SaveTLSPinRotation(dir, config.TLSPinRotation{
+		Mode: "public", Expiry: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveTLSPinRotation: %v", err)
+	}
+
+	opts := Options{
+		Config:   &config.Config{TLSPin: "WRONG-PIN"},
+		StateDir: dir,
+	}
+	conn, promote, err := dialWithTrust(context.Background(), opts, wsURL(t, srv))
+	if err == nil {
+		if conn != nil {
+			conn.Close()
+		}
+		t.Fatal("dialWithTrust succeeded, want both the pinned dial and the public retry to fail")
+	}
+	if promote != nil {
+		t.Error("promote func = non-nil on a failed dial+retry, want nil")
+	}
+	if !strings.Contains(err.Error(), "certificate pin mismatch") {
+		t.Errorf("err = %q, want the original pin-mismatch error, not the retry's own failure", err)
+	}
+	if got := atomic.LoadInt32(&cl.accepts); got != 2 {
+		t.Errorf("accepted connections = %d, want 2 (the original dial plus one retry)", got)
 	}
 }

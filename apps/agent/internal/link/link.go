@@ -407,67 +407,92 @@ func serverKeyCandidates(cfg *config.Config, stateDir string) []string {
 	return candidates
 }
 
-// dialWithTrust dials u under cfg's currently resolved TLS trust policy and
-// reports the tls_pin_kind this connection's handshake matched.
+// dialWithTrust dials u under cfg's currently resolved TLS trust policy.
+//
+// It does not itself promote a successor trust policy: TLS success alone
+// does not prove the peer is the *right* server, only that it presented a
+// certificate this policy accepts. Promotion clears the persisted rotation
+// permanently, so it must wait for the Noise IK handshake to actually
+// authenticate the peer — see dialAndHandshake, the only caller, which
+// invokes the returned promote func after that handshake succeeds and
+// discards it (never calling it) if the handshake fails. The matched
+// candidate is still resolved here, at TLS time, because that is the only
+// point with access to the negotiated certificate.
 //
 // When the first dial fails, it consults the persisted rotation and, only
 // when successorRetryTrust says a cross-mode cutover was actually
 // advertised, retries once under that policy — see successorRetryTrust's
 // doc comment for why the retry is symmetric and why it cannot be triggered
-// by an attacker merely causing dials to fail. A successful retry is itself
-// proof the server is serving the advertised policy, so it promotes exactly
-// like a first-dial successor match does.
+// by an attacker merely causing dials to fail. opts.StateDir == "" skips
+// the retry entirely rather than falling back to LoadTLSPinRotation's own
+// process-relative default path: every other stateDir-gated lookup in this
+// package (ResolveTrust, serverKeyCandidates, handleTLSPinRotate) guards
+// that case explicitly, and a retry is exactly the path where reading a
+// file an attacker could plant in the process's working directory would
+// matter most.
 //
 // On failure — no retry warranted, or the retry also failing — the returned
 // error is always the *original* current-policy dial's error, since that is
 // what actually describes what the operator has to fix; a doomed retry's own
 // failure would only be noise on top of it.
-func dialWithTrust(ctx context.Context, opts Options, u string) (*websocket.Conn, string, error) {
+func dialWithTrust(ctx context.Context, opts Options, u string) (*websocket.Conn, func() (string, error), error) {
 	trust := ResolveTrust(opts.Config, opts.StateDir)
 	conn, resp, dialErr := tlsdial.NewDialer(trust).DialContext(ctx, u, nil)
 	if dialErr == nil {
-		tlsPinKind := ""
 		if resp != nil && resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
 			if idx, ok := trust.Matches(resp.TLS.PeerCertificates[0]); ok {
-				kind, promoteErr := PromoteTrust(opts.Config, opts.StateDir, idx)
-				if promoteErr != nil {
-					log.Printf("link: promoting tls trust: %v", promoteErr)
-				}
-				tlsPinKind = kind
+				return conn, func() (string, error) {
+					return PromoteTrust(opts.Config, opts.StateDir, idx)
+				}, nil
 			}
 		}
-		return conn, tlsPinKind, nil
+		return conn, nil, nil
 	}
 
+	if opts.StateDir == "" {
+		return nil, nil, fmt.Errorf("link: dial: %w", dialErr)
+	}
 	rotation, rotErr := config.LoadTLSPinRotation(opts.StateDir)
 	if rotErr != nil {
 		log.Printf("link: reading persisted tls pin rotation for cutover retry: %v", rotErr)
-		return nil, "", fmt.Errorf("link: dial: %w", dialErr)
+		return nil, nil, fmt.Errorf("link: dial: %w", dialErr)
 	}
 	retryTrust, ok := successorRetryTrust(trust, rotation)
 	if !ok {
-		return nil, "", fmt.Errorf("link: dial: %w", dialErr)
+		return nil, nil, fmt.Errorf("link: dial: %w", dialErr)
 	}
 	retryConn, _, retryErr := tlsdial.NewDialer(retryTrust).DialContext(ctx, u, nil)
 	if retryErr != nil {
-		return nil, "", fmt.Errorf("link: dial: %w", dialErr)
+		return nil, nil, fmt.Errorf("link: dial: %w", dialErr)
 	}
-	kind, promoteErr := PromoteTrust(opts.Config, opts.StateDir, successorRetryIndex)
-	if promoteErr != nil {
-		log.Printf("link: promoting tls trust: %v", promoteErr)
-	}
-	return retryConn, kind, nil
+	return retryConn, func() (string, error) {
+		return PromoteTrust(opts.Config, opts.StateDir, successorRetryIndex)
+	}, nil
 }
 
 // dialAndHandshake dials u and completes the Noise IK handshake against
 // remotePKHex, returning the live connection, initiator session, and the
-// tls_pin_kind the dial matched (see dialWithTrust) on success. A handshake
-// failure (ReadHandshakeMessage returning an error — the signal that
-// remotePKHex was the wrong server key: the derived shared secret doesn't
-// match, so msg2's AEAD payload fails to decrypt/verify) closes conn itself
-// before returning, so runOnce's candidate loop can simply try the next key
-// with no leaked socket. A dial failure never reaches that point at all —
-// there's nothing to close.
+// tls_pin_kind the dial matched (see dialWithTrust) on success.
+//
+// Promotion is deliberately deferred to the very end, after the Noise
+// handshake has succeeded: TLS success alone only means the peer presented
+// an acceptable certificate, not that it is the right server, and
+// PromoteTrust permanently clears the persisted successor. Promoting on TLS
+// success and then failing the handshake would destroy the only record of
+// the successor policy while leaving the agent unauthenticated against
+// whatever presented that certificate — and since the update-binary
+// download is pinned too, there would be no remote path back. The promote
+// func dialWithTrust returns is therefore only ever invoked here, after
+// ReadHandshakeMessage below has returned successfully; every earlier
+// failure path returns without calling it, leaving the persisted rotation
+// exactly as it was.
+//
+// A handshake failure (ReadHandshakeMessage returning an error — the signal
+// that remotePKHex was the wrong server key: the derived shared secret
+// doesn't match, so msg2's AEAD payload fails to decrypt/verify) closes conn
+// itself before returning, so runOnce's candidate loop can simply try the
+// next key with no leaked socket. A dial failure never reaches that point at
+// all — there's nothing to close.
 func dialAndHandshake(
 	ctx context.Context, opts Options, u string, remotePKHex string,
 ) (*websocket.Conn, *noiseconn.Session, string, error) {
@@ -483,7 +508,7 @@ func dialAndHandshake(
 		return nil, nil, "", fmt.Errorf("link: %w", err)
 	}
 
-	conn, tlsPinKind, err := dialWithTrust(ctx, opts, u)
+	conn, promote, err := dialWithTrust(ctx, opts, u)
 	if err != nil {
 		return nil, nil, "", err
 	}
@@ -510,6 +535,15 @@ func dialAndHandshake(
 	if err := session.ReadHandshakeMessage(msg2); err != nil {
 		conn.Close()
 		return nil, nil, "", fmt.Errorf("link: %w", err)
+	}
+
+	tlsPinKind := ""
+	if promote != nil {
+		kind, promoteErr := promote()
+		if promoteErr != nil {
+			log.Printf("link: promoting tls trust: %v", promoteErr)
+		}
+		tlsPinKind = kind
 	}
 	return conn, session, tlsPinKind, nil
 }
