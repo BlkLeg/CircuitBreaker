@@ -262,7 +262,7 @@ func runDaemon() {
 		return syscall.Exec(installedBinaryPath, os.Args, os.Environ())
 	})
 
-	if err := enroll.Run(cfg, key, AgentVersion); err != nil {
+	if err := enroll.Run(cfg, key, AgentVersion, link.ResolveTrust(cfg, config.StateDir())); err != nil {
 		fmt.Fprintf(os.Stderr, "cb-agent: enrollment: %v\n", err)
 		os.Exit(1)
 	}
@@ -356,7 +356,7 @@ func runDaemon() {
 		if err := send(instr.Version, "started", ""); err != nil {
 			log.Printf("cb-agent: send started update.status: %v", err)
 		}
-		tmpPath, err := update.Download(cfg, instr)
+		tmpPath, err := update.Download(cfg, link.ResolveTrust(cfg, config.StateDir()), instr)
 		if err != nil {
 			if sendErr := send(instr.Version, "failed", err.Error()); sendErr != nil {
 				log.Printf("cb-agent: send failed update.status: %v", sendErr)
@@ -1334,7 +1334,7 @@ func runEnroll() {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 		os.Exit(1)
 	}
-	if err := enroll.Run(cfg, key, AgentVersion); err != nil {
+	if err := enroll.Run(cfg, key, AgentVersion, link.ResolveTrust(cfg, config.StateDir())); err != nil {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 		os.Exit(1)
 	}

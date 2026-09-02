@@ -15,6 +15,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"circuitbreaker.dev/cb-agent/internal/config"
+	"circuitbreaker.dev/cb-agent/internal/tlsdial"
 )
 
 // generateTestKeypair mirrors noiseconn_test.go's generateKeypair.
@@ -152,7 +153,7 @@ func TestRun_PrintsPairingCodeAndReturnsOnActive(t *testing.T) {
 	}
 
 	cfg := &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])}
-	if err := Run(cfg, key, "0.1.0-test"); err != nil {
+	if err := Run(cfg, key, "0.1.0-test", tlsdial.Trust{Mode: tlsdial.ModePublic}); err != nil {
 		t.Fatalf("Run() error = %v, want nil (status=active)", err)
 	}
 }
@@ -201,7 +202,7 @@ func TestRun_StalledServerDoesNotBlockForever(t *testing.T) {
 	cfg := &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])}
 
 	done := make(chan error, 1)
-	go func() { done <- Run(cfg, key, "0.1.0-test") }()
+	go func() { done <- Run(cfg, key, "0.1.0-test", tlsdial.Trust{Mode: tlsdial.ModePublic}) }()
 
 	select {
 	case err := <-done:
@@ -276,7 +277,7 @@ func TestRun_ApprovalMayTakeLongerThanTheHandshakeDeadline(t *testing.T) {
 	}
 	cfg := &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])}
 
-	if err := Run(cfg, key, "0.1.0-test"); err != nil {
+	if err := Run(cfg, key, "0.1.0-test", tlsdial.Trust{Mode: tlsdial.ModePublic}); err != nil {
 		t.Fatalf("Run() error = %v, want nil — a slow approval is not a timeout", err)
 	}
 }

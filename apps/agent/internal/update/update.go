@@ -87,18 +87,20 @@ var maxDownloadBytes int64 = 256 * 1024 * 1024
 
 // Download fetches the update binary named by instr from cfg.ServerURL and
 // writes it to a new temp file, returning its path. The request routes
-// through tlsdial.NewTransport(cfg.TLSPin) — the same pinned-TLS/proxy
-// policy used for the agent's enroll and link websocket connections —
-// rather than a bare http.Get, so a self-signed/TOFU install's tls_pin is
-// actually enforced for the download and not just the control connection.
-func Download(cfg *config.Config, instr Instruction) (string, error) {
+// through tlsdial.NewTransport(trust) — the same pinned-TLS/proxy policy
+// used for the agent's enroll and link websocket connections — rather than
+// a bare http.Get, so a self-signed/TOFU install's tls_pin is actually
+// enforced for the download and not just the control connection. trust is
+// resolved by the caller via link.ResolveTrust: cfg is kept here only
+// because the URL above is built from cfg.ServerURL.
+func Download(cfg *config.Config, trust tlsdial.Trust, instr Instruction) (string, error) {
 	url := fmt.Sprintf(
 		"%s/api/v1/agents/binary/%s/%s/%s",
 		strings.TrimRight(cfg.ServerURL, "/"), instr.Version, instr.OS, instr.Arch,
 	)
 
 	client := &http.Client{
-		Transport: tlsdial.NewTransport(cfg.TLSPin),
+		Transport: tlsdial.NewTransport(trust),
 		Timeout:   downloadTimeout,
 	}
 	resp, err := client.Get(url)

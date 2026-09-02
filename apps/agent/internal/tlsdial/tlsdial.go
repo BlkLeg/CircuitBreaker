@@ -43,6 +43,15 @@ import (
 type Trust struct {
 	Mode string
 	Pins []string
+
+	// PublicSuccessorPending records that a `tls.pin.rotate` advertised a
+	// move to public trust which has not been promoted yet. The policy stays
+	// pinned — dropping the pin the moment the successor was advertised,
+	// before the certificate actually changed, would strand the agent
+	// against the still-current self-signed leaf. internal/link consults
+	// this on a pin failure to decide whether one standard-verification
+	// retry is warranted (see link.dialWithTrust).
+	PublicSuccessorPending bool
 }
 
 const (

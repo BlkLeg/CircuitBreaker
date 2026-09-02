@@ -13,11 +13,12 @@ import (
 	"time"
 
 	"circuitbreaker.dev/cb-agent/internal/config"
+	"circuitbreaker.dev/cb-agent/internal/tlsdial"
 )
 
-// TestDownload_RejectsCertPinMismatch proves Download actually enforces
-// cfg.TLSPin against the server it downloads from — the point of routing
-// through tlsdial.NewTransport instead of a bare http.Get.
+// TestDownload_RejectsCertPinMismatch proves Download actually enforces the
+// resolved trust policy against the server it downloads from — the point of
+// routing through tlsdial.NewTransport instead of a bare http.Get.
 func TestDownload_RejectsCertPinMismatch(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("should never be read"))
@@ -31,7 +32,8 @@ func TestDownload_RejectsCertPinMismatch(t *testing.T) {
 	cfg := &config.Config{ServerURL: srv.URL, TLSPin: wrongPin}
 	instr := Instruction{Version: "0.2.0", SHA256: "deadbeef", Arch: "amd64", OS: "linux"}
 
-	tmpPath, err := Download(cfg, instr)
+	trust := tlsdial.Trust{Mode: tlsdial.ModeSelfSigned, Pins: []string{wrongPin}}
+	tmpPath, err := Download(cfg, trust, instr)
 	if err == nil {
 		os.Remove(tmpPath)
 		t.Fatal("Download() with mismatched pin = nil error, want an error")
@@ -69,7 +71,7 @@ func TestDownload_RejectsOnTimeout(t *testing.T) {
 	instr := Instruction{Version: "0.2.0", SHA256: "deadbeef", Arch: "amd64", OS: "linux"}
 
 	start := time.Now()
-	tmpPath, err := Download(cfg, instr)
+	tmpPath, err := Download(cfg, tlsdial.Trust{Mode: tlsdial.ModePublic}, instr)
 	elapsed := time.Since(start)
 	if err == nil {
 		os.Remove(tmpPath)
@@ -101,7 +103,7 @@ func TestDownload_RejectsOversizeContentLength(t *testing.T) {
 	cfg := &config.Config{ServerURL: srv.URL}
 	instr := Instruction{Version: "0.2.0", SHA256: "deadbeef", Arch: "amd64", OS: "linux"}
 
-	tmpPath, err := Download(cfg, instr)
+	tmpPath, err := Download(cfg, tlsdial.Trust{Mode: tlsdial.ModePublic}, instr)
 	if err == nil {
 		os.Remove(tmpPath)
 		t.Fatal("Download() with oversize Content-Length = nil error, want an error")
@@ -134,7 +136,7 @@ func TestDownload_RejectsOversizeStreamedBody(t *testing.T) {
 	cfg := &config.Config{ServerURL: srv.URL}
 	instr := Instruction{Version: "0.2.0", SHA256: "deadbeef", Arch: "amd64", OS: "linux"}
 
-	tmpPath, err := Download(cfg, instr)
+	tmpPath, err := Download(cfg, tlsdial.Trust{Mode: tlsdial.ModePublic}, instr)
 	if err == nil {
 		os.Remove(tmpPath)
 		t.Fatal("Download() with oversize streamed body = nil error, want an error")

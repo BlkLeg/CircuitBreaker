@@ -430,7 +430,7 @@ func dialAndHandshake(
 		return nil, nil, fmt.Errorf("link: %w", err)
 	}
 
-	conn, _, err := tlsdial.NewDialer(opts.Config.TLSPin).DialContext(ctx, u, nil)
+	conn, _, err := tlsdial.NewDialer(ResolveTrust(opts.Config, opts.StateDir)).DialContext(ctx, u, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("link: dial: %w", err)
 	}
@@ -987,7 +987,7 @@ func Uninstall(ctx context.Context, opts Options) error {
 	u.Scheme = strings.Replace(u.Scheme, "http", "ws", 1)
 	u.Path = "/api/v1/agents/link"
 
-	conn, _, err := tlsdial.NewDialer(opts.Config.TLSPin).DialContext(ctx, u.String(), nil)
+	conn, _, err := tlsdial.NewDialer(ResolveTrust(opts.Config, opts.StateDir)).DialContext(ctx, u.String(), nil)
 	if err != nil {
 		return fmt.Errorf("link: dial: %w", err)
 	}

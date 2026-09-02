@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"circuitbreaker.dev/cb-agent/internal/config"
+	"circuitbreaker.dev/cb-agent/internal/tlsdial"
 )
 
 func TestDownloadAndVerify_RoundTrips(t *testing.T) {
@@ -26,7 +27,7 @@ func TestDownloadAndVerify_RoundTrips(t *testing.T) {
 	cfg := &config.Config{ServerURL: srv.URL}
 	instr := Instruction{Version: "0.2.0", SHA256: wantHash, Arch: "amd64", OS: "linux"}
 
-	tmpPath, err := Download(cfg, instr)
+	tmpPath, err := Download(cfg, tlsdial.Trust{Mode: tlsdial.ModePublic}, instr)
 	if err != nil {
 		t.Fatalf("Download() error = %v", err)
 	}

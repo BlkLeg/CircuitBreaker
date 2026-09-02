@@ -39,7 +39,12 @@ import (
 // cleared as soon as the first frame arrives. A var so tests can shrink it.
 var handshakeTimeout = 10 * time.Second
 
-func Run(cfg *config.Config, key *DeviceKey, agentVersion string) error {
+// Run takes trust as a resolved tlsdial.Trust rather than resolving it
+// itself: internal/link already imports internal/enroll for DeviceKey, so
+// enroll importing internal/link back (to call link.ResolveTrust) would be
+// an import cycle. cmd/cb-agent/main.go resolves it once via
+// link.ResolveTrust(cfg, config.StateDir()) and passes the result in.
+func Run(cfg *config.Config, key *DeviceKey, agentVersion string, trust tlsdial.Trust) error {
 	remotePub, err := hex.DecodeString(cfg.ServerStaticPK)
 	if err != nil || len(remotePub) != 32 {
 		return fmt.Errorf("enroll: invalid server_static_pk in config: %w", err)
@@ -59,7 +64,7 @@ func Run(cfg *config.Config, key *DeviceKey, agentVersion string) error {
 	u.Scheme = strings.Replace(u.Scheme, "http", "ws", 1)
 	u.Path = "/api/v1/agents/enroll"
 
-	conn, _, err := tlsdial.NewDialer(cfg.TLSPin).Dial(u.String(), nil)
+	conn, _, err := tlsdial.NewDialer(trust).Dial(u.String(), nil)
 	if err != nil {
 		return fmt.Errorf("enroll: dial %s: %w", u.String(), err)
 	}
