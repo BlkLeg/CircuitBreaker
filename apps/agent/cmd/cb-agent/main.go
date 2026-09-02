@@ -221,6 +221,8 @@ func main() {
 		runEnroll()
 	case "uninstall":
 		runUninstall()
+	case "signing-key":
+		runSigningKey()
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand %q\n", os.Args[1])
 		os.Exit(1)
@@ -1235,6 +1237,20 @@ func runVersion() {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// runSigningKey prints the Ed25519 update-signing public key embedded in
+// this binary at build time, or nothing at all for a warn-mode build that
+// carries none.
+//
+// It exists because a wrong `-X` package path sets the variable silently:
+// the build succeeds, the binary verifies nothing, and the only symptom is
+// an update path that quietly stopped being enforceable. `make
+// verify-signing-key` reads this to prove the flag landed. Public key only —
+// it is not secret, and nothing here can print the private half because the
+// binary has never held it.
+func runSigningKey() {
+	fmt.Println(update.SigningPublicKey)
 }
 
 // printVersion writes "cb-agent <version>" and, only when a device key

@@ -153,7 +153,7 @@ deps-native-down:  ## Stop native systemd deps
 # ==============================================================================
 DIST_NATIVE ?= dist/native
 
-.PHONY: build build-deps build-in-release-image build-release build-from-source release-local release-tag release-retag release-untag docker-build docker-push sign sbom
+.PHONY: build build-deps build-in-release-image build-release build-from-source release-local release-tag release-retag release-untag agent-signing-key docker-build docker-push sign sbom
 
 build: ## Build native app (tarball + deb + rpm + apk + AppImage + .pkg.tar.zst)
 	cd $(FRONTEND_DIR) && npm ci && npm run build
@@ -169,6 +169,9 @@ build-deps: ## Install build toolchain (nfpm, appimagetool, Python 3.12, Node 20
 # the artifact has the floor the released one has. ADR 0005 Phase 3, F8.
 build-in-release-image: ## Build packages inside the ubuntu-22.04 image the release job uses
 	bash scripts/build-in-release-image.sh
+
+agent-signing-key: ## Generate an Ed25519 agent-update signing keypair (operators who build their own agents)
+	.venv/bin/python scripts/agent_signing_key.py
 
 build-release: ## Install build deps then build all packages
 	$(MAKE) --no-print-directory build-deps
