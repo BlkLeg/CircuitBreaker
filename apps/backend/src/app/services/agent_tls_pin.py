@@ -188,3 +188,67 @@ def convergence_counts(db: Session, state: TLSPinRotationState) -> tuple[int, in
         else:
             unconverged += 1
     return converged, unconverged
+
+
+def activation_block_reason(db: Session, cert: Certificate) -> str | None:
+    """Why activating `cert` would strand agents, or None when it is safe.
+
+    The convergence counts alone are not a sufficient gate. They are only
+    meaningful *while a rotation is running*, so an operator who activates a
+    new certificate without starting one at all — the likeliest way to hit
+    F4, since it needs no knowledge of this mechanism to do — would sail
+    through a gate keyed on them and brick the fleet. The rotation is also
+    per-policy: rotating to certificate A and then activating certificate B
+    passes a count-only check while stranding everyone.
+
+    So the question asked here is the one that actually matters: *is this
+    activation a trust change, and has the fleet been prepared for this
+    specific one?*
+
+    Safe, in order:
+
+    - no active agents — there is nobody to strand;
+    - the certificate's trust policy already matches what is being served —
+      a Let's Encrypt renewal, or re-activating the current certificate,
+      changes nothing an agent verifies;
+    - the server serves nothing yet, so no agent can have pinned it;
+    - a rotation advertising *this* policy has converged across the fleet.
+    """
+    from app.services import agent_install, agent_registry
+
+    if not agent_registry.list_agents(db, status="active"):
+        return None
+
+    target = agent_install.tls_policy_for_certificate(cert)
+
+    served = agent_install.served_tls_policy()
+    if served is None:
+        # Nothing on disk for nginx to present, so nothing an agent could
+        # have pinned. Refusing here would block the first activation on an
+        # install that has never served a certificate.
+        return None
+    if target == served:
+        return None
+
+    state = load_tls_pin_rotation_state(db)
+    advertised = (state.successor_mode, state.successor_pin or "")
+    if not state.rotation_active or advertised != target:
+        return (
+            "Activating this certificate changes the TLS trust policy agents "
+            "verify against, and no rotation has advertised this policy to the "
+            "fleet. Every agent would be unable to reconnect — including over "
+            "the update channel that would otherwise deliver a fix. Start a "
+            "rotation first: POST /api/v1/agents/tls-pin/rotate with this "
+            "certificate's id (see docs/tls-trust-rotation.md), or re-send "
+            "with force=true to activate anyway."
+        )
+
+    _, unconverged = convergence_counts(db, state)
+    if unconverged:
+        return (
+            f"{unconverged} active agent(s) have not confirmed the successor TLS "
+            "policy and would be stranded by this activation. Check "
+            "GET /api/v1/agents/tls-pin/pending, or re-send with force=true to "
+            "activate anyway."
+        )
+    return None

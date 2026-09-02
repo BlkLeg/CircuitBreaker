@@ -664,7 +664,13 @@ The second case is the one that corrupts data. See [Runbook 3](#3-duplicate-agen
 
 ## Recovery runbooks
 
-These are the six scenarios AGT-18 requires. Each is written to be followed as-is.
+The six scenarios AGT-18 requires, plus the Redis-outage behaviour route finding F16 asks be
+stated plainly to operators. Each is written to be followed as-is.
+
+For the two fleet-wide rotations, see [Agent Server-Key
+Rotation](agent-key-rotation.md) and [Agent TLS Trust Rotation](tls-trust-rotation.md). They are
+independent of each other, and neither is a recovery step — both are planned operations with a
+timed window.
 
 > **On evidence:** AGT-18 counts a runbook as evidence only once it has been exercised in a
 > tabletop or automated scenario. This page is the prerequisite for that exercise, not a record
@@ -868,6 +874,36 @@ Work through these in order — each is independently able to break every agent:
    over the link — they have to reach the server to be told anything.
 6. **Verify** once agents are back: presence green in the fleet view, `cb-agent status` showing
    `link: connected` with a recent `last connected`, and spool depths falling toward zero.
+
+### 7. Redis is down
+
+**Symptom.** No agent can enroll and no agent can reconnect. The fleet goes offline together,
+within about a minute, and nothing in the agents' own logs explains it — they are being refused
+before a single Noise handshake byte is read.
+
+**This is deliberate, and it is the one dependency the agent plane does not degrade around.**
+`/enroll` and `/link` are the anonymous, adversarial-by-default surface, and their per-IP and
+global attempt caps are Redis-backed. If Redis is unreachable those caps cannot be evaluated, so
+the endpoints **fail closed** — reject — rather than silently admitting unlimited attempts. The
+alternative would quietly remove the only guarantee protecting them at exactly the moment
+something is going wrong.
+
+Two consequences worth knowing before it happens:
+
+- **Redis is a hard dependency for the agent plane specifically.** The rest of the product
+  degrades when Redis is down; agent enrollment and reconnection do not.
+- **Presence is Redis-backed too** (60 s TTL), so the fleet view will show everything offline —
+  which in this case is accurate rather than misleading.
+
+**Recovery.** Bring Redis back; nothing else is required. Agents reconnect on their own backoff,
+up to about 5 minutes for one that had been failing for a while. No re-enrollment, no key
+rotation, and no agent-side action: their identity lives in `/var/lib/cb-agent` and in the
+server's database, neither of which Redis touches. Telemetry gathered during the outage is
+spooled on each agent and drains on reconnect; watch the spool depths fall to confirm.
+
+If Redis is going to be down for a planned window, expect the fleet to be offline for its
+duration, and size the window against the agents' 5-minute reconnect ceiling rather than
+expecting instant recovery.
 
 ---
 

@@ -256,6 +256,27 @@ def tls_policy_for_certificate(cert: Certificate) -> tuple[str, str]:
     return "self_signed", _spki_pin(cert.cert_pem)
 
 
+def served_tls_policy() -> tuple[str, str] | None:
+    """The wire trust policy nginx is presenting right now, or None when this
+    install serves no certificate yet.
+
+    Read from the live file rather than the `Certificate` table because that
+    is what an agent's handshake actually sees — `_live_nginx_cert_pem`'s
+    docstring has the full reason. None is a real answer, not an error: an
+    install with nothing on disk has no policy for an agent to have pinned.
+
+    The mode is reported as "self_signed" for anything on disk. This function
+    cannot tell a publicly-trusted leaf from a self-signed one by inspection,
+    and it does not need to: its only caller compares the *pin*, and two
+    certificates with the same SPKI digest are the same trust decision
+    whatever issued them.
+    """
+    pem = _live_nginx_cert_pem()
+    if pem is None:
+        return None
+    return "self_signed", _spki_pin(pem)
+
+
 def render_install_script(
     *,
     server_url: str,

@@ -212,17 +212,9 @@ def activate_certificate_route(
     from app.services import agent_tls_pin, certificate_activation
 
     rotation = agent_tls_pin.load_tls_pin_rotation_state(db)
-    _, unconverged = agent_tls_pin.convergence_counts(db, rotation)
-    if unconverged and not force:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"{unconverged} active agent(s) have not confirmed the successor TLS "
-                "policy and would be stranded by this activation. Check "
-                "GET /api/v1/agents/tls-pin/pending, or re-send with force=true to "
-                "activate anyway."
-            ),
-        )
+    block_reason = agent_tls_pin.activation_block_reason(db, cert)
+    if block_reason is not None and not force:
+        raise HTTPException(status_code=409, detail=block_reason)
 
     result = certificate_activation.activate_certificate(db, cert)
     log_audit(
@@ -234,7 +226,7 @@ def activate_certificate_route(
         status="ok" if result.reloaded else "partial",
         details=result.detail,
     )
-    if unconverged and force:
+    if block_reason is not None and force:
         # Audited separately from the activation itself: this is the record
         # that someone knowingly stranded agents, and it must be findable
         # without reading every activation entry.
@@ -246,8 +238,8 @@ def activate_certificate_route(
             resource=f"certificate:{cert_id}",
             status="ok",
             details=(
-                f"Activated with {unconverged} unconverged agent(s); "
-                "they will be unable to reconnect until reinstalled."
+                "Activated over the TLS trust gate; affected agents will be "
+                f"unable to reconnect until reinstalled. Reason: {block_reason}"
             ),
         )
     if rotation.rotation_active:

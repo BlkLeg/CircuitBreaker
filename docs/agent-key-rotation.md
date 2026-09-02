@@ -3,6 +3,11 @@
 The agent server key is the identity key every `cb-agent` authenticates the
 server against. Rotating it is a fleet-wide operation with a timed window.
 
+**See also:** [Agent TLS Trust Rotation](tls-trust-rotation.md), for changing
+the *certificate* this install serves. The two are independent — rotating the
+identity key does not rotate TLS trust, and vice versa — and changing both is
+two procedures, not one.
+
 **Where:** Agents page, top panel. Admin only.
 
 ## What rotation does
