@@ -508,7 +508,17 @@ def approve_agent(
     hardware_id: int | None = None,
     host_link_action: str | None = None,
     capability_overrides: dict[str, Any] | None = None,
+    via: str | None = None,
 ) -> Agent:
+    """Approve a pending agent and grant it the default capability set.
+
+    `via` names the surface the approval came from — "cli" for a headless
+    change, absent for the UI. It rides on the event detail, and so into the
+    hash-chained audit entry `record_event` writes (F17), because that entry
+    is now the single record of an approval from any surface: a caller that
+    wrote its own alongside it would put two rows in the chain for one
+    decision.
+    """
     agent = db.get(Agent, agent_id)
     if agent is None:
         raise ValueError(f"agent {agent_id} not found")
@@ -549,6 +559,8 @@ def approve_agent(
     detail = None
     if hardware_id is not None or host_link_action is not None:
         detail = {"hardware_id": hardware_id, "host_link_action": host_link_action}
+    if via is not None:
+        detail = {**(detail or {}), "via": via}
     record_event(db, agent.id, "approved", actor_user_id=approving_user_id, detail=detail)
     db.flush()
     return agent
@@ -607,8 +619,15 @@ def reject_agent(db: Session, agent_id: int, *, actor_user_id: int) -> Agent:
 
 
 def revoke_agent(
-    db: Session, agent_id: int, *, actor_user_id: int | None, reason: str | None = None
+    db: Session,
+    agent_id: int,
+    *,
+    actor_user_id: int | None,
+    reason: str | None = None,
+    via: str | None = None,
 ) -> Agent:
+    """Withdraw an agent's authorization. `via` names the surface the request
+    came from ("cli"); see `approve_agent`'s parameter of the same name."""
     agent = db.get(Agent, agent_id)
     if agent is None:
         raise ValueError(f"agent {agent_id} not found")
@@ -616,7 +635,10 @@ def revoke_agent(
     agent.revoked_at = utcnow()
     agent.revoked_by_user_id = actor_user_id
     agent.revoke_reason = reason
-    record_event(db, agent.id, "revoked", actor_user_id=actor_user_id, detail={"reason": reason})
+    detail: dict[str, Any] = {"reason": reason}
+    if via is not None:
+        detail["via"] = via
+    record_event(db, agent.id, "revoked", actor_user_id=actor_user_id, detail=detail)
     db.flush()
     return agent
 

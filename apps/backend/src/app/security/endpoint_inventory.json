@@ -1,6 +1,6 @@
 {
   "generated_by": "apps/backend/scripts/generate_endpoint_inventory.py",
-  "route_count": 440,
+  "route_count": 444,
   "routes": [
     {
       "auth_policy": "authenticated",
@@ -650,6 +650,23 @@
       "transport": "http"
     },
     {
+      "auth_policy": "agent-download",
+      "dependency_calls": [
+        "app.api.agents.get_binary_signature"
+      ],
+      "disclosure": "detached Ed25519 signature over a versioned agent binary",
+      "endpoint_module": "app.api.agents",
+      "endpoint_name": "get_binary_signature",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_binary_signature",
+      "path": "/api/v1/agents/binary/{version}/{os_name}/{arch}.sig",
+      "rbac_policy": "none",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
       "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.agents.get_capability_defaults",
@@ -855,6 +872,69 @@
       ],
       "name": "get_server_key_rotation_status",
       "path": "/api/v1/agents/server-key/status",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.agents.get_tls_pin_pending_agents",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.agents",
+      "endpoint_name": "get_tls_pin_pending_agents",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_tls_pin_pending_agents",
+      "path": "/api/v1/agents/tls-pin/pending",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.agents.post_tls_pin_rotate",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.agents",
+      "endpoint_name": "post_tls_pin_rotate",
+      "methods": [
+        "POST"
+      ],
+      "name": "post_tls_pin_rotate",
+      "path": "/api/v1/agents/tls-pin/rotate",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.agents.get_tls_pin_rotation_status",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.agents",
+      "endpoint_name": "get_tls_pin_rotation_status",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_tls_pin_rotation_status",
+      "path": "/api/v1/agents/tls-pin/status",
       "rbac_policy": "declared-role-or-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"

@@ -496,7 +496,15 @@ def test_revoking_an_agent_records_the_reason(db_session, factories):
     summary = cli_admin.revoke_agent(db_session, admin, agent.id, "decommissioned")
     assert summary.status == "revoked"
     entries = _audit_entries(db_session, "agent_revoked")
-    assert json.loads(entries[0].details)["reason"] == "decommissioned"
+    assert len(entries) == 1, "one chained entry per revocation, whatever the surface"
+    # Read from `diff`, not `details`: since slice 4.3 (F17) the single audit
+    # entry for a revocation is the one `agent_registry.record_event` writes,
+    # and it carries the event detail in write_log's `diff` column. The CLI no
+    # longer writes a second row of its own — its `via` provenance rides on
+    # this same entry instead.
+    payload = json.loads(entries[0].diff)
+    assert payload["reason"] == "decommissioned"
+    assert payload["via"] == "cli"
 
 
 def test_agent_list_filters_by_status(db_session, factories):

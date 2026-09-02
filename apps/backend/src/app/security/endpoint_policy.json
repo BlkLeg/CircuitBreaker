@@ -195,6 +195,16 @@
       "methods": [
         "GET"
       ],
+      "path": "/api/v1/agents/binary/{version}/{os_name}/{arch}.sig",
+      "policy": "agent-download",
+      "public_reason": "The detached signature is the integrity mechanism for the binary beside it, so route auth would add nothing an attacker able to serve the binary could not also defeat; the agent has no user session to present either. Public key material only.",
+      "disclosure": "detached Ed25519 signature over a versioned agent binary"
+    },
+    {
+      "transport": "http",
+      "methods": [
+        "GET"
+      ],
       "path": "/api/v1/agents/binary/{version}/{os_name}/{arch}",
       "policy": "agent-download",
       "public_reason": "Agent install scripts need to download a versioned binary during enrollment.",

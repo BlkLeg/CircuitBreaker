@@ -777,15 +777,12 @@ def approve_agent(db: Session, actor: Any, agent_id: int) -> AgentSummary:
     agent = _require_agent(db, agent_id)
     if agent.status == "active":
         raise AdminError(f"Agent {agent_id} is already active.", EXIT_USAGE)
-    approved = agent_registry.approve_agent(db, agent_id, approving_user_id=actor.id)
-    _audit(
-        db,
-        actor,
-        "agent_approved",
-        entity_type="agent",
-        entity_id=agent_id,
-        entity_name=approved.name or approved.hostname or "",
-    )
+    # No `_audit` call beside this one. `agent_registry.approve_agent` routes
+    # the approval through `record_event`, which since slice 4.3 (F17) writes
+    # the hash-chained audit entry for *every* surface — so auditing here too
+    # would put two rows in the chain for one decision. The `via="cli"`
+    # provenance this used to add is threaded into that single entry instead.
+    approved = agent_registry.approve_agent(db, agent_id, approving_user_id=actor.id, via="cli")
     db.commit()
     return _agent_summary(approved)
 
@@ -794,15 +791,11 @@ def revoke_agent(db: Session, actor: Any, agent_id: int, reason: str | None = No
     from app.services import agent_registry
 
     _require_agent(db, agent_id)
-    revoked = agent_registry.revoke_agent(db, agent_id, actor_user_id=actor.id, reason=reason)
-    _audit(
-        db,
-        actor,
-        "agent_revoked",
-        entity_type="agent",
-        entity_id=agent_id,
-        entity_name=revoked.name or revoked.hostname or "",
-        details={"reason": reason},
+    # One chained entry per revocation, written by record_event for every
+    # surface — see approve_agent above for why this no longer audits
+    # separately.
+    revoked = agent_registry.revoke_agent(
+        db, agent_id, actor_user_id=actor.id, reason=reason, via="cli"
     )
     db.commit()
     return _agent_summary(revoked)
