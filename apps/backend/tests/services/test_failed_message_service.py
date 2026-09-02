@@ -109,3 +109,42 @@ def test_listing_is_newest_first(db_session) -> None:
 
     listed = svc.list_parked(db_session)
     assert [row.id for row in listed] == [second.id, first.id]
+
+
+@pytest.mark.asyncio
+async def test_requeue_and_publish_sends_the_payload_to_its_original_subject(
+    db_session,
+) -> None:
+    parked = _park(db_session)
+    db_session.commit()
+    sent: list[tuple[str, bytes]] = []
+
+    async def _publish(subject: str, payload: bytes) -> None:
+        sent.append((subject, payload))
+
+    row = await svc.requeue_and_publish(db_session, parked.id, _publish)
+
+    assert sent == [("mon.poll.item", b'{"monitor_id": 1}')]
+    assert row.requeued_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_publisher_that_raises_leaves_the_message_parked(db_session) -> None:
+    """The mark and the send must not disagree.
+
+    A row marked requeued whose message never reached a stream is the worst
+    state to be in: the operator believes the work was recovered and it silently
+    was not, and the listing no longer shows it as needing attention.
+    """
+    parked = _park(db_session)
+    db_session.commit()
+
+    async def _explode(subject: str, payload: bytes) -> None:
+        raise RuntimeError("broker unreachable")
+
+    with pytest.raises(svc.RepublishFailed):
+        await svc.requeue_and_publish(db_session, parked.id, _explode)
+
+    still_parked = svc.list_parked(db_session)
+    assert [r.id for r in still_parked] == [parked.id]
+    assert still_parked[0].requeued_at is None

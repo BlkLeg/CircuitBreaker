@@ -15,6 +15,7 @@ roll it back rather than leaving a row claiming a requeue that never happened.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
@@ -40,12 +41,19 @@ class MessageAlreadyResolved(FailedMessageError):
     """
 
 
+class RepublishFailed(FailedMessageError):
+    """The message was not put back on its stream, so the row was not marked."""
+
+
 @dataclass(frozen=True)
 class Republish:
-    """What the caller must send to put a parked message back on its stream."""
+    """What must be sent to put a parked message back on its stream."""
 
     subject: str
     payload: bytes
+
+
+Publisher = Callable[[str, bytes], Awaitable[None]]
 
 
 def park_message(
@@ -103,8 +111,8 @@ def _load_actionable(db: Session, message_id: int) -> FailedMessage:
 def requeue(db: Session, message_id: int) -> Republish:
     """Mark a parked message for redelivery and return what to republish.
 
-    The row is marked here but the publish happens in the caller, so a failed
-    publish can roll this back. See the module docstring.
+    Marks and flushes only — the caller owns the commit. `requeue_and_publish`
+    is the operator-facing wrapper that also sends it.
     """
     row = _load_actionable(db, message_id)
     row.requeued_at = utcnow()
@@ -112,8 +120,36 @@ def requeue(db: Session, message_id: int) -> Republish:
     return Republish(subject=row.subject, payload=row.payload)
 
 
+async def requeue_and_publish(db: Session, message_id: int, publish: Publisher) -> FailedMessage:
+    """Put a parked message back on its stream, marking the row only if it lands.
+
+    The publish happens between the flush and the commit so the two outcomes
+    cannot disagree: if it raises, the mark is rolled back and the row stays
+    parked for another attempt, rather than claiming a requeue that never
+    reached a stream.
+
+    A caveat worth knowing, because it bounds what this guarantee is worth:
+    `nats_client.publish` buffers on a disconnect and logs rather than raising,
+    so a requeue issued while NATS is down is recorded as done and delivered
+    when the connection returns — or dropped silently if the buffer overflows
+    first. The rollback below therefore covers a publisher that genuinely
+    raises, not every way a message can fail to arrive.
+    """
+    republish = requeue(db, message_id)
+    try:
+        await publish(republish.subject, republish.payload)
+    except Exception as exc:
+        db.rollback()
+        raise RepublishFailed(f"could not republish message {message_id}: {exc}") from exc
+    db.commit()
+    row = db.get(FailedMessage, message_id)
+    if row is None:  # pragma: no cover - the row was just committed
+        raise MessageNotFound(f"no parked message with id {message_id}")
+    return row
+
+
 def discard(db: Session, message_id: int) -> FailedMessage:
-    """Mark a parked message as deliberately abandoned.
+    """Mark a parked message as deliberately abandoned, and commit.
 
     The row survives. "This failed and was thrown away" is a different fact from
     "this never happened", and the difference matters when the same message
@@ -121,5 +157,6 @@ def discard(db: Session, message_id: int) -> FailedMessage:
     """
     row = _load_actionable(db, message_id)
     row.discarded_at = utcnow()
-    db.flush()
+    db.commit()
+    db.refresh(row)
     return row

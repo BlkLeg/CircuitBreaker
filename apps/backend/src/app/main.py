@@ -2172,6 +2172,18 @@ app.include_router(
     dependencies=[Depends(require_auth)],
 )
 
+from app.api import failed_messages as failed_messages_api  # noqa: E402
+
+# Parked JetStream work (route F14). `require_auth` here and `require_role("admin")`
+# on each route: the rows carry raw payloads from the producing system, so the
+# per-route admin gate is the security boundary, not the mount.
+app.include_router(
+    failed_messages_api.router,
+    prefix=f"{_V1}/failed-messages",
+    tags=["failed-messages"],
+    dependencies=[Depends(require_auth)],
+)
+
 
 # ── Health check ───────────────────────────────────────────────────────────
 #
