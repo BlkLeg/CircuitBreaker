@@ -617,6 +617,11 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 	// operator how much of the fleet has converged on an advertised
 	// successor.
 	helloPayload.TLSPinKind = tlsPinKind
+	// Whether this agent already holds an advertised successor, which is
+	// what the server's convergence view and certificate-activation gate
+	// read — see SuccessorReady on why the matched kind above cannot answer
+	// that before the cutover.
+	helloPayload.TLSPinSuccessorReady = SuccessorReady(opts.StateDir)
 	helloFrame := frame.Frame{V: 1, Type: frame.TypeHello, Seq: 0, TS: time.Now().UTC()}
 	helloFrame.Payload, err = json.Marshal(helloPayload)
 	if err != nil {

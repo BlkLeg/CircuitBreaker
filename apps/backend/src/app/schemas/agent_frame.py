@@ -120,6 +120,15 @@ class HelloPayload(BaseModel):
     spool_depth: int = 0
     capability_schema: int = 1
     tls_pin_kind: str | None = None
+    # Whether the agent already holds an advertised successor TLS trust
+    # policy. Distinct from `tls_pin_kind`, and it is this field the
+    # certificate-activation gate reads: until the server serves the
+    # successor every reachable agent matches the *current* policy, so
+    # convergence keyed on a successor match could never be reached before
+    # the change it gates. Absent from agents predating the mechanism, which
+    # is why the default is False rather than None — "did not say" and "does
+    # not hold one" are the same fact for the gate, and both must block.
+    tls_pin_successor_ready: bool = False
 
 
 class HelloAckPayload(BaseModel):

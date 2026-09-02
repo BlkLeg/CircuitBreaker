@@ -647,7 +647,12 @@ async def link_stream(websocket: WebSocket) -> None:
             # reports nothing and records nothing — see
             # agent_registry.record_tls_pin's docstring on why that is not
             # folded into "current".
-            agent_registry.record_tls_pin(db, agent, hello_payload.tls_pin_kind or "")
+            agent_registry.record_tls_pin(
+                db,
+                agent,
+                hello_payload.tls_pin_kind or "",
+                successor_ready=hello_payload.tls_pin_successor_ready,
+            )
             hello_cancellation = agent_registry.update_hello_metadata(db, agent, hello_payload)
         grants = agent_registry.structured_grants_dict(db, agent_id)
         agent_registry.record_event(db, agent_id, "connected")

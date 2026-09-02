@@ -815,11 +815,22 @@ def record_server_key_pin(
 
 
 def record_tls_pin(
-    db: Session, agent: Agent, pin_kind: str, *, now: datetime | None = None
+    db: Session,
+    agent: Agent,
+    pin_kind: str,
+    *,
+    successor_ready: bool = False,
+    now: datetime | None = None,
 ) -> None:
-    """Record which TLS trust policy `agent`'s most recent successful dial
-    matched — `pin_kind` is the `tls_pin_kind` its hello reported ("current"
-    or "successor").
+    """Record what `agent`'s most recent hello said about TLS trust:
+    `pin_kind` is the `tls_pin_kind` its handshake matched ("current" or
+    "successor"), and `successor_ready` is its `tls_pin_successor_ready` —
+    whether it already holds an advertised successor policy.
+
+    `successor_ready` is the one the activation gate turns on. Matching the
+    successor is only observable *after* the certificate changes, so a gate
+    keyed on it alone could never open before the change it exists to
+    guard, and every rotation would have to be forced.
 
     Unlike `record_server_key_pin` beside it, this is not purely
     observational: `api/certificates.py`'s activation gate reads these two
@@ -833,11 +844,19 @@ def record_tls_pin(
     `record_server_key_pin`'s treat-unknown-as-current bias is deliberate.
     """
     reference = now if now is not None else utcnow()
-    if pin_kind == "successor":
+    wrote = False
+    # Holding the advertised successor is what the activation gate needs, and
+    # it is knowable before the cutover; matching it is only knowable after.
+    # An agent that reports both — it holds a successor *and* this handshake
+    # matched it — is on the new policy outright and belongs in the same
+    # bucket either way.
+    if pin_kind == "successor" or successor_ready:
         agent.tls_pin_successor_pinned_at = reference
-    elif pin_kind == "current":
+        wrote = True
+    if pin_kind == "current":
         agent.tls_pin_current_pinned_at = reference
-    else:
+        wrote = True
+    if not wrote:
         return
     db.flush()
 

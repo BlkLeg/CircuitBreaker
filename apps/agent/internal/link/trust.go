@@ -170,3 +170,28 @@ func successorRetryTrust(trust tlsdial.Trust, rotation *config.TLSPinRotation) (
 	}
 	return tlsdial.Trust{}, false
 }
+
+// SuccessorReady reports whether this agent has durably persisted an
+// advertised successor trust policy, and so would survive the cutover to it.
+//
+// This, not the matched-policy kind, is what the server's convergence view
+// and certificate-activation gate need. Until the server actually serves the
+// successor, every reachable agent's handshake matches the *current* policy
+// — so a gate keyed on a successor match could never open on the normal
+// path, and an operator would have to force every rotation, which is exactly
+// the stranding the gate exists to prevent.
+//
+// Travels to the server on hello as `tls_pin_successor_ready`. False once
+// promoted: the agent is then on the new policy outright and reports that as
+// a "successor" match instead.
+func SuccessorReady(stateDir string) bool {
+	if stateDir == "" {
+		return false
+	}
+	rotation, err := config.LoadTLSPinRotation(stateDir)
+	if err != nil {
+		log.Printf("link: reading persisted tls pin rotation for readiness: %v", err)
+		return false
+	}
+	return rotation != nil
+}

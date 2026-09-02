@@ -219,6 +219,15 @@ type HelloPayload struct {
 	// successor certificate. Purely observational, and omitted entirely by
 	// agents predating the tls.pin.rotate mechanism.
 	TLSPinKind string `json:"tls_pin_kind,omitempty"`
+
+	// TLSPinSuccessorReady reports whether this agent has durably persisted
+	// an advertised successor trust policy, and so would survive a cutover
+	// to it. Distinct from TLSPinKind, and it is this field the server's
+	// activation gate reads: until the server actually serves the successor
+	// every reachable agent matches the *current* policy, so convergence
+	// keyed on a successor match could never be reached before the change
+	// it is supposed to gate. Omitted by agents predating the mechanism.
+	TLSPinSuccessorReady bool `json:"tls_pin_successor_ready,omitempty"`
 }
 
 // HelloAckPayload is the server -> agent `hello.ack` payload's structured shape for the

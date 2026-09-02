@@ -504,3 +504,54 @@ func TestResolveTrust_APromotedPolicyStillAcceptsANewSuccessor(t *testing.T) {
 		t.Errorf("Pins = %v, want [PIN-B PIN-C]", got.Pins)
 	}
 }
+
+// ── Defect A: readiness is reportable before the cutover ─────────────────
+
+func TestSuccessorReady_TrueWhileARotationIsHeld(t *testing.T) {
+	// The activation gate needs to know, BEFORE the certificate changes,
+	// which agents already accept the successor. "Which policy did this
+	// handshake match" cannot answer that: until the server actually serves
+	// the successor, every agent matches the current policy, so a gate
+	// keyed on a successor *match* can never open on the normal path.
+	dir := t.TempDir()
+	if err := config.SaveTLSPinRotation(dir, config.TLSPinRotation{
+		Mode: "self_signed", SuccessorPin: "PIN-B", Expiry: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveTLSPinRotation: %v", err)
+	}
+
+	if !SuccessorReady(dir) {
+		t.Error("SuccessorReady = false while a successor is persisted, want true")
+	}
+}
+
+func TestSuccessorReady_FalseWithNoRotation(t *testing.T) {
+	if SuccessorReady(t.TempDir()) {
+		t.Error("SuccessorReady = true with no rotation persisted, want false")
+	}
+}
+
+func TestSuccessorReady_FalseWithoutAStateDir(t *testing.T) {
+	// Nowhere durable to have persisted anything, so nothing can be held.
+	if SuccessorReady("") {
+		t.Error("SuccessorReady = true with no state dir, want false")
+	}
+}
+
+func TestSuccessorReady_FalseAfterPromotion(t *testing.T) {
+	// Once promoted there is no longer a successor pending; the agent is on
+	// the new policy outright, which it reports as a "successor" match.
+	dir := t.TempDir()
+	if err := config.SaveTLSPinRotation(dir, config.TLSPinRotation{
+		Mode: "self_signed", SuccessorPin: "PIN-B", Expiry: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveTLSPinRotation: %v", err)
+	}
+	if _, err := PromoteTrust(&config.Config{TLSPin: "PIN-A"}, dir, 1); err != nil {
+		t.Fatalf("PromoteTrust: %v", err)
+	}
+
+	if SuccessorReady(dir) {
+		t.Error("SuccessorReady = true after promotion, want false")
+	}
+}

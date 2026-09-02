@@ -178,3 +178,59 @@ def test_successor_is_the_staged_certificate_not_the_one_nginx_serves(
     assert state is not None
     assert state.successor_pin == _spki_pin(self_signed_certificate.cert_pem)
     assert state.successor_pin != _spki_pin(_UNRELATED_CERT_PEM)
+
+
+def test_readiness_alone_marks_the_successor_bucket(db_session, factories):
+    """An agent that holds the advertised successor but still matches the
+    current policy is exactly the agent the gate must count as converged —
+    it will survive the cutover. Before the cutover, that is every reachable
+    agent, so this is the normal case rather than an edge one."""
+    from app.services import agent_registry
+
+    agent = factories.agent(status="active")
+    agent_registry.record_tls_pin(db_session, agent, "current", successor_ready=True)
+
+    assert agent.tls_pin_successor_pinned_at is not None
+    assert agent.tls_pin_current_pinned_at is not None
+
+
+def test_a_reachable_fleet_converges_before_the_cutover(
+    db_session, factories, self_signed_certificate
+):
+    """The deadlock regression.
+
+    Convergence used to be keyed on a successor *match*, which an agent can
+    only report after the server serves the successor — i.e. after the very
+    activation the gate guards. Every rotation therefore had to be forced,
+    which is the stranding the gate exists to prevent.
+    """
+    from app.services import agent_registry
+
+    agent = factories.agent(status="active")
+    state = agent_tls_pin.start_tls_pin_rotation(db_session, self_signed_certificate)
+    assert state is not None
+
+    # What the agent reports on its next hello, with the OLD certificate
+    # still being served: it matched current, and it holds the successor.
+    agent_registry.record_tls_pin(db_session, agent, "current", successor_ready=True)
+
+    converged, unconverged = agent_tls_pin.convergence_counts(db_session, state)
+    assert (converged, unconverged) == (1, 0)
+
+
+def test_an_agent_that_never_heard_the_advertisement_blocks(
+    db_session, factories, self_signed_certificate
+):
+    """The other half: an agent that dialed but does not hold the successor
+    — offline during the broadcast, or predating the mechanism — must keep
+    the gate shut. It is the agent the cutover would strand."""
+    from app.services import agent_registry
+
+    agent = factories.agent(status="active")
+    state = agent_tls_pin.start_tls_pin_rotation(db_session, self_signed_certificate)
+    assert state is not None
+
+    agent_registry.record_tls_pin(db_session, agent, "current", successor_ready=False)
+
+    converged, unconverged = agent_tls_pin.convergence_counts(db_session, state)
+    assert (converged, unconverged) == (0, 1)
