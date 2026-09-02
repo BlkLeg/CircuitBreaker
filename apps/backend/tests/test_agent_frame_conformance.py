@@ -25,6 +25,7 @@ from app.schemas.agent_frame import (
     TYPE_PROBE_CANCEL,
     TYPE_PROBE_RESULT,
     TYPE_TELEMETRY_HOST,
+    TYPE_TLS_PIN_ROTATE,
     TYPE_TRANSPORT_REKEY,
     TYPE_UNINSTALL,
     TYPE_UPDATE,
@@ -43,6 +44,7 @@ from app.schemas.agent_frame import (
     ProbeAssignPayload,
     ProbeCancelPayload,
     ProbeResultPayload,
+    TLSPinRotatePayload,
     TransportRekeyPayload,
     UpdateStatusPayload,
 )
@@ -68,6 +70,7 @@ _PAYLOAD_MODEL_FOR_TYPE = {
     TYPE_DISCOVERY_REQUEST: DiscoveryRequestPayload,
     TYPE_DISCOVERY_CANCEL: DiscoveryCancelPayload,
     TYPE_DISCOVERY_FINDING: DiscoveryFindingPayload,
+    TYPE_TLS_PIN_ROTATE: TLSPinRotatePayload,
 }
 
 
