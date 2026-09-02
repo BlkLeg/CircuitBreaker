@@ -97,7 +97,6 @@ from app.core.startup_validation import validate_core_dependencies, validate_sta
 from app.core.time import utcnow
 from app.core.write_admission import WriteAdmissionMiddleware
 from app.db import models  # noqa: F401 — import to register all model metadata with Base
-from app.db.async_session import AsyncSessionLocal
 from app.db.models import IntegrationConfig
 from app.db.session import engine, get_db, get_session_context
 from app.middleware.csrf import CSRFMiddleware
@@ -458,51 +457,6 @@ def _assert_required_schema() -> None:
                 ", ".join(missing_tables),
             )
             raise SystemExit(1)
-
-
-def _record_sync_health(
-    config_id: int,
-    result: dict | None = None,
-    exc: Exception | None = None,
-) -> None:
-    """Persist sync outcome to IntegrationConfig. Opens its own session — safe after rollbacks."""
-    try:
-        with get_session_context() as _hdb:
-            cfg = _hdb.get(IntegrationConfig, config_id)
-            if not cfg:
-                return
-            if exc is not None:
-                cfg.last_sync_status = "error"
-                cfg.last_sync_error = str(exc)[:512]
-            elif result is not None:
-                errors = result.get("errors") or []
-                if not result.get("ok", True):
-                    # discover_and_import caught a hard failure internally and returned ok=False
-                    cfg.last_sync_status = "error"
-                    cfg.last_sync_error = (
-                        "\n".join(str(e) for e in errors[:5]) if errors else "Sync failed"
-                    )
-                else:
-                    cfg.last_sync_status = "partial" if errors else "ok"
-                    cfg.last_sync_error = "\n".join(str(e) for e in errors[:5]) if errors else None
-            cfg.last_sync_at = utcnow()
-            _hdb.commit()
-    except Exception:
-        _logger.exception("Failed to record sync health for config %s", config_id)
-
-
-def _record_poll_health(poll_outcomes: dict[int, Exception | None]) -> None:
-    """Write last_poll_error to IntegrationConfig for each config in poll_outcomes."""
-    for config_id, exc in poll_outcomes.items():
-        try:
-            with get_session_context() as _hdb:
-                cfg = _hdb.get(IntegrationConfig, config_id)
-                if not cfg:
-                    continue
-                cfg.last_poll_error = str(exc)[:512] if exc is not None else None
-                _hdb.commit()
-        except Exception:
-            _logger.exception("Failed to record poll health for config %s", config_id)
 
 
 def _register_discovery_profile_crons(scheduler: "BaseScheduler", db: "Session") -> None:
@@ -1251,50 +1205,16 @@ async def lifespan(app: FastAPI):
             _logger.info("Docker topology sync scheduled every %d minutes.", interval_mins)
 
     # ── Proxmox telemetry polling ────────────────────────────────────────
-    from app.services.proxmox_service import (
-        discover_and_import,
-        list_integrations,
-        poll_node_telemetry,
-        poll_rrd_telemetry,
-        poll_vm_telemetry,
-        refresh_proxmox_storage,
+    # Route F9: these five were closures defined here in the lifespan, so
+    # nothing could import or test them. They now live in app/jobs/proxmox.py
+    # with their health writers; the bodies are unchanged.
+    from app.jobs.proxmox import (
+        proxmox_full_sync,
+        proxmox_node_poll,
+        proxmox_rrd_poll,
+        proxmox_storage_refresh,
+        proxmox_vm_poll,
     )
-
-    async def _proxmox_node_poll():
-        try:
-            async with asyncio.timeout(60):
-                async with AsyncSessionLocal() as _pdb:
-                    poll_outcomes = await poll_node_telemetry(_pdb)
-                    _record_poll_health(poll_outcomes)
-        except TimeoutError:
-            _logger.warning("proxmox_node_poll timed out (60s) — skipping cycle")
-
-    async def _proxmox_vm_poll():
-        try:
-            async with asyncio.timeout(100):
-                async with AsyncSessionLocal() as _pdb:
-                    poll_outcomes = await poll_vm_telemetry(_pdb)
-                    _record_poll_health(poll_outcomes)
-        except TimeoutError:
-            _logger.warning("proxmox_vm_poll timed out (100s) — skipping cycle")
-
-    async def _proxmox_full_sync():
-        try:
-            async with asyncio.timeout(270):
-                with get_session_context() as _pdb:
-                    configs = list_integrations(_pdb)
-                    for cfg in configs:
-                        if cfg.auto_sync:
-                            try:
-                                result = await discover_and_import(
-                                    _pdb, cfg, queue_for_review=False
-                                )
-                                _record_sync_health(cfg.id, result=result)
-                            except Exception as exc:
-                                _logger.warning("Proxmox full sync failed for %d: %s", cfg.id, exc)
-                                _record_sync_health(cfg.id, exc=exc)
-        except TimeoutError:
-            _logger.warning("proxmox_full_sync timed out (270s) — skipping cycle")
 
     with get_session_context() as pxmx_db:
         from sqlalchemy import func
@@ -1311,7 +1231,7 @@ async def lifespan(app: FastAPI):
             _pxmx_node_s = int(os.environ.get("PROXMOX_NODE_POLL_SECONDS", "30"))
             _pxmx_vm_s = int(os.environ.get("PROXMOX_VM_POLL_SECONDS", "120"))
             scheduler.add_job(
-                _proxmox_node_poll,
+                proxmox_node_poll,
                 trigger=_IT(seconds=_pxmx_node_s),
                 id="proxmox_node_telemetry",
                 replace_existing=True,
@@ -1320,7 +1240,7 @@ async def lifespan(app: FastAPI):
                 misfire_grace_time=15,
             )
             scheduler.add_job(
-                _proxmox_vm_poll,
+                proxmox_vm_poll,
                 trigger=_IT(seconds=_pxmx_vm_s),
                 id="proxmox_vm_telemetry",
                 replace_existing=True,
@@ -1330,33 +1250,16 @@ async def lifespan(app: FastAPI):
             )
             _pxmx_rrd_s = int(os.environ.get("PROXMOX_RRD_POLL_SECONDS", "300"))
 
-            async def _proxmox_rrd_poll():
-                try:
-                    async with asyncio.timeout(270):
-                        async with AsyncSessionLocal() as _pdb:
-                            poll_outcomes = await poll_rrd_telemetry(_pdb)
-                            _record_poll_health(poll_outcomes)
-                except TimeoutError:
-                    _logger.warning("proxmox_rrd_poll timed out (270s) — skipping cycle")
-
             scheduler.add_job(
-                _proxmox_rrd_poll,
+                proxmox_rrd_poll,
                 trigger=_IT(seconds=_pxmx_rrd_s),
                 id="proxmox_rrd_telemetry",
                 replace_existing=True,
                 max_instances=1,
             )
 
-            async def _proxmox_storage_refresh():
-                try:
-                    async with asyncio.timeout(270):
-                        async with AsyncSessionLocal() as _pdb:
-                            await refresh_proxmox_storage(_pdb)
-                except TimeoutError:
-                    _logger.warning("proxmox_storage_refresh timed out (270s) — skipping cycle")
-
             scheduler.add_job(
-                _proxmox_storage_refresh,
+                proxmox_storage_refresh,
                 trigger=_IT(seconds=300),
                 id="proxmox_storage_refresh",
                 replace_existing=True,
@@ -1372,7 +1275,7 @@ async def lifespan(app: FastAPI):
                 or 300
             )
             scheduler.add_job(
-                _proxmox_full_sync,
+                proxmox_full_sync,
                 trigger=_IT(seconds=sync_interval),
                 id="proxmox_full_sync",
                 replace_existing=True,
