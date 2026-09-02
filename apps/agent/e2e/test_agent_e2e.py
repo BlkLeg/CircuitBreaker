@@ -5785,11 +5785,20 @@ def test_certificate_rotation_does_not_strand_the_fleet():
                 timeout=120,
                 interval=2.0,
             )
-            _wait_until(
-                lambda: "promoted the successor TLS trust policy" in _agent_logs(),
-                timeout=90,
-                interval=2.0,
-            )
+            try:
+                _wait_until(
+                    lambda: "promoted the successor TLS trust policy" in _agent_logs(),
+                    timeout=90,
+                    interval=2.0,
+                )
+            except TimeoutError:  # pragma: no cover - diagnostic path
+                trust_lines = [
+                    line for line in _agent_logs().splitlines() if "tls trust" in line
+                ]
+                raise AssertionError(
+                    "the agent reconnected after the cutover but never promoted the "
+                    f"successor policy. Trust lines from its log: {trust_lines[-10:]}"
+                ) from None
 
             # And the second half, which is a distinct failure. Promotion
             # clears the advertised successor, so every dial from here

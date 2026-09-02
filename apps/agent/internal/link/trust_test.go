@@ -2,6 +2,8 @@ package link
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 
 	"circuitbreaker.dev/cb-agent/internal/config"
 	"circuitbreaker.dev/cb-agent/internal/tlsdial"
@@ -553,5 +557,103 @@ func TestSuccessorReady_FalseAfterPromotion(t *testing.T) {
 
 	if SuccessorReady(dir) {
 		t.Error("SuccessorReady = true after promotion, want false")
+	}
+}
+
+// ── The peer certificate has to come from the connection ─────────────────
+
+func TestDialWithTrust_ReportsTheMatchedPolicyOverTLS(t *testing.T) {
+	// gorilla's Dialer builds its *http.Response by reading the handshake
+	// response off the connection itself rather than going through
+	// net/http's transport, so resp.TLS is nil however the dial was made.
+	// Keying promotion on it meant the promote closure was never built: every
+	// dial reported an empty tls_pin_kind, no agent ever promoted a
+	// successor, and no agent ever reported convergence through the matched
+	// kind. The peer certificate must be read from the connection.
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		// Hold the connection open long enough for the dial to return.
+		time.Sleep(50 * time.Millisecond)
+	}))
+	defer srv.Close()
+
+	leaf := srv.Certificate()
+	sum := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
+	pin := base64.StdEncoding.EncodeToString(sum[:])
+
+	dir := t.TempDir()
+	cfg := &config.Config{TLSPin: pin}
+	u := "wss" + strings.TrimPrefix(srv.URL, "https")
+
+	conn, promote, err := dialWithTrust(context.Background(), Options{Config: cfg, StateDir: dir}, u)
+	if err != nil {
+		t.Fatalf("dialWithTrust: %v", err)
+	}
+	defer conn.Close()
+
+	if promote == nil {
+		t.Fatal("promote closure is nil — the peer certificate was never inspected")
+	}
+	kind, err := promote()
+	if err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	if kind != "current" {
+		t.Errorf("kind = %q, want current", kind)
+	}
+}
+
+func TestDialWithTrust_MatchesTheSuccessorAfterACutover(t *testing.T) {
+	// The same dial once the server has actually cut over: the configured pin
+	// no longer matches, the advertised successor does, and that is what
+	// promotion and the reported kind must both key on.
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		time.Sleep(50 * time.Millisecond)
+	}))
+	defer srv.Close()
+
+	leaf := srv.Certificate()
+	sum := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
+	successorPin := base64.StdEncoding.EncodeToString(sum[:])
+
+	dir := t.TempDir()
+	if err := config.SaveTLSPinRotation(dir, config.TLSPinRotation{
+		Mode: "self_signed", SuccessorPin: successorPin, Expiry: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveTLSPinRotation: %v", err)
+	}
+	cfg := &config.Config{TLSPin: "PIN-THE-SERVER-NO-LONGER-SERVES"}
+	u := "wss" + strings.TrimPrefix(srv.URL, "https")
+
+	conn, promote, err := dialWithTrust(context.Background(), Options{Config: cfg, StateDir: dir}, u)
+	if err != nil {
+		t.Fatalf("dialWithTrust: %v", err)
+	}
+	defer conn.Close()
+	if promote == nil {
+		t.Fatal("promote closure is nil after a successor match")
+	}
+
+	kind, err := promote()
+	if err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	if kind != "successor" {
+		t.Errorf("kind = %q, want successor", kind)
+	}
+	// And it stuck: the next dial resolves the promoted policy alone.
+	if got := ResolveTrust(cfg, dir); len(got.Pins) != 1 || got.Pins[0] != successorPin {
+		t.Errorf("Pins = %v, want [%s]", got.Pins, successorPin)
 	}
 }

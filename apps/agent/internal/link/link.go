@@ -3,6 +3,8 @@ package link
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -435,12 +437,35 @@ func serverKeyCandidates(cfg *config.Config, stateDir string) []string {
 // error is always the *original* current-policy dial's error, since that is
 // what actually describes what the operator has to fix; a doomed retry's own
 // failure would only be noise on top of it.
+// peerLeafCertificate returns the leaf certificate the server presented on
+// conn, or nil for a plain ws:// connection with no TLS to inspect.
+//
+// Read from the connection rather than from the dial's *http.Response, and
+// that distinction is load-bearing. gorilla builds that response by reading
+// the handshake reply off the socket itself instead of going through
+// net/http's transport, so `resp.TLS` is nil however the dial was made —
+// including over wss. Keying promotion on it meant the promote closure was
+// never built at all: every dial reported an empty tls_pin_kind, no agent
+// ever promoted an advertised successor, and the whole slice 4.1 mechanism
+// was inert past the point of persisting the frame.
+func peerLeafCertificate(conn *websocket.Conn) *x509.Certificate {
+	tlsConn, ok := conn.NetConn().(*tls.Conn)
+	if !ok {
+		return nil
+	}
+	state := tlsConn.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
+		return nil
+	}
+	return state.PeerCertificates[0]
+}
+
 func dialWithTrust(ctx context.Context, opts Options, u string) (*websocket.Conn, func() (string, error), error) {
 	trust := ResolveTrust(opts.Config, opts.StateDir)
-	conn, resp, dialErr := tlsdial.NewDialer(trust).DialContext(ctx, u, nil)
+	conn, _, dialErr := tlsdial.NewDialer(trust).DialContext(ctx, u, nil)
 	if dialErr == nil {
-		if resp != nil && resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
-			if idx, ok := trust.Matches(resp.TLS.PeerCertificates[0]); ok {
+		if leaf := peerLeafCertificate(conn); leaf != nil {
+			if idx, ok := trust.Matches(leaf); ok {
 				return conn, func() (string, error) {
 					return PromoteTrust(opts.Config, opts.StateDir, idx)
 				}, nil
@@ -545,6 +570,12 @@ func dialAndHandshake(
 		}
 		tlsPinKind = kind
 	}
+	// Which TLS trust policy this connection actually verified against.
+	// Logged on every connection because it is the one fact an operator
+	// needs while watching a certificate rotation and cannot otherwise see
+	// from the agent side: "current" throughout the overlap, then
+	// "successor" on the first dial after the cutover.
+	log.Printf("link: tls trust matched policy %q", tlsPinKind)
 	return conn, session, tlsPinKind, nil
 }
 
