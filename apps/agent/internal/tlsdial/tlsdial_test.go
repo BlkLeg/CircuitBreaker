@@ -3,10 +3,16 @@ package tlsdial
 
 import (
 	"bufio"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +21,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -116,20 +123,172 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// selfSignedLeaf returns a fresh self-signed certificate and the base64
+// SHA-256 SPKI digest that pins it — the same value agent_install._spki_pin
+// computes server-side.
+func selfSignedLeaf(t *testing.T) (*x509.Certificate, string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "cb-test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parse certificate: %v", err)
+	}
+	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	return cert, base64.StdEncoding.EncodeToString(sum[:])
+}
+
+// verify drives the VerifyPeerCertificate callback the way crypto/tls does.
+func verify(t *testing.T, trust Trust, cert *x509.Certificate) error {
+	t.Helper()
+	cfg := trust.tlsConfig()
+	if cfg == nil {
+		t.Fatal("tlsConfig() = nil, want a config with VerifyPeerCertificate")
+	}
+	return cfg.VerifyPeerCertificate([][]byte{cert.Raw}, nil)
+}
+
+func TestTrust_AcceptsTheEffectivePin(t *testing.T) {
+	cert, pin := selfSignedLeaf(t)
+	if err := verify(t, Trust{Mode: "self_signed", Pins: []string{pin}}, cert); err != nil {
+		t.Errorf("verify with the matching pin = %v, want nil", err)
+	}
+}
+
+// The whole point of the successor mechanism: during the overlap, a leaf
+// matching *either* candidate is accepted.
+func TestTrust_AcceptsTheSuccessorPin(t *testing.T) {
+	_, oldPin := selfSignedLeaf(t)
+	newCert, newPin := selfSignedLeaf(t)
+	trust := Trust{Mode: "self_signed", Pins: []string{oldPin, newPin}}
+	if err := verify(t, trust, newCert); err != nil {
+		t.Errorf("verify with the successor pin = %v, want nil", err)
+	}
+}
+
+func TestTrust_RefusesAnUnrelatedLeaf(t *testing.T) {
+	_, pin := selfSignedLeaf(t)
+	other, _ := selfSignedLeaf(t)
+	if err := verify(t, Trust{Mode: "self_signed", Pins: []string{pin}}, other); err == nil {
+		t.Error("verify with an unrelated leaf = nil, want a pin-mismatch error")
+	}
+}
+
+// A self_signed trust with no pins at all must fail closed. Falling through
+// to "accept anything" would turn a missing-config bug into silent
+// unverified TLS.
+func TestTrust_SelfSignedWithNoPinsFailsClosed(t *testing.T) {
+	cert, _ := selfSignedLeaf(t)
+	if err := verify(t, Trust{Mode: "self_signed"}, cert); err == nil {
+		t.Error("verify with no pins = nil, want an error")
+	}
+}
+
+// "public" means standard system-CA verification, which is expressed by
+// leaving TLSClientConfig's verification alone — so there is no
+// VerifyPeerCertificate callback and no InsecureSkipVerify.
+func TestTrust_PublicModeUsesStandardVerification(t *testing.T) {
+	if cfg := (Trust{Mode: "public"}).tlsConfig(); cfg != nil {
+		t.Errorf("public-mode tlsConfig() = %+v, want nil (standard verification)", cfg)
+	}
+	tr := NewTransport(Trust{Mode: "public"})
+	if tr.TLSClientConfig != nil {
+		t.Errorf("public-mode transport TLSClientConfig = %+v, want nil", tr.TLSClientConfig)
+	}
+}
+
+// Matches is what internal/link uses to decide whether to promote and what
+// to report as tls_pin_kind — which is what gates certificate activation.
+// It needs its own tests: verification succeeding says a leaf was accepted,
+// not *which* candidate accepted it.
+func TestTrust_MatchesReportsWhichCandidateMatched(t *testing.T) {
+	_, oldPin := selfSignedLeaf(t)
+	newCert, newPin := selfSignedLeaf(t)
+	trust := Trust{Mode: ModeSelfSigned, Pins: []string{oldPin, newPin}}
+
+	idx, ok := trust.Matches(newCert)
+	if !ok {
+		t.Fatal("Matches on the successor leaf = false, want true")
+	}
+	if idx != 1 {
+		t.Errorf("Matches index = %d, want 1 (the successor)", idx)
+	}
+}
+
+func TestTrust_MatchesReportsIndexZeroForTheCurrentPin(t *testing.T) {
+	cert, pin := selfSignedLeaf(t)
+	_, otherPin := selfSignedLeaf(t)
+	trust := Trust{Mode: ModeSelfSigned, Pins: []string{pin, otherPin}}
+
+	idx, ok := trust.Matches(cert)
+	if !ok || idx != 0 {
+		t.Errorf("Matches = (%d, %v), want (0, true)", idx, ok)
+	}
+}
+
+func TestTrust_MatchesReportsFalseForAnUnrelatedLeaf(t *testing.T) {
+	_, pin := selfSignedLeaf(t)
+	other, _ := selfSignedLeaf(t)
+
+	if _, ok := (Trust{Mode: ModeSelfSigned, Pins: []string{pin}}).Matches(other); ok {
+		t.Error("Matches on an unrelated leaf = true, want false")
+	}
+}
+
+// Public mode always matches at index 0: standard verification already
+// succeeded by the time Matches is asked, so there is no candidate to pick.
+func TestTrust_MatchesAlwaysSucceedsInPublicMode(t *testing.T) {
+	cert, _ := selfSignedLeaf(t)
+	idx, ok := (Trust{Mode: ModePublic}).Matches(cert)
+	if !ok || idx != 0 {
+		t.Errorf("Matches in public mode = (%d, %v), want (0, true)", idx, ok)
+	}
+}
+
+// Regression guard for the bug tlsdial.go documents: a bare
+// &websocket.Dialer{} literal leaves HandshakeTimeout at zero, which gorilla
+// treats as unbounded, so a half-open connection hangs the caller forever.
+func TestNewDialer_PinnedPathKeepsAHandshakeTimeout(t *testing.T) {
+	_, pin := selfSignedLeaf(t)
+	d := NewDialer(Trust{Mode: "self_signed", Pins: []string{pin}})
+	if d.HandshakeTimeout == 0 {
+		t.Error("pinned dialer HandshakeTimeout = 0 (unbounded), want the default")
+	}
+	if d.Proxy == nil {
+		t.Error("pinned dialer Proxy = nil, want ProxyFromEnvironment")
+	}
+}
+
 // TestNewDialer_ProxyRespectsHTTPSProxyEnv exercises both NewDialer branches
-// (pin == "" and pin != "") against the same fixed env, since the pin != ""
-// branch builds its own *websocket.Dialer literal rather than reusing
-// websocket.DefaultDialer — it must independently wire up Proxy or it will
-// silently ignore HTTPS_PROXY.
+// (public mode and self-signed/pinned mode) against the same fixed env,
+// since the pinned branch builds its own *websocket.Dialer literal rather
+// than reusing websocket.DefaultDialer — it must independently wire up Proxy
+// or it will silently ignore HTTPS_PROXY.
 func TestNewDialer_ProxyRespectsHTTPSProxyEnv(t *testing.T) {
 	wantProxy, err := url.Parse(testProxy.url())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	for _, pin := range []string{"", "deadbeef"} {
-		t.Run(fmt.Sprintf("pin=%q", pin), func(t *testing.T) {
-			d := NewDialer(pin)
+	trusts := []Trust{
+		{Mode: ModePublic},
+		{Mode: ModeSelfSigned, Pins: []string{"deadbeef"}},
+	}
+	for _, trust := range trusts {
+		t.Run(fmt.Sprintf("mode=%s", trust.Mode), func(t *testing.T) {
+			d := NewDialer(trust)
 			if d.Proxy == nil {
 				t.Fatal("Dialer.Proxy is nil, want a func that honors HTTPS_PROXY")
 			}
@@ -156,9 +315,13 @@ func TestNewDialer_ProxyRespectsHTTPSProxyEnv(t *testing.T) {
 // TestNewDialer_ProxyRespectsNoProxyEnv confirms NO_PROXY exclusions are
 // honored on both branches too.
 func TestNewDialer_ProxyRespectsNoProxyEnv(t *testing.T) {
-	for _, pin := range []string{"", "deadbeef"} {
-		t.Run(fmt.Sprintf("pin=%q", pin), func(t *testing.T) {
-			d := NewDialer(pin)
+	trusts := []Trust{
+		{Mode: ModePublic},
+		{Mode: ModeSelfSigned, Pins: []string{"deadbeef"}},
+	}
+	for _, trust := range trusts {
+		t.Run(fmt.Sprintf("mode=%s", trust.Mode), func(t *testing.T) {
+			d := NewDialer(trust)
 			if d.Proxy == nil {
 				t.Fatal("Dialer.Proxy is nil, want a func that honors NO_PROXY")
 			}
@@ -180,7 +343,7 @@ func TestNewDialer_ProxyRespectsNoProxyEnv(t *testing.T) {
 
 // TestNewDialer_DialsThroughHTTPSProxy proves the wiring end-to-end: with
 // HTTPS_PROXY pointed at a local CONNECT proxy, a real wss:// dial through
-// NewDialer(pin) (the self-signed / TOFU branch — the one that regressed)
+// NewDialer (the self-signed / TOFU branch — the one that regressed)
 // reaches its target only via that proxy.
 func TestNewDialer_DialsThroughHTTPSProxy(t *testing.T) {
 	upgrader := websocket.Upgrader{}
@@ -213,7 +376,7 @@ func TestNewDialer_DialsThroughHTTPSProxy(t *testing.T) {
 	before := testProxy.connectCount.Load()
 	wsURL := "wss://agent-test-target.example:" + port + "/"
 
-	d := NewDialer(pin)
+	d := NewDialer(Trust{Mode: ModeSelfSigned, Pins: []string{pin}})
 	conn, resp, err := d.Dial(wsURL, nil)
 	if err != nil {
 		status := "<nil resp>"
@@ -234,25 +397,5 @@ func TestNewDialer_DialsThroughHTTPSProxy(t *testing.T) {
 	}
 	if string(msg) != "hello" {
 		t.Errorf("message = %q, want %q", msg, "hello")
-	}
-}
-
-// TestNewDialer_PinnedDialerBoundsTheHandshake pins the timeout that the
-// pinned path silently lost.
-//
-// websocket.DefaultDialer carries HandshakeTimeout: 45s, and gorilla applies
-// it only `if d.HandshakeTimeout != 0`. NewDialer returned a bare
-// &websocket.Dialer{} whenever a pin was configured — so the unpinned
-// fallback was bounded and the path every real deployment takes was not. A
-// half-open connection to the server left `cb-agent enroll` blocked forever
-// with no error, no retry and nothing in the journal.
-func TestNewDialer_PinnedDialerBoundsTheHandshake(t *testing.T) {
-	pinned := NewDialer(strings.Repeat("c", 44))
-	if pinned.HandshakeTimeout == 0 {
-		t.Fatal("pinned dialer has no HandshakeTimeout; a half-open server hangs the agent forever")
-	}
-	if pinned.HandshakeTimeout != websocket.DefaultDialer.HandshakeTimeout {
-		t.Errorf("pinned HandshakeTimeout = %v, want DefaultDialer's %v",
-			pinned.HandshakeTimeout, websocket.DefaultDialer.HandshakeTimeout)
 	}
 }
