@@ -449,6 +449,20 @@ class Agent(Base):
     server_pk_successor_pinned_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Slice 4.1: which TLS trust policy this agent's most recent successful
+    # dial actually matched, reported by the agent as hello's `tls_pin_kind`.
+    # Rollout *timing* only, exactly like server_pk_*_pinned_at above: the
+    # server cannot see whether an agent's state directory holds the
+    # successor policy, only which one its handshakes have used. Unlike those
+    # columns, though, these are not purely observational —
+    # api/certificates.py's activation gate reads them, because activating a
+    # certificate no agent has converged on is what stranded the fleet.
+    tls_pin_current_pinned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    tls_pin_successor_pinned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     primary_macs: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     reported_ip: Mapped[str | None] = mapped_column(String, nullable=True)
     hardware_id: Mapped[int | None] = mapped_column(
@@ -1517,6 +1531,28 @@ class AppSettings(Base):
         DateTime(timezone=True), nullable=True
     )
     agent_server_key_rotation_overlap_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Slice 4.1: TLS trust rotation with an overlap window. The rotated unit
+    # is a *policy*, not a digest: `agent_tls_pin_successor_mode` is
+    # "self_signed" (with `agent_tls_pin_successor` holding the base64 SPKI
+    # digest of the successor leaf) or "public" (with the successor column
+    # empty, meaning agents should fall back to the system CA store). All
+    # four are set together by agent_tls_pin.start_tls_pin_rotation and
+    # cleared together by complete_tls_pin_rotation — never independently.
+    #
+    # Carrying the mode is what makes a self-signed <-> Let's Encrypt cutover
+    # expressible at all. agent_install._tls_mode_and_pin returns an empty
+    # pin for a letsencrypt certificate and a digest otherwise, and
+    # tlsdial branches on which kind of verification applies, so a server
+    # moving in either direction strands every agent that only learned a
+    # digest.
+    agent_tls_pin_successor_mode: Mapped[str | None] = mapped_column(String, nullable=True)
+    agent_tls_pin_successor: Mapped[str | None] = mapped_column(Text, nullable=True)
+    agent_tls_pin_rotation_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    agent_tls_pin_rotation_overlap_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     # Phase 7.5: PostgreSQL backup retention
