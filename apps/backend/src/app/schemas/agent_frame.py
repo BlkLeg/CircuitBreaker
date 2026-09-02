@@ -48,6 +48,7 @@ TYPE_PROBE_CANCEL = "probe.cancel"
 TYPE_DISCOVERY_REQUEST = "discovery.request"
 TYPE_DISCOVERY_CANCEL = "discovery.cancel"
 TYPE_KEY_ROTATE = "key.rotate"
+TYPE_TLS_PIN_ROTATE = "tls.pin.rotate"
 TYPE_UPDATE = "update"
 TYPE_DISCONNECT = "disconnect"
 TYPE_PING = "ping"
@@ -611,3 +612,21 @@ class KeyRotatePayload(BaseModel):
         if not _HEX_PK_RE.fullmatch(v):
             raise ValueError("successor_pk must be exactly 64 lowercase hex characters")
         return v
+
+
+class TLSPinRotatePayload(BaseModel):
+    """server -> agent `tls.pin.rotate` payload: the TLS trust policy this
+    install is about to start serving, advertised over the authenticated
+    Noise link ahead of the certificate actually changing.
+
+    The rotated unit is a policy, not a digest. `mode="public"` carries an
+    empty `successor_pin` and means "stop pinning; verify against the system
+    CA store" — the transition a Let's Encrypt cutover makes, which a
+    pin-only advertisement could not express. `mode="self_signed"` carries
+    the base64 SHA-256 SPKI digest of the successor leaf, the same value
+    `agent_install._spki_pin` computes.
+    """
+
+    mode: str
+    successor_pin: str = ""
+    expiry: datetime

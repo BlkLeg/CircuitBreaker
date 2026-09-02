@@ -89,6 +89,8 @@ func TestCorpus_TypedPayloadsDecode(t *testing.T) {
 				roundTripTransportRekeyPayload(t, decoded.Payload)
 			case TypeKeyRotate:
 				roundTripKeyRotatePayload(t, decoded.Payload)
+			case TypeTLSPinRotate:
+				roundTripTLSPinRotatePayload(t, decoded.Payload)
 			case TypeUpdateStatus:
 				roundTripUpdateStatusPayload(t, decoded.Payload)
 			case TypeTelemetryHost:
@@ -346,6 +348,26 @@ func roundTripKeyRotatePayload(t *testing.T, raw json.RawMessage) {
 	}
 	if !first.Expiry.Equal(second.Expiry) {
 		t.Errorf("KeyRotatePayload.Expiry round-trip mismatch: got %v, want %v", second.Expiry, first.Expiry)
+	}
+}
+
+func roundTripTLSPinRotatePayload(t *testing.T, raw json.RawMessage) {
+	t.Helper()
+	var first TLSPinRotatePayload
+	if err := json.Unmarshal(raw, &first); err != nil {
+		t.Fatalf("TLSPinRotatePayload decode error = %v", err)
+	}
+	reencoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("TLSPinRotatePayload encode error = %v", err)
+	}
+	var second TLSPinRotatePayload
+	if err := json.Unmarshal(reencoded, &second); err != nil {
+		t.Fatalf("TLSPinRotatePayload re-decode error = %v", err)
+	}
+	if first.Mode != second.Mode || first.SuccessorPin != second.SuccessorPin ||
+		!first.Expiry.Equal(second.Expiry) {
+		t.Errorf("TLSPinRotatePayload round-trip mismatch: got %+v, want %+v", second, first)
 	}
 }
 

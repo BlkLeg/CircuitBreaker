@@ -67,9 +67,16 @@ const (
 	TypeDiscoveryRequest = "discovery.request"
 	TypeDiscoveryCancel  = "discovery.cancel"
 	TypeKeyRotate        = "key.rotate"
-	TypeUpdate           = "update"
-	TypeDisconnect       = "disconnect"
-	TypePing             = "ping"
+	// TypeTLSPinRotate advertises the TLS trust policy this server is about
+	// to start serving, ahead of the certificate actually changing, so the
+	// agent can accept either the current or the successor leaf across the
+	// cutover. Distinct from TypeKeyRotate: that frame rotates Noise
+	// identity keys and its `kind` is closed over "device"/"server", while
+	// this one rotates the transport-layer trust policy underneath them.
+	TypeTLSPinRotate = "tls.pin.rotate"
+	TypeUpdate       = "update"
+	TypeDisconnect   = "disconnect"
+	TypePing         = "ping"
 )
 
 // Frame type constants — bidirectional (either side may send it about its own cipher).
@@ -102,6 +109,7 @@ var allFrameTypes = []string{
 	TypeDiscoveryRequest,
 	TypeDiscoveryCancel,
 	TypeKeyRotate,
+	TypeTLSPinRotate,
 	TypeUpdate,
 	TypeDisconnect,
 	TypePing,
@@ -130,6 +138,7 @@ var controlFrameTypes = map[string]bool{
 	TypeDiscoveryRequest:    true,
 	TypeDiscoveryCancel:     true,
 	TypeKeyRotate:           true,
+	TypeTLSPinRotate:        true,
 	TypeUpdate:              true,
 	TypeDisconnect:          true,
 	TypePing:                true,
@@ -325,6 +334,18 @@ type KeyRotatePayload struct {
 	Kind        string    `json:"kind"` // "device" | "server"
 	SuccessorPK string    `json:"successor_pk"`
 	Expiry      time.Time `json:"expiry"`
+}
+
+// TLSPinRotatePayload mirrors apps/backend/src/app/schemas/agent_frame.py's
+// TLSPinRotatePayload field-for-field: the TLS trust policy the server is
+// about to start serving. Mode is "self_signed" (SuccessorPin is the base64
+// SHA-256 SPKI digest of the successor leaf) or "public" (SuccessorPin is
+// empty and the agent falls back to the system CA store). Expiry bounds how
+// long both policies stay acceptable.
+type TLSPinRotatePayload struct {
+	Mode         string    `json:"mode"`
+	SuccessorPin string    `json:"successor_pin"`
+	Expiry       time.Time `json:"expiry"`
 }
 
 // ProbeAssignPayload is the server -> agent `probe.assign` payload (§4): exactly one remote check,

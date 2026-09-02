@@ -794,5 +794,33 @@
         "networks": []
       }
     }
+  },
+  {
+    "description": "tls.pin.rotate — successor self-signed certificate pin",
+    "json": {
+      "v": 1,
+      "type": "tls.pin.rotate",
+      "seq": 0,
+      "ts": "2026-09-01T10:00:00Z",
+      "payload": {
+        "mode": "self_signed",
+        "successor_pin": "K7gNU3sdo+OL0wNhqoVWhr3g6s1xYv72ol/pe/Unols=",
+        "expiry": "2026-09-08T10:00:00Z"
+      }
+    }
+  },
+  {
+    "description": "tls.pin.rotate — successor is a publicly trusted certificate, pin dropped",
+    "json": {
+      "v": 1,
+      "type": "tls.pin.rotate",
+      "seq": 1,
+      "ts": "2026-09-01T10:00:00Z",
+      "payload": {
+        "mode": "public",
+        "successor_pin": "",
+        "expiry": "2026-09-08T10:00:00Z"
+      }
+    }
   }
 ]
