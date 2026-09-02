@@ -140,3 +140,91 @@ func hexFill(n int) string {
 	}
 	return string(out)
 }
+
+// ── TLSPinRotation persistence (Task 2) ────────────────────────────────────
+
+func TestTLSPinRotation_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+
+	got, err := LoadTLSPinRotation(dir)
+	if err != nil {
+		t.Fatalf("LoadTLSPinRotation on empty dir error = %v", err)
+	}
+	if got != nil {
+		t.Fatalf("LoadTLSPinRotation on empty dir = %+v, want nil", got)
+	}
+
+	want := TLSPinRotation{
+		Mode:         "self_signed",
+		SuccessorPin: "K7gNU3sdo+OL0wNhqoVWhr3g6s1xYv72ol/pe/Unols=",
+		Expiry:       time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC),
+	}
+	if err := SaveTLSPinRotation(dir, want); err != nil {
+		t.Fatalf("SaveTLSPinRotation error = %v", err)
+	}
+
+	got, err = LoadTLSPinRotation(dir)
+	if err != nil {
+		t.Fatalf("LoadTLSPinRotation error = %v", err)
+	}
+	if got == nil {
+		t.Fatal("LoadTLSPinRotation = nil, want the saved rotation")
+	}
+	if got.Mode != want.Mode || got.SuccessorPin != want.SuccessorPin || !got.Expiry.Equal(want.Expiry) {
+		t.Errorf("LoadTLSPinRotation = %+v, want %+v", *got, want)
+	}
+}
+
+// A "public" successor carries no pin. The empty string must survive the
+// round trip as a *present* rotation, not be mistaken for "no rotation" —
+// that distinction is what makes a self-signed -> Let's Encrypt cutover
+// expressible at all.
+func TestTLSPinRotation_PublicModeHasNoPin(t *testing.T) {
+	dir := t.TempDir()
+	if err := SaveTLSPinRotation(dir, TLSPinRotation{
+		Mode:   "public",
+		Expiry: time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("SaveTLSPinRotation error = %v", err)
+	}
+	got, err := LoadTLSPinRotation(dir)
+	if err != nil {
+		t.Fatalf("LoadTLSPinRotation error = %v", err)
+	}
+	if got == nil {
+		t.Fatal("LoadTLSPinRotation = nil, want a present public-mode rotation")
+	}
+	if got.Mode != "public" || got.SuccessorPin != "" {
+		t.Errorf("LoadTLSPinRotation = %+v, want mode=public with an empty pin", *got)
+	}
+}
+
+func TestClearTLSPinRotation_IsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	if err := ClearTLSPinRotation(dir); err != nil {
+		t.Fatalf("ClearTLSPinRotation on empty dir error = %v", err)
+	}
+	if err := SaveTLSPinRotation(dir, TLSPinRotation{Mode: "public"}); err != nil {
+		t.Fatalf("SaveTLSPinRotation error = %v", err)
+	}
+	if err := ClearTLSPinRotation(dir); err != nil {
+		t.Fatalf("ClearTLSPinRotation error = %v", err)
+	}
+	got, err := LoadTLSPinRotation(dir)
+	if err != nil {
+		t.Fatalf("LoadTLSPinRotation error = %v", err)
+	}
+	if got != nil {
+		t.Errorf("LoadTLSPinRotation after clear = %+v, want nil", got)
+	}
+}
+
+func TestLoadTLSPinRotation_CorruptFileIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "tls_pin_rotation.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("seed corrupt file: %v", err)
+	}
+	if _, err := LoadTLSPinRotation(dir); err == nil {
+		t.Error("LoadTLSPinRotation on a corrupt file = nil error, want an error")
+	}
+}

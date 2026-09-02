@@ -117,3 +117,99 @@ func SaveServerKeyRotation(stateDir string, state ServerKeyRotation) error {
 	renamed = true
 	return nil
 }
+
+// TLSPinRotation is the successor TLS trust policy a server advertised to
+// this agent over an authenticated `/link` connection (a `tls.pin.rotate`
+// frame — see internal/frame.TLSPinRotatePayload and internal/link's
+// handling of it), persisted so it survives reconnects and restarts.
+//
+// Held *alongside* agent.toml's own tls_pin, never in place of it: both
+// policies stay acceptable until the agent actually completes a dial against
+// the successor, at which point it promotes (see internal/link.PromoteTrust)
+// and this file is cleared. agent.toml is never rewritten — it is root-owned
+// and read-only to the agent, and a half-written config file would leave the
+// agent unable to reach the server at all.
+//
+// Mode is "self_signed" (SuccessorPin holds the base64 SHA-256 SPKI digest
+// of the successor leaf) or "public" (SuccessorPin is empty and the system
+// CA store applies). Expiry is carried for observability; nothing on the
+// agent acts on it, matching ServerKeyRotation's handling of the same field.
+type TLSPinRotation struct {
+	Mode         string    `json:"mode"`
+	SuccessorPin string    `json:"successor_pin"`
+	Expiry       time.Time `json:"expiry"`
+}
+
+func tlsPinRotationPath(stateDir string) string {
+	return filepath.Join(stateDir, "tls_pin_rotation.json")
+}
+
+// LoadTLSPinRotation reads the persisted successor trust policy, if any.
+// Returns (nil, nil) — not an error — when none has ever been advertised to
+// this agent, which is the overwhelmingly common case.
+func LoadTLSPinRotation(stateDir string) (*TLSPinRotation, error) {
+	data, err := os.ReadFile(tlsPinRotationPath(stateDir))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("config: load tls pin rotation: %w", err)
+	}
+	var state TLSPinRotation
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, fmt.Errorf("config: decode tls pin rotation: %w", err)
+	}
+	return &state, nil
+}
+
+// SaveTLSPinRotation durably persists state via a temp-file-then-rename
+// write, so a crash between writing and the next read can never leave a
+// corrupt, unparseable trust file behind.
+func SaveTLSPinRotation(stateDir string, state TLSPinRotation) error {
+	data, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("config: encode tls pin rotation: %w", err)
+	}
+	path := tlsPinRotationPath(stateDir)
+	tmp, err := os.CreateTemp(stateDir, ".tmp-tls-pin-rotation-*")
+	if err != nil {
+		return fmt.Errorf("config: create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	renamed := false
+	defer func() {
+		if !renamed {
+			os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("config: write temp file: %w", err)
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return fmt.Errorf("config: chmod temp file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("config: sync temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("config: close temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("config: rename into place: %w", err)
+	}
+	renamed = true
+	return nil
+}
+
+// ClearTLSPinRotation removes the persisted successor policy after a
+// successful promotion. Absence is success: a clear that finds nothing has
+// already achieved what it was asked to do.
+func ClearTLSPinRotation(stateDir string) error {
+	if err := os.Remove(tlsPinRotationPath(stateDir)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("config: clear tls pin rotation: %w", err)
+	}
+	return nil
+}
