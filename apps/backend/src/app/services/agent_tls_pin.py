@@ -24,6 +24,7 @@ pin-only advertisement cannot say "stop pinning".
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -32,6 +33,8 @@ from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
 from app.db.models import AppSettings, Certificate
+
+_logger = logging.getLogger(__name__)
 
 # Matches SERVER_KEY_OVERLAP_SECONDS. An operator watching convergence needs
 # the same amount of time to chase stragglers for either rotation, and two
@@ -256,5 +259,21 @@ def activation_block_reason(db: Session, cert: Certificate) -> str | None:
             "policy and would be stranded by this activation. Check "
             "GET /api/v1/agents/tls-pin/pending, or re-send with force=true to "
             "activate anyway."
+        )
+
+    # Pending agents cannot converge and are deliberately outside the counts
+    # above: `/link` closes a non-active agent before the rotation resend, so
+    # they can never report readiness and folding them into the gate would
+    # deadlock every rotation. They are not therefore *safe* — each one holds
+    # the current pin from its install command and will be unable to reconnect
+    # after the cutover, including to complete approval. Silence here is how
+    # that becomes a support ticket, so it is logged rather than swallowed.
+    pending = len(agent_registry.list_agents(db, status="pending"))
+    if pending:
+        _logger.warning(
+            "[agent_tls_pin] activating a trust change with %d pending agent(s): "
+            "they hold the current pin, cannot receive the successor, and will "
+            "need re-enrolling with a fresh install command after the cutover",
+            pending,
         )
     return None

@@ -325,3 +325,47 @@ def test_re_activating_the_served_certificate_is_always_safe(
     _serve(monkeypatch, tmp_path, self_signed_certificate.cert_pem)
 
     assert agent_tls_pin.activation_block_reason(db_session, self_signed_certificate) is None
+
+
+def test_pending_agents_are_reported_rather_than_silently_stranded(
+    db_session, factories, self_signed_certificate, monkeypatch, tmp_path, caplog
+):
+    """M10. A pending agent is outside `convergence_counts` because approval
+    state is not liveness — and it cannot converge in any case, since `/link`
+    closes a non-active agent before the rotation resend.
+
+    That exclusion is correct (folding them in would deadlock every rotation:
+    they can never report readiness) but it is not the same as safe. Each one
+    holds the current pin from its install command and will be unable to
+    reconnect after the cutover — including to complete approval. The gate does
+    not block on them; it must not stay silent about them either.
+    """
+    import logging
+
+    from app.services import agent_registry
+
+    # A real cutover: something else is being served, a rotation has advertised
+    # this certificate's policy, and the active fleet has converged on it.
+    _serve(monkeypatch, tmp_path, _UNRELATED_CERT_PEM)
+    active = factories.agent(status="active")
+    state = agent_tls_pin.start_tls_pin_rotation(db_session, self_signed_certificate)
+    assert state is not None
+    agent_registry.record_tls_pin(db_session, active, "current", successor_ready=True)
+
+    factories.agent(status="pending")
+
+    with caplog.at_level(logging.WARNING):
+        reason = agent_tls_pin.activation_block_reason(db_session, self_signed_certificate)
+
+    assert reason is None, "a pending agent must not block the activation"
+    assert "pending agent" in caplog.text
+
+
+def test_convergence_counts_ignore_pending_agents(db_session, factories, self_signed_certificate):
+    """The deadlock this exclusion prevents: a pending agent can never report
+    readiness, so counting it as unconverged would force every rotation."""
+    factories.agent(status="pending")
+    state = agent_tls_pin.start_tls_pin_rotation(db_session, self_signed_certificate)
+    assert state is not None
+
+    assert agent_tls_pin.convergence_counts(db_session, state) == (0, 0)

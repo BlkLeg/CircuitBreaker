@@ -352,6 +352,15 @@ class TLSPinRotationStatus(BaseModel):
     overlap_expires_at: datetime | None = None
     converged: int = 0
     unconverged: int = 0
+    #: Enrolled-but-unapproved agents. They are outside `converged`/`unconverged`
+    #: because approval state is not liveness and they cannot converge: the
+    #: `/link` socket closes a non-active agent before the rotation resend, by
+    #: design. They still hold the *current* pin from their install command, so a
+    #: cutover strands them exactly as it would an active agent — and they cannot
+    #: even reach approval afterwards. Counted here rather than folded into the
+    #: gate, which they would deadlock: they can never report readiness, so every
+    #: rotation would have to be forced.
+    pending_agents: int = 0
 
 
 class TLSPinRotateRequest(BaseModel):

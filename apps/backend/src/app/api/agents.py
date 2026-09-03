@@ -403,6 +403,7 @@ def _tls_pin_status(db: Session, state: agent_tls_pin.TLSPinRotationState) -> TL
     """Shape one rotation state for the admin surface, including the fleet
     convergence counts the certificate-activation gate reads."""
     converged, unconverged = agent_tls_pin.convergence_counts(db, state)
+    pending_agents = len(agent_registry.list_agents(db, status="pending"))
     fingerprint: str | None = None
     if state.successor_pin:
         fingerprint = hashlib.sha256(state.successor_pin.encode()).hexdigest()[:32]
@@ -414,6 +415,7 @@ def _tls_pin_status(db: Session, state: agent_tls_pin.TLSPinRotationState) -> TL
         overlap_expires_at=state.overlap_expires_at,
         converged=converged,
         unconverged=unconverged,
+        pending_agents=pending_agents,
     )
 
 
