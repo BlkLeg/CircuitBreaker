@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from app.core import agent_crypto, agent_scope
+from app.core.audit import log_audit
 from app.core.rate_limit import get_limit, limiter
 from app.core.rbac import require_role, require_scope
 from app.core.scheduler import reload_discovery_jobs
@@ -309,8 +310,9 @@ def get_server_key_rotation_status(
 
 @router.post("/server-key/rotate", response_model=ServerKeyRotationStatus, status_code=201)
 async def post_server_key_rotate(
+    request: Request,
     db: Annotated[Session, Depends(get_db)],
-    _user: Annotated[User, require_role("admin")],
+    current_user: Annotated[User, require_role("admin")],
 ) -> Any:
     """Task 28: start a server-key rotation (fresh successor keypair, 7-day
     overlap by default). Rejects with 409 while a prior rotation's overlap is
@@ -330,6 +332,16 @@ async def post_server_key_rotate(
             detail="A server-key rotation is already active (overlap window in progress)",
         )
     await agent_registry.broadcast_server_key_rotate(db, state)
+    log_audit(
+        db,
+        request,
+        user_id=current_user.id,
+        action="agent_server_key_rotated",
+        resource="agents:server-key",
+        status="ok",
+        details=f"overlap_expires_at={state.overlap_expires_at}",
+        severity="warn",
+    )
     return _rotation_status(state, db)
 
 
@@ -418,8 +430,9 @@ def get_tls_pin_rotation_status(
 @router.post("/tls-pin/rotate", response_model=TLSPinRotationStatus, status_code=201)
 async def post_tls_pin_rotate(
     body: TLSPinRotateRequest,
+    request: Request,
     db: Annotated[Session, Depends(get_db)],
-    _user: Annotated[User, require_role("admin")],
+    current_user: Annotated[User, require_role("admin")],
 ) -> Any:
     """Slice 4.1: advertise a staged certificate's trust policy as the
     successor, so the fleet accepts either leaf across the cutover.
@@ -442,6 +455,19 @@ async def post_tls_pin_rotate(
             detail="A TLS pin rotation is already active (overlap window in progress)",
         )
     await agent_registry.broadcast_tls_pin_rotate(db, state)
+    log_audit(
+        db,
+        request,
+        user_id=current_user.id,
+        action="agent_tls_pin_rotated",
+        resource=f"agents:tls-pin:certificate:{cert.id}",
+        status="ok",
+        details=(
+            f"domain={cert.domain} successor_mode={state.successor_mode} "
+            f"overlap_expires_at={state.overlap_expires_at}"
+        ),
+        severity="warn",
+    )
     return _tls_pin_status(db, state)
 
 
