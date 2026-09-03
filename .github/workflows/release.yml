@@ -45,10 +45,64 @@ jobs:
       - name: Assert version parity
         run: python3 scripts/check_version_parity.py --expected "${{ steps.ver.outputs.version }}"
 
+  # ── Tier 0 gate (C2) ─────────────────────────────────────────────────────────
+  # This workflow triggers on a tag push and every job below used to depend only
+  # on other jobs in this same file. Nothing consulted ci.yml, and there is no
+  # workflow_run gate — so `git push origin v0.4.0` published a GitHub Release
+  # and pushed images to GHCR with CI red, the release-control ledger
+  # unevidenced, and the composed E2E failing. The release checklist's "hard
+  # stops" were prose that a tag push never read.
+  #
+  # Running the gates here rather than depending on ci.yml is deliberate: a
+  # workflow_run dependency is only as good as whether ci.yml happened to run on
+  # the tagged commit, and on a tag push it generally has not. This asserts the
+  # tagged tree itself passes, which is the claim that actually matters.
+  gate:
+    name: Release Gate (Tier 0)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - name: Install Python deps
+        run: |
+          python3.12 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e "apps/backend/[dev]"
+
+      - name: Install frontend deps
+        run: cd apps/frontend && npm ci
+
+      - name: Tier 0 — static gates
+        env:
+          CB_DB_URL: postgresql://cb_ci:cb_ci@127.0.0.1:5432/cb_ci
+        run: scripts/ci/tier0-static.sh
+
+      - name: Security gate
+        run: scripts/security_scan.sh --gate
+
+      - name: Upload gate evidence
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: release-gate-evidence
+          path: |
+            artifacts/junit/
+            security_scan_report.md
+          if-no-files-found: warn
+          retention-days: 90
+
   # ── Build all packages ────────────────────────────────────────────────────────
   build:
     name: Build Packages
-    needs: version
+    needs: [version, gate]
     uses: ./.github/workflows/build.yml
     with:
       version: ${{ needs.version.outputs.version }}
@@ -107,7 +161,7 @@ jobs:
   # leaves a usable tag behind.
   image:
     name: Build Image (${{ matrix.arch }})
-    needs: version
+    needs: [version, gate]
     permissions:
       contents: read
       packages: write

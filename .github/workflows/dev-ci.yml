@@ -3,6 +3,14 @@ name: Dev CI
 on:
   push:
     branches: [dev]
+  # Without this, a pull request into dev ran no Tier 0 and no Tier 1 — no
+  # repo-policy suite, no ruff/mypy/eslint, no ledger validator, no backend
+  # shards, no coverage gate. Only pushes to the branch were checked, which is
+  # also what .github/branch-protection.md says cannot happen: if direct pushes
+  # to dev were blocked, this workflow could never report on the PR that
+  # replaced them.
+  pull_request:
+    branches: [dev]
 
 permissions:
   contents: read
