@@ -32,78 +32,91 @@ function getStateConfig(state) {
 }
 
 /**
- * Wraps the app. Blocks children from rendering until the server is ready.
- * Shows a status banner during starting / stopping / offline states.
+ * Wraps the app. Shows a status overlay during starting / stopping / offline
+ * states, over a route tree that stays mounted.
+ *
+ * R5's second half: this used to return a replacement element instead of its
+ * children, so a degraded banner unmounted every page in the app and threw away
+ * its state — an open form, a running scan view, an unsent edit — and remounted
+ * the whole tree from scratch on recovery. A health blip is not a reason to
+ * destroy what the user was doing. The overlay says the same thing without
+ * touching the tree underneath it.
+ *
+ * The delay applies to all three states, not just offline. `starting` and
+ * `stopping` were shown immediately with no streak and no delay, so one health
+ * response during a rolling worker restart or a migration lock blanked the app
+ * instantly.
  */
 export default function ServerLifecycleBanner({ children }) {
   const { state, isReady, offlineSince } = useServerLifecycle();
-  const [showOffline, setShowOffline] = useState(false);
+  const [showBanner, setShowBanner] = useState(false);
 
-  // Delay the offline banner slightly to avoid flicker on fast restarts.
   useEffect(() => {
-    if (state !== 'offline') {
-      setShowOffline(false);
+    if (isReady || state === 'checking' || !getStateConfig(state)) {
+      setShowBanner(false);
       return;
     }
-    const timer = setTimeout(() => setShowOffline(true), MAX_OFFLINE_BEFORE_NOTIFY_MS);
+    const timer = setTimeout(() => setShowBanner(true), MAX_OFFLINE_BEFORE_NOTIFY_MS);
     return () => clearTimeout(timer);
-  }, [state, offlineSince]);
-
-  if (state === 'checking' || isReady) return <>{children}</>;
+  }, [state, offlineSince, isReady]);
 
   const config = getStateConfig(state);
-  const visible =
-    state === 'starting' || state === 'stopping' || (state === 'offline' && showOffline);
-
-  if (!visible || !config) return <>{children}</>;
+  const visible = showBanner && Boolean(config) && !isReady && state !== 'checking';
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        background: 'var(--color-bg, #0a0f1a)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}
-    >
-      {visible && config && (
+    <>
+      {children}
+      {visible && (
         <div
+          role="status"
+          aria-live="polite"
           style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 9000,
+            background: 'var(--color-bg, #0a0f1a)ee',
             display: 'flex',
-            flexDirection: 'column',
             alignItems: 'center',
-            gap: 12,
-            padding: '32px 40px',
-            borderRadius: 12,
-            border: `1px solid ${config.color}44`,
-            background: `${config.color}12`,
-            maxWidth: 360,
-            textAlign: 'center',
+            justifyContent: 'center',
           }}
         >
-          {config.spinner && (
-            <div
-              style={{
-                width: 36,
-                height: 36,
-                borderRadius: '50%',
-                border: `3px solid ${config.color}33`,
-                borderTopColor: config.color,
-                animation: 'cb-spin 0.9s linear infinite',
-              }}
-            />
-          )}
-          <p style={{ margin: 0, fontWeight: 600, color: config.color, fontSize: 15 }}>
-            {config.label}
-          </p>
-          <p style={{ margin: 0, fontSize: 12, color: 'var(--color-text-muted, #8892a4)' }}>
-            {config.subtext}
-          </p>
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: 12,
+              padding: '32px 40px',
+              borderRadius: 12,
+              border: `1px solid ${config.color}44`,
+              background: `${config.color}12`,
+              maxWidth: 360,
+              textAlign: 'center',
+            }}
+          >
+            {config.spinner && (
+              <div
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: '50%',
+                  border: `3px solid ${config.color}33`,
+                  borderTopColor: config.color,
+                  animation: 'cb-spin 0.9s linear infinite',
+                }}
+              />
+            )}
+            <p style={{ margin: 0, fontWeight: 600, color: config.color, fontSize: 15 }}>
+              {config.label}
+            </p>
+            <p style={{ margin: 0, fontSize: 12, color: 'var(--color-text-muted, #8892a4)' }}>
+              {config.subtext}
+            </p>
+          </div>
+          <style>{`@keyframes cb-spin { to { transform: rotate(360deg); } }`}</style>
         </div>
       )}
-      <style>{`@keyframes cb-spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
+    </>
   );
 }
 

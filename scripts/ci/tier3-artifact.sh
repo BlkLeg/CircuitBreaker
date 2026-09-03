@@ -644,6 +644,13 @@ BACKUPS_BEFORE="$(t3::latest_backup)"
 section "Upgrade to the candidate"
 CANDIDATE_VERSION_EXPECTED="$(basename "$PACKAGE")"
 t3::install_set candidate /opt/cb-tier3
+# The provenance check above ran against $START_LABEL, which on an upgrade row is
+# the N-1 fixture — so until this call the package actually being upgraded *to*,
+# the one the ledger would cite, was never checked at all and a locally built
+# candidate passed an upgrade row silently. Confirmed by the evidence on disk:
+# every artifacts/diagnostics/tier3-*-upgrade/ has build-info-previous.json and
+# no build-info-candidate.json.
+t3::assert_candidate_provenance candidate
 
 section "Assert the upgrade took a pre-upgrade backup"
 # preinstall.sh's gate (ADR 0005 Phase 3). Before it existed, `dnf upgrade`
