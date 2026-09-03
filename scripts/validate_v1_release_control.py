@@ -21,6 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SPEC_DIR = ROOT / "specs" / "1.0.0"
 DEFAULT_LEDGER = SPEC_DIR / "release-control" / "requirement-ledger.csv"
+DEFAULT_BLOCKERS = SPEC_DIR / "release-control" / "release-blockers.csv"
 DEFAULT_EXCEPTIONS = SPEC_DIR / "release-control" / "exception-register.csv"
 
 ID_RE = re.compile(r"\| ((?:RC|SEC|AGT|SRV|ACC|REL|GOV|NPM|EXEC)-\d{2}) \|")
@@ -343,6 +344,41 @@ def validate_exceptions(
                     )
 
 
+def validate_release_blockers(rows: list[dict[str, str]], *, blockers_path: Path) -> int:
+    """Assert every declared release-blocker id is a real ledger row.
+
+    The §6 release checklist used to require "no `not_evidenced` blocker rows".
+    The ledger has no blocker or severity column, and `not_evidenced` is an
+    `invalidation_state` rather than a `status`, so that condition named nothing
+    this file could answer -- and 115 of 145 rows satisfy the literal reading
+    today. The blocker set is declared explicitly now; what is checked here is
+    that it still points at rows that exist, so renaming a requirement cannot
+    silently empty the checklist.
+
+    Whether those rows have *passed* is a release-time decision, deliberately
+    not asserted here: this validator runs in T0 on every commit, and most
+    commits are not releases.
+    """
+    if not blockers_path.exists():
+        fail(f"release-blocker declaration missing: {display_path(blockers_path)}")
+    known = {row["requirement_id"] for row in rows}
+    declared: list[str] = []
+    with blockers_path.open(newline="", encoding="utf-8") as handle:
+        for entry in csv.DictReader(handle):
+            requirement_id = (entry.get("requirement_id") or "").strip()
+            if not requirement_id:
+                continue
+            declared.append(requirement_id)
+            if requirement_id not in known:
+                fail(
+                    f"release-blockers.csv names {requirement_id}, which is not a ledger "
+                    "row. A blocker pointing at nothing is a checklist item that can never fail"
+                )
+    if not declared:
+        fail("release-blockers.csv declares no rows; the release checklist would gate on nothing")
+    return len(declared)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -362,12 +398,22 @@ def main() -> int:
         default=DEFAULT_EXCEPTIONS,
         help="Path to exception-register.csv.",
     )
+    parser.add_argument(
+        "--blockers",
+        type=Path,
+        default=DEFAULT_BLOCKERS,
+        help="Path to release-blockers.csv.",
+    )
     args = parser.parse_args()
 
     canonical = canonical_requirement_ids()
     rows = validate_ledger(canonical, ledger_path=args.ledger, strict_passes=args.strict_passes)
     validate_exceptions(canonical, rows, exceptions_path=args.exceptions)
-    print(f"release-control validation ok: {len(rows)} ledger rows, {len(canonical)} canonical IDs")
+    blockers = validate_release_blockers(rows, blockers_path=args.blockers)
+    print(
+        f"release-control validation ok: {len(rows)} ledger rows, "
+        f"{len(canonical)} canonical IDs, {blockers} release blockers"
+    )
     return 0
 
 
