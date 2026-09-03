@@ -228,12 +228,34 @@ def _activate_if_served(db: Session, cert: Certificate) -> None:
     """
     if not cert.is_active:
         return
-    from app.services.certificate_activation import activate_certificate
+    from app.services.certificate_activation import ActivationBlocked, activate_certificate
 
     try:
         result = activate_certificate(db, cert)
         if not result.reloaded:
             _logger.warning("Renewed %s but TLS did not reload: %s", cert.domain, result.detail)
+    except ActivationBlocked as exc:
+        # A self-signed renewal generates a fresh keypair, so a fresh pin.
+        # Serving it underneath agents that are still pinned to the old one
+        # breaks every dial path they have, including the update channel that
+        # would otherwise carry a fix — so the renewed bytes stay in the
+        # database and nginx keeps presenting the expiring certificate. That
+        # is recoverable (rotate, then activate); the alternative is not.
+        _logger.error(
+            "[certificate_service] Renewed %s but did not activate it: %s",
+            cert.domain,
+            exc.reason,
+        )
+        log_audit(
+            db,
+            None,
+            user_id=None,
+            action="certificate_activation_blocked",
+            resource=f"certificate:{cert.id}",
+            status="fail",
+            details=f"domain={cert.domain} reason={exc.reason}",
+            severity="error",
+        )
     except Exception as exc:  # noqa: BLE001 — the renewal succeeded; say so and keep it
         _logger.error(
             "Renewed %s but could not write it to the TLS directory: %s", cert.domain, exc

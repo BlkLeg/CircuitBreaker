@@ -234,3 +234,94 @@ def test_an_agent_that_never_heard_the_advertisement_blocks(
 
     converged, unconverged = agent_tls_pin.convergence_counts(db_session, state)
     assert (converged, unconverged) == (0, 1)
+
+
+# --- Slice 4.1 follow-up: what the activation gate calls a trust change -------
+#
+# `activation_block_reason` decides whether an activation would strand the
+# fleet. Both directions of that decision are load-bearing: a false "safe"
+# bricks every agent, and a false "blocked" refuses the renewal that keeps the
+# server reachable at all. The four cases below pin both.
+
+
+def _serve(monkeypatch, tmp_path, pem: str) -> None:
+    """Put *pem* where `_live_nginx_cert_pem` reads the served certificate."""
+    served = tmp_path / "tls"
+    served.mkdir(exist_ok=True)
+    (served / "fullchain.pem").write_text(pem)
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path))
+
+
+def test_a_letsencrypt_renewal_is_not_a_trust_change(
+    db_session, letsencrypt_certificate, monkeypatch, tmp_path
+):
+    """An agent enrolled against a publicly-trusted server is in "public"
+    mode and pins nothing, so a renewed leaf changes nothing it verifies.
+
+    This read as a trust change for as long as the served mode was inferred
+    from the bytes on disk, which cannot distinguish a public leaf from a
+    self-signed one and so reported "self_signed" for both. Every Let's
+    Encrypt renewal was refused, and the operator's only escape was `force`,
+    which recorded that agents had been stranded when none had.
+    """
+    from app.db.models import Agent  # noqa: F401  (factories needs the mapper)
+
+    letsencrypt_certificate.is_active = True
+    db_session.flush()
+    # Renewal replaces the row's bytes before activation, so disk and row
+    # legitimately differ here — the served *mode* still comes from the row.
+    _serve(monkeypatch, tmp_path, _UNRELATED_CERT_PEM)
+
+    assert agent_tls_pin.activation_block_reason(db_session, letsencrypt_certificate) is None
+
+
+def test_a_self_signed_renewal_with_a_new_pin_is_blocked(
+    db_session, factories, self_signed_certificate, monkeypatch, tmp_path
+):
+    """The C1 case, and the reason the gate moved out of the admin route.
+
+    `renew_certificate` generates a fresh keypair for a self-signed
+    certificate, so a fresh SPKI. Activating it underneath agents pinned to
+    the old one strands all four of their dial paths, including the update
+    download. Unattended renewal is exactly where nobody is watching.
+    """
+    factories.agent(status="active")
+    self_signed_certificate.is_active = True
+    db_session.flush()
+    _serve(monkeypatch, tmp_path, _UNRELATED_CERT_PEM)
+
+    reason = agent_tls_pin.activation_block_reason(db_session, self_signed_certificate)
+
+    assert reason is not None
+    assert "rotation" in reason
+
+
+def test_a_self_signed_to_public_cutover_is_still_blocked(
+    db_session, factories, letsencrypt_certificate, self_signed_certificate, monkeypatch, tmp_path
+):
+    """The half the "public pins nothing" allowance must not swallow.
+
+    Agents pinned to a self-signed leaf verify that pin on every dial. Moving
+    the server to a publicly-trusted certificate is a real trust change for
+    them, however little the *new* policy pins.
+    """
+    factories.agent(status="active")
+    self_signed_certificate.is_active = True
+    db_session.flush()
+    _serve(monkeypatch, tmp_path, self_signed_certificate.cert_pem)
+
+    reason = agent_tls_pin.activation_block_reason(db_session, letsencrypt_certificate)
+
+    assert reason is not None
+
+
+def test_re_activating_the_served_certificate_is_always_safe(
+    db_session, factories, self_signed_certificate, monkeypatch, tmp_path
+):
+    """Nothing changes, so nothing can strand."""
+    factories.agent(status="active")
+    self_signed_certificate.is_active = True
+    db_session.flush()
+    _serve(monkeypatch, tmp_path, self_signed_certificate.cert_pem)
+
+    assert agent_tls_pin.activation_block_reason(db_session, self_signed_certificate) is None

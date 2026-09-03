@@ -216,7 +216,7 @@ def activate_certificate_route(
     if block_reason is not None and not force:
         raise HTTPException(status_code=409, detail=block_reason)
 
-    result = certificate_activation.activate_certificate(db, cert)
+    result = certificate_activation.activate_certificate(db, cert, force=force)
     log_audit(
         db,
         request,

@@ -221,13 +221,19 @@ def activation_block_reason(db: Session, cert: Certificate) -> str | None:
 
     target = agent_install.tls_policy_for_certificate(cert)
 
-    served = agent_install.served_tls_policy()
+    served = agent_install.served_trust_policy(db)
     if served is None:
         # Nothing on disk for nginx to present, so nothing an agent could
         # have pinned. Refusing here would block the first activation on an
         # install that has never served a certificate.
         return None
     if target == served:
+        return None
+    if target[0] == "public" and served[0] == "public":
+        # Public trust pins nothing, so one publicly-trusted leaf replacing
+        # another changes nothing an agent verifies. The pins differ on every
+        # Let's Encrypt renewal — comparing them here refused the one case
+        # this function's docstring names as always safe.
         return None
 
     state = load_tls_pin_rotation_state(db)

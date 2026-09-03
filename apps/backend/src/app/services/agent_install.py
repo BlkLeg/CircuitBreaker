@@ -277,6 +277,33 @@ def served_tls_policy() -> tuple[str, str] | None:
     return "self_signed", _spki_pin(pem)
 
 
+def served_trust_policy(db: Session) -> tuple[str, str] | None:
+    """The trust policy the fleet is actually operating under, or None when
+    this install serves no certificate yet.
+
+    `served_tls_policy` reads the bytes on disk, which is what an agent's
+    handshake sees — but it cannot tell a publicly-trusted leaf from a
+    self-signed one by inspection, so it reports "self_signed" for both. That
+    is the right conservative answer for comparing a *pin* and the wrong one
+    for comparing a *mode*: an agent enrolled against a Let's Encrypt server
+    is in "public" mode and pins nothing, so a renewal changes nothing it
+    verifies. Reading the mode off disk called every such renewal a trust
+    change, which made `activation_block_reason` refuse an activation its own
+    docstring lists as always safe.
+
+    The mode comes from the active `Certificate` row, because that is the
+    server's own record of what it advertised to the fleet. The pin still
+    comes from the live file: when the two disagree the bytes win, since the
+    bytes are what an agent checks.
+    """
+    served = served_tls_policy()
+    if served is None:
+        return None
+    active = db.execute(select(Certificate).filter(Certificate.is_active)).scalars().first()
+    mode = "public" if active is not None and active.type == "letsencrypt" else "self_signed"
+    return mode, served[1]
+
+
 def render_install_script(
     *,
     server_url: str,
