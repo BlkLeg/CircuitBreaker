@@ -242,3 +242,58 @@ def test_no_private_key_material_is_committed() -> None:
         if _PEM_KEY_BODY.search(text):
             offenders.append(str(path.relative_to(REPO_ROOT)))
     assert not offenders, f"private key material committed: {offenders}"
+
+
+def test_the_mono_image_signs_its_agent_binaries_too() -> None:
+    """H2. The ratchet above proved the *native* build reaches the signer and
+    stopped there, so the mono image — the primary shipping artifact, and the
+    one most installs actually run — built every agent binary with no embedded
+    key and no `.sig` beside it. Slice 4.2 had no effect there at all.
+
+    That is this suite's own recorded failure mode: it was written to catch "a
+    signer that is defined but never invoked", and it missed a whole build path
+    because it only ever looked at one.
+
+    The private key must arrive as a BuildKit secret rather than a build arg.
+    Build args are recorded in image metadata and readable with `docker
+    history`; leaking the agent signing key that way would be worse than
+    shipping unsigned.
+    """
+    raw = (REPO_ROOT / "Dockerfile.mono").read_text()
+    # Directives only. A plain substring search over the whole file passes on a
+    # commented-out `# ARG SIGNING_PUBKEY=`, which is the exact way the gates
+    # this suite replaced failed to notice anything: they asserted that a string
+    # appeared, not that the build does the thing.
+    dockerfile = "\n".join(
+        line for line in raw.splitlines() if not line.lstrip().startswith("#")
+    )
+    release = RELEASE_WORKFLOW.read_text()
+
+    assert "ARG SIGNING_PUBKEY" in dockerfile, (
+        "Dockerfile.mono's agent-builder stage must accept SIGNING_PUBKEY, or "
+        "mono-image agents carry no embedded key and can never enforce"
+    )
+    assert 'make manifest SIGNING_PUBKEY="${SIGNING_PUBKEY}"' in dockerfile, (
+        "the public key must reach `make manifest`; accepting the ARG and not "
+        "passing it on is the same defect one step later"
+    )
+    assert "--mount=type=secret,id=agent_signing_key" in dockerfile, (
+        "the private key must be mounted as a BuildKit secret in the stage that "
+        "runs gen_manifest.py"
+    )
+    assert "python3-cryptography" in dockerfile, (
+        "gen_manifest.py's signing branch imports cryptography; without it a "
+        "build handed a key fails instead of signing"
+    )
+
+    assert "--secret id=agent_signing_key" in release, (
+        "release.yml's image build must pass the signing key as a BuildKit "
+        "secret, or the mono image ships unsigned binaries"
+    )
+    assert "--build-arg SIGNING_PUBKEY=" in release, (
+        "release.yml's image build must pass the public key through"
+    )
+    assert "--build-arg AGENT_SIGNING_PRIVATE_KEY" not in release, (
+        "the private key must never be a build arg — build args are recorded in "
+        "image metadata and readable with `docker history`"
+    )

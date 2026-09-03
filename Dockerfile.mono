@@ -59,11 +59,24 @@ WORKDIR /src
 
 # make/python3 aren't guaranteed present on the base golang image across
 # versions; installed explicitly so `make manifest` (which shells out to
-# gen_manifest.py) works regardless.
+# gen_manifest.py) works regardless. python3-cryptography is what signs the
+# binaries: without it gen_manifest.py's signing branch ImportErrors, so a build
+# handed a key would have failed rather than produced signatures.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     make \
     python3 \
+    python3-cryptography \
     && rm -rf /var/lib/apt/lists/*
+
+# Slice 4.2 (F3). The public half is a build arg because it is public by
+# construction — it is compiled into the binary via -ldflags and is readable
+# from any agent with `cb-agent signing-key`.
+#
+# Until this existed, every agent binary in the mono image — the primary
+# shipping artifact — was built with no embedded key and no .sig beside it, so
+# 4.2 had no effect on the image most installs actually run. Only the native
+# deb/rpm/apk path was ever plumbed.
+ARG SIGNING_PUBKEY=
 
 COPY VERSION /VERSION
 COPY apps/agent/ ./
@@ -72,7 +85,17 @@ COPY apps/agent/ ./
 # fallback — this build context has no .git directory, and even if it did,
 # the app's own /VERSION file (already the single source of truth for the
 # frontend/backend stages above) is the version agent binaries must match.
-RUN VERSION="$(cat /VERSION)" make manifest
+#
+# The private half arrives as a BuildKit secret, never a build arg: build args
+# are recorded in image metadata and readable with `docker history`, which for
+# the agent signing key would be worse than not signing at all. The mount exists
+# only for the life of this RUN and is never written to a layer. An absent
+# secret leaves the key empty, which is the documented self-hoster path —
+# gen_manifest.py warns and emits unsigned binaries that run in warn mode.
+RUN --mount=type=secret,id=agent_signing_key \
+    AGENT_SIGNING_PRIVATE_KEY="$(cat /run/secrets/agent_signing_key 2>/dev/null || true)" \
+    VERSION="$(cat /VERSION)" \
+    make manifest SIGNING_PUBKEY="${SIGNING_PUBKEY}"
 
 
 ########## Stage 4: Runtime image (all services + supervisor) ##########

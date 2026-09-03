@@ -142,9 +142,10 @@ def test_direct_db_access_in_api_does_not_grow() -> None:
     )
 
 
-#: `except: pass` handlers across the whole backend app. Route F13. Measured at
-#: 119 across 45 files on 2026-09-01. EXACT — see `_assert_exact`.
-_MAX_SILENT_EXCEPT_HANDLERS = 119
+#: `except: pass` handlers across the whole backend app. Route F13. 118 as of
+#: 2026-09-03 — the notification worker's bare `except: pass` around a nak went
+#: when that consumer moved onto the dead-letter path. EXACT — see `_assert_exact`.
+_MAX_SILENT_EXCEPT_HANDLERS = 118
 
 
 def test_silent_exception_handlers_do_not_grow() -> None:

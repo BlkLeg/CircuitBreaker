@@ -185,6 +185,20 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Slice 4.2 (F3). The private key reaches the build as a BuildKit secret
+      # written to a file, never as --build-arg: build args land in image
+      # metadata and are readable with `docker history`. The public half is a
+      # repository variable and is a plain build arg, because it is public by
+      # construction — it is compiled into the binary and any agent will print
+      # it. Without these the mono image shipped unsigned agent binaries with no
+      # .sig, so 4.2 did nothing for the artifact most installs run.
+      - name: Stage the agent signing key
+        env:
+          AGENT_SIGNING_PRIVATE_KEY: ${{ secrets.AGENT_SIGNING_PRIVATE_KEY }}
+        run: |
+          umask 077
+          printf '%s' "${AGENT_SIGNING_PRIVATE_KEY}" > /tmp/agent-signing-key
+
       - name: Build and push by digest
         id: build
         run: |
@@ -192,11 +206,17 @@ jobs:
           docker buildx build \
             --platform "linux/${{ matrix.arch }}" \
             -f Dockerfile.mono \
+            --build-arg SIGNING_PUBKEY="${{ vars.AGENT_SIGNING_PUBLIC_KEY }}" \
+            --secret id=agent_signing_key,src=/tmp/agent-signing-key \
             --provenance=true \
             --sbom=true \
             --output "type=image,name=${IMAGE},push-by-digest=true,name-canonical=true,push=true" \
             --metadata-file /tmp/build-metadata.json \
             .
+
+      - name: Shred the staged signing key
+        if: always()
+        run: shred -u /tmp/agent-signing-key 2>/dev/null || rm -f /tmp/agent-signing-key
           DIGEST=$(python3 -c "import json;print(json.load(open('/tmp/build-metadata.json'))['containerimage.digest'])")
           echo "built ${{ matrix.arch }} -> ${DIGEST}"
           mkdir -p /tmp/digests
