@@ -330,7 +330,10 @@ async def drive(args: argparse.Namespace) -> dict[str, Any]:
         )
 
     topology_p95 = percentile(state.timings[TOPOLOGY_ROUTE], 0.95)
-    monitor_lag = gauge_value(metrics_text, "circuitbreaker_monitor_check_lag_seconds")
+    # Not circuitbreaker_monitor_check_lag_seconds: that gauge only counts
+    # checks more than two intervals late, so against the 30s Tier C interval
+    # it reads 0.0 for every lag the objective is actually about.
+    monitor_lag = gauge_value(metrics_text, "circuitbreaker_monitor_scheduling_lag_seconds")
 
     report: dict[str, Any] = {
         "schema_version": 1,

@@ -94,6 +94,10 @@ async def test_the_named_slo_metrics_are_emitted(client: AsyncClient, auth_heade
         # Monitoring execution freshness
         "circuitbreaker_monitor_checks_overdue",
         "circuitbreaker_monitor_check_lag_seconds",
+        # §5 objective 1 reads this one, not the gauge above it: that one only
+        # counts checks more than two intervals late, so against a 30s Tier C
+        # interval it is 0.0 for every lag the objective is about.
+        "circuitbreaker_monitor_scheduling_lag_seconds",
         # Backlog and agent presence
         "circuitbreaker_scan_job_backlog",
         "circuitbreaker_agents_present",
@@ -231,3 +235,45 @@ async def test_metrics_still_require_authentication(client: AsyncClient):
     """The new series carry operational detail; the endpoint's existing auth
     model must not have been widened to publish them."""
     assert (await client.get("/api/v1/metrics/metrics")).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_scheduling_lag_is_measurable_below_two_intervals(
+    client, auth_headers, db_session, factories
+):
+    """M12. §5's first objective is "monitor scheduling lag < the shortest
+    supported poll interval" — 30s at Tier C. It was scored against
+    `circuitbreaker_monitor_check_lag_seconds`, which reports the oldest check
+    *more than two intervals* past due. Against a 30s interval that gauge reads
+    0.0 for every lag below 60s and jumps straight past the target once it is
+    non-zero, so "passed" collapsed to "lag == 0" and the region the objective
+    describes had no resolution at all.
+
+    A check 45s late against a 30s interval is exactly the case that matters: it
+    misses the target and is not yet two intervals overdue.
+    """
+    from datetime import timedelta
+
+    from app.core.time import utcnow
+    from app.db.models import MonitorItem
+
+    item = MonitorItem(
+        name="cb-test-m12",
+        host="192.0.2.10",
+        target_type="hardware",
+        target_id=factories.hardware().id,
+        check_type="ping",
+        interval_secs=30,
+        enabled=True,
+        next_due_at=utcnow() - timedelta(seconds=45),
+    )
+    db_session.add(item)
+    db_session.commit()
+
+    body = await _scrape(client, auth_headers)
+
+    old_gauge = _sample(body, "circuitbreaker_monitor_check_lag_seconds")
+    new_gauge = _sample(body, "circuitbreaker_monitor_scheduling_lag_seconds")
+
+    assert old_gauge == 0.0, "the two-interval gauge cannot see a 45s lag on a 30s interval"
+    assert new_gauge >= 45.0, "the scheduling-lag gauge must report the real lateness"

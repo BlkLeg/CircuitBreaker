@@ -18,6 +18,7 @@ import pytest
 
 from app.core.log_redaction import LogRedactionFilter
 from app.middleware.request_id import (
+    RequestIdFormatter,
     RequestIdLogFilter,
     RequestIdMiddleware,
     install_request_id_log_filter,
@@ -234,9 +235,93 @@ def test_redaction_still_runs_after_the_request_id_filter_is_installed():
 
 
 def test_install_is_idempotent_and_does_not_duplicate_filters():
+    """Idempotency, now asserted where the filter actually lives.
+
+    This used to count `logger.filters`. That was the defect rather than the
+    contract: a filter on an ancestor logger never sees a record propagated up
+    from a child, so it could not annotate anything from `app.api.*`. The filter
+    and the wrapping formatter go on the handler; installing twice must still
+    leave one of each.
+    """
     logger_name = "app.test_request_id.install_once"
     logger = logging.getLogger(logger_name)
-    before = len(logger.filters)
-    install_request_id_log_filter((logger_name,))
-    install_request_id_log_filter((logger_name,))
-    assert len(logger.filters) == before + 1
+    handler = logging.StreamHandler()
+    logger.handlers = [handler]
+    try:
+        install_request_id_log_filter((logger_name,))
+        install_request_id_log_filter((logger_name,))
+        assert len(handler.filters) == 1
+        assert isinstance(handler.formatter, RequestIdFormatter)
+        assert not isinstance(handler.formatter._inner, RequestIdFormatter), (
+            "the formatter must not wrap itself on a second install"
+        )
+    finally:
+        logger.handlers = []
+
+
+# --- M4: the correlation path has to reach the logs -------------------------
+#
+# The middleware and the response echo were correct, but nothing rendered the ID
+# and the filter was attached where it could not fire. §4.2's stated path —
+# browser nav ID to request IDs to server logs — was one hand-formatted line
+# wide, in db/session.py.
+
+
+def test_a_propagated_record_carries_the_request_id() -> None:
+    """`Logger.addFilter` was the original approach and cannot work here.
+
+    Python applies an ancestor logger's filters only to records that logger
+    emits itself, never to records propagated up from a child — so every record
+    from `app.api.*` reached the handler with no `request_id` attribute, and the
+    documented `%(request_id)s` format string would have raised `KeyError` on
+    the first one rather than correlating anything.
+    """
+    import io
+    import logging
+
+    from app.middleware.request_id import install_request_id_log_filter, request_id_var
+
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+
+    parent = logging.getLogger("cb_test_m4")
+    parent.handlers = [handler]
+    parent.propagate = False
+    parent.setLevel(logging.INFO)
+
+    install_request_id_log_filter(logger_names=("cb_test_m4",))
+
+    token = request_id_var.set("abc-123")
+    try:
+        # Emitted by a *child*, which is the case that was broken.
+        logging.getLogger("cb_test_m4.api.telemetry").info("hello")
+    finally:
+        request_id_var.reset(token)
+
+    assert "abc-123" in stream.getvalue()
+
+
+def test_a_record_outside_a_request_is_not_annotated() -> None:
+    """Startup, shutdown and background work have no request. The line must
+    still render, without a dangling marker."""
+    import io
+    import logging
+
+    from app.middleware.request_id import install_request_id_log_filter
+
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+
+    logger = logging.getLogger("cb_test_m4_no_request")
+    logger.handlers = [handler]
+    logger.propagate = False
+    logger.setLevel(logging.INFO)
+
+    install_request_id_log_filter(logger_names=("cb_test_m4_no_request",))
+    logger.info("startup complete")
+
+    rendered = stream.getvalue()
+    assert "startup complete" in rendered
+    assert "req=" not in rendered

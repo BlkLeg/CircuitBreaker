@@ -122,25 +122,61 @@ class RequestIdLogFilter(logging.Filter):
 _INSTALL_MARKER = "_cb_request_id_filter_installed"
 
 
+class RequestIdFormatter(logging.Formatter):
+    """Delegate to whatever formatter was already configured, then append the ID.
+
+    Wrapping rather than replacing, because the handler this decorates is
+    usually uvicorn's, whose formatter does its own level colouring and access
+    log layout. Rewriting the format string to interpolate `%(request_id)s`
+    would either lose that or raise `KeyError` on the first record that reached
+    the handler without passing through the filter.
+    """
+
+    def __init__(self, inner: logging.Formatter | None) -> None:
+        super().__init__()
+        self._inner = inner or logging.Formatter()
+
+    def format(self, record: logging.LogRecord) -> str:
+        rendered = self._inner.format(record)
+        request_id = getattr(record, "request_id", None)
+        if request_id and request_id != "-":
+            return f"{rendered} [req={request_id}]"
+        return rendered
+
+
 def install_request_id_log_filter(logger_names: Iterable[str] | None = None) -> None:
-    """Install the request-ID filter on root and selected named loggers, exactly once.
+    """Install the request-ID filter so every emitted record carries the ID.
+
+    Attached to *handlers*, not to loggers. `Logger.addFilter` was the original
+    approach and cannot work for this: Python applies an ancestor logger's
+    filters only to records that logger emits itself, never to records
+    propagated up from a child. So `app.api.telemetry` — every module that
+    matters — produced records with no `request_id` attribute at all, and the
+    documented `%(request_id)s` format string would have raised on the first one
+    rather than correlating anything. Handler filters run for every record that
+    reaches the handler, propagated or not.
+
+    Nothing rendered the attribute either. `RequestIdFormatter` wraps each
+    handler's existing formatter so the ID appears without disturbing uvicorn's
+    own layout. Before this, §4.2's stated correlation path — browser nav ID to
+    request IDs to server logs — was exactly one hand-formatted line wide, in
+    db/session.py's slow-query logger.
 
     A parallel installer to `app.core.log_redaction.install_global_log_redaction`
-    rather than a change to it, so the redaction filter keeps running
-    unmodified — this adds a filter, it does not replace one. Call from the
-    same place `install_global_log_redaction()` is called (`main.py`) so both
-    are attached to the same logger set.
+    rather than a change to it, so the redaction filter keeps running unmodified.
     """
     filter_instance = RequestIdLogFilter()
-    root = logging.getLogger()
-    if not getattr(root, _INSTALL_MARKER, False):
-        root.addFilter(filter_instance)
-        setattr(root, _INSTALL_MARKER, True)
+
+    def _decorate(logger: logging.Logger) -> None:
+        for handler in logger.handlers:
+            if getattr(handler, _INSTALL_MARKER, False):
+                continue
+            handler.addFilter(filter_instance)
+            handler.setFormatter(RequestIdFormatter(handler.formatter))
+            setattr(handler, _INSTALL_MARKER, True)
+
+    _decorate(logging.getLogger())
 
     target_names = tuple(logger_names or ("uvicorn", "uvicorn.error", "uvicorn.access", "app"))
     for logger_name in target_names:
-        logger = logging.getLogger(logger_name)
-        if getattr(logger, _INSTALL_MARKER, False):
-            continue
-        logger.addFilter(filter_instance)
-        setattr(logger, _INSTALL_MARKER, True)
+        _decorate(logging.getLogger(logger_name))

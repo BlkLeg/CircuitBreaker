@@ -22,7 +22,7 @@ from prometheus_client import (
     Info,
     generate_latest,
 )
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.core import slo_metrics
@@ -104,13 +104,38 @@ def _add_slo_gauges(reg: CollectorRegistry, db: Session) -> None:
     overdue_cutoff = func.now() - func.make_interval(
         0, 0, 0, 0, 0, 0, MonitorItem.interval_secs * 2
     )
-    overdue_count, oldest_due = (
-        db.query(func.count(MonitorItem.id), func.min(MonitorItem.next_due_at))
-        .filter(MonitorItem.enabled.is_(True), MonitorItem.next_due_at < overdue_cutoff)
+    # `lag` above only sees checks *more than two intervals* late, which makes it
+    # useless for §5's first objective — "monitor scheduling lag < the shortest
+    # supported poll interval", 30s at Tier C. Against a 30s interval it reads
+    # 0.0 for every lag below 60s and jumps straight past the target once it is
+    # non-zero, so "passed" reduced to "lag == 0" and the region the objective
+    # describes had no resolution at all. That is a number with no measurement
+    # behind it, which is the defect class this route keeps recording.
+    #
+    # `scheduling_lag` has no cutoff: it is simply how late the scheduler is.
+    scheduling_lag = Gauge(
+        "circuitbreaker_monitor_scheduling_lag_seconds",
+        "Age of the oldest enabled monitor check past its due time, in seconds",
+        registry=reg,
+    )
+    # Both figures come off one scan. The overdue cutoff is strictly earlier than
+    # `now`, so narrowing the filter to `next_due_at < now` leaves the overdue
+    # subset unchanged and lets a conditional aggregate carry it — a second
+    # query here would add a direct-DB call in api/, which the F6 ratchet
+    # (rightly) refuses.
+    is_overdue = MonitorItem.next_due_at < overdue_cutoff
+    overdue_count, oldest_due, oldest_due_at_all = (
+        db.query(
+            func.count(case((is_overdue, MonitorItem.id))),
+            func.min(case((is_overdue, MonitorItem.next_due_at))),
+            func.min(MonitorItem.next_due_at),
+        )
+        .filter(MonitorItem.enabled.is_(True), MonitorItem.next_due_at < now)
         .one()
     )
     overdue.set(overdue_count or 0)
     lag.set((now - oldest_due).total_seconds() if oldest_due else 0.0)
+    scheduling_lag.set((now - oldest_due_at_all).total_seconds() if oldest_due_at_all else 0.0)
 
     # Background processing backlog: work that has been accepted but not
     # finished. The objective is that it drains after a dependency recovery
