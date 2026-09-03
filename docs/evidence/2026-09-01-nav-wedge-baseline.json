@@ -1,0 +1,125 @@
+{
+  "schema_version": 3,
+  "repeats": 6,
+  "navigations": [
+    {
+      "navigation": 1,
+      "target": "/monitors",
+      "outcome": "wedge",
+      "branch": "router-location-never-updated",
+      "renderedRoute": "/map",
+      "routerSawNavigation": false,
+      "pendingChunks": []
+    },
+    {
+      "navigation": 3,
+      "target": "/agents",
+      "outcome": "wedge",
+      "branch": "router-location-never-updated",
+      "renderedRoute": "/map",
+      "routerSawNavigation": false,
+      "pendingChunks": []
+    },
+    {
+      "navigation": 6,
+      "target": "/monitors",
+      "outcome": "wedge",
+      "branch": "router-location-never-updated",
+      "renderedRoute": "/map",
+      "routerSawNavigation": false,
+      "pendingChunks": []
+    },
+    {
+      "navigation": 8,
+      "target": "/agents",
+      "outcome": "wedge",
+      "branch": "router-location-never-updated",
+      "renderedRoute": "/map",
+      "routerSawNavigation": false,
+      "pendingChunks": []
+    },
+    {
+      "navigation": 11,
+      "target": "/monitors",
+      "outcome": "wedge",
+      "branch": "router-location-never-updated",
+      "renderedRoute": "/map",
+      "routerSawNavigation": false,
+      "pendingChunks": []
+    },
+    {
+      "navigation": 13,
+      "target": "/agents",
+      "outcome": "wedge",
+      "branch": "router-location-never-updated",
+      "renderedRoute": "/map",
+      "routerSawNavigation": false,
+      "pendingChunks": []
+    },
+    {
+      "navigation": 16,
+      "target": "/monitors",
+      "outcome": "wedge",
+      "branch": "router-location-never-updated",
+      "renderedRoute": "/map",
+      "routerSawNavigation": false,
+      "pendingChunks": []
+    },
+    {
+      "navigation": 18,
+      "target": "/agents",
+      "outcome": "wedge",
+      "branch": "router-location-never-updated",
+      "renderedRoute": "/map",
+      "routerSawNavigation": false,
+      "pendingChunks": []
+    },
+    {
+      "navigation": 21,
+      "target": "/monitors",
+      "outcome": "wedge",
+      "branch": "router-location-never-updated",
+      "renderedRoute": "/map",
+      "routerSawNavigation": false,
+      "pendingChunks": []
+    },
+    {
+      "navigation": 23,
+      "target": "/agents",
+      "outcome": "wedge",
+      "branch": "router-location-never-updated",
+      "renderedRoute": "/map",
+      "routerSawNavigation": false,
+      "pendingChunks": []
+    },
+    {
+      "navigation": 26,
+      "target": "/monitors",
+      "outcome": "wedge",
+      "branch": "router-location-never-updated",
+      "renderedRoute": "/map",
+      "routerSawNavigation": false,
+      "pendingChunks": []
+    },
+    {
+      "navigation": 28,
+      "target": "/agents",
+      "outcome": "wedge",
+      "branch": "router-location-never-updated",
+      "renderedRoute": "/map",
+      "routerSawNavigation": false,
+      "pendingChunks": []
+    }
+  ],
+  "wedges": 12,
+  "wedge_rate": 0.4,
+  "fallbacks": 0,
+  "ui_failures": 0,
+  "wedges_by_branch": {
+    "router-location-never-updated": 12,
+    "incoming-route-never-mounted": 0,
+    "outgoing-route-never-removed": 0
+  },
+  "wedges_with_pending_chunk": 0,
+  "wedges_with_two_route_elements": 0
+}
