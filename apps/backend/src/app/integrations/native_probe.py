@@ -11,11 +11,20 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.core.egress import PRIVATE_LAN_HTTP, httpx_get
+from app.core.url_validation import (
+    MONITOR_TARGET_POLICY,
+    validate_outbound_url,
+    validate_redirect_target,
+)
 from app.db.models import IntegrationMonitor
 from app.integrations.base import ConfigField, IntegrationPlugin, MonitorStatus
 from app.services.ip_reservation import _parse_ports_json
 
 _logger = logging.getLogger(__name__)
+
+# Matches the monitor collector beside this one; a probe that needs more hops
+# than this is a redirect loop, not a health check.
+_MAX_PROBE_REDIRECTS = 20
 
 
 class NativeProbePlugin(IntegrationPlugin):
@@ -103,15 +112,51 @@ def _probe(mon: IntegrationMonitor) -> tuple[str, float | None]:
 
 
 def _probe_http(target: str, timeout: int = 5) -> tuple[str, float | None]:
-    """HTTP probe — "up" if response status < 400."""
+    """HTTP probe — "up" if response status < 400.
+
+    `probe_target` is operator-supplied and stored unvalidated, and this runs on
+    a schedule, so it is validated on every probe rather than only at save time
+    — the same reasoning `collectors/web.py` records for the monitor path beside
+    it, plus the rows that predate any validation at all.
+
+    Validation is also where air-gap enforcement lives for this call.
+    `httpx_get` only runs `enforce_before_resolution`, which is deliberately a
+    no-op for `PRIVATE_LAN_HTTP`; the resolved-answer check that actually
+    refuses a public address under `CB_AIRGAP=true` is inside
+    `validate_outbound_url`. Calling the client without it meant a scheduled
+    probe of any external URL left an air-gapped install every interval, and
+    reported "down" while it did.
+
+    Redirects are followed by hand so every hop is re-validated. Leaving that to
+    httpx let an allowed LAN target bounce the probe onward to link-local and
+    the metadata address, which is the SSRF half of the same defect.
+    """
     t0 = time.monotonic()
     try:
-        resp = httpx_get(target, policy=PRIVATE_LAN_HTTP, timeout=timeout, follow_redirects=True)
+        validate_outbound_url(target, MONITOR_TARGET_POLICY)
+        resp = httpx_get(target, policy=PRIVATE_LAN_HTTP, timeout=timeout, follow_redirects=False)
+        hops = 0
+        while resp.is_redirect and hops < _MAX_PROBE_REDIRECTS:
+            hop = validate_redirect_target(
+                str(resp.request.url),
+                resp.headers.get("location", ""),
+                MONITOR_TARGET_POLICY,
+            )
+            resp = httpx_get(
+                hop.url, policy=PRIVATE_LAN_HTTP, timeout=timeout, follow_redirects=False
+            )
+            hops += 1
         latency_ms = (time.monotonic() - t0) * 1000
         status = "up" if resp.status_code < 400 else "down"
         return status, round(latency_ms, 2)
-    except Exception as exc:
-        _logger.debug("HTTP probe failed for %s: %s", target, exc)
+    except (ValueError, ConnectionError) as exc:
+        # Refused, not unreachable. "down" alone cannot tell an operator whether
+        # the host is switched off or the server declined to make the request, so
+        # the refusal is logged where the silent version left no trace at all.
+        _logger.warning("[native_probe] refused HTTP probe of %s: %s", target, exc)
+        return "down", None
+    except Exception as exc:  # noqa: BLE001 — a probe reports down; it never breaks the loop
+        _logger.debug("[native_probe] HTTP probe failed for %s: %s", target, exc)
         return "down", None
 
 
