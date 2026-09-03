@@ -128,7 +128,17 @@ def write_log(
     # Imported here rather than at module scope, like the ORM imports below:
     # app.core.audit_chain pulls in app.db.models, and this module is imported
     # by callers that must not require the database layer to be importable.
-    from app.core.audit_chain import AuditChainLockTimeout
+    #
+    # In its own try, because it cannot go in either of the obvious places. Above
+    # the main try, an ImportError escapes the handler whose whole job is to stop
+    # this function raising. Inside it, the `except AuditChainLockTimeout` clause
+    # below references a name that was never bound, and the failure becomes an
+    # UnboundLocalError raised while handling the original error.
+    try:
+        from app.core.audit_chain import AuditChainLockTimeout
+    except Exception:  # noqa: BLE001 - never raises, by contract
+        _logger.exception("write_log could not import the audit chain (action=%r)", action)
+        return
 
     try:
         from app.db.models import Log
@@ -224,8 +234,21 @@ def write_log(
             session.commit()
 
         if db is not None:
+            # A SAVEPOINT, so a failure here cannot poison the caller's
+            # transaction. Without one, a raise inside _do_write left the
+            # caller's session in pending-rollback state and the broad handler
+            # below swallowed the original error — so the caller's own commit()
+            # then raised PendingRollbackError. That is write_log raising into
+            # its caller through a laundered exception, which is exactly what
+            # this function's docstring promises it never does.
             with _AUDIT_CHAIN_LOCK:
-                _do_write(db)
+                nested = db.begin_nested()
+                try:
+                    _do_write(db)
+                except Exception:
+                    if nested.is_active:
+                        nested.rollback()
+                    raise
         else:
             # No caller transaction: this is a background writer (the HTTP audit
             # middleware) on a connection of its own, so it queues for the

@@ -150,37 +150,83 @@ async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
             _touch_healthy()
             continue
 
-        items: list[dict] = []
+        # Messages stay paired with what they decoded to. The previous version
+        # built a bare `items` list that silently skipped unparseable messages,
+        # so indices no longer lined up with `msgs` and the failure path below
+        # could not tell which message caused what.
+        parsed: list[tuple[Any, dict]] = []
         for m in msgs:
             try:
-                items.append(json.loads(m.data.decode()))
-            except json.JSONDecodeError:
-                logger.warning("monitor-poll: bad message, dropping")
+                parsed.append((m, json.loads(m.data.decode())))
+            except json.JSONDecodeError as exc:
+                # Parked, not dropped. "bad message, dropping" acked it, which
+                # deleted the payload and left no record — despite
+                # db/models_failed_message.py naming a message that failed to
+                # parse as exactly the kind that belongs in failed_messages.
+                # max_deliver=1 because a parse failure is deterministic:
+                # redelivering the same bytes cannot succeed.
+                logger.warning("monitor-poll: unparseable message, parking")
+                await handle_failed_delivery(
+                    m,
+                    stream=_JS_STREAM,
+                    consumer=_JS_DURABLE,
+                    error=f"JSONDecodeError: {exc}",
+                    max_deliver=1,
+                    session_factory=get_session_context,
+                )
 
-        if items:
+        if parsed:
             try:
-                await process_batch(items, SessionLocal)
+                await process_batch([item for _, item in parsed], SessionLocal)
             except Exception as exc:  # noqa: BLE001
-                logger.error("monitor-poll batch failed: %s", exc, exc_info=True)
-                # Per message, not per batch. This loop naks the whole batch on
-                # one failure, so without the budget check a single poisoned
-                # message blocks every good message beside it forever (F14).
-                for m in msgs:
-                    await handle_failed_delivery(
-                        m,
-                        stream=_JS_STREAM,
-                        consumer=_JS_DURABLE,
-                        error=f"{type(exc).__name__}: {exc}",
-                        max_deliver=_MAX_DELIVER,
-                        session_factory=get_session_context,
-                    )
+                logger.error("monitor-poll batch failed, isolating: %s", exc, exc_info=True)
+                # Failure handling was per-batch despite the comment claiming
+                # otherwise: only the *delivery budget* was checked per message.
+                # One poison item in a 50-message fetch naked all 50 together,
+                # marched all 50 to max_deliver, then parked and terminated
+                # them — 49 healthy monitor checks deleted from a work queue and
+                # filed as failures under someone else's exception.
+                #
+                # Re-running one at a time isolates the real offender. A message
+                # that already succeeded inside the failed batch may be polled
+                # twice; that was already true of every redelivery, since a nak
+                # re-polls the whole batch, and a duplicate availability sample
+                # is a far smaller harm than discarding 49 checks.
+                await _process_individually(parsed)
+                _touch_healthy()
                 continue
 
-        for m in msgs:
+        for m, _ in parsed:
             await _safe_ack(m)
         _touch_healthy()
 
     logger.info("monitor-poll worker stopped")
+
+
+async def _process_individually(parsed: list[tuple[Any, dict]]) -> None:
+    """Re-run a failed batch one message at a time, so only the poison one pays.
+
+    Called after a batch raises. Each message is acked on success and handed to
+    the dead-letter path on its own failure, with its own error attached rather
+    than the batch exception that happened to surface first.
+    """
+    from app.db.session import SessionLocal
+
+    for m, item in parsed:
+        try:
+            await process_batch([item], SessionLocal)
+        except Exception as exc:  # noqa: BLE001 - attributed to this message, not the batch
+            logger.error("monitor-poll: message failed in isolation: %s", exc, exc_info=True)
+            await handle_failed_delivery(
+                m,
+                stream=_JS_STREAM,
+                consumer=_JS_DURABLE,
+                error=f"{type(exc).__name__}: {exc}",
+                max_deliver=_MAX_DELIVER,
+                session_factory=get_session_context,
+            )
+        else:
+            await _safe_ack(m)
 
 
 async def _safe_ack(msg: Any) -> None:
