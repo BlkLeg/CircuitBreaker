@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from typing import Any
 
 import pytest
 
@@ -123,23 +124,43 @@ async def test_a_message_that_exhausted_its_budget_is_parked_and_terminated(
 
 
 @pytest.mark.asyncio
-async def test_the_park_is_committed_so_terminating_cannot_lose_the_record(
-    db_session,
-) -> None:
+async def test_the_park_is_committed_before_term_is_sent(db_session) -> None:
     """The row must be durable before `term()` gives up the only other copy.
 
     `term()` tells the server never to redeliver. If the park were still
     uncommitted at that moment, a crash in between would destroy the message
     and its record together — which is the silent drop this whole task exists
     to avoid.
+
+    This asserts the *ordering of the calls*, not that the row is visible. The
+    previous version queried the same `db_session` from inside `term()` and
+    checked the row was there — but that fixture runs in a savepoint and never
+    commits, and `park_message` already flushes, so the row was visible whether
+    or not anything committed. Deleting the `db.commit()` this test names left
+    it green. Recording the calls is the only version that fails.
     """
-    committed_before_term: list[bool] = []
+    events: list[str] = []
+
+    class _RecordingSession:
+        """Records commits without ending the test's transaction."""
+
+        def __init__(self, inner: Any) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+        def commit(self) -> None:
+            events.append("commit")
+            self._inner.flush()
+
+    @contextmanager
+    def _recording_factory():
+        yield _RecordingSession(db_session)
 
     class _WatchingMsg(_FakeMsg):
         async def term(self) -> None:
-            committed_before_term.append(
-                db_session.query(FailedMessage).filter_by(subject=self.subject).count() == 1
-            )
+            events.append("term")
             await super().term()
 
     msg = _WatchingMsg(subject="telemetry.host.1", data=b"x", num_delivered=9)
@@ -149,10 +170,14 @@ async def test_the_park_is_committed_so_terminating_cannot_lose_the_record(
         consumer="telemetry_ingest",
         error="bad",
         max_deliver=9,
-        session_factory=_factory(db_session),
+        session_factory=_recording_factory,
     )
 
-    assert committed_before_term == [True], "the parked row must exist before term() is sent"
+    assert events == ["commit", "term"], (
+        "the park must be committed before term() is sent; got "
+        f"{events}. A missing 'commit' means the durability step this module "
+        "documents is not happening"
+    )
 
 
 @pytest.mark.asyncio

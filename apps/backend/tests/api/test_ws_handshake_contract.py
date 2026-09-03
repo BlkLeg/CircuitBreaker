@@ -17,6 +17,7 @@ under test here.
 
 from __future__ import annotations
 
+import pathlib
 from datetime import timedelta
 
 import pytest
@@ -128,16 +129,45 @@ def test_every_adopting_stream_goes_through_the_shared_helper(module_name: str) 
     than this helper covers (service-account JWTs, API tokens) and collapsing it
     in would either widen these four or narrow that one. See `ws_session`.
     """
+    import ast
     import importlib
 
     source_path = importlib.import_module(module_name).__file__
     assert source_path is not None
-    source = open(source_path, encoding="utf-8").read()
+    source = pathlib.Path(source_path).read_text(encoding="utf-8")
+    tree = ast.parse(source)
 
-    assert "resolve_ws_session_user" in source, (
-        f"{module_name} no longer uses the shared session check — a re-inlined "
-        "copy is how the expired-demo branch gets lost"
+    # Parsed rather than grepped. The substring version of this test asserted
+    # that the string "resolve_ws_session_user" appeared *somewhere* in the file
+    # and that "decode_token(" did not. Both pass on a stream that re-inlines a
+    # weaker handshake with `jwt.decode(...)` — a different spelling — while
+    # leaving one stale mention of the helper behind in a comment or an unused
+    # import. The gate would have been green through the exact reversion it
+    # exists to catch, which is F10 with extra steps.
+    called = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    called_attrs = {
+        f"{node.func.value.id}.{node.func.attr}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+    }
+
+    assert "resolve_ws_session_user" in called, (
+        f"{module_name} no longer *calls* the shared session check — a re-inlined "
+        "copy is how the expired-demo branch gets lost. An import or a mention in "
+        "a comment is not adoption"
     )
-    assert "decode_token(" not in source, (
-        f"{module_name} decodes tokens itself again; that is the duplication F10 is about"
+
+    # Every way a stream could decode a token for itself again, rather than the
+    # one spelling the old assertion happened to name.
+    forbidden = {"decode_token", "jwt.decode", "jose.decode", "jwt.get_unverified_claims"}
+    reinlined = forbidden & (called | called_attrs)
+    assert not reinlined, (
+        f"{module_name} decodes tokens itself again ({sorted(reinlined)}); that is "
+        "the duplication F10 is about. Route it through app.api.ws_session"
     )
