@@ -297,3 +297,179 @@ def test_the_mono_image_signs_its_agent_binaries_too() -> None:
         "the private key must never be a build arg — build args are recorded in "
         "image metadata and readable with `docker history`"
     )
+
+
+def test_no_agent_dial_bypasses_tlsdial_entirely() -> None:
+    """G4. The two checks above both assume the dial goes through `tlsdial`.
+
+    Neither can see a fifth dial site that does not. A bare `http.Get`, an
+    `&http.Client{}` with its own transport, or a `&websocket.Dialer{}` literal
+    names no `TLSPin` and matches no `tlsdial.New...(tlsdial.Trust{` literal, so
+    both stay green while the agent talks to the server under a trust policy no
+    rotation can reach — F4 returning by the one route that pair was written to
+    close.
+
+    Client and dialer literals are judged by what they are *given*: legitimate
+    ones take `tlsdial.NewTransport(...)` (see `internal/update/update.go`,
+    which is exactly this shape and is correct). `http.Get` and
+    `websocket.DefaultDialer` can carry no transport at all, so they are always
+    a bypass.
+
+    Two packages are exempt because they do not talk to Circuit Breaker: the
+    monitoring probe dials whatever target an operator configured, and the
+    Docker collector dials a local unix socket. Neither has a pin to honour.
+    """
+    exempt = {
+        "internal/tlsdial/tlsdial.go",  # the wrapper itself
+        "internal/collect/probe/http.go",  # user-configured probe targets
+        "internal/collect/host/docker.go",  # local unix socket
+    }
+    # `\b` cannot precede `&` — both are non-word characters, so an earlier
+    # version of this pattern silently matched nothing that mattered.
+    needs_transport = re.compile(r"&(?:http\.Client|websocket\.Dialer)\{")
+    always_bypass = re.compile(
+        r"\bhttp\.(?:Get|Post|Head|PostForm)\(|\bwebsocket\.DefaultDialer\b"
+    )
+    offenders: list[str] = []
+
+    for path in _go_sources():
+        relative = str(path.relative_to(AGENT_SRC))
+        if relative in exempt:
+            continue
+        lines = path.read_text().splitlines()
+        for lineno, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if stripped.startswith("//"):
+                continue
+            if always_bypass.search(line):
+                offenders.append(f"{relative}:{lineno}: {stripped}")
+            elif needs_transport.search(line):
+                # The literal's own block: a pinned client hands its transport
+                # in right here.
+                block = "\n".join(lines[lineno - 1 : lineno + 5])
+                if "tlsdial." not in block:
+                    offenders.append(f"{relative}:{lineno}: {stripped}")
+
+    assert not offenders, (
+        "an outbound dial bypasses internal/tlsdial, so an advertised successor "
+        "TLS policy cannot reach it. A stranded agent cannot be repaired "
+        "remotely, because the update download is stranded with everything "
+        "else:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_the_chained_event_set_is_actually_consulted() -> None:
+    """G5. The check above pins the constant's *contents*. It says nothing
+    about whether anything reads it.
+
+    Delete the `if event_type in CHAINED_EVENT_TYPES:` branch in `record_event`
+    and every assertion above still passes: the set is intact, correct, and
+    inert. That is the same shape as the four defects slice 4.1 recorded — a
+    mechanism that looks right at every layer and does nothing — and it is what
+    a gate written for exactly that failure mode should be least willing to
+    miss.
+    """
+    source = (
+        REPO_ROOT / "apps" / "backend" / "src" / "app" / "services" / "agent_registry.py"
+    ).read_text()
+    tree = ast.parse(source)
+
+    record_event = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "record_event"
+        ),
+        None,
+    )
+    assert record_event is not None, "record_event has moved; this gate needs updating with it"
+
+    reads_the_set = any(
+        isinstance(node, ast.Name) and node.id == "CHAINED_EVENT_TYPES"
+        for node in ast.walk(record_event)
+    )
+    assert reads_the_set, (
+        "record_event no longer consults CHAINED_EVENT_TYPES, so agent "
+        "authorization events are not reaching the hash-chained audit log — F17, "
+        "with the constant left behind to make it look handled"
+    )
+
+    # Name *and* Attribute: the call is `write_log(...)` from a function-local
+    # import today, and an attribute-only check would have read as satisfied by
+    # nothing at all — the exact narrowness this suite keeps finding elsewhere.
+    writes_the_chain = any(
+        (isinstance(node, ast.Name) and node.id == "write_log")
+        or (isinstance(node, ast.Attribute) and node.attr == "write_log")
+        for node in ast.walk(record_event)
+    )
+    assert writes_the_chain, (
+        "record_event reads the set but never calls log_service.write_log; the "
+        "chained write is what makes the decision tamper-evident"
+    )
+
+
+def test_no_authorization_event_is_recorded_without_a_decision() -> None:
+    """The set is one-directional: nothing stops a *new* authorization event
+    type being passed to `record_event` and quietly never chained.
+
+    So every event-type literal handed to `record_event` anywhere in the app is
+    collected here, and any name that reads like an authorization decision has
+    to be either chained or listed as a deliberate exclusion. The point is that
+    adding one forces a choice, which the constant alone could not do.
+    """
+    chained = _chained_event_types()
+    app_root = REPO_ROOT / "apps" / "backend" / "src" / "app"
+
+    #: Authorization-shaped names that are deliberately not chained, with the
+    #: reason they are safe to leave out.
+    deliberate_exclusions = {
+        # High-volume, agent-driven, and already throttled — chaining them
+        # would trade a write-amplification problem for instance-wide lock
+        # contention. See test_high_volume_events_are_never_chained.
+        "capability_violation",
+        "protocol_violation",
+    }
+    authorization_markers = (
+        "approv",
+        "reject",
+        "revok",
+        "enroll",
+        "authoriz",
+        "key_rotation",
+        "permission",
+        "grant",
+        "deny",
+    )
+
+    unchained: list[str] = []
+    for path in sorted(app_root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = (
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else None
+            )
+            if name != "record_event":
+                continue
+            for arg in list(node.args) + [kw.value for kw in node.keywords]:
+                if not isinstance(arg, ast.Constant) or not isinstance(arg.value, str):
+                    continue
+                event = arg.value
+                if event in chained or event in deliberate_exclusions:
+                    continue
+                if any(marker in event for marker in authorization_markers):
+                    unchained.append(f"{path.relative_to(app_root)}:{node.lineno}: {event!r}")
+
+    assert not unchained, (
+        "an authorization-shaped agent event is recorded without a hash-chained "
+        "entry:\n  "
+        + "\n  ".join(unchained)
+        + "\n\nAdd it to CHAINED_EVENT_TYPES, or to this test's "
+        "deliberate_exclusions with the reason it is safe to leave out."
+    )

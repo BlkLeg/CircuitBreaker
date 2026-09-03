@@ -74,6 +74,28 @@ async def test_an_admin_sees_the_parked_record(client, auth_headers, db_session)
     assert row["discarded_at"] is None
 
 
+@pytest.fixture
+def published(monkeypatch):
+    """A connected bus that records what it was handed.
+
+    The requeue route now refuses when NATS is disconnected, which it is
+    throughout this suite. That refusal is the fix: `nats_client.publish`
+    buffers instead of raising, so every requeue used to return 200 and stamp
+    `requeued_at` while the message went nowhere — and a test asserting only on
+    `requeued_at` could not tell the two apart.
+    """
+    from app.core.nats_client import NATSClient, nats_client
+
+    monkeypatch.setattr(NATSClient, "is_connected", property(lambda self: True))
+    sent: list[str] = []
+
+    async def _publish(subject: str, payload: bytes) -> None:
+        sent.append(subject)
+
+    monkeypatch.setattr(nats_client, "publish", _publish)
+    return sent
+
+
 @pytest.mark.asyncio
 async def test_discard_marks_the_row_and_removes_it_from_the_listing(
     client, auth_headers, db_session
@@ -89,17 +111,20 @@ async def test_discard_marks_the_row_and_removes_it_from_the_listing(
 
 
 @pytest.mark.asyncio
-async def test_requeue_marks_the_row(client, auth_headers, db_session) -> None:
+async def test_requeue_marks_the_row(client, auth_headers, db_session, published) -> None:
     parked = _park(db_session)
 
     resp = await client.post(f"/api/v1/failed-messages/{parked.id}/requeue", headers=auth_headers)
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["requeued_at"] is not None
+    assert published == [parked.subject], "the row is only marked if it actually republished"
 
 
 @pytest.mark.asyncio
-async def test_acting_twice_on_one_row_is_refused(client, auth_headers, db_session) -> None:
+async def test_acting_twice_on_one_row_is_refused(
+    client, auth_headers, db_session, published
+) -> None:
     """A double-click must not republish the same work twice.
 
     409 rather than 200: the operator needs to know the second action did not
@@ -121,3 +146,91 @@ async def test_an_unknown_id_is_a_404_with_a_detail(client, auth_headers) -> Non
 
     assert resp.status_code == 404, resp.text
     assert "detail" in resp.json()
+
+
+# --- M14: a requeue that reports success must have reached a stream ----------
+
+
+@pytest.mark.asyncio
+async def test_requeue_is_refused_while_the_bus_is_disconnected(db_session) -> None:
+    """`nats_client.publish` catches everything and buffers into a bounded
+    deque on a disconnect, dropping silently on overflow — so every requeue
+    returned 200 and stamped `requeued_at` whether or not the message reached a
+    stream. Requeue 250 rows with NATS down: 200 buffer, 50 vanish, all 250 read
+    as requeued.
+
+    The existing test asserted only that `requeued_at` was set, and was green on
+    a requeue that provably republished nothing.
+    """
+    from app.services import failed_message_service as svc
+
+    row = svc.park_message(
+        db_session,
+        stream="MONITOR_POLL",
+        subject="mon.poll.item",
+        consumer="monitor_poll",
+        payload=b'{"monitor_id": 1}',
+        error="boom",
+        delivered_count=5,
+    )
+    db_session.commit()
+
+    published: list[str] = []
+
+    async def _publish(subject: str, payload: bytes) -> None:
+        published.append(subject)
+
+    with pytest.raises(svc.RepublishFailed):
+        await svc.requeue_and_publish(db_session, row.id, _publish, is_connected=lambda: False)
+
+    db_session.rollback()
+    db_session.refresh(row)
+    assert published == [], "nothing may be published while the bus is down"
+    assert row.requeued_at is None, "the row must stay parked, not claim a requeue"
+
+
+def test_resolved_rows_are_pruned_but_parked_ones_are_not(db_session) -> None:
+    """`discard` keeps the row by design, so without retention the operator
+    action that clears a flood left every payload behind for ever. Unfinished
+    work is never pruned by age."""
+    from datetime import timedelta
+
+    from app.core.time import utcnow
+    from app.services import failed_message_service as svc
+
+    old_parked = svc.park_message(
+        db_session,
+        stream="MONITOR_POLL",
+        subject="mon.poll.old-parked",
+        consumer="monitor_poll",
+        payload=b"{}",
+        error="still failing",
+        delivered_count=5,
+    )
+    old_discarded = svc.park_message(
+        db_session,
+        stream="MONITOR_POLL",
+        subject="mon.poll.old-discarded",
+        consumer="monitor_poll",
+        payload=b"{}",
+        error="dealt with",
+        delivered_count=5,
+    )
+    long_ago = utcnow() - timedelta(days=90)
+    old_parked.parked_at = long_ago
+    old_discarded.parked_at = long_ago
+    old_discarded.discarded_at = long_ago
+    db_session.commit()
+
+    parked_id, discarded_id = old_parked.id, old_discarded.id
+    model = type(old_parked)
+
+    deleted = svc.prune_resolved(db_session, older_than_days=30)
+
+    # The deleted instance is still in the identity map; drop it so these read
+    # the table rather than a stale object.
+    db_session.expunge_all()
+
+    assert deleted == 1
+    assert db_session.query(model).filter_by(id=parked_id).first() is not None
+    assert db_session.query(model).filter_by(id=discarded_id).first() is None

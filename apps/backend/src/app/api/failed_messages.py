@@ -58,10 +58,18 @@ class FailedMessageOut(BaseModel):
 def list_failed_messages(
     db: Annotated[Session, Depends(get_db)],
     include_resolved: bool = False,
+    limit: int = svc.DEFAULT_PARKED_PAGE,
+    offset: int = 0,
     _: Annotated[None, require_role("admin")] = None,
 ) -> list[FailedMessage]:
-    """Parked messages, newest first. Resolved rows are hidden unless asked for."""
-    return svc.list_parked(db, include_resolved=include_resolved)
+    """One page of parked messages, newest first. Resolved rows hidden unless asked for.
+
+    Paged because the failure this table records is a flood: a stuck integration
+    parking a 50-message batch every poll writes payload-bearing rows faster than
+    anyone reads them, and the unpaginated version was an admin request that
+    stopped returning at exactly the moment it was needed.
+    """
+    return svc.list_parked(db, include_resolved=include_resolved, limit=limit, offset=offset)
 
 
 @router.post("/{message_id}/requeue", response_model=FailedMessageOut)
@@ -74,9 +82,17 @@ async def requeue_failed_message(
 
     The service marks the row and publishes inside one transaction, so a
     publisher that raises leaves the message parked rather than marked-and-lost.
+    It also refuses outright when the bus is disconnected: `nats_client.publish`
+    buffers instead of raising, so without that check a requeue issued during an
+    outage returned 200 and stamped the row while the message went nowhere.
     """
     try:
-        return await svc.requeue_and_publish(db, message_id, nats_client.publish)
+        return await svc.requeue_and_publish(
+            db,
+            message_id,
+            nats_client.publish,
+            is_connected=lambda: nats_client.is_connected,
+        )
     except svc.MessageNotFound as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except svc.MessageAlreadyResolved as exc:
