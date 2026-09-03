@@ -38,8 +38,41 @@ _API_ROOT = _APP_ROOT / "api"
 _ALLOWED_TOP_LEVEL = frozenset({"destructive_actions.py"})
 
 #: Deferred (in-function) `core -> services` imports. F7's remaining surface.
-#: MAY ONLY DECREASE.
+#: EXACT — see `_assert_exact`.
 _MAX_DEFERRED_CORE_TO_SERVICES = 21
+
+
+def _assert_exact(measured: int, frozen: int, *, what: str, detail: str, guidance: str) -> None:
+    """Fail when *measured* differs from *frozen* in either direction.
+
+    These began as `<=` bounds, which reads as the safer choice and is not. Slack
+    accumulates silently: slice 3.2 removed three direct-DB calls in `api/` and
+    left the constant at 581, and the two units of headroom that created went on
+    to absorb a real new `db.commit()` added by an unrelated commit while this
+    suite stayed green. The gate had already failed at its one job before anyone
+    looked at it.
+
+    An exact count has no headroom to donate. It costs a one-line edit in the
+    commit that removes a violation — which every docstring here already asked
+    for and none of them could enforce.
+    """
+    if measured == frozen:
+        return
+    direction = (
+        f"rose to {measured}, above the frozen {frozen}"
+        if measured > frozen
+        else f"fell to {measured}, below the frozen {frozen}"
+    )
+    tail = (
+        guidance
+        if measured > frozen
+        else (
+            "Nothing is wrong — you removed one. Lower the constant to "
+            f"{measured} in this same commit. Leaving the higher number behind is "
+            "how the gate acquires headroom for the next violation to hide in."
+        )
+    )
+    raise AssertionError(f"{what} {direction}. {detail} {tail}")
 
 
 def _core_files() -> list[Path]:
@@ -72,17 +105,19 @@ def test_deferred_core_to_services_imports_do_not_grow() -> None:
             per_file[str(path.relative_to(_APP_ROOT))] = len(deferred)
             total += len(deferred)
 
-    assert total <= _MAX_DEFERRED_CORE_TO_SERVICES, (
-        f"deferred `core -> services` imports rose to {total}, above the frozen "
-        f"{_MAX_DEFERRED_CORE_TO_SERVICES}. Current spread: {per_file}. This ratchet "
-        "only ever goes down: remove an inversion rather than raising the number."
+    _assert_exact(
+        total,
+        _MAX_DEFERRED_CORE_TO_SERVICES,
+        what="deferred `core -> services` imports",
+        detail=f"Current spread: {per_file}.",
+        guidance="Remove an inversion rather than raising the number.",
     )
 
 
 #: Direct session operations inside `api/`. Route F6: routes should stay thin and
-#: delegate to services. Measured at 581 across 43 files on 2026-09-01.
-#: MAY ONLY DECREASE.
-_MAX_DIRECT_DB_CALLS_IN_API = 581
+#: delegate to services. Re-measured at 579 across 41 files on 2026-09-03.
+#: EXACT — see `_assert_exact`.
+_MAX_DIRECT_DB_CALLS_IN_API = 579
 
 
 def test_direct_db_access_in_api_does_not_grow() -> None:
@@ -95,17 +130,20 @@ def test_direct_db_access_in_api_does_not_grow() -> None:
             total += len(calls)
 
     worst = sorted(per_file.items(), key=lambda kv: -kv[1])[:5]
-    assert total <= _MAX_DIRECT_DB_CALLS_IN_API, (
-        f"direct database calls in api/ rose to {total}, above the frozen "
-        f"{_MAX_DIRECT_DB_CALLS_IN_API}. Heaviest files: {worst}. Routes stay thin "
-        "(CLAUDE.md): put the query in a service and call it from the route. This "
-        "ratchet only ever goes down \u2014 lower the constant when you remove calls, "
-        "never raise it to accommodate new ones."
+    _assert_exact(
+        total,
+        _MAX_DIRECT_DB_CALLS_IN_API,
+        what="direct database calls in api/",
+        detail=f"Heaviest files: {worst}.",
+        guidance=(
+            "Routes stay thin (CLAUDE.md): put the query in a service and call it "
+            "from the route."
+        ),
     )
 
 
 #: `except: pass` handlers across the whole backend app. Route F13. Measured at
-#: 119 across 45 files on 2026-09-01. MAY ONLY DECREASE.
+#: 119 across 45 files on 2026-09-01. EXACT — see `_assert_exact`.
 _MAX_SILENT_EXCEPT_HANDLERS = 119
 
 
@@ -119,10 +157,13 @@ def test_silent_exception_handlers_do_not_grow() -> None:
             total += len(handlers)
 
     worst = sorted(per_file.items(), key=lambda kv: -kv[1])[:5]
-    assert total <= _MAX_SILENT_EXCEPT_HANDLERS, (
-        f"silent exception handlers rose to {total}, above the frozen "
-        f"{_MAX_SILENT_EXCEPT_HANDLERS}. Heaviest files: {worst}. A handler that "
-        "only passes turns a failure into silence, which is what makes production "
-        "problems unfindable. Log it, record it, or let it raise. This ratchet only "
-        "ever goes down."
+    _assert_exact(
+        total,
+        _MAX_SILENT_EXCEPT_HANDLERS,
+        what="silent exception handlers",
+        detail=f"Heaviest files: {worst}.",
+        guidance=(
+            "A handler that only passes turns a failure into silence, which is what "
+            "makes production problems unfindable. Log it, record it, or let it raise."
+        ),
     )

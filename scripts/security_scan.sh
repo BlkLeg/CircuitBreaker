@@ -252,7 +252,12 @@ TRIVY_IGNORE=""
 # because the directory is gitignored. Keep both common environments out of the
 # native and containerised scans; dependency vulnerabilities are covered below
 # by pip-audit against the committed lock files.
-TRIVY_SKIP_DIRS="--skip-dirs .venv --skip-dirs .venv-release --skip-dirs node_modules --skip-dirs dist"
+# .claude/worktrees holds throwaway checkouts of this same repo. Scanning them
+# reported every finding once per worktree (six copies of the same four CVEs on
+# 2026-09-03) and, worse, let a stale lockfile in an abandoned worktree fail a
+# blocking gate after the real tree was already clean. Same class as 0d1f5142,
+# which excluded worktrees from the discovery-publisher scan.
+TRIVY_SKIP_DIRS="--skip-dirs .venv --skip-dirs .venv-release --skip-dirs node_modules --skip-dirs dist --skip-dirs .claude --skip-dirs build --skip-dirs artifacts"
 
 # Trivy's vulnerability database is ~110MB and `docker run --rm` throws the
 # container away with it, so without a host cache mount every single run
