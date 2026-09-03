@@ -76,6 +76,10 @@ const HeaderWidgets = ({ settings = {} }) => {
   const showTimeWidget = settings?.showTimeWidget ?? settings?.show_time_widget ?? true;
   const showWeatherWidget = settings?.showWeatherWidget ?? settings?.show_weather_widget ?? true;
   const weatherLocation = settings?.weatherLocation ?? settings?.weather_location ?? 'Phoenix, AZ';
+  // CB_AIRGAP cannot reach code running in the browser, so the backend's egress
+  // choke point never saw these calls. An air-gapped install must not reach
+  // open-meteo, and the location the operator typed is not ours to send anywhere.
+  const airgapMode = settings?.airgapMode ?? settings?.airgap_mode ?? false;
   const timezone = settings?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 
   const [now, setNow] = useState(new Date());
@@ -88,6 +92,10 @@ const HeaderWidgets = ({ settings = {} }) => {
 
   useEffect(() => {
     if (!showWeatherWidget || !weatherLocation) return;
+    if (airgapMode) {
+      setWeatherData({ temp: '--', condition: 'Offline (air-gap)' });
+      return;
+    }
 
     let isMounted = true;
 
@@ -131,7 +139,7 @@ const HeaderWidgets = ({ settings = {} }) => {
       isMounted = false;
       clearInterval(weatherInterval);
     };
-  }, [showWeatherWidget, weatherLocation]);
+  }, [showWeatherWidget, weatherLocation, airgapMode]);
 
   const timeText = useMemo(
     () =>

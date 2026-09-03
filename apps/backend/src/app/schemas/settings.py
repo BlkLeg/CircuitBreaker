@@ -146,6 +146,12 @@ class AppSettingsRead(BaseModel):
     show_time_widget: bool = True
     show_weather_widget: bool = True
     weather_location: str = "Phoenix, AZ"
+    # Read-only, and deliberately absent from AppSettingsUpdate: air-gap is set by
+    # CB_AIRGAP or the DB column, never by a settings PUT. The browser needs it
+    # because CB_AIRGAP cannot reach code running in the user's tab -- the header
+    # weather widget called a third-party API from air-gapped installs for as long
+    # as the frontend had no way to know.
+    airgap_mode: bool = False
     auth_enabled: bool = True
     registration_open: bool = True
     rate_limit_profile: str = "normal"
@@ -272,6 +278,21 @@ class AppSettingsRead(BaseModel):
         self.opnsense_credentials_set = bool(
             self.opnsense_api_key_enc or self.opnsense_api_secret_enc
         )
+        return self
+
+    @model_validator(mode="after")
+    def build_effective_airgap(self) -> "AppSettingsRead":
+        """Report the air-gap state the backend actually enforces.
+
+        The column alone is only half of it: ``core.egress.airgap_enabled``
+        treats ``CB_AIRGAP`` as unconditionally true and consults the row only
+        when the env var is unset. A frontend gating on the raw column would
+        keep calling out from every env-configured air-gapped install.
+        """
+        from app.core.egress import airgap_enabled
+
+        if airgap_enabled():
+            self.airgap_mode = True
         return self
 
     @model_validator(mode="after")

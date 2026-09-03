@@ -54,6 +54,7 @@ function OOBEWizardPage({ onCompleted }) {
   const { login } = useAuth();
   const { settings, reloadSettings } = useSettings();
   const branding = settings?.branding;
+  const airgapMode = settings?.airgapMode ?? settings?.airgap_mode ?? false;
 
   const [step, setStep] = useState(1);
   const [fqdn, setFqdn] = useState('');
@@ -318,36 +319,47 @@ function OOBEWizardPage({ onCompleted }) {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  const searchLocation = useCallback(async (query) => {
-    const q = query.trim();
-    if (q.length < 2) {
-      setLocationResults([]);
-      setLocationDropdownOpen(false);
-      return;
-    }
-    setLocationSearching(true);
-    try {
-      const res = await fetch(
-        `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=6&language=en&format=json`
-      );
-      const data = await res.json();
-      const results = (data.results || []).map((r) => ({
-        id: r.id,
-        name: r.name,
-        admin1: r.admin1,
-        country: r.country,
-        timezone: r.timezone,
-        display: [r.name, r.admin1, r.country].filter(Boolean).join(', '),
-      }));
-      setLocationResults(results);
-      setLocationDropdownOpen(results.length > 0);
-    } catch (err) {
-      console.warn('OOBE location search failed:', err);
-      setLocationResults([]);
-    } finally {
-      setLocationSearching(false);
-    }
-  }, []);
+  const searchLocation = useCallback(
+    async (query) => {
+      const q = query.trim();
+      if (q.length < 2) {
+        setLocationResults([]);
+        setLocationDropdownOpen(false);
+        return;
+      }
+      // Same reason as HeaderWidgets: a third-party call the backend's air-gap
+      // choke point cannot see. The operator types the location by hand rather
+      // than having it sent away to be autocompleted.
+      if (airgapMode) {
+        setLocationResults([]);
+        setLocationDropdownOpen(false);
+        return;
+      }
+      setLocationSearching(true);
+      try {
+        const res = await fetch(
+          `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=6&language=en&format=json`
+        );
+        const data = await res.json();
+        const results = (data.results || []).map((r) => ({
+          id: r.id,
+          name: r.name,
+          admin1: r.admin1,
+          country: r.country,
+          timezone: r.timezone,
+          display: [r.name, r.admin1, r.country].filter(Boolean).join(', '),
+        }));
+        setLocationResults(results);
+        setLocationDropdownOpen(results.length > 0);
+      } catch (err) {
+        console.warn('OOBE location search failed:', err);
+        setLocationResults([]);
+      } finally {
+        setLocationSearching(false);
+      }
+    },
+    [airgapMode]
+  );
 
   const handleLocationQueryChange = (e) => {
     const val = e.target.value;
