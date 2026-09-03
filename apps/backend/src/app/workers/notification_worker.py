@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from nats.js.api import ConsumerConfig
+
 from app.core.nats_client import nats_client
 from app.core.redis import get_redis
 from app.core.url_validation import outbound_async_client, safe_async_request
@@ -17,6 +19,7 @@ from app.db.session import SessionLocal
 from app.services.credential_vault import get_vault
 from app.services.notification_secrets import decrypt_config
 from app.services.notification_severity import route_matches
+from app.workers.dead_letter import handle_failed_delivery
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,11 @@ _NOTIFICATION_RETRY_BASE_S = 1.0
 
 _JS_STREAM = "CB_EVENTS"
 _JS_CONSUMER_DURABLE = "notification_dispatch"
+#: Matches the monitor-poll and telemetry-ingest consumers. Without it this
+#: worker naked on every handler exception forever, so one poison alert
+#: nak-looped until CB_EVENTS aged it out 24h later with no operator record —
+#: F14 verbatim, on the one consumer slice 3.3 did not reach.
+_MAX_DELIVER = 5
 _JS_SUBJECT_FILTER = "alert.>"
 _JS_BATCH_SIZE = 5
 _JS_FETCH_TIMEOUT_S = 1.0
@@ -350,6 +358,7 @@ async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
                     _JS_SUBJECT_FILTER,
                     durable=_JS_CONSUMER_DURABLE,
                     stream=_JS_STREAM,
+                    config=ConsumerConfig(max_deliver=_MAX_DELIVER),
                 )
                 logger.info(
                     "Notification worker subscribed to %s stream filter=%s (durable=%s)",
@@ -399,10 +408,14 @@ async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
                     exc,
                     exc_info=True,
                 )
-                try:
-                    await msg.nak()
-                except Exception:
-                    pass
+                await handle_failed_delivery(
+                    msg,
+                    stream=_JS_STREAM,
+                    consumer=_JS_CONSUMER_DURABLE,
+                    error=str(exc),
+                    max_deliver=_MAX_DELIVER,
+                    session_factory=SessionLocal,
+                )
 
         _touch_healthy()
 

@@ -1606,7 +1606,15 @@ app.add_middleware(
     allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-CSRF-Token"],
+    # X-Request-ID is set by the axios client on every request (api/client.jsx).
+    # Omitting it here meant that on any split-origin deployment — the case where
+    # cors_origins is configured at all — the preflight came back without it and
+    # the browser blocked the whole request, not just the header. Same-origin
+    # mono installs never preflight, which is why this went unnoticed.
+    allow_headers=["Authorization", "Content-Type", "X-CSRF-Token", "X-Request-ID"],
+    # Exposed so the browser can read the id back off the response and correlate
+    # it with the server logs, which is the entire point of minting it.
+    expose_headers=["X-Request-ID"],
 )
 app.add_middleware(CSRFMiddleware)
 app.add_middleware(LegacyTokenMiddleware)
