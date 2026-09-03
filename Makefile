@@ -94,7 +94,7 @@ backend:  ## Native backend (ZERO DOCKER DRIFT)
 		CB_DB_URL="postgresql://breaker:breaker@localhost:5432/circuitbreaker" \
 		CB_REDIS_URL="redis://localhost:6379/0" \
 		NATS_URL="nats://localhost:4222" \
-		NATS_AUTH_TOKEN="dev-token-local-only" \
+		NATS_AUTH_TOKEN="$(NATS_AUTH_TOKEN_DEV)" \
 		CB_ALLOW_DEGRADED_DEPENDENCIES="$(CB_ALLOW_DEGRADED_DEPENDENCIES_DEV)" \
 		CB_TOPOLOGY_MODE="$(CB_TOPOLOGY_MODE_DEV)" \
 		CB_AUTO_MIGRATE=false \

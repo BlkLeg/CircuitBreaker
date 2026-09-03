@@ -24,6 +24,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 API = ROOT / "apps/backend/src/app/api"
 SERVICES = ROOT / "apps/backend/src/app/services"
+CORE = ROOT / "apps/backend/src/app/core"
 
 #: Names bound to a synchronous `Session` in the functions below. A call on any
 #: of these is a database round trip, and on a coroutine it is one the event
@@ -175,3 +176,57 @@ def test_the_rule_would_catch_a_regression() -> None:
         "    return await run_in_threadpool(_read, db)\n"
     ).body[0]
     assert _direct_session_calls(compliant) == []
+
+
+#: The dependencies FastAPI resolves before any of the handlers above runs.
+#: Declared `def`, they are resolved in the threadpool; declared `async def`,
+#: their bodies run inline on the event loop.
+_AUTH_DEPENDENCIES = (
+    "get_optional_user",
+    "require_write_auth",
+    "require_auth_always",
+)
+
+
+def test_the_auth_prologue_is_not_an_async_def() -> None:
+    """M3. The list above certified the nav handlers as off-loop while the
+    dependencies resolved *ahead of every one of them* did blocking work inline.
+
+    `get_optional_user` runs on every request: an AppSettings read through
+    `get_or_create_settings`, a synchronous Redis MGET, and on a cache miss a
+    full `APIToken` scan with a per-row HMAC verify. `require_write_auth` and
+    `require_auth_always` add `db.get(User, ...)` and `_is_user_accessible`.
+    None of them awaits anything, so `async def` bought nothing and cost the
+    loop every one of those reads.
+
+    This is why the gate mattered less than it looked: slice 2.5 moved five
+    handlers off the loop behind a prologue that was never converted, so the
+    loop-lag delta it was meant to demonstrate would have read as roughly
+    nothing — and the conclusion drawn would have been about de-asyncing rather
+    than about this.
+    """
+    source = (CORE / "security.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    offenders = [
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name in _AUTH_DEPENDENCIES
+    ]
+    assert not offenders, (
+        f"{offenders} are `async def` and await nothing, so FastAPI resolves them "
+        "inline on the event loop — in front of every request the API serves. "
+        "Declare them `def` and they are resolved in the threadpool instead."
+    )
+
+
+def test_the_auth_prologue_still_exists_under_those_names() -> None:
+    """The check above passes vacuously if a dependency is renamed or removed,
+    which is how a gate keyed on names quietly stops gating anything."""
+    tree = ast.parse((CORE / "security.py").read_text(encoding="utf-8"))
+    defined = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    missing = [name for name in _AUTH_DEPENDENCIES if name not in defined]
+    assert not missing, f"auth dependencies renamed or removed: {missing}"

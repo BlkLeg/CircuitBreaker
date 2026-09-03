@@ -473,3 +473,112 @@ def test_no_authorization_event_is_recorded_without_a_decision() -> None:
         + "\n\nAdd it to CHAINED_EVENT_TYPES, or to this test's "
         "deliberate_exclusions with the reason it is safe to leave out."
     )
+
+
+#: Environment variables whose value is signing or encryption material. A
+#: literal assigned to any of these is a committed secret whatever file it is
+#: in — CLAUDE.md's rule names tests, fixtures, examples and CI explicitly.
+_SECRET_ENV_NAMES = (
+    "CB_JWT_SECRET",
+    "CB_VAULT_KEY",
+    "NATS_AUTH_TOKEN",
+    "AGENT_SIGNING_PRIVATE_KEY",
+    "CB_API_TOKEN",
+)
+
+
+def test_no_secret_env_var_is_assigned_a_literal() -> None:
+    """The PEM check above sees only PEM bodies.
+
+    It could not see the three literals that were actually committed: a JWT
+    signing secret, a working base64 Fernet vault key, and a bus token, all in
+    `apps/backend/tests/conftest.py`, all readable by anyone with the
+    repository. A base64 Ed25519 seed — the shape the agent signing key takes —
+    is equally invisible to it.
+
+    So this matches on the *name* being assigned rather than on the value's
+    shape. A secret's value can look like anything; the variable it lands in
+    cannot.
+
+    Matched only on real assignment syntax. A first version matched any
+    `NAME` followed by `=` or `:` and a quoted string, which flagged
+    `assert "CB_VAULT_KEY=" in content` and `{"CB_JWT_SECRET": "change_me"}` —
+    a test asserting the placeholder is *rejected*. A gate red on arrival gets
+    muted, so it has to be right about what an assignment is.
+    """
+    names = "|".join(_SECRET_ENV_NAMES)
+    forms = (
+        # os.environ["NAME"] = "literal"  /  os.environ.setdefault("NAME", "literal")
+        re.compile(rf"os\.environ(?:\[|\.setdefault\()\s*[\"\']({names})[\"\']\s*[\],]\s*=?\s*[\"\']([^\"\'\n]+)"),
+        # export NAME="literal" at the start of a shell line
+        re.compile(rf"^\s*(?:export\s+)?({names})=[\"\']([^\"\'\n]+)[\"\']"),
+        # export NAME=literal, unquoted — stops at whitespace, or the value
+        # swallows the rest of the command line after it.
+        re.compile(rf"^\s*(?:export\s+)?({names})=([^\s\"\'\n\\]+)"),
+        # NAME: literal in YAML
+        re.compile(rf"^\s*-?\s*({names}):\s+[\"\']?([^\"\'\n]+)"),
+    )
+    #: Values that are read from somewhere rather than written down.
+    generated_markers = (
+        "${",
+        "$(",
+        "$",
+        "os.environ",
+        "getenv",
+        "secrets.token",
+        "Fernet.generate",
+        "openssl",
+        "rand",
+        "generate_key",
+        "uuid",
+    )
+    #: `make dev` starts a local broker and a local backend that must agree on a
+    #: token. This is a pairing between two processes on one developer's laptop,
+    #: not secret material — and randomising it would break `make dev` unless
+    #: both sides read the same generated value, which is a change to the dev
+    #: workflow rather than a security fix. Named here so the exemption is a
+    #: decision rather than a gap.
+    exempt_files = {"Makefile"}
+
+    offenders: list[str] = []
+    for path in _tracked_files():
+        if not path.is_file() or path.resolve() == Path(__file__).resolve():
+            continue
+        relative = str(path.relative_to(REPO_ROOT))
+        if relative in exempt_files:
+            continue
+        if path.suffix not in {".py", ".sh", ".yml", ".yaml", ".toml", ".env", ".conf", ""}:
+            continue
+        try:
+            text = path.read_text(errors="ignore")
+        except OSError:
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("#") or stripped.startswith("//") or "assert" in stripped:
+                continue
+            for form in forms:
+                match = form.search(line)
+                if not match:
+                    continue
+                value = match.group(2).strip()
+                if any(marker in value for marker in generated_markers):
+                    continue
+                # Documentation placeholders: `CB_VAULT_KEY="<key>"` in a usage
+                # example, or `CB_API_TOKEN=MY_API_TOKEN_123` in a docstring
+                # showing how to run a suite. Neither is a secret, and flagging
+                # them teaches people to mute the gate.
+                if "<" in value and ">" in value:
+                    continue
+                if re.fullmatch(r"[A-Z][A-Z0-9_]*", value):
+                    continue
+                offenders.append(f"{relative}:{lineno}: {match.group(1)} assigned a literal")
+                break
+
+    assert not offenders, (
+        "signing or encryption material is committed:\n  "
+        + "\n  ".join(offenders)
+        + "\n\nGenerate it at runtime (secrets.token_urlsafe, Fernet.generate_key, "
+        "openssl rand) or inject it from the secret store. CLAUDE.md's rule covers "
+        "tests, fixtures, examples and CI workflows."
+    )

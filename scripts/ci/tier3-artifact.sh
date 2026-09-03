@@ -335,7 +335,13 @@ t3::exercise_api() {
 }
 
 t3::exercise_scheduled_monitor() {
-    local label=$1 email=tier3-admin@local.invalid password='Tier3Monitor123!'
+    # Generated per run rather than committed. The VM is ephemeral and the
+    # account is thrown away with it, but CLAUDE.md's rule is unconditional and
+    # names CI workflows explicitly — and .github/workflows/baseline.yml already
+    # does exactly this with `openssl rand`, so the committed literal was the
+    # outlier rather than the convention.
+    local label=$1 email=tier3-admin@local.invalid password
+    password="Tier3-$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9')!aA1"
     section "Prove the scheduled monitor pipeline ($label)"
     local status token setup_token data_dir monitor id deadline history
     status="$(curl -fsS "$BASE_URL/bootstrap/status")"

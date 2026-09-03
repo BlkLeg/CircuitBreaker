@@ -593,19 +593,37 @@ def resolve_optional_user_id_sync(db: Session, request: HTTPConnection) -> int |
     return None
 
 
-async def get_optional_user(request: HTTPConnection, db: Session = Depends(get_db)) -> int | None:
+def get_optional_user(request: HTTPConnection, db: Session = Depends(get_db)) -> int | None:
     """Return the authenticated user_id, or None if absent/invalid.
 
     Returns 0 (service-account sentinel) when the LegacyTokenMiddleware
     has flagged the request (CB_LEGACY_AUTH rollback).  Never raises.
+
+    Sync on purpose (F12/M3). It awaits nothing and its body is entirely
+    blocking: `resolve_optional_user_id_sync` reads AppSettings through
+    `get_or_create_settings`, then does a synchronous Redis MGET, and on a cache
+    miss falls through to a full `APIToken` scan with a per-row HMAC verify —
+    all of it on the event loop, on *every* request, because `async def` makes
+    FastAPI await the dependency inline.
+
+    Declared `def`, FastAPI runs it in the threadpool instead. This matters more
+    than any single handler conversion: slice 2.5 moved five nav endpoints off
+    the loop while this ran ahead of all of them, so the loop-lag delta that
+    slice was meant to demonstrate would have read as roughly nothing, and the
+    conclusion would have been "de-asyncing did not help" rather than "the auth
+    prologue was never converted".
     """
     return resolve_optional_user_id_sync(db, request)
 
 
-async def require_write_auth(
+def require_write_auth(
     user_id: int | None = Depends(get_optional_user), db: Session = Depends(get_db)
 ) -> int | None:
-    """Raise 401/403 when write access is not authorised."""
+    """Raise 401/403 when write access is not authorised.
+
+    Sync for the same reason as `get_optional_user` above: `db.get(User, ...)`
+    and `_is_user_accessible` are blocking reads that ran on the event loop.
+    """
     from app.core.rbac import _effective_role, effective_scopes, has_scope
 
     if user_id is None:
@@ -624,10 +642,14 @@ async def require_write_auth(
     return user_id
 
 
-async def require_auth_always(
+def require_auth_always(
     user_id: int | None = Depends(get_optional_user), db: Session = Depends(get_db)
 ) -> int:
-    """Validates JWT and raises 401 if no authenticated user."""
+    """Validates JWT and raises 401 if no authenticated user.
+
+    Sync for the same reason as `get_optional_user` above — `_is_user_accessible`
+    is a blocking read, and this dependency guards most of the API.
+    """
     if user_id is None:
         raise HTTPException(status_code=401, detail="Authentication required")
     if user_id != 0 and not _is_user_accessible(db, user_id):

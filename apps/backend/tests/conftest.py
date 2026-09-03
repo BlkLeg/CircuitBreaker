@@ -10,12 +10,14 @@ Architecture notes:
 """
 
 import os
+import secrets
 import shutil
 import tempfile
 from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
+from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
@@ -40,9 +42,15 @@ def pytest_configure(config):
 
     # Settings() is a module-level singleton in config.py — set env before import
     os.environ["CB_DB_URL"] = _PG_CONTAINER.get_connection_url()
-    os.environ["CB_JWT_SECRET"] = "ci-test-jwt-secret-minimum-32-chars-xxxx"
-    os.environ["CB_VAULT_KEY"] = "hUQwP5Pb5SDdz_8mBBe0aPn7B6K1lItbytzXv7eaGLk="
-    os.environ["NATS_AUTH_TOKEN"] = "ci-test-nats-token"
+    # Generated per run, never committed. CLAUDE.md's rule against hardcoded
+    # signing material is unconditional and names fixtures explicitly, and these
+    # three were the real thing: a JWT signing secret, a working Fernet vault
+    # key, and a bus token, all readable by anyone with the repository. A fresh
+    # value each run also proves the suite never depends on a *particular*
+    # secret, which a committed one quietly permits.
+    os.environ["CB_JWT_SECRET"] = secrets.token_urlsafe(32)
+    os.environ["CB_VAULT_KEY"] = Fernet.generate_key().decode()
+    os.environ["NATS_AUTH_TOKEN"] = secrets.token_urlsafe(16)
     os.environ["CB_ALLOW_DEGRADED_DEPENDENCIES"] = "true"
     os.environ["CB_RATE_LIMIT_STORAGE_URL"] = "memory://"
     # The `setup_db` fixture builds schema directly via SQLAlchemy metadata
