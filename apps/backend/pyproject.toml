@@ -129,7 +129,7 @@ security = [
 ]
 docs = [
     "zensical>=0.0.24",
-    "mkdocs-material>=9.7.3",
+    "mkdocs-material>=9.7.7",
 ]
 
 [tool.hatch.version]
