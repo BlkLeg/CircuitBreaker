@@ -228,6 +228,16 @@ type HelloPayload struct {
 	// keyed on a successor match could never be reached before the change
 	// it is supposed to gate. Omitted by agents predating the mechanism.
 	TLSPinSuccessorReady bool `json:"tls_pin_successor_ready,omitempty"`
+
+	// TLSPinSuccessorFingerprint identifies *which* successor policy this
+	// agent holds. TLSPinSuccessorReady alone says only that it holds one,
+	// and an agent can hold a stale successor indefinitely — from a rotation
+	// the operator abandoned, which clears the server's state but sends no
+	// frame telling the agent to drop its copy. The server credited that
+	// agent as converged on the next rotation and the cutover stranded it.
+	// Omitted by agents predating the field, which the server treats as
+	// unconverged.
+	TLSPinSuccessorFingerprint string `json:"tls_pin_successor_fingerprint,omitempty"`
 }
 
 // HelloAckPayload is the server -> agent `hello.ack` payload's structured shape for the
@@ -302,6 +312,12 @@ type HeartbeatPayload struct {
 	// truth every heartbeat interval, which is the same durability
 	// reasoning behind resending the rotation frame on every hello.ack.
 	TLSPinSuccessorReady bool `json:"tls_pin_successor_ready"`
+
+	// TLSPinSuccessorFingerprint repeats hello's field of the same name, for
+	// the same durability reason the readiness flag is repeated: the server's
+	// gate must be able to tell a live socket's agent apart from one holding a
+	// successor it was never sent.
+	TLSPinSuccessorFingerprint string `json:"tls_pin_successor_fingerprint,omitempty"`
 }
 
 type HostSummary struct {

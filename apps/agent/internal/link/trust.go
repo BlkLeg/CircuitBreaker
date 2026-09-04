@@ -1,6 +1,8 @@
 package link
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"log"
 	"slices"
 
@@ -194,4 +196,50 @@ func SuccessorReady(stateDir string) bool {
 		return false
 	}
 	return rotation != nil
+}
+
+// policyFingerprintChars matches POLICY_FINGERPRINT_CHARS in
+// app/services/agent_tls_pin.py.
+const policyFingerprintChars = 32
+
+// PolicyFingerprint returns a stable digest of a (mode, pin) trust policy.
+//
+// Over the policy rather than the pin, because the rotated unit is a policy: a
+// public-mode successor carries an empty pin, so a pin-only digest cannot tell
+// "stop pinning" apart from "no successor at all".
+//
+// The server computes this identically in
+// app/services/agent_tls_pin.py:policy_fingerprint. Two languages agreeing on a
+// digest is exactly the kind of contract that drifts in silence — neither
+// suite alone would catch a mismatch, because each would be checking its own
+// arithmetic — so tests/build/test_tls_pin_fingerprint_contract.py pins both
+// against shared vectors, as the agent signature encoding already is.
+func PolicyFingerprint(mode, pin string) string {
+	sum := sha256.Sum256([]byte(mode + "\x00" + pin))
+	return hex.EncodeToString(sum[:])[:policyFingerprintChars]
+}
+
+// SuccessorFingerprint reports which successor trust policy this agent holds,
+// or "" when it holds none.
+//
+// SuccessorReady alone answers "do you hold a successor", which is not the
+// question the server's gate needs: an agent can hold one indefinitely from a
+// rotation that was abandoned — the server clears its own state and no frame
+// ever tells the agent to drop its copy, and nothing here acts on Expiry — so
+// a bare boolean credited that agent as converged on the *next* rotation, for a
+// policy it had never received. The cutover then stranded it, which is F4 by
+// way of the mechanism built to prevent F4.
+func SuccessorFingerprint(stateDir string) string {
+	if stateDir == "" {
+		return ""
+	}
+	rotation, err := config.LoadTLSPinRotation(stateDir)
+	if err != nil {
+		log.Printf("link: reading persisted tls pin rotation for fingerprint: %v", err)
+		return ""
+	}
+	if rotation == nil {
+		return ""
+	}
+	return PolicyFingerprint(rotation.Mode, rotation.SuccessorPin)
 }

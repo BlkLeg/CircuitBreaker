@@ -129,6 +129,11 @@ class HelloPayload(BaseModel):
     # is why the default is False rather than None — "did not say" and "does
     # not hold one" are the same fact for the gate, and both must block.
     tls_pin_successor_ready: bool = False
+    # Which successor policy the agent holds, not merely that it holds one
+    # (H5). Absent from agents predating the field, which the server treats
+    # as unconverged — a stale successor from an abandoned rotation used to
+    # satisfy the gate on the *next* rotation and strand the agent.
+    tls_pin_successor_fingerprint: str | None = None
 
 
 class HelloAckPayload(BaseModel):
@@ -200,6 +205,11 @@ class HeartbeatPayload(BaseModel):
     # the policy until its next reconnect — which may be days, while the
     # certificate-activation gate waits on exactly that signal.
     tls_pin_successor_ready: bool = False
+    # Which successor policy the agent holds, not merely that it holds one
+    # (H5). Absent from agents predating the field, which the server treats
+    # as unconverged — a stale successor from an abandoned rotation used to
+    # satisfy the gate on the *next* rotation and strand the agent.
+    tls_pin_successor_fingerprint: str | None = None
 
 
 class HostTelemetryPayload(BaseModel):

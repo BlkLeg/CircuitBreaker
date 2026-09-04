@@ -32,6 +32,7 @@ from sqlalchemy import update as sa_update
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
+from app.core.tls_policy import policy_fingerprint
 from app.db.models import AppSettings, Certificate
 
 _logger = logging.getLogger(__name__)
@@ -182,11 +183,20 @@ def convergence_counts(db: Session, state: TLSPinRotationState) -> tuple[int, in
 
     if not state.rotation_active or state.started_at is None:
         return 0, 0
+    expected = policy_fingerprint(state.successor_mode, state.successor_pin)
     converged = 0
     unconverged = 0
     for agent in agent_registry.list_agents(db, status="active"):
         pinned = agent.tls_pin_successor_pinned_at
-        if pinned is not None and pinned >= state.started_at:
+        fresh = pinned is not None and pinned >= state.started_at
+        # The fingerprint is what makes this a claim about *this* rotation
+        # (H5). Readiness used to be a bare boolean — "I hold some successor" —
+        # so an agent carrying one from an abandoned rotation was credited on
+        # its next heartbeat for a policy it had never received. The gate opened
+        # and the cutover stranded it. An agent predating the field reports
+        # nothing and counts as unconverged, which blocks rather than strands.
+        matches = agent.tls_pin_successor_fingerprint == expected
+        if fresh and matches:
             converged += 1
         else:
             unconverged += 1

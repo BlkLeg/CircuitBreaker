@@ -653,6 +653,7 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 	// read — see SuccessorReady on why the matched kind above cannot answer
 	// that before the cutover.
 	helloPayload.TLSPinSuccessorReady = SuccessorReady(opts.StateDir)
+	helloPayload.TLSPinSuccessorFingerprint = SuccessorFingerprint(opts.StateDir)
 	helloFrame := frame.Frame{V: 1, Type: frame.TypeHello, Seq: 0, TS: time.Now().UTC()}
 	helloFrame.Payload, err = json.Marshal(helloPayload)
 	if err != nil {
@@ -770,7 +771,8 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 			// Re-asserted every interval so a rotation applied on a live
 			// socket reaches the server without waiting for a reconnect —
 			// see the field's own doc comment.
-			TLSPinSuccessorReady: SuccessorReady(opts.StateDir),
+			TLSPinSuccessorReady:       SuccessorReady(opts.StateDir),
+			TLSPinSuccessorFingerprint: SuccessorFingerprint(opts.StateDir),
 		})
 		if err != nil {
 			return fmt.Errorf("link: encode heartbeat payload: %w", err)

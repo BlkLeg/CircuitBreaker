@@ -653,6 +653,7 @@ async def link_stream(websocket: WebSocket) -> None:
                 agent,
                 hello_payload.tls_pin_kind or "",
                 successor_ready=hello_payload.tls_pin_successor_ready,
+                successor_fingerprint=hello_payload.tls_pin_successor_fingerprint,
             )
             hello_cancellation = agent_registry.update_hello_metadata(db, agent, hello_payload)
         grants = agent_registry.structured_grants_dict(db, agent_id)
@@ -957,7 +958,13 @@ async def link_stream(websocket: WebSocket) -> None:
                         pass
                     else:
                         if beat.tls_pin_successor_ready:
-                            agent_registry.record_tls_pin(db, fresh, "", successor_ready=True)
+                            agent_registry.record_tls_pin(
+                                db,
+                                fresh,
+                                "",
+                                successor_ready=True,
+                                successor_fingerprint=beat.tls_pin_successor_fingerprint,
+                            )
                             db.commit()
                 if agent_frame.type == TYPE_TRANSPORT_REKEY:
                     # Applied here, inline, rather than through

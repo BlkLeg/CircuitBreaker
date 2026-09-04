@@ -204,15 +204,25 @@ def test_a_reachable_fleet_converges_before_the_cutover(
     activation the gate guards. Every rotation therefore had to be forced,
     which is the stranding the gate exists to prevent.
     """
+    from app.core.tls_policy import policy_fingerprint
     from app.services import agent_registry
+    from app.services.agent_install import tls_policy_for_certificate
 
     agent = factories.agent(status="active")
     state = agent_tls_pin.start_tls_pin_rotation(db_session, self_signed_certificate)
     assert state is not None
 
     # What the agent reports on its next hello, with the OLD certificate
-    # still being served: it matched current, and it holds the successor.
-    agent_registry.record_tls_pin(db_session, agent, "current", successor_ready=True)
+    # still being served: it matched current, and it holds the successor —
+    # naming which one (H5), so the credit is about *this* rotation.
+    mode, pin = tls_policy_for_certificate(self_signed_certificate)
+    agent_registry.record_tls_pin(
+        db_session,
+        agent,
+        "current",
+        successor_ready=True,
+        successor_fingerprint=policy_fingerprint(mode, pin),
+    )
 
     converged, unconverged = agent_tls_pin.convergence_counts(db_session, state)
     assert (converged, unconverged) == (1, 0)
@@ -342,15 +352,24 @@ def test_pending_agents_are_reported_rather_than_silently_stranded(
     """
     import logging
 
-    from app.services import agent_registry
-
     # A real cutover: something else is being served, a rotation has advertised
     # this certificate's policy, and the active fleet has converged on it.
+    from app.core.tls_policy import policy_fingerprint
+    from app.services import agent_registry
+    from app.services.agent_install import tls_policy_for_certificate
+
     _serve(monkeypatch, tmp_path, _UNRELATED_CERT_PEM)
     active = factories.agent(status="active")
     state = agent_tls_pin.start_tls_pin_rotation(db_session, self_signed_certificate)
     assert state is not None
-    agent_registry.record_tls_pin(db_session, active, "current", successor_ready=True)
+    mode, pin = tls_policy_for_certificate(self_signed_certificate)
+    agent_registry.record_tls_pin(
+        db_session,
+        active,
+        "current",
+        successor_ready=True,
+        successor_fingerprint=policy_fingerprint(mode, pin),
+    )
 
     factories.agent(status="pending")
 
@@ -369,3 +388,97 @@ def test_convergence_counts_ignore_pending_agents(db_session, factories, self_si
     assert state is not None
 
     assert agent_tls_pin.convergence_counts(db_session, state) == (0, 0)
+
+
+# --- H5: convergence has to be about *this* rotation ------------------------
+
+
+def _report(db_session, agent, state, *, mode=None, pin=None):
+    """Record what an agent's heartbeat says it holds."""
+    from app.core.tls_policy import policy_fingerprint
+    from app.services import agent_registry
+
+    fingerprint = None
+    if mode is not None:
+        fingerprint = policy_fingerprint(mode, pin or "")
+    agent_registry.record_tls_pin(
+        db_session, agent, "current", successor_ready=True, successor_fingerprint=fingerprint
+    )
+    return state
+
+
+def test_an_agent_holding_the_advertised_successor_converges(
+    db_session, factories, self_signed_certificate
+):
+    from app.services.agent_install import tls_policy_for_certificate
+
+    agent = factories.agent(status="active")
+    state = agent_tls_pin.start_tls_pin_rotation(db_session, self_signed_certificate)
+    assert state is not None
+    mode, pin = tls_policy_for_certificate(self_signed_certificate)
+    _report(db_session, agent, state, mode=mode, pin=pin)
+
+    assert agent_tls_pin.convergence_counts(db_session, state) == (1, 0)
+
+
+def test_a_stale_successor_does_not_satisfy_the_gate(
+    db_session, factories, self_signed_certificate
+):
+    """H5, the defect itself.
+
+    An agent can hold a successor indefinitely from a rotation that was
+    abandoned: the runbook's own abandon procedure clears the *server's* state
+    and no frame ever tells the agent to drop its copy, and the agent acts on
+    nothing in the successor's expiry. Readiness was a bare boolean — "I hold
+    some successor" — so on the next rotation that agent's heartbeat marked it
+    converged for a policy it had never received. The gate opened and the
+    cutover stranded it: F4, reached through the mechanism built to prevent F4.
+    """
+    agent = factories.agent(status="active")
+    state = agent_tls_pin.start_tls_pin_rotation(db_session, self_signed_certificate)
+    assert state is not None
+
+    # Holds something, but not what this rotation advertised.
+    _report(db_session, agent, state, mode="self_signed", pin="a-pin-from-an-abandoned-rotation")
+
+    converged, unconverged = agent_tls_pin.convergence_counts(db_session, state)
+    assert (converged, unconverged) == (0, 1)
+    assert agent.tls_pin_successor_pinned_at is not None, (
+        "the timestamp is still recorded; it is the *fingerprint* that withholds credit"
+    )
+
+
+def test_an_agent_predating_the_field_counts_as_unconverged(
+    db_session, factories, self_signed_certificate
+):
+    """It reports readiness and no fingerprint, so it cannot prove which policy
+    it holds. Unconverged is the safe reading: it blocks a cutover, which is
+    recoverable, rather than permitting one that strands the fleet, which is
+    not."""
+    agent = factories.agent(status="active")
+    state = agent_tls_pin.start_tls_pin_rotation(db_session, self_signed_certificate)
+    assert state is not None
+
+    _report(db_session, agent, state)  # readiness, no fingerprint
+
+    assert agent_tls_pin.convergence_counts(db_session, state) == (0, 1)
+
+
+def test_a_reported_fingerprint_is_replaced_not_accumulated(
+    db_session, factories, self_signed_certificate
+):
+    """An agent that downgrades, or drops its rotation, must not keep credit
+    from a fingerprint it reported earlier — that is the stale-successor defect
+    one layer down."""
+    from app.services.agent_install import tls_policy_for_certificate
+
+    agent = factories.agent(status="active")
+    state = agent_tls_pin.start_tls_pin_rotation(db_session, self_signed_certificate)
+    assert state is not None
+    mode, pin = tls_policy_for_certificate(self_signed_certificate)
+
+    _report(db_session, agent, state, mode=mode, pin=pin)
+    assert agent_tls_pin.convergence_counts(db_session, state) == (1, 0)
+
+    _report(db_session, agent, state)  # next heartbeat carries nothing
+    assert agent_tls_pin.convergence_counts(db_session, state) == (0, 1)

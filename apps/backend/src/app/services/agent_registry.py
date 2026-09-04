@@ -842,6 +842,7 @@ def record_tls_pin(
     pin_kind: str,
     *,
     successor_ready: bool = False,
+    successor_fingerprint: str | None = None,
     now: datetime | None = None,
 ) -> None:
     """Record what `agent`'s most recent hello said about TLS trust:
@@ -874,6 +875,11 @@ def record_tls_pin(
     # bucket either way.
     if pin_kind == "successor" or successor_ready:
         agent.tls_pin_successor_pinned_at = reference
+        # Recorded beside the timestamp so the gate can ask *which* successor
+        # (H5). Overwritten every report, including with None from an agent
+        # predating the field — a stale fingerprint left behind would be the
+        # same defect one layer down.
+        agent.tls_pin_successor_fingerprint = successor_fingerprint
         wrote = True
     if pin_kind == "current":
         agent.tls_pin_current_pinned_at = reference

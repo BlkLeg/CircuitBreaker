@@ -463,6 +463,13 @@ class Agent(Base):
     tls_pin_successor_pinned_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # *Which* successor policy the agent says it holds, not merely that it holds
+    # one (H5). A bare boolean let an agent carrying a stale successor — from a
+    # rotation that was abandoned, and which nothing ever told it to drop — be
+    # credited as converged on the next rotation, opening the gate on a cutover
+    # that would strand it. NULL for agents predating the field, which counts as
+    # unconverged: blocking a cutover is the recoverable direction.
+    tls_pin_successor_fingerprint: Mapped[str | None] = mapped_column(String(32), nullable=True)
     primary_macs: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     reported_ip: Mapped[str | None] = mapped_column(String, nullable=True)
     hardware_id: Mapped[int | None] = mapped_column(

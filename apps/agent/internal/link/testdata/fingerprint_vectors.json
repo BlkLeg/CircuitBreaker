@@ -1,0 +1,42 @@
+{
+  "_comment": "Shared vectors for the TLS trust policy fingerprint (H5). Read by BOTH apps/agent/internal/link/trust_fingerprint_test.go and tests/build/test_tls_pin_fingerprint_contract.py. The server credits an agent as converged only when the fingerprint it reports equals the one the server computes for the advertised policy, so the two implementations agreeing is a security property rather than a nicety: if they drift, every agent reads as unconverged, every rotation has to be forced, and forcing is the stranding the gate exists to prevent. Neither language's suite alone would notice - each would be checking its own arithmetic against itself.",
+  "algorithm": "sha256(mode + '\\x00' + pin), lowercase hex, first 32 chars",
+  "cases": [
+    {
+      "name": "self_signed with a pin",
+      "mode": "self_signed",
+      "pin": "Zm9vYmFyc3BraWRpZ2VzdA==",
+      "fingerprint": "5cc3e3bb81d7140b0faaf246aca5ebef"
+    },
+    {
+      "name": "public, no pin",
+      "mode": "public",
+      "pin": "",
+      "fingerprint": "00329e5a4735a00b8fbd48d126a210f2"
+    },
+    {
+      "name": "empty policy (no successor held)",
+      "mode": "",
+      "pin": "",
+      "fingerprint": "6e340b9cffb37a989ca544e6bb780a2c"
+    },
+    {
+      "name": "same pin, different mode",
+      "mode": "public",
+      "pin": "Zm9vYmFyc3BraWRpZ2VzdA==",
+      "fingerprint": "79c424ff14c1bbf3cdb00b2090fc01ec"
+    },
+    {
+      "name": "separator probe A",
+      "mode": "self",
+      "pin": "_signedX",
+      "fingerprint": "8b6aef7aca74e4e2540c4009d0e021f5"
+    },
+    {
+      "name": "separator probe B",
+      "mode": "self_signed",
+      "pin": "X",
+      "fingerprint": "b8e14177a08cc1a469486bd4ff4f51bb"
+    }
+  ]
+}
