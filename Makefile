@@ -47,7 +47,7 @@ PYTHON ?= $(shell python3 -c "import sys; print('python3' if sys.version_info >=
 # ==============================================================================
 # CORE TARGETS
 # ==============================================================================
-.PHONY: help install dev backend backend-watch frontend monitor-workers migrate reset-oobe stop ensure-nmap
+.PHONY: help install dev backend backend-watch frontend monitor-workers migrate reset-oobe stop ensure-nmap agent-binaries dev-tls dev-tls-down dev-tls-status dev-agent dev-agent-down
 
 help: ## Show available targets
 	awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-15s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -78,6 +78,32 @@ dev: ensure-nmap deps-up stop migrate ## Native backend + frontend + monitor wor
 		$(MAKE) --no-print-directory monitor-workers & \
 		$(MAKE) --no-print-directory frontend
 
+# ── Agent feature on a dev box ───────────────────────────────────────────────
+# The agent path needs two things `make dev` alone does not provide: a TLS
+# terminator (agent_install derives an agent's SPKI pin from the certificate at
+# ${CB_DATA_DIR}/tls/fullchain.pem and fails closed without one) and built agent
+# binaries (the install script embeds a version and digest read from
+# CB_AGENT_BINARIES_DIR/manifest.json). Without both, "Add an agent" answers 503
+# and there is nothing for an enrolled agent to download.
+
+agent-binaries: ## Build cb-agent for linux/amd64+arm64 and write dist/manifest.json
+	$(MAKE) -C apps/agent manifest PYTHON=$(CURDIR)/.venv/bin/python
+
+dev-tls: agent-binaries ## TLS front door for the agent feature (https on :443)
+	./scripts/dev-tls.sh up
+
+dev-tls-down: ## Stop the dev TLS front door
+	./scripts/dev-tls.sh down
+
+dev-tls-status: ## Front door status, URL and the pin agents will verify
+	./scripts/dev-tls.sh status
+
+dev-agent: ## Enroll a throwaway containerised cb-agent against the dev server
+	./scripts/dev-agent.sh up
+
+dev-agent-down: ## Remove the throwaway agent and its enrolled identity
+	./scripts/dev-agent.sh down
+
 stop: ## Kill any process holding the dev ports
 	lsof -ti tcp:$(BACKEND_PORT) | xargs -r kill -9 || true
 	lsof -ti tcp:$(FRONTEND_PORT) | xargs -r kill -9 || true
@@ -97,6 +123,7 @@ backend:  ## Native backend (ZERO DOCKER DRIFT)
 		NATS_AUTH_TOKEN="$(NATS_AUTH_TOKEN_DEV)" \
 		CB_ALLOW_DEGRADED_DEPENDENCIES="$(CB_ALLOW_DEGRADED_DEPENDENCIES_DEV)" \
 		CB_TOPOLOGY_MODE="$(CB_TOPOLOGY_MODE_DEV)" \
+		CB_AGENT_BINARIES_DIR="$(CURDIR)/apps/agent/dist" \
 		CB_AUTO_MIGRATE=false \
 		PYTHONPATH=src $(CURDIR)/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 8 --no-proxy-headers $(CB_UVICORN_ARGS)
 
