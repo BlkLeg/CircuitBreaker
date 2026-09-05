@@ -25,6 +25,14 @@ _IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 _trusted_proxy_cache: tuple[tuple[_IPNetwork, ...], tuple[str, ...]] | None = None
 
+#: Where `middleware.proxy_headers` records the real socket peer before it
+#: overwrites `scope["client"]` with the forwarded address. The trust question
+#: this module answers is "did this request arrive through one of our own
+#: proxies", and after the forwarded headers have been applied `scope["client"]`
+#: answers a different question — it names the end client. Reading the peer from
+#: here is what keeps the two apart.
+SOCKET_PEER_SCOPE_KEY = "cb_socket_peer"
+
 
 def trusted_proxy_networks() -> tuple[_IPNetwork, ...]:
     """Parsed `trusted_proxy_cidrs`, re-parsed whenever the setting changes."""
@@ -43,7 +51,13 @@ def trusted_proxy_networks() -> tuple[_IPNetwork, ...]:
     return _trusted_proxy_cache[0]
 
 
-def _is_trusted(address: str) -> bool:
+def is_trusted_peer(address: str) -> bool:
+    """Whether `address` is one of our own reverse proxies.
+
+    Public because `middleware.proxy_headers` has to make the identical
+    decision before it applies any forwarded header, and two copies of a trust
+    rule are one copy too many.
+    """
     if not address:
         return False
     try:
@@ -68,9 +82,30 @@ def client_host(conn: Any) -> str:
     return ""
 
 
+def socket_peer(conn: Any) -> str:
+    """The address that actually opened this connection.
+
+    Distinct from `client_host`, which reports the *client* — a value
+    `middleware.proxy_headers` rewrites from `X-Forwarded-For` so audit records
+    name the real caller. Trust has to be decided on the peer instead: asking
+    whether the rewritten client is a trusted proxy is asking the wrong
+    question, and the answer is False on every proxied request.
+
+    Falls back to `client_host` when nothing recorded a peer — no middleware
+    ran (a direct ASGI test call), or the peer was not trusted, in which case
+    the two are the same address anyway.
+    """
+    scope = conn if isinstance(conn, dict) else getattr(conn, "scope", None)
+    if isinstance(scope, dict):
+        recorded = scope.get(SOCKET_PEER_SCOPE_KEY)
+        if recorded:
+            return str(recorded)
+    return client_host(conn)
+
+
 def request_from_trusted_proxy(conn: Any) -> bool:
     """Whether this connection's peer is one of our own reverse proxies."""
-    return _is_trusted(client_host(conn))
+    return is_trusted_peer(socket_peer(conn))
 
 
 def _header(conn: Any, name: str) -> str:
@@ -120,7 +155,7 @@ def forwarded_client_identity(headers: Any) -> str:
             # is hearsay, so fall back to the peer rather than guess.
             _logger.debug("Ignoring invalid X-Forwarded-For value from trusted proxy")
             return ""
-        if _is_trusted(str(candidate)):
+        if is_trusted_peer(str(candidate)):
             continue
         return str(candidate)
     return ""

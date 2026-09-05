@@ -98,7 +98,7 @@ backend:  ## Native backend (ZERO DOCKER DRIFT)
 		CB_ALLOW_DEGRADED_DEPENDENCIES="$(CB_ALLOW_DEGRADED_DEPENDENCIES_DEV)" \
 		CB_TOPOLOGY_MODE="$(CB_TOPOLOGY_MODE_DEV)" \
 		CB_AUTO_MIGRATE=false \
-		PYTHONPATH=src $(CURDIR)/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 8 $(CB_UVICORN_ARGS)
+		PYTHONPATH=src $(CURDIR)/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 8 --no-proxy-headers $(CB_UVICORN_ARGS)
 
 backend-watch:  ## Native backend WITH reload (post-fix only)
 	$(MAKE) backend --no-print-directory CB_UVICORN_ARGS="--reload"

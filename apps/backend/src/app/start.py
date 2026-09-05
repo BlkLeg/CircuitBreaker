@@ -380,6 +380,13 @@ def main(argv: list[str] | None = None) -> int:
     uvicorn.run(
         "app.main:app",
         loop="asyncio",
+        # app.middleware.proxy_headers applies X-Forwarded-* instead. uvicorn's
+        # own middleware overwrites scope["client"] with the forwarded address
+        # before the app is called, which destroys the socket peer
+        # core.forwarded decides trust on — see that module's docstring. Every
+        # other launch path passes --no-proxy-headers for the same reason, and
+        # tests/build/test_proxy_forwarded_headers.py holds them all to it.
+        proxy_headers=False,
         **uvicorn_options,
     )
     return 0
