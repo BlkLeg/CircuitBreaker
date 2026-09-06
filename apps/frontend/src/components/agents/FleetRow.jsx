@@ -385,14 +385,23 @@ CapsCell.propTypes = { capabilities: PropTypes.object };
 
 function PendingCells({ agent }) {
   return (
-    <td className="fleet-cell fleet-muted" colSpan={PENDING_DETAIL_SPAN}>
-      Waiting for approval
-      <span className="fleet-muted">
+    <td className="fleet-cell fleet-muted fleet-pending" colSpan={PENDING_DETAIL_SPAN}>
+      {/* Every field is its own element. The separator between them is an
+          adjacent-sibling rule, and the leading label used to be a bare text
+          node — which no sibling selector can match, so the status ran
+          straight into the platform: "Waiting for approvallinux / amd64". */}
+      <span className="fleet-pending__item">Waiting for approval</span>
+      <span className="fleet-pending__item">
         {agent.os} / {agent.arch}
       </span>
       {agent.fingerprint && (
-        <span className="fleet-chip" data-tone="warn" title={agent.fingerprint}>
-          {agent.fingerprint.slice(0, FINGERPRINT_PREVIEW_CHARS)}…
+        <span className="fleet-pending__item">
+          {/* Full label text, abbreviated visually rather than by slicing it
+              here — a truncated string is unreachable to a screen reader.
+              `title` restores it on hover. */}
+          <span className="fleet-chip" data-tone="warn" title={agent.fingerprint}>
+            {agent.fingerprint.slice(0, FINGERPRINT_PREVIEW_CHARS)}…
+          </span>
         </span>
       )}
     </td>

@@ -23,6 +23,7 @@ import {
 } from '../lib/fleetFilters';
 import { useToast } from '../components/common/Toast';
 import ConfirmDialog from '../components/common/ConfirmDialog';
+import Panel from '../components/common/Panel';
 import AgentApprovalModal from '../components/agents/AgentApprovalModal';
 import AddAgentPanel from '../components/agents/AddAgentPanel';
 import ServerKeyRotationPanel from '../components/agents/ServerKeyRotationPanel';
@@ -243,8 +244,15 @@ FleetFilters.propTypes = {
  * numbers change under the operator as filters are applied and as polls land,
  * and a count that only sighted users can see moving is not a count.
  */
-function FleetSummary({ summary }) {
-  const parts = [`${summary.matching} of ${summary.total} agents`];
+export function FleetSummary({ summary }) {
+  const parts = [];
+  // summarizeFleet excludes pending agents from `total` on purpose — the
+  // filter predicates do not apply to an agent nobody has approved. But a
+  // deployment whose only agent is pending then read "0 of 0 agents" directly
+  // above a visible row. The arithmetic was right and the sentence was wrong.
+  if (summary.total > 0 || summary.pending === 0) {
+    parts.push(`${summary.matching} of ${summary.total} agents`);
+  }
   if (summary.pending > 0) parts.push(`${summary.pending} awaiting approval`);
   if (summary.offline > 0) parts.push(`${summary.offline} offline`);
   if (summary.attention > 0) parts.push(`${summary.attention} need attention`);
@@ -480,8 +488,14 @@ export default function AgentsPage() {
 
       {!isAddStandalone && (
         <>
-          <FleetFilters filters={filters} summary={summary} onChange={setFilterParam} />
-          <FleetSummary summary={summary} />
+          {/* Bodyless: the filter bar carries its own dense spacing, and the
+              panel's body padding would inset it into a second box. The counts
+              live in here with the controls that produce them rather than
+              floating between this and the table. */}
+          <Panel title="Filters" bodyless>
+            <FleetFilters filters={filters} summary={summary} onChange={setFilterParam} />
+            <FleetSummary summary={summary} />
+          </Panel>
           <FleetTable
             rows={[...pending, ...fleetRows]}
             isFiltered={isFiltered}

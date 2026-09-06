@@ -215,8 +215,19 @@ function renderDetail() {
   );
 }
 
+/**
+ * Task 14: the probes section is a tab, so it is only in the DOM once its tab
+ * is selected. Selecting it is part of asking for the section.
+ */
 async function probesSection() {
+  fireEvent.click(await screen.findByRole('tab', { name: 'Probes' }));
   return screen.findByRole('region', { name: 'Assigned probes' });
+}
+
+/** …and the capability toggles live on Overview, one tab back. */
+async function openOverview() {
+  fireEvent.click(await screen.findByRole('tab', { name: 'Overview' }));
+  return screen.findByRole('region', { name: 'Capabilities' });
 }
 
 describe('Agent Detail — assigned probes', () => {
@@ -273,6 +284,35 @@ describe('Agent Detail — assigned probes', () => {
     ).toBeInTheDocument();
   });
 
+  it('keeps the disabled-probing wording exactly as written', async () => {
+    // Task 18 moved this sentence into a Banner. It is the operator's only
+    // explanation of why assignments are listed but nothing is running, so
+    // the assertion is byte for byte: a later tidy-up fails here rather than
+    // drifting.
+    const { getAgent } = await import('../api/agents');
+    getAgent.mockResolvedValue({
+      data: {
+        ...apiDefaults.agent,
+        capabilities: { ...apiDefaults.agent.capabilities, remote_probe: false },
+      },
+    });
+    renderDetail();
+
+    const section = await probesSection();
+    expect(
+      within(section).getByText(
+        'Remote probing is disabled for this agent. Assigned monitors keep their last known target state and stay probe-unavailable until it is re-enabled.'
+      )
+    ).toBeInTheDocument();
+  });
+
+  it('is reachable as a region by its heading', async () => {
+    renderDetail();
+    // Panel names the region from its own title, so the section stays
+    // navigable by heading rather than by an aria-label a refactor can drop.
+    expect(await probesSection()).toBeInTheDocument();
+  });
+
   it('offers open, check now, reassign and return-to-server actions', async () => {
     const { runCheck, updateMonitor } = await import('../api/monitor');
     const { listProbeEligibleAgents } = await import('../api/agents');
@@ -305,6 +345,7 @@ describe('Agent Detail — assigned probes', () => {
     renderDetail();
 
     await probesSection();
+    await openOverview();
     fireEvent.click(await screen.findByLabelText('Remote probe'));
 
     const dialog = await screen.findByRole('dialog');
@@ -330,6 +371,7 @@ describe('Agent Detail — assigned probes', () => {
     const section = await probesSection();
     await within(section).findByText(/0 of 20 concurrent checks in use/);
 
+    await openOverview();
     fireEvent.click(await screen.findByLabelText('Remote probe'));
     await waitFor(() =>
       expect(setAgentCapabilities).toHaveBeenCalledWith('3', { remote_probe: false })

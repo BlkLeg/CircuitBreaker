@@ -117,6 +117,16 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Task 20: both live in a bodyless Panel, so they take the padding the missing
+   body would have given them. Bodyless and not padded, because the filter bar
+   sets its own dense spacing and a body would inset it into a second box. */
+.cb-panel .agents-page__filters {
+  padding: var(--space-2) var(--panel-pad) 0;
+}
+.cb-panel .agents-page__summary {
+  padding: var(--space-1) var(--panel-pad) var(--space-2);
+}
+
 .agents-page__empty {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -894,91 +904,227 @@
 }
 
 /* INC-13: server-key rotation panel. Sits between the page header and the
-   add-agent panel; admin-only, and absent entirely when no admin is viewing. */
-.agents-page__key-panel {
-  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
-  border-radius: 8px;
-  padding: 12px 14px;
-  margin-bottom: 14px;
-  background: var(--color-surface);
+   add-agent panel; admin-only, and absent entirely when no admin is viewing.
+   Task 20: the surface, its head and its label/value list are Panel and
+   KeyValue now, so what is left here is the rotation-specific content — the
+   adoption buckets and the two notes that qualify them. */
+
+/* Fingerprints are compared character by character against what the agent
+   printed on the machine, which proportional digits make needlessly hard. */
+.agents-page__key-panel-values dd {
+  font-family: var(--font-mono);
 }
 
-.agents-page__key-panel dl {
+.agents-page__key-adoption {
+  margin-top: var(--space-3);
+}
+
+.agents-page__key-buckets {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  list-style: none;
+  padding: 0;
   margin: 0;
 }
 
-.agents-page__key-panel dt {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+.agents-page__key-pending {
+  margin: var(--space-2) 0 0;
 }
 
-.agents-page__key-panel dd {
-  margin: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+.agents-page__key-note {
+  margin: var(--space-2) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--fs-xs);
 }
 
-/* ── Agent detail: the state summary (AGT-14) ───────────────────────────────
+/* ── Agent detail: the state surface (AGT-14) ───────────────────────────────
    The requirement asks for a distinct, unambiguous treatment per state *and*
-   for each state to carry a documented operator action. Those are two
-   different readings — one at a glance, one when something is wrong — so this
-   block renders both: a chip row that is scannable, and a definition list
-   underneath that says what each chip means and what to do about it.
+   for each state to carry a documented operator action. Since Task 14 those
+   are two places rather than one block: the primary state is an
+   AgentStateBanner (panels.css `.cb-banner`), and every other holding state is
+   a chip in the sticky header.
 
    Chips reuse `.fleet-chip`'s tone ladder rather than defining a second colour
    vocabulary for the same states; the detail page imports agents.css for
    exactly that. Nothing here depends on colour: the glyph and the label are
-   inside the chip, and the reason and remedy are in the list below it. */
-.agent-detail-page__states {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 8px 0 4px;
-}
+   inside the chip, and the reason and remedy are in its accessible text. */
 
-.agent-detail-page__state-chips {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
+/* The tab body. Focusable, because `panelPropsFor` gives every panel
+   tabIndex=0 so the tablist's own arrow keys can hand focus down into it. */
+.agent-detail-page__panel {
+  padding: var(--space-4);
 }
-
-/* Two columns on anything wider than a phone, one below it. The label column
-   is capped rather than sized to content so a long state name cannot push the
-   explanation off the right edge. */
-.agent-detail-page__state-list {
-  display: grid;
-  grid-template-columns: minmax(8rem, 12rem) 1fr;
-  gap: 2px 12px;
-  margin: 0;
-  font-size: 0.78rem;
-}
-.agent-detail-page__state-list dt {
-  font-weight: 600;
-  color: var(--color-text);
-}
-.agent-detail-page__state-list dd {
-  margin: 0;
-  color: var(--color-text-muted);
-}
-/* The action is the actionable half, so it is the half that is not muted. */
-.agent-detail-page__state-list dd em {
-  color: var(--color-text);
-  font-style: normal;
-}
-
-@media (max-width: 640px) {
-  .agent-detail-page__state-list {
-    grid-template-columns: 1fr;
-  }
-  .agent-detail-page__state-list dd {
-    margin-bottom: 6px;
-  }
+.agent-detail-page__panel:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
 }
 
 .agent-detail-page__last-seen {
   margin: 0;
   color: var(--color-text-muted);
   font-size: 0.72rem;
+}
+
+/* AGT: the pending row's detail cell. Each field is its own element and the
+   separator is an adjacent-sibling rule, so adding a field cannot reintroduce
+   the run-together defect — a bare text node simply will not match. */
+.fleet-pending {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.fleet-pending__item + .fleet-pending__item::before {
+  content: '·';
+  margin: 0 6px;
+  color: var(--color-border);
+}
+
+/* ── Detail-page live strip ─────────────────────────────────────────────────
+   Spec §5.1. This sits in DetailHeader's sticky strip slot, so it is on screen
+   on every tab — including Discovery and Events, which carry no telemetry of
+   their own. Hiding detail behind tabs is only safe if the pulse never hides
+   with it. */
+
+.agent-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  width: 100%;
+}
+
+.agent-strip[data-dimmed='true'] .agent-strip__spark polyline {
+  opacity: 0.35;
+}
+
+.agent-strip__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.09em;
+  font-weight: 700;
+  flex: none;
+  color: var(--color-success);
+}
+
+.agent-strip__pill::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.agent-strip__pill[data-animate='true']::before {
+  animation: agent-strip-pulse 1.6s ease-in-out infinite;
+}
+
+.agent-strip[data-level='lagging'] .agent-strip__pill,
+.agent-strip[data-level='stale'] .agent-strip__pill {
+  color: var(--color-warning);
+}
+.agent-strip[data-level='offline'] .agent-strip__pill {
+  color: var(--color-text-muted);
+}
+
+@keyframes agent-strip-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+}
+
+.agent-strip__metric {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+}
+
+.agent-strip__label {
+  font-size: var(--fs-micro);
+  letter-spacing: 0.09em;
+  color: var(--color-text-muted);
+  font-weight: 700;
+  width: 32px;
+}
+
+.agent-strip__spark {
+  width: 78px;
+  height: 22px;
+  display: block;
+}
+
+.agent-strip__spark polyline {
+  fill: none;
+  stroke: var(--color-info);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.agent-strip__value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  min-width: 46px;
+}
+
+.agent-strip__metric[data-hot='true'] .agent-strip__spark polyline {
+  stroke: var(--color-danger);
+}
+.agent-strip__metric[data-hot='true'] .agent-strip__value {
+  color: var(--color-danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-strip__pill[data-animate='true']::before {
+    animation: none;
+  }
+}
+
+/* Task 18: the discovery groups are bodyless Panels so their tables meet the
+   panel border. Their hint paragraphs are not tables, so they take the padding
+   the missing body would have given them. */
+.cb-panel .agent-discovery__hint,
+.cb-panel .agent-discovery__history-link {
+  margin: 0;
+  padding: var(--space-2) var(--panel-pad);
+}
+
+/* ── Detail-page event feed ─────────────────────────────────────────────────
+   A fixed-width timestamp column so the labels beside it line up into a
+   readable second column; the feed is scanned down the labels, not across the
+   times. */
+
+.agent-events {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: var(--fs-sm);
+}
+
+.agent-events li {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid rgba(80, 73, 69, 0.35);
+}
+
+.agent-events li:last-child {
+  border-bottom: 0;
+}
+
+.agent-events time {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  flex: none;
+  width: 132px;
 }

@@ -212,6 +212,19 @@ describe('FleetRow telemetry-off variant', () => {
     expect(screen.getByText('online')).toBeInTheDocument();
   });
 
+  it('states the absence for a metric this sample does not carry', () => {
+    // A partial sample is ordinary: a host with no exposed sensor reports no
+    // temperature while everything else is fine. The cell is an em dash, the
+    // same convention KeyValue and StatTile use on the detail page — a blank
+    // cell here is indistinguishable from a row that failed to render.
+    renderRow({ ...ONLINE_AGENT, latest: { collected_at: RECENT_ISO, cpu_pct: 62 } });
+
+    expect(screen.getByText('62%')).toBeInTheDocument();
+    // Uptime, Mem, Disk, Net and Temp: everything this sample left out.
+    expect(screen.getAllByText('—')).toHaveLength(5);
+    expect(screen.queryByText('0°C')).not.toBeInTheDocument();
+  });
+
   it('still prints a real zero when the agent actually reported one', () => {
     // The other half of the rule: 0% is a legitimate reading from an idle box,
     // and suppressing it would be the same lie in the opposite direction.

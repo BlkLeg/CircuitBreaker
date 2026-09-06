@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import AgentDetailPage from '../pages/AgentDetailPage';
+import { POLL_BACKOFF_MS } from '../hooks/useAgentDetail';
 
 // Task 19: the default API responses live here rather than inline in the
 // vi.mock factory so that beforeEach can *restore* them. `vi.clearAllMocks()`
@@ -141,6 +142,16 @@ vi.mock('../hooks/useTelemetryStream', () => ({
 const mockToast = { success: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() };
 vi.mock('../components/common/Toast', () => ({ useToast: () => mockToast }));
 
+// The unverified-clock caveat is conditional on the offset having been
+// measured, and nothing in this suite carries a Date header, so one test has to
+// say it was. Only serverClockOffsetMs is replaced — lib/agentState's serverNow
+// keeps the real implementation.
+const mockClockOffsetMs = vi.hoisted(() => vi.fn(() => null));
+vi.mock('../utils/serverClock', async (importOriginal) => ({
+  ...(await importOriginal()),
+  serverClockOffsetMs: mockClockOffsetMs,
+}));
+
 function detailTree() {
   return (
     <MemoryRouter initialEntries={['/agents/3']}>
@@ -153,6 +164,41 @@ function detailTree() {
 
 function renderDetail() {
   return render(detailTree());
+}
+
+/**
+ * Task 14: a section is only in the DOM while its tab is selected, so every
+ * assertion about probes, discovery, telemetry or events has to ask for that
+ * section first. `fireEvent` rather than `userEvent` on purpose — two tests
+ * below drive the poll with fake timers, and userEvent's own timer advance
+ * does not compose with them.
+ */
+async function openTab(name) {
+  fireEvent.click(await screen.findByRole('tab', { name }));
+  return screen.findByRole('tabpanel');
+}
+
+/**
+ * What the page says about the agent's state. The old <section aria-label="Agent
+ * state"> held a chip row and a <dl> together; Task 14 splits the same wording
+ * across the primary state's banner, the secondary states' header chips, and
+ * the unverified-clock note, so the assertions that read one element read all
+ * three.
+ */
+/**
+ * How the header renders presence now: `composeAgentPage` dims the live strip
+ * for an offline agent and leaves it lit for a connected one.
+ */
+const stripDimmed = () => document.querySelector('.agent-strip')?.getAttribute('data-dimmed');
+
+function stateText() {
+  return [
+    document.querySelector('.cb-detail-head__chips'),
+    document.querySelector('.cb-banner'),
+    document.querySelector('.agent-detail-page__last-seen'),
+  ]
+    .map((element) => element?.textContent ?? '')
+    .join(' ');
 }
 
 describe('AgentDetailPage', () => {
@@ -173,6 +219,7 @@ describe('AgentDetailPage', () => {
     api.triggerAgentUpdate.mockImplementation(apiDefaults.triggerAgentUpdate);
     mockUseAgentLive.mockReturnValue({ statuses: new Map(), connected: true });
     mockTelemetryStream.data = new Map();
+    mockClockOffsetMs.mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -187,6 +234,7 @@ describe('AgentDetailPage', () => {
     expect(screen.getByText('Host telemetry')).toBeInTheDocument();
     // AGT-15: the timeline renders the operator-facing label, not the raw
     // `agent_events.event_type` wire string it used to print verbatim.
+    await openTab('Events');
     expect(screen.getByText('Approved')).toBeInTheDocument();
   });
 
@@ -221,6 +269,9 @@ describe('AgentDetailPage', () => {
     renderDetail();
 
     await waitFor(() => expect(screen.getByText('box1')).toBeInTheDocument());
+    // Task 16 put the host-telemetry settings on the Telemetry tab, where
+    // spec §7 places them: they are a form, and overview is a reading.
+    await openTab('Telemetry');
     // Only in the server registry — proves HOST_DEFAULTS is really gone.
     const gpu = await screen.findByLabelText(/^gpu$/i);
     expect(gpu).toBeChecked();
@@ -231,6 +282,7 @@ describe('AgentDetailPage', () => {
     renderDetail();
 
     await waitFor(() => expect(screen.getByText('box1')).toBeInTheDocument());
+    await openTab('Telemetry');
     // The grant is a bare `true` (no config), so every value shown must come
     // from the fetched defaults — 45, not a hardcoded 30.
     const cadence = await screen.findByLabelText(/cadence/i);
@@ -245,6 +297,7 @@ describe('AgentDetailPage', () => {
     renderDetail();
 
     await waitFor(() => expect(screen.getByText('box1')).toBeInTheDocument());
+    await openTab('Telemetry');
     fireEvent.click(await screen.findByLabelText(/^virtual$/i));
 
     await waitFor(() => expect(setAgentCapabilities).toHaveBeenCalled());
@@ -263,7 +316,12 @@ describe('AgentDetailPage', () => {
   it('renders online state and linked-hardware summary from the bulk presence endpoint', async () => {
     renderDetail();
 
-    await waitFor(() => expect(screen.getByText('online')).toBeInTheDocument());
+    // Presence reaches the page rather than merely being fetched: an online
+    // agent's live strip is undimmed and the overview says when its socket
+    // opened. (The bare "online"/"offline" word the header used to carry is
+    // now the freshness pill plus the strip's dim state — Tasks 12 and 13.)
+    await waitFor(() => expect(screen.getByText(/Connected since/)).toBeInTheDocument());
+    expect(stripDimmed()).toBe('false');
     expect(screen.getByText(/lab-nas/)).toBeInTheDocument();
   });
 
@@ -283,7 +341,7 @@ describe('AgentDetailPage', () => {
     });
 
     const { rerender } = renderDetail();
-    await waitFor(() => expect(screen.getByText('offline')).toBeInTheDocument());
+    await waitFor(() => expect(stateText()).toContain('Offline'));
 
     mockUseAgentLive.mockReturnValue({
       statuses: new Map([[3, { event_type: 'connected', detail: null, ts: Date.now() }]]),
@@ -297,7 +355,7 @@ describe('AgentDetailPage', () => {
       </MemoryRouter>
     );
 
-    await waitFor(() => expect(screen.getByText('online')).toBeInTheDocument());
+    await waitFor(() => expect(stripDimmed()).toBe('false'));
 
     mockUseAgentLive.mockReturnValue({
       statuses: new Map([[3, { event_type: 'disconnected', detail: null, ts: Date.now() }]]),
@@ -311,7 +369,7 @@ describe('AgentDetailPage', () => {
       </MemoryRouter>
     );
 
-    await waitFor(() => expect(screen.getByText('offline')).toBeInTheDocument());
+    await waitFor(() => expect(stateText()).toContain('Offline'));
   });
 
   it('lets a fresher presence poll win over a stale cached live event (missed disconnected during a reconnect gap)', async () => {
@@ -341,8 +399,8 @@ describe('AgentDetailPage', () => {
 
     renderDetail();
 
-    await waitFor(() => expect(screen.getByText('offline')).toBeInTheDocument());
-    expect(screen.queryByText('online')).not.toBeInTheDocument();
+    await waitFor(() => expect(stateText()).toContain('Offline'));
+    expect(stateText()).not.toContain('Online');
   });
 
   it('still applies a fresh live event ahead of the next poll (normal case)', async () => {
@@ -361,7 +419,7 @@ describe('AgentDetailPage', () => {
     });
 
     const { rerender } = renderDetail();
-    await waitFor(() => expect(screen.getByText('offline')).toBeInTheDocument());
+    await waitFor(() => expect(stateText()).toContain('Offline'));
 
     mockUseAgentLive.mockReturnValue({
       statuses: new Map([[3, { event_type: 'connected', detail: null, ts: Date.now() }]]),
@@ -375,7 +433,7 @@ describe('AgentDetailPage', () => {
       </MemoryRouter>
     );
 
-    await waitFor(() => expect(screen.getByText('online')).toBeInTheDocument());
+    await waitFor(() => expect(stripDimmed()).toBe('false'));
   });
   // ── Task 16 / D-12: the spool catch-up indicator ──────────────────────────
 
@@ -399,6 +457,7 @@ describe('AgentDetailPage', () => {
     getAgentTelemetry.mockResolvedValue(telemetryWithSpool({ depth: 120, bytes: 240000 }));
 
     renderDetail();
+    await openTab('Telemetry');
 
     const indicator = await screen.findByText(/Catching up/);
     expect(indicator).toHaveTextContent('120 samples buffered');
@@ -411,6 +470,7 @@ describe('AgentDetailPage', () => {
     getAgentTelemetry.mockResolvedValue(telemetryWithSpool({ depth: 0, bytes: 0 }));
 
     renderDetail();
+    await openTab('Telemetry');
 
     await waitFor(() => expect(screen.getByText(/Last sample/)).toBeInTheDocument());
     expect(screen.queryByText(/Catching up/)).not.toBeInTheDocument();
@@ -423,6 +483,7 @@ describe('AgentDetailPage', () => {
     );
 
     renderDetail();
+    await openTab('Telemetry');
 
     await waitFor(() => expect(screen.getByText(/Last sample/)).toBeInTheDocument());
     expect(screen.queryByText(/Catching up/)).not.toBeInTheDocument();
@@ -452,8 +513,9 @@ describe('AgentDetailPage', () => {
     });
 
     renderDetail();
+    await openTab('Telemetry');
 
-    const alert = await screen.findByRole('alert');
+    const [alert] = await findTelemetryBanners();
     expect(alert).toHaveTextContent('host.core: unavailable');
     expect(alert).toHaveTextContent('/proc unreadable');
     expect(alert).toHaveTextContent('check agent permissions');
@@ -468,6 +530,7 @@ describe('AgentDetailPage', () => {
     });
 
     renderDetail();
+    await openTab('Telemetry');
 
     const indicator = await screen.findByText(/Catching up/);
     expect(indicator).toHaveTextContent('42 samples buffered');
@@ -486,6 +549,7 @@ describe('AgentDetailPage', () => {
     });
 
     renderDetail();
+    await openTab('Telemetry');
 
     const status = await screen.findByText(/Last sample/);
     expect(status).toHaveTextContent('Live');
@@ -507,6 +571,7 @@ describe('AgentDetailPage', () => {
     });
 
     renderDetail();
+    await openTab('Telemetry');
 
     const status = await screen.findByText(/Last sample/);
     expect(status).toHaveTextContent('Live');
@@ -544,12 +609,13 @@ describe('AgentDetailPage', () => {
     });
 
     renderDetail();
+    await openTab('Telemetry');
 
     expect(await screen.findByText('Containers')).toBeInTheDocument();
     expect(screen.getByText(/1 of 101 containers running/)).toBeInTheDocument();
     expect(screen.getByText('/web')).toBeInTheDocument();
     expect(screen.getByText('nginx')).toBeInTheDocument();
-    expect(screen.getByRole('alert')).toHaveTextContent(/100 containers/);
+    expect(telemetryBanners()[0]).toHaveTextContent(/100 containers/);
   });
 
   it('does not render a Docker section when the collector is disabled', async () => {
@@ -568,6 +634,7 @@ describe('AgentDetailPage', () => {
     });
 
     renderDetail();
+    await openTab('Telemetry');
 
     expect(await screen.findByText('Filesystems')).toBeInTheDocument();
     expect(screen.queryByText('Docker')).not.toBeInTheDocument();
@@ -598,8 +665,9 @@ describe('AgentDetailPage', () => {
     mockTelemetryStream.data = new Map([['readiness:agent:3', READINESS_PUSH]]);
 
     renderDetail();
+    await openTab('Telemetry');
 
-    const alert = await screen.findByRole('alert');
+    const [alert] = await findTelemetryBanners();
     expect(alert).toHaveTextContent('host.thermal: degraded');
     expect(alert).toHaveTextContent('no thermal zones exposed');
     expect(alert).toHaveTextContent('install lm-sensors');
@@ -627,10 +695,11 @@ describe('AgentDetailPage', () => {
     mockTelemetryStream.data = new Map([['readiness:agent:3', READINESS_PUSH]]);
 
     renderDetail();
+    await openTab('Telemetry');
 
-    const alert = await screen.findByRole('alert');
+    const [alert] = await findTelemetryBanners();
     expect(alert).toHaveTextContent('host.thermal: degraded');
-    expect(screen.getByText('12.5%')).toBeInTheDocument();
+    expect(within(telemetrySection()).getByText('12.5%')).toBeInTheDocument();
     expect(screen.getByText(/Last sample/)).toBeInTheDocument();
   });
 
@@ -658,11 +727,12 @@ describe('AgentDetailPage', () => {
     ]);
 
     renderDetail();
+    await openTab('Telemetry');
 
     await waitFor(() =>
       expect(screen.getByText(/No host samples received yet/)).toBeInTheDocument()
     );
-    expect(await screen.findByRole('alert')).toHaveTextContent('/proc unreadable');
+    expect((await findTelemetryBanners())[0]).toHaveTextContent('/proc unreadable');
   });
 
   it('lets a fresher poll override a readiness push cached from before it', async () => {
@@ -696,18 +766,20 @@ describe('AgentDetailPage', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       renderDetail();
+      await openTab('Telemetry');
 
       // The push arrived after the in-flight first request was issued, so it
       // legitimately wins over that response.
-      expect(await screen.findByRole('alert')).toHaveTextContent('fault that later cleared');
+      expect((await findTelemetryBanners())[0]).toHaveTextContent('fault that later cleared');
 
-      // 30 s later the page polls again. That request is issued *after* the
-      // cached push arrived, so the poll is strictly fresher and must win.
+      // The next reconciliation poll — at the backoff period, because the
+      // stream is delivering — is issued *after* the cached push arrived, so
+      // it is strictly fresher and must win.
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(30000);
+        await vi.advanceTimersByTimeAsync(POLL_BACKOFF_MS);
       });
 
-      await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+      await waitFor(() => expect(telemetryBanners()).toHaveLength(0));
     } finally {
       vi.useRealTimers();
     }
@@ -750,11 +822,45 @@ describe('AgentDetailPage', () => {
     };
   }
 
-  // A summary card is <article><span>{label}</span><strong>{value}</strong>.
+  /**
+   * The Telemetry tab's own section. Task 14 put a live strip in the sticky
+   * header that repeats CPU/MEM/DISK/NET/TEMP and their formatted values, so
+   * an unscoped getByText('CPU') now matches two elements. Every assertion
+   * about the cards is scoped here; the strip has its own suite
+   * (agent-live-strip.test.jsx).
+   */
+  const telemetrySection = () => screen.getByRole('region', { name: 'Host telemetry' });
+
+  /** Waits for the summary cards to render, then returns the section. */
+  const findCards = () =>
+    waitFor(() => {
+      within(telemetrySection()).getByText('CPU');
+      return telemetrySection();
+    });
+
+  // Task 16: a summary card is a StatTile — <div class="cb-tile"> with its
+  // label and value in their own elements — rather than the bare
+  // <article><span><strong> the page used to emit.
   function cardValue(label) {
-    const article = screen.getByText(label).closest('article');
-    return article.querySelector('strong').textContent;
+    const tile = within(telemetrySection()).getByText(label).closest('.cb-tile');
+    return tile.querySelector('.cb-tile__value').textContent;
   }
+
+  /**
+   * The readiness and truncation callouts on the Telemetry tab.
+   *
+   * Task 16 renders these as Banners, which are role="status" and not
+   * role="alert" — every one of these conditions is already true when the tab
+   * opens, and an alert would interrupt a screen reader on each navigation.
+   * Scoped to the tab body because the page header carries a Banner of its own
+   * for the primary agent state.
+   */
+  const telemetryBanners = () => within(telemetrySection()).queryAllByRole('status');
+
+  const findTelemetryBanners = async () => {
+    await waitFor(() => expect(telemetryBanners().length).toBeGreaterThan(0));
+    return telemetryBanners();
+  };
 
   describe('summary cards', () => {
     it('renders all eight summary cards with formatMetric output', async () => {
@@ -762,8 +868,9 @@ describe('AgentDetailPage', () => {
       getAgentTelemetry.mockResolvedValue({ data: telemetryFixture() });
 
       renderDetail();
+      await openTab('Telemetry');
 
-      await screen.findByText('CPU');
+      await findCards();
       expect(cardValue('CPU')).toBe('12.5%');
       expect(cardValue('Memory')).toBe('63.4%');
       expect(cardValue('Root disk')).toBe('41.2%');
@@ -778,6 +885,7 @@ describe('AgentDetailPage', () => {
       getAgentTelemetry.mockResolvedValue({ data: telemetryFixture() });
 
       renderDetail();
+      await openTab('Telemetry');
 
       // net_tx_bps is null in the fixture; a missing key must behave the same.
       await screen.findByText('Network transmit');
@@ -791,8 +899,9 @@ describe('AgentDetailPage', () => {
       });
 
       renderDetail();
+      await openTab('Telemetry');
 
-      await screen.findByText('CPU');
+      await findCards();
       expect(cardValue('CPU')).toBe('Unavailable');
       expect(cardValue('Uptime')).toBe('Unavailable');
     });
@@ -808,6 +917,7 @@ describe('AgentDetailPage', () => {
       });
 
       renderDetail();
+      await openTab('Telemetry');
 
       expect(await screen.findByText(/Last sample/)).toHaveTextContent('Live');
     });
@@ -822,6 +932,7 @@ describe('AgentDetailPage', () => {
       });
 
       renderDetail();
+      await openTab('Telemetry');
 
       const status = await screen.findByText(/Last sample/);
       expect(status).toHaveTextContent('Stale');
@@ -845,6 +956,7 @@ describe('AgentDetailPage', () => {
       });
 
       renderDetail();
+      await openTab('Telemetry');
 
       expect(await screen.findByText(/Last sample/)).toHaveTextContent('Live');
     });
@@ -856,6 +968,7 @@ describe('AgentDetailPage', () => {
       });
 
       const { unmount } = renderDetail();
+      await openTab('Telemetry');
       expect(await screen.findByText(/Last sample/)).toHaveTextContent(
         'Projected to linked hardware'
       );
@@ -865,6 +978,7 @@ describe('AgentDetailPage', () => {
         data: telemetryFixture({ latest: { projected: false } }),
       });
       renderDetail();
+      await openTab('Telemetry');
       const status = await screen.findByText(/Last sample/);
       expect(status).toHaveTextContent('Agent only');
       expect(status).not.toHaveTextContent('Projected to linked hardware');
@@ -875,14 +989,23 @@ describe('AgentDetailPage', () => {
     it('re-renders the cards from a pushed sample without polling again', async () => {
       const { getAgentTelemetry } = await import('../api/agents');
       getAgentTelemetry.mockResolvedValue({ data: telemetryFixture() });
+      // Seeded so useAgentDetail's `streamIsDelivering` is already true at
+      // mount. The poll-backoff effect depends on that boolean, and the sample
+      // push below must not be the thing that flips it: the resulting
+      // dependency change re-fires an immediate poll that lands after the
+      // merge and clobbers it (the sample merge has no re-apply-after-poll
+      // guard — see agent-detail-hook.test.jsx, which seeds it the same way).
+      mockTelemetryStream.data = new Map([['seed:unrelated', {}]]);
 
       const { rerender } = renderDetail();
+      await openTab('Telemetry');
       // Let the initial poll land first — the push has to arrive *after* it,
       // exactly as it does in production, or the poll's own resolution would
       // be what put the numbers on screen.
       await waitFor(() => expect(cardValue('CPU')).toBe('12.5%'));
 
       mockTelemetryStream.data = new Map([
+        ['seed:unrelated', {}],
         [
           'agent:3',
           {
@@ -941,6 +1064,7 @@ describe('AgentDetailPage', () => {
       getAgentTelemetryHistory.mockResolvedValue({ data: { points: historyPoints(3) } });
 
       renderDetail();
+      await openTab('Telemetry');
 
       expect(await screen.findByText('3 history points')).toBeInTheDocument();
       expect(getAgentTelemetryHistory).toHaveBeenCalledWith('3', '1h');
@@ -958,6 +1082,7 @@ describe('AgentDetailPage', () => {
       getAgentTelemetryHistory.mockRejectedValue(new Error('500'));
 
       renderDetail();
+      await openTab('Telemetry');
 
       expect(await screen.findByText('0 history points')).toBeInTheDocument();
       expect(screen.queryByLabelText('CPU history')).not.toBeInTheDocument();
@@ -977,6 +1102,7 @@ describe('AgentDetailPage', () => {
       });
 
       renderDetail();
+      await openTab('Telemetry');
 
       expect(await screen.findByLabelText('CPU history')).toBeInTheDocument();
       // One present value is not a line. `null` must count as missing, not as
@@ -1006,6 +1132,7 @@ describe('AgentDetailPage', () => {
       });
 
       renderDetail();
+      await openTab('Telemetry');
 
       const table = (await screen.findByText('Filesystems')).closest('.agent-telemetry__table');
       const headers = within(table)
@@ -1032,8 +1159,9 @@ describe('AgentDetailPage', () => {
       });
 
       renderDetail();
+      await openTab('Telemetry');
 
-      await screen.findByText('CPU');
+      await findCards();
       expect(screen.queryByText('Disks')).not.toBeInTheDocument();
       expect(screen.queryByText('Filesystems')).not.toBeInTheDocument();
       expect(screen.queryByText('Interfaces')).not.toBeInTheDocument();
@@ -1058,6 +1186,7 @@ describe('AgentDetailPage', () => {
       });
 
       renderDetail();
+      await openTab('Telemetry');
 
       const interfaces = (await screen.findByText('Interfaces')).closest('.agent-telemetry__table');
       expect(within(interfaces).getAllByRole('row')).toHaveLength(2);
@@ -1098,8 +1227,9 @@ describe('AgentDetailPage', () => {
       });
 
       renderDetail();
+      await openTab('Telemetry');
 
-      const alerts = await screen.findAllByRole('alert');
+      const alerts = await findTelemetryBanners();
       expect(alerts).toHaveLength(2);
       expect(alerts[0]).toHaveTextContent('host.thermal: degraded');
       expect(alerts[0]).toHaveTextContent('no thermal zones exposed — install lm-sensors');
@@ -1127,9 +1257,14 @@ describe('AgentDetailPage', () => {
       });
 
       renderDetail();
+      await openTab('Telemetry');
 
-      const alert = await screen.findByRole('alert');
-      expect(alert).toHaveTextContent('host.core: degraded partial read');
+      const [alert] = await findTelemetryBanners();
+      // Banner keeps the collector line and the reason in separate elements,
+      // so they are asserted separately; what matters is that the em-dash
+      // clause is absent when there is nothing to remediate.
+      expect(alert).toHaveTextContent('host.core: degraded');
+      expect(alert).toHaveTextContent('partial read');
       expect(alert.textContent).not.toContain('—');
     });
 
@@ -1144,8 +1279,9 @@ describe('AgentDetailPage', () => {
       });
 
       renderDetail();
+      await openTab('Telemetry');
 
-      const alert = await screen.findByRole('alert');
+      const [alert] = await findTelemetryBanners();
       expect(alert).toHaveTextContent('host.thermal: unavailable');
       expect(cardValue('CPU')).toBe('12.5%');
     });
@@ -1157,13 +1293,23 @@ describe('AgentDetailPage', () => {
       getAgentTelemetry.mockResolvedValue({ data: fixture });
 
       renderDetail();
+      await openTab('Telemetry');
 
-      await screen.findByText('CPU');
-      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      await findCards();
+      expect(telemetryBanners()).toHaveLength(0);
     });
   });
 
   describe('host-telemetry capability editing', () => {
+    /**
+     * Task 16: the settings form is on the Telemetry tab (spec §7), so every
+     * test here has to open it before the controls exist.
+     */
+    const renderSettings = async () => {
+      renderDetail();
+      await openTab('Telemetry');
+    };
+
     // The client guard exists to match the agent-side bounds in
     // internal/capability/capability.go:14-17 (MinIntervalSeconds 10,
     // MaxIntervalSeconds 900). These two tests are what stop the pair drifting.
@@ -1173,7 +1319,7 @@ describe('AgentDetailPage', () => {
     ])('rejects a cadence %s without calling the API', async (_label, value) => {
       const { setAgentCapabilities } = await import('../api/agents');
 
-      renderDetail();
+      await renderSettings();
 
       const cadence = await screen.findByLabelText(/cadence/i);
       fireEvent.change(cadence, { target: { value } });
@@ -1185,7 +1331,7 @@ describe('AgentDetailPage', () => {
     it('sends the registry-derived config merged with the patch for a valid cadence', async () => {
       const { setAgentCapabilities } = await import('../api/agents');
 
-      renderDetail();
+      await renderSettings();
 
       const cadence = await screen.findByLabelText(/cadence/i);
       fireEvent.change(cadence, { target: { value: '60' } });
@@ -1208,7 +1354,7 @@ describe('AgentDetailPage', () => {
         response: { data: { detail: 'interval_s must be an integer' } },
       });
 
-      renderDetail();
+      await renderSettings();
 
       const virtual = await screen.findByLabelText(/^virtual$/i);
       expect(virtual).not.toBeChecked();
@@ -1225,7 +1371,7 @@ describe('AgentDetailPage', () => {
       const { setAgentCapabilities } = await import('../api/agents');
       setAgentCapabilities.mockRejectedValue(new Error('network down'));
 
-      renderDetail();
+      await renderSettings();
 
       fireEvent.click(await screen.findByLabelText(/^virtual$/i));
 
@@ -1238,7 +1384,7 @@ describe('AgentDetailPage', () => {
       const { setAgentCapabilities } = await import('../api/agents');
       const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
 
-      renderDetail();
+      await renderSettings();
 
       const docker = await screen.findByLabelText(/^docker$/i);
       expect(docker).not.toBeChecked();
@@ -1253,7 +1399,7 @@ describe('AgentDetailPage', () => {
       const { setAgentCapabilities } = await import('../api/agents');
       const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
 
-      renderDetail();
+      await renderSettings();
 
       fireEvent.click(await screen.findByLabelText(/^docker$/i));
 
@@ -1279,7 +1425,7 @@ describe('AgentDetailPage', () => {
       });
       const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
 
-      renderDetail();
+      await renderSettings();
 
       const docker = await screen.findByLabelText(/^docker$/i);
       expect(docker).toBeChecked();
@@ -1311,12 +1457,14 @@ describe('AgentDetailPage', () => {
       });
 
       renderDetail();
+      await openTab('Telemetry');
 
       expect(await screen.findByText(/Link this agent to Hardware/)).toBeInTheDocument();
       // The prompt must not replace the telemetry — issue 2's "unlinked agent
       // shows nothing" symptom.
       expect(cardValue('CPU')).toBe('12.5%');
       expect(screen.getByText(/Last sample/)).toBeInTheDocument();
+      await openTab('Overview');
       expect(screen.getByText('No hardware linked')).toBeInTheDocument();
     });
 
@@ -1325,9 +1473,11 @@ describe('AgentDetailPage', () => {
       getAgentTelemetry.mockResolvedValue({ data: telemetryFixture() });
 
       renderDetail();
+      await openTab('Telemetry');
 
-      await screen.findByText('CPU');
+      await findCards();
       expect(screen.queryByText(/Link this agent to Hardware/)).not.toBeInTheDocument();
+      await openTab('Overview');
       expect(screen.getByText(/lab-nas/)).toBeInTheDocument();
     });
   });
@@ -1341,8 +1491,6 @@ describe('AgentDetailPage', () => {
   // which is the ONLY place a dispatched update's outcome is visible because no
   // REST response carries `pending_update_version`.
   describe('agent state', () => {
-    const stateSection = () => screen.getByRole('region', { name: 'Agent state' });
-
     it('says an agent that is genuinely fine is online, and nothing more', async () => {
       const { getAgentTelemetry } = await import('../api/agents');
       getAgentTelemetry.mockResolvedValue({
@@ -1353,9 +1501,12 @@ describe('AgentDetailPage', () => {
         },
       });
       renderDetail();
-      await waitFor(() => expect(stateSection().textContent).toContain('Online'));
-      expect(stateSection().textContent).not.toContain('Stale telemetry');
-      expect(stateSection().textContent).not.toContain('No samples yet');
+      // `online` is the only state agentState emits when nothing else holds, so
+      // this is also the assertion that the word reaches the page at all.
+      await waitFor(() => expect(stateText()).toContain('Online'));
+      expect(stripDimmed()).toBe('false');
+      expect(stateText()).not.toContain('Stale telemetry');
+      expect(stateText()).not.toContain('No samples yet');
     });
 
     it('gives every state it shows a reason and an operator action', async () => {
@@ -1376,12 +1527,31 @@ describe('AgentDetailPage', () => {
       });
       renderDetail();
 
-      await waitFor(() => expect(stateSection().textContent).toContain('Capability degraded'));
-      const text = stateSection().textContent;
+      await waitFor(() => expect(stateText()).toContain('Capability degraded'));
+      const text = stateText();
       // The requirement is a *documented operator action* per state, not a badge.
       expect(text).toContain('What to do: Open the agent and read the collector');
       // …and it names which collector, or the operator has nowhere to look.
       expect(text).toContain('host.docker');
+
+      // "every state it shows", not "the primary state". The <dl> this page
+      // replaced rendered "What to do: …" for every holding state; only the
+      // primary reaches a banner now, so the rest carry theirs on their chip —
+      // in the tooltip and in the accessible name, which AgentStateChip builds
+      // from one string. This fixture holds two states: capability_degraded is
+      // primary, never_reported is secondary and is exactly the one whose
+      // remedy used to be reachable only from the <dl>.
+      const chips = [...document.querySelectorAll('.fleet-chip[data-state]')];
+      expect(chips.length).toBeGreaterThan(0);
+      for (const chip of chips) {
+        expect(chip.getAttribute('title')).toContain('What to do: ');
+        expect(chip.textContent).toContain('What to do: ');
+      }
+      const neverReported = document.querySelector('.fleet-chip[data-state="never_reported"]');
+      expect(neverReported).toBeTruthy();
+      expect(neverReported.textContent).toContain(
+        'What to do: Give it one cadence interval. If nothing arrives, check collector readiness.'
+      );
     });
 
     it('derives a pending update from the event stream', async () => {
@@ -1398,8 +1568,8 @@ describe('AgentDetailPage', () => {
       });
       renderDetail();
 
-      await waitFor(() => expect(stateSection().textContent).toContain('Update pending'));
-      expect(stateSection().textContent).toContain('0.9.2');
+      await waitFor(() => expect(stateText()).toContain('Update pending'));
+      expect(stateText()).toContain('0.9.2');
     });
 
     it('lets a later terminal event resolve that pending update', async () => {
@@ -1426,9 +1596,19 @@ describe('AgentDetailPage', () => {
       // The default fixture has telemetry granted and no sample, so the section
       // settles on `never_reported` — the assertion that matters is that the
       // resolved update has stopped claiming to be in flight.
-      await waitFor(() => expect(stateSection().textContent).toContain('No samples yet'));
-      expect(stateSection().textContent).not.toContain('Update pending');
-      expect(stateSection().textContent).not.toContain('Update failed');
+      await waitFor(() => expect(stateText()).toContain('No samples yet'));
+      expect(stateText()).not.toContain('Update pending');
+      expect(stateText()).not.toContain('Update failed');
+    });
+
+    it('keeps the last-seen label once the server clock has been observed', async () => {
+      // The caveat is conditional; the label is not. The header's meta row
+      // carries the timestamp with no word for it, so dropping "Last seen" with
+      // the caveat would leave an elapsed time labelled by nothing.
+      mockClockOffsetMs.mockReturnValue(1200);
+      renderDetail();
+      await waitFor(() => expect(stateText()).toContain('Last seen'));
+      expect(stateText()).not.toContain('has not been observed yet');
     });
 
     it('admits when elapsed times are measured against an unverified browser clock', async () => {
@@ -1437,8 +1617,8 @@ describe('AgentDetailPage', () => {
       // and the page has to say so rather than presenting "4 minutes ago" as
       // though it had been checked.
       renderDetail();
-      await waitFor(() => expect(stateSection().textContent).toContain('Last seen'));
-      expect(stateSection().textContent).toContain('has not been observed yet');
+      await waitFor(() => expect(stateText()).toContain('Last seen'));
+      expect(stateText()).toContain('has not been observed yet');
     });
   });
 
