@@ -609,13 +609,16 @@
   background: color-mix(in srgb, var(--color-surface) 86%, var(--color-bg));
 }
 
-/* Sticky offset is `--header-height`, not 0: the page scrolls inside
-   `.page-content`, whose scrollport starts underneath the fixed app header,
-   so `top: 0` would park the header row behind it. Same reason
-   `.settings-sidebar` offsets by `--header-height` (main.css:2050). */
+/* `top: 0`. The comment here used to claim the offset had to be
+   `--header-height` or the row would park behind the fixed app header. That is
+   wrong: `.page-content` is the scrollport and its own
+   `padding-top: calc(var(--header-height) + 16px)` already clears the chrome,
+   and a sticky offset is measured from the content box inside that padding.
+   Adding the chrome again pinned this row 60px too low. Same defect, same
+   cause, as `.cb-detail-head` in panels.css. */
 .fleet__th {
   position: sticky;
-  top: var(--header-height);
+  top: 0;
   z-index: 2;
   height: 28px;
   padding: 0 var(--fleet-cell-pad-x);
