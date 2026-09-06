@@ -5,9 +5,11 @@ import PanelGrid from '../common/PanelGrid';
 import KeyValue from '../common/KeyValue';
 import CopyField from '../common/CopyField';
 import EmptyState from '../common/EmptyState';
-import AgentCapabilitiesPanel from './AgentCapabilitiesPanel';
+import AgentCapabilitiesPanel, { CAPABILITY_LABELS } from './AgentCapabilitiesPanel';
 import AgentHardwarePanel from './AgentHardwarePanel';
 import AgentEventsPanel from './AgentEventsPanel';
+import AgentOpsStrip from './AgentOpsStrip';
+import { normalizeCapability } from '../../api/agents';
 
 const SCOPE_HEAD = 8;
 const SCOPE_TAIL = 4;
@@ -43,6 +45,65 @@ export default function AgentOverviewTab({
     </button>
   );
 
+  const enabledCapabilities = Object.keys(CAPABILITY_LABELS).filter(
+    (key) => normalizeCapability(agent.capabilities?.[key]).enabled
+  ).length;
+  // `AgentDiscoveryRead` (schemas/discovery.py) carries `scope[]` and
+  // `limits.scope_mode`. This card previously read `subnets` and `config.mode`,
+  // which that payload has never had, so it rendered "0" and "—" for every
+  // agent whatever its real scope was.
+  //
+  // `effective` rather than the raw length, matching DiscoveryScopeSection's
+  // own reading of the same field: the list also holds exclusions, over-wide
+  // prefixes and tunnels, none of which this agent will scan.
+  const networksInScope = (discovery?.scope ?? []).filter((entry) => entry.effective).length;
+  const scopeMode = discovery?.limits?.scope_mode ?? null;
+  const overviewReadings = [
+    {
+      panel: null,
+      label: 'Connection',
+      value: online === null ? 'Unknown' : online ? 'Online' : 'Offline',
+      detail: online ? 'socket open' : 'no active socket',
+      tone: online ? 'ok' : online === false ? 'muted' : 'default',
+      marker: online !== null,
+    },
+    {
+      panel: 'capabilities',
+      label: 'Capabilities',
+      value: `${enabledCapabilities} of ${Object.keys(CAPABILITY_LABELS).length} on`,
+      detail: capabilitiesLocked ? 'changes locked' : 'operator controlled',
+      tone: enabledCapabilities === Object.keys(CAPABILITY_LABELS).length ? 'ok' : 'warn',
+    },
+    {
+      panel: 'discovery',
+      label: 'Discovery coverage',
+      value: discovery === null ? 'Loading' : `${networksInScope} in scope`,
+      detail: scopeMode ?? 'scope unresolved',
+      tone: discovery === null ? 'muted' : 'info',
+    },
+    {
+      panel: 'probes',
+      label: 'Probe execution',
+      value: probes === null ? 'Loading' : `${probes.length} assigned`,
+      detail: 'remote vantage',
+      tone: probes === null ? 'muted' : probes.length > 0 ? 'info' : 'default',
+    },
+    {
+      panel: 'hardware',
+      label: 'Inventory link',
+      value: presence?.hardware ? 'Linked' : 'Unlinked',
+      detail: presence?.hardware ? 'topology enriched' : 'topology limited',
+      tone: presence?.hardware ? 'ok' : 'warn',
+    },
+    {
+      panel: 'events',
+      label: 'Audit activity',
+      value: `${events.length} events`,
+      detail: 'loaded history',
+      tone: events.length > 0 ? 'info' : 'muted',
+    },
+  ].filter((reading) => reading.panel === null || panels.includes(reading.panel));
+
   const render = {
     capabilities: () => (
       <AgentCapabilitiesPanel
@@ -63,8 +124,8 @@ export default function AgentOverviewTab({
         ) : (
           <KeyValue
             rows={[
-              ['Scope mode', discovery.config?.mode],
-              ['Subnets', discovery.subnets?.length ?? 0],
+              ['Scope mode', scopeMode],
+              ['Networks in scope', networksInScope],
               [
                 'Scope version',
                 // Truncated head-and-tail with a copy button, the same
@@ -105,7 +166,7 @@ export default function AgentOverviewTab({
       </Panel>
     ),
     hardware: () => <AgentHardwarePanel key="hardware" hardware={presence?.hardware ?? null} />,
-    events: () => <AgentEventsPanel key="events" events={events} />,
+    events: () => <AgentEventsPanel key="events" events={events} compact />,
     // Slice A: the address this agent actually dialed, as it reported it. An
     // agent that enrolled through an endpoint which later stops resolving is
     // otherwise indistinguishable from one that never had a problem — and on a
@@ -128,7 +189,7 @@ export default function AgentOverviewTab({
   };
 
   return (
-    <>
+    <div className="agent-overview">
       {/* Not a panel: one line of presence, and the only place the page says
           when the socket opened rather than when a sample last arrived. */}
       {online && presence?.connected_since && (
@@ -136,13 +197,18 @@ export default function AgentOverviewTab({
           Connected since {new Date(presence.connected_since).toLocaleString()}
         </p>
       )}
-      <PanelGrid>
-        {panels.map((name) =>
-          // eslint-disable-next-line security/detect-object-injection -- `name` indexes this component's own literal renderer map, and an unknown name renders nothing
-          Object.hasOwn(render, name) ? render[name]() : null
-        )}
-      </PanelGrid>
-    </>
+      <AgentOpsStrip label="Agent situation summary" items={overviewReadings} />
+      <div className="agent-overview__grid">
+        <PanelGrid>
+          {panels.map((name) => (
+            <div className="agent-overview__panel" data-panel={name} key={name}>
+              {/* eslint-disable-next-line security/detect-object-injection -- `name` indexes this component's own literal renderer map, and an unknown name renders nothing */}
+              {Object.hasOwn(render, name) ? render[name]() : null}
+            </div>
+          ))}
+        </PanelGrid>
+      </div>
+    </div>
   );
 }
 

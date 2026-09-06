@@ -438,6 +438,11 @@ export default function AgentDetailPage() {
           agentId={Number(id)}
           probes={probes}
           granted={normalizeCapability(agent.capabilities?.remote_probe).enabled}
+          scopeMode={
+            normalizeCapability(agent.capabilities?.remote_probe).config?.scope_mode ??
+            probeDefaults.scope_mode ??
+            null
+          }
           onChanged={reloadProbes}
         >
           {normalizeCapability(agent.capabilities?.remote_probe).enabled &&

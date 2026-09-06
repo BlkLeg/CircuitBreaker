@@ -156,7 +156,7 @@
    a background/padding baseline is wrong for a control the browser draws
    itself, and AgentIdentityComparison renders inside this subtree. */
 
-:where(.agents-page, .add-agent, .fleet) :where(button) {
+:where(.agents-page, .agent-detail-page, .add-agent, .fleet) :where(button) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -174,16 +174,18 @@
     border-color 0.15s,
     color 0.15s;
 }
-:where(.agents-page, .add-agent, .fleet) :where(button:hover:not(:disabled)) {
+:where(.agents-page, .agent-detail-page, .add-agent, .fleet) :where(button:hover:not(:disabled)) {
   background: var(--color-border);
   border-color: var(--color-primary);
 }
-:where(.agents-page, .add-agent, .fleet) :where(button:disabled) {
+:where(.agents-page, .agent-detail-page, .add-agent, .fleet) :where(button:disabled) {
   opacity: 0.45;
   cursor: not-allowed;
 }
 
-:where(.agents-page, .add-agent) :where(select, input:not([type='checkbox']):not([type='radio'])) {
+:where(.agents-page, .agent-detail-page, .add-agent)
+  :where(select, input:not([type='checkbox']):not([type='radio'])) {
+  color-scheme: dark;
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--color-bg) 72%, var(--color-surface));
@@ -195,10 +197,10 @@
     border-color 0.15s,
     box-shadow 0.15s;
 }
-:where(.agents-page, .add-agent) :where(input)::placeholder {
+:where(.agents-page, .agent-detail-page, .add-agent) :where(input)::placeholder {
   color: var(--color-text-muted);
 }
-:where(.agents-page, .add-agent)
+:where(.agents-page, .agent-detail-page, .add-agent)
   :where(select, input:not([type='checkbox']):not([type='radio'])):focus {
   outline: none;
   border-color: var(--color-primary);
@@ -211,10 +213,13 @@
    `.filter-input` / `.filter-select`. Wrapped in `:where()` too, so it stays a
    floor: it ties with the baseline above and is resolved by source order,
    and still loses to every class rule. */
-:where([data-theme='light']) :where(.agents-page, .add-agent, .fleet) :where(button),
 :where([data-theme='light'])
-  :where(.agents-page, .add-agent)
+  :where(.agents-page, .agent-detail-page, .add-agent, .fleet)
+  :where(button),
+:where([data-theme='light'])
+  :where(.agents-page, .agent-detail-page, .add-agent)
   :where(select, input:not([type='checkbox']):not([type='radio'])) {
+  color-scheme: light;
   background: color-mix(in srgb, var(--color-surface) 92%, #ffffff);
 }
 
@@ -1208,10 +1213,393 @@
   padding: var(--space-2) var(--panel-pad);
 }
 
-/* ── Detail-page event feed ─────────────────────────────────────────────────
-   A fixed-width timestamp column so the labels beside it line up into a
-   readable second column; the feed is scanned down the labels, not across the
-   times. */
+/* ── Agent operations language ──────────────────────────────────────────────
+   Overview, probes, discovery and events share this situation strip and the
+   same dense workbench rhythm as Telemetry. These are derived readings of
+   existing payloads, not a second source of operational truth. */
+
+.agent-ops-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface-raised);
+}
+
+.agent-ops-strip__item {
+  --agent-ops-tone: var(--color-text);
+  position: relative;
+  min-width: 0;
+  min-height: 64px;
+  padding: 7px 10px 6px;
+  border-right: 1px solid var(--color-border);
+}
+
+.agent-ops-strip__item:last-child {
+  border-right: 0;
+}
+
+.agent-ops-strip__item::after {
+  content: '';
+  position: absolute;
+  inset: auto 9px 0;
+  height: 1px;
+  background: color-mix(in srgb, var(--agent-ops-tone) 55%, transparent);
+}
+
+.agent-ops-strip__item[data-tone='ok'] {
+  --agent-ops-tone: var(--color-success);
+}
+
+.agent-ops-strip__item[data-tone='warn'] {
+  --agent-ops-tone: var(--color-warning);
+}
+
+.agent-ops-strip__item[data-tone='danger'] {
+  --agent-ops-tone: var(--color-danger);
+}
+
+.agent-ops-strip__item[data-tone='info'] {
+  --agent-ops-tone: var(--color-info);
+}
+
+.agent-ops-strip__item[data-tone='muted'] {
+  --agent-ops-tone: var(--color-text-muted);
+}
+
+.agent-ops-strip__label,
+.agent-ops-strip__detail {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-ops-strip__label {
+  color: var(--color-text-muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.agent-ops-strip__value {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--agent-ops-tone);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-ops-strip__value i {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 16%, transparent);
+}
+
+.agent-ops-strip__detail {
+  margin-top: 2px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.025em;
+}
+
+/* ── Overview: situation board ─────────────────────────────────────────── */
+
+.agent-overview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-detail-page__connected-since {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.03em;
+}
+
+.agent-overview__grid .cb-panel-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 6px;
+  align-items: stretch;
+}
+
+.agent-overview__panel {
+  grid-column: span 3;
+  min-width: 0;
+}
+
+.agent-overview__panel[data-panel='events'],
+.agent-overview__panel[data-panel='enrollment'] {
+  grid-column: span 6;
+}
+
+.agent-overview__panel > .cb-panel,
+.agent-overview__panel > .agent-events-workbench,
+.agent-overview__panel > .agent-events-workbench > .cb-panel {
+  height: 100%;
+}
+
+.agent-overview .cb-panel__head {
+  min-height: 31px;
+}
+
+.agent-overview .cb-panel__body {
+  padding: 9px 10px;
+}
+
+.agent-overview .cb-empty {
+  min-height: 82px;
+  padding: 14px 8px;
+}
+
+/* ── Assigned probes: execution board + policy rail ───────────────────── */
+
+.agent-probes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 0;
+}
+
+.agent-probes__workbench {
+  display: grid;
+  grid-template-columns: minmax(0, 2.4fr) minmax(286px, 0.9fr);
+  gap: 6px;
+  min-width: 0;
+}
+
+.agent-probes__workbench[data-has-policy='false'] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.agent-probes__assignments,
+.agent-probes__policy {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-surface-raised) 78%, transparent);
+}
+
+.agent-probes__assignments > .cb-banner {
+  margin: 6px;
+}
+
+.agent-probes__assignments > .cb-empty {
+  display: grid;
+  min-height: 326px;
+  place-content: center;
+}
+
+.agent-probes__assignments .data-table,
+.agent-probes__policy {
+  font-size: var(--fs-xs);
+}
+
+.agent-probes__assignments .data-table th,
+.agent-probes__assignments .data-table td {
+  padding-block: 6px;
+}
+
+.agent-probes__policy .agent-probes__config {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 10px;
+}
+
+.agent-probes__policy .agent-probes__config legend {
+  color: var(--color-primary);
+  font-size: var(--fs-micro);
+}
+
+.agent-probes__policy .agent-probes__config input {
+  width: 100%;
+  max-width: none;
+}
+
+/* ── Discovery: bounded, navigable operations workspace ───────────────── */
+
+.agent-discovery {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 0;
+}
+
+.agent-discovery__eligibility {
+  min-height: 26px;
+  margin: 0;
+  padding: 5px 8px;
+  border-left: 2px solid var(--color-success);
+  background: color-mix(in srgb, var(--color-success) 5%, transparent);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+}
+
+.agent-discovery__eligibility[data-eligible='false'] {
+  border-left-color: var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 6%, transparent);
+}
+
+.agent-discovery__pause input[type='checkbox'] {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--color-primary);
+  color-scheme: dark;
+}
+
+[data-theme='light'] .agent-discovery__pause input[type='checkbox'] {
+  color-scheme: light;
+}
+
+.agent-discovery__workbench {
+  display: grid;
+  grid-template-columns: 142px minmax(0, 1fr);
+  gap: 6px;
+  min-width: 0;
+}
+
+.agent-discovery__section-nav {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  align-self: start;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface-raised);
+}
+
+.agent-discovery__section-nav::before {
+  content: 'Workspace';
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.agent-discovery__section-nav a {
+  padding: 7px 9px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 62%, transparent);
+  color: var(--color-text-muted);
+  font-size: var(--fs-xs);
+  text-decoration: none;
+}
+
+.agent-discovery__section-nav a::before {
+  content: '›';
+  margin-right: 6px;
+  color: var(--color-primary);
+}
+
+.agent-discovery__section-nav a:hover,
+.agent-discovery__section-nav a:focus-visible {
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+  color: var(--color-primary);
+}
+
+.agent-discovery__section-nav span {
+  margin-top: 14px;
+  padding: 8px 9px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  overflow-wrap: anywhere;
+}
+
+.agent-discovery__workbench-body {
+  display: flex;
+  max-height: 620px;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+  scroll-behavior: smooth;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.agent-discovery__section,
+.agent-discovery__settings {
+  min-width: 0;
+  scroll-margin-top: 4px;
+}
+
+.agent-discovery__section > .cb-panel + .cb-panel {
+  margin-top: 6px;
+}
+
+.agent-discovery__readiness-grid {
+  display: grid;
+  grid-template-columns: minmax(250px, 0.75fr) minmax(0, 1.8fr);
+  gap: 6px;
+}
+
+.agent-discovery__readiness-grid > aside {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.agent-discovery__jobs-grid {
+  display: grid;
+  grid-template-columns: minmax(215px, 0.55fr) minmax(0, 2fr);
+  gap: 6px;
+}
+
+.agent-discovery__workbench .cb-panel__head {
+  min-height: 29px;
+}
+
+.agent-discovery__workbench .cb-panel__body {
+  padding: 8px 9px;
+}
+
+.agent-discovery__workbench .data-table {
+  font-size: var(--fs-xs);
+}
+
+.agent-discovery__workbench .data-table th,
+.agent-discovery__workbench .data-table td {
+  padding-block: 5px;
+}
+
+.agent-discovery__settings .agent-discovery__config {
+  margin: 0;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-surface-raised) 76%, transparent);
+}
+
+/* ── Event history: chronological audit stream ────────────────────────── */
+
+.agent-events-workbench {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
 
 .agent-events {
   list-style: none;
@@ -1220,23 +1608,174 @@
   font-size: var(--fs-sm);
 }
 
+.agent-events__head,
+.agent-events-workbench[data-compact='false'] .agent-events li {
+  display: grid;
+  grid-template-columns: 64px 142px minmax(132px, 0.75fr) minmax(220px, 2fr) 92px;
+  column-gap: 10px;
+  align-items: center;
+}
+
+.agent-events__head {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
 .agent-events li {
-  display: flex;
-  gap: var(--space-3);
-  padding: var(--space-1) 0;
-  border-bottom: 1px solid rgba(80, 73, 69, 0.35);
+  min-width: 0;
+  padding: 8px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 58%, transparent);
 }
 
 .agent-events li:last-child {
   border-bottom: 0;
 }
 
-.agent-events time {
+.agent-events li[data-event='connected'] {
+  box-shadow: inset 2px 0 var(--color-success);
+}
+
+.agent-events li[data-event='disconnected'] {
+  box-shadow: inset 2px 0 var(--color-danger);
+}
+
+.agent-events time,
+.agent-events__sequence,
+.agent-events__kind {
   color: var(--color-text-muted);
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
-  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-events__detail {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-events__kind {
+  display: inline-flex;
+  width: fit-content;
+  padding: 1px 6px;
+  border: 1px dashed var(--color-border);
+  border-radius: 999px;
+}
+
+.agent-events li[data-event='connected'] .agent-events__kind {
+  border-color: var(--color-success);
+  color: var(--color-success);
+}
+
+.agent-events li[data-event='disconnected'] .agent-events__kind {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.agent-events__privacy {
+  margin: 0;
+  padding: 7px 10px;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+}
+
+.agent-events-workbench[data-compact='true'] .agent-events li {
+  display: flex;
+  gap: var(--space-3);
+  padding-block: 5px;
+}
+
+.agent-events-workbench[data-compact='true'] .agent-events time {
   width: 132px;
+  flex: none;
+}
+
+.agent-events-workbench[data-compact='true'] .agent-events strong {
+  min-width: 92px;
+}
+
+.agent-events-workbench[data-compact='true'] .agent-events__detail {
+  flex: 1;
+}
+
+@media (max-width: 1100px) {
+  .agent-overview__panel,
+  .agent-overview__panel[data-panel='events'],
+  .agent-overview__panel[data-panel='enrollment'] {
+    grid-column: span 6;
+  }
+
+  .agent-probes__workbench,
+  .agent-discovery__readiness-grid,
+  .agent-discovery__jobs-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .agent-discovery__readiness-grid > aside {
+    grid-column: auto;
+  }
+
+  .agent-events__head,
+  .agent-events-workbench[data-compact='false'] .agent-events li {
+    grid-template-columns: 58px 132px minmax(120px, 0.7fr) minmax(180px, 1.5fr) 82px;
+  }
+}
+
+@media (max-width: 720px) {
+  .agent-overview__panel,
+  .agent-overview__panel[data-panel='events'],
+  .agent-overview__panel[data-panel='enrollment'] {
+    grid-column: 1 / -1;
+  }
+
+  .agent-discovery__workbench {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .agent-discovery__section-nav {
+    position: static;
+    flex-direction: row;
+    overflow-x: auto;
+  }
+
+  .agent-discovery__section-nav::before,
+  .agent-discovery__section-nav span {
+    display: none;
+  }
+
+  .agent-discovery__section-nav a {
+    flex: none;
+    border-right: 1px solid var(--color-border);
+    border-bottom: 0;
+  }
+
+  .agent-events__head {
+    display: none;
+  }
+
+  .agent-events-workbench[data-compact='false'] .agent-events li {
+    display: grid;
+    grid-template-columns: 56px minmax(0, 1fr) auto;
+  }
+
+  .agent-events-workbench[data-compact='false'] .agent-events li time,
+  .agent-events-workbench[data-compact='false'] .agent-events__detail {
+    grid-column: 2 / -1;
+  }
+
+  .agent-events-workbench[data-compact='true'] .agent-events li {
+    display: grid;
+    grid-template-columns: minmax(110px, max-content) minmax(0, 1fr);
+  }
 }
 
 /* ── Detail-page telemetry tab ──────────────────────────────────────────────

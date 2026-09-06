@@ -334,6 +334,32 @@ describe('Agent Detail — discovery scope', () => {
     vi.restoreAllMocks();
   });
 
+  // The overview card reads the same payload the Discovery tab does, and used
+  // to read fields the payload has never had (`config.mode`, `subnets`) — so it
+  // could only ever render "—" and 0 no matter what the agent reported. The
+  // API sends `limits.scope_mode` and `scope[]` (schemas/discovery.py's
+  // AgentDiscoveryRead).
+  const kv = (scope, label) => scope.getByText(label).nextElementSibling.textContent;
+
+  it('reports the real scope mode and count on the overview card', async () => {
+    renderDetail();
+    const panel = await screen.findByRole('region', { name: 'Discovery' });
+
+    expect(kv(within(panel), 'Scope mode')).toBe('direct_private');
+    // Two of the fixture's six entries are effective; the rest are excluded,
+    // over-wide, or a tunnel. "In scope" is what the agent will actually scan.
+    expect(kv(within(panel), 'Networks in scope')).toBe('2');
+  });
+
+  it('counts the same scope in the overview summary strip', async () => {
+    renderDetail();
+    const strip = await screen.findByRole('group', { name: 'Agent situation summary' });
+
+    expect(within(strip).getByText('2 in scope')).toBeInTheDocument();
+    expect(within(strip).getByText('direct_private')).toBeInTheDocument();
+    expect(within(strip).queryByText('scope unresolved')).toBeNull();
+  });
+
   it('keeps the disabled-discovery wording exactly as written', async () => {
     // Task 18 moved this sentence into a Banner. It is the only place the page
     // says that nothing is lost by disabling — subnets, results and history

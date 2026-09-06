@@ -4103,7 +4103,7 @@ body {
    as the agent-telemetry block above, since they are neighbours on the same
    page. */
 .agent-probes {
-  margin-top: 1.5rem;
+  margin-top: 0;
 }
 .agent-probes .table-scroll {
   max-width: 100%;
@@ -4281,7 +4281,7 @@ body {
    set as the agent-telemetry and agent-probes blocks above — the three are
    neighbours on one page and must not read as three designs. */
 .agent-discovery {
-  margin-top: 1.5rem;
+  margin-top: 0;
 }
 .agent-discovery .table-scroll {
   max-width: 100%;
