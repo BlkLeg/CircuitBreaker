@@ -103,6 +103,32 @@ describe('AgentIdentityHeader', () => {
     expect(items).toContain('never connected');
   });
 
+  // `deriveAgentStates` only emits its `online` state when nothing else holds,
+  // so an agent that is connected AND has, say, a wedged collector produces no
+  // state saying it is connected. The header is therefore the only place the
+  // link itself is stated, and it has to state it in every case — the page this
+  // replaced rendered `{online ? 'online' : 'offline'}` unconditionally.
+  it('says the agent is connected, not only that it is not', () => {
+    const { container } = renderHeader({ online: true });
+    const items = [...container.querySelectorAll('.cb-meta__item')].map((el) => el.textContent);
+    expect(items).toContain('online');
+  });
+
+  it('says the agent is disconnected', () => {
+    const { container } = renderHeader({ online: false });
+    const items = [...container.querySelectorAll('.cb-meta__item')].map((el) => el.textContent);
+    expect(items).toContain('offline');
+  });
+
+  it('distinguishes "we have not heard" from "it is down"', () => {
+    // No presence entry at all is a third answer, and flattening it into
+    // "offline" is the claim agentState's presence_unknown exists to avoid.
+    const { container } = renderHeader({ online: null });
+    const items = [...container.querySelectorAll('.cb-meta__item')].map((el) => el.textContent);
+    expect(items).toContain('connection unknown');
+    expect(items).not.toContain('offline');
+  });
+
   it('omits the strip slot when there is nothing live to show', () => {
     const { container } = renderHeader({ strip: null });
     expect(container.querySelector('.cb-detail-head__strip')).toBeNull();

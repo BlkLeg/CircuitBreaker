@@ -131,6 +131,29 @@ describe('agent detail tabs', () => {
     expect(screen.getByText('LIVE')).toBeTruthy();
   });
 
+  it('corrects a link to a tab this agent does not have', async () => {
+    // A bookmark saved before the agent was revoked. The name is spelled like a
+    // tab, so TAB_KEYS alone would keep it — the composition is what says this
+    // agent has no telemetry tab. Correcting it in the URL rather than clamping
+    // at render is what keeps the hook's fetch gating and the rendered panel on
+    // the same tab.
+    hookResult.page = { ...hookResult.page, tabs: ['overview', 'events'] };
+    renderAt('/agents/7?tab=telemetry');
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: 'Overview' }).getAttribute('aria-selected')).toBe(
+        'true'
+      )
+    );
+    // …and the hook is told the tab that is actually showing, or it gates off
+    // the very fetches the overview panel needs.
+    const [, options] = hookResult.calls.at(-1);
+    expect(options.activeTab).toBe('overview');
+    hookResult.page = {
+      ...hookResult.page,
+      tabs: ['overview', 'telemetry', 'probes', 'discovery', 'events'],
+    };
+  });
+
   it('renders only the tabs the composition allows', async () => {
     hookResult.page = { ...hookResult.page, tabs: ['overview', 'events'] };
     renderAt('/agents/7');

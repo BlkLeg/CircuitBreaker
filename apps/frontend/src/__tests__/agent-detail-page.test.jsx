@@ -142,6 +142,16 @@ vi.mock('../hooks/useTelemetryStream', () => ({
 const mockToast = { success: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() };
 vi.mock('../components/common/Toast', () => ({ useToast: () => mockToast }));
 
+// The unverified-clock caveat is conditional on the offset having been
+// measured, and nothing in this suite carries a Date header, so one test has to
+// say it was. Only serverClockOffsetMs is replaced — lib/agentState's serverNow
+// keeps the real implementation.
+const mockClockOffsetMs = vi.hoisted(() => vi.fn(() => null));
+vi.mock('../utils/serverClock', async (importOriginal) => ({
+  ...(await importOriginal()),
+  serverClockOffsetMs: mockClockOffsetMs,
+}));
+
 function detailTree() {
   return (
     <MemoryRouter initialEntries={['/agents/3']}>
@@ -209,6 +219,7 @@ describe('AgentDetailPage', () => {
     api.triggerAgentUpdate.mockImplementation(apiDefaults.triggerAgentUpdate);
     mockUseAgentLive.mockReturnValue({ statuses: new Map(), connected: true });
     mockTelemetryStream.data = new Map();
+    mockClockOffsetMs.mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -1427,7 +1438,10 @@ describe('AgentDetailPage', () => {
         },
       });
       renderDetail();
-      await waitFor(() => expect(stripDimmed()).toBe('false'));
+      // `online` is the only state agentState emits when nothing else holds, so
+      // this is also the assertion that the word reaches the page at all.
+      await waitFor(() => expect(stateText()).toContain('Online'));
+      expect(stripDimmed()).toBe('false');
       expect(stateText()).not.toContain('Stale telemetry');
       expect(stateText()).not.toContain('No samples yet');
     });
@@ -1456,6 +1470,25 @@ describe('AgentDetailPage', () => {
       expect(text).toContain('What to do: Open the agent and read the collector');
       // …and it names which collector, or the operator has nowhere to look.
       expect(text).toContain('host.docker');
+
+      // "every state it shows", not "the primary state". The <dl> this page
+      // replaced rendered "What to do: …" for every holding state; only the
+      // primary reaches a banner now, so the rest carry theirs on their chip —
+      // in the tooltip and in the accessible name, which AgentStateChip builds
+      // from one string. This fixture holds two states: capability_degraded is
+      // primary, never_reported is secondary and is exactly the one whose
+      // remedy used to be reachable only from the <dl>.
+      const chips = [...document.querySelectorAll('.fleet-chip[data-state]')];
+      expect(chips.length).toBeGreaterThan(0);
+      for (const chip of chips) {
+        expect(chip.getAttribute('title')).toContain('What to do: ');
+        expect(chip.textContent).toContain('What to do: ');
+      }
+      const neverReported = document.querySelector('.fleet-chip[data-state="never_reported"]');
+      expect(neverReported).toBeTruthy();
+      expect(neverReported.textContent).toContain(
+        'What to do: Give it one cadence interval. If nothing arrives, check collector readiness.'
+      );
     });
 
     it('derives a pending update from the event stream', async () => {
@@ -1503,6 +1536,16 @@ describe('AgentDetailPage', () => {
       await waitFor(() => expect(stateText()).toContain('No samples yet'));
       expect(stateText()).not.toContain('Update pending');
       expect(stateText()).not.toContain('Update failed');
+    });
+
+    it('keeps the last-seen label once the server clock has been observed', async () => {
+      // The caveat is conditional; the label is not. The header's meta row
+      // carries the timestamp with no word for it, so dropping "Last seen" with
+      // the caveat would leave an elapsed time labelled by nothing.
+      mockClockOffsetMs.mockReturnValue(1200);
+      renderDetail();
+      await waitFor(() => expect(stateText()).toContain('Last seen'));
+      expect(stateText()).not.toContain('has not been observed yet');
     });
 
     it('admits when elapsed times are measured against an unverified browser clock', async () => {

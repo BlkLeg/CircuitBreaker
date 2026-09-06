@@ -1,5 +1,5 @@
 /* eslint-disable security/detect-object-injection -- metric, column and capability keys all come from module-level literal lists and from the agent payload's own field names; none is caller-supplied */
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
 import { useParams, useSearchParams } from 'react-router-dom';
 import {
@@ -187,8 +187,10 @@ export default function AgentDetailPage() {
 
   const requestedTab = searchParams.get('tab');
   // A stale bookmark or a hand-edited URL must land somewhere, not on a blank
-  // page — and the composition, not the URL, decides which tabs exist at all.
-  const namedTab = TAB_KEYS.includes(requestedTab) ? requestedTab : DEFAULT_TAB;
+  // page. This is the only clamp applied during render: one value feeds the
+  // hook's fetch gating AND the panel, so the tab the page fetches for can
+  // never be a different tab from the one it shows.
+  const activeTab = TAB_KEYS.includes(requestedTab) ? requestedTab : DEFAULT_TAB;
 
   const {
     agent,
@@ -210,13 +212,7 @@ export default function AgentDetailPage() {
     reload,
     reloadProbes,
     reloadDiscovery,
-  } = useAgentDetail(id, { activeTab: namedTab });
-
-  // The second half of the same rule: `TAB_KEYS` says the name is spelled like
-  // a tab, `page.tabs` says whether *this* agent has one. A revoked agent has
-  // no telemetry tab, so a link to it lands on overview rather than on a panel
-  // with no tab selected above it. `overview` is in every composition.
-  const activeTab = page.tabs.includes(namedTab) ? namedTab : DEFAULT_TAB;
+  } = useAgentDetail(id, { activeTab });
 
   const hostDefaults = capabilityDefaults?.host_telemetry?.config ?? {};
   const probeDefaults = capabilityDefaults?.remote_probe?.config ?? {};
@@ -237,6 +233,16 @@ export default function AgentDetailPage() {
     },
     [setSearchParams]
   );
+
+  // `TAB_KEYS` only says the name is spelled like a tab; `page.tabs` says
+  // whether *this* agent has one. A bookmark saved before the agent was revoked
+  // names a telemetry tab that no longer exists, and it is corrected in the URL
+  // rather than clamped at render: the address bar then agrees with what the
+  // hook fetches and what the panel shows, instead of a third answer sitting
+  // between them. `overview` is in every composition, so this always lands.
+  useEffect(() => {
+    if (!page.tabs.includes(activeTab)) selectTab(DEFAULT_TAB);
+  }, [page.tabs, activeTab, selectTab]);
 
   const tabs = useMemo(
     () => page.tabs.map((key) => ({ key, label: TAB_LABELS[key] })),
@@ -487,6 +493,14 @@ export default function AgentDetailPage() {
   // `online` is the exception in the other direction: AgentStateBanner
   // deliberately renders nothing for it (a banner on every healthy page is
   // chrome), so when it is the primary state the chip row is where it is said.
+  //
+  // These chips keep `showAction` at its default of true. The <dl> this shell
+  // replaced rendered "What to do: …" for every holding state, and the banner
+  // only ever carries the primary's — so with showAction={false} a secondary
+  // state's remedy is written down nowhere on the page, in neither the chip's
+  // tooltip nor its accessible name (AgentStateChip.jsx builds both from the
+  // same string). One banner per state would rebuild the wall of text this
+  // redesign exists to remove; the chip is where the rest of them live.
   const chips = page.secondary.concat(
     page.primary && page.primary.code === 'online' ? [page.primary] : []
   );
@@ -576,13 +590,10 @@ export default function AgentDetailPage() {
       <AgentIdentityHeader
         agent={agent}
         online={online}
-        freshness={freshness}
         chips={
           chips.length === 0
             ? null
-            : chips.map((state) => (
-                <AgentStateChip key={state.code} state={state} showAction={false} />
-              ))
+            : chips.map((state) => <AgentStateChip key={state.code} state={state} />)
         }
         actions={headerActions}
         strip={
@@ -599,18 +610,16 @@ export default function AgentDetailPage() {
       <AgentStateBanner state={page.primary} />
 
       {/* AGT-14, relocated verbatim from the state list this shell replaces.
-          An elapsed time measured against a clock nobody has checked has to
-          say so. Only rendered while the offset is genuinely unknown — once it
-          has been observed, the header's own last-seen field is the one place
-          this lives. */}
-      {clockOffsetMs == null && (
-        <p className="agent-detail-page__last-seen">
-          Last seen {formatTimestamp(agent.last_seen_at)}
-          {
-            ' (elapsed times are measured against this browser’s clock; the server’s has not been observed yet)'
-          }
-        </p>
-      )}
+          The label stays in both branches: the header's meta row carries the
+          timestamp but not the word for it, and "4 minutes ago" with nothing
+          saying what happened four minutes ago is not a reading. The
+          parenthetical is the part that is conditional — an elapsed time
+          measured against a clock nobody has checked has to say so. */}
+      <p className="agent-detail-page__last-seen">
+        Last seen {formatTimestamp(agent.last_seen_at)}
+        {clockOffsetMs == null &&
+          ' (elapsed times are measured against this browser’s clock; the server’s has not been observed yet)'}
+      </p>
 
       <Tabs tabs={tabs} active={activeTab} onChange={selectTab} label="Agent sections" />
 
