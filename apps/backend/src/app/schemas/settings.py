@@ -141,6 +141,7 @@ class AppSettingsRead(BaseModel):
     locations: list[str] = []
     dock_order: list[str] | None = None
     dock_hidden_items: list[str] | None = None
+    agent_endpoints: list[dict[str, str]] = []
     show_page_hints: bool = True
     show_header_widgets: bool = True
     show_time_widget: bool = True
@@ -460,6 +461,7 @@ class AppSettingsUpdate(BaseModel):
     locations: list[str] | None = None
     dock_order: list[str] | None = None
     dock_hidden_items: list[str] | None = None
+    agent_endpoints: list[dict[str, str]] | None = None
     show_page_hints: bool | None = None
     show_header_widgets: bool | None = None
     show_time_widget: bool | None = None

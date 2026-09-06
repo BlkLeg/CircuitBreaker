@@ -44,7 +44,10 @@ def put_settings(
     user: Any = require_role("admin"),
 ) -> Any:
     """Merge-update app settings. Only supplied fields are changed."""
-    result = settings_service.update_settings(db, payload, user_id=user.id)
+    try:
+        result = settings_service.update_settings(db, payload, user_id=user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if payload.rate_limit_profile is not None:
         from app.core.rate_limit import invalidate_rate_limit_profile_cache
 
