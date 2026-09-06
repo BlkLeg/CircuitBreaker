@@ -400,6 +400,83 @@
 /* macOS and Windows are rendered disabled rather than omitted: the operator
    should see that the platform exists and is simply not built yet, instead of
    wondering whether we forgot it. */
+/* The approval mode stays a <fieldset>: that is what names the radio group for
+   a screen reader. The browser's default fieldset border and inset legend are
+   the only reason it read as pasted on — stripped here and rebuilt as a quiet
+   labelled row matching the Endpoint control above it.
+
+   Deliberately not a second segmented control like .add-agent__platforms
+   below: two of them stacked would compete, and this choice is a property of
+   the whole step while that one only re-skins the command. */
+.add-agent__mode {
+  margin: 0 0 10px;
+  padding: 0;
+  border: 0;
+  min-inline-size: 0;
+}
+
+.add-agent__mode legend {
+  padding: 0;
+  margin-bottom: 5px;
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+}
+
+.add-agent__mode-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+}
+
+.add-agent__mode-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.72rem;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.add-agent__mode-options input {
+  accent-color: var(--color-primary);
+  margin: 0;
+  cursor: pointer;
+}
+
+/* The token is a bearer credential shown exactly once, so it gets the same
+   frame the install command gets — an operator is meant to copy it, and the
+   prose around it is what tells them it will not be shown again. */
+.add-agent__token {
+  margin: 0 0 10px;
+  padding: 9px 10px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.add-agent__token p {
+  margin: 0 0 6px;
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+}
+
+.add-agent__token p:last-child {
+  margin-bottom: 0;
+}
+
+.add-agent__token-value {
+  display: block;
+  margin: 0 0 6px;
+  padding: 6px 8px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  font-family: ui-monospace, 'SFMono-Regular', 'Menlo', monospace;
+  font-size: 0.72rem;
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+
 .add-agent__platforms {
   display: inline-flex;
   align-items: center;

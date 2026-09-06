@@ -275,28 +275,30 @@ export default function AddAgentPanel({
               nothing until the operator asks for a token. */}
           <fieldset className="add-agent__mode">
             <legend>Approval</legend>
-            <label htmlFor="add-agent-mode-attended">
-              <input
-                id="add-agent-mode-attended"
-                type="radio"
-                name="add-agent-mode"
-                value={MODE_ATTENDED}
-                checked={mode === MODE_ATTENDED}
-                onChange={() => handleModeChange(MODE_ATTENDED)}
-              />
-              Attended — you approve the machine here
-            </label>
-            <label htmlFor="add-agent-mode-unattended">
-              <input
-                id="add-agent-mode-unattended"
-                type="radio"
-                name="add-agent-mode"
-                value={MODE_UNATTENDED}
-                checked={mode === MODE_UNATTENDED}
-                onChange={() => handleModeChange(MODE_UNATTENDED)}
-              />
-              Unattended — the machine enrolls itself with a token
-            </label>
+            <div className="add-agent__mode-options">
+              <label htmlFor="add-agent-mode-attended">
+                <input
+                  id="add-agent-mode-attended"
+                  type="radio"
+                  name="add-agent-mode"
+                  value={MODE_ATTENDED}
+                  checked={mode === MODE_ATTENDED}
+                  onChange={() => handleModeChange(MODE_ATTENDED)}
+                />
+                Attended — you approve the machine here
+              </label>
+              <label htmlFor="add-agent-mode-unattended">
+                <input
+                  id="add-agent-mode-unattended"
+                  type="radio"
+                  name="add-agent-mode"
+                  value={MODE_UNATTENDED}
+                  checked={mode === MODE_UNATTENDED}
+                  onChange={() => handleModeChange(MODE_UNATTENDED)}
+                />
+                Unattended — the machine enrolls itself with a token
+              </label>
+            </div>
           </fieldset>
 
           {mode === MODE_UNATTENDED && (
@@ -313,7 +315,7 @@ export default function AddAgentPanel({
                 </>
               )}
               {mintError && (
-                <p className="add-agent__warning" role="alert">
+                <p className="add-agent__error" role="alert">
                   {mintError}
                 </p>
               )}
