@@ -946,3 +946,209 @@ def test_install_command_without_an_endpoint_has_no_query_string(
     resp = agent_install.build_install_command(db_session, "https://cb.example.com")
 
     assert resp.command == "curl -fsSL https://cb.example.com/install-agent.sh | sudo sh"
+
+
+# ── Slice B: the enrollment token the installer plants ───────────────────────
+
+
+def _run_token_block(tmp_path, *, env_token: str | None):
+    """Execute the installer's enroll-token block against a scratch config dir.
+
+    Runs the real shell, like `_run_icmp_block` and `_run_preflight` beside it,
+    rather than asserting on the script's text — a guard and a comment look
+    identical to a substring search.
+    """
+    import subprocess
+
+    script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex="ab" * 32,
+        tls_pin="",
+        manifest={"0.1.0": {"linux-amd64": "deadbeef"}},
+    )
+    start = script.index("# Enrollment token")
+    end = script.index("if command -v docker", start)
+    snippet = script[start:end]
+
+    conf_dir = tmp_path / "etc"
+    conf_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    # The cb-agent user does not exist on this host; chown must not be fatal.
+    (bin_dir / "chown").write_text("#!/bin/sh\nexit 1\n")
+    (bin_dir / "chown").chmod(0o755)
+
+    runner = tmp_path / "run.sh"
+    runner.write_text(f"#!/bin/sh\nset -eu\nCB_CONF_DIR='{conf_dir}'\n{snippet}\n")
+    runner.chmod(0o755)
+
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin"}
+    if env_token is not None:
+        env["CB_ENROLL_TOKEN"] = env_token
+    result = subprocess.run(["/bin/sh", str(runner)], capture_output=True, text=True, env=env)
+    assert result.returncode == 0, result.stderr
+    return conf_dir / "enroll-token", result
+
+
+def test_the_token_is_written_only_readable_by_its_owner(tmp_path):
+    """It is a bearer credential on a machine other people may use."""
+    written, _ = _run_token_block(tmp_path, env_token="cbe_abc123")
+
+    assert written.exists()
+    assert written.read_text().strip() == "cbe_abc123"
+    assert oct(written.stat().st_mode)[-3:] == "600"
+
+
+def test_no_token_in_the_environment_writes_no_file(tmp_path):
+    """The attended flow is the default and must leave nothing behind."""
+    written, _ = _run_token_block(tmp_path, env_token=None)
+
+    assert not written.exists()
+
+
+def test_a_failed_chown_does_not_abort_the_install(tmp_path):
+    """`set -e` is on. An install that dies here would leave a half-configured
+    host over a file the agent can still read as root-installed."""
+    written, result = _run_token_block(tmp_path, env_token="cbe_abc123")
+
+    assert result.returncode == 0
+    assert written.exists()
+
+
+def test_the_token_never_appears_in_the_rendered_script(tmp_path):
+    """The script is served by an unauthenticated route. A token compiled into
+    it would be readable by anyone who can reach the server."""
+    script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex="ab" * 32,
+        tls_pin="",
+        manifest={"0.1.0": {"linux-amd64": "deadbeef"}},
+    )
+
+    assert "cbe_" not in script
+    assert "CB_ENROLL_TOKEN" in script, "the script reads it from the environment"
+
+
+def test_the_token_is_not_echoed_to_the_terminal(tmp_path):
+    """cloud-init captures stdout verbatim into a log that outlives the TTL."""
+    _, result = _run_token_block(tmp_path, env_token="cbe_secret-value")
+
+    assert "cbe_secret-value" not in result.stdout
+    assert "cbe_secret-value" not in result.stderr
+
+
+# ── Slice B: the unattended install command ──────────────────────────────────
+
+
+@pytest.fixture
+def public_tls(db_session, app_cfg):
+    """A publicly trusted certificate, so these tests assert on the command
+    shape rather than on TLS pinning."""
+    from datetime import timedelta
+
+    from app.core.time import utcnow
+    from app.db.models import Certificate
+
+    db_session.add(
+        Certificate(
+            domain="cb.example.com",
+            type="letsencrypt",
+            cert_pem="-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+            key_pem="-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----",
+            expires_at=utcnow() + timedelta(days=60),
+        )
+    )
+    db_session.flush()
+
+
+def test_an_unattended_command_passes_the_token_through_the_environment(db_session, public_tls):
+    """Never as an argument: argv is visible in `ps` and lands in shell history
+    and cloud-init logs."""
+    result = agent_install.build_install_command(
+        db_session, "https://cb.example.com", endpoint_id="pub1", enroll_token="cbe_abc"
+    )
+
+    assert "CB_ENROLL_TOKEN=cbe_abc" in result.command
+    assert "sudo -E" in result.command
+    # The token must not be an argument to anything.
+    assert "sh cbe_abc" not in result.command
+    assert not result.command.rstrip().endswith("cbe_abc")
+
+
+def test_an_attended_command_is_unchanged_by_this_feature(db_session, public_tls):
+    """The default path must stay byte-identical to what shipped."""
+    result = agent_install.build_install_command(
+        db_session, "https://cb.example.com", endpoint_id="pub1"
+    )
+
+    assert "CB_ENROLL_TOKEN" not in result.command
+    assert "sudo -E" not in result.command
+    assert "sudo sh" in result.command
+
+
+def test_the_published_digest_is_unaffected_by_the_token(db_session, public_tls):
+    """The token lives in the command, not the script, so one script — and one
+    digest — serves both flows."""
+    attended = agent_install.build_install_command(
+        db_session, "https://cb.example.com", endpoint_id="pub1"
+    )
+    unattended = agent_install.build_install_command(
+        db_session, "https://cb.example.com", endpoint_id="pub1", enroll_token="cbe_abc"
+    )
+
+    assert attended.script_sha256 == unattended.script_sha256
+
+
+def test_a_self_signed_unattended_command_still_verifies_before_it_runs(
+    db_session, app_cfg, monkeypatch
+):
+    """The token must not displace the digest check: the prefix belongs on the
+    final `sh`, not on the curl or the sha256sum that guard it."""
+    from app.services.certificate_service import generate_selfsigned
+
+    valid_cert_pem, _, _ = generate_selfsigned("cb.home")
+    monkeypatch.setattr(agent_install, "_live_nginx_cert_pem", lambda: valid_cert_pem)
+
+    result = agent_install.build_install_command(
+        db_session, "https://cb.home", enroll_token="cbe_abc"
+    )
+
+    assert "sha256sum -c" in result.command
+    assert result.script_sha256 in result.command
+    # The token appears once, and after the digest check rather than before it.
+    assert result.command.count("CB_ENROLL_TOKEN") == 1
+    assert result.command.index("sha256sum -c") < result.command.index("CB_ENROLL_TOKEN")
+
+
+@pytest.mark.parametrize(
+    "token", ["cbe_a;echo pwned", "cbe_a'quote", 'cbe_a"dquote', "cbe_a$(echo x)", "cbe_a`id`"]
+)
+def test_a_token_with_shell_metacharacters_survives_verbatim_and_runs_nothing(
+    db_session, public_tls, token
+):
+    """The value is server-minted today, but a command assembled by string
+    interpolation should not depend on that staying true.
+
+    Executed rather than pattern-matched: the property is that the shell puts
+    exactly this value in the environment and runs nothing extra, and only a
+    shell can demonstrate that.
+    """
+    import subprocess
+
+    result = agent_install.build_install_command(
+        db_session, "https://cb.example.com", enroll_token=token
+    )
+    prefix = result.command[
+        result.command.index("CB_ENROLL_TOKEN=") : result.command.index(" sudo -E")
+    ]
+
+    out = subprocess.run(
+        ["/bin/sh", "-c", f"{prefix} printenv CB_ENROLL_TOKEN"],
+        capture_output=True,
+        text=True,
+    )
+
+    assert out.returncode == 0, out.stderr
+    # Exact equality is the whole proof: the value arrived verbatim, and a
+    # shell that had run the injected fragment would print something else.
+    assert out.stdout == token + "\n"

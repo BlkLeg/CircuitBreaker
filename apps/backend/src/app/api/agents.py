@@ -397,6 +397,7 @@ def get_install_command(
     db: Annotated[Session, Depends(get_db)],
     _user: Annotated[User, require_role("admin")],
     endpoint: str | None = None,
+    enrollment_token: str | None = None,
 ) -> Any:
     from app.core.forwarded import forwarded_base_url
     from app.services import agent_endpoints, agent_install
@@ -424,7 +425,13 @@ def get_install_command(
         # on the download link inside the emitted command, so the machine that
         # runs it asks `/install-agent.sh` for this same endpoint rather than
         # letting that route re-derive an address from its own request.
-        return agent_install.build_install_command(db, server_url, endpoint_id=endpoint)
+        # `enrollment_token` is passed in, never minted here: the wizard mints
+        # once through POST /agents/enrollment-tokens and then asks for a
+        # command carrying it, so re-fetching the command — an endpoint change,
+        # a re-render — never silently burns a second credential.
+        return agent_install.build_install_command(
+            db, server_url, endpoint_id=endpoint, enroll_token=enrollment_token
+        )
     except ValueError as exc:
         # A missing or unreadable TLS certificate is an operator-fixable
         # deployment problem, not a bug in the request. Surfacing it as a bare

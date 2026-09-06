@@ -95,6 +95,26 @@ log_level = "info"
 spool_cap_bytes = 67108864
 EOF
 
+# Enrollment token (optional). Supplied through the environment, never as a
+# script argument: argv is visible in `ps` and lands in shell history and
+# cloud-init logs. It is also never rendered into this script, which is served
+# by an unauthenticated route -- baking it in would publish it to anyone who
+# can reach the server. The agent unlinks the file after a successful enroll;
+# a spent token left on disk is a stale secret with no purpose.
+#
+# CB_CONF_DIR defaults to the real path and exists so the installer's tests can
+# point this block at a scratch directory. It is not an operator knob.
+if [ -n "${{CB_ENROLL_TOKEN:-}}" ]; then
+  cb_token_file="${{CB_CONF_DIR:-/etc/circuit-breaker}}/enroll-token"
+  (umask 077 && printf '%s\n' "${{CB_ENROLL_TOKEN}}" > "$cb_token_file")
+  chmod 600 "$cb_token_file"
+  # `|| true` because `set -e` is on and the install must not die over
+  # ownership: the file is already mode 0600 and root-owned, which the agent
+  # can still read.
+  chown cb-agent:cb-agent "$cb_token_file" 2>/dev/null || true
+  echo "enrollment token installed -- this agent will enroll unattended"
+fi
+
 if command -v docker >/dev/null 2>&1; then
   usermod -aG docker cb-agent || true
 fi
@@ -376,7 +396,10 @@ def _script_download_arg(server_url: str, endpoint_id: str | None) -> str:
 
 
 def build_install_command(
-    db: Session, server_url: str, endpoint_id: str | None = None
+    db: Session,
+    server_url: str,
+    endpoint_id: str | None = None,
+    enroll_token: str | None = None,
 ) -> InstallCommandResponse:
     # Task 28: once a server-key rotation has begun, a freshly generated
     # install prefers the successor identity key over the current one — it's
@@ -401,8 +424,19 @@ def build_install_command(
     script_sha256 = hashlib.sha256(script.encode()).hexdigest()
     download = _script_download_arg(server_url, endpoint_id)
 
+    # Slice B: an enrollment token rides in the *environment* of the shell that
+    # runs the script — never in argv, which is visible in `ps` and lands in
+    # shell history and cloud-init logs, and never in the script itself, which
+    # an unauthenticated route serves. `sudo -E` because sudo scrubs the
+    # environment by default; without it the assignment is silently dropped and
+    # every unattended install quietly falls back to waiting for a human.
+    # Shell-quoted so the command cannot be broken out of by a value it did not
+    # mint. With no token the two strings are what shipped, byte for byte.
+    prefix = f"CB_ENROLL_TOKEN={shlex.quote(enroll_token)} " if enroll_token else ""
+    run_sh = "sudo -E sh" if enroll_token else "sudo sh"
+
     if tls_mode == "public":
-        command = f"curl -fsSL {download} | sudo sh"
+        command = f"curl -fsSL {download} | {prefix}{run_sh}"
     else:
         # --pinnedpubkey is what actually verifies this fetch (curl enforces it
         # even alongside -k, which is only here because the chain cannot
@@ -413,7 +447,7 @@ def build_install_command(
             f'curl -fsSL --insecure --pinnedpubkey "sha256//{tls_pin}" '
             f"{download} -o /tmp/cb-agent-install.sh && "
             f'echo "{script_sha256}  /tmp/cb-agent-install.sh" | sha256sum -c && '
-            f"sudo sh /tmp/cb-agent-install.sh"
+            f"{prefix}{run_sh} /tmp/cb-agent-install.sh"
         )
 
     return InstallCommandResponse(tls_mode=tls_mode, command=command, script_sha256=script_sha256)
