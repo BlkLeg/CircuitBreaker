@@ -26,7 +26,7 @@ function sparkPoints(points) {
 }
 
 /**
- * The pulse of one machine, pinned to the sticky header.
+ * The pulse of one machine in the shared detail header.
  *
  * Two rules hold this component together. The freshness label is rendered as
  * text and not only as colour, so what it says survives greyscale and reaches

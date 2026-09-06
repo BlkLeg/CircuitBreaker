@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "targets": {
+    "/agents/:id?tab=telemetry": {
+      "targetKind": "existing-ui",
+      "projectId": "8b984ff8-fa32-4386-98b6-0de7bd58135b",
+      "baselineDraftId": "4ada9408-496a-4c22-a518-0bb6cdafebe7",
+      "activeDraftId": "4ada9408-496a-4c22-a518-0bb6cdafebe7",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "apps/frontend/src/pages/AgentDetailPage.jsx:400:596",
+        "apps/frontend/src/components/agents/AgentTelemetryTab.jsx",
+        "apps/frontend/src/components/agents/AgentIdentityHeader.jsx",
+        "apps/frontend/src/components/agents/AgentStateBanner.jsx",
+        "apps/frontend/src/components/agents/AgentLiveStrip.jsx",
+        "apps/frontend/src/components/agents/AgentStateChip.jsx",
+        "apps/frontend/src/components/common/DetailHeader.jsx",
+        "apps/frontend/src/components/common/Tabs.jsx",
+        "apps/frontend/src/components/common/Panel.jsx",
+        "apps/frontend/src/components/common/StatTile.jsx",
+        "apps/frontend/src/components/common/Banner.jsx",
+        "apps/frontend/src/components/common/EmptyState.jsx",
+        "apps/frontend/src/styles/panels.css",
+        "apps/frontend/src/styles/agents.css:1040:1909",
+        "apps/frontend/src/styles/main.css:1:80",
+        "apps/frontend/src/styles/main.css:94:590"
+      ],
+      "referenceIds": [
+        "d19cff65-c06f-446a-86a1-32841321d1b3",
+        "apps-frontend-public-CB-AZ_Final.png"
+      ],
+      "brandAssets": {
+        "logo": {
+          "assetKey": "apps-frontend-public-CB-AZ_Final.png",
+          "url": "https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/8b984ff8-fa32-4386-98b6-0de7bd58135b/brand-assets/apps-frontend-public-CB-AZ_Final.png/CB-AZ_Final.png",
+          "sourcePath": "apps/frontend/public/CB-AZ_Final.png"
+        }
+      },
+      "fingerprints": {
+        ".superdesign/design-system.md": "2d959202a73c8a3dee5cf4ed6445dc487f72ed005b325488254da88ad78b5713",
+        "apps/frontend/src/pages/AgentDetailPage.jsx": "ee82d3cbe00c9881a09b535cb69b828171a3089ba199e14995f6b621d42465cd",
+        "apps/frontend/src/components/agents/AgentTelemetryTab.jsx": "982f45d62ba4423f02c47e68467455ac055f20f9086c22c231b9a3033e3994f4",
+        "apps/frontend/src/components/agents/AgentIdentityHeader.jsx": "44e49ba82a7ecfa8d7dc20cb8ba6d069a471cb147a94c3c7c64e394e7f65d4d7",
+        "apps/frontend/src/components/agents/AgentStateBanner.jsx": "94df981042816f21b9f465e9d2711708167d179aff7b75c1df9938c136153397",
+        "apps/frontend/src/components/agents/AgentLiveStrip.jsx": "599ab508852afa70d2e0712c683a63df59f1cb0e10282c7111fda7e73fea37af",
+        "apps/frontend/src/components/agents/AgentStateChip.jsx": "1e771a1fe314b0552156de9b5185fcbabb0b59483faf41d711b15e2d76552260",
+        "apps/frontend/src/components/common/DetailHeader.jsx": "fe3abfc6274e58318a577212a252fb2e9a7b3d6645d9ff1ee8ba765ca1f64f6d",
+        "apps/frontend/src/components/common/Tabs.jsx": "7db86ea5b61925de89315f41cda8e44b0122c35a588a794bfe93bed1cc05e7cf",
+        "apps/frontend/src/components/common/Panel.jsx": "124f7c987015f680d9cfecbfdc9654e9d4311770eabb227c687f1cf03700d139",
+        "apps/frontend/src/components/common/StatTile.jsx": "500b792e96b343ce7c00a830c7e27e377cba5bab53f4560132bd1990f606e38c",
+        "apps/frontend/src/components/common/Banner.jsx": "c987a0a5f39e523caec0e9ab3cde8850959498e378d0184d8a813bd25fbef8e3",
+        "apps/frontend/src/components/common/EmptyState.jsx": "28f68f6985456a5941c8d3a4d603b0dd63a0c161daeb612040c59ecd004d9c5b",
+        "apps/frontend/src/styles/panels.css": "76462f5d3b8e98709d4860745d848da41407b15716c7930be6ed4c131bb3a7ca",
+        "apps/frontend/src/styles/agents.css": "e0b311f15c60b9f3897f7e66d7aa344b30ef28fae13b8ac24868e83967e8350f",
+        "apps/frontend/src/styles/main.css": "b30de745b3637e084220404373f405382f9c3481122bc5a7baee00c989e759cb"
+      },
+      "components": [
+        {
+          "name": "GlobalHeader",
+          "id": "6372d3d3-35a0-4040-b7c2-db35bab762ec",
+          "sourcePath": "apps/frontend/src/components/Header.jsx",
+          "logoAssetKey": "apps-frontend-public-CB-AZ_Final.png"
+        },
+        {
+          "name": "AgentDetailHeader",
+          "id": "cb952c1e-89bf-4815-b462-42b06fd1dd0c",
+          "sourcePath": "apps/frontend/src/components/common/DetailHeader.jsx"
+        }
+      ],
+      "drafts": {
+        "4ada9408-496a-4c22-a518-0bb6cdafebe7": {
+          "title": "Agent Telemetry — SOC Workbench",
+          "visualDirection": "Dense Gruvbox SOC workstation with irregular sampled telemetry traces, synchronized lanes, cursor inspection, and signal matrix",
+          "parentDraftId": null,
+          "currentVersion": 3
+        }
+      },
+      "updatedAt": "2026-09-06T21:52:25.000Z"
+    }
+  }
+}

@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import '../../styles/panels.css';
 
 /**
- * The sticky header of a detail page.
+ * The identity header of a detail page.
  *
  * `meta` entries are wrapped here, not by the caller. The separator between
  * them is an adjacent-sibling CSS rule, and a caller passing a bare string
@@ -12,7 +12,7 @@ import '../../styles/panels.css';
  * exactly how the fleet table's pending row came to render its fields run
  * together. Owning the wrapper makes that unreachable.
  *
- * `strip` is a slot for content that must stay visible on every tab. It is
+ * `strip` is a slot for content that is shared by every tab. It is
  * omitted entirely when null rather than rendered empty: reserved space that
  * never fills reads as something failing to load.
  */

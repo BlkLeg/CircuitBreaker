@@ -140,6 +140,7 @@ docker-compose.datadog.yml
 # apps/frontend/src/data/ — removed; navigation.js is a tracked source file
 conductor/
 docs/superpowers/
+.superdesign/tmp/
 # Internal / auto-generated
 .INTERNAL/
 .claude/worktrees/

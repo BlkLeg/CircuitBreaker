@@ -176,46 +176,375 @@ function DeviceTable({ title, rows }) {
 
 DeviceTable.propTypes = { title: PropTypes.string.isRequired, rows: PropTypes.array };
 
-function HistoryChart({ label, metric, points }) {
-  // `null` is how the history endpoint reports "this collector produced no
-  // value for that bucket" (no thermal zones, no root filesystem, ...), and
-  // `Number(null)` is 0 — a finite number. Coercing first therefore charted a
-  // missing metric as a real 0-valued datapoint and defeated the
-  // fewer-than-two-values guard below. Missing is mapped to NaN explicitly so
-  // only values that are actually present survive the filter; the Number()
-  // coercion is kept for numeric strings.
-  const values = points
-    .map((point) => {
-      // eslint-disable-next-line security/detect-object-injection -- `metric` is a literal passed by this file's own five call sites
-      const raw = point.summary?.[metric];
-      return raw == null ? NaN : Number(raw);
-    })
-    .filter(Number.isFinite);
-  if (values.length < 2) return null;
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+const CHART = {
+  width: 1100,
+  height: 348,
+  plotX: 88,
+  plotY: 10,
+  plotWidth: 922,
+  plotHeight: 300,
+};
+
+const TRACE_METRICS = [
+  { key: 'cpu_pct', label: 'CPU', lane: 'compute', tone: 'info', domain: [0, 100] },
+  { key: 'load_1', label: 'Load', lane: 'compute', tone: 'primary' },
+  { key: 'mem_pct', label: 'Memory', lane: 'memory', tone: 'info', domain: [0, 100] },
+  { key: 'root_disk_pct', label: 'Root disk', lane: 'disk', tone: 'warning', domain: [0, 100] },
+  { key: 'net_rx_bps', label: 'Network RX', lane: 'network', tone: 'info' },
+  { key: 'net_tx_bps', label: 'Network TX', lane: 'network', tone: 'primary' },
+  { key: 'max_temp_c', label: 'Temperature', lane: 'thermal', tone: 'danger' },
+];
+
+const TRACE_LANES = [
+  { key: 'compute', label: 'Compute', top: 10, height: 58 },
+  { key: 'memory', label: 'Memory', top: 70, height: 58 },
+  { key: 'disk', label: 'Root disk', top: 130, height: 58 },
+  { key: 'network', label: 'Network', top: 190, height: 68 },
+  { key: 'thermal', label: 'Thermal', top: 260, height: 50 },
+];
+
+const INSPECT_METRICS = [
+  ['cpu_pct', 'CPU'],
+  ['load_1', 'Load'],
+  ['mem_pct', 'Memory'],
+  ['root_disk_pct', 'Disk'],
+  ['net_rx_bps', 'RX'],
+  ['net_tx_bps', 'TX'],
+];
+
+function rawMetric(point, key) {
+  // eslint-disable-next-line security/detect-object-injection -- `key` comes from this module's metric registry
+  const value = point?.summary?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function historySamples(history, key) {
+  return history
+    .map((point, index) => ({ index, value: rawMetric(point, key) }))
+    .filter((sample) => sample.value !== null);
+}
+
+/**
+ * A monotone-looking cubic trace through actual samples. The controls use
+ * neighbouring samples, then clamp vertically to the lane so a spike cannot
+ * manufacture an overshoot outside the collector's scale.
+ */
+function smoothTrace(samples, domain, lane, historyLength) {
+  if (samples.length < 2) return '';
+  const values = samples.map((sample) => sample.value);
+  const observedMin = Math.min(...values);
+  const observedMax = Math.max(...values);
+  const dynamicPad = Math.max((observedMax - observedMin) * 0.12, observedMax * 0.03, 1);
+  const min = domain?.[0] ?? Math.min(0, observedMin - dynamicPad);
+  const max = domain?.[1] ?? observedMax + dynamicPad;
   const span = max - min || 1;
-  const path = values
-    .map((value, index) => {
-      const x = (index / (values.length - 1)) * 100;
-      const y = 36 - ((value - min) / span) * 32;
-      return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`;
-    })
-    .join(' ');
+  const inset = 7;
+  const top = lane.top + inset;
+  const bottom = lane.top + lane.height - inset;
+  const points = samples.map((sample) => ({
+    x: CHART.plotX + (sample.index / Math.max(historyLength - 1, 1)) * CHART.plotWidth,
+    y: bottom - ((sample.value - min) / span) * (bottom - top),
+  }));
+  const clampY = (value) => Math.max(top, Math.min(bottom, value));
+  let path = `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    // eslint-disable-next-line security/detect-object-injection -- loop bounds are derived from `points.length`
+    const current = points[index];
+    const next = points[index + 1];
+    const previous = points[index - 1] ?? current;
+    const after = points[index + 2] ?? next;
+    const controlOneX = current.x + (next.x - previous.x) / 6;
+    const controlOneY = clampY(current.y + (next.y - previous.y) / 6);
+    const controlTwoX = next.x - (after.x - current.x) / 6;
+    const controlTwoY = clampY(next.y - (after.y - current.y) / 6);
+    path += ` C ${controlOneX.toFixed(2)} ${controlOneY.toFixed(2)}, ${controlTwoX.toFixed(2)} ${controlTwoY.toFixed(2)}, ${next.x.toFixed(2)} ${next.y.toFixed(2)}`;
+  }
+  return path;
+}
+
+function historyTimestamp(point) {
+  const raw = point?.bucket ?? point?.collected_at;
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime())
+    ? 'Latest sample'
+    : date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+}
+
+function metricTone(key, value) {
+  if (value == null) return 'offline';
+  if (key === 'root_disk_pct' && value >= 60) return 'watch';
+  if ((key === 'cpu_pct' || key === 'mem_pct') && value >= 85) return 'critical';
+  if (key === 'max_temp_c' && value >= 80) return 'critical';
+  return 'nominal';
+}
+
+function MetricMatrix({ summary, history }) {
   return (
-    <figure className="agent-telemetry__chart">
-      <figcaption>{label}</figcaption>
-      <svg viewBox="0 0 100 40" role="img" aria-label={`${label} history`}>
-        <path d={path} fill="none" stroke="currentColor" strokeWidth="1.5" />
-      </svg>
-    </figure>
+    <div className="cb-tiles agent-telemetry__metrics" aria-label="Current host metrics">
+      {Object.entries(SUMMARY_LABELS).map(([key, label]) => {
+        // eslint-disable-next-line security/detect-object-injection -- `key` is an element of this module's own summary registry
+        const value = summary?.[key];
+        const tone = metricTone(key, value);
+        return (
+          <div className="agent-telemetry__metric" data-state={tone} key={key}>
+            <span className="agent-telemetry__metric-state">{tone}</span>
+            <StatTile
+              label={label}
+              value={formatMetric(key, value)}
+              points={seriesFor(history, key)}
+            />
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
-HistoryChart.propTypes = {
-  label: PropTypes.string.isRequired,
-  metric: PropTypes.string.isRequired,
-  points: PropTypes.array.isRequired,
+MetricMatrix.propTypes = {
+  summary: PropTypes.object,
+  history: PropTypes.array.isRequired,
+};
+
+function TelemetryWorkbench({ history, latest, historyRange, onHistoryRange, faults, spool }) {
+  const [cursor, setCursor] = React.useState(null);
+  const selectedIndex = Math.max(0, Math.min(cursor ?? history.length - 1, history.length - 1));
+  // eslint-disable-next-line security/detect-object-injection -- selectedIndex is clamped to the history array
+  const selectedPoint = history[selectedIndex];
+  const summary = latest.summary ?? {};
+  const selectedSummary = selectedPoint?.summary ?? {};
+  const traces = TRACE_METRICS.map((metric) => {
+    const samples = historySamples(history, metric.key);
+    const lane = TRACE_LANES.find((candidate) => candidate.key === metric.lane);
+    return {
+      ...metric,
+      samples,
+      path: smoothTrace(samples, metric.domain, lane, history.length),
+    };
+  });
+  const reporting = Object.keys(SUMMARY_LABELS).filter(
+    (key) => rawMetric(latest, key) !== null
+  ).length;
+
+  const selectFromPointer = (event) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const svgX = ((event.clientX - bounds.left) / bounds.width) * CHART.width;
+    const ratio = Math.max(0, Math.min(1, (svgX - CHART.plotX) / CHART.plotWidth));
+    setCursor(Math.round(ratio * Math.max(history.length - 1, 0)));
+  };
+
+  const moveCursor = (event) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    event.preventDefault();
+    const direction = event.key === 'ArrowLeft' ? -1 : 1;
+    setCursor(Math.max(0, Math.min(selectedIndex + direction, history.length - 1)));
+  };
+
+  const cursorX = CHART.plotX + (selectedIndex / Math.max(history.length - 1, 1)) * CHART.plotWidth;
+
+  return (
+    <section className="agent-telemetry__workbench" aria-label="Telemetry analysis workbench">
+      <div className="agent-telemetry__trace-panel">
+        <header className="agent-telemetry__trace-head">
+          <div>
+            <h3>Synchronized telemetry traces</h3>
+            <p>Shared cursor · local scales · sampled across one operational timeline</p>
+          </div>
+          <span className="agent-telemetry__history-count">{history.length} history points</span>
+          <label className="agent-telemetry__range">
+            <span>History range</span>
+            <select value={historyRange} onChange={(event) => onHistoryRange(event.target.value)}>
+              {RANGES.map((range) => (
+                <option key={range}>{range}</option>
+              ))}
+            </select>
+          </label>
+        </header>
+        <svg
+          className="agent-telemetry__trace"
+          viewBox={`0 0 ${CHART.width} ${CHART.height}`}
+          role="img"
+          aria-label="Synchronized host telemetry history"
+          tabIndex="0"
+          onMouseMove={selectFromPointer}
+          onMouseLeave={() => setCursor(null)}
+          onKeyDown={moveCursor}
+        >
+          {TRACE_LANES.map((lane, index) => (
+            <g key={lane.key}>
+              <rect
+                className="agent-telemetry__lane"
+                data-alternate={String(index % 2 === 1)}
+                x={CHART.plotX}
+                y={lane.top}
+                width={CHART.plotWidth}
+                height={lane.height}
+              />
+              <line
+                className="agent-telemetry__lane-rule"
+                x1={CHART.plotX}
+                x2={CHART.plotX + CHART.plotWidth}
+                y1={lane.top + lane.height}
+                y2={lane.top + lane.height}
+              />
+              <text className="agent-telemetry__axis-label" x="8" y={lane.top + 19}>
+                {lane.label.toUpperCase()}
+              </text>
+              <text className="agent-telemetry__axis-value" x="8" y={lane.top + 36}>
+                {lane.key === 'compute' && `CPU ${formatMetric('cpu_pct', summary.cpu_pct)}`}
+                {lane.key === 'memory' && formatMetric('mem_pct', summary.mem_pct)}
+                {lane.key === 'disk' && formatMetric('root_disk_pct', summary.root_disk_pct)}
+                {lane.key === 'network' && `RX ${formatMetric('net_rx_bps', summary.net_rx_bps)}`}
+                {lane.key === 'thermal' && formatMetric('max_temp_c', summary.max_temp_c)}
+              </text>
+            </g>
+          ))}
+          {Array.from({ length: 13 }, (_, index) => {
+            const x = CHART.plotX + (index / 12) * CHART.plotWidth;
+            return (
+              <line
+                className={
+                  index % 2 === 0 ? 'agent-telemetry__grid-major' : 'agent-telemetry__grid'
+                }
+                key={x}
+                x1={x}
+                x2={x}
+                y1={CHART.plotY}
+                y2={CHART.plotY + CHART.plotHeight}
+              />
+            );
+          })}
+          <line
+            className="agent-telemetry__threshold"
+            x1={CHART.plotX}
+            x2={CHART.plotX + CHART.plotWidth}
+            y1="26"
+            y2="26"
+          />
+          {traces.map((trace) =>
+            trace.path ? (
+              <path
+                aria-label={`${trace.label} history`}
+                className="agent-telemetry__trace-line"
+                data-tone={trace.tone}
+                d={trace.path}
+                key={trace.key}
+              />
+            ) : null
+          )}
+          {!traces.find((trace) => trace.key === 'max_temp_c')?.path && (
+            <g aria-label="Temperature unavailable">
+              <line
+                className="agent-telemetry__missing-line"
+                x1={CHART.plotX}
+                x2={CHART.plotX + CHART.plotWidth}
+                y1="285"
+                y2="285"
+              />
+              <text className="agent-telemetry__missing-label" x="480" y="280">
+                NO TEMPERATURE SERIES REPORTED
+              </text>
+            </g>
+          )}
+          <rect
+            className="agent-telemetry__cursor-band"
+            x={cursorX - 14}
+            y={CHART.plotY}
+            width="28"
+            height={CHART.plotHeight}
+          />
+          <line
+            className="agent-telemetry__cursor"
+            x1={cursorX}
+            x2={cursorX}
+            y1={CHART.plotY}
+            y2={CHART.plotY + CHART.plotHeight}
+          />
+          <text className="agent-telemetry__time-label" x={CHART.plotX} y="334">
+            Oldest
+          </text>
+          <text className="agent-telemetry__time-label" x="980" y="334">
+            Latest
+          </text>
+        </svg>
+      </div>
+
+      <aside className="agent-telemetry__ops" aria-label="Operational telemetry context">
+        <section className="agent-telemetry__ops-panel">
+          <header>
+            <h3>Cursor inspection</h3>
+            <time>{historyTimestamp(selectedPoint)}</time>
+          </header>
+          <dl className="agent-telemetry__inspection">
+            {INSPECT_METRICS.map(([key, label]) => (
+              <div key={key}>
+                <dt>{label}</dt>
+                <dd>{formatMetric(key, rawMetric({ summary: selectedSummary }, key))}</dd>
+              </div>
+            ))}
+          </dl>
+          <p>
+            Sample {selectedIndex + 1} of {history.length} · synchronized cursor
+          </p>
+        </section>
+
+        <section className="agent-telemetry__ops-panel">
+          <header>
+            <h3>Signal state</h3>
+            <strong>
+              {faults.length +
+                (metricTone('root_disk_pct', summary.root_disk_pct) === 'watch' ? 1 : 0)}{' '}
+              attention
+            </strong>
+          </header>
+          <ul className="agent-telemetry__signal-list">
+            <li data-state={metricTone('cpu_pct', summary.cpu_pct)}>
+              <span>Compute + memory</span>
+              <b>Nominal</b>
+            </li>
+            <li data-state={metricTone('root_disk_pct', summary.root_disk_pct)}>
+              <span>Root disk</span>
+              <b>{formatMetric('root_disk_pct', summary.root_disk_pct)}</b>
+            </li>
+            <li data-state={metricTone('max_temp_c', summary.max_temp_c)}>
+              <span>Thermal collector</span>
+              <b>{summary.max_temp_c == null ? 'Offline' : 'Nominal'}</b>
+            </li>
+          </ul>
+        </section>
+
+        <section className="agent-telemetry__ops-panel agent-telemetry__collector-panel">
+          <header>
+            <h3>Collector matrix</h3>
+            <strong>
+              {reporting}/{Object.keys(SUMMARY_LABELS).length} reporting
+            </strong>
+          </header>
+          <div className="agent-telemetry__collector-grid">
+            {Object.entries(SUMMARY_LABELS).map(([key, label]) => (
+              <span data-state={rawMetric(latest, key) == null ? 'offline' : 'nominal'} key={key}>
+                {label}
+              </span>
+            ))}
+          </div>
+          <div className="agent-telemetry__collector-foot">
+            <span>Spool</span>
+            <b>{spool?.depth ?? 0} buffered</b>
+            <span>Projection</span>
+            <b>{latest.projected ? 'hardware' : 'agent only'}</b>
+          </div>
+        </section>
+      </aside>
+    </section>
+  );
+}
+
+TelemetryWorkbench.propTypes = {
+  history: PropTypes.array.isRequired,
+  latest: PropTypes.object.isRequired,
+  historyRange: PropTypes.string.isRequired,
+  onHistoryRange: PropTypes.func.isRequired,
+  faults: PropTypes.array.isRequired,
+  spool: PropTypes.object,
 };
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -393,24 +722,21 @@ export default function AgentTelemetryTab({
 
   return (
     <section aria-label="Host telemetry" className="agent-telemetry">
-      <ReadinessBanners faults={faults} />
+      {faults.length > 0 && (
+        <div className="agent-telemetry__faults">
+          <ReadinessBanners faults={faults} />
+        </div>
+      )}
 
-      <div className="cb-tiles">
-        {Object.entries(SUMMARY_LABELS).map(([key, label]) => (
-          <StatTile
-            key={key}
-            label={label}
-            // eslint-disable-next-line security/detect-object-injection -- `key` is an element of this module's own literal label map
-            value={formatMetric(key, telemetry.latest.summary?.[key])}
-            points={seriesFor(history, key)}
-          />
-        ))}
-      </div>
+      <MetricMatrix summary={telemetry.latest.summary} history={history} />
 
       <p className="agent-telemetry__status">
-        {stale ? 'Stale' : 'Live'} · Last sample{' '}
-        {new Date(telemetry.latest.collected_at).toLocaleString()} ·{' '}
+        <strong data-state={stale ? 'stale' : 'live'}>{stale ? '● Stale' : '● Live'}</strong>
+        {' · Last sample '}
+        {new Date(telemetry.latest.collected_at).toLocaleString()}
+        {' · '}
         {interval != null && <>Cadence {interval}s · </>}
+        {history.length} samples ·{' '}
         {telemetry.latest.projected ? 'Projected to linked hardware' : 'Agent only'}
         {catchUp && (
           <>
@@ -420,44 +746,47 @@ export default function AgentTelemetryTab({
         )}
       </p>
 
-      <Panel
-        title="History"
-        summary={`${history.length} history points`}
-        actions={
-          <label>
-            History range{' '}
-            <select value={historyRange} onChange={(event) => onHistoryRange(event.target.value)}>
-              {RANGES.map((range) => (
-                <option key={range}>{range}</option>
-              ))}
-            </select>
-          </label>
-        }
-      >
-        {/* Every chart needs two points to be a line, so a fresh agent draws
-            none of them and the panel was an empty box. Saying so is the
-            difference between "nothing yet" and "this failed to render". */}
-        {history.length < 2 ? (
+      {/* Every chart needs two points to be a line, so a fresh agent draws
+          none of them and the panel was an empty box. Saying so is the
+          difference between "nothing yet" and "this failed to render". */}
+      {history.length < 2 ? (
+        <Panel
+          title="Synchronized telemetry traces"
+          summary={`${history.length} history points`}
+          actions={
+            <label className="agent-telemetry__range">
+              <span>History range</span>
+              <select value={historyRange} onChange={(event) => onHistoryRange(event.target.value)}>
+                {RANGES.map((range) => (
+                  <option key={range}>{range}</option>
+                ))}
+              </select>
+            </label>
+          }
+        >
           <EmptyState
             icon="◴"
             message="Not enough history to chart yet"
             hint={`Charts appear once this agent has reported twice in the selected ${historyRange} window.`}
           />
-        ) : (
-          <div className="agent-telemetry__charts">
-            <HistoryChart label="CPU" metric="cpu_pct" points={history} />
-            <HistoryChart label="Memory" metric="mem_pct" points={history} />
-            <HistoryChart label="Disk" metric="root_disk_pct" points={history} />
-            <HistoryChart label="Network receive" metric="net_rx_bps" points={history} />
-            <HistoryChart label="Temperature" metric="max_temp_c" points={history} />
-          </div>
-        )}
-      </Panel>
+        </Panel>
+      ) : (
+        <TelemetryWorkbench
+          history={history}
+          latest={telemetry.latest}
+          historyRange={historyRange}
+          onHistoryRange={onHistoryRange}
+          faults={faults}
+          spool={telemetry.spool}
+        />
+      )}
 
-      <DeviceTable title="Filesystems" rows={telemetry.latest.payload?.filesystems} />
-      <DeviceTable title="Disks" rows={telemetry.latest.payload?.disks} />
-      <DeviceTable title="Interfaces" rows={telemetry.latest.payload?.interfaces} />
-      <DeviceTable title="Temperatures" rows={telemetry.latest.payload?.temperatures} />
+      <div className="agent-telemetry__device-grid">
+        <DeviceTable title="Filesystems" rows={telemetry.latest.payload?.filesystems} />
+        <DeviceTable title="Disks" rows={telemetry.latest.payload?.disks} />
+        <DeviceTable title="Interfaces" rows={telemetry.latest.payload?.interfaces} />
+        <DeviceTable title="Temperatures" rows={telemetry.latest.payload?.temperatures} />
+      </div>
 
       {/* Docker is absent in the normal case — include_docker defaults to
           false — so the whole block disappears rather than rendering an empty

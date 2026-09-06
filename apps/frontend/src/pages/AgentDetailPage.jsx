@@ -400,11 +400,15 @@ export default function AgentDetailPage() {
 
   const headerActions = (
     <>
-      <button type="button" onClick={() => setUpdateConfirmOpen(true)}>
+      <button
+        className="btn btn-secondary btn-sm"
+        type="button"
+        onClick={() => setUpdateConfirmOpen(true)}
+      >
         Update
       </button>
       {agent.status === 'active' && (
-        <button type="button" onClick={() => setRevokeOpen(true)}>
+        <button className="btn btn-danger btn-sm" type="button" onClick={() => setRevokeOpen(true)}>
           Revoke
         </button>
       )}

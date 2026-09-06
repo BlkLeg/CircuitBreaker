@@ -506,27 +506,13 @@
 
 /* ── DetailHeader ───────────────────────────────────────────────────────── */
 
-/* Sticky, because the identity of the thing being looked at must not scroll
-   away from the numbers describing it.
-
-   `top: 0`, NOT `--header-height`. The scrollport is `.page-content`, which
-   already carries `padding-top: calc(var(--header-height) + 16px)` — and a
-   sticky offset is measured from the scrollport's *content* box, inside that
-   padding. Offsetting by the app chrome again put this 136px down: far enough
-   below the app bar to leave a band of page showing above it, which content
-   then scrolled through and disappeared under. It read as the header covering
-   things, and the cause was counting the same 60px twice.
-
-   The negative offset cancels `--page-top-gap`. `top: 0` pins to the content
-   box, which sits that gap below the app bar — and a scroll container's
-   padding does not clip, so rows kept scrolling up through the band and
-   showing above the pinned header. Cancelling it pins flush to the app bar,
-   where the only thing above the header is opaque chrome. */
+/* The identity header stays in normal document flow. It used to be sticky,
+   which turned this large, information-dense surface into an overlay that
+   covered the telemetry workbench as the page scrolled. The global app header
+   is the only pinned chrome; this local header scrolls with its agent. */
 .cb-detail-head {
-  position: sticky;
-  top: calc(-1 * var(--page-top-gap));
-  z-index: 5;
-  padding: var(--space-4) var(--space-4) 0;
+  position: relative;
+  padding: 7px var(--space-3) 0;
   background: var(--color-surface-raised);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
@@ -534,6 +520,7 @@
 
 .cb-detail-head__back {
   font-size: var(--fs-xs);
+  line-height: 12px;
   color: var(--color-text-muted);
   text-decoration: none;
 }
@@ -546,7 +533,8 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin-top: var(--space-2);
+  min-height: 24px;
+  margin-top: 2px;
 }
 
 .cb-detail-head__title {
@@ -565,7 +553,7 @@
 .cb-detail-head__actions {
   margin-left: auto;
   display: flex;
-  gap: var(--space-2);
+  gap: 6px;
 }
 
 /* Each item is its own element, so the separator is a real adjacent-sibling
@@ -573,8 +561,9 @@
 .cb-meta {
   display: flex;
   flex-wrap: wrap;
-  margin: var(--space-2) 0 var(--space-3);
-  font-size: var(--fs-sm);
+  margin: 2px 0 4px;
+  font-size: var(--fs-xs);
+  line-height: 1.35;
   color: var(--color-text-muted);
 }
 
@@ -591,8 +580,8 @@
 .cb-detail-head__strip {
   display: flex;
   align-items: center;
-  gap: var(--space-4);
-  padding: var(--space-2) 0 var(--space-3);
+  gap: var(--space-3);
+  padding: 3px 0 4px;
   border-top: 1px solid rgba(80, 73, 69, 0.4);
   overflow-x: auto;
 }

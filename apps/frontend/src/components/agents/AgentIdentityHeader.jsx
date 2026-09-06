@@ -30,7 +30,7 @@ function connectionWord(online) {
 }
 
 /**
- * Identity for one agent, in the sticky header.
+ * Identity for one agent in the shared detail header.
  *
  * Every meta field is passed as a separate array entry, because DetailHeader
  * wraps each one — the run-together defect on the fleet's pending row came
