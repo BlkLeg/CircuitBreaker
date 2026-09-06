@@ -57,6 +57,37 @@ async def _serve_baseline_certificate(client, auth_headers, domain: str) -> int:
     return cert_id
 
 
+def _report_successor_held(db_session, agent, cert_id: int) -> None:
+    """Record the heartbeat a reachable agent sends once it holds the
+    advertised successor: it still matches the *current* policy, and it names
+    which successor it holds (H5) so the credit is about this rotation.
+
+    Naming it is not optional. `convergence_counts` credits an agent only when
+    its reported fingerprint matches the running rotation's policy, so bare
+    readiness with no fingerprint — what an agent predating the field sends —
+    counts as unconverged and keeps the gate shut. Deriving the fingerprint
+    from the certificate rather than from the advertised columns is what makes
+    this also assert that the rotation advertised *this* certificate's policy.
+
+    Mirrors what `api/ws_agents.py` writes from a real hello.
+    """
+    from app.core.tls_policy import policy_fingerprint
+    from app.db.models import Certificate
+    from app.services import agent_registry
+    from app.services.agent_install import tls_policy_for_certificate
+
+    cert = db_session.get(Certificate, cert_id)
+    assert cert is not None, f"certificate {cert_id} was created through the API"
+    mode, pin = tls_policy_for_certificate(cert)
+    agent_registry.record_tls_pin(
+        db_session,
+        agent,
+        "current",
+        successor_ready=True,
+        successor_fingerprint=policy_fingerprint(mode, pin),
+    )
+
+
 @pytest.mark.asyncio
 async def test_activation_is_refused_while_agents_are_unconverged(
     client, auth_headers, db_session, factories, activation_env
@@ -77,14 +108,12 @@ async def test_activation_is_refused_while_agents_are_unconverged(
 async def test_activation_succeeds_once_every_agent_has_converged(
     client, auth_headers, db_session, factories, activation_env
 ):
-    from app.services import agent_registry
-
     agent = factories.agent(status="active")
     db_session.commit()
     await _serve_baseline_certificate(client, auth_headers, "base-converged.example.com")
     cert_id = await _make_certificate(client, auth_headers, "gate-converged.example.com")
     await _rotate(client, auth_headers, cert_id)
-    agent_registry.record_tls_pin(db_session, agent, "current", successor_ready=True)
+    _report_successor_held(db_session, agent, cert_id)
     db_session.commit()
 
     resp = await client.post(f"/api/v1/certificates/{cert_id}/activate", headers=auth_headers)
@@ -96,14 +125,14 @@ async def test_activation_succeeds_once_every_agent_has_converged(
 async def test_activation_clears_the_rotation_on_success(
     client, auth_headers, db_session, factories, activation_env
 ):
-    from app.services import agent_registry, agent_tls_pin
+    from app.services import agent_tls_pin
 
     agent = factories.agent(status="active")
     db_session.commit()
     await _serve_baseline_certificate(client, auth_headers, "base-clears.example.com")
     cert_id = await _make_certificate(client, auth_headers, "gate-clears.example.com")
     await _rotate(client, auth_headers, cert_id)
-    agent_registry.record_tls_pin(db_session, agent, "current", successor_ready=True)
+    _report_successor_held(db_session, agent, cert_id)
     db_session.commit()
 
     resp = await client.post(f"/api/v1/certificates/{cert_id}/activate", headers=auth_headers)
@@ -197,8 +226,6 @@ async def test_a_rotation_for_a_different_certificate_does_not_open_the_gate(
 ):
     """Rotating to certificate A and then activating certificate B strands
     the fleet just as thoroughly, and passes a count-only check."""
-    from app.services import agent_registry
-
     agent = factories.agent(status="active")
     db_session.commit()
 
@@ -210,7 +237,7 @@ async def test_a_rotation_for_a_different_certificate_does_not_open_the_gate(
     advertised = await _make_certificate(client, auth_headers, "advertised.example.com")
     other = await _make_certificate(client, auth_headers, "other.example.com")
     await _rotate(client, auth_headers, advertised)
-    agent_registry.record_tls_pin(db_session, agent, "current", successor_ready=True)
+    _report_successor_held(db_session, agent, advertised)
     db_session.commit()
 
     resp = await client.post(f"/api/v1/certificates/{other}/activate", headers=auth_headers)
