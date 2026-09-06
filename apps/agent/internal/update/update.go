@@ -129,7 +129,23 @@ func downloadTo(
 		)
 	}
 
-	tmp, err := os.CreateTemp("", prefix)
+	// Where this lands is chosen per download rather than fixed at
+	// os.TempDir(), because the requirement is known only now: an honest
+	// Content-Length is the exact figure, and without one the ceiling this
+	// call is already bounded by — capped at scratchFloorBytes so a 4 KB
+	// signature is not asked to reserve the room a 256 MB binary would.
+	need := resp.ContentLength
+	if need <= 0 {
+		need = limit
+		if need > scratchFloorBytes {
+			need = scratchFloorBytes
+		}
+	}
+	dir, err := scratchDir(need)
+	if err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(dir, prefix)
 	if err != nil {
 		return "", fmt.Errorf("update: create temp file: %w", err)
 	}
@@ -216,9 +232,12 @@ func constantTimeEqualHexFold(a, b string) bool {
 }
 
 // moveFile renames src to dst, falling back to a copy+remove when the rename
-// fails across a filesystem boundary (EXDEV) — expected in practice, since
-// Download() writes into os.TempDir() while the install target usually
-// lives on a different mount (e.g. /usr/local/bin).
+// fails across a filesystem boundary (EXDEV). Rarer than it used to be:
+// Download() now stages inside the agent's own state directory when it can
+// (see scratchCandidates), which is the same filesystem as the install
+// target. The fallback still has to be correct, because a host whose state
+// directory is unwritable stages in a temp directory that usually is on a
+// different mount.
 func moveFile(src, dst string) error {
 	if err := os.Rename(src, dst); err == nil {
 		return nil
@@ -243,10 +262,10 @@ func moveFile(src, dst string) error {
 		os.Remove(dst)
 		return fmt.Errorf("moveFile: copy %s -> %s: %w", src, dst, err)
 	}
-	// This is the production install path in practice — Download() writes
-	// into os.TempDir() while the install target usually lives on a
-	// different mount, so os.Rename above almost always fails with EXDEV and
-	// lands here. Without an explicit Sync, dst's data may still be sitting
+	// Reached whenever the staging directory and the install target are on
+	// different mounts, which is every host that could not stage in its own
+	// state directory and fell back to a temp directory. Without an explicit
+	// Sync, dst's data may still be sitting
 	// in the page cache when Close returns: Close flushes Go-side buffers,
 	// not the kernel's, so a power loss right after a cross-mount swap could
 	// leave dst truncated or partially written — and unlike the same-
