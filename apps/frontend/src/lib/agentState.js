@@ -194,7 +194,10 @@ const DEFINITIONS = {
     icon: 'ShieldAlert',
     tone: WARN,
     summary: 'One or more collectors on this agent report themselves degraded or unavailable.',
-    action: 'Open the agent and read the collector’s own reason and remediation.',
+    // Not "open the agent": this renders on the agent's own detail page as
+    // well as in the fleet list, and there the instruction had already been
+    // followed. Naming the tab is the useful direction from both.
+    action: 'Read the collector’s own reason and remediation on the Telemetry tab.',
   },
   stale_telemetry: {
     label: 'Stale telemetry',

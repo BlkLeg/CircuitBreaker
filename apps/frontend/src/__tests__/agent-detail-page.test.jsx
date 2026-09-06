@@ -1612,7 +1612,12 @@ describe('AgentDetailPage', () => {
       await waitFor(() => expect(stateText()).toContain('Capability degraded'));
       const text = stateText();
       // The requirement is a *documented operator action* per state, not a badge.
-      expect(text).toContain('What to do: Open the agent and read the collector');
+      // Not "open the agent": this banner renders on the agent's own page,
+      // where that instruction has already been followed. It names the tab
+      // instead, which is also the right direction from the fleet list.
+      expect(text).toContain(
+        'What to do: Read the collector\u2019s own reason and remediation on the Telemetry tab.'
+      );
       // …and it names which collector, or the operator has nowhere to look.
       expect(text).toContain('host.docker');
 
