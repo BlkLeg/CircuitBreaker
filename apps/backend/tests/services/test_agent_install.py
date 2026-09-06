@@ -6,6 +6,7 @@ import shutil
 import ssl
 import subprocess
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -1152,3 +1153,304 @@ def test_a_token_with_shell_metacharacters_survives_verbatim_and_runs_nothing(
     # Exact equality is the whole proof: the value arrived verbatim, and a
     # shell that had run the injected fragment would print something else.
     assert out.stdout == token + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Staging the binary download somewhere that is not, by default, /tmp.
+#
+# Found deploying an agent to a second machine: /tmp is routinely a small
+# tmpfs, and systemd's PrivateTmp= gives this unit a RAM-backed one of its own.
+# A full /tmp failed the install with whatever curl happened to say, which
+# names neither the filesystem nor the fix. The installer now tries the agent's
+# own directory first — real disk, same filesystem as the install target — and
+# falls through a list of alternatives, refusing only when none of them can
+# hold the download and saying what each had.
+
+
+def _run_stage_block(
+    tmp_path,
+    *,
+    state_dir=None,
+    tmpdir=None,
+    override=None,
+    free_kb=None,
+    df_fails=False,
+    then_fail=False,
+):
+    """Execute the installer's staging-directory selection for real.
+
+    `free_kb` maps a path fragment to the KB a stub `df` reports for any
+    candidate containing it, defaulting to plenty — which is how a full
+    filesystem is simulated without needing one. Runs the shell rather than
+    reading the script, for the reason `_run_icmp_block` gives.
+    """
+    import subprocess
+
+    script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex="ab" * 32,
+        tls_pin="",
+        manifest={"0.1.0": {"linux-amd64": "deadbeef"}},
+    )
+    start = script.index("# Staging directory")
+    end = script.index("CB_BINARY_URL=", start)
+    snippet = script[start:end]
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    if df_fails:
+        (bin_dir / "df").write_text("#!/bin/sh\nexit 1\n")
+    else:
+        cases = "\n".join(
+            f"  *{fragment}*) available={kb} ;;" for fragment, kb in (free_kb or {}).items()
+        )
+        (bin_dir / "df").write_text(
+            "#!/bin/sh\n"
+            'target="$2"\n'
+            "available=10000000\n"
+            'case "$target" in\n'
+            f"{cases}\n"
+            "  *) ;;\n"
+            "esac\n"
+            'echo "Filesystem 1024-blocks Used Available Capacity Mounted"\n'
+            'echo "/dev/stub 20000000 0 $available 1% /"\n'
+        )
+    (bin_dir / "df").chmod(0o755)
+
+    lines = ["#!/bin/sh", "set -eu"]
+    if state_dir is not None:
+        lines.append(f"CB_STATE_DIR='{state_dir}'")
+    if tmpdir is not None:
+        lines.append(f"TMPDIR='{tmpdir}'")
+    if override is not None:
+        lines.append(f"CB_AGENT_DOWNLOAD_DIR='{override}'")
+    lines.append(snippet)
+    lines.append('echo "CHOSE=$CB_STAGE_DIR"')
+    lines.append('echo "STAGED=$TMP_BIN"')
+    if then_fail:
+        lines.append("exit 3")
+
+    runner = tmp_path / "run.sh"
+    runner.write_text("\n".join(lines) + "\n")
+    runner.chmod(0o755)
+
+    return subprocess.run(
+        ["/bin/sh", str(runner)],
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+    )
+
+
+def _reported(result, key: str) -> str:
+    for line in result.stdout.splitlines():
+        if line.startswith(f"{key}="):
+            return line.split("=", 1)[1]
+    raise AssertionError(f"{key} not reported: {result.stdout!r} {result.stderr!r}")
+
+
+def test_the_binary_is_staged_in_the_agents_own_directory(tmp_path):
+    """First choice: real disk, and the same filesystem as the install target,
+    so the later `install` is not a cross-mount copy."""
+    state = tmp_path / "state"
+    result = _run_stage_block(tmp_path, state_dir=state, tmpdir=str(tmp_path / "scratch"))
+
+    assert result.returncode == 0, result.stderr
+    assert _reported(result, "CHOSE") == f"{state}/.staging"
+    assert _reported(result, "STAGED").startswith(f"{state}/.staging/")
+
+
+def test_a_full_state_filesystem_falls_back_to_the_next_candidate(tmp_path):
+    """The failure that started this: one filesystem being full must not be
+    the end of the install."""
+    state = tmp_path / "state"
+    scratch = tmp_path / "scratch"
+    result = _run_stage_block(
+        tmp_path, state_dir=state, tmpdir=str(scratch), free_kb={"/.staging": 0}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _reported(result, "CHOSE") == str(scratch)
+
+
+def test_an_unusable_state_directory_does_not_stop_the_install(tmp_path):
+    """A path that cannot even be created — here a regular file, which fails
+    for root too — is skipped rather than fatal under `set -e`."""
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("x")
+    scratch = tmp_path / "scratch"
+    result = _run_stage_block(tmp_path, state_dir=blocked, tmpdir=str(scratch))
+
+    assert result.returncode == 0, result.stderr
+    assert _reported(result, "CHOSE") == str(scratch)
+
+
+def test_the_operator_can_name_the_staging_directory(tmp_path):
+    """The way out for a host whose /var/lib is the constrained filesystem."""
+    chosen = tmp_path / "elsewhere"
+    result = _run_stage_block(
+        tmp_path,
+        state_dir=tmp_path / "state",
+        tmpdir=str(tmp_path / "scratch"),
+        override=str(chosen),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _reported(result, "CHOSE") == str(chosen)
+
+
+def test_no_room_anywhere_names_every_candidate_it_tried(tmp_path):
+    """The message an operator has to act on. "No space left on device" from
+    inside curl says nothing about which filesystem to free."""
+    state = tmp_path / "state"
+    scratch = tmp_path / "scratch"
+    result = _run_stage_block(tmp_path, state_dir=state, tmpdir=str(scratch), free_kb={"": 0})
+
+    assert result.returncode == 1, result.stdout
+    assert f"{state}/.staging" in result.stderr
+    assert str(scratch) in result.stderr
+    assert "/var/tmp" in result.stderr
+    assert "CB_AGENT_DOWNLOAD_DIR" in result.stderr
+
+
+def test_a_df_that_cannot_answer_does_not_refuse_the_install(tmp_path):
+    """Busybox, a stripped image, an unusual mount: an unanswerable `df` is a
+    reason to proceed on the write probe alone, not to refuse."""
+    state = tmp_path / "state"
+    result = _run_stage_block(
+        tmp_path, state_dir=state, tmpdir=str(tmp_path / "scratch"), df_fails=True
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _reported(result, "CHOSE") == f"{state}/.staging"
+
+
+def test_a_failed_install_does_not_leave_the_download_behind(tmp_path):
+    """The staging directory persists across reboots now, so nothing else ever
+    sweeps it."""
+    result = _run_stage_block(
+        tmp_path,
+        state_dir=tmp_path / "state",
+        tmpdir=str(tmp_path / "scratch"),
+        then_fail=True,
+    )
+
+    assert result.returncode == 3, result.stderr
+    assert not Path(_reported(result, "STAGED")).exists()
+
+
+def test_the_staged_name_is_unpredictable(tmp_path):
+    """A staging directory can be world-writable (/tmp and /var/tmp both are),
+    so a guessable name is a symlink target somebody else can plant."""
+    first = _run_stage_block(tmp_path / "a", state_dir=tmp_path / "state")
+    second = _run_stage_block(tmp_path / "b", state_dir=tmp_path / "state")
+
+    assert _reported(first, "STAGED") != _reported(second, "STAGED")
+
+
+# ---------------------------------------------------------------------------
+# Where the emitted command stages the installer script itself.
+#
+# The self-signed form downloads the script, verifies its digest, then runs it,
+# and all three steps named /tmp by absolute path. Same finding as the binary
+# staging above: /tmp is frequently a small tmpfs and is the first thing to
+# fill. /var/tmp is on persistent storage and is not swept mid-boot, and TMPDIR
+# lets an operator put it wherever their host actually has room.
+
+
+@pytest.fixture
+def self_signed_command(db_session, app_cfg, monkeypatch):
+    cert_pem, _, _ = generate_selfsigned("cb.home")
+    monkeypatch.setattr(agent_install, "_live_nginx_cert_pem", lambda: cert_pem)
+    return agent_install.build_install_command(db_session, "https://cb.home")
+
+
+def _staged_installer_path(command: str, env: dict) -> str:
+    """Resolve the command's staging path the way the operator's shell will."""
+    assignment = command.split(";", 1)[0]
+    out = subprocess.run(
+        ["/bin/sh", "-c", f'{assignment}; printf "%s" "$cb_installer"'],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert out.returncode == 0, out.stderr
+    return out.stdout
+
+
+def test_the_emitted_command_stages_the_installer_off_tmp(self_signed_command):
+    assert "/tmp/" not in self_signed_command.command
+    assert _staged_installer_path(self_signed_command.command, {}) == (
+        "/var/tmp/cb-agent-install.sh"
+    )
+
+
+def test_the_staging_path_follows_tmpdir_when_the_host_sets_one(self_signed_command):
+    """The operator's own answer to "where does this host have room" wins."""
+    staged = _staged_installer_path(self_signed_command.command, {"TMPDIR": "/scratch"})
+
+    assert staged == "/scratch/cb-agent-install.sh"
+
+
+def test_the_digest_check_and_the_run_use_the_same_staged_file(self_signed_command):
+    """Three references to one path: download target, digest subject, and the
+    script actually executed. A path that drifted between them would verify one
+    file and run another."""
+    command = self_signed_command.command
+
+    # Three references: the download target, the digest's subject, and the
+    # script executed. The digest one sits inside a larger quoted string, so
+    # count the expansion rather than a quoted-argument shape.
+    assert command.count("$cb_installer") == 3
+    assert "/cb-agent-install.sh" not in command.split(";", 1)[1]
+
+
+def _run_dropin_block(tmp_path, *, download_dir: str | None):
+    """Execute the installer's systemd drop-in block against a scratch unit dir."""
+    script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex="ab" * 32,
+        tls_pin="",
+        manifest={"0.1.0": {"linux-amd64": "deadbeef"}},
+    )
+    start = script.index("# A staging directory the operator named")
+    end = script.index("systemctl daemon-reload", start)
+    snippet = script[start:end]
+
+    unit_dir = tmp_path / "systemd"
+    unit_dir.mkdir(parents=True)
+    runner = tmp_path / "run.sh"
+    lines = ["#!/bin/sh", "set -eu", f"CB_UNIT_DIR='{unit_dir}'"]
+    if download_dir is not None:
+        lines.append(f"CB_AGENT_DOWNLOAD_DIR='{download_dir}'")
+    lines.append(snippet)
+    runner.write_text("\n".join(lines) + "\n")
+    runner.chmod(0o755)
+
+    result = subprocess.run(
+        ["/bin/sh", str(runner)], capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"}
+    )
+    assert result.returncode == 0, result.stderr
+    return unit_dir / "cb-agent.service.d" / "10-download-dir.conf"
+
+
+def test_an_operators_download_directory_is_carried_into_the_unit(tmp_path):
+    """An operator who needed a directory at install time needs the same one at
+    update time — the agent's own downloads land there too."""
+    conf = _run_dropin_block(tmp_path, download_dir="/mnt/data/cb-staging")
+
+    assert conf.exists()
+    body = conf.read_text()
+    assert "Environment=CB_AGENT_DOWNLOAD_DIR=/mnt/data/cb-staging" in body
+    # Without this the sandbox silently wins: ProtectSystem=strict makes the
+    # directory read-only, the agent falls back to the tmpfs this whole change
+    # exists to avoid, and nothing reports it.
+    assert "ReadWritePaths=/mnt/data/cb-staging" in body
+
+
+def test_no_drop_in_is_written_when_the_default_is_fine(tmp_path):
+    """The default path needs no override, and an empty drop-in is one more
+    file for the next operator to wonder about."""
+    conf = _run_dropin_block(tmp_path, download_dir=None)
+
+    assert not conf.exists()

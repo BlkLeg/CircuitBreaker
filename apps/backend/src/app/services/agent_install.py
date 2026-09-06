@@ -73,13 +73,88 @@ esac
 
 {binary_digest_cases}
 
-TMP_BIN="$(mktemp)"
+# Staging directory for the binary download. Deliberately not /tmp first: on a
+# real host /tmp is routinely a small tmpfs, and the systemd unit below adds a
+# RAM-backed one of its own via PrivateTmp=, so a full /tmp failed this install
+# with whatever error curl happened to produce -- naming neither the filesystem
+# nor the fix. The agent's own directory leads instead. It is real disk, and it
+# is the same filesystem as the install target below, which makes that `install`
+# a rename rather than a cross-mount copy.
+#
+# Each candidate must exist or be creatable, accept a write, and -- where df can
+# answer -- have room. CB_AGENT_DOWNLOAD_DIR is the way out for a host whose
+# /var/lib is the constrained filesystem; the last two are the general fallback
+# for a host that cannot write its own state directory at all.
+#
+# CB_STATE_DIR defaults to the real path and exists so the installer's tests can
+# point this block at a scratch directory. It is not an operator knob.
+CB_STAGE_MIN_KB=65536
+cb_stage_reasons=""
+CB_STAGE_DIR=""
+cb_stage_skip() {{
+  cb_stage_reasons="${{cb_stage_reasons}}  $1
+"
+}}
+for cb_candidate in \
+  "${{CB_AGENT_DOWNLOAD_DIR:-}}" \
+  "${{CB_STATE_DIR:-/var/lib/cb-agent}}/.staging" \
+  "${{TMPDIR:-}}" \
+  /tmp \
+  /var/tmp
+do
+  [ -n "$cb_candidate" ] || continue
+  if ! mkdir -p "$cb_candidate" 2>/dev/null; then
+    cb_stage_skip "$cb_candidate: cannot be created"
+    continue
+  fi
+  # mktemp rather than a fixed probe name: /tmp and /var/tmp are world-writable
+  # and this runs as root, so a name another user can predict is a name they can
+  # pre-create as a symlink onto a file this would then truncate.
+  if ! cb_probe="$(mktemp "$cb_candidate/.cb-write-probe.XXXXXX" 2>/dev/null)"; then
+    cb_stage_skip "$cb_candidate: not writable"
+    continue
+  fi
+  rm -f "$cb_probe"
+  # The probe proves permission, not room -- a filesystem with one byte free
+  # still accepts an empty file. A df that cannot answer (busybox, a stripped
+  # image, an unusual mount) is a reason to proceed on the probe alone rather
+  # than to refuse, so an unparseable answer is treated as no answer.
+  cb_free_kb="$(df -Pk "$cb_candidate" 2>/dev/null | awk 'NR==2 {{print $4}}')"
+  case "$cb_free_kb" in
+    ''|*[!0-9]*) cb_free_kb="" ;;
+  esac
+  if [ -n "$cb_free_kb" ] && [ "$cb_free_kb" -lt "$CB_STAGE_MIN_KB" ]; then
+    cb_stage_skip "$cb_candidate: ${{cb_free_kb}} KB free, needs ${{CB_STAGE_MIN_KB}} KB"
+    continue
+  fi
+  CB_STAGE_DIR="$cb_candidate"
+  break
+done
+if [ -z "$CB_STAGE_DIR" ]; then
+  echo "No directory can hold the agent binary download (${{CB_STAGE_MIN_KB}} KB needed):" >&2
+  printf '%s' "$cb_stage_reasons" >&2
+  echo "Free space on one of them, or re-run with CB_AGENT_DOWNLOAD_DIR set to a" >&2
+  echo "directory that has room." >&2
+  exit 1
+fi
+
+TMP_BIN="$(mktemp "$CB_STAGE_DIR/cb-agent-download.XXXXXX")"
+# The staging directory outlives this script, so a download abandoned by an
+# interrupted install is nobody else's to clean up.
+trap 'rm -f "$TMP_BIN"' EXIT INT TERM
 CB_BINARY_URL="${{CB_SERVER_URL}}/api/v1/agents/binary/{latest_version}/linux/${{CB_ARCH}}"
 cb_curl "$CB_BINARY_URL" -o "$TMP_BIN"
 echo "${{CB_BINARY_SHA256}}  ${{TMP_BIN}}" | sha256sum -c
 
 mkdir -p /etc/circuit-breaker /var/lib/cb-agent
 chown cb-agent:cb-agent /var/lib/cb-agent
+# The agent stages its own update downloads in the same directory (see
+# internal/update's scratchCandidates). Created above as root, it would be
+# unwritable by cb-agent, and every future update would silently fall back to
+# the tmpfs this staging block exists to avoid.
+if [ -d "${{CB_STATE_DIR:-/var/lib/cb-agent}}/.staging" ]; then
+  chown cb-agent:cb-agent "${{CB_STATE_DIR:-/var/lib/cb-agent}}/.staging" || true
+fi
 install -d -m 0755 -o cb-agent -g cb-agent "/var/lib/cb-agent/versions/{latest_version}"
 install -m 0755 -o cb-agent -g cb-agent "$TMP_BIN" \
   "/var/lib/cb-agent/versions/{latest_version}/cb-agent"
@@ -187,6 +262,23 @@ ReadWritePaths=/var/lib/cb-agent
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# A staging directory the operator named at install time is one the agent needs
+# at update time too -- its own downloads go to the same place. Two directives,
+# both required: Environment= tells the agent where, and ReadWritePaths= is what
+# lets it write there at all, since ProtectSystem=strict above makes everything
+# outside /var/lib/cb-agent read-only. With only the first, the agent would find
+# the directory unwritable and fall back to the tmpfs this staging work exists
+# to avoid -- silently, which is the failure mode that started all of this.
+#
+# CB_UNIT_DIR defaults to the real path and exists so the installer's tests can
+# point this block at a scratch directory. It is not an operator knob.
+if [ -n "${{CB_AGENT_DOWNLOAD_DIR:-}}" ]; then
+  mkdir -p "${{CB_UNIT_DIR:-/etc/systemd/system}}/cb-agent.service.d"
+  printf '[Service]\nEnvironment=CB_AGENT_DOWNLOAD_DIR=%s\nReadWritePaths=%s\n' \
+    "${{CB_AGENT_DOWNLOAD_DIR}}" "${{CB_AGENT_DOWNLOAD_DIR}}" \
+    > "${{CB_UNIT_DIR:-/etc/systemd/system}}/cb-agent.service.d/10-download-dir.conf"
+fi
 systemctl daemon-reload
 
 echo "Enrolling — compare the fingerprint below against the one shown in the approval screen."
@@ -443,11 +535,20 @@ def build_install_command(
         # validate). The digest check below stays as an independent second
         # check rather than, as before, the only thing between -k and a
         # MITM'd installer.
+        # Staged through one shell variable rather than three copies of a
+        # hardcoded /tmp path. /tmp is frequently a small tmpfs and is the
+        # first filesystem on a host to fill, which is how an agent install
+        # came to fail with an error naming neither the filesystem nor the
+        # fix; /var/tmp is persistent storage and is not swept mid-boot.
+        # TMPDIR still wins, because the operator knows where their host has
+        # room. One variable also means the file downloaded, the file whose
+        # digest is checked and the file executed cannot drift apart.
         command = (
+            'cb_installer="${TMPDIR:-/var/tmp}/cb-agent-install.sh"; '
             f'curl -fsSL --insecure --pinnedpubkey "sha256//{tls_pin}" '
-            f"{download} -o /tmp/cb-agent-install.sh && "
-            f'echo "{script_sha256}  /tmp/cb-agent-install.sh" | sha256sum -c && '
-            f"{prefix}{run_sh} /tmp/cb-agent-install.sh"
+            f'{download} -o "$cb_installer" && '
+            f'echo "{script_sha256}  $cb_installer" | sha256sum -c && '
+            f'{prefix}{run_sh} "$cb_installer"'
         )
 
     return InstallCommandResponse(tls_mode=tls_mode, command=command, script_sha256=script_sha256)

@@ -114,7 +114,7 @@ if you lose it, mint another and revoke the first.
 **Deliver it through the environment, never as an argument.** The command already does this:
 
 ```sh
-CB_ENROLL_TOKEN='cbe_…' sudo -E sh /tmp/cb-agent-install.sh
+CB_ENROLL_TOKEN='cbe_…' sudo -E sh "$cb_installer"
 ```
 
 `sudo -E` is load-bearing — `sudo` scrubs the environment by default, and without it the token
@@ -156,10 +156,21 @@ curl -fsSL 'https://cb.example.com/install-agent.sh?endpoint=<id>' | sudo sh
 runs it, because `-k` skips certificate verification for the download:
 
 ```sh
-curl -fsSLk 'https://cb.example.com/install-agent.sh?endpoint=<id>' -o /tmp/cb-agent-install.sh && \
-  echo "<script_sha256>  /tmp/cb-agent-install.sh" | sha256sum -c && \
-  sudo sh /tmp/cb-agent-install.sh
+cb_installer="${TMPDIR:-/var/tmp}/cb-agent-install.sh"; \
+  curl -fsSL --insecure --pinnedpubkey "sha256//<tls_pin>" \
+    'https://cb.example.com/install-agent.sh?endpoint=<id>' -o "$cb_installer" && \
+  echo "<script_sha256>  $cb_installer" | sha256sum -c && \
+  sudo sh "$cb_installer"
 ```
+
+`--insecure` and `--pinnedpubkey` are a pair, not a contradiction: curl enforces the pin
+independently of `--insecure`, so together they mean "skip the CA chain, require exactly this
+key" — the same check the agent's own TLS stack makes. The digest check that follows is a second,
+independent check rather than the only one.
+
+The script is staged in `${TMPDIR:-/var/tmp}` rather than `/tmp`. `/tmp` is frequently a small
+tmpfs and is the first filesystem on a busy host to fill; `/var/tmp` is persistent storage. Set
+`TMPDIR` if your host wants it somewhere else.
 
 The `?endpoint=<id>` is not cosmetic and must not be edited out. The command runs on the *target*
 machine, and that machine's `curl` is the only thing `GET /install-agent.sh` ever sees — the id
@@ -204,8 +215,22 @@ Running as root, in order:
    the first thing that can answer "is this address reachable from here?".
 2. Creates the service user if it does not exist:
    `useradd --system --no-create-home --shell /usr/sbin/nologin cb-agent`.
-3. Downloads the binary from `${SERVER_URL}/api/v1/agents/binary/<version>/linux/<arch>` and
-   verifies it against a SHA-256 digest embedded in the script itself (`sha256sum -c`).
+3. **Picks somewhere to stage the download**, then downloads the binary from
+   `${SERVER_URL}/api/v1/agents/binary/<version>/linux/<arch>` and verifies it against a SHA-256
+   digest embedded in the script itself (`sha256sum -c`). Candidates are tried in order —
+   `$CB_AGENT_DOWNLOAD_DIR`, `/var/lib/cb-agent/.staging`, `$TMPDIR`, `/tmp`, `/var/tmp` — and the
+   first that can be created, accepts a write, and has at least 64 MB free wins. `/tmp` is
+   deliberately not first: it is frequently a small tmpfs, and a full one used to fail the install
+   with an error naming neither the filesystem nor the fix. If none qualifies the installer says
+   so and lists what each had free:
+
+   ```
+   No directory can hold the agent binary download (65536 KB needed):
+     /var/lib/cb-agent/.staging: 12040 KB free, needs 65536 KB
+     /tmp: 208 KB free, needs 65536 KB
+   ```
+
+   Set `CB_AGENT_DOWNLOAD_DIR` to a directory with room, or free space on one of them.
 4. Installs it to `/var/lib/cb-agent/versions/<version>/cb-agent`, points
    `/var/lib/cb-agent/current` at it, and points `/usr/local/bin/cb-agent` at *that*. The
    two-level symlink is what makes self-update and rollback atomic.
@@ -228,7 +253,10 @@ Running as root, in order:
    rather than looking for a line, and widens as a **union** — groups your host already allowed
    keep their ping. A host sitting on the kernel default `1 0` ("no group may") becomes exactly
    the `cb-agent` group, not everyone. A range that already covers `cb-agent` is left untouched.
-9. Writes `/etc/systemd/system/cb-agent.service` and runs `systemctl daemon-reload`.
+9. Writes `/etc/systemd/system/cb-agent.service`, and — if `CB_AGENT_DOWNLOAD_DIR` was set —
+   a `10-download-dir.conf` drop-in carrying that directory as both `Environment=` and
+   `ReadWritePaths=`, so the agent's own update downloads can use it under
+   `ProtectSystem=strict`. Then runs `systemctl daemon-reload`.
 10. Runs `sudo -u cb-agent /usr/local/bin/cb-agent enroll`. Attended, this prints the device
     fingerprint and pairing code and waits for you to approve. With a token present it sends the
     token instead, is approved immediately, erases the token file, and returns.
@@ -490,6 +518,7 @@ There is exactly one, and it is not a Linux capability:
 |---|---|---|
 | `/var/lib/cb-agent/` | created by the installer under its umask, then `chown`ed; the agent creates it `0700` if it is missing | `cb-agent` |
 | `/var/lib/cb-agent/versions/<v>/` | `0755` | `cb-agent` |
+| `/var/lib/cb-agent/.staging/` | created by whoever gets there first — the installer under its umask, then `chown`ed, or the agent `0700` | `cb-agent` |
 | `/var/lib/cb-agent/device.key` | `0600` | `cb-agent` |
 | `/var/lib/cb-agent/grants.json` | `0600` | `cb-agent` |
 | `/var/lib/cb-agent/status.json` | `0600` | `cb-agent` |
@@ -518,7 +547,12 @@ that push is missed, the agent picks it up from a Redis-queued fallback the link
 ### What the agent does
 
 1. Downloads from `https://your-server/api/v1/agents/binary/{version}/{os}/{arch}` through the
-   same pinned-TLS transport the link uses. Responses larger than 256 MiB are rejected.
+   same pinned-TLS transport the link uses. Responses larger than 256 MiB are rejected. The
+   download is staged in `/var/lib/cb-agent/.staging` where it can be — same filesystem as the
+   install target, so step 4's swap is a rename rather than a cross-mount copy, and real disk
+   rather than the RAM-backed `/tmp` the unit's `PrivateTmp=` provides. `$CB_AGENT_DOWNLOAD_DIR`
+   overrides it; `$TMPDIR` and `/var/tmp` are the fallbacks if the state directory cannot take it.
+   Downloads abandoned by a crash are swept on the next update, 24 hours after they were written.
 2. Verifies the SHA-256 against the digest that arrived over the encrypted channel, using a
    constant-time comparison.
 3. Fetches the detached signature from the same URL with a `.sig` suffix and verifies it against
@@ -675,6 +709,37 @@ journalctl -u cb-agent -f
 `cb-agent status` reads `/var/lib/cb-agent/status.json`. If it says *"no status recorded yet"*,
 the daemon has never run or has not reached its first link attempt — that is a service problem,
 not a connection problem. Check `systemctl status cb-agent`.
+
+### The installer has nowhere to put the download
+
+```
+No directory can hold the agent binary download (65536 KB needed):
+  /var/lib/cb-agent/.staging: 12040 KB free, needs 65536 KB
+  /tmp: 208 KB free, needs 65536 KB
+  /var/tmp: 12040 KB free, needs 65536 KB
+```
+
+Every candidate was tried and each is listed with what it actually had. Nothing on the host was
+changed. Either free space on one of them, or point the installer somewhere with room:
+
+```sh
+CB_AGENT_DOWNLOAD_DIR=/mnt/data/cb-staging sudo -E sh "$cb_installer"
+```
+
+`sudo -E`, or the variable never reaches the script. Setting it at install time also settles it
+for the running agent: the installer writes
+`/etc/systemd/system/cb-agent.service.d/10-download-dir.conf` carrying both `Environment=` and
+`ReadWritePaths=` for that directory, so the agent's own update downloads go there too. Both
+directives are needed — `ProtectSystem=strict` makes everything outside `/var/lib/cb-agent`
+read-only, so without the second the agent would find the directory unwritable and fall back to
+the tmpfs, silently.
+
+On an agent installed before this existed, `systemctl edit cb-agent` and add the same two lines.
+
+A related symptom with no error at all: updates that never complete on a host whose
+`/var/lib/cb-agent/.staging` is owned by root. The agent runs as `cb-agent`, silently falls back
+to `$TMPDIR`, and lands on the tmpfs the staging directory exists to avoid. `chown cb-agent:cb-agent
+/var/lib/cb-agent/.staging` fixes it.
 
 ### The installer says it cannot reach the server
 
