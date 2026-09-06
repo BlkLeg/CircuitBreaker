@@ -15,6 +15,7 @@ vi.mock('../api/agents', () => ({
   approveAgent: vi.fn(),
   rejectAgent: vi.fn(),
   lookupPairingCode: vi.fn(),
+  mintEnrollmentToken: vi.fn(),
 }));
 
 const mockToast = { success: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() };
@@ -28,7 +29,13 @@ vi.mock('../context/SettingsContext', () => ({
   useSettings: () => ({ settings: settingsMock.current, reloadSettings: vi.fn(), loading: false }),
 }));
 
-import { approveAgent, getAgent, getCapabilityDefaults, getInstallCommand } from '../api/agents';
+import {
+  approveAgent,
+  getAgent,
+  getCapabilityDefaults,
+  getInstallCommand,
+  mintEnrollmentToken,
+} from '../api/agents';
 
 const INSTALL = {
   tls_mode: 'self_signed',
@@ -179,7 +186,7 @@ describe('AddAgentPanel', () => {
 
     fireEvent.change(screen.getByLabelText(/endpoint/i), { target: { value: 'pub1' } });
 
-    await waitFor(() => expect(getInstallCommand).toHaveBeenCalledWith('pub1'));
+    await waitFor(() => expect(getInstallCommand).toHaveBeenCalledWith('pub1', null));
   });
 
   it('defaults to the endpoint matching the address this browser is on', async () => {
@@ -189,7 +196,7 @@ describe('AddAgentPanel', () => {
     settingsMock.current = { agent_endpoints: ENDPOINTS };
     render(<AddAgentPanel isStandalone pendingAgents={[]} />);
 
-    await waitFor(() => expect(getInstallCommand).toHaveBeenCalledWith('lan1'));
+    await waitFor(() => expect(getInstallCommand).toHaveBeenCalledWith('lan1', null));
     expect(screen.getByLabelText(/endpoint/i)).toHaveValue('lan1');
   });
 
@@ -199,7 +206,7 @@ describe('AddAgentPanel', () => {
 
     expect(screen.getByText(/address you are browsing/i)).toBeInTheDocument();
     expect(screen.queryByLabelText(/endpoint/i)).not.toBeInTheDocument();
-    expect(getInstallCommand).toHaveBeenCalledWith('');
+    expect(getInstallCommand).toHaveBeenCalledWith('', null);
   });
 
   it('names the address to check once nothing has checked in for 90 seconds', async () => {
@@ -219,5 +226,146 @@ describe('AddAgentPanel', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // ── Slice B: attended or unattended ───────────────────────────────────────
+
+  describe('unattended enrollment', () => {
+    it('defaults to attended, and mints nothing until asked', async () => {
+      settingsMock.current = { agent_endpoints: ENDPOINTS };
+      render(<AddAgentPanel isStandalone pendingAgents={[]} />);
+      await screen.findByText(INSTALL.command);
+
+      expect(screen.getByRole('radio', { name: /^attended/i })).toBeChecked();
+      expect(mintEnrollmentToken).not.toHaveBeenCalled();
+    });
+
+    it('mints only when the operator asks, not when they choose unattended', async () => {
+      // A credential burned on every stray click is a credential nobody can
+      // account for.
+      settingsMock.current = { agent_endpoints: ENDPOINTS };
+      render(<AddAgentPanel isStandalone pendingAgents={[]} />);
+      await screen.findByText(INSTALL.command);
+
+      fireEvent.click(screen.getByRole('radio', { name: /^unattended/i }));
+
+      expect(mintEnrollmentToken).not.toHaveBeenCalled();
+      expect(await screen.findByRole('button', { name: /generate token/i })).toBeInTheDocument();
+    });
+
+    it('shows the token once, and says so', async () => {
+      settingsMock.current = { agent_endpoints: ENDPOINTS };
+      mintEnrollmentToken.mockResolvedValue({ data: { id: 7, token: 'cbe_shown-once' } });
+      render(<AddAgentPanel isStandalone pendingAgents={[]} />);
+      await screen.findByText(INSTALL.command);
+
+      fireEvent.click(screen.getByRole('radio', { name: /^unattended/i }));
+      fireEvent.click(await screen.findByRole('button', { name: /generate token/i }));
+
+      expect(await screen.findByText('cbe_shown-once')).toBeInTheDocument();
+      expect(screen.getByText(/not be shown again/i)).toBeInTheDocument();
+    });
+
+    it('warns that the token must not be passed as an argument', async () => {
+      settingsMock.current = { agent_endpoints: ENDPOINTS };
+      mintEnrollmentToken.mockResolvedValue({ data: { id: 7, token: 'cbe_x' } });
+      render(<AddAgentPanel isStandalone pendingAgents={[]} />);
+      await screen.findByText(INSTALL.command);
+
+      fireEvent.click(screen.getByRole('radio', { name: /^unattended/i }));
+      fireEvent.click(await screen.findByRole('button', { name: /generate token/i }));
+
+      expect(await screen.findByText(/visible in/i)).toBeInTheDocument();
+    });
+
+    it('re-fetches the command with the token, so the copied command carries it', async () => {
+      settingsMock.current = { agent_endpoints: ENDPOINTS };
+      mintEnrollmentToken.mockResolvedValue({ data: { id: 7, token: 'cbe_x' } });
+      render(<AddAgentPanel isStandalone pendingAgents={[]} />);
+      await screen.findByText(INSTALL.command);
+
+      fireEvent.click(screen.getByRole('radio', { name: /^unattended/i }));
+      fireEvent.click(await screen.findByRole('button', { name: /generate token/i }));
+
+      await waitFor(() => expect(getInstallCommand).toHaveBeenLastCalledWith('lan1', 'cbe_x'));
+    });
+
+    it('mints for the endpoint that is selected', async () => {
+      settingsMock.current = { agent_endpoints: ENDPOINTS };
+      mintEnrollmentToken.mockResolvedValue({ data: { id: 7, token: 'cbe_x' } });
+      render(<AddAgentPanel isStandalone pendingAgents={[]} />);
+      await screen.findByText(INSTALL.command);
+
+      fireEvent.change(screen.getByLabelText(/endpoint/i), { target: { value: 'pub1' } });
+      fireEvent.click(screen.getByRole('radio', { name: /^unattended/i }));
+      fireEvent.click(await screen.findByRole('button', { name: /generate token/i }));
+
+      await waitFor(() =>
+        expect(mintEnrollmentToken).toHaveBeenCalledWith(
+          expect.objectContaining({ endpoint_id: 'pub1' })
+        )
+      );
+    });
+
+    it('drops a minted token when the endpoint changes, since it is scoped to one', async () => {
+      settingsMock.current = { agent_endpoints: ENDPOINTS };
+      mintEnrollmentToken.mockResolvedValue({ data: { id: 7, token: 'cbe_x' } });
+      render(<AddAgentPanel isStandalone pendingAgents={[]} />);
+      await screen.findByText(INSTALL.command);
+      fireEvent.click(screen.getByRole('radio', { name: /^unattended/i }));
+      fireEvent.click(await screen.findByRole('button', { name: /generate token/i }));
+      await screen.findByText('cbe_x');
+
+      fireEvent.change(screen.getByLabelText(/endpoint/i), { target: { value: 'pub1' } });
+
+      await waitFor(() => expect(screen.queryByText('cbe_x')).not.toBeInTheDocument());
+      await waitFor(() => expect(getInstallCommand).toHaveBeenLastCalledWith('pub1', null));
+    });
+
+    it('drops the token when the operator goes back to attended', async () => {
+      // Otherwise the copied command still carries a credential they think
+      // they abandoned.
+      settingsMock.current = { agent_endpoints: ENDPOINTS };
+      mintEnrollmentToken.mockResolvedValue({ data: { id: 7, token: 'cbe_x' } });
+      render(<AddAgentPanel isStandalone pendingAgents={[]} />);
+      await screen.findByText(INSTALL.command);
+      fireEvent.click(screen.getByRole('radio', { name: /^unattended/i }));
+      fireEvent.click(await screen.findByRole('button', { name: /generate token/i }));
+      await screen.findByText('cbe_x');
+
+      fireEvent.click(screen.getByRole('radio', { name: /^attended/i }));
+
+      await waitFor(() => expect(screen.queryByText('cbe_x')).not.toBeInTheDocument());
+      await waitFor(() => expect(getInstallCommand).toHaveBeenLastCalledWith('lan1', null));
+    });
+
+    it('surfaces a mint failure inline rather than silently staying attended', async () => {
+      settingsMock.current = { agent_endpoints: ENDPOINTS };
+      mintEnrollmentToken.mockRejectedValue({ response: { data: { detail: 'no endpoint' } } });
+      render(<AddAgentPanel isStandalone pendingAgents={[]} />);
+      await screen.findByText(INSTALL.command);
+
+      fireEvent.click(screen.getByRole('radio', { name: /^unattended/i }));
+      fireEvent.click(await screen.findByRole('button', { name: /generate token/i }));
+
+      expect(await screen.findByText(/no endpoint/)).toBeInTheDocument();
+      expect(mockToast.error).toHaveBeenCalled();
+    });
+
+    it('tells the operator the machine will not wait for approval', async () => {
+      settingsMock.current = { agent_endpoints: ENDPOINTS };
+      mintEnrollmentToken.mockResolvedValue({ data: { id: 7, token: 'cbe_x' } });
+      render(<AddAgentPanel isStandalone pendingAgents={[]} />);
+      await screen.findByText(INSTALL.command);
+
+      fireEvent.click(screen.getByRole('radio', { name: /^unattended/i }));
+      fireEvent.click(await screen.findByRole('button', { name: /generate token/i }));
+
+      // Wait for the mint to land first: before it does, the *pre*-mint copy
+      // carries this same sentence, so asserting straight away can pass or
+      // fail on whichever render it catches.
+      await screen.findByText('cbe_x');
+      expect(await screen.findByText(/without waiting for approval/i)).toBeInTheDocument();
+    });
   });
 });

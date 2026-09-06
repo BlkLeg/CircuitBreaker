@@ -77,14 +77,36 @@ export const deleteAgent = (id) => client.delete(`/agents/${id}`);
 // `endpointId` names one of the operator-declared agent endpoints. Omitting it
 // is the pre-existing behaviour — the server derives the address from the host
 // the browser is on — so an install with nothing configured is unchanged.
-export const getInstallCommand = (endpointId) =>
-  client.get('/agents/install-command', { params: endpointId ? { endpoint: endpointId } : {} });
+// `enrollmentToken` makes the emitted command an unattended one. It is passed
+// in rather than minted here: the caller mints once and then asks for a command
+// carrying it, so re-fetching the command never silently burns a second
+// credential.
+export const getInstallCommand = (endpointId, enrollmentToken) =>
+  client.get('/agents/install-command', {
+    params: {
+      ...(endpointId ? { endpoint: endpointId } : {}),
+      ...(enrollmentToken ? { enrollment_token: enrollmentToken } : {}),
+    },
+  });
 export const triggerAgentUpdate = (id, version) => client.post(`/agents/${id}/update`, { version });
 
 // Agents enrolled per endpoint URL. An endpoint with no agents is the only
 // positive evidence an operator gets that an address they declared is
 // unreachable — the agent that would report it is the one that cannot connect.
 export const getEndpointUsage = () => client.get('/agents/endpoint-usage');
+
+// Slice B: unattended enrollment. The mint response is the only place the
+// plaintext token ever appears — the row stores only its hash, so it cannot be
+// read back.
+export const mintEnrollmentToken = (body) => client.post('/agents/enrollment-tokens', body);
+
+// Every token, newest first, revoked and expired included: an operator
+// auditing what was minted needs the ones that are no longer live.
+export const listEnrollmentTokens = () => client.get('/agents/enrollment-tokens');
+
+// Shuts a token immediately. Agents already enrolled through it are unaffected
+// — they hold their own device identity and never present it again.
+export const revokeEnrollmentToken = (id) => client.post(`/agents/enrollment-tokens/${id}/revoke`);
 
 // Fleet redesign §1.2: the sparkline series for the Agents page, deliberately a
 // second endpoint rather than a flag on /agents/presence. The two reads have
