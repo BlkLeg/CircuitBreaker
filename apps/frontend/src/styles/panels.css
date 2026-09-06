@@ -1,0 +1,116 @@
+/* ── Shared layout primitives ───────────────────────────────────────────────
+   The spacing and type scale main.css never had. Colour is NOT redefined here
+   — every tone below resolves to a --color-* already declared in main.css, so
+   a theme change lands in one place and this file follows it.
+
+   Nothing in components/common/ knows the word "agent". These rules are named
+   cb-* rather than agent-* for the same reason: the next detail page adopts
+   them without renaming anything. */
+
+:root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  --panel-pad: var(--space-3);
+  --panel-gap: var(--space-3);
+
+  /* A type ramp, not a set of one-off font-sizes. --fs-micro is the uppercase
+     label size and is deliberately paired with letter-spacing everywhere it is
+     used; below 9.5px the tracking stops compensating for the size. */
+  --fs-micro: 9.5px;
+  --fs-xs: 11px;
+  --fs-sm: 12.5px;
+  --fs-md: 13px;
+  --fs-lg: 19px;
+  --fs-xl: 21px;
+
+  /* Panels sit *above* the page. --color-surface (#3c3836) is the same value
+     the page chrome uses, so a panel painted with it reads as flat. */
+  --color-surface-raised: #32302f;
+
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* ── Panel ──────────────────────────────────────────────────────────────── */
+
+.cb-panel {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+/* Tone is a left edge, never a fill: a panel whose whole background changes
+   colour stops reading as the same kind of object as its neighbours. */
+.cb-panel[data-tone='ok'] {
+  border-left: 3px solid var(--color-success);
+}
+.cb-panel[data-tone='warn'] {
+  border-left: 3px solid var(--color-warning);
+}
+.cb-panel[data-tone='danger'] {
+  border-left: 3px solid var(--color-danger);
+}
+.cb-panel[data-tone='info'] {
+  border-left: 3px solid var(--color-info);
+}
+
+.cb-panel__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--panel-pad);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+}
+
+.cb-panel__title {
+  margin: 0;
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+/* The summary is a reading of the panel's contents, so it is quiet and it is
+   tabular — these values change in place as polls land. */
+.cb-panel__summary {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.cb-panel__actions {
+  margin-left: auto;
+  display: flex;
+  gap: var(--space-2);
+}
+.cb-panel__summary + .cb-panel__actions {
+  margin-left: var(--space-2);
+}
+
+.cb-panel__body {
+  padding: var(--panel-pad);
+}
+
+/* ── PanelGrid ──────────────────────────────────────────────────────────── */
+
+.cb-panel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(var(--cb-grid-min, 232px), 1fr));
+  gap: var(--panel-gap);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cb-panel,
+  .cb-panel * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
