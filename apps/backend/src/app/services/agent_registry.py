@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     # runtime import of the scope-cancellation trigger below is function-local.
     # Only the annotation is needed up here.
     from app.services.agent_discovery import DiscoveryCancellation
+    from app.services.agent_enrollment_tokens import ConsumedToken
 
     # `agent_tls_pin` is a sibling service; a runtime import here would make
     # the pair a services<->services cycle. Only the annotation on
@@ -504,7 +505,7 @@ def approve_agent(
     db: Session,
     agent_id: int,
     *,
-    approving_user_id: int,
+    approving_user_id: int | None,
     hardware_id: int | None = None,
     host_link_action: str | None = None,
     capability_overrides: dict[str, Any] | None = None,
@@ -512,8 +513,14 @@ def approve_agent(
 ) -> Agent:
     """Approve a pending agent and grant it the default capability set.
 
+    `approving_user_id` may be None only where no user can be named — a token
+    whose minting operator has since been deleted. Both columns it feeds
+    (`approved_by_user_id`, `granted_by_user_id`) are nullable, and recording
+    nothing is more honest than inventing an approver.
+
     `via` names the surface the approval came from — "cli" for a headless
-    change, absent for the UI. It rides on the event detail, and so into the
+    change, "enrollment_token" for an unattended enrollment, absent for the UI.
+    It rides on the event detail, and so into the
     hash-chained audit entry `record_event` writes (F17), because that entry
     is now the single record of an approval from any surface: a caller that
     wrote its own alongside it would put two rows in the chain for one
@@ -563,6 +570,61 @@ def approve_agent(
         detail = {**(detail or {}), "via": via}
     record_event(db, agent.id, "approved", actor_user_id=approving_user_id, detail=detail)
     db.flush()
+    return agent
+
+
+def create_enrolled_agent(
+    db: Session,
+    *,
+    device_pk: str,
+    fingerprint: str,
+    token: ConsumedToken,
+    hello_payload: Mapping[str, Any],
+    reported_ip: str | None,
+) -> Agent:
+    """Slice B: create an already-approved agent from a consumed token.
+
+    One function rather than `create_pending_agent` then `approve_agent` at the
+    call site, because approval here is not a transition an operator performs
+    later — the row is born approved, and two separate writes would leave a
+    window in which a token-enrolled agent is briefly `pending` and visible as
+    such to anyone watching the fleet.
+
+    Approval *is* what is happening, which is why grant rows are written now:
+    the capability invariant governs never silently enabling a capability on an
+    **already-approved** agent, and this agent has no prior approval to be
+    surprised by.
+
+    The approver recorded is the operator who minted the token. They authorised
+    every agent it enrolls, and leaving it blank would make the audit trail read
+    as though the agent approved itself.
+    """
+    agent = create_pending_agent(
+        db,
+        device_pk=device_pk,
+        fingerprint=fingerprint,
+        hostname=hello_payload.get("hostname"),
+        machine_id_hash=hello_payload.get("machine_id_hash"),
+        os=hello_payload.get("os"),
+        os_version=hello_payload.get("os_version"),
+        arch=hello_payload.get("arch"),
+        agent_version=hello_payload.get("agent_version"),
+        primary_macs=hello_payload.get("primary_macs"),
+        reported_ip=reported_ip,
+        # The token's endpoint, not the hello's `server_url`: the token is what
+        # the operator chose, and a machine that reported something else dialed
+        # an address they did not pick.
+        enrolled_via_endpoint=token.endpoint_url,
+    )
+    agent.enrollment_token_id = token.id
+    db.flush()
+    approve_agent(
+        db,
+        agent.id,
+        approving_user_id=token.created_by_user_id,
+        capability_overrides=dict(token.capabilities) or None,
+        via="enrollment_token",
+    )
     return agent
 
 

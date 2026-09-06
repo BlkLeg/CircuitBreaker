@@ -175,11 +175,12 @@ def _reaped_models() -> tuple[type, ...]:
     """Tables tests legitimately commit outside the per-test transaction.
 
     Ordered so a child is deleted before whatever it points at: monitor rows
-    name a hardware target, and hardware and users can carry a tenant.
+    name a hardware target, agents name the enrollment token they came through,
+    and hardware and users can carry a tenant.
     """
-    from app.db.models import Agent, Hardware, MonitorItem, Tenant, User
+    from app.db.models import Agent, AgentEnrollmentToken, Hardware, MonitorItem, Tenant, User
 
-    return (MonitorItem, Agent, Hardware, User, Tenant)
+    return (MonitorItem, Agent, AgentEnrollmentToken, Hardware, User, Tenant)
 
 
 def _committed_ids() -> dict[str, set[int]]:

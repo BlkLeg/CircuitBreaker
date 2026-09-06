@@ -52,6 +52,7 @@ from app.schemas.agent_frame import (
 from app.services import (
     agent_discovery,
     agent_enrollment,
+    agent_enrollment_tokens,
     agent_link,
     agent_registry,
     agent_tls_pin,
@@ -214,6 +215,45 @@ async def enroll_stream(websocket: WebSocket) -> None:
             )
             await websocket.close(code=1000)
             return
+        # Slice B: unattended enrollment. A hello carrying a token takes this
+        # branch entirely — no pairing code, no approval screen, and no
+        # concurrent-pending accounting. A token-enrolled agent is never
+        # pending, so folding it into that cap would deadlock every unattended
+        # boot (design §4). The per-IP and global attempt-rate gates at the top
+        # of this handler still apply and are what bound abuse of this path.
+        enroll_token = payload.get("enroll_token")
+        if enroll_token:
+            consumed = agent_enrollment_tokens.consume_token(db, str(enroll_token))
+            if consumed is None:
+                # Unknown, spent, revoked or expired — one indistinguishable
+                # close, so this endpoint is not an oracle for live tokens.
+                # Deliberately not an encrypted error frame naming the reason:
+                # the reason is exactly what must not travel. The token itself
+                # is never logged — it is a credential either way.
+                _logger.info("agent enroll: token rejected from %s", client_ip)
+                await websocket.close(code=1008)
+                return
+            agent = agent_registry.create_enrolled_agent(
+                db,
+                device_pk=device_pk_hex,
+                fingerprint=fingerprint,
+                token=consumed,
+                hello_payload=payload,
+                reported_ip=client_ip,
+            )
+            agent_registry.record_server_key_pin(db, agent, server_key_kind)
+            db.commit()
+            agent_id = agent.id
+            await agent_registry.broadcast_presence(agent_id, "enrolled")
+            # The shipped agent already handles status="active" — it prints
+            # "approved — connecting" and proceeds to the link — so this needs
+            # no new client behaviour.
+            await websocket.send_bytes(
+                _ack_bytes(responder, {"agent_id": agent_id, "status": "active"})
+            )
+            await websocket.close(code=1000)
+            return
+
         pending_lock_token = None
         try:
             if existing is not None and existing.status == "pending":
