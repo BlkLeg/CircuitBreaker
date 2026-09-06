@@ -57,3 +57,28 @@ async def test_a_bare_host_with_a_trailing_slash_is_still_accepted(client, auth_
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["agent_endpoints"][0]["url"] == "https://example.com"
+
+
+@pytest.mark.asyncio
+async def test_omitting_endpoints_leaves_the_stored_ones_alone(client, auth_headers):
+    """`update_settings` iterates `model_dump(exclude_unset=True)`, so an
+    omitted `agent_endpoints` never reaches the loop and the stored list
+    survives. That is load-bearing — the settings screen PUTs whatever section
+    the operator touched — and `agent_endpoints` now has a bespoke branch in
+    that loop, so it is worth pinning rather than inferring."""
+    created = await client.put(
+        "/api/v1/settings",
+        json={"agent_endpoints": [{"label": "Public", "url": "https://cb.example.com"}]},
+        headers=auth_headers,
+    )
+    assert created.status_code == 200, created.text
+    stored = created.json()["agent_endpoints"]
+
+    unrelated = await client.put("/api/v1/settings", json={"theme": "dark"}, headers=auth_headers)
+
+    assert unrelated.status_code == 200, unrelated.text
+    assert unrelated.json()["agent_endpoints"] == stored
+
+    reread = await client.get("/api/v1/settings", headers=auth_headers)
+    assert reread.status_code == 200, reread.text
+    assert reread.json()["agent_endpoints"] == stored
