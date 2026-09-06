@@ -298,6 +298,92 @@ describe('useAgentDetail', () => {
     expect(result.current.telemetry.latest.collected_at).toBe('2026-09-05T00:00:00Z');
   });
 
+  it('keeps a merged sample when a poll issued before it resolves afterwards', async () => {
+    // Fix round: the merge below used to have no re-apply-after-poll guard, so
+    // a GET that was already in flight when the push landed overwrote the
+    // pushed sample the moment it resolved — and nothing re-fired the merge
+    // effect afterwards, because `liveTelemetry`'s identity had not changed.
+    // The strip then sat on the older reading for a whole poll period.
+    live.telemetry = new Map([['seed:unrelated', {}]]);
+
+    // The first poll never resolves on its own; the test resolves it by hand,
+    // after the push, so that "issued before, resolved after" is exact.
+    let resolvePoll;
+    api.getAgentTelemetry.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolvePoll = resolve;
+      })
+    );
+
+    const { result, rerender } = mount('overview');
+    await waitFor(() => expect(api.getAgentTelemetry).toHaveBeenCalledTimes(1));
+
+    const pushed = {
+      payload: { summary: { cpu_pct: 77.7 }, status: 'ok' },
+      collected_at: '2026-09-05T00:00:10Z',
+    };
+    act(() => {
+      live.telemetry = new Map(live.telemetry).set('agent:7', pushed);
+    });
+    rerender({ tab: 'overview' });
+    await waitFor(() =>
+      expect(result.current.telemetry?.latest?.summary).toEqual({ cpu_pct: 77.7 })
+    );
+
+    // The in-flight response finally lands, carrying the older sample.
+    await act(async () => {
+      resolvePoll({
+        data: {
+          latest: {
+            collected_at: '2026-09-05T00:00:00Z',
+            summary: { cpu_pct: 12.5 },
+            payload: { summary: { cpu_pct: 12.5 } },
+          },
+          readiness: [],
+          spool: null,
+        },
+      });
+    });
+
+    // It must not win: its request predates the push.
+    await waitFor(() => expect(result.current.telemetry.latest.summary).toEqual({ cpu_pct: 77.7 }));
+    expect(result.current.telemetry.latest.collected_at).toBe('2026-09-05T00:00:10Z');
+  });
+
+  it('lets a poll issued after a sample push override it', async () => {
+    // The other half of the same rule, and the reason it is a request-time
+    // comparison rather than an unconditional re-apply: useTelemetryStream
+    // never clears its data map on a socket drop, so a cached push must not
+    // pin a stale sample on top of every later poll for the life of the page.
+    live.telemetry = new Map([['seed:unrelated', {}]]);
+    const { result, rerender } = mount('overview');
+    await waitFor(() => expect(result.current.telemetry).toBeTruthy());
+
+    act(() => {
+      live.telemetry = new Map(live.telemetry).set('agent:7', {
+        payload: { summary: { cpu_pct: 77.7 }, status: 'ok' },
+        collected_at: '2026-09-05T00:00:10Z',
+      });
+    });
+    rerender({ tab: 'overview' });
+    await waitFor(() => expect(result.current.telemetry.latest.summary).toEqual({ cpu_pct: 77.7 }));
+
+    api.getAgentTelemetry.mockResolvedValueOnce({
+      data: {
+        latest: {
+          collected_at: '2026-09-05T00:01:00Z',
+          summary: { cpu_pct: 3.5 },
+          payload: { summary: { cpu_pct: 3.5 } },
+        },
+        readiness: [],
+        spool: null,
+      },
+    });
+    act(() => result.current.reloadTelemetry());
+
+    await waitFor(() => expect(result.current.telemetry.latest.summary).toEqual({ cpu_pct: 3.5 }));
+  });
+
   it('applies a live readiness push, then lets a newer poll override a now-stale one', async () => {
     // Same seeding rationale as the sample-merge test above.
     live.telemetry = new Map([['seed:unrelated', {}]]);

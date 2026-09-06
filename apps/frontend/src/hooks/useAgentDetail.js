@@ -78,6 +78,9 @@ export function useAgentDetail(id, { activeTab = 'overview' } = {}) {
   // Identity + client receipt time of the last capability.readiness push,
   // mirroring AgentDetailPage's readinessPushRef.
   const readinessPushRef = useRef({ array: null, receivedAt: 0 });
+  // The same, for the last telemetry.host sample push. See the merge below for
+  // why a sample needs the guard a readiness row needs.
+  const samplePushRef = useRef({ update: null, receivedAt: 0 });
 
   const { statuses } = useAgentLive();
   const telemetryEntities = useMemo(() => [{ entity_type: 'agent', entity_id: Number(id) }], [id]);
@@ -150,26 +153,43 @@ export function useAgentDetail(id, { activeTab = 'overview' } = {}) {
     return () => clearInterval(timer);
   }, [reloadTelemetry, streamIsDelivering]);
 
-  // Live sample push: merged into `telemetry.latest` as soon as it arrives,
-  // exactly as AgentDetailPage.jsx did before this hook replaced it. Without
-  // this, `liveTelemetry` is subscribed to but never read, and the header
-  // strip would only ever move on the 30s poll — which is the bug this
-  // fix-round exists to close.
+  // Live sample push: merged into `telemetry.latest` as soon as it arrives.
+  // Without this, `liveTelemetry` is subscribed to but never read, and the
+  // header strip would only ever move on the 30s poll.
+  //
+  // The guard is the same one the readiness merge below applies, and it is here
+  // for the same reason: the poll replaces the whole telemetry object, so a
+  // response that was already in flight when the push landed will overwrite the
+  // merged sample the moment it resolves — and nothing re-fires this effect
+  // afterwards, because `liveTelemetry`'s identity has not changed. The strip
+  // would then sit on the older reading until the next poll, which is up to
+  // POLL_BACKOFF_MS away. Re-applying the push on top of every poll would be
+  // the opposite error (a push cached across a socket drop would pin a stale
+  // sample forever), so the tie is broken by request time: a push only outranks
+  // a poll whose request was issued *before* the push arrived.
+  const liveSample = liveTelemetry.get(`agent:${Number(id)}`);
   useEffect(() => {
-    const update = liveTelemetry.get(`agent:${Number(id)}`);
-    if (update?.payload) {
-      setTelemetry((current) => ({
-        ...current,
-        latest: {
-          ...current?.latest,
-          payload: update.payload,
-          summary: update.payload.summary,
-          collected_at: update.collected_at,
-          status: update.payload.status,
-        },
-      }));
+    if (!liveSample?.payload) return;
+    if (samplePushRef.current.update !== liveSample) {
+      samplePushRef.current = { update: liveSample, receivedAt: Date.now() };
     }
-  }, [liveTelemetry, id]);
+    if (telemetryRequestedAt != null && samplePushRef.current.receivedAt < telemetryRequestedAt) {
+      return;
+    }
+    // Already applied. The equality check is what makes the re-apply a fixed
+    // point rather than a render loop.
+    if (telemetry?.latest?.payload === liveSample.payload) return;
+    setTelemetry((current) => ({
+      ...current,
+      latest: {
+        ...current?.latest,
+        payload: liveSample.payload,
+        summary: liveSample.payload.summary,
+        collected_at: liveSample.collected_at,
+        status: liveSample.payload.status,
+      },
+    }));
+  }, [liveSample, telemetry, telemetryRequestedAt]);
 
   // Live readiness push: broadcast on the same telemetry:agent:{id} channel as
   // the samples but filed under its own `readiness:` key by useTelemetryStream
