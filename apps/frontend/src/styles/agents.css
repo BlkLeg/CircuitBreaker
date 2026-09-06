@@ -953,6 +953,7 @@
 .fleet-pending {
   display: flex;
   align-items: center;
+  gap: 0;
 }
 
 .fleet-pending__item + .fleet-pending__item::before {
