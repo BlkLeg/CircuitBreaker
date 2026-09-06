@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import PropTypes from 'prop-types';
 import '../../styles/panels.css';
 
@@ -34,6 +34,24 @@ function indicatorSuffix(indicator) {
  * one while arrowing past.
  */
 export default function Tabs({ tabs, active, onChange, label }) {
+  const tablistRef = useRef(null);
+  const activeButtonRef = useRef(null);
+
+  // Roving tabindex only relocates the DOM's *focusable* element; the browser
+  // does not follow along on its own. Move actual focus here so the visible
+  // ring and what a screen reader announces track the same button the arrow
+  // keys just selected — but only when the tablist already holds focus.
+  // Otherwise a parent re-rendering with a different `active` (e.g. on
+  // mount) would yank focus into the tabs unasked.
+  useEffect(() => {
+    const tablist = tablistRef.current;
+    const activeButton = activeButtonRef.current;
+    if (!tablist || !activeButton) return;
+    if (tablist.contains(document.activeElement)) {
+      activeButton.focus();
+    }
+  }, [active]);
+
   const onKeyDown = useCallback(
     (event) => {
       const index = tabs.findIndex((tab) => tab.key === active);
@@ -50,7 +68,13 @@ export default function Tabs({ tabs, active, onChange, label }) {
   );
 
   return (
-    <div className="cb-tabs" role="tablist" aria-label={label} onKeyDown={onKeyDown}>
+    <div
+      className="cb-tabs"
+      role="tablist"
+      aria-label={label}
+      onKeyDown={onKeyDown}
+      ref={tablistRef}
+    >
       {tabs.map((tab) => {
         const selected = tab.key === active;
         const indicator = tab.indicator ?? null;
@@ -58,6 +82,7 @@ export default function Tabs({ tabs, active, onChange, label }) {
         return (
           <button
             key={tab.key}
+            ref={selected ? activeButtonRef : null}
             type="button"
             role="tab"
             id={tabId(tab.key)}

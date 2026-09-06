@@ -38,8 +38,9 @@ export default function DetailHeader({
       {meta.length === 0 ? null : (
         <div className="cb-meta">
           {meta.map((item, index) => (
-            // are positional fields of one record (status, platform, version);
-            // they have no identity of their own and the list never reorders.
+            // Index as key is fine here: meta entries are positional fields
+            // of one record (status, platform, version), have no identity of
+            // their own, and this list never reorders.
             <span className="cb-meta__item" key={index}>
               {item}
             </span>

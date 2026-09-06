@@ -23,6 +23,14 @@ function renderTabs(props = {}) {
   return { ...utils, onChange };
 }
 
+// A bare vi.fn() never updates `active`, so it cannot exercise whether DOM
+// focus actually follows a selection change — this wrapper holds real state
+// and wires a real onChange, the way every caller of Tabs will.
+function StatefulTabs({ initial }) {
+  const [active, setActive] = React.useState(initial);
+  return <Tabs tabs={TABS} active={active} onChange={setActive} label="Agent sections" />;
+}
+
 describe('Tabs', () => {
   it('marks only the active tab as selected', () => {
     renderTabs({ active: 'telemetry' });
@@ -108,6 +116,21 @@ describe('Tabs', () => {
     const tab = screen.getByRole('tab', { name: 'Overview' });
     expect(tab.getAttribute('aria-controls')).toBe('cb-panel-overview');
     expect(tab.id).toBe('cb-tab-overview');
+  });
+
+  it('moves DOM focus to the newly active tab when selection follows an ArrowRight', async () => {
+    // A mocked onChange never updates `active`, so the earlier ArrowRight
+    // tests only prove the key handler *reports* the right key — not that
+    // focus actually lands where aria-selected and tabIndex say it should.
+    render(<StatefulTabs initial="overview" />);
+    screen.getByRole('tab', { name: 'Overview' }).focus();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Telemetry' }));
+  });
+
+  it('does not steal focus into the tablist merely because it rendered', () => {
+    render(<StatefulTabs initial="telemetry" />);
+    expect(document.activeElement).not.toBe(screen.getByRole('tab', { name: 'Telemetry' }));
   });
 });
 
