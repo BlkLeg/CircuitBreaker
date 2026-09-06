@@ -343,3 +343,79 @@ def test_revoking_an_unknown_token_is_none_not_an_error(db_session):
     from app.services import agent_enrollment_tokens as tokens
 
     assert tokens.revoke_token(db_session, 999_999) is None
+
+
+# ── The one genuine race (design §4, §10) ────────────────────────────────────
+
+
+def test_concurrent_boots_cannot_over_consume_a_token(setup_db):
+    """N instances boot from one launch template at once.
+
+    A read-then-write would let several observe `uses < max_uses` before any
+    wrote, and all enroll — over-consuming a token whose entire purpose is to
+    bound how many agents it can create. The design calls this the one genuine
+    race and requires a test for it.
+
+    Real threads on real connections, deliberately. A single-session loop
+    re-runs the statement serially and would pass against the very
+    check-then-write this test exists to reject. That also means the token
+    cannot come from `db_session`: it is SAVEPOINT-isolated and never actually
+    commits, so its rows are invisible to any other connection. It is committed
+    here and deleted on the way out, the way conftest already reaps agent rows
+    committed outside a test.
+    """
+    import threading
+
+    from sqlalchemy import delete
+    from sqlalchemy.orm import Session
+
+    from app.db.models import AgentEnrollmentToken
+    from app.db.session import engine
+    from app.services import agent_enrollment_tokens as tokens
+
+    max_uses = 3
+    attempts = 8
+
+    with Session(engine) as setup:
+        plaintext, row = tokens.mint_token(
+            setup,
+            label="launch template",
+            endpoint_url="https://cb.example.com",
+            capabilities={},
+            ttl_seconds=3600,
+            max_uses=max_uses,
+            # Deliberately no user: the FK is nullable, and a committed user
+            # row would be one more thing to reap.
+            created_by_user_id=None,
+        )
+        setup.commit()
+        token_id = row.id
+
+    try:
+        results: list[bool] = []
+        lock = threading.Lock()
+        start = threading.Barrier(attempts)
+
+        def _attempt() -> None:
+            start.wait(timeout=10)
+            with Session(engine) as session:
+                got = tokens.consume_token(session, plaintext)
+                session.commit()
+            with lock:
+                results.append(got is not None)
+
+        threads = [threading.Thread(target=_attempt) for _ in range(attempts)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        assert len(results) == attempts, "a thread never finished"
+        assert sum(results) == max_uses, f"expected exactly {max_uses} successes, got {results}"
+
+        with Session(engine) as check:
+            assert check.get(AgentEnrollmentToken, token_id).uses == max_uses
+    finally:
+        with Session(engine) as cleanup:
+            cleanup.execute(delete(AgentEnrollmentToken).where(AgentEnrollmentToken.id == token_id))
+            cleanup.commit()
