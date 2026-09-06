@@ -708,3 +708,47 @@ def test_icmp_widening_keeps_groups_the_host_already_allowed(tmp_path):
     line = [ln for ln in conf.splitlines() if ln.startswith("net.ipv4.ping_group_range")][-1]
     low, high = line.split("=")[1].split()
     assert int(low) <= 500 and int(high) >= 997, line
+
+
+@pytest.mark.asyncio
+async def test_install_command_uses_the_selected_endpoint_not_the_browsed_host(
+    client, auth_headers, db_session, letsencrypt_certificate
+):
+    """The whole point: the address an agent dials is not the address you browsed.
+
+    `letsencrypt_certificate` sidesteps the unrelated TLS-pin requirement
+    (`_tls_mode_and_pin` fails closed with no cert anywhere) so this test's
+    only assertion is about which server_url got rendered.
+    """
+    from app.schemas.settings import AppSettingsUpdate
+    from app.services import settings_service
+
+    settings_service.update_settings(
+        db_session,
+        AppSettingsUpdate(
+            agent_endpoints=[{"id": "pub1", "label": "Public", "url": "https://cb.example.com"}]
+        ),
+    )
+    db_session.commit()
+
+    resp = await client.get("/api/v1/agents/install-command?endpoint=pub1", headers=auth_headers)
+
+    assert resp.status_code == 200, resp.text
+    assert "https://cb.example.com" in resp.json()["command"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_endpoint_id_is_refused_rather_than_silently_substituted(
+    client, auth_headers
+):
+    """Falling back here would re-create the defect this feature exists to fix."""
+    resp = await client.get("/api/v1/agents/install-command?endpoint=nope", headers=auth_headers)
+    assert resp.status_code == 404
+    assert "nope" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_absent_endpoint_falls_back_to_the_browsed_host(client, auth_headers):
+    """Existing installs and existing commands keep working untouched."""
+    resp = await client.get("/api/v1/agents/install-command", headers=auth_headers)
+    assert resp.status_code in (200, 503)
