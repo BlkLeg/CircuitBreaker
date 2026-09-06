@@ -40,6 +40,41 @@ def committed_public_endpoint():
         _set_agent_endpoints_committed([])
 
 
+def _ensure_server_key_committed() -> None:
+    """Pre-generate `AppSettings.agent_server_private_key` through a real,
+    committed connection, so no route needs to write it during the test.
+
+    Both `/api/v1/agents/install-command` (via `db_session`) and
+    `/install-agent.sh` (via its own `SessionLocal()`) call
+    `agent_crypto.load_server_key_rotation_state`, which generates-and-persists
+    the key on its *first* use if the column is still unset. Left unset here,
+    whichever of the two connections runs first takes a row lock on
+    `app_settings` id=1 inside its own transaction to write it — `db_session`'s
+    is a SAVEPOINT that is never really committed until teardown, so the
+    *second* connection's identical write blocks on that lock until pytest's
+    statement/test timeout: a hang, not a clean failure, and one that only
+    shows up when this test runs standalone rather than after a sibling test
+    that happened to seed the key first. Pre-seeding it for real means neither
+    session ever attempts that write, so there is no lock to contend over.
+    Idempotent: a key already committed by an earlier test in this session is
+    read, not regenerated. Same pattern as
+    test_ws_agents_link.py::_start_server_key_rotation_committed.
+    """
+    from app.core.agent_crypto import load_server_key_rotation_state
+    from app.db.session import SessionLocal
+
+    with SessionLocal() as db:
+        load_server_key_rotation_state(db)
+
+
+@pytest.fixture
+def committed_server_key():
+    """See `_ensure_server_key_committed` -- nothing to tear down, since an
+    already-generated key is exactly the steady-state a real deployment is
+    in and other tests already rely on that being idempotent."""
+    _ensure_server_key_committed()
+
+
 @pytest.fixture
 def live_selfsigned_cert(monkeypatch):
     """A valid self-signed cert `_live_nginx_cert_pem` can read, so
@@ -56,7 +91,7 @@ def live_selfsigned_cert(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_script_renders_the_selected_endpoint(
-    client, committed_public_endpoint, live_selfsigned_cert
+    client, committed_public_endpoint, live_selfsigned_cert, committed_server_key
 ):
     resp = await client.get("/install-agent.sh?endpoint=pub1")
 
@@ -66,13 +101,15 @@ async def test_script_renders_the_selected_endpoint(
 
 @pytest.mark.asyncio
 async def test_script_digest_matches_the_command_the_ui_showed(
-    client, auth_headers, committed_public_endpoint, live_selfsigned_cert
+    client, auth_headers, committed_public_endpoint, live_selfsigned_cert, committed_server_key
 ):
     """The operator is told to verify this digest; the two must agree or the
     published check fails on a correct download."""
     command = await client.get("/api/v1/agents/install-command?endpoint=pub1", headers=auth_headers)
     script = await client.get("/install-agent.sh?endpoint=pub1")
 
+    assert command.status_code == 200, command.text
+    assert script.status_code == 200, script.text
     assert command.json()["script_sha256"] == hashlib.sha256(script.text.encode()).hexdigest()
 
 
