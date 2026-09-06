@@ -726,6 +726,106 @@ def test_icmp_widening_keeps_groups_the_host_already_allowed(tmp_path):
     assert int(low) <= 500 and int(high) >= 997, line
 
 
+def _run_preflight(tmp_path, *, reachable: bool, tls_pin: str = "c" * 44):
+    """Execute the installer up to and including the user-creation step.
+
+    Runs the real script prefix — the assignments, the curl-version guard,
+    `cb_curl`, the reachability preflight and the `useradd` block — against a
+    stub curl, rather than asserting on its source. Returns
+    `(returncode, stderr, curl_argv, user_created)`.
+
+    `user_created` is the assertion that matters. The preflight exists so that
+    a wrong `CB_SERVER_URL` "costs nothing" (design §7): it must fail before
+    the script has touched the host. A stub `useradd` that records being called
+    is the only thing that can prove that, and asserting on the script's text
+    cannot.
+    """
+    import subprocess
+
+    script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex="ab" * 32,
+        tls_pin=tls_pin,
+        manifest={"0.1.0": {"linux-amd64": "deadbeef"}},
+    )
+    prefix = script[: script.index('ARCH="$(uname -m)"')]
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    argv_log = tmp_path / "curl-argv"
+    created = tmp_path / "useradd-ran"
+    # `--version` must always succeed: it is the curl-too-old guard ahead of
+    # the preflight, not a fetch. Every other invocation is the preflight's.
+    (bin_dir / "curl").write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do [ "$a" = "--version" ] && exit 0; done\n'
+        f'printf \'%s\\n\' "$@" >> "{argv_log}"\n'
+        f"exit {0 if reachable else 7}\n"
+    )
+    # No cb-agent user on this host, so the script reaches useradd.
+    (bin_dir / "id").write_text("#!/bin/sh\nexit 1\n")
+    (bin_dir / "useradd").write_text(f'#!/bin/sh\necho ran > "{created}"\nexit 0\n')
+    for stub in bin_dir.iterdir():
+        stub.chmod(0o755)
+
+    runner = tmp_path / "run.sh"
+    runner.write_text(prefix)
+    runner.chmod(0o755)
+
+    result = subprocess.run(
+        ["/bin/sh", str(runner)],
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+    )
+    argv = argv_log.read_text().splitlines() if argv_log.exists() else []
+    return result.returncode, result.stderr, argv, created.exists()
+
+
+def test_an_unreachable_server_fails_before_the_installer_touches_the_host(tmp_path):
+    """The wrong-endpoint case, and the whole reason the preflight exists.
+
+    An operator who picks the wrong endpoint gets a precise message and a
+    machine in exactly the state it was in beforehand — no cb-agent user, no
+    binary, no unit. Without this the agent installs cleanly and then dials an
+    unreachable address forever, which surfaces as "the agent never appeared".
+    """
+    code, stderr, _, user_created = _run_preflight(tmp_path, reachable=False)
+
+    assert code == 1, stderr
+    assert "Cannot reach https://cb.example.com from this machine." in stderr
+    assert not user_created, "the preflight must fail before creating the cb-agent user"
+
+
+def test_a_reachable_server_carries_on_into_the_install(tmp_path):
+    """The other direction: the preflight must not be a gate that never opens."""
+    code, stderr, _, user_created = _run_preflight(tmp_path, reachable=True)
+
+    assert code == 0, stderr
+    assert user_created, "a reachable server must let the install proceed"
+
+
+def test_the_preflight_uses_the_same_tls_trust_the_agent_will(tmp_path):
+    """It goes through `cb_curl`, so a self-signed install pins the same SPKI
+    the agent's tlsdial checks. A preflight that verified differently would
+    pass on a server the agent then refuses — a false green at the one moment
+    the operator is watching."""
+    _, stderr, argv, _ = _run_preflight(tmp_path, reachable=True)
+
+    assert "--pinnedpubkey" in argv, (argv, stderr)
+    assert f"sha256//{'c' * 44}" in argv, argv
+    assert "https://cb.example.com/api/v1/health" in argv, argv
+
+
+def test_a_publicly_trusted_install_pins_nothing_in_the_preflight(tmp_path):
+    """An empty pin means the system trust store applies; adding --insecure
+    there would be a straight downgrade."""
+    _, _, argv, _ = _run_preflight(tmp_path, reachable=True, tls_pin="")
+
+    assert "--pinnedpubkey" not in argv, argv
+    assert "--insecure" not in argv, argv
+
+
 @pytest.mark.asyncio
 async def test_install_command_uses_the_selected_endpoint_not_the_browsed_host(
     client, auth_headers, db_session, letsencrypt_certificate
