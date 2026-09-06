@@ -216,6 +216,29 @@ def get_capability_defaults(
     }
 
 
+@router.get("/endpoint-usage")
+def get_endpoint_usage(
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("admin")],
+) -> dict[str, int]:
+    """How many agents enrolled through each endpoint.
+
+    An endpoint with no agents is the only observable signal that it is
+    unreachable: the agent that would report the failure is the one that
+    cannot connect to report it.
+
+    Keyed by URL rather than endpoint id so a deleted endpoint still accounts
+    for the agents that came through it — those agents keep dialing that
+    address whether or not it is still in the list.
+    """
+    rows = db.execute(
+        select(Agent.enrolled_via_endpoint, func.count())
+        .where(Agent.enrolled_via_endpoint.is_not(None))
+        .group_by(Agent.enrolled_via_endpoint)
+    ).all()
+    return {url: count for url, count in rows}
+
+
 @router.get("/install-command", response_model=InstallCommandResponse)
 def get_install_command(
     request: Request,
