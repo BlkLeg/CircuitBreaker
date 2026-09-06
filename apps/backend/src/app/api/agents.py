@@ -23,6 +23,7 @@ from app.db.bucket import epoch_bucket
 from app.db.models import (
     Agent,
     AgentCapabilityReadiness,
+    AgentEnrollmentToken,
     AgentEvent,
     AgentHostSample,
     AgentHostSampleHourly,
@@ -47,6 +48,9 @@ from app.schemas.agents import (
     ApproveRequest,
     CapabilitiesUpdateRequest,
     CapabilityGrant,
+    EnrollmentTokenCreate,
+    EnrollmentTokenMinted,
+    EnrollmentTokenRead,
     HardwareSummary,
     InstallCommandResponse,
     PairingLookupRequest,
@@ -233,6 +237,158 @@ def get_endpoint_usage(
     from app.services import agent_endpoints
 
     return agent_endpoints.usage_counts(db)
+
+
+def _token_capability_scope(capabilities: dict[str, Any] | None) -> dict[str, Any]:
+    """The capability scope a token grants, as plain JSON, validated now.
+
+    Validated at mint rather than at enrollment, because enrollment is the
+    moment nobody is watching: a token naming an unknown capability would mint
+    cleanly and then fail every unattended boot it was made for, with the
+    operator long since gone. `normalize_grant` raises ValueError on an unknown
+    name or an invalid config, which the caller turns into a 400.
+
+    Stored in the shape the wire already accepts — a bare boolean or an
+    `{enabled, config}` object — so `approve_agent` consumes it unchanged.
+    """
+    scope: dict[str, Any] = {}
+    for name, value in (capabilities or {}).items():
+        raw = value if isinstance(value, bool) else value.model_dump()
+        agent_capabilities.normalize_grant(name, raw)
+        scope[name] = raw
+    return scope
+
+
+def _token_to_read(db: Session, row: AgentEnrollmentToken) -> dict[str, Any]:
+    """Render one token row, with the count of agents that came through it.
+
+    Never includes the token: the row cannot reproduce it, and this shape is
+    what both the listing and the revoke response return.
+    """
+    count = db.execute(
+        select(func.count()).select_from(Agent).where(Agent.enrollment_token_id == row.id)
+    ).scalar_one()
+    return {
+        "id": row.id,
+        "label": row.label,
+        "endpoint_url": row.endpoint_url,
+        "capabilities": row.capabilities or {},
+        "max_uses": row.max_uses,
+        "uses": row.uses,
+        "expires_at": row.expires_at,
+        "revoked_at": row.revoked_at,
+        "created_at": row.created_at,
+        "agent_count": int(count),
+    }
+
+
+@router.post("/enrollment-tokens", response_model=EnrollmentTokenMinted, status_code=201)
+def post_enrollment_token(
+    body: EnrollmentTokenCreate,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, require_role("admin")],
+) -> Any:
+    """Slice B: mint a token that enrolls an agent with no human present.
+
+    The plaintext is in this response and nowhere else, ever — the row stores
+    only its SHA-256. The attended flow is unchanged and remains the default;
+    this is opt-in, and design §5 states its cost.
+
+    Declared before "/{agent_id}" so "enrollment-tokens" is not parsed as an
+    agent id, same as "/pending", "/install-command" and "/endpoint-usage".
+    """
+    from app.services import agent_endpoints, agent_enrollment_tokens
+
+    endpoint = agent_endpoints.find_endpoint(db, body.endpoint_id)
+    if endpoint is None:
+        # Never fall back to a derived address. A token scoped to an endpoint
+        # nobody declared would send its agents somewhere the operator did not
+        # choose, which is the defect the endpoint feature exists to remove.
+        raise HTTPException(
+            status_code=404, detail=f"No agent endpoint with id {body.endpoint_id!r}"
+        )
+
+    try:
+        plaintext, row = agent_enrollment_tokens.mint_token(
+            db,
+            label=body.label,
+            endpoint_url=endpoint["url"],
+            capabilities=_token_capability_scope(body.capabilities),
+            ttl_seconds=body.ttl_seconds,
+            max_uses=body.max_uses,
+            created_by_user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # The audit row records that a credential was minted; it is deliberately
+    # not a copy of one. `details` names the scope and the bounds, which is
+    # what an auditor needs, and nothing that could be replayed.
+    log_audit(
+        db,
+        request,
+        user_id=current_user.id,
+        action="agent_enrollment_token_minted",
+        resource=f"agents:enrollment-token:{row.id}",
+        status="ok",
+        details=(
+            f"label={row.label} endpoint_url={row.endpoint_url} "
+            f"max_uses={row.max_uses} expires_at={row.expires_at}"
+        ),
+        severity="warn",
+    )
+    rendered = _token_to_read(db, row)
+    db.commit()
+    return {**rendered, "token": plaintext}
+
+
+@router.get("/enrollment-tokens", response_model=list[EnrollmentTokenRead])
+def get_enrollment_tokens(
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("admin")],
+) -> Any:
+    """Slice B: every token, newest first, including revoked and expired ones.
+
+    An operator auditing what was minted needs the ones that are no longer
+    live, and a spent token still names the agents that came through it.
+    """
+    from app.services import agent_enrollment_tokens
+
+    return [_token_to_read(db, row) for row in agent_enrollment_tokens.list_tokens(db)]
+
+
+@router.post("/enrollment-tokens/{token_id}/revoke", response_model=EnrollmentTokenRead)
+def post_revoke_enrollment_token(
+    token_id: int,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, require_role("admin")],
+) -> Any:
+    """Slice B: shut a token immediately.
+
+    Agents already enrolled through it are unaffected — they hold their own
+    device identity and never present the token again.
+    """
+    from app.services import agent_enrollment_tokens
+
+    row = agent_enrollment_tokens.revoke_token(db, token_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No enrollment token with id {token_id}")
+
+    log_audit(
+        db,
+        request,
+        user_id=current_user.id,
+        action="agent_enrollment_token_revoked",
+        resource=f"agents:enrollment-token:{row.id}",
+        status="ok",
+        details=f"label={row.label} uses={row.uses} max_uses={row.max_uses}",
+        severity="warn",
+    )
+    rendered = _token_to_read(db, row)
+    db.commit()
+    return rendered
 
 
 @router.get("/install-command", response_model=InstallCommandResponse)

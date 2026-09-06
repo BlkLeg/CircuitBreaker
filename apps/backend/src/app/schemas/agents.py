@@ -371,3 +371,49 @@ class TLSPinRotateRequest(BaseModel):
     """The certificate whose trust policy becomes the advertised successor."""
 
     certificate_id: int
+
+
+# ── Slice B: unattended enrollment ───────────────────────────────────────────
+
+
+class EnrollmentTokenCreate(BaseModel):
+    """Mint request.
+
+    The bounds are declared here *and* in `agent_enrollment_tokens.mint_token`.
+    The schema gives the API a 422 naming the field; the service gives every
+    other caller — the CLI, a future importer — the same limits. They are what
+    bound a token's blast radius (design §5), so neither layer is decoration.
+    """
+
+    label: str = Field(min_length=1, max_length=120)
+    endpoint_id: str = Field(min_length=1)
+    capabilities: dict[str, CapabilityValue] | None = None
+    ttl_seconds: int = Field(default=3600, ge=1, le=86400)
+    max_uses: int = Field(default=1, ge=1)
+
+
+class EnrollmentTokenRead(BaseModel):
+    """A token as an operator sees it.
+
+    Carries no key material. The plaintext is returned once, by the mint route,
+    and is not recoverable afterwards — the row holds only its SHA-256.
+    """
+
+    id: int
+    label: str
+    endpoint_url: str
+    capabilities: dict[str, Any]
+    max_uses: int
+    uses: int
+    expires_at: datetime
+    revoked_at: datetime | None
+    created_at: datetime
+    #: How many agents enrolled through this token. The reason a spent or
+    #: revoked token is kept rather than deleted.
+    agent_count: int
+
+
+class EnrollmentTokenMinted(EnrollmentTokenRead):
+    """The mint response, and the only place the plaintext ever appears."""
+
+    token: str
