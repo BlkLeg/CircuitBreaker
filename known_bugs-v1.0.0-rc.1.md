@@ -1,160 +1,129 @@
 # Known Bugs — v1.0.0-rc.1
 
 Found while installing rc.1 on Ubuntu Server 26.04 LTS (native one-line install).
-Last updated 2026-08-19.
+Last updated 2026-09-06.
 
-Item 1 is open. It now reproduces under browser automation (see below), but the cause is
-not yet localised. Items 2, 3 and 4
-are fixed. The two install-blocking defects at the bottom are fixed and carried in
-rc.2.
+Every item is fixed. Item 1 — the sticky-navigation wedge that was open from rc.1 —
+was localised and fixed on 2026-09-06; the record below keeps the ruled-out
+hypotheses, because two of them had been the leading explanation for eight months
+and both were wrong.
+
 
 ---
 
-## 1. Sticky navigation — selecting a page in the dash does nothing until a manual reload
+## 1. Sticky navigation — selecting a page in the dash does nothing until a manual reload — FIXED
 
 **Severity:** high — the app looks broken on first use.
-**Status (2026-08-19): REPRODUCED under browser automation, cause not yet localised. Still open.**
+**Status (2026-09-06): FIXED.** Root cause found, one-line fix, guarded by a static
+check and a throttled e2e test that both fail without it.
 
-### Reproduction, 2026-08-19
+### The cause
 
-The 2026-08-18 attempt below could not reproduce this. It can now, because the earlier attempt
-was navigating away from a page that was never actually rendering: the API stub returned `[]`
-for `/api/v1/maps`, which sends `useMapTabs` down a create-then-read-`.id` path that leaves
-`/map` sitting on "Loading maps…" forever. Every navigation was therefore leaving a near-empty
-page. With `maps` stubbed to a real row, `/map` renders its React Flow canvas, and navigating
-away from *that* is what wedges.
+**react-router v7 wraps every location update in `React.startTransition`.**
+`BrowserRouter` does this by default (`useTransitions` is opt-out, see
+`react-router/dist/.../BrowserRouter`), while `history.pushState` has already
+changed the URL synchronously. A transition is interruptible and non-urgent, so
+React is free to render it late, discard the render, or never commit it at all.
+When that happens the address bar and the rendered route diverge permanently:
+no Suspense fallback, no ErrorBoundary, no console error, and no recovery,
+because a transition lane that never commits is never retried. A reload is the
+only way out — it re-seeds both from the address bar, which is exactly the
+workaround the original report describes.
 
-**Recipe.** Firefox, production build under `vite preview`, CPU contention (Playwright at 8–10
-workers on an 8-core host). Load `/`, wait for the topology to render, click the dock's
-Hardware link.
+The trigger is an expensive outgoing tree. **Every wedge in every run recorded
+here was a navigation away from `/map`**, whose topology canvas is the heaviest
+render in the app. That is also why the 2026-08-18 attempt could not reproduce
+it: `/map` was sitting on "Loading maps…", so nothing expensive was ever being
+navigated away from.
 
-**Observed, 3 times in roughly 180 attempts:** the URL advances to `/hardware`
-(`expect(page).toHaveURL(/\/hardware$/)` passes), and `.page-content` still contains the
-topology markup 10–15 seconds later. One route wrapper, `opacity: 1`, holding the *old* page.
-Not "never mounted" and not "stuck at opacity 0" — the two branches the diagnostic below was
-written for. It is the third shape: the outgoing route stays mounted and visible while the
-incoming one never takes over.
+### The fix
 
-**Ruled out with numbers: `AnimatePresence mode` is not the cause.** The leading hypothesis was
-that `mode="wait"` holds the incoming route behind an exit animation that never resolves. Under
-identical load, 48 runs each:
+`apps/frontend/src/App.jsx`:
 
-| mode | wedges / 48 |
+```jsx
+<BrowserRouter useTransitions={false}>
+```
+
+The location then commits immediately, and a route whose chunk is still loading
+shows the `LoadingScreen` fallback instead of silently holding the previous
+page. A visible loading state is the behaviour this app wants; a stale page that
+lies about where you are is not.
+
+### Measurements
+
+Dock-click navigations, Chromium, 6x CPU throttle, API stubbed
+(`e2e/fixtures/api.ts`), one variable changed at a time:
+
+| variant | wedges |
 |---|---|
-| `wait` (current) | 2 |
-| `sync` | 1 |
+| as shipped | 16/40 |
+| `AnimatePresence mode="sync"` | 15/40 |
+| **no `AnimatePresence` at all** | 16/40 |
+| **journey routes imported eagerly, no `React.lazy`** | 16/40 |
+| **`useTransitions={false}`** | **0/80** |
 
-That is no difference, so `App.jsx` was left on `wait` — the value `8bb0ee25` shipped. Switching
-it would have looked like a fix while changing nothing.
+Against a real backend (native `make dev`, real SSE/WebSocket traffic, logged in
+as a real user), same journey: **15/40 wedges before, 0/40 after.** On the real
+backend it wedged on the *first* navigation away from `/map`, every time —
+this was never rare in the conditions users actually hit, only in the stubbed
+harness that answers instantly.
 
-**Not localised.** Adding request/response/console listeners to the probe changed the timing
-enough that 96 further attempts produced no wedge at all, so there is no network trace of one.
-The remaining hypothesis, and where to look next, is the `React.lazy` + `Suspense` pair: during
-a transition React keeps the previous UI on screen while the incoming route suspends, so a
-chunk request that stalls produces exactly this symptom — old content, new URL, no error
-boundary, fixed by a reload because the reload re-requests the chunk. Confirming that needs a
-wedge captured with the network log attached.
+### Ruled out, with numbers — read this before touching either
 
-**Why the suite does not assert on it.** At roughly 1-in-60 under artificial load, encoding this
-as a test would add a flaky failure to every PR without adding information. `e2e/navigation.spec.ts`
-keeps its deterministic assertions; this recipe is how to go looking for it deliberately.
+- **The animation wrapper is not involved.** Removing `AnimatePresence`
+  outright leaves the rate at 16/40. `mode="wait"` vs `"sync"` is 16/40 vs
+  15/40. `8bb0ee25` added this wrapper *as* the fix for this symptom and it was
+  never load bearing for it; the symptom went away then for some other reason
+  and came back. The wrapper is a page transition and may be changed on visual
+  grounds.
+- **Lazy chunks are not involved.** Importing the journey's routes eagerly
+  instead of through `React.lazy` leaves the rate at 16/40, and no wedge in any
+  run had a pending chunk fetch (`wedges_with_pending_chunk: 0` across 60
+  navigations of `nav-wedge.spec.ts`). H1's "stalled chunk" branch is dead.
+- **It is not a blocked main thread.** While wedged, a rAF loop ran 301 frames
+  in 5 seconds — a completely idle thread at 60fps — and sync-priority updates
+  still committed normally (the command palette opens on Ctrl-K while the page
+  behind it is stale). Only the transition lane is stuck.
+- **jsdom cannot reproduce it**, and that is not fixable. It needs a contended
+  CPU to interrupt the transition. This is why 1236 passing unit tests said
+  nothing for eight months.
 
-### Earlier reproduction attempt, 2026-08-18 (superseded)
+### Why the old diagnostic misread it
 
-The Playwright harness this bug motivated now exists (`apps/frontend/e2e/`), and
-`e2e/navigation.spec.ts` encodes exactly the diagnostic this report asked for: it
-distinguishes "route never mounted" (fix is in AnimatePresence/Suspense) from "route mounted
-but stuck at opacity 0" (fix is in the animation layer), so a recurrence names its own cause
-instead of needing a live instance again.
+`nav-wedge.spec.ts` classified these wedges as `router-location-never-updated`
+on the basis that no nav entry existed for the target path. Two separate faults
+fed that:
 
-**The bug did not reproduce** — for the reason given above: `/map` was stuck on its loading
-placeholder, so nothing heavy was ever being navigated away from. What was tried:
+- `useNavigationMountSignal` closed a navigation from a `[location.pathname]`
+  effect dependency rather than from a mount. With `mode="wait"` the outgoing
+  subtree stays mounted through the exit animation, so the *outgoing* instance
+  re-fired that effect when the location changed and stamped `pending: false`
+  on a route that had not rendered — a wedge reading back as a completed
+  navigation. Fixed: the effect is now mount-only and reads a path captured at
+  mount. `src/__tests__/navigation-timing.test.jsx` has the case that fails
+  without it, and its harness now mirrors App.jsx's keyed subtree, whose absence
+  is what let the fault hide.
+- The branch names themselves assume the wedge is downstream of the router.
+  It is not; it is the router's own update.
 
-- Chromium, Firefox and mobile-Chrome, against a real production build served by `vite preview`
-  — not the dev server, since its on-demand transform hides lazy-chunk failures. (WebKit needs
-  `libgtk-4-1`, unavailable on the authoring host; it runs in the CI container.)
-- Six routes: `/hardware`, `/services`, `/ipam`, `/storage`, `/agents`, `/monitors`.
-- Both navigation paths: `history.pushState` + `popstate`, and clicking the dock `NavLink`.
-- Lazy-chunk latency injected at 300 ms, 1200 ms and 3000 ms, to mimic the first-visit chunk
-  timing this report points at. `AnimatePresence mode="wait"` held nothing; the incoming route
-  mounted, reached opacity 1, and the content changed every time.
+### Safeguards
 
-In every case the route mounted, became visible, and rendered its own content.
+- `tests/build/test_router_transitions_contract.py` — fails the build if any
+  router in `apps/frontend/src` is rendered without `useTransitions={false}`.
+  The prop is one token, invisible in review, and exactly what a router upgrade
+  or a copy-pasted `<BrowserRouter>` drops.
+- `apps/frontend/e2e/navigation.spec.ts`, "navigating away from the topology
+  does not wedge under CPU load" — 12 dock-click navigations alternating off a
+  rendered `/map` under 6x CPU throttle. Verified 5/5 pass with the fix and 5/5
+  fail without it. At a ~40% per-navigation rate it misses a full regression
+  with probability ~0.2%.
+- `nav-wedge.spec.ts` stays as the opt-in rate-measuring diagnostic.
 
-**What is still untested, and is where I would look next.** The harness stubs the API at the
-network layer and answers instantly. The three conditions it therefore does *not* recreate are
-a real backend's response latency, the auth/redirect flow on a genuinely first visit, and a
-cold browser cache on a slow link. If this is still seen on a running instance, capture the two
-data points below — the harness assertions are written against exactly them.
+The three conditions the old suite never combined, and which any future
+navigation test needs: navigate **away from a rendered `/map`**, through a real
+`<NavLink>` (not `history.pushState` + synthetic `popstate`, which bypasses the
+`startTransition` path entirely), under **CPU contention**.
 
-
-Clicking a nav entry changes the URL but the page content does not respond. Only a
-manual browser reload completes the navigation.
-
-**This is a regression, not a new bug.** The same symptom was fixed once already in
-`8bb0ee25` ("Fixed sticky loading issue requiring a hard reload to complete
-navigation"). That commit's fix was to wrap the router in framer-motion:
-
-```
-apps/frontend/src/App.jsx:135-144
-  <React.Suspense fallback={<LoadingScreen />}>
-    <AnimatePresence mode="wait">
-      <motion.div key={location.pathname} ... >
-        <Routes location={location}>
-```
-
-That wrapper is still in place, so whatever is wedging navigation now is either a new
-cause with the same symptom or something the wrapper stopped covering. Worth examining
-first:
-
-- `AnimatePresence mode="wait"` holds the incoming route until the outgoing exit
-  animation completes. An exit that never resolves — interrupted transition, a page
-  that suspends during exit, `prefers-reduced-motion` short-circuiting the transition —
-  leaves the new route unmounted while the URL has already changed. That matches the
-  symptom exactly.
-- `<Routes location={location}>` renders against an explicitly passed location rather
-  than the ambient one. If that `location` ever goes stale relative to the router, the
-  URL and the rendered route diverge until a reload re-seeds both.
-- The routes are `React.lazy` behind `Suspense`; a chunk that fails to load leaves the
-  boundary pending rather than throwing to `ErrorBoundary`.
-
-### Investigated and ruled out
-
-- **The routing structure is not the regression.** `App.jsx`'s Suspense →
-  AnimatePresence → motion.div → Routes block is byte-identical to what `8bb0ee25`
-  shipped as the fix. Whatever changed, it was not this file.
-- **Navigation is client-side and does fire.** The dock uses `NavLink`
-  (`components/MacOSDOCK.jsx:173`), and the URL updates — which is why a reload lands
-  on the right page. So the router state advances and the render does not follow.
-- **Not reproducible in jsdom.** Two attempts, both pass: the pattern with instantly
-  resolved lazy pages, and again with chunks deliberately resolved *after* the click,
-  the way a real first visit behaves. framer-motion does not run real animation timing
-  under jsdom, so `mode="wait"` never actually holds anything there. A jsdom test
-  cannot catch this class of bug, which is a large part of why it regressed unnoticed.
-- **No global reduced-motion kill switch.** The only `animation: none` rules are
-  scoped inside `styles/monitors.css`; nothing globally disables transitions in a way
-  that would stall an exit animation.
-
-### What is needed to close it
-
-Deliberately not fixed on a guess — a speculative change to the router is how this
-comes back a third time. From a browser on a running instance, at the moment of a
-click that does nothing:
-
-1. Does the new page's markup exist in the DOM but render invisible? Inspect the
-   `motion.div` under `.page-content` and read its computed `opacity`. Stuck at `0`
-   means the enter animation never ran and the fix is in the animation layer. Absent
-   entirely means the route never mounted and the fix is in AnimatePresence/Suspense.
-2. Any console error, unresolved chunk request in the Network tab, or framer-motion
-   warning at click time.
-
-Those two answers separate "wedged animation" from "wedged route", which are different
-fixes in different places.
-
-**Do not** simply delete the animation wrapper without checking `8bb0ee25` — it was
-added *as* the fix for this symptom, so removing it may reopen the original cause.
-
----
 
 ## 2. Remove every suggestion to visit `IP:8088` — 443 is the port — FIXED
 

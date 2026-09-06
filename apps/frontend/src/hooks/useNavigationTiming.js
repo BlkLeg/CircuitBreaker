@@ -125,20 +125,32 @@ export function useNavigationTiming() {
  * only when — the incoming route has actually rendered.
  *
  * That makes it a direct, sufficient close signal on its own: no DOM
- * observation is needed. `App.jsx` documents a real wedge in its
- * `AnimatePresence mode="wait"` transition (known_bugs item 1) where the
- * outgoing page's exit animation can hang, in which case the incoming page —
- * and this component along with it — never mounts at all. When that
- * happens, this effect simply never runs, and the entry
+ * observation is needed. When the incoming route never renders, this
+ * component never mounts, this effect never runs, and the entry
  * `useNavigationTiming()` opened stays `pending: true` forever: that
  * absence *is* the wedge signal Task 8 reads for, not something a positive
  * check has to detect.
+ *
+ * **The effect must not depend on `location.pathname`, and the path must be
+ * captured at mount.** It used to do both the other way round, and that made
+ * the close signal lie. With `AnimatePresence mode="wait"` the outgoing
+ * `motion.div` stays mounted for the length of the exit animation, so the
+ * instance living inside it is still subscribed to the router when the
+ * location changes. A `[location.pathname]` dependency therefore re-ran this
+ * effect *on the outgoing instance* and closed the incoming path's entry — a
+ * navigation recorded as `pending: false`, meaning "the route mounted", for a
+ * route that had not rendered and never would. That is the exact reading the
+ * wedge diagnostic branches on, and it sent it to the wrong branch.
  */
 export function useNavigationMountSignal() {
   const location = useLocation();
+  // The path this instance mounted with, not whatever the router holds when
+  // the effect runs. See the note above: reading the live location here is
+  // what let an outgoing instance close an incoming navigation.
+  const mountedPathRef = useRef(location.pathname);
 
   useEffect(() => {
-    const path = location.pathname;
+    const path = mountedPathRef.current;
     const nav = openNav;
     if (!nav || nav.path !== path) return;
     safeMark(`nav:end:${path}`);
@@ -150,8 +162,8 @@ export function useNavigationMountSignal() {
     const longTaskTotalMs = longTasks.reduce((sum, task) => sum + (task.duration || 0), 0);
     nav.closed = true;
     closeNav(nav.id, { durationMs, longTasks, longTaskTotalMs });
-    // Intentionally no cleanup: this effect fires exactly once per fresh
-    // mount (a new component instance every navigation, via the ancestor's
-    // `key`), and `closeNav` is itself idempotent/safe to call once.
-  }, [location.pathname]);
+    // Empty deps, and intentionally no cleanup: this effect fires exactly once
+    // per fresh mount (a new component instance every navigation, via the
+    // ancestor's `key`), and `closeNav` is itself idempotent/safe to call once.
+  }, []);
 }

@@ -146,12 +146,18 @@ function AppInner() {
         <ErrorBoundary>
           <React.Suspense fallback={<LoadingScreen />}>
             {/*
-              known_bugs-v1.0.0-rc.1.md item 1 reproduces from this route tree
-              (see e2e/navigation.spec.ts), but mode is NOT the cause: measured
-              on Firefox under 8-way load, "wait" wedged 2 times in 48 and
-              "sync" 1 in 48 — no difference. Left on "wait", the value
-              8bb0ee25 shipped. Do not switch it speculatively; the numbers are
-              in known_bugs.
+              This wrapper is a page transition and nothing more. It was added
+              by 8bb0ee25 as the fix for the sticky-navigation wedge
+              (known_bugs item 1) and was never actually load bearing for it:
+              removing `AnimatePresence` outright leaves the wedge rate
+              unchanged at 16/40, and `mode="sync"` gives 15/40 against 16/40
+              for `"wait"`. The wedge lives in the router — see the comment on
+              `<BrowserRouter>` at the bottom of this file.
+
+              So `mode` is a look, not a fix, and it is safe to change on
+              visual grounds. What is *not* safe is reaching for this block the
+              next time navigation misbehaves; that mistake cost this bug eight
+              months of investigation.
             */}
             <AnimatePresence mode="wait">
               <motion.div
@@ -470,7 +476,51 @@ function AppRoutes() {
 function App() {
   return (
     <I18nextProvider i18n={i18n}>
-      <BrowserRouter>
+      {/*
+        `useTransitions={false}` is the fix for known_bugs item 1, the sticky
+        navigation wedge: the URL advances and the page does not, permanently,
+        until a manual reload.
+
+        react-router v7 wraps every location update in `React.startTransition`,
+        while `history.pushState` has already changed the URL synchronously.
+        A transition is interruptible and non-urgent, so React is free to
+        render it late, discard the render, or never commit it at all — and
+        when the outgoing route is an expensive tree (MapPage's topology
+        canvas), that is exactly what happens. The URL and the rendered route
+        then disagree with nothing on screen to say so: no fallback, no error
+        boundary, no console error. A reload is the only recovery because it
+        re-seeds both from the address bar.
+
+        Measured on this app, dock-click navigations, Chromium under 6x CPU
+        throttle:
+
+        | variant                            | wedges |
+        |------------------------------------|--------|
+        | as shipped                         | 16/40  |
+        | `AnimatePresence mode="sync"`      | 15/40  |
+        | no `AnimatePresence` at all        | 16/40  |
+        | journey routes imported eagerly    | 16/40  |
+        | `useTransitions={false}`           |  0/80  |
+
+        and against a real backend, 15/40 -> 0/40. Every wedge in every run was
+        a navigation *away from* `/map`.
+
+        Read the middle rows before changing anything here. The animation
+        wrapper in `AppInner` and the `React.lazy` route chunks were the two
+        standing hypotheses for eight months, and both are innocent: removing
+        either one entirely leaves the wedge rate untouched. Only this prop does.
+
+        The cost is the intended one. Without transitions the location commits
+        immediately, so a route whose chunk is still loading shows the
+        `LoadingScreen` fallback instead of silently holding the previous page.
+        A visible loading state is the behaviour this app wants; a stale page
+        that lies about where you are is not.
+
+        tests/build/test_router_transitions_contract.py fails the build if this
+        prop is dropped, and e2e/navigation.spec.ts reproduces the wedge under
+        throttle.
+      */}
+      <BrowserRouter useTransitions={false}>
         <NavigationTimingWatcher />
         <SettingsProvider>
           <TimezoneProvider>

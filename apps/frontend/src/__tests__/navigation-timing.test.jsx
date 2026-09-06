@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { describe, expect, it, beforeEach } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/react';
-import { MemoryRouter, Routes, Route, useNavigate } from 'react-router-dom';
+import { MemoryRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { useNavigationTiming, useNavigationMountSignal } from '../hooks/useNavigationTiming';
 import { getEntries, clearEntries, recordNav } from '../lib/diagnosticsBuffer';
 
@@ -15,21 +15,27 @@ import { getEntries, clearEntries, recordNav } from '../lib/diagnosticsBuffer';
  * request volume before it closed, silently losing the entry) are both
  * regression-guarded here.
  *
- * App.jsx's real wedge (known_bugs item 1) is AnimatePresence `mode="wait"`
- * hanging on the *outgoing* page's exit animation, which delays *mounting*
- * the incoming page's subtree — it does not delay the router's own location
- * state. `blocked` below stands in for exactly that: the URL/location has
- * already moved on (so useNavigationTiming's nav-start fires promptly, and
- * the outgoing page keeps rendering, churning its own DOM), but the
- * Suspense-wrapped <Routes>/<NavigationMountSignal> subtree is deliberately
- * kept unmounted, so the mount-effect close signal never fires — the same
- * shape as the real bug. (A `React.lazy` promise that never resolves is
- * *not* an equivalent stand-in here: react-router v7 wraps `navigate()` in
- * `React.startTransition`, and React defers exposing a transition's own
- * location update — to every consumer, not just the suspending subtree —
- * until it can commit without a fallback, so that shape never even reaches
- * nav-start in a test. It is a different, unrelated React mechanic from the
- * animation-exit hang this app actually has.)
+ * `blocked` below stands for any reason the incoming page's subtree fails to
+ * mount while the router's own location has already moved on: nav-start fires
+ * promptly and the outgoing page keeps rendering and churning its own DOM, but
+ * the Suspense-wrapped <Routes>/<NavigationMountSignal> subtree stays
+ * unmounted, so the mount-effect close signal never fires. That is the shape
+ * the `pending: true` wedge signal exists to record.
+ *
+ * It is a stand-in, not a reproduction of known_bugs item 1. That bug turned
+ * out to be neither an AnimatePresence exit hang nor a stalled `React.lazy`
+ * chunk — removing either one entirely left the wedge rate unchanged — but
+ * react-router v7 wrapping its location update in `React.startTransition`,
+ * which React can then render late, discard, or never commit. jsdom cannot
+ * reproduce that: it needs a contended CPU to interrupt the transition, which
+ * is why this bug survived a green unit suite for eight months and why the
+ * regression test that actually catches it is
+ * `e2e/navigation.spec.ts`'s throttled run. What these tests guard is the
+ * *instrumentation* — that a wedge, whatever causes it, is recorded honestly.
+ *
+ * The harness therefore has to mirror App.jsx's structure exactly, because one
+ * of the two ways this instrumentation lied came from a harness that did not:
+ * see `keyed by location.pathname` below.
  */
 
 function MountSignal() {
@@ -75,6 +81,17 @@ function Nav() {
 }
 
 function Harness({ blocked, onUnblock }) {
+  // Keyed by location.pathname, mirroring App.jsx, where <MountSignal /> sits
+  // inside `<motion.div key={location.pathname}>`. Without the key this
+  // harness kept ONE MountSignal instance alive across every navigation, and
+  // the hook still passed — because it closed navigations from a
+  // `[location.pathname]` effect dependency that re-fired on the surviving
+  // instance rather than from a fresh mount. A close that only a *mount* is
+  // supposed to produce was being produced by a re-render, and in the real app
+  // (where the outgoing subtree stays mounted through the exit animation) that
+  // meant an incoming route which never rendered was recorded as having
+  // mounted. Keeping this key is what holds the hook to its actual contract.
+  const { pathname } = useLocation();
   return (
     <>
       <Watcher />
@@ -88,12 +105,14 @@ function Harness({ blocked, onUnblock }) {
         <div>outgoing page still exiting…</div>
       ) : (
         <React.Suspense fallback={<div>loading…</div>}>
-          <MountSignal />
-          <Routes>
-            <Route path="/" element={<ChurningPage />} />
-            <Route path="/immediate" element={<div>immediate page</div>} />
-            <Route path="/target" element={<div>target page</div>} />
-          </Routes>
+          <div key={pathname}>
+            <MountSignal />
+            <Routes>
+              <Route path="/" element={<ChurningPage />} />
+              <Route path="/immediate" element={<div>immediate page</div>} />
+              <Route path="/target" element={<div>target page</div>} />
+            </Routes>
+          </div>
         </React.Suspense>
       )}
     </>
@@ -215,5 +234,86 @@ describe('eviction safety (Finding 2 regression)', () => {
     expect(entries).toHaveLength(200);
     expect(entries.some((e) => e.path === '/target')).toBe(false);
     expect(entries.every((e) => e.kind === 'nav' && e.pending === true)).toBe(true);
+  });
+});
+
+/**
+ * `AnimatePresence mode="wait"` at the moment it holds a navigation.
+ *
+ * This is the shape `Harness({ blocked: true })` above does *not* have, and the
+ * difference is the whole point. There, the outgoing subtree is replaced
+ * wholesale, so no `MountSignal` exists at all while the navigation is
+ * pending. Here — as in App.jsx — the outgoing subtree stays mounted for the
+ * length of the exit animation, which means the `MountSignal` that mounted for
+ * the *previous* path is still there, still subscribed to the router, and
+ * still re-rendering every time the location changes.
+ *
+ * That instance must not close the incoming navigation. It used to: the close
+ * effect was keyed on `[location.pathname]`, so the location moving was enough
+ * to re-fire it on the surviving outgoing instance and stamp `pending: false`
+ * on a route that had not rendered and never would. A wedge then read back as
+ * a completed navigation, which is precisely the reading the wedge diagnostic
+ * branches on.
+ */
+function ExitHoldHarness() {
+  const { pathname } = useLocation();
+  // The path the "exit animation" is still showing. It lags the router until
+  // `finish exit` is clicked, exactly as AnimatePresence lags it until the
+  // outgoing child's exit completes.
+  const [heldPath, setHeldPath] = useState(pathname);
+  return (
+    <>
+      <Watcher />
+      <Nav />
+      <button type="button" onClick={() => setHeldPath(pathname)}>
+        finish exit
+      </button>
+      <React.Suspense fallback={<div>loading…</div>}>
+        <div key={heldPath}>
+          <MountSignal />
+          <Routes location={heldPath}>
+            <Route path="/" element={<ChurningPage />} />
+            <Route path="/immediate" element={<div>immediate page</div>} />
+            <Route path="/target" element={<div>target page</div>} />
+          </Routes>
+        </div>
+      </React.Suspense>
+    </>
+  );
+}
+
+describe('a navigation held behind an outgoing exit animation', () => {
+  it("is not closed by the outgoing page's own mount signal", async () => {
+    const { getByText } = render(
+      <MemoryRouter initialEntries={['/']}>
+        <ExitHoldHarness />
+      </MemoryRouter>
+    );
+
+    fireEvent.click(getByText('go target'));
+
+    // The router has moved, so the entry exists.
+    await waitFor(() => expect(latestNav().path).toBe('/target'));
+
+    // The outgoing subtree is still mounted and has now re-rendered with the
+    // new location several times over. None of that is a mount of the incoming
+    // route, so the entry must still read as pending: this is the wedge signal,
+    // and it is the only thing standing between a wedge and a diagnostic that
+    // reports it as a completed navigation.
+    // ChurningPage adds a list item every 5ms for as long as it stays mounted,
+    // so waiting for it to grow is a wait for the outgoing subtree to have
+    // re-rendered under the new location — the condition that used to produce
+    // the false close. Polling on the app's own signal beats a fixed sleep.
+    const outgoingItems = () => document.querySelectorAll('li').length;
+    const before = outgoingItems();
+    await waitFor(() => expect(outgoingItems()).toBeGreaterThan(before + 2));
+
+    expect(latestNav().pending).toBe(true);
+
+    // When the exit finally completes the incoming subtree mounts for real,
+    // and only then does the entry close.
+    fireEvent.click(getByText('finish exit'));
+    await waitFor(() => expect(latestNav().pending).toBe(false));
+    expect(latestNav().path).toBe('/target');
   });
 });
