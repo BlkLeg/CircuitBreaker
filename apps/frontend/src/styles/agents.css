@@ -618,7 +618,7 @@
    cause, as `.cb-detail-head` in panels.css. */
 .fleet__th {
   position: sticky;
-  top: 0;
+  top: calc(-1 * var(--page-top-gap));
   z-index: 2;
   height: 28px;
   padding: 0 var(--fleet-cell-pad-x);

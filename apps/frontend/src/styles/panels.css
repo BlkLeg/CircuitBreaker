@@ -515,10 +515,16 @@
    padding. Offsetting by the app chrome again put this 136px down: far enough
    below the app bar to leave a band of page showing above it, which content
    then scrolled through and disappeared under. It read as the header covering
-   things, and the cause was counting the same 60px twice. */
+   things, and the cause was counting the same 60px twice.
+
+   The negative offset cancels `--page-top-gap`. `top: 0` pins to the content
+   box, which sits that gap below the app bar — and a scroll container's
+   padding does not clip, so rows kept scrolling up through the band and
+   showing above the pinned header. Cancelling it pins flush to the app bar,
+   where the only thing above the header is opaque chrome. */
 .cb-detail-head {
   position: sticky;
-  top: 0;
+  top: calc(-1 * var(--page-top-gap));
   z-index: 5;
   padding: var(--space-4) var(--space-4) 0;
   background: var(--color-surface-raised);
