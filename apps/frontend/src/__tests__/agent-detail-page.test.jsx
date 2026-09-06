@@ -242,6 +242,9 @@ describe('AgentDetailPage', () => {
     renderDetail();
 
     await waitFor(() => expect(screen.getByText('box1')).toBeInTheDocument());
+    // Task 16 put the host-telemetry settings on the Telemetry tab, where
+    // spec §7 places them: they are a form, and overview is a reading.
+    await openTab('Telemetry');
     // Only in the server registry — proves HOST_DEFAULTS is really gone.
     const gpu = await screen.findByLabelText(/^gpu$/i);
     expect(gpu).toBeChecked();
@@ -252,6 +255,7 @@ describe('AgentDetailPage', () => {
     renderDetail();
 
     await waitFor(() => expect(screen.getByText('box1')).toBeInTheDocument());
+    await openTab('Telemetry');
     // The grant is a bare `true` (no config), so every value shown must come
     // from the fetched defaults — 45, not a hardcoded 30.
     const cadence = await screen.findByLabelText(/cadence/i);
@@ -266,6 +270,7 @@ describe('AgentDetailPage', () => {
     renderDetail();
 
     await waitFor(() => expect(screen.getByText('box1')).toBeInTheDocument());
+    await openTab('Telemetry');
     fireEvent.click(await screen.findByLabelText(/^virtual$/i));
 
     await waitFor(() => expect(setAgentCapabilities).toHaveBeenCalled());
@@ -483,7 +488,7 @@ describe('AgentDetailPage', () => {
     renderDetail();
     await openTab('Telemetry');
 
-    const alert = await screen.findByRole('alert');
+    const [alert] = await findTelemetryBanners();
     expect(alert).toHaveTextContent('host.core: unavailable');
     expect(alert).toHaveTextContent('/proc unreadable');
     expect(alert).toHaveTextContent('check agent permissions');
@@ -583,7 +588,7 @@ describe('AgentDetailPage', () => {
     expect(screen.getByText(/1 of 101 containers running/)).toBeInTheDocument();
     expect(screen.getByText('/web')).toBeInTheDocument();
     expect(screen.getByText('nginx')).toBeInTheDocument();
-    expect(screen.getByRole('alert')).toHaveTextContent(/100 containers/);
+    expect(telemetryBanners()[0]).toHaveTextContent(/100 containers/);
   });
 
   it('does not render a Docker section when the collector is disabled', async () => {
@@ -635,7 +640,7 @@ describe('AgentDetailPage', () => {
     renderDetail();
     await openTab('Telemetry');
 
-    const alert = await screen.findByRole('alert');
+    const [alert] = await findTelemetryBanners();
     expect(alert).toHaveTextContent('host.thermal: degraded');
     expect(alert).toHaveTextContent('no thermal zones exposed');
     expect(alert).toHaveTextContent('install lm-sensors');
@@ -665,7 +670,7 @@ describe('AgentDetailPage', () => {
     renderDetail();
     await openTab('Telemetry');
 
-    const alert = await screen.findByRole('alert');
+    const [alert] = await findTelemetryBanners();
     expect(alert).toHaveTextContent('host.thermal: degraded');
     expect(within(telemetrySection()).getByText('12.5%')).toBeInTheDocument();
     expect(screen.getByText(/Last sample/)).toBeInTheDocument();
@@ -700,7 +705,7 @@ describe('AgentDetailPage', () => {
     await waitFor(() =>
       expect(screen.getByText(/No host samples received yet/)).toBeInTheDocument()
     );
-    expect(await screen.findByRole('alert')).toHaveTextContent('/proc unreadable');
+    expect((await findTelemetryBanners())[0]).toHaveTextContent('/proc unreadable');
   });
 
   it('lets a fresher poll override a readiness push cached from before it', async () => {
@@ -738,7 +743,7 @@ describe('AgentDetailPage', () => {
 
       // The push arrived after the in-flight first request was issued, so it
       // legitimately wins over that response.
-      expect(await screen.findByRole('alert')).toHaveTextContent('fault that later cleared');
+      expect((await findTelemetryBanners())[0]).toHaveTextContent('fault that later cleared');
 
       // The next reconciliation poll — at the backoff period, because the
       // stream is delivering — is issued *after* the cached push arrived, so
@@ -747,7 +752,7 @@ describe('AgentDetailPage', () => {
         await vi.advanceTimersByTimeAsync(POLL_BACKOFF_MS);
       });
 
-      await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+      await waitFor(() => expect(telemetryBanners()).toHaveLength(0));
     } finally {
       vi.useRealTimers();
     }
@@ -806,11 +811,29 @@ describe('AgentDetailPage', () => {
       return telemetrySection();
     });
 
-  // A summary card is <article><span>{label}</span><strong>{value}</strong>.
+  // Task 16: a summary card is a StatTile — <div class="cb-tile"> with its
+  // label and value in their own elements — rather than the bare
+  // <article><span><strong> the page used to emit.
   function cardValue(label) {
-    const article = within(telemetrySection()).getByText(label).closest('article');
-    return article.querySelector('strong').textContent;
+    const tile = within(telemetrySection()).getByText(label).closest('.cb-tile');
+    return tile.querySelector('.cb-tile__value').textContent;
   }
+
+  /**
+   * The readiness and truncation callouts on the Telemetry tab.
+   *
+   * Task 16 renders these as Banners, which are role="status" and not
+   * role="alert" — every one of these conditions is already true when the tab
+   * opens, and an alert would interrupt a screen reader on each navigation.
+   * Scoped to the tab body because the page header carries a Banner of its own
+   * for the primary agent state.
+   */
+  const telemetryBanners = () => within(telemetrySection()).queryAllByRole('status');
+
+  const findTelemetryBanners = async () => {
+    await waitFor(() => expect(telemetryBanners().length).toBeGreaterThan(0));
+    return telemetryBanners();
+  };
 
   describe('summary cards', () => {
     it('renders all eight summary cards with formatMetric output', async () => {
@@ -1179,7 +1202,7 @@ describe('AgentDetailPage', () => {
       renderDetail();
       await openTab('Telemetry');
 
-      const alerts = await screen.findAllByRole('alert');
+      const alerts = await findTelemetryBanners();
       expect(alerts).toHaveLength(2);
       expect(alerts[0]).toHaveTextContent('host.thermal: degraded');
       expect(alerts[0]).toHaveTextContent('no thermal zones exposed — install lm-sensors');
@@ -1209,8 +1232,12 @@ describe('AgentDetailPage', () => {
       renderDetail();
       await openTab('Telemetry');
 
-      const alert = await screen.findByRole('alert');
-      expect(alert).toHaveTextContent('host.core: degraded partial read');
+      const [alert] = await findTelemetryBanners();
+      // Banner keeps the collector line and the reason in separate elements,
+      // so they are asserted separately; what matters is that the em-dash
+      // clause is absent when there is nothing to remediate.
+      expect(alert).toHaveTextContent('host.core: degraded');
+      expect(alert).toHaveTextContent('partial read');
       expect(alert.textContent).not.toContain('—');
     });
 
@@ -1227,7 +1254,7 @@ describe('AgentDetailPage', () => {
       renderDetail();
       await openTab('Telemetry');
 
-      const alert = await screen.findByRole('alert');
+      const [alert] = await findTelemetryBanners();
       expect(alert).toHaveTextContent('host.thermal: unavailable');
       expect(cardValue('CPU')).toBe('12.5%');
     });
@@ -1242,11 +1269,20 @@ describe('AgentDetailPage', () => {
       await openTab('Telemetry');
 
       await findCards();
-      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(telemetryBanners()).toHaveLength(0);
     });
   });
 
   describe('host-telemetry capability editing', () => {
+    /**
+     * Task 16: the settings form is on the Telemetry tab (spec §7), so every
+     * test here has to open it before the controls exist.
+     */
+    const renderSettings = async () => {
+      renderDetail();
+      await openTab('Telemetry');
+    };
+
     // The client guard exists to match the agent-side bounds in
     // internal/capability/capability.go:14-17 (MinIntervalSeconds 10,
     // MaxIntervalSeconds 900). These two tests are what stop the pair drifting.
@@ -1256,7 +1292,7 @@ describe('AgentDetailPage', () => {
     ])('rejects a cadence %s without calling the API', async (_label, value) => {
       const { setAgentCapabilities } = await import('../api/agents');
 
-      renderDetail();
+      await renderSettings();
 
       const cadence = await screen.findByLabelText(/cadence/i);
       fireEvent.change(cadence, { target: { value } });
@@ -1268,7 +1304,7 @@ describe('AgentDetailPage', () => {
     it('sends the registry-derived config merged with the patch for a valid cadence', async () => {
       const { setAgentCapabilities } = await import('../api/agents');
 
-      renderDetail();
+      await renderSettings();
 
       const cadence = await screen.findByLabelText(/cadence/i);
       fireEvent.change(cadence, { target: { value: '60' } });
@@ -1291,7 +1327,7 @@ describe('AgentDetailPage', () => {
         response: { data: { detail: 'interval_s must be an integer' } },
       });
 
-      renderDetail();
+      await renderSettings();
 
       const virtual = await screen.findByLabelText(/^virtual$/i);
       expect(virtual).not.toBeChecked();
@@ -1308,7 +1344,7 @@ describe('AgentDetailPage', () => {
       const { setAgentCapabilities } = await import('../api/agents');
       setAgentCapabilities.mockRejectedValue(new Error('network down'));
 
-      renderDetail();
+      await renderSettings();
 
       fireEvent.click(await screen.findByLabelText(/^virtual$/i));
 
@@ -1321,7 +1357,7 @@ describe('AgentDetailPage', () => {
       const { setAgentCapabilities } = await import('../api/agents');
       const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
 
-      renderDetail();
+      await renderSettings();
 
       const docker = await screen.findByLabelText(/^docker$/i);
       expect(docker).not.toBeChecked();
@@ -1336,7 +1372,7 @@ describe('AgentDetailPage', () => {
       const { setAgentCapabilities } = await import('../api/agents');
       const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
 
-      renderDetail();
+      await renderSettings();
 
       fireEvent.click(await screen.findByLabelText(/^docker$/i));
 
@@ -1362,7 +1398,7 @@ describe('AgentDetailPage', () => {
       });
       const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
 
-      renderDetail();
+      await renderSettings();
 
       const docker = await screen.findByLabelText(/^docker$/i);
       expect(docker).toBeChecked();
