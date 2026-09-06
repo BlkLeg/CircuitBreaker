@@ -24,11 +24,25 @@ vi.mock('../api/agents', async () => {
   const actual = await vi.importActual('../api/agents');
   return { ...api, normalizeCapability: actual.normalizeCapability };
 });
+
+// Mutable, test-controlled backing stores for the two WebSocket hooks.
+// Reassigning `live.statuses` / `live.telemetry` to a *new* Map (rather than
+// mutating one in place) mirrors exactly how the real hooks behave: a fresh
+// Map only on an actual message, the *same* reference across renders that
+// have nothing new to deliver. That distinction matters here — a mock that
+// handed out a new Map on every call, regardless of whether anything changed,
+// would make the hook's own `liveTelemetry`-dependent effect see a "changed"
+// dependency on every render and loop forever once a push was present.
+const live = vi.hoisted(() => ({
+  statuses: new Map(),
+  telemetry: new Map(),
+}));
+
 vi.mock('../hooks/useAgentLive', () => ({
-  useAgentLive: () => ({ statuses: new Map(), connected: true }),
+  useAgentLive: () => ({ statuses: live.statuses, connected: true }),
 }));
 vi.mock('../hooks/useTelemetryStream', () => ({
-  useTelemetryStream: () => ({ data: new Map(), connected: true }),
+  useTelemetryStream: () => ({ data: live.telemetry, connected: true }),
 }));
 vi.mock('../components/common/Toast', () => ({
   useToast: () => ({ error: vi.fn(), success: vi.fn() }),
@@ -57,6 +71,8 @@ function mount(activeTab = 'overview') {
 
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
+  live.statuses = new Map();
+  live.telemetry = new Map();
   Object.values(api).forEach((fn) => fn.mockReset());
   api.getAgent.mockResolvedValue({ data: AGENT });
   api.getAgentEvents.mockResolvedValue({ data: [] });
@@ -102,6 +118,59 @@ describe('useAgentDetail', () => {
     mount('overview');
     await waitFor(() => expect(api.getAgentProbes).toHaveBeenCalled());
     expect(api.getAgentDiscovery).toHaveBeenCalled();
+  });
+
+  // Fix round: reloadProbes/reloadDiscovery are reachable both from the
+  // tab-gated effect and as an external "refresh after mutation" callback, so
+  // rapid re-triggering (e.g. tab switching) can leave two requests in flight
+  // at once. A slower, earlier one resolving after a fresher one must not be
+  // allowed to overwrite it.
+  it('discards a stale reloadProbes response that resolves after a fresher one', async () => {
+    const { result } = mount('overview');
+    await waitFor(() => expect(api.getAgentProbes).toHaveBeenCalledTimes(1));
+
+    let resolveStale;
+    const stale = new Promise((resolve) => {
+      resolveStale = resolve;
+    });
+    api.getAgentProbes
+      .mockReturnValueOnce(stale)
+      .mockResolvedValueOnce({ data: { assignments: [{ id: 'fresh' }] } });
+
+    result.current.reloadProbes(); // in flight, resolves later
+    result.current.reloadProbes(); // fired after — must win
+
+    await waitFor(() => expect(result.current.probes).toEqual({ assignments: [{ id: 'fresh' }] }));
+
+    resolveStale({ data: { assignments: [{ id: 'stale' }] } });
+    await act(() => Promise.resolve());
+    await act(() => Promise.resolve());
+
+    expect(result.current.probes).toEqual({ assignments: [{ id: 'fresh' }] });
+  });
+
+  it('discards a stale reloadDiscovery response that resolves after a fresher one', async () => {
+    const { result } = mount('overview');
+    await waitFor(() => expect(api.getAgentDiscovery).toHaveBeenCalledTimes(1));
+
+    let resolveStale;
+    const stale = new Promise((resolve) => {
+      resolveStale = resolve;
+    });
+    api.getAgentDiscovery
+      .mockReturnValueOnce(stale)
+      .mockResolvedValueOnce({ data: { subnets: [{ cidr: 'fresh' }] } });
+
+    result.current.reloadDiscovery(); // in flight, resolves later
+    result.current.reloadDiscovery(); // fired after — must win
+
+    await waitFor(() => expect(result.current.discovery).toEqual({ subnets: [{ cidr: 'fresh' }] }));
+
+    resolveStale({ data: { subnets: [{ cidr: 'stale' }] } });
+    await act(() => Promise.resolve());
+    await act(() => Promise.resolve());
+
+    expect(result.current.discovery).toEqual({ subnets: [{ cidr: 'fresh' }] });
   });
 
   it('polls the latest sample on the active interval', async () => {
@@ -156,5 +225,107 @@ describe('useAgentDetail', () => {
     await waitFor(() =>
       expect(result.current.discovery).toEqual({ subnets: [{ cidr: '10.0.0.0/24' }] })
     );
+  });
+
+  // Fix round: the hook subscribed to both WebSockets but read neither, so
+  // `online` never moved off the initial presence poll and a live
+  // sample/readiness push sat unread in `liveTelemetry` until the next 30s
+  // poll clobbered it. These four tests prove all three merges actually run.
+
+  it('overrides a polled presence with a fresh connected/disconnected push', async () => {
+    api.getAgentsPresence.mockResolvedValue({ data: [{ online: false, hardware: null }] });
+    const { result, rerender } = mount('overview');
+    await waitFor(() => expect(result.current.online).toBe(false));
+
+    act(() => {
+      live.statuses = new Map(live.statuses).set(7, {
+        event_type: 'connected',
+        detail: null,
+        ts: Date.now(),
+      });
+    });
+    rerender({ tab: 'overview' });
+
+    await waitFor(() => expect(result.current.online).toBe(true));
+  });
+
+  it('ignores a connected/disconnected push older than the last presence poll', async () => {
+    api.getAgentsPresence.mockResolvedValue({ data: [{ online: false, hardware: null }] });
+    const { result, rerender } = mount('overview');
+    await waitFor(() => expect(result.current.online).toBe(false));
+
+    // Older than the presence poll that just landed: isLivePushFresh's
+    // poll-recency guard must reject it, so the poll's answer stands.
+    act(() => {
+      live.statuses = new Map(live.statuses).set(7, {
+        event_type: 'connected',
+        detail: null,
+        ts: Date.now() - 5000,
+      });
+    });
+    rerender({ tab: 'overview' });
+
+    await waitFor(() => expect(result.current.agent).toBeTruthy());
+    expect(result.current.online).toBe(false);
+  });
+
+  it('merges a live sample push into telemetry.latest', async () => {
+    // Seeded so `streamIsDelivering` (liveTelemetry.size > 0) is already true
+    // at mount: the poll-backoff effect depends on that boolean, and the sample
+    // push below must not be the thing that flips it, or the resulting
+    // dependency change re-fires an immediate reloadTelemetry() that can land
+    // after the merge and clobber it — the sample merge has no re-apply-after-
+    // poll guard (matching AgentDetailPage.jsx exactly; see the readiness merge
+    // below for the contrasting case that does need one).
+    live.telemetry = new Map([['seed:unrelated', {}]]);
+    const { result, rerender } = mount('overview');
+    await waitFor(() => expect(result.current.telemetry).toBeTruthy());
+
+    act(() => {
+      live.telemetry = new Map(live.telemetry).set('agent:7', {
+        payload: { summary: { cpu_pct: 42 }, status: 'ok' },
+        collected_at: '2026-09-05T00:00:00Z',
+      });
+    });
+    rerender({ tab: 'overview' });
+
+    await waitFor(() =>
+      expect(result.current.telemetry.latest?.payload?.summary).toEqual({
+        cpu_pct: 42,
+      })
+    );
+    expect(result.current.telemetry.latest.status).toBe('ok');
+    expect(result.current.telemetry.latest.collected_at).toBe('2026-09-05T00:00:00Z');
+  });
+
+  it('applies a live readiness push, then lets a newer poll override a now-stale one', async () => {
+    // Same seeding rationale as the sample-merge test above.
+    live.telemetry = new Map([['seed:unrelated', {}]]);
+    const { result, rerender } = mount('overview');
+    await waitFor(() => expect(api.getAgentTelemetry).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.telemetry).toBeTruthy());
+
+    const pushedReadiness = [{ collector: 'cpu', state: 'degraded' }];
+    act(() => {
+      live.telemetry = new Map(live.telemetry).set('readiness:agent:7', {
+        readiness: pushedReadiness,
+      });
+    });
+    rerender({ tab: 'overview' });
+
+    // Applied: the push arrived after the poll that is currently applied.
+    await waitFor(() => expect(result.current.telemetry.readiness).toBe(pushedReadiness));
+
+    // A newer poll resolves with different readiness. Its request was issued
+    // after the push arrived above, so it must win — the stale push must not
+    // be re-applied on top of it.
+    const freshReadiness = [{ collector: 'cpu', state: 'ok' }];
+    api.getAgentTelemetry.mockResolvedValueOnce({
+      data: { latest: null, readiness: freshReadiness, spool: null },
+    });
+    act(() => result.current.reloadTelemetry());
+
+    await waitFor(() => expect(result.current.telemetry.readiness).toBe(freshReadiness));
+    expect(result.current.telemetry.readiness).not.toBe(pushedReadiness);
   });
 });
