@@ -385,14 +385,23 @@ CapsCell.propTypes = { capabilities: PropTypes.object };
 
 function PendingCells({ agent }) {
   return (
-    <td className="fleet-cell fleet-muted" colSpan={PENDING_DETAIL_SPAN}>
-      Waiting for approval
-      <span className="fleet-muted">
+    <td className="fleet-cell fleet-muted fleet-pending" colSpan={PENDING_DETAIL_SPAN}>
+      {/* Every field is its own element. The separator between them is an
+          adjacent-sibling rule, and the leading label used to be a bare text
+          node — which no sibling selector can match, so the status ran
+          straight into the platform: "Waiting for approvallinux / amd64". */}
+      <span className="fleet-pending__item">Waiting for approval</span>
+      <span className="fleet-pending__item">
         {agent.os} / {agent.arch}
       </span>
       {agent.fingerprint && (
-        <span className="fleet-chip" data-tone="warn" title={agent.fingerprint}>
-          {agent.fingerprint.slice(0, FINGERPRINT_PREVIEW_CHARS)}…
+        <span className="fleet-pending__item">
+          {/* Full label text, abbreviated visually rather than by slicing it
+              here — a truncated string is unreachable to a screen reader.
+              `title` restores it on hover. */}
+          <span className="fleet-chip" data-tone="warn" title={agent.fingerprint}>
+            {agent.fingerprint.slice(0, FINGERPRINT_PREVIEW_CHARS)}…
+          </span>
         </span>
       )}
     </td>
@@ -409,14 +418,23 @@ PendingCells.propTypes = { agent: PropTypes.object.isRequired };
 // `.sr-only` clause carry the same fact without colour.
 function VersionCell({ agent, latestFleetVersion }) {
   const drift = versionDrift(agent.agent_version, latestFleetVersion);
-  if (agent.agent_version == null) return <td className="fleet-cell fleet-num">{EM_DASH}</td>;
+  if (agent.agent_version == null)
+    return (
+      <td className="fleet-cell">
+        <span className="fleet-num">{EM_DASH}</span>
+      </td>
+    );
   if (drift !== 'behind') {
-    return <td className="fleet-cell fleet-num">{agent.agent_version}</td>;
+    return (
+      <td className="fleet-cell">
+        <span className="fleet-num">{agent.agent_version}</span>
+      </td>
+    );
   }
   const explanation = `Behind the newest agent in this fleet (${latestFleetVersion}). Dispatch an update from the agent's page to bring it forward.`;
   return (
-    <td className="fleet-cell fleet-num" data-drift="behind" title={explanation}>
-      {agent.agent_version}
+    <td className="fleet-cell" data-drift="behind" title={explanation}>
+      <span className="fleet-num">{agent.agent_version}</span>
       <span className="fleet-drift-mark" aria-hidden="true">
         {' '}
         ↑
@@ -438,8 +456,10 @@ function FleetCells({ agent, latestFleetVersion }) {
       <VersionCell agent={agent} latestFleetVersion={latestFleetVersion} />
       {/* An offline agent's stored uptime is a snapshot from before it went
           away; rendering it would claim the host is still up that long. */}
-      <td className="fleet-cell fleet-num">
-        {(!isOffline && formatDuration(agent.latest?.uptime_s)) || EM_DASH}
+      <td className="fleet-cell">
+        <span className="fleet-num">
+          {(!isOffline && formatDuration(agent.latest?.uptime_s)) || EM_DASH}
+        </span>
       </td>
       {isOffline && <OfflineCell agent={agent} />}
       {!isOffline && agent.latest == null && <TelemetryOffCell />}

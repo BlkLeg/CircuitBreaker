@@ -65,7 +65,7 @@ jobs:
         run: |
           cd apps/backend
           alembic upgrade head
-          uvicorn app.main:app --host 127.0.0.1 --port 8000 > ../../artifacts-baseline-server.log 2>&1 &
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers > ../../artifacts-baseline-server.log 2>&1 &
           CB_TOPOLOGY_MODE=worker python -m app.workers.main --type=monitor_scheduler > ../../artifacts-monitor-scheduler.log 2>&1 &
           CB_TOPOLOGY_MODE=worker python -m app.workers.main --type=monitor_poll > ../../artifacts-monitor-poll.log 2>&1 &
           for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8000/api/v1/livez && break; sleep 1; done

@@ -982,3 +982,17 @@
   color: var(--color-text-muted);
   font-size: 0.72rem;
 }
+
+/* AGT: the pending row's detail cell. Each field is its own element and the
+   separator is an adjacent-sibling rule, so adding a field cannot reintroduce
+   the run-together defect — a bare text node simply will not match. */
+.fleet-pending {
+  display: flex;
+  align-items: center;
+}
+
+.fleet-pending__item + .fleet-pending__item::before {
+  content: '·';
+  margin: 0 6px;
+  color: var(--color-border);
+}

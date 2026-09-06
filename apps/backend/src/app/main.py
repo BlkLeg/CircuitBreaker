@@ -102,6 +102,7 @@ from app.db.session import engine, get_db, get_session_context
 from app.middleware.csrf import CSRFMiddleware
 from app.middleware.legacy_token import LegacyTokenMiddleware
 from app.middleware.logging_middleware import LoggingMiddleware
+from app.middleware.proxy_headers import ProxyHeadersMiddleware
 from app.middleware.rate_limit_middleware import TenantRateLimitMiddleware
 from app.middleware.request_id import RequestIdMiddleware, install_request_id_log_filter
 from app.middleware.security_headers import SecurityHeadersMiddleware
@@ -1638,6 +1639,14 @@ app.add_middleware(HttpMetricsMiddleware)
 # metrics layer could never appear in the metrics layer's own log lines, or
 # in any log line any middleware above emits while handling this request.
 app.add_middleware(RequestIdMiddleware)
+# Added after RequestIdMiddleware, so this — not that — is now the outermost
+# layer. It has to be: it rewrites scope["client"] and scope["scheme"] from the
+# forwarded headers (the job uvicorn's own ProxyHeadersMiddleware used to do,
+# now disabled at every launch site), and everything that reads request.client
+# for an audit record must run inside it. It records the pre-rewrite socket
+# peer, which is the fact core.forwarded needs and uvicorn's version destroyed.
+# See middleware/proxy_headers.py for the full account.
+app.add_middleware(ProxyHeadersMiddleware)
 
 # ── Global error handlers ──────────────────────────────────────────────────
 
