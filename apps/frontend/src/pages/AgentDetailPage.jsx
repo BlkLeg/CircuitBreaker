@@ -1,40 +1,35 @@
 /* eslint-disable security/detect-object-injection -- metric, column and capability keys all come from module-level literal lists and from the agent payload's own field names; none is caller-supplied */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import React, { useCallback, useMemo, useState } from 'react';
+import PropTypes from 'prop-types';
+import { useParams, useSearchParams } from 'react-router-dom';
 import {
-  getAgent,
-  getAgentDiscovery,
-  getAgentEvents,
-  getAgentProbes,
-  getAgentTelemetry,
-  getAgentTelemetryHistory,
-  getAgentsPresence,
-  getCapabilityDefaults,
   revokeAgent,
   setAgentCapabilities,
   triggerAgentUpdate,
   normalizeCapability,
 } from '../api/agents';
-import { useTelemetryStream } from '../hooks/useTelemetryStream';
-import { useAgentLive } from '../hooks/useAgentLive';
-import { isLivePushFresh } from '../utils/agentPresenceFreshness';
+import { useAgentDetail } from '../hooks/useAgentDetail';
 import { useToast } from '../components/common/Toast';
 import ConfirmDialog from '../components/common/ConfirmDialog';
+import Tabs, { panelPropsFor } from '../components/common/Tabs';
 import AssignedProbesSection from '../components/agents/AssignedProbesSection';
 import DiscoveryScopeSection from '../components/agents/DiscoveryScopeSection';
+import AgentIdentityHeader from '../components/agents/AgentIdentityHeader';
+import AgentStateBanner from '../components/agents/AgentStateBanner';
+import AgentLiveStrip from '../components/agents/AgentLiveStrip';
 import { agentDisplayName } from '../lib/agentLabel';
 import {
   describeAgentEvent,
   operatorErrorMessage,
   updateDispatchMessage,
 } from '../lib/agentErrors';
-import { deriveAgentStates, updateStateFromEvents } from '../lib/agentState';
+import { TAB_KEYS } from '../lib/agentComposition';
 import { serverClockOffsetMs } from '../utils/serverClock';
 import { formatTimestamp } from '../lib/time';
-import AgentStateChip, { stateDetailText } from '../components/agents/AgentStateChip';
+import AgentStateChip from '../components/agents/AgentStateChip';
 // AGT-14: the state chips on this page reuse the fleet's `.fleet-chip` tone
 // ladder rather than defining a second colour vocabulary for the same states,
-// and the `.agent-detail-page__state-*` rules live alongside them.
+// and the `.agent-detail-page__*` rules live alongside them.
 import '../styles/agents.css';
 import RemoteProbeConfigEditor, {
   REMOTE_PROBE_MAX_CONCURRENT,
@@ -54,6 +49,25 @@ const CAPABILITY_LABELS = {
 // each unset one falls back to, and what config gets sent on an edit. A key
 // that only exists server-side therefore shows up here with no frontend
 // change, which is the whole point: the two can no longer drift.
+
+const TAB_LABELS = {
+  overview: 'Overview',
+  telemetry: 'Telemetry',
+  probes: 'Probes',
+  discovery: 'Discovery',
+  events: 'Events',
+};
+
+const DEFAULT_TAB = 'overview';
+
+/** Which strip metrics come from which summary key, in reading order. */
+const STRIP_METRICS = [
+  { key: 'cpu_pct', label: 'CPU' },
+  { key: 'mem_pct', label: 'MEM' },
+  { key: 'root_disk_pct', label: 'DISK' },
+  { key: 'net_rx_bps', label: 'NET' },
+  { key: 'max_temp_c', label: 'TEMP' },
+];
 
 const SUMMARY_LABELS = {
   cpu_pct: 'CPU',
@@ -158,218 +172,94 @@ function HistoryChart({ label, metric, points }) {
 
 export default function AgentDetailPage() {
   const { id } = useParams();
-  const navigate = useNavigate();
   const toast = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
 
-  const [agent, setAgent] = useState(null);
-  const [events, setEvents] = useState([]);
-  const [presence, setPresence] = useState(null);
-  // Client-side Date.now() from the most recent successful presence poll
-  // response — see isLivePushFresh / AgentsPage for why this is needed.
-  const [presenceFetchedAt, setPresenceFetchedAt] = useState(null);
-  const [loading, setLoading] = useState(true);
   const [revokeOpen, setRevokeOpen] = useState(false);
-  const [telemetry, setTelemetry] = useState(null);
-  // When the request behind the currently-applied `telemetry` was issued —
-  // the readiness effect's freshness comparison, mirroring presenceFetchedAt.
-  const [telemetryRequestedAt, setTelemetryRequestedAt] = useState(null);
-  // Identity + client receipt time of the last capability.readiness push.
-  const readinessPushRef = useRef({ array: null, receivedAt: 0 });
-  const [historyRange, setHistoryRange] = useState('1h');
-  const [history, setHistory] = useState([]);
-  // null until the server capability registry resolves; the capability editor
-  // stays in a loading state until then rather than rendering a guessed set of
-  // settings that a subsequent edit would then persist.
-  const [capabilityDefaults, setCapabilityDefaults] = useState(null);
-  // Slice 3 §7. null until GET /agents/{id}/probes resolves; the section
-  // renders a loading line rather than pretending the agent has no assignments,
-  // because "no assignments" is exactly what decides whether disabling the
-  // capability needs a confirmation.
-  const [probes, setProbes] = useState(null);
+  // AGT-16: dispatching an update replaces the running binary on a remote host.
+  // It shipped as a single unconfirmed click in the page header.
+  const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false);
   // AGT-16: one record instead of a boolean per dialog. Every capability change
   // that expands privilege or withdraws work in flight goes through it, so a
   // capability added later cannot quietly ship without a confirmation — there
   // is one place to add its copy, and one dialog that renders it.
   const [pendingCapability, setPendingCapability] = useState(null);
-  // Slice 4 §6. `null` until GET /agents/{id}/discovery resolves; the section
-  // says so rather than rendering an empty scope, which would read as "this
-  // agent discovers nothing" — the one thing it exists to distinguish.
-  const [discovery, setDiscovery] = useState(null);
-  // AGT-16: dispatching an update replaces the running binary on a remote host.
-  // It shipped as a single unconfirmed click in the page header.
-  const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false);
 
-  const { statuses } = useAgentLive();
-  const telemetryEntities = useMemo(() => [{ entity_type: 'agent', entity_id: Number(id) }], [id]);
-  const { data: liveTelemetry } = useTelemetryStream({ entities: telemetryEntities });
+  const requestedTab = searchParams.get('tab');
+  // A stale bookmark or a hand-edited URL must land somewhere, not on a blank
+  // page — and the composition, not the URL, decides which tabs exist at all.
+  const namedTab = TAB_KEYS.includes(requestedTab) ? requestedTab : DEFAULT_TAB;
 
-  const load = useCallback(() => {
-    Promise.all([getAgent(id), getAgentEvents(id)])
-      .then(([agentRes, eventsRes]) => {
-        setAgent(agentRes.data);
-        setEvents(eventsRes.data);
-      })
-      .catch(() => toast.error('Could not load agent'))
-      .finally(() => setLoading(false));
+  const {
+    agent,
+    setAgent,
+    presence,
+    events,
+    telemetry,
+    history,
+    probes,
+    discovery,
+    capabilityDefaults,
+    loading,
+    page,
+    freshness,
+    online,
+    historyRange,
+    setHistoryRange,
+    setDiscovery,
+    reload,
+    reloadProbes,
+    reloadDiscovery,
+  } = useAgentDetail(id, { activeTab: namedTab });
 
-    // Task 12 bulk presence, called with this single id — online state,
-    // connected_since, and linked-hardware summary aren't on AgentRead, so
-    // this is the only source for them. Kept off the critical load path
-    // (own catch) so a presence hiccup doesn't block the rest of the page.
-    getAgentsPresence({ ids: [id] })
-      .then(({ data }) => {
-        setPresence(data[0] ?? null);
-        setPresenceFetchedAt(Date.now());
-      })
-      .catch(() => {});
-  }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Fetched once (it is server configuration, not per-agent state) and kept
-  // off the critical load path so a hiccup here can't blank the whole page.
-  useEffect(() => {
-    let cancelled = false;
-    getCapabilityDefaults()
-      .then(({ data }) => {
-        if (!cancelled) setCapabilityDefaults(data ?? {});
-      })
-      .catch(() => {
-        if (!cancelled) toast.error('Could not load capability defaults');
-      });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // The second half of the same rule: `TAB_KEYS` says the name is spelled like
+  // a tab, `page.tabs` says whether *this* agent has one. A revoked agent has
+  // no telemetry tab, so a link to it lands on overview rather than on a panel
+  // with no tab selected above it. `overview` is in every composition.
+  const activeTab = page.tabs.includes(namedTab) ? namedTab : DEFAULT_TAB;
 
   const hostDefaults = capabilityDefaults?.host_telemetry?.config ?? {};
   const probeDefaults = capabilityDefaults?.remote_probe?.config ?? {};
   const discoveryDefaults = capabilityDefaults?.local_discovery?.config ?? {};
 
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  // Own request, own catch: the assigned-probes section is additive and a
-  // failure here must not blank the rest of the page. Re-run after every
-  // mutation the section performs (check now / reassign / return to server) so
-  // the execution conditions it renders are the ones the backend just wrote.
-  const loadProbes = useCallback(() => {
-    getAgentProbes(id)
-      .then(({ data }) => setProbes(data))
-      .catch(() => setProbes(null));
-  }, [id]);
-
-  useEffect(() => {
-    loadProbes();
-  }, [loadProbes]);
-
-  // Own request, own catch, exactly like loadProbes above: the discovery-scope
-  // section is additive and a failure here must not blank the rest of the page.
-  const loadDiscovery = useCallback(() => {
-    getAgentDiscovery(id)
-      .then(({ data }) => setDiscovery(data))
-      .catch(() => setDiscovery(null));
-  }, [id]);
-
-  useEffect(() => {
-    loadDiscovery();
-  }, [loadDiscovery]);
-
-  const loadTelemetry = useCallback(() => {
-    // The request time, not the response time: a readiness push that arrived
-    // while this poll was in flight carries information the response may
-    // predate, so it must still win. See the readiness effect below.
-    const requestedAt = Date.now();
-    getAgentTelemetry(id)
-      .then(({ data }) => {
-        setTelemetry(data);
-        setTelemetryRequestedAt(requestedAt);
-      })
-      .catch(() => {});
-  }, [id]);
-
-  useEffect(() => {
-    loadTelemetry();
-    const timer = setInterval(loadTelemetry, 30000);
-    return () => clearInterval(timer);
-  }, [loadTelemetry]);
-
-  useEffect(() => {
-    getAgentTelemetryHistory(id, historyRange)
-      .then(({ data }) => setHistory(data.points ?? []))
-      .catch(() => setHistory([]));
-  }, [id, historyRange]);
-
-  useEffect(() => {
-    const update = liveTelemetry.get(`agent:${Number(id)}`);
-    if (update?.payload)
-      setTelemetry((current) => ({
-        ...current,
-        latest: {
-          ...current?.latest,
-          payload: update.payload,
-          summary: update.payload.summary,
-          collected_at: update.collected_at,
-          status: update.payload.status,
+  const selectTab = useCallback(
+    (key) => {
+      // `replace` so a five-tab page does not bury the previous page under five
+      // history entries the back button has to walk out of.
+      setSearchParams(
+        (params) => {
+          const next = new URLSearchParams(params);
+          next.set('tab', key);
+          return next;
         },
-      }));
-  }, [liveTelemetry, id]);
+        { replace: true }
+      );
+    },
+    [setSearchParams]
+  );
 
-  // Task 18: `capability.readiness` is broadcast on the same
-  // telemetry:agent:{id} channel as the samples, but useTelemetryStream files
-  // it under its own `readiness:` key rather than the sample slot — reading it
-  // from the shared slot would clobber `update.payload` above and blank every
-  // metric card. Without this the page only learns about a collector fault on
-  // the next 30 s poll.
-  //
-  // The broadcast carries the *full* readiness list, so a whole-array replace
-  // is correct; there is no per-collector merge to do.
-  const liveReadiness = liveTelemetry.get(`readiness:agent:${Number(id)}`)?.readiness;
-  useEffect(() => {
-    // Only a real array is applied. A malformed push must not replace a polled
-    // list with `undefined`, and a push landing before the first
-    // getAgentTelemetry resolves must not fabricate a half-built object —
-    // `{readiness: [...]}` with no `latest` is a valid renderable state after
-    // Task 17 (the no-sample branch still renders the warnings), `{readiness:
-    // undefined}` is not.
-    if (!Array.isArray(liveReadiness)) return;
-    if (readinessPushRef.current.array !== liveReadiness) {
-      readinessPushRef.current = { array: liveReadiness, receivedAt: Date.now() };
-    }
-    // `telemetry` is a real dependency, not incidental: the 30 s poll replaces
-    // the whole object, so the push has to be re-applied on top of each poll
-    // or it would survive only until the next one. The equality check makes
-    // the re-apply a fixed point, so this cannot loop.
-    //
-    // But re-applying unconditionally pins a stale warning forever: the
-    // backend only publishes readiness when it *changes* (D-4) and
-    // useTelemetryStream never clears its `data` map on a socket drop, so a
-    // change that happens while the browser is disconnected is never pushed —
-    // and the cached array would keep overwriting every fresher poll for the
-    // life of the page. A push therefore only outranks a poll whose request
-    // was issued *before* the push arrived. This is the same hazard, and the
-    // same resolution, as isLivePushFresh applies to presence.
-    if (telemetryRequestedAt != null && readinessPushRef.current.receivedAt < telemetryRequestedAt)
-      return;
-    if (telemetry?.readiness === liveReadiness) return;
-    setTelemetry((current) => ({ ...current, readiness: liveReadiness }));
-  }, [liveReadiness, telemetry, telemetryRequestedAt]);
+  const tabs = useMemo(
+    () => page.tabs.map((key) => ({ key, label: TAB_LABELS[key] })),
+    [page.tabs]
+  );
 
-  // Live connected/disconnected push for this agent overrides the last
-  // polled presence snapshot immediately, without waiting on a re-fetch —
-  // but only when the push isn't stale relative to that poll (see
-  // isLivePushFresh): a disconnected event missed during a WS reconnect gap
-  // must not permanently pin `online: true` once a fresher poll disagrees.
-  const online = useMemo(() => {
-    const push = statuses.get(Number(id));
-    if (
-      (push?.event_type === 'connected' || push?.event_type === 'disconnected') &&
-      isLivePushFresh(push, presenceFetchedAt)
-    ) {
-      return push.event_type === 'connected';
-    }
-    return presence?.online ?? null;
-  }, [statuses, id, presence, presenceFetchedAt]);
+  const stripMetrics = useMemo(
+    () =>
+      STRIP_METRICS.map(({ key, label }) => ({
+        key,
+        label,
+        value:
+          telemetry?.latest?.summary?.[key] == null
+            ? null
+            : formatMetric(key, telemetry.latest.summary[key]),
+        // History rows are `{bucket, summary: {...}}` — the metric lives under
+        // `summary`, the same place HistoryChart reads it from.
+        points: history
+          .map((point) => point.summary?.[key])
+          .filter((value) => typeof value === 'number'),
+      })),
+    [telemetry, history]
+  );
 
   const applyCapabilityToggle = async (capability, enabled) => {
     const previous = agent;
@@ -470,7 +360,7 @@ export default function AgentDetailPage() {
     await applyCapabilityToggle(pending.capability, pending.enabled);
     // Discovery's own section is a second read of the same grant, so it has to
     // be re-fetched whichever direction the grant moved.
-    if (pending.capability === 'local_discovery') loadDiscovery();
+    if (pending.capability === 'local_discovery') reloadDiscovery();
   };
 
   const updateHostConfig = async (patch) => {
@@ -553,7 +443,7 @@ export default function AgentDetailPage() {
       await revokeAgent(id, 'revoked from UI');
       toast.success('Agent revoked');
       setRevokeOpen(false);
-      load();
+      reload();
     } catch {
       toast.error('Revoke failed');
     }
@@ -567,7 +457,7 @@ export default function AgentDetailPage() {
       // The queued update is only visible through the event stream (there is no
       // pending-update field on any REST response), so the states this page
       // derives are stale the instant the dispatch succeeds.
-      load();
+      reload();
     } catch (err) {
       // AGT-15: mapped to an operator action and redacted on the way through,
       // rather than echoing whatever `detail` the server happened to send.
@@ -578,357 +468,155 @@ export default function AgentDetailPage() {
   if (loading) return <div className="agent-detail-page">Loading…</div>;
   if (!agent) return <div className="agent-detail-page">Agent not found</div>;
 
-  // AGT-14. The same contract the fleet row uses (lib/agentState.js), fed the
-  // extra sources this page has and the list does not: the collector readiness
-  // table, the host-telemetry cadence, and the event stream — which is the only
-  // place a dispatched update's outcome is visible, since no REST response
-  // carries `pending_update_version`.
   const clockOffsetMs = serverClockOffsetMs();
-  const agentStates = deriveAgentStates({
-    status: agent.status,
-    online,
-    lastSeenAt: agent.last_seen_at,
-    capabilities: agent.capabilities,
-    latestSampleAt: telemetry?.latest?.collected_at ?? null,
-    // `telemetry === null` means the read has not resolved; only a resolved
-    // read with no sample is evidence that nothing was ever delivered.
-    hasTelemetryHistory: telemetry == null ? undefined : telemetry.latest != null,
-    telemetryIntervalSeconds: telemetry?.capability?.config?.interval_s ?? hostDefaults.interval_s,
-    readiness: telemetry?.readiness,
-    update: updateStateFromEvents(events),
-    spoolDepth: telemetry?.spool?.depth,
-    clockSkewSeconds: clockOffsetMs == null ? null : clockOffsetMs / 1000,
-  });
+
+  const headerActions = (
+    <>
+      <button type="button" onClick={() => setUpdateConfirmOpen(true)}>
+        Update
+      </button>
+      {agent.status === 'active' && (
+        <button type="button" onClick={() => setRevokeOpen(true)}>
+          Revoke
+        </button>
+      )}
+    </>
+  );
+
+  // Every state that holds, minus the one the banner below already spells out.
+  // `online` is the exception in the other direction: AgentStateBanner
+  // deliberately renders nothing for it (a banner on every healthy page is
+  // chrome), so when it is the primary state the chip row is where it is said.
+  const chips = page.secondary.concat(
+    page.primary && page.primary.code === 'online' ? [page.primary] : []
+  );
+
+  const renderTab = () => {
+    if (activeTab === 'probes') {
+      return (
+        <AssignedProbesSection
+          agentId={Number(id)}
+          probes={probes}
+          granted={normalizeCapability(agent.capabilities?.remote_probe).enabled}
+          onChanged={reloadProbes}
+        >
+          {normalizeCapability(agent.capabilities?.remote_probe).enabled &&
+            (capabilityDefaults === null ? (
+              <p>Loading remote probe settings…</p>
+            ) : (
+              <RemoteProbeConfigEditor
+                config={normalizeCapability(agent.capabilities.remote_probe).config}
+                defaults={probeDefaults}
+                onChange={updateProbeConfig}
+              />
+            ))}
+        </AssignedProbesSection>
+      );
+    }
+    if (activeTab === 'discovery') {
+      // Wiring only: the section owns its own mutations and its own wide-scope
+      // confirmation, and renders the config editor itself. `onDiscovery` is
+      // the section's in-place update path after one of those mutations — a
+      // no-op here would leave it showing pre-mutation data until the next
+      // fetch.
+      return (
+        <DiscoveryScopeSection
+          agentId={id}
+          agentName={agentLabel}
+          discovery={discovery}
+          granted={normalizeCapability(agent.capabilities?.local_discovery).enabled}
+          config={normalizeCapability(agent.capabilities?.local_discovery).config}
+          defaults={capabilityDefaults === null ? null : discoveryDefaults}
+          onDiscovery={setDiscovery}
+          onChanged={() => {
+            reload();
+            reloadDiscovery();
+          }}
+        />
+      );
+    }
+    if (activeTab === 'events') {
+      return <AgentEventsPanel events={events} />;
+    }
+    if (activeTab === 'telemetry') {
+      return (
+        <AgentTelemetryTab
+          telemetry={telemetry}
+          history={history}
+          historyRange={historyRange}
+          onHistoryRange={setHistoryRange}
+          hostDefaults={hostDefaults}
+          hasHardware={Boolean(presence?.hardware)}
+        />
+      );
+    }
+    return (
+      <AgentOverviewTab
+        panels={page.overviewPanels}
+        agent={agent}
+        presence={presence}
+        events={events}
+        probes={probes}
+        discovery={discovery}
+        capabilitiesLocked={page.capabilitiesLocked}
+        blockedReason={page.blockedReason}
+        stripMetrics={stripMetrics}
+        onToggleCapability={handleToggleCapability}
+        onSelectTab={selectTab}
+        capabilityDefaults={capabilityDefaults}
+        hostDefaults={hostDefaults}
+        onUpdateHostConfig={updateHostConfig}
+        online={online}
+      />
+    );
+  };
 
   return (
     <div className="agent-detail-page">
-      <button type="button" onClick={() => navigate('/agents')}>
-        ← Back to Agents
-      </button>
+      <AgentIdentityHeader
+        agent={agent}
+        online={online}
+        freshness={freshness}
+        chips={
+          chips.length === 0
+            ? null
+            : chips.map((state) => (
+                <AgentStateChip key={state.code} state={state} showAction={false} />
+              ))
+        }
+        actions={headerActions}
+        strip={
+          page.showLiveStrip ? (
+            <AgentLiveStrip
+              freshness={freshness}
+              metrics={stripMetrics}
+              dimmed={page.liveStripDimmed}
+            />
+          ) : null
+        }
+      />
 
-      <header className="agent-detail-page__header">
-        <h1>{agent.name ?? agent.hostname}</h1>
-        <span>{agent.status}</span>
-        {online != null && (
-          <span className={online ? 'agent-detail-page__online' : 'agent-detail-page__offline'}>
-            {online ? 'online' : 'offline'}
-          </span>
-        )}
-        <code>{agent.fingerprint}</code>
-        <span>v{agent.agent_version}</span>
-        <button type="button" onClick={() => setUpdateConfirmOpen(true)}>
-          Update
-        </button>
-        {agent.status === 'active' && (
-          <button type="button" onClick={() => setRevokeOpen(true)}>
-            Revoke
-          </button>
-        )}
-      </header>
+      <AgentStateBanner state={page.primary} />
 
-      {/* AGT-14: every state that holds, each with its own glyph, its own
-          wording and — in the expanded list below — the action it calls for.
-          The chips are the at-a-glance row; the list underneath is what makes
-          them actionable without a trip to the documentation. */}
-      <section aria-label="Agent state" className="agent-detail-page__states">
-        <div className="agent-detail-page__state-chips">
-          {agentStates.map((state) => (
-            <AgentStateChip key={state.code} state={state} showAction={false} />
-          ))}
-        </div>
-        <dl className="agent-detail-page__state-list">
-          {agentStates.map((state) => (
-            <React.Fragment key={state.code}>
-              <dt>{state.label}</dt>
-              <dd>
-                {state.summary}
-                {stateDetailText(state) ? ` ${stateDetailText(state)}` : ''}{' '}
-                <em>What to do: {state.action}</em>
-              </dd>
-            </React.Fragment>
-          ))}
-        </dl>
+      {/* AGT-14, relocated verbatim from the state list this shell replaces.
+          An elapsed time measured against a clock nobody has checked has to
+          say so. Only rendered while the offset is genuinely unknown — once it
+          has been observed, the header's own last-seen field is the one place
+          this lives. */}
+      {clockOffsetMs == null && (
         <p className="agent-detail-page__last-seen">
           Last seen {formatTimestamp(agent.last_seen_at)}
-          {clockOffsetMs == null &&
-            ' (elapsed times are measured against this browser’s clock; the server’s has not been observed yet)'}
-        </p>
-      </section>
-
-      {online && presence?.connected_since && (
-        <p className="agent-detail-page__connected-since">
-          Connected since {new Date(presence.connected_since).toLocaleString()}
+          {
+            ' (elapsed times are measured against this browser’s clock; the server’s has not been observed yet)'
+          }
         </p>
       )}
 
-      <section aria-label="Capabilities">
-        <h2>Capabilities</h2>
-        {Object.entries(CAPABILITY_LABELS).map(([key, label]) => (
-          <label key={key}>
-            <input
-              type="checkbox"
-              checked={normalizeCapability(agent.capabilities?.[key]).enabled}
-              onChange={(e) => handleToggleCapability(key, e.target.checked)}
-            />
-            {label}
-          </label>
-        ))}
-        {normalizeCapability(agent.capabilities?.host_telemetry).enabled &&
-          (capabilityDefaults === null ? (
-            <p>Loading capability settings…</p>
-          ) : (
-            <fieldset>
-              <legend>Host telemetry settings</legend>
-              <label>
-                Cadence{' '}
-                <input
-                  type="number"
-                  min="10"
-                  max="900"
-                  value={
-                    normalizeCapability(agent.capabilities.host_telemetry).config.interval_s ??
-                    hostDefaults.interval_s
-                  }
-                  onChange={(event) => updateHostConfig({ interval_s: Number(event.target.value) })}
-                />{' '}
-                seconds
-              </label>
-              {Object.keys(hostDefaults)
-                .filter((key) => key.startsWith('include_'))
-                .map((key) => (
-                  <label key={key}>
-                    <input
-                      type="checkbox"
-                      checked={
-                        normalizeCapability(agent.capabilities.host_telemetry).config[key] ??
-                        hostDefaults[key]
-                      }
-                      onChange={(event) => updateHostConfig({ [key]: event.target.checked })}
-                    />
-                    {key.replace('include_', '').replaceAll('_', ' ')}
-                  </label>
-                ))}
-            </fieldset>
-          ))}
-      </section>
+      <Tabs tabs={tabs} active={activeTab} onChange={selectTab} label="Agent sections" />
 
-      <section aria-label="Host telemetry" className="agent-telemetry">
-        <h2>System metrics</h2>
-        {(() => {
-          // hostDefaults, not a literal: the registry owns the cadence
-          // default, and a second copy here is exactly the drift issue 8
-          // exists to remove.
-          const interval = telemetry?.capability?.config?.interval_s ?? hostDefaults.interval_s;
-          // Task 16 / D-12: the catch-up indicator, and the only user-visible
-          // evidence that the agent's paced spool drain is making progress.
-          // Rendered only for a real backlog: depth 0 ("reported, drained")
-          // and a null spool ("this agent predates spool reporting") both
-          // render nothing. Task 17 lifts it out of the `latest` branch — an
-          // agent that buffered samples but has never delivered one is
-          // exactly when the backlog is worth showing, since nothing else on
-          // this section would explain the empty page.
-          const spoolDepth = telemetry?.spool?.depth ?? 0;
-          const catchUpLabel =
-            'The agent is replaying host samples it buffered while it could not reach ' +
-            'the server. Displayed samples may lag until the backlog drains.';
-          const catchUp = spoolDepth > 0 && (
-            <span
-              className="agent-telemetry__catchup"
-              title={catchUpLabel}
-              aria-label={catchUpLabel}
-            >
-              Catching up · {spoolDepth} samples buffered
-              {telemetry.spool?.bytes != null && ` (${formatBytes(telemetry.spool.bytes)})`}
-            </span>
-          );
-          if (!telemetry?.latest) {
-            return (
-              <>
-                <p>No host samples received yet.</p>
-                {catchUp && <p>{catchUp}</p>}
-              </>
-            );
-          }
-          const age = Date.now() - new Date(telemetry.latest.collected_at).getTime();
-          // `interval` is undefined until GET /agents/capability-defaults
-          // resolves, so the staleness window falls back to the 90 s floor and
-          // the cadence segment is omitted entirely rather than rendering a
-          // bare "Cadence s".
-          const stale = age > Math.max((interval ?? 0) * 3000, 90000);
-          return (
-            <p>
-              {stale ? 'Stale' : 'Live'} · Last sample{' '}
-              {new Date(telemetry.latest.collected_at).toLocaleString()} ·{' '}
-              {interval != null && <>Cadence {interval}s · </>}
-              {telemetry.latest.projected ? 'Projected to linked hardware' : 'Agent only'}
-              {catchUp && (
-                <>
-                  {' · '}
-                  {catchUp}
-                </>
-              )}
-            </p>
-          );
-        })()}
-        {/* Task 17: deliberately outside the `latest` branch. `capability.readiness`
-            is its own frame and is ingested independently of `telemetry.host`, so
-            the case that matters most — a collector that cannot read /proc and
-            therefore never produces a sample — has readiness rows and no sample at
-            all. `disabled` stays excluded: a switched-off collector is not a fault.
-            Slice 3 and 4 collectors land in this same readiness table and
-            render here unchanged. */}
-        {telemetry?.readiness
-          ?.filter((item) => item.state === 'degraded' || item.state === 'unavailable')
-          .map((item) => (
-            <aside role="alert" key={item.collector}>
-              <strong>
-                {item.collector}: {item.state}
-              </strong>{' '}
-              {item.reason}
-              {item.remediation ? ` — ${item.remediation}` : ''}
-            </aside>
-          ))}
-        {telemetry?.latest && (
-          <>
-            <div className="agent-telemetry__cards">
-              {Object.entries(SUMMARY_LABELS).map(([key, label]) => (
-                <article key={key}>
-                  <span>{label}</span>
-                  <strong>{formatMetric(key, telemetry.latest.summary?.[key])}</strong>
-                </article>
-              ))}
-            </div>
-            <label>
-              History range{' '}
-              <select
-                value={historyRange}
-                onChange={(event) => setHistoryRange(event.target.value)}
-              >
-                {['1h', '6h', '24h', '7d', '30d'].map((range) => (
-                  <option key={range}>{range}</option>
-                ))}
-              </select>
-            </label>
-            <p>{history.length} history points</p>
-            <div className="agent-telemetry__charts">
-              <HistoryChart label="CPU" metric="cpu_pct" points={history} />
-              <HistoryChart label="Memory" metric="mem_pct" points={history} />
-              <HistoryChart label="Disk" metric="root_disk_pct" points={history} />
-              <HistoryChart label="Network receive" metric="net_rx_bps" points={history} />
-              <HistoryChart label="Temperature" metric="max_temp_c" points={history} />
-            </div>
-            <DeviceTable title="Filesystems" rows={telemetry.latest.payload?.filesystems} />
-            <DeviceTable title="Disks" rows={telemetry.latest.payload?.disks} />
-            <DeviceTable title="Interfaces" rows={telemetry.latest.payload?.interfaces} />
-            <DeviceTable title="Temperatures" rows={telemetry.latest.payload?.temperatures} />
-            {/* Docker is absent from the payload in the normal case — the
-                capability's include_docker default is false — so the whole
-                section disappears rather than rendering an empty table. Note
-                the payload's `docker` is a dict ({containers, total, running,
-                truncated}, internal/collect/host/docker.go:124), never a row
-                array, so only `.containers` may reach DeviceTable; handing it
-                the dict would make Object.keys(rows[0]) a nonsense header. */}
-            {telemetry.latest.payload?.docker && (
-              <div className="agent-telemetry__docker">
-                <h3>Docker</h3>
-                <p>
-                  {telemetry.latest.payload.docker.running} of{' '}
-                  {telemetry.latest.payload.docker.total} containers running
-                </p>
-                {telemetry.latest.payload.docker.truncated && (
-                  <aside role="alert">
-                    This host reports more than 100 containers; only the first 100 are collected and
-                    the sample is marked degraded.
-                  </aside>
-                )}
-                {/* Container rows are collector-shaped: id / name / image / state /
-                    status, plus cpu_pct, memory_used_bytes, memory_limit_bytes,
-                    memory_pct and network_rx_bytes / network_tx_bytes from
-                    dockerStatsSummary (docker.go:47-78) — collected for running
-                    containers only. DeviceTable derives its columns from the first
-                    row, so a stats-less first container yields a narrower table.
-                    That is acceptable and identical to the four tables above. */}
-                <DeviceTable title="Containers" rows={telemetry.latest.payload.docker.containers} />
-              </div>
-            )}
-          </>
-        )}
-        {!presence?.hardware && (
-          <p>
-            Link this agent to Hardware to add topology, analytics, and Hardware telemetry views.
-          </p>
-        )}
-      </section>
-
-      <AssignedProbesSection
-        agentId={Number(id)}
-        probes={probes}
-        granted={normalizeCapability(agent.capabilities?.remote_probe).enabled}
-        onChanged={loadProbes}
-      >
-        {normalizeCapability(agent.capabilities?.remote_probe).enabled &&
-          (capabilityDefaults === null ? (
-            <p>Loading remote probe settings…</p>
-          ) : (
-            <RemoteProbeConfigEditor
-              config={normalizeCapability(agent.capabilities.remote_probe).config}
-              defaults={probeDefaults}
-              onChange={updateProbeConfig}
-            />
-          ))}
-      </AssignedProbesSection>
-
-      {/* Wiring only: the section owns its own mutations and its own
-          wide-scope confirmation, and renders the config editor itself. This
-          page is already far past the component budget. */}
-      <DiscoveryScopeSection
-        agentId={id}
-        agentName={agentDisplayName(agent, id)}
-        discovery={discovery}
-        granted={normalizeCapability(agent.capabilities?.local_discovery).enabled}
-        config={normalizeCapability(agent.capabilities?.local_discovery).config}
-        defaults={capabilityDefaults === null ? null : discoveryDefaults}
-        onDiscovery={setDiscovery}
-        onChanged={() => {
-          load();
-          loadDiscovery();
-        }}
-      />
-
-      <section aria-label="Linked hardware">
-        <h2>Linked hardware</h2>
-        {presence?.hardware ? (
-          <p>
-            {presence.hardware.name}
-            {presence.hardware.hostname ? ` (${presence.hardware.hostname})` : ''}
-          </p>
-        ) : (
-          <p>No hardware linked</p>
-        )}
-      </section>
-
-      <section aria-label="Events">
-        <h2>Events</h2>
-        {/* AGT-15. This list used to render `JSON.stringify(e.detail)`, which
-            put wire-protocol internals — frame types, sequence numbers, raw
-            validation-error text off the link — straight in front of an
-            operator, and would have carried anything a future payload added
-            with it. Every row now goes through describeAgentEvent, which
-            allow-lists the keys it will show per event type and redacts what it
-            does show. See lib/agentErrors.js. */}
-        <ul>
-          {events.map((event) => {
-            const described = describeAgentEvent(event);
-            return (
-              <li key={event.id}>
-                <span>{formatTimestamp(event.created_at)}</span> —{' '}
-                <strong>{described.label}</strong>
-                {described.detail && <span> — {described.detail}</span>}
-              </li>
-            );
-          })}
-        </ul>
-      </section>
+      <div className="agent-detail-page__panel" {...panelPropsFor(activeTab)}>
+        {renderTab()}
+      </div>
 
       {/* AGT-16: names the machine and states what revocation actually does,
           rather than "It will stop reporting immediately" — which understates
@@ -973,3 +661,305 @@ export default function AgentDetailPage() {
     </div>
   );
 }
+
+// ── Temporary tab bodies ────────────────────────────────────────────────────
+//
+// Tasks 15, 16 and 17 each replace one of these with a real component under
+// components/agents/. They live here, rather than as placeholder text, so that
+// this task changes the page's *shape* and nothing else: every behaviour the
+// suites lock down is the same markup, moved onto the tab that owns it.
+
+// Replaced by AgentEventsPanel in Task 15.
+function AgentEventsPanel({ events }) {
+  return (
+    <section aria-label="Events">
+      <h2>Events</h2>
+      {/* AGT-15. This list used to render `JSON.stringify(e.detail)`, which
+          put wire-protocol internals — frame types, sequence numbers, raw
+          validation-error text off the link — straight in front of an
+          operator, and would have carried anything a future payload added
+          with it. Every row now goes through describeAgentEvent, which
+          allow-lists the keys it will show per event type and redacts what it
+          does show. See lib/agentErrors.js. */}
+      <ul>
+        {events.map((event) => {
+          const described = describeAgentEvent(event);
+          return (
+            <li key={event.id}>
+              <span>{formatTimestamp(event.created_at)}</span> — <strong>{described.label}</strong>
+              {described.detail && <span> — {described.detail}</span>}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+AgentEventsPanel.propTypes = { events: PropTypes.array.isRequired };
+
+// Replaced by AgentTelemetryTab in Task 16, which cuts SUMMARY_LABELS,
+// formatMetric, formatBytes, DeviceTable and HistoryChart across with it.
+function AgentTelemetryTab({
+  telemetry,
+  history,
+  historyRange,
+  onHistoryRange,
+  hostDefaults,
+  hasHardware,
+}) {
+  return (
+    <section aria-label="Host telemetry" className="agent-telemetry">
+      <h2>System metrics</h2>
+      {(() => {
+        // hostDefaults, not a literal: the registry owns the cadence
+        // default, and a second copy here is exactly the drift issue 8
+        // exists to remove.
+        const interval = telemetry?.capability?.config?.interval_s ?? hostDefaults.interval_s;
+        // Task 16 / D-12: the catch-up indicator, and the only user-visible
+        // evidence that the agent's paced spool drain is making progress.
+        // Rendered only for a real backlog: depth 0 ("reported, drained")
+        // and a null spool ("this agent predates spool reporting") both
+        // render nothing. Task 17 lifts it out of the `latest` branch — an
+        // agent that buffered samples but has never delivered one is
+        // exactly when the backlog is worth showing, since nothing else on
+        // this section would explain the empty page.
+        const spoolDepth = telemetry?.spool?.depth ?? 0;
+        const catchUpLabel =
+          'The agent is replaying host samples it buffered while it could not reach ' +
+          'the server. Displayed samples may lag until the backlog drains.';
+        const catchUp = spoolDepth > 0 && (
+          <span className="agent-telemetry__catchup" title={catchUpLabel} aria-label={catchUpLabel}>
+            Catching up · {spoolDepth} samples buffered
+            {telemetry.spool?.bytes != null && ` (${formatBytes(telemetry.spool.bytes)})`}
+          </span>
+        );
+        if (!telemetry?.latest) {
+          return (
+            <>
+              <p>No host samples received yet.</p>
+              {catchUp && <p>{catchUp}</p>}
+            </>
+          );
+        }
+        const age = Date.now() - new Date(telemetry.latest.collected_at).getTime();
+        // `interval` is undefined until GET /agents/capability-defaults
+        // resolves, so the staleness window falls back to the 90 s floor and
+        // the cadence segment is omitted entirely rather than rendering a
+        // bare "Cadence s".
+        const stale = age > Math.max((interval ?? 0) * 3000, 90000);
+        return (
+          <p>
+            {stale ? 'Stale' : 'Live'} · Last sample{' '}
+            {new Date(telemetry.latest.collected_at).toLocaleString()} ·{' '}
+            {interval != null && <>Cadence {interval}s · </>}
+            {telemetry.latest.projected ? 'Projected to linked hardware' : 'Agent only'}
+            {catchUp && (
+              <>
+                {' · '}
+                {catchUp}
+              </>
+            )}
+          </p>
+        );
+      })()}
+      {/* Task 17: deliberately outside the `latest` branch. `capability.readiness`
+          is its own frame and is ingested independently of `telemetry.host`, so
+          the case that matters most — a collector that cannot read /proc and
+          therefore never produces a sample — has readiness rows and no sample at
+          all. `disabled` stays excluded: a switched-off collector is not a fault.
+          Slice 3 and 4 collectors land in this same readiness table and
+          render here unchanged. */}
+      {telemetry?.readiness
+        ?.filter((item) => item.state === 'degraded' || item.state === 'unavailable')
+        .map((item) => (
+          <aside role="alert" key={item.collector}>
+            <strong>
+              {item.collector}: {item.state}
+            </strong>{' '}
+            {item.reason}
+            {item.remediation ? ` — ${item.remediation}` : ''}
+          </aside>
+        ))}
+      {telemetry?.latest && (
+        <>
+          <div className="agent-telemetry__cards">
+            {Object.entries(SUMMARY_LABELS).map(([key, label]) => (
+              <article key={key}>
+                <span>{label}</span>
+                <strong>{formatMetric(key, telemetry.latest.summary?.[key])}</strong>
+              </article>
+            ))}
+          </div>
+          <label>
+            History range{' '}
+            <select value={historyRange} onChange={(event) => onHistoryRange(event.target.value)}>
+              {['1h', '6h', '24h', '7d', '30d'].map((range) => (
+                <option key={range}>{range}</option>
+              ))}
+            </select>
+          </label>
+          <p>{history.length} history points</p>
+          <div className="agent-telemetry__charts">
+            <HistoryChart label="CPU" metric="cpu_pct" points={history} />
+            <HistoryChart label="Memory" metric="mem_pct" points={history} />
+            <HistoryChart label="Disk" metric="root_disk_pct" points={history} />
+            <HistoryChart label="Network receive" metric="net_rx_bps" points={history} />
+            <HistoryChart label="Temperature" metric="max_temp_c" points={history} />
+          </div>
+          <DeviceTable title="Filesystems" rows={telemetry.latest.payload?.filesystems} />
+          <DeviceTable title="Disks" rows={telemetry.latest.payload?.disks} />
+          <DeviceTable title="Interfaces" rows={telemetry.latest.payload?.interfaces} />
+          <DeviceTable title="Temperatures" rows={telemetry.latest.payload?.temperatures} />
+          {/* Docker is absent from the payload in the normal case — the
+              capability's include_docker default is false — so the whole
+              section disappears rather than rendering an empty table. Note
+              the payload's `docker` is a dict ({containers, total, running,
+              truncated}, internal/collect/host/docker.go:124), never a row
+              array, so only `.containers` may reach DeviceTable; handing it
+              the dict would make Object.keys(rows[0]) a nonsense header. */}
+          {telemetry.latest.payload?.docker && (
+            <div className="agent-telemetry__docker">
+              <h3>Docker</h3>
+              <p>
+                {telemetry.latest.payload.docker.running} of {telemetry.latest.payload.docker.total}{' '}
+                containers running
+              </p>
+              {telemetry.latest.payload.docker.truncated && (
+                <aside role="alert">
+                  This host reports more than 100 containers; only the first 100 are collected and
+                  the sample is marked degraded.
+                </aside>
+              )}
+              {/* Container rows are collector-shaped: id / name / image / state /
+                  status, plus cpu_pct, memory_used_bytes, memory_limit_bytes,
+                  memory_pct and network_rx_bytes / network_tx_bytes from
+                  dockerStatsSummary (docker.go:47-78) — collected for running
+                  containers only. DeviceTable derives its columns from the first
+                  row, so a stats-less first container yields a narrower table.
+                  That is acceptable and identical to the four tables above. */}
+              <DeviceTable title="Containers" rows={telemetry.latest.payload.docker.containers} />
+            </div>
+          )}
+        </>
+      )}
+      {!hasHardware && (
+        <p>Link this agent to Hardware to add topology, analytics, and Hardware telemetry views.</p>
+      )}
+    </section>
+  );
+}
+AgentTelemetryTab.propTypes = {
+  telemetry: PropTypes.object,
+  history: PropTypes.array.isRequired,
+  historyRange: PropTypes.string.isRequired,
+  onHistoryRange: PropTypes.func.isRequired,
+  hostDefaults: PropTypes.object.isRequired,
+  hasHardware: PropTypes.bool.isRequired,
+};
+
+// Replaced by AgentOverviewTab in Task 17. The real component takes the
+// narrower prop set the plan declares and composes Panels from
+// `panels`/`capabilitiesLocked`/`blockedReason`/`stripMetrics`; this stand-in
+// only has to keep the capability editor and the hardware summary reachable,
+// so it takes the extra props that markup needs and ignores the rest.
+function AgentOverviewTab({
+  agent,
+  presence,
+  capabilityDefaults,
+  hostDefaults,
+  onToggleCapability,
+  onUpdateHostConfig,
+  online,
+}) {
+  return (
+    <>
+      {online && presence?.connected_since && (
+        <p className="agent-detail-page__connected-since">
+          Connected since {new Date(presence.connected_since).toLocaleString()}
+        </p>
+      )}
+
+      <section aria-label="Capabilities">
+        <h2>Capabilities</h2>
+        {Object.entries(CAPABILITY_LABELS).map(([key, label]) => (
+          <label key={key}>
+            <input
+              type="checkbox"
+              checked={normalizeCapability(agent.capabilities?.[key]).enabled}
+              onChange={(e) => onToggleCapability(key, e.target.checked)}
+            />
+            {label}
+          </label>
+        ))}
+        {normalizeCapability(agent.capabilities?.host_telemetry).enabled &&
+          (capabilityDefaults === null ? (
+            <p>Loading capability settings…</p>
+          ) : (
+            <fieldset>
+              <legend>Host telemetry settings</legend>
+              <label>
+                Cadence{' '}
+                <input
+                  type="number"
+                  min="10"
+                  max="900"
+                  value={
+                    normalizeCapability(agent.capabilities.host_telemetry).config.interval_s ??
+                    hostDefaults.interval_s
+                  }
+                  onChange={(event) =>
+                    onUpdateHostConfig({ interval_s: Number(event.target.value) })
+                  }
+                />{' '}
+                seconds
+              </label>
+              {Object.keys(hostDefaults)
+                .filter((key) => key.startsWith('include_'))
+                .map((key) => (
+                  <label key={key}>
+                    <input
+                      type="checkbox"
+                      checked={
+                        normalizeCapability(agent.capabilities.host_telemetry).config[key] ??
+                        hostDefaults[key]
+                      }
+                      onChange={(event) => onUpdateHostConfig({ [key]: event.target.checked })}
+                    />
+                    {key.replace('include_', '').replaceAll('_', ' ')}
+                  </label>
+                ))}
+            </fieldset>
+          ))}
+      </section>
+
+      <section aria-label="Linked hardware">
+        <h2>Linked hardware</h2>
+        {presence?.hardware ? (
+          <p>
+            {presence.hardware.name}
+            {presence.hardware.hostname ? ` (${presence.hardware.hostname})` : ''}
+          </p>
+        ) : (
+          <p>No hardware linked</p>
+        )}
+      </section>
+    </>
+  );
+}
+AgentOverviewTab.propTypes = {
+  panels: PropTypes.arrayOf(PropTypes.string).isRequired,
+  agent: PropTypes.object.isRequired,
+  presence: PropTypes.object,
+  events: PropTypes.array.isRequired,
+  probes: PropTypes.object,
+  discovery: PropTypes.object,
+  capabilitiesLocked: PropTypes.bool.isRequired,
+  blockedReason: PropTypes.string,
+  stripMetrics: PropTypes.array.isRequired,
+  onToggleCapability: PropTypes.func.isRequired,
+  onSelectTab: PropTypes.func.isRequired,
+  capabilityDefaults: PropTypes.object,
+  hostDefaults: PropTypes.object.isRequired,
+  onUpdateHostConfig: PropTypes.func.isRequired,
+  online: PropTypes.bool,
+};

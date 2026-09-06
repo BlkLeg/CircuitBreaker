@@ -322,6 +322,11 @@ export function useAgentDetail(id, { activeTab = 'overview' } = {}) {
 
   return {
     agent,
+    // Exposed for the page's optimistic capability edits, which flip the
+    // grant locally, call the API, and put the previous agent back when the
+    // server refuses — a rollback the page cannot perform through `reload()`,
+    // because a refetch would race the rejected request rather than undo it.
+    setAgent,
     presence,
     events,
     telemetry,

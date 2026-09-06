@@ -919,62 +919,26 @@
   font-size: 12px;
 }
 
-/* ── Agent detail: the state summary (AGT-14) ───────────────────────────────
+/* ── Agent detail: the state surface (AGT-14) ───────────────────────────────
    The requirement asks for a distinct, unambiguous treatment per state *and*
-   for each state to carry a documented operator action. Those are two
-   different readings — one at a glance, one when something is wrong — so this
-   block renders both: a chip row that is scannable, and a definition list
-   underneath that says what each chip means and what to do about it.
+   for each state to carry a documented operator action. Since Task 14 those
+   are two places rather than one block: the primary state is an
+   AgentStateBanner (panels.css `.cb-banner`), and every other holding state is
+   a chip in the sticky header.
 
    Chips reuse `.fleet-chip`'s tone ladder rather than defining a second colour
    vocabulary for the same states; the detail page imports agents.css for
    exactly that. Nothing here depends on colour: the glyph and the label are
-   inside the chip, and the reason and remedy are in the list below it. */
-.agent-detail-page__states {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 8px 0 4px;
-}
+   inside the chip, and the reason and remedy are in its accessible text. */
 
-.agent-detail-page__state-chips {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
+/* The tab body. Focusable, because `panelPropsFor` gives every panel
+   tabIndex=0 so the tablist's own arrow keys can hand focus down into it. */
+.agent-detail-page__panel {
+  padding: var(--space-4);
 }
-
-/* Two columns on anything wider than a phone, one below it. The label column
-   is capped rather than sized to content so a long state name cannot push the
-   explanation off the right edge. */
-.agent-detail-page__state-list {
-  display: grid;
-  grid-template-columns: minmax(8rem, 12rem) 1fr;
-  gap: 2px 12px;
-  margin: 0;
-  font-size: 0.78rem;
-}
-.agent-detail-page__state-list dt {
-  font-weight: 600;
-  color: var(--color-text);
-}
-.agent-detail-page__state-list dd {
-  margin: 0;
-  color: var(--color-text-muted);
-}
-/* The action is the actionable half, so it is the half that is not muted. */
-.agent-detail-page__state-list dd em {
-  color: var(--color-text);
-  font-style: normal;
-}
-
-@media (max-width: 640px) {
-  .agent-detail-page__state-list {
-    grid-template-columns: 1fr;
-  }
-  .agent-detail-page__state-list dd {
-    margin-bottom: 6px;
-  }
+.agent-detail-page__panel:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
 }
 
 .agent-detail-page__last-seen {
