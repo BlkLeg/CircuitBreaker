@@ -55,6 +55,32 @@ Copied from the spec and `CLAUDE.md`. Every task's requirements implicitly inclu
   `/install-command`, `/capability-defaults`, `/endpoint-usage` and `/probe-eligible` already do
   this; follow them.
 
+### Test-fixture facts that change how Tasks 4–6 must be written
+
+Established by reading `apps/backend/tests/conftest.py` before execution, not assumed.
+
+- **`db_session` never really commits.** It is SAVEPOINT-isolated: the outer connection
+  transaction is never committed and is rolled back on teardown, and `session.commit()` inside a
+  test is redirected to a SAVEPOINT release. Postgres runs READ COMMITTED, so the direction of
+  visibility is asymmetric and it decides the shape of two tasks:
+  - Rows written through `db_session` are **invisible** to any other connection.
+  - Rows committed on another connection **are** visible to `db_session`.
+
+  `enroll_stream` opens its own `SessionLocal()`, which is a different connection. **A token
+  minted through `db_session` therefore cannot be consumed by the enroll handler.** Tasks 5 and 6
+  must commit their token on its own connection and delete it on teardown — the same problem
+  `conftest._reap_agents_committed_outside_the_test` already solves for agent rows. Task 4's
+  route tests are unaffected: `client` overrides `get_db` with `db_session`, so the whole request
+  runs inside the savepoint.
+- **The viewer fixture is `viewer_headers`**, not `viewer_auth_headers`. Admin is `auth_headers`.
+- **There is no `db_engine` fixture.** Task 6 uses `from app.db.session import engine`.
+- **The enroll tests are synchronous.** `apps/backend/tests/api/test_ws_agents_enroll.py` uses
+  the sync `ws_client` fixture with `TestNoiseInitiator` from
+  `tests.helpers.agent_noise_client`, and carries
+  `pytestmark = pytest.mark.usefixtures("agent_redis_default")` because every `/enroll`
+  connection runs through the Redis-backed rate limiter before any Noise byte is read. Task 5's
+  tests must follow that file exactly rather than the async `client` style sketched below.
+
 ### What already shipped in Slice A — do not rebuild
 
 - `AppSettings.agent_endpoints` (JSON), `services/agent_endpoints.py` with `normalize_endpoints`,
