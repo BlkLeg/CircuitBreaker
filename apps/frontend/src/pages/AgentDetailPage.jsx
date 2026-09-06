@@ -1,6 +1,5 @@
 /* eslint-disable security/detect-object-injection -- metric, column and capability keys all come from module-level literal lists and from the agent payload's own field names; none is caller-supplied */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import PropTypes from 'prop-types';
 import { useParams, useSearchParams } from 'react-router-dom';
 import {
   revokeAgent,
@@ -18,9 +17,8 @@ import AgentIdentityHeader from '../components/agents/AgentIdentityHeader';
 import AgentStateBanner from '../components/agents/AgentStateBanner';
 import AgentLiveStrip from '../components/agents/AgentLiveStrip';
 import AgentEventsPanel from '../components/agents/AgentEventsPanel';
-import AgentCapabilitiesPanel from '../components/agents/AgentCapabilitiesPanel';
-import AgentHardwarePanel from '../components/agents/AgentHardwarePanel';
 import AgentTelemetryTab, { formatMetric } from '../components/agents/AgentTelemetryTab';
+import AgentOverviewTab from '../components/agents/AgentOverviewTab';
 import { agentDisplayName } from '../lib/agentLabel';
 import { operatorErrorMessage, updateDispatchMessage } from '../lib/agentErrors';
 import { TAB_KEYS } from '../lib/agentComposition';
@@ -466,16 +464,15 @@ export default function AgentDetailPage() {
         agent={agent}
         presence={presence}
         events={events}
-        probes={probes}
+        // The overview summarises the assignments, not the concurrency
+        // envelope around them, and `null` has to survive the unwrapping: it
+        // is what tells the panel the request has not resolved yet.
+        probes={probes === null ? null : (probes.assignments ?? [])}
         discovery={discovery}
         capabilitiesLocked={page.capabilitiesLocked}
         blockedReason={page.blockedReason}
-        stripMetrics={stripMetrics}
         onToggleCapability={handleToggleCapability}
         onSelectTab={selectTab}
-        capabilityDefaults={capabilityDefaults}
-        hostDefaults={hostDefaults}
-        onUpdateHostConfig={updateHostConfig}
         online={online}
       />
     );
@@ -566,63 +563,3 @@ export default function AgentDetailPage() {
     </div>
   );
 }
-
-// ── Temporary tab bodies ────────────────────────────────────────────────────
-//
-// Tasks 16 and 17 each replace one of these with a real component under
-// components/agents/. They live here, rather than as placeholder text, so that
-// this task changes the page's *shape* and nothing else: every behaviour the
-// suites lock down is the same markup, moved onto the tab that owns it.
-
-// Replaced by AgentOverviewTab in Task 17. The real component takes the
-// narrower prop set the plan declares and composes Panels from
-// `panels`/`capabilitiesLocked`/`blockedReason`/`stripMetrics`; this stand-in
-// only has to keep the capability editor and the hardware summary reachable,
-// so it takes the extra props that markup needs and ignores the rest.
-function AgentOverviewTab({
-  agent,
-  presence,
-  capabilitiesLocked,
-  blockedReason,
-  onToggleCapability,
-  online,
-}) {
-  return (
-    <>
-      {online && presence?.connected_since && (
-        <p className="agent-detail-page__connected-since">
-          Connected since {new Date(presence.connected_since).toLocaleString()}
-        </p>
-      )}
-
-      {/* Task 16 moved the host-telemetry settings onto the Telemetry tab,
-          where spec §7 puts them: they are a form, and overview is a
-          reading. */}
-      <AgentCapabilitiesPanel
-        capabilities={agent.capabilities}
-        locked={capabilitiesLocked}
-        blockedReason={blockedReason}
-        onToggle={onToggleCapability}
-      />
-
-      <AgentHardwarePanel hardware={presence?.hardware ?? null} />
-    </>
-  );
-}
-AgentOverviewTab.propTypes = {
-  panels: PropTypes.arrayOf(PropTypes.string).isRequired,
-  agent: PropTypes.object.isRequired,
-  presence: PropTypes.object,
-  events: PropTypes.array.isRequired,
-  probes: PropTypes.object,
-  discovery: PropTypes.object,
-  capabilitiesLocked: PropTypes.bool.isRequired,
-  blockedReason: PropTypes.string,
-  stripMetrics: PropTypes.array.isRequired,
-  onToggleCapability: PropTypes.func.isRequired,
-  onSelectTab: PropTypes.func.isRequired,
-  capabilityDefaults: PropTypes.object,
-  hostDefaults: PropTypes.object.isRequired,
-  onUpdateHostConfig: PropTypes.func.isRequired,
-  online: PropTypes.bool,
-};
