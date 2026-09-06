@@ -215,8 +215,19 @@ function renderDetail() {
   );
 }
 
+/**
+ * Task 14: the probes section is a tab, so it is only in the DOM once its tab
+ * is selected. Selecting it is part of asking for the section.
+ */
 async function probesSection() {
+  fireEvent.click(await screen.findByRole('tab', { name: 'Probes' }));
   return screen.findByRole('region', { name: 'Assigned probes' });
+}
+
+/** …and the capability toggles live on Overview, one tab back. */
+async function openOverview() {
+  fireEvent.click(await screen.findByRole('tab', { name: 'Overview' }));
+  return screen.findByRole('region', { name: 'Capabilities' });
 }
 
 describe('Agent Detail — assigned probes', () => {
@@ -305,6 +316,7 @@ describe('Agent Detail — assigned probes', () => {
     renderDetail();
 
     await probesSection();
+    await openOverview();
     fireEvent.click(await screen.findByLabelText('Remote probe'));
 
     const dialog = await screen.findByRole('dialog');
@@ -330,6 +342,7 @@ describe('Agent Detail — assigned probes', () => {
     const section = await probesSection();
     await within(section).findByText(/0 of 20 concurrent checks in use/);
 
+    await openOverview();
     fireEvent.click(await screen.findByLabelText('Remote probe'));
     await waitFor(() =>
       expect(setAgentCapabilities).toHaveBeenCalledWith('3', { remote_probe: false })

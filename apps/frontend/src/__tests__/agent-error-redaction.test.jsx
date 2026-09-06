@@ -157,6 +157,7 @@ describe('the event timeline', () => {
       ],
     });
     renderDetail();
+    fireEvent.click(await screen.findByRole('tab', { name: 'Events' }));
 
     await waitFor(() => expect(screen.getByText('Protocol violation')).toBeInTheDocument());
     const shown = everythingShown();
@@ -177,8 +178,9 @@ describe('the event timeline', () => {
       ],
     });
     renderDetail();
+    fireEvent.click(await screen.findByRole('tab', { name: 'Events' }));
 
-    // More than one match on purpose: the timeline row, and the state chip the
+    // More than one match on purpose: the timeline row, and the banner the
     // header derives from that same event (AGT-14's update_failed).
     await waitFor(() => expect(screen.getAllByText('Update failed').length).toBeGreaterThan(0));
     expect(everythingShown()).toContain('0.9.2');

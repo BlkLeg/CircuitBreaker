@@ -287,6 +287,8 @@ function renderDetail() {
 // the readiness table (GET /agents/{id}/discovery) and the config editor
 // (GET /agents/capability-defaults) — is what makes the rest synchronous.
 async function scopeSection() {
+  // Task 14: the section is a tab now, so asking for it starts by selecting it.
+  fireEvent.click(await screen.findByRole('tab', { name: 'Discovery' }));
   const section = await screen.findByRole('region', { name: 'Discovery scope' });
   await within(section).findByRole('table', { name: 'Collector readiness' });
   await within(section).findByRole('group', { name: 'Local discovery settings' });
@@ -612,6 +614,8 @@ describe('Agent Detail — discovery scope', () => {
     renderDetail();
     await scopeSection();
 
+    // The capability toggle itself is on Overview, one tab back.
+    fireEvent.click(await screen.findByRole('tab', { name: 'Overview' }));
     fireEvent.click(await screen.findByLabelText('Local discovery'));
 
     const dialog = await screen.findByRole('dialog');
