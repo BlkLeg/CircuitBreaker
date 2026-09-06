@@ -103,3 +103,17 @@ func TestCollectRecordsTheDialedServerURL(t *testing.T) {
 		t.Errorf("ServerURL = %q, want https://cb.example.com", got.ServerURL)
 	}
 }
+
+// TestCollect_NeverCarriesAnEnrollmentToken pins the invariant that keeps a
+// bearer credential off every link hello.
+//
+// internal/link calls Collect twice to build its own hello, and the link runs
+// for the life of the agent. If Collect ever populated EnrollToken, the token
+// would ride every reconnect long after it was spent — so internal/enroll sets
+// the field itself, after this returns, and this test is what stops that from
+// being quietly undone.
+func TestCollect_NeverCarriesAnEnrollmentToken(t *testing.T) {
+	if got := Collect("0.1.0", "https://cb.example.com").EnrollToken; got != "" {
+		t.Fatalf("Collect must not populate EnrollToken, got %q", got)
+	}
+}

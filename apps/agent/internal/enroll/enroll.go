@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -38,6 +40,40 @@ import (
 // human pressing a button and is legitimately unbounded, so the deadline is
 // cleared as soon as the first frame arrives. A var so tests can shrink it.
 var handshakeTimeout = 10 * time.Second
+
+// enrollTokenPath is where the installer plants a token supplied through
+// CB_ENROLL_TOKEN. A var so tests can point it elsewhere.
+var enrollTokenPath = "/etc/circuit-breaker/enroll-token"
+
+// readEnrollToken returns the token at path, or "" when there is none.
+//
+// An absent file is not an error: it is the attended flow, which is the
+// default and by far the common case. A file that exists and cannot be read
+// is worth reporting, since that is a misconfiguration an operator can fix and
+// silently falling back to attended enrollment is not what they asked for.
+func readEnrollToken(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("enroll: read token: %w", err)
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
+// clearEnrollToken removes a spent token, best-effort.
+//
+// It is spent the moment the server accepts it, so keeping it buys nothing and
+// leaves a credential on disk for the life of the host. A failure to remove it
+// must not fail an enrollment that has already succeeded: the agent is
+// enrolled either way, and refusing to start over a leftover file would turn a
+// cleanup problem into an outage.
+func clearEnrollToken(path string) {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Printf("enroll: could not remove spent token at %s: %v", path, err)
+	}
+}
 
 // Run takes trust as a resolved tlsdial.Trust rather than resolving it
 // itself: internal/link already imports internal/enroll for DeviceKey, so
@@ -88,6 +124,14 @@ func Run(cfg *config.Config, key *DeviceKey, agentVersion string, trust tlsdial.
 	}
 
 	helloPayload := hostinfo.Collect(agentVersion, cfg.ServerURL)
+	token, err := readEnrollToken(enrollTokenPath)
+	if err != nil {
+		return err
+	}
+	// Set here rather than inside hostinfo.Collect: internal/link builds its
+	// hello from that same helper, and this credential belongs on exactly one
+	// frame in the agent's lifetime.
+	helloPayload.EnrollToken = token
 	helloFrame := frame.Frame{V: 1, Type: frame.TypeHello, Seq: 0, TS: time.Now().UTC()}
 	helloFrame.Payload, err = json.Marshal(helloPayload)
 	if err != nil {
@@ -141,6 +185,12 @@ func Run(cfg *config.Config, key *DeviceKey, agentVersion string, trust tlsdial.
 		status, _ := payload["status"].(string)
 		switch status {
 		case "active":
+			// Unlinked only now, once the server has confirmed it accepted the
+			// enrollment. Removing it earlier would strand an agent whose
+			// enrollment then failed, with no credential left to retry.
+			if token != "" {
+				clearEnrollToken(enrollTokenPath)
+			}
 			fmt.Println("approved — connecting")
 			return nil
 		case "rejected":

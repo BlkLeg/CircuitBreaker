@@ -243,6 +243,15 @@ type HelloPayload struct {
 	// observe it — it never connects to an agent — so an endpoint that no
 	// machine can reach is otherwise invisible.
 	ServerURL string `json:"server_url,omitempty"`
+
+	// EnrollToken is a short-lived enrollment token that approves this agent
+	// without a human at the approval screen. Sent on the ENROLL hello only:
+	// internal/link builds its hello from this same struct, and a bearer
+	// credential has no business riding every heartbeat for the life of the
+	// agent. internal/enroll sets it after hostinfo.Collect returns, which is
+	// what keeps it off the link path. Omitted entirely by the attended flow,
+	// which is the default.
+	EnrollToken string `json:"enroll_token,omitempty"`
 }
 
 // HelloAckPayload is the server -> agent `hello.ack` payload's structured shape for the
