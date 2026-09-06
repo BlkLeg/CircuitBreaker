@@ -996,3 +996,111 @@
   margin: 0 6px;
   color: var(--color-border);
 }
+
+/* ── Detail-page live strip ─────────────────────────────────────────────────
+   Spec §5.1. This sits in DetailHeader's sticky strip slot, so it is on screen
+   on every tab — including Discovery and Events, which carry no telemetry of
+   their own. Hiding detail behind tabs is only safe if the pulse never hides
+   with it. */
+
+.agent-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  width: 100%;
+}
+
+.agent-strip[data-dimmed='true'] .agent-strip__spark polyline {
+  opacity: 0.35;
+}
+
+.agent-strip__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.09em;
+  font-weight: 700;
+  flex: none;
+  color: var(--color-success);
+}
+
+.agent-strip__pill::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.agent-strip__pill[data-animate='true']::before {
+  animation: agent-strip-pulse 1.6s ease-in-out infinite;
+}
+
+.agent-strip[data-level='lagging'] .agent-strip__pill,
+.agent-strip[data-level='stale'] .agent-strip__pill {
+  color: var(--color-warning);
+}
+.agent-strip[data-level='offline'] .agent-strip__pill {
+  color: var(--color-text-muted);
+}
+
+@keyframes agent-strip-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+}
+
+.agent-strip__metric {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+}
+
+.agent-strip__label {
+  font-size: var(--fs-micro);
+  letter-spacing: 0.09em;
+  color: var(--color-text-muted);
+  font-weight: 700;
+  width: 32px;
+}
+
+.agent-strip__spark {
+  width: 78px;
+  height: 22px;
+  display: block;
+}
+
+.agent-strip__spark polyline {
+  fill: none;
+  stroke: var(--color-info);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.agent-strip__value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  min-width: 46px;
+}
+
+.agent-strip__metric[data-hot='true'] .agent-strip__spark polyline {
+  stroke: var(--color-danger);
+}
+.agent-strip__metric[data-hot='true'] .agent-strip__value {
+  color: var(--color-danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-strip__pill[data-animate='true']::before {
+    animation: none;
+  }
+}
