@@ -259,6 +259,35 @@ TRIVY_IGNORE=""
 # which excluded worktrees from the discovery-publisher scan.
 TRIVY_SKIP_DIRS="--skip-dirs .venv --skip-dirs .venv-release --skip-dirs node_modules --skip-dirs dist --skip-dirs .claude --skip-dirs build --skip-dirs artifacts"
 
+# The path entries in .trivyignore become --skip-dirs here, and they have to,
+# because Trivy's ignorefile does not do what this repo assumed it did: it
+# matches *finding IDs* (CVE-2024-1234, AVD-DS-0002), never paths. Every path
+# line in that file — docker/data/tls/ and docker/circuitbreaker-data/tls/ since
+# they were added — was therefore silently inert. Nothing noticed for as long as
+# none of those directories existed on a machine that ran the gate. Then `make
+# dev` wrote a self-signed key to apps/backend/.dev-data/tls/ and `make verify`
+# started failing its own security gate, on a developer machine, over ephemeral
+# TLS material that a reviewed suppression already covered on paper.
+#
+# Deriving the flags from the file keeps one governed list: SEC-18 requires a
+# reviewed manifest row per .trivyignore entry
+# (scripts/validate_security_suppressions.py), and now the entries that need to
+# affect paths actually affect them. An ID keeps going to --ignorefile, which is
+# the only thing that reads IDs.
+#
+# tests/build/test_secret_suppression_scope.py holds the two ends of this: no
+# suppressed path may be anything but gitignored and untracked, and every data
+# directory this repo's tooling creates must be listed.
+if [ -f .trivyignore ]; then
+    while IFS= read -r ignore_entry; do
+        TRIVY_SKIP_DIRS="$TRIVY_SKIP_DIRS --skip-dirs $ignore_entry"
+    done < <(
+        grep -vE '^[[:space:]]*(#|$)' .trivyignore \
+            | sed 's/[[:space:]]*$//' \
+            | grep -vE '^[A-Z][A-Z0-9]*(-[A-Z0-9]+)+$'
+    )
+fi
+
 # Trivy's vulnerability database is ~110MB and `docker run --rm` throws the
 # container away with it, so without a host cache mount every single run
 # redownloads it. Measured 2026-08-27: `make verify` at 4m55s against a 3m17s

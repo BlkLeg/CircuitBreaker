@@ -69,6 +69,28 @@
       "requirements": ["SEC-18", "RC-08"]
     },
     {
+      "id": "TRIVY-007",
+      "tool": "trivy",
+      "selector": "apps/backend/.dev-data/tls/",
+      "owner": "security-owner",
+      "reviewer": "release-owner",
+      "reason": "Native-development TLS material, the same class as TRIVY-003 and TRIVY-004 but for the non-container paths. `make dev` and `make backend` set CB_DATA_DIR to apps/backend/.dev-data, and scripts/dev-tls.sh generates a self-signed EC certificate under its tls/ for the agent front door. Gitignored (.dev-data/), regenerated on demand, never source and never in a packaged RC artifact. Its absence made `make verify` fail its own security gate on every machine that had run the dev stack.",
+      "compensating_control": "tests/build/test_secret_suppression_scope.py asserts this path is gitignored and holds no git-tracked file, so the suppression cannot mask a committed key; scripts/secret_exposure_guard.sh blocks TLS material tracked in HEAD; Gitleaks still scans git history.",
+      "expiry": "2026-11-13",
+      "requirements": ["SEC-18", "RC-08"]
+    },
+    {
+      "id": "TRIVY-008",
+      "tool": "trivy",
+      "selector": "circuitbreaker-data/tls/",
+      "owner": "security-owner",
+      "reviewer": "release-owner",
+      "reason": "The repository-root data directory. The Makefile's default CB_DATA_DIR (?= ./circuitbreaker-data) and docker-compose.yml both resolve here, so a compose run or a dev-tls invocation that does not override CB_DATA_DIR writes its self-signed EC certificate to this tls/. Gitignored (circuitbreaker-data/) and ephemeral. Registered alongside TRIVY-007 rather than after it turns someone's gate red.",
+      "compensating_control": "Identical to TRIVY-007: the suppression-scope test proves the path is gitignored and untracked, secret_exposure_guard.sh blocks tracked TLS material in HEAD, and Gitleaks covers history.",
+      "expiry": "2026-11-13",
+      "requirements": ["SEC-18", "RC-08"]
+    },
+    {
       "id": "GITLEAKS-001",
       "tool": "gitleaks",
       "selector": "SECURITY_PATCHES/scanner_false_positives_2026-03-12.md:generic-api-key",
