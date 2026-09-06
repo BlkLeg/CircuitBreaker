@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import shlex
 from pathlib import Path
+from urllib.parse import quote
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -350,7 +352,32 @@ def render_install_script(
     )
 
 
-def build_install_command(db: Session, server_url: str) -> InstallCommandResponse:
+def _script_download_arg(server_url: str, endpoint_id: str | None) -> str:
+    """The `/install-agent.sh` URL as it appears in the emitted command.
+
+    The id is *only* a link-builder here: `server_url` still decides the
+    address, exactly as it did before. But the command is run on the target
+    machine, and that machine's curl is the only thing `/install-agent.sh`
+    ever sees — so without `?endpoint=<id>` on this URL the route takes its
+    "absent" branch and re-derives the address from `forwarded_base_url`,
+    which is the derivation the endpoint feature exists to eliminate (design
+    §1.1). It also breaks the published `script_sha256`, since that digest is
+    computed over the endpoint variant while the download would be the
+    fallback one.
+
+    Shell-quoted, because `?` is a glob character. `shlex.quote` leaves an
+    ordinary URL untouched, so a command with no endpoint is byte-identical
+    to what shipped before endpoints existed.
+    """
+    url = f"{server_url}/install-agent.sh"
+    if endpoint_id is not None:
+        url = f"{url}?endpoint={quote(endpoint_id, safe='')}"
+    return shlex.quote(url)
+
+
+def build_install_command(
+    db: Session, server_url: str, endpoint_id: str | None = None
+) -> InstallCommandResponse:
     # Task 28: once a server-key rotation has begun, a freshly generated
     # install prefers the successor identity key over the current one — it's
     # the key this install will still be valid under once the current key is
@@ -372,9 +399,10 @@ def build_install_command(db: Session, server_url: str) -> InstallCommandRespons
         manifest=manifest,
     )
     script_sha256 = hashlib.sha256(script.encode()).hexdigest()
+    download = _script_download_arg(server_url, endpoint_id)
 
     if tls_mode == "public":
-        command = f"curl -fsSL {server_url}/install-agent.sh | sudo sh"
+        command = f"curl -fsSL {download} | sudo sh"
     else:
         # --pinnedpubkey is what actually verifies this fetch (curl enforces it
         # even alongside -k, which is only here because the chain cannot
@@ -383,7 +411,7 @@ def build_install_command(db: Session, server_url: str) -> InstallCommandRespons
         # MITM'd installer.
         command = (
             f'curl -fsSL --insecure --pinnedpubkey "sha256//{tls_pin}" '
-            f"{server_url}/install-agent.sh -o /tmp/cb-agent-install.sh && "
+            f"{download} -o /tmp/cb-agent-install.sh && "
             f'echo "{script_sha256}  /tmp/cb-agent-install.sh" | sha256sum -c && '
             f"sudo sh /tmp/cb-agent-install.sh"
         )

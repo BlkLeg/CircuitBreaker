@@ -245,7 +245,11 @@ def get_install_command(
         server_url = selected["url"]
 
     try:
-        return agent_install.build_install_command(db, server_url)
+        # The id goes through as well as the URL: it is what puts `?endpoint=`
+        # on the download link inside the emitted command, so the machine that
+        # runs it asks `/install-agent.sh` for this same endpoint rather than
+        # letting that route re-derive an address from its own request.
+        return agent_install.build_install_command(db, server_url, endpoint_id=endpoint)
     except ValueError as exc:
         # A missing or unreadable TLS certificate is an operator-fixable
         # deployment problem, not a bug in the request. Surfacing it as a bare

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shlex
+from urllib.parse import urlparse
 
 import pytest
 
@@ -99,18 +101,44 @@ async def test_script_renders_the_selected_endpoint(
     assert re.search(r'CB_SERVER_URL="https://cb\.example\.com"', resp.text)
 
 
+def _download_url(command: str) -> str:
+    """The `/install-agent.sh` URL an emitted install command downloads.
+
+    Split the way a shell would, so a quoted URL and a bare one both resolve
+    to the same string.
+    """
+    for token in shlex.split(command):
+        if "/install-agent.sh" in token:
+            return token
+    raise AssertionError(f"no install-agent.sh download in command: {command!r}")
+
+
 @pytest.mark.asyncio
-async def test_script_digest_matches_the_command_the_ui_showed(
+async def test_digest_matches_the_url_the_command_actually_emits(
     client, auth_headers, committed_public_endpoint, live_selfsigned_cert, committed_server_key
 ):
-    """The operator is told to verify this digest; the two must agree or the
-    published check fails on a correct download."""
-    command = await client.get("/api/v1/agents/install-command?endpoint=pub1", headers=auth_headers)
-    script = await client.get("/install-agent.sh?endpoint=pub1")
+    """Parity for the URL the product emits, not one the test constructs.
 
+    Hand-appending `?endpoint=pub1` to both requests verifies parity for a URL
+    nothing ever downloads. The target machine runs whatever the *command*
+    says, so the download here is driven by the command: if the emitted URL
+    ever loses the query string, this fetches the `forwarded_base_url`
+    fallback variant and its digest stops matching -- exactly the
+    `sha256sum -c` failure an operator would read as tampering.
+    """
+    command = await client.get("/api/v1/agents/install-command?endpoint=pub1", headers=auth_headers)
     assert command.status_code == 200, command.text
+    body = command.json()
+
+    # Path and query verbatim from the command; only the host is swapped for
+    # the ASGI test client's, since "cb.example.com" is not a host it serves.
+    emitted = urlparse(_download_url(body["command"]))
+    assert emitted.query == "endpoint=pub1", body["command"]
+    script = await client.get(f"{emitted.path}?{emitted.query}")
+
     assert script.status_code == 200, script.text
-    assert command.json()["script_sha256"] == hashlib.sha256(script.text.encode()).hexdigest()
+    assert 'CB_SERVER_URL="https://cb.example.com"' in script.text
+    assert body["script_sha256"] == hashlib.sha256(script.text.encode()).hexdigest()
 
 
 @pytest.mark.asyncio

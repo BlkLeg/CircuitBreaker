@@ -1,6 +1,7 @@
 import http.server
 import os
 import re
+import shlex
 import shutil
 import ssl
 import subprocess
@@ -767,3 +768,59 @@ async def test_absent_endpoint_falls_back_to_the_browsed_host(client, auth_heade
     """Existing installs and existing commands keep working untouched."""
     resp = await client.get("/api/v1/agents/install-command", headers=auth_headers)
     assert resp.status_code in (200, 503)
+
+
+# ── The emitted command must carry the choice, not just honour it ────────────
+# Resolving an endpoint server-side is only half the fix. The command the
+# operator pastes is what the *target machine* runs, and that machine's curl is
+# what `/install-agent.sh` sees. Without `?endpoint=<id>` on that download URL
+# the route takes its `endpoint is None` branch and re-derives the address from
+# `forwarded_base_url` — the very derivation §1.1 exists to eliminate — so the
+# declared endpoint only lands when the proxy chain happens to reproduce it,
+# and `script_sha256` (computed over the endpoint variant) no longer matches
+# the fallback variant that was actually downloaded.
+
+
+def _download_url(command: str) -> str:
+    """The `/install-agent.sh` URL an emitted install command downloads.
+
+    Split the way a shell would, so a quoted URL and a bare one both resolve
+    to the same string.
+    """
+    for token in shlex.split(command):
+        if "/install-agent.sh" in token:
+            return token
+    raise AssertionError(f"no install-agent.sh download in command: {command!r}")
+
+
+def test_install_command_carries_the_endpoint_id_under_self_signed_tls(
+    db_session, app_cfg, monkeypatch
+):
+    cert_pem, _, _ = generate_selfsigned("cb.home")
+    monkeypatch.setattr(agent_install, "_live_nginx_cert_pem", lambda: cert_pem)
+
+    resp = agent_install.build_install_command(db_session, "https://cb.home", endpoint_id="pub1")
+
+    assert resp.tls_mode == "self_signed"
+    assert _download_url(resp.command) == "https://cb.home/install-agent.sh?endpoint=pub1"
+
+
+def test_install_command_carries_the_endpoint_id_under_public_tls(
+    db_session, app_cfg, letsencrypt_certificate
+):
+    resp = agent_install.build_install_command(
+        db_session, "https://cb.example.com", endpoint_id="pub1"
+    )
+
+    assert resp.tls_mode == "public"
+    assert _download_url(resp.command) == "https://cb.example.com/install-agent.sh?endpoint=pub1"
+
+
+def test_install_command_without_an_endpoint_has_no_query_string(
+    db_session, app_cfg, letsencrypt_certificate
+):
+    """Byte-identical to what shipped before endpoints existed: an operator who
+    configured none must see exactly today's command."""
+    resp = agent_install.build_install_command(db_session, "https://cb.example.com")
+
+    assert resp.command == "curl -fsSL https://cb.example.com/install-agent.sh | sudo sh"
