@@ -23,6 +23,7 @@ import {
 } from '../lib/fleetFilters';
 import { useToast } from '../components/common/Toast';
 import ConfirmDialog from '../components/common/ConfirmDialog';
+import Panel from '../components/common/Panel';
 import AgentApprovalModal from '../components/agents/AgentApprovalModal';
 import AddAgentPanel from '../components/agents/AddAgentPanel';
 import ServerKeyRotationPanel from '../components/agents/ServerKeyRotationPanel';
@@ -487,8 +488,14 @@ export default function AgentsPage() {
 
       {!isAddStandalone && (
         <>
-          <FleetFilters filters={filters} summary={summary} onChange={setFilterParam} />
-          <FleetSummary summary={summary} />
+          {/* Bodyless: the filter bar carries its own dense spacing, and the
+              panel's body padding would inset it into a second box. The counts
+              live in here with the controls that produce them rather than
+              floating between this and the table. */}
+          <Panel title="Filters" bodyless>
+            <FleetFilters filters={filters} summary={summary} onChange={setFilterParam} />
+            <FleetSummary summary={summary} />
+          </Panel>
           <FleetTable
             rows={[...pending, ...fleetRows]}
             isFiltered={isFiltered}

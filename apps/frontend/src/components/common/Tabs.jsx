@@ -62,6 +62,7 @@ export default function Tabs({ tabs, active, onChange, label }) {
       else if (event.key === 'End') next = tabs.length - 1;
       if (next === null) return;
       event.preventDefault();
+      // eslint-disable-next-line security/detect-object-injection -- `next` is an integer index this function derived and wrapped into range against tabs.length
       onChange(tabs[next].key);
     },
     [tabs, active, onChange]

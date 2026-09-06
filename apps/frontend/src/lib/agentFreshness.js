@@ -35,6 +35,7 @@ const LABELS = {
 function result(level, ageSeconds) {
   return {
     level,
+    // eslint-disable-next-line security/detect-object-injection -- `level` is one of the four FRESHNESS constants this module declares, and LABELS is keyed by exactly those
     label: LABELS[level],
     ageSeconds,
     // Only the top rung animates. This is the whole point of the module.

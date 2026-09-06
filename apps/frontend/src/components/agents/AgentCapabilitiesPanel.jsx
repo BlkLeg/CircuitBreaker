@@ -17,6 +17,9 @@ const BLOCKED_NOTES = {
   revocation: 'credential revoked',
 };
 
+// eslint-disable-next-line security/detect-object-injection -- `key` is always an element of CAPABILITY_LABELS' own literal key list
+const grantFor = (capabilities, key) => normalizeCapability(capabilities?.[key]);
+
 /**
  * The three capability switches.
  *
@@ -33,7 +36,7 @@ export default function AgentCapabilitiesPanel({
   children = null,
 }) {
   const keys = Object.keys(CAPABILITY_LABELS);
-  const enabled = keys.filter((key) => normalizeCapability(capabilities?.[key]).enabled).length;
+  const enabled = keys.filter((key) => grantFor(capabilities, key).enabled).length;
   // eslint-disable-next-line security/detect-object-injection -- blockedReason is constrained by PropTypes to the two literal keys of this module-level map
   const note = locked ? (BLOCKED_NOTES[blockedReason] ?? null) : null;
 
@@ -46,7 +49,7 @@ export default function AgentCapabilitiesPanel({
           label={CAPABILITY_LABELS[key]}
           note={note}
           disabled={locked}
-          checked={normalizeCapability(capabilities?.[key]).enabled}
+          checked={grantFor(capabilities, key).enabled}
           onChange={(next) => onToggle(key, next)}
         />
       ))}

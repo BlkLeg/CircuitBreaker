@@ -420,6 +420,18 @@ describe('AgentsPage fleet filters', () => {
     await waitFor(() => expect(screen.getByText('Telemetry Agent')).toBeInTheDocument());
   }
 
+  it('frames the filters and their counts as one named region', async () => {
+    // The chrome down the left of this page is a stack of unlabelled boxes to
+    // anyone navigating by region. The counts belong inside the same box as
+    // the controls that produce them: every number in them comes from the
+    // predicate these selects set.
+    await renderPage();
+
+    const filters = screen.getByRole('region', { name: 'Filters' });
+    expect(within(filters).getByLabelText('Status')).toBeInTheDocument();
+    expect(within(filters).getByRole('status')).toHaveTextContent(/of \d+ agents/);
+  });
+
   it('narrows the table to the selected status, leaving the pending row pinned', async () => {
     await renderPage();
 
@@ -516,6 +528,10 @@ describe('AgentsPage degraded states', () => {
     // Expanded without being asked, and fetching the command on mount.
     await waitFor(() => expect(getInstallCommand).toHaveBeenCalled());
     expect(screen.getByText('Add an agent')).toBeInTheDocument();
+    // Named, like the other chrome on this page. It keeps its own section
+    // rather than becoming a Panel: standalone it *is* the page, and a panel
+    // head above its numbered steps would title the page twice.
+    expect(screen.getByRole('region', { name: 'Add an agent' })).toBeInTheDocument();
     // No table chrome and no filters — there is nothing to sort or filter.
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Status')).not.toBeInTheDocument();

@@ -197,6 +197,9 @@ describe('a rejected capability config change', () => {
       },
     });
     renderDetail();
+    // The cadence field lives with the rest of the host-telemetry settings on
+    // the Telemetry tab, beside the numbers it governs.
+    fireEvent.click(await screen.findByRole('tab', { name: /^Telemetry/ }));
 
     const cadence = await screen.findByRole('spinbutton');
     fireEvent.change(cadence, { target: { value: '60' } });

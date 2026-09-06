@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { KeyRound } from 'lucide-react';
 import { getServerKeyStatus, getServerKeyPendingAgents, rotateServerKey } from '../../api/agents';
 import HighRiskConfirmDialog from '../common/HighRiskConfirmDialog';
+import Panel from '../common/Panel';
+import KeyValue from '../common/KeyValue';
 import { useToast } from '../common/Toast';
 
 const SHORT_FP = (fp) => (fp ? `${fp.slice(0, 8)}…${fp.slice(-6)}` : '—');
@@ -94,104 +95,98 @@ function ServerKeyRotationPanel() {
 
   if (error) {
     return (
-      <section className="agents-page__key-panel" role="alert">
-        <p>{error}</p>
+      <Panel title="Agent server key" tone="danger">
+        {/* role="alert" rather than the shared Banner: every other message on
+            these pages is a condition that was already true when the page
+            loaded, but this one is this fetch failing now, and it has taken
+            the rotation controls away with it. */}
+        <p role="alert">{error}</p>
         <button type="button" className="btn btn-sm" onClick={load}>
           Retry
         </button>
-      </section>
+      </Panel>
     );
   }
 
   const active = !!status?.active;
   const fleet = status?.fleet;
+  const overlapEnds = remaining(status?.overlap_expires_at);
 
   return (
-    <section className="agents-page__key-panel">
-      <header style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <KeyRound size={16} />
-        <strong>Agent server key</strong>
-        <span className="fleet-muted">
-          {active ? 'rotation in progress' : 'no rotation in progress'}
-        </span>
-        <button
-          type="button"
-          className="btn btn-sm"
-          style={{ marginLeft: 'auto' }}
-          disabled={active}
-          onClick={() => {
-            setRotateError(null);
-            setConfirmOpen(true);
-          }}
-        >
-          Rotate key…
-        </button>
-      </header>
-
-      <dl style={{ display: 'flex', gap: 26, flexWrap: 'wrap', marginTop: 8 }}>
-        <div>
-          <dt className="fleet-muted">Current fingerprint</dt>
-          <dd>{SHORT_FP(status?.current_key_fingerprint)}</dd>
+    <>
+      <Panel
+        title="Agent server key"
+        summary={active ? 'rotation in progress' : 'no rotation in progress'}
+        tone={active ? 'info' : 'default'}
+        actions={
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={active}
+            onClick={() => {
+              setRotateError(null);
+              setConfirmOpen(true);
+            }}
+          >
+            Rotate key…
+          </button>
+        }
+      >
+        <div className="agents-page__key-panel-values">
+          <KeyValue
+            rows={[
+              ['Current fingerprint', SHORT_FP(status?.current_key_fingerprint)],
+              ...(active
+                ? [
+                    ['Successor fingerprint', SHORT_FP(status?.successor_key_fingerprint)],
+                    ['Started', formatWhen(status?.started_at)],
+                    [
+                      'Overlap ends',
+                      `${formatWhen(status?.overlap_expires_at)}${overlapEnds ? ` (in ${overlapEnds})` : ''}`,
+                    ],
+                  ]
+                : []),
+            ]}
+          />
         </div>
-        {active && (
-          <>
-            <div>
-              <dt className="fleet-muted">Successor fingerprint</dt>
-              <dd>{SHORT_FP(status?.successor_key_fingerprint)}</dd>
-            </div>
-            <div>
-              <dt className="fleet-muted">Started</dt>
-              <dd>{formatWhen(status?.started_at)}</dd>
-            </div>
-            <div>
-              <dt className="fleet-muted">Overlap ends</dt>
-              <dd>
-                {formatWhen(status?.overlap_expires_at)}
-                {remaining(status?.overlap_expires_at)
-                  ? ` (in ${remaining(status.overlap_expires_at)})`
-                  : ''}
-              </dd>
-            </div>
-          </>
-        )}
-      </dl>
 
-      {active && fleet && (
-        <div style={{ marginTop: 12 }}>
-          <ul style={{ display: 'flex', gap: 20, listStyle: 'none', padding: 0, margin: 0 }}>
-            <li>{fleet.successor} authenticated with successor</li>
-            <li>{fleet.current} still on current</li>
-            <li>{fleet.unseen} not seen since rotation</li>
-          </ul>
-          {fleet.current + fleet.unseen > 0 && (
-            <button type="button" className="btn btn-sm" onClick={showPending}>
-              Show agents
-            </button>
-          )}
-          {pendingOpen && pending && (
-            <ul style={{ marginTop: 8 }}>
-              {pending.map((a) => (
-                <li key={a.id}>
-                  {a.hostname || a.name || `Agent ${a.id}`}{' '}
-                  <span className="fleet-muted">
-                    {a.bucket === 'current' ? 'still on current' : 'not seen since rotation'}
-                  </span>
-                </li>
-              ))}
+        {active && fleet && (
+          <div className="agents-page__key-adoption">
+            <ul className="agents-page__key-buckets">
+              <li>{fleet.successor} authenticated with successor</li>
+              <li>{fleet.current} still on current</li>
+              <li>{fleet.unseen} not seen since rotation</li>
             </ul>
-          )}
-          <p className="fleet-muted" style={{ fontSize: 11, marginTop: 8 }}>
-            Counts reflect which key each agent&apos;s handshakes have used. The server has no
-            visibility into what an agent holds locally.
-          </p>
-        </div>
-      )}
+            {fleet.current + fleet.unseen > 0 && (
+              <button type="button" className="btn btn-sm" onClick={showPending}>
+                Show agents
+              </button>
+            )}
+            {pendingOpen && pending && (
+              <ul className="agents-page__key-pending">
+                {pending.map((a) => (
+                  <li key={a.id}>
+                    {a.hostname || a.name || `Agent ${a.id}`}{' '}
+                    <span className="fleet-muted">
+                      {a.bucket === 'current' ? 'still on current' : 'not seen since rotation'}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="agents-page__key-note">
+              Counts reflect which key each agent&apos;s handshakes have used. The server has no
+              visibility into what an agent holds locally.
+            </p>
+          </div>
+        )}
 
-      {active && (
-        <p className="fleet-muted" style={{ fontSize: 11, marginTop: 8 }}>
-          Rotate is unavailable until the overlap ends — the server allows one rotation in flight.
-        </p>
-      )}
+        {active && (
+          <p className="agents-page__key-note">
+            Rotate is unavailable until the overlap ends — the server allows one rotation in flight.
+          </p>
+        )}
+      </Panel>
 
       <HighRiskConfirmDialog
         open={confirmOpen}
@@ -216,7 +211,7 @@ function ServerKeyRotationPanel() {
         onConfirm={handleRotate}
         onCancel={() => setConfirmOpen(false)}
       />
-    </section>
+    </>
   );
 }
 

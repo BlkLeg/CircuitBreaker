@@ -117,6 +117,16 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Task 20: both live in a bodyless Panel, so they take the padding the missing
+   body would have given them. Bodyless and not padded, because the filter bar
+   sets its own dense spacing and a body would inset it into a second box. */
+.cb-panel .agents-page__filters {
+  padding: var(--space-2) var(--panel-pad) 0;
+}
+.cb-panel .agents-page__summary {
+  padding: var(--space-1) var(--panel-pad) var(--space-2);
+}
+
 .agents-page__empty {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -894,29 +904,38 @@
 }
 
 /* INC-13: server-key rotation panel. Sits between the page header and the
-   add-agent panel; admin-only, and absent entirely when no admin is viewing. */
-.agents-page__key-panel {
-  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
-  border-radius: 8px;
-  padding: 12px 14px;
-  margin-bottom: 14px;
-  background: var(--color-surface);
+   add-agent panel; admin-only, and absent entirely when no admin is viewing.
+   Task 20: the surface, its head and its label/value list are Panel and
+   KeyValue now, so what is left here is the rotation-specific content — the
+   adoption buckets and the two notes that qualify them. */
+
+/* Fingerprints are compared character by character against what the agent
+   printed on the machine, which proportional digits make needlessly hard. */
+.agents-page__key-panel-values dd {
+  font-family: var(--font-mono);
 }
 
-.agents-page__key-panel dl {
+.agents-page__key-adoption {
+  margin-top: var(--space-3);
+}
+
+.agents-page__key-buckets {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  list-style: none;
+  padding: 0;
   margin: 0;
 }
 
-.agents-page__key-panel dt {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+.agents-page__key-pending {
+  margin: var(--space-2) 0 0;
 }
 
-.agents-page__key-panel dd {
-  margin: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+.agents-page__key-note {
+  margin: var(--space-2) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--fs-xs);
 }
 
 /* ── Agent detail: the state surface (AGT-14) ───────────────────────────────
