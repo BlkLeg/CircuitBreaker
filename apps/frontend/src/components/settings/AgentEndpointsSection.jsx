@@ -27,7 +27,20 @@ const S = {
   actions: { display: 'flex', gap: 8, marginTop: 12 },
   error: { fontSize: 12, color: 'var(--color-danger)', marginTop: 8 },
   empty: { fontSize: 12, color: 'var(--color-text-muted)', margin: '0 0 4px 0' },
+  usage: { fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 },
 };
+
+// Spec §6 item 4. `undefined` counts mean the read has not resolved; only a
+// resolved read with no agents justifies saying none came through, because
+// "no agents have enrolled" is a claim about the address, not about the fetch.
+function usageLabel(usage, url) {
+  if (!usage) return null;
+
+  // server's own count map and `url` a key read out of it, not a path.
+  const count = usage[url] ?? 0;
+  if (count === 0) return 'no agents have enrolled through this address yet';
+  return `${count} agent${count === 1 ? '' : 's'} enrolled`;
+}
 
 /** Client-side row identity, so removing a row does not scramble the ones below it. */
 let nextRowKey = 0;
@@ -48,7 +61,7 @@ const toRows = (endpoints) =>
  * uses. Getting this wrong is an agent that dials a private address forever
  * and never appears, so the copy says plainly what the field is for.
  */
-export default function AgentEndpointsSection({ endpoints = [], onSave }) {
+export default function AgentEndpointsSection({ endpoints = [], usage = null, onSave }) {
   const [rows, setRows] = useState(() => toRows(endpoints));
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -125,6 +138,9 @@ export default function AgentEndpointsSection({ endpoints = [], onSave }) {
               placeholder="https://cb.example.com"
               onChange={(e) => update(row.key, 'url', e.target.value)}
             />
+            {usageLabel(usage, row.url) ? (
+              <span style={S.usage}>{usageLabel(usage, row.url)}</span>
+            ) : null}
           </div>
           <button
             type="button"
@@ -167,5 +183,7 @@ AgentEndpointsSection.propTypes = {
   endpoints: PropTypes.arrayOf(
     PropTypes.shape({ id: PropTypes.string, label: PropTypes.string, url: PropTypes.string })
   ),
+  // Agents enrolled, keyed by endpoint URL. Null until the read resolves.
+  usage: PropTypes.objectOf(PropTypes.number),
   onSave: PropTypes.func.isRequired,
 };

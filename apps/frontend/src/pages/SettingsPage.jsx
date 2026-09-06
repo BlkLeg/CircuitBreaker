@@ -1,5 +1,5 @@
 /* eslint-disable security/detect-object-injection -- internal key lookups */
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useCallback, useEffect, useState, useMemo } from 'react';
 import PropTypes from 'prop-types';
 import { useSearchParams } from 'react-router-dom';
 import { settingsApi, adminApi, cveApi } from '../api/client';
@@ -9,6 +9,8 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { useTimezone } from '../context/TimezoneContext.jsx';
 import { useToast } from '../components/common/Toast';
 import { syncDocker } from '../api/discovery.js';
+import { getEndpointUsage } from '../api/agents';
+import logger from '../utils/logger';
 
 // Components
 import IconLibraryManager from '../components/settings/IconLibraryManager';
@@ -404,6 +406,24 @@ export default function SettingsPage() {
     }
   };
 
+  // null until the read resolves, so the section can tell "no agents came
+  // through this address" apart from "the counts have not arrived". A failed
+  // read leaves it null for the same reason — better silent than wrong.
+  const [endpointUsage, setEndpointUsage] = useState(null);
+  const loadEndpointUsage = useCallback(async () => {
+    if (!isAdmin) return;
+    try {
+      const { data } = await getEndpointUsage();
+      setEndpointUsage(data);
+    } catch (err) {
+      logger.error('Failed to load agent endpoint usage:', err);
+    }
+  }, [isAdmin]);
+
+  useEffect(() => {
+    loadEndpointUsage();
+  }, [loadEndpointUsage]);
+
   // Saved on its own, not through the page's Save bar: the server mints the ids
   // and normalizes the URLs, so the list has to come straight back from the
   // round-trip rather than sit in local form state until the operator happens
@@ -415,6 +435,8 @@ export default function SettingsPage() {
     }
     await settingsApi.update({ agent_endpoints: agentEndpoints });
     await reloadSettings();
+    // The counts are keyed by URL, so editing an address re-keys them.
+    await loadEndpointUsage();
     toast.success('Agent endpoints saved');
   };
 
@@ -1112,6 +1134,7 @@ export default function SettingsPage() {
                 <SettingSection title="Agent Endpoints" className="settings-section--full">
                   <AgentEndpointsSection
                     endpoints={ctxSettings?.agent_endpoints ?? []}
+                    usage={endpointUsage}
                     onSave={handleSaveAgentEndpoints}
                   />
                 </SettingSection>
