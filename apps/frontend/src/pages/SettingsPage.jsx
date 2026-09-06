@@ -244,6 +244,7 @@ CveSecuritySection.propTypes = {
 
 import NotificationsManager from '../components/settings/NotificationsManager';
 import OAuthProvidersManager from '../components/settings/OAuthProvidersManager';
+import AgentEndpointsSection from '../components/settings/AgentEndpointsSection';
 
 export default function SettingsPage() {
   const { settings: ctxSettings, reloadSettings } = useSettings();
@@ -401,6 +402,20 @@ export default function SettingsPage() {
     } finally {
       setSaving(false);
     }
+  };
+
+  // Saved on its own, not through the page's Save bar: the server mints the ids
+  // and normalizes the URLs, so the list has to come straight back from the
+  // round-trip rather than sit in local form state until the operator happens
+  // to press Save. Errors are re-thrown for the section to render — a rejected
+  // endpoint URL has to be visible beside the field that caused it.
+  const handleSaveAgentEndpoints = async (agentEndpoints) => {
+    if (!isAdmin) {
+      throw new Error('Only admins can update system settings.');
+    }
+    await settingsApi.update({ agent_endpoints: agentEndpoints });
+    await reloadSettings();
+    toast.success('Agent endpoints saved');
   };
 
   const handleRevert = () => {
@@ -1092,6 +1107,13 @@ export default function SettingsPage() {
                       onChange={(e) => set('api_base_url', e.target.value)}
                     />
                   </SettingField>
+                </SettingSection>
+
+                <SettingSection title="Agent Endpoints" className="settings-section--full">
+                  <AgentEndpointsSection
+                    endpoints={ctxSettings?.agent_endpoints ?? []}
+                    onSave={handleSaveAgentEndpoints}
+                  />
                 </SettingSection>
               </div>
             )}
