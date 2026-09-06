@@ -21,7 +21,9 @@ import (
 
 // Collect gathers this host's hello metadata fresh on every call, so a long-lived agent never
 // reports stale values on reconnect. agentVersion is passed in rather than read here since it's
-// build-time state (main.AgentVersion), not host state.
+// build-time state (main.AgentVersion), not host state. serverURL is likewise the caller's own
+// configured address (cfg.ServerURL) rather than something this package could infer — see
+// HelloPayload.ServerURL's doc comment for why the server needs the agent to say it at all.
 //
 // SpoolDepth is left at its zero value here by design: the outbound spool is owned by
 // internal/link (Options.Spool), not by host collection, so this collector has no access to it
@@ -30,7 +32,7 @@ import (
 // every heartbeat (frame.HeartbeatPayload) — the heartbeat, not the hello, is what lets the
 // server see a backlog drain to zero without waiting for a reconnect. Callers other than
 // internal/link get a zero here and should not read it.
-func Collect(agentVersion string) frame.HelloPayload {
+func Collect(agentVersion string, serverURL string) frame.HelloPayload {
 	hostname, _ := os.Hostname()
 	distroID, distroVersion := osRelease()
 	machineIDHash := machineIDHash()
@@ -46,6 +48,7 @@ func Collect(agentVersion string) frame.HelloPayload {
 		Networks:         Networks(),
 		Readiness:        identityReadiness(machineIDHash),
 		CapabilitySchema: 2,
+		ServerURL:        serverURL,
 	}
 }
 

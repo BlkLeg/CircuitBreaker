@@ -238,6 +238,11 @@ type HelloPayload struct {
 	// Omitted by agents predating the field, which the server treats as
 	// unconverged.
 	TLSPinSuccessorFingerprint string `json:"tls_pin_successor_fingerprint,omitempty"`
+
+	// ServerURL is the address this agent actually dialed. The server cannot
+	// observe it — it never connects to an agent — so an endpoint that no
+	// machine can reach is otherwise invisible.
+	ServerURL string `json:"server_url,omitempty"`
 }
 
 // HelloAckPayload is the server -> agent `hello.ack` payload's structured shape for the

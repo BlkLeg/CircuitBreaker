@@ -637,7 +637,7 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 		return opts.Spool.Len(), size
 	}
 
-	helloPayload := hostinfo.Collect(opts.AgentVersion)
+	helloPayload := hostinfo.Collect(opts.AgentVersion, opts.Config.ServerURL)
 	// The at-connect backlog snapshot (D-12). The heartbeat below reports
 	// the same numbers live, which is what lets a server-side catch-up
 	// indicator clear without waiting for a reconnect.
@@ -1196,7 +1196,7 @@ func Uninstall(ctx context.Context, opts Options) error {
 		return fmt.Errorf("link: %w", err)
 	}
 
-	helloPayload := hostinfo.Collect(opts.AgentVersion)
+	helloPayload := hostinfo.Collect(opts.AgentVersion, opts.Config.ServerURL)
 	hello := frame.Frame{V: 1, Type: frame.TypeHello, Seq: 0, TS: time.Now().UTC()}
 	hello.Payload, err = json.Marshal(helloPayload)
 	if err != nil {

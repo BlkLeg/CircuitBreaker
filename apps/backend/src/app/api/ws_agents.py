@@ -265,6 +265,7 @@ async def enroll_stream(websocket: WebSocket) -> None:
                     agent_version=payload.get("agent_version"),
                     primary_macs=payload.get("primary_macs"),
                     reported_ip=client_ip,
+                    enrolled_via_endpoint=payload.get("server_url"),
                 )
                 newly_created = True
             # Task 28: which of the server's two overlapping identity keys

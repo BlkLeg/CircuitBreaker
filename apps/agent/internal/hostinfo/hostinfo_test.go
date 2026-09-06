@@ -43,7 +43,7 @@ func TestIdentityReadiness(t *testing.T) {
 // environment-dependent so only structural invariants are checked (field wiring is correct;
 // nothing panics; the result decodes to the Task 1 schema).
 func TestCollect(t *testing.T) {
-	got := Collect("1.2.3")
+	got := Collect("1.2.3", "")
 
 	if got.AgentVersion != "1.2.3" {
 		t.Errorf("Collect().AgentVersion = %q, want %q", got.AgentVersion, "1.2.3")
@@ -89,7 +89,17 @@ func TestCollect_NetworksAreWiredFromNetFacts(t *testing.T) {
 	if len(want) == 0 {
 		t.Skip("host reports no usable interfaces; the comparison would degenerate to nil == nil")
 	}
-	if got := Collect("1.2.3").Networks; !reflect.DeepEqual(got, want) {
+	if got := Collect("1.2.3", "").Networks; !reflect.DeepEqual(got, want) {
 		t.Errorf("Collect().Networks = %+v, want the netfacts report %+v", got, want)
+	}
+}
+
+// TestCollectRecordsTheDialedServerURL pins ServerURL to the address the caller actually dialed
+// (cfg.ServerURL), not something Collect infers itself — the server can never observe this on its
+// own, since it never connects to an agent (it's the agent that dials out).
+func TestCollectRecordsTheDialedServerURL(t *testing.T) {
+	got := Collect("1.2.3", "https://cb.example.com")
+	if got.ServerURL != "https://cb.example.com" {
+		t.Errorf("ServerURL = %q, want https://cb.example.com", got.ServerURL)
 	}
 }

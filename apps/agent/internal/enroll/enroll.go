@@ -87,7 +87,7 @@ func Run(cfg *config.Config, key *DeviceKey, agentVersion string, trust tlsdial.
 		return fmt.Errorf("enroll: %w", err)
 	}
 
-	helloPayload := hostinfo.Collect(agentVersion)
+	helloPayload := hostinfo.Collect(agentVersion, cfg.ServerURL)
 	helloFrame := frame.Frame{V: 1, Type: frame.TypeHello, Seq: 0, TS: time.Now().UTC()}
 	helloFrame.Payload, err = json.Marshal(helloPayload)
 	if err != nil {

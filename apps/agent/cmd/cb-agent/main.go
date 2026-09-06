@@ -762,7 +762,7 @@ func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion st
 	// report before any link attempt (readiness has no network dependency —
 	// see hostinfo.Collect). MergeReadiness, not a whole-slice replacement,
 	// so the collector's own host.* rows and this identity row coexist.
-	identityReadiness := hostinfo.Collect(agentVersion).Readiness
+	identityReadiness := hostinfo.Collect(agentVersion, cfg.ServerURL).Readiness
 	statusWriter := status.NewWriter(config.StateDir(), agentVersion, key.FingerprintGrouped())
 	if err := statusWriter.SetGrants(capGate.Grants()); err != nil {
 		log.Printf("cb-agent: status: %v", err)
