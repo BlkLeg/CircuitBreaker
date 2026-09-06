@@ -927,6 +927,58 @@ body {
   background: color-mix(in srgb, var(--color-primary) 5%, transparent);
 }
 
+/* Compact sibling of .entity-table above, for tables that sit inside a panel
+   rather than filling a page: the agent Discovery and Probes tabs and the
+   monitor detail page. All three referenced this class and nothing defined it,
+   so every one of those tables rendered as a bare <table> — no cell padding,
+   no rules, headers jammed against the column beside them.
+
+   Matched to .agent-telemetry__grid rather than to .entity-table: Telemetry
+   and Discovery are two tabs of one page and must not read as two designs.
+   .entity-table's 12px/14px padding is right for a table that is the whole
+   page and too loose for one panel among several.
+
+   The tokens carry fallbacks on purpose. panels.css declares them on :root but
+   is imported by the common/ components, and MonitorDetailPage mounts none of
+   those — so on that page the fallback is what renders. */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm, 12.5px);
+}
+
+.data-table th,
+.data-table td {
+  text-align: left;
+  padding: var(--space-1, 4px) var(--panel-pad, 12px);
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: middle;
+}
+
+.data-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.data-table th {
+  color: var(--color-text-muted);
+  font-size: var(--fs-micro, 9.5px);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  white-space: nowrap;
+}
+
+/* Right-aligned and tabular so digits stack into place columns — the
+   difference between reading four numbers and comparing them. */
+.data-table th[data-numeric='true'],
+.data-table td[data-numeric='true'] {
+  text-align: right;
+}
+
+.data-table td[data-numeric='true'] {
+  font-variant-numeric: tabular-nums;
+}
+
 .action-cell {
   white-space: nowrap;
 }
