@@ -297,3 +297,148 @@
   outline: 2px solid var(--color-primary);
   outline-offset: 2px;
 }
+
+/* ── StatTile ───────────────────────────────────────────────────────────── */
+
+.cb-tile {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  transition:
+    border-color 0.5s ease,
+    box-shadow 0.5s ease;
+}
+
+.cb-tile__label {
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+/* Tabular numerals are load-bearing: without them a value stepping 9 -> 11
+   shifts every digit beside it and the column appears to twitch. */
+.cb-tile__value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xl);
+  font-variant-numeric: tabular-nums;
+  margin: 2px 0 1px;
+}
+
+.cb-tile svg {
+  width: 100%;
+  height: 30px;
+  display: block;
+}
+
+.cb-tile polyline {
+  fill: none;
+  stroke: var(--color-info);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+/* A flash marks a threshold crossing or a state change — never the arrival of
+   an ordinary sample. At a 10s cadence a per-sample flash reads as fidgeting
+   rather than as signal, and a page that flashes constantly trains the
+   operator to stop looking at it. */
+.cb-tile[data-flash='true'] {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 1px rgba(var(--color-primary-rgb), 0.35);
+}
+
+.cb-tile[data-hot='true'] {
+  border-color: var(--color-danger);
+  box-shadow: 0 0 0 1px rgba(251, 73, 52, 0.4);
+}
+
+.cb-tile[data-hot='true'] .cb-tile__value {
+  color: var(--color-danger);
+}
+.cb-tile[data-hot='true'] polyline {
+  stroke: var(--color-danger);
+}
+
+.cb-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(154px, 1fr));
+  gap: var(--space-2);
+}
+
+/* ── Toggle ─────────────────────────────────────────────────────────────── */
+
+.cb-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  font-size: var(--fs-sm);
+  background: none;
+  border: 0;
+  color: var(--color-text);
+  font-family: inherit;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cb-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+.cb-toggle:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+.cb-toggle + .cb-toggle {
+  border-top: 1px solid rgba(80, 73, 69, 0.5);
+}
+
+.cb-toggle__track {
+  width: 30px;
+  height: 17px;
+  border-radius: 999px;
+  background: var(--color-border);
+  position: relative;
+  flex: none;
+  transition: background 0.15s ease;
+}
+
+.cb-toggle__track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+  transition:
+    transform 0.15s ease,
+    background 0.15s ease;
+}
+
+.cb-toggle[aria-checked='true'] .cb-toggle__track {
+  background: rgba(184, 187, 38, 0.35);
+}
+
+.cb-toggle[aria-checked='true'] .cb-toggle__track::after {
+  transform: translateX(13px);
+  background: var(--color-success);
+}
+
+.cb-toggle__note {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  color: var(--color-text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cb-tile,
+  .cb-toggle__track,
+  .cb-toggle__track::after {
+    transition: none !important;
+  }
+}
