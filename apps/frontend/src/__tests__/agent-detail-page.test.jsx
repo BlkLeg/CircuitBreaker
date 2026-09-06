@@ -874,10 +874,14 @@ describe('AgentDetailPage', () => {
       expect(cardValue('CPU')).toBe('12.5%');
       expect(cardValue('Memory')).toBe('63.4%');
       expect(cardValue('Root disk')).toBe('41.2%');
-      expect(cardValue('Network receive')).toBe('1,234,568 B/s');
+      // The renderings the fleet row uses for the same two metrics. This tile
+      // and that row read the same sample from the same host, so a raw
+      // "1,234,568 B/s" here beside "↓1.2 MB/s" there was one number in two
+      // languages — and 25h is an uptime nobody states that way out loud.
+      expect(cardValue('Network receive')).toBe('1.2 MB/s');
       expect(cardValue('Temperature')).toBe('48.5 °C');
       expect(cardValue('Load (1m)')).toBe('1.23');
-      expect(cardValue('Uptime')).toBe('25h');
+      expect(cardValue('Uptime')).toBe('1d 1h');
     });
 
     it('renders a null summary field as Unavailable rather than omitting the card', async () => {
@@ -1138,10 +1142,88 @@ describe('AgentDetailPage', () => {
       const headers = within(table)
         .getAllByRole('columnheader')
         .map((cell) => cell.textContent);
-      expect(headers).toEqual(['device', 'mountpoint', 'used pct']);
+      // The unit moves into the cell, beside the digits being compared, which
+      // frees the header of it: "used %" over 41.2%, not "used pct".
+      expect(headers).toEqual(['device', 'mountpoint', 'used %']);
       // getAllByRole('row') includes the header row.
       expect(within(table).getAllByRole('row')).toHaveLength(3);
       expect(within(table).getByText('/var')).toBeInTheDocument();
+      expect(within(table).getByText('41.2%')).toBeInTheDocument();
+      // A whole number is still shown to one decimal: a column of 41.2 above
+      // 12 does not line up, and these are read down the column.
+      expect(within(table).getByText('12.0%')).toBeInTheDocument();
+    });
+
+    it('reads every unit off the key the collector chose', async () => {
+      // The rows are free-form maps (frame.go: []map[string]any), so the unit
+      // can only come from the key's suffix. Raw values are what this tab
+      // shipped with: an operator counted digits to tell 674126548964 from
+      // 1024731513088.
+      const { getAgentTelemetry } = await import('../api/agents');
+      getAgentTelemetry.mockResolvedValue({
+        data: telemetryFixture({
+          latest: {
+            payload: {
+              filesystems: [
+                {
+                  device: '/dev/nvme0n1p3',
+                  read_only: false,
+                  total_bytes: 1024731513088,
+                  available_bytes: 674126548964,
+                  used_pct: 64.8697303,
+                },
+              ],
+              interfaces: [{ name: 'eth0', rx_bps: 20973103, speed_mbps: 10000 }],
+              temperatures: [{ name: 'hwmon0/temp1', temp_c: 25.3 }],
+            },
+          },
+        }),
+      });
+
+      renderDetail();
+      await openTab('Telemetry');
+
+      const filesystems = (await screen.findByText('Filesystems')).closest(
+        '.agent-telemetry__table'
+      );
+      // Base-1024, because df is what an operator will check this against.
+      expect(within(filesystems).getByText('954.4 GB')).toBeInTheDocument();
+      expect(within(filesystems).getByText('627.8 GB')).toBeInTheDocument();
+      expect(within(filesystems).getByText('64.9%')).toBeInTheDocument();
+      // "false" is a word to stop and parse; the column asks a question.
+      expect(within(filesystems).getByText('no')).toBeInTheDocument();
+
+      const interfaces = screen.getByText('Interfaces').closest('.agent-telemetry__table');
+      // Base-1000 for a link rate, matching the NIC's own quoted speed.
+      expect(within(interfaces).getByText('21.0 MB/s')).toBeInTheDocument();
+      expect(within(interfaces).getByText('10,000 Mb/s')).toBeInTheDocument();
+
+      const temps = screen.getByText('Temperatures').closest('.agent-telemetry__table');
+      expect(within(temps).getByText('25.3 °C')).toBeInTheDocument();
+    });
+
+    it('states an absence rather than leaving the cell blank', async () => {
+      const { getAgentTelemetry } = await import('../api/agents');
+      getAgentTelemetry.mockResolvedValue({
+        data: telemetryFixture({
+          latest: {
+            payload: {
+              // A sysfs read that found an empty file, and a key the second
+              // row simply does not carry.
+              temperatures: [
+                { name: 'hwmon0/temp1', temp_c: 25.3, warning_c: '' },
+                { name: 'hwmon1/temp1', temp_c: 44 },
+              ],
+            },
+          },
+        }),
+      });
+
+      renderDetail();
+      await openTab('Telemetry');
+
+      const temps = (await screen.findByText('Temperatures')).closest('.agent-telemetry__table');
+      expect(within(temps).getAllByText('—')).toHaveLength(2);
     });
 
     it('renders nothing for an empty or absent device array', async () => {

@@ -12,7 +12,7 @@ import {
   fleetRowStateInput,
   versionDrift,
 } from '../../lib/agentState';
-import { elapsedSecondsFromIso, formatElapsed } from '../../lib/time';
+import { elapsedSecondsFromIso, formatDuration, formatElapsed } from '../../lib/time';
 import {
   CPU_CRITICAL_PCT,
   CPU_WARN_PCT,
@@ -51,10 +51,6 @@ const PENDING_DETAIL_SPAN = 8; // Ver … Caps
 // machine, short enough not to wrap a 34px row. The full value is in the
 // approval modal's comparison, which is where an approval actually happens.
 const FINGERPRINT_PREVIEW_CHARS = 8;
-
-const SECONDS_PER_MINUTE = 60;
-const SECONDS_PER_HOUR = 3600;
-const SECONDS_PER_DAY = 86400;
 
 // Base-1000 for link rates: NICs and every other tool an operator cross-checks
 // against quote bits/bytes per second in decimal units, unlike the spool's
@@ -110,16 +106,6 @@ function formatBytesPerSecond(value) {
   // a whole-number rate flickers between 1 and 2 MB/s on a steady transfer.
   const decimals = unitIndex >= RATE_MEGABYTE_INDEX ? RATE_DECIMALS : 0;
   return `${scaled.toFixed(decimals)} ${RATE_UNITS[unitIndex]}`;
-}
-
-function formatDuration(seconds) {
-  if (!Number.isFinite(seconds) || seconds < 0) return null;
-  const days = Math.floor(seconds / SECONDS_PER_DAY);
-  const hours = Math.floor((seconds % SECONDS_PER_DAY) / SECONDS_PER_HOUR);
-  const minutes = Math.floor((seconds % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE);
-  if (days > 0) return `${days}d ${hours}h`;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  return minutes > 0 ? `${minutes}m` : '<1m';
 }
 
 function grantedCapabilityLabels(capabilities) {
