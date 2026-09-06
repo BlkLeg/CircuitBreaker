@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { getInstallCommand } from '../../api/agents';
+import { useSettings } from '../../context/SettingsContext';
 import { operatorErrorMessage } from '../../lib/agentErrors';
 import { agentDisplayName } from '../../lib/agentLabel';
 import { useToast } from '../common/Toast';
@@ -29,6 +30,23 @@ const GENERIC_INSTALL_ERROR =
 // not a fault. Saying who can get them one beats echoing "Not enough
 // permissions" at someone who cannot act on it.
 const INSTALL_ADMIN_ONLY = 'Ask an administrator for the install command';
+
+// Spec §6 item 3. An install that is going to fail fails silently: the agent
+// that would report "I cannot reach you" is the one that cannot reach us. After
+// this long with no check-in, say which address to go and verify rather than
+// spinning "listening…" indefinitely.
+const CHECK_IN_OVERDUE_MS = 90_000;
+
+// The endpoint whose address matches the one this browser is on is the likeliest
+// correct choice for a LAN agent, and picking it reproduces today's behaviour
+// for an operator who never opens the picker. Falling back to the first
+// declared endpoint beats falling back to none: an empty choice sends the
+// browsed host, which is exactly the address the list exists to override.
+function defaultEndpointId(endpoints) {
+  if (endpoints.length === 0) return '';
+  const match = endpoints.find((e) => e.url === globalThis.location.origin);
+  return (match ?? endpoints[0]).id ?? '';
+}
 
 // AGT-15: the server answers 503 with an operator-fixable reason when it has
 // one (an unreadable TLS cert names the path and the chmod that fixes it), and
@@ -62,6 +80,7 @@ export default function AddAgentPanel({
   onPairingResolved,
 }) {
   const toast = useToast();
+  const { settings } = useSettings();
   // Only the *operator's* toggle lives in state. Whether the panel is open is
   // derived below, because `isStandalone` can turn true after mount — deleting
   // the last agent empties the fleet — and a seeded initial state would leave
@@ -72,6 +91,17 @@ export default function AddAgentPanel({
   const [installError, setInstallError] = useState(null);
   const [isLoadingCommand, setIsLoadingCommand] = useState(false);
   const isMountedRef = useRef(true);
+
+  const endpoints = useMemo(() => settings?.agent_endpoints ?? [], [settings]);
+  // '' is "not chosen yet", which is distinct from "chosen nothing": the
+  // settings context loads asynchronously, so an explicit choice has to survive
+  // the list arriving, and the derived value below covers the gap before it does.
+  const [chosenEndpoint, setChosenEndpoint] = useState('');
+  const selectedEndpoint =
+    chosenEndpoint && endpoints.some((e) => e.id === chosenEndpoint)
+      ? chosenEndpoint
+      : defaultEndpointId(endpoints);
+  const selectedEndpointUrl = endpoints.find((e) => e.id === selectedEndpoint)?.url ?? '';
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -84,7 +114,7 @@ export default function AddAgentPanel({
     setIsLoadingCommand(true);
     setInstallError(null);
     try {
-      const { data } = await getInstallCommand();
+      const { data } = await getInstallCommand(selectedEndpoint);
       if (isMountedRef.current) setInstallCommand(data);
     } catch (err) {
       if (!isMountedRef.current) return;
@@ -97,34 +127,42 @@ export default function AddAgentPanel({
     } finally {
       if (isMountedRef.current) setIsLoadingCommand(false);
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedEndpoint]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const isOpen = Boolean(isStandalone) || isExpanded;
 
   // Standalone means the fleet is empty and this panel *is* the page, so the
   // command is fetched without waiting to be asked. Inline, the fetch is the
   // operator opening the panel — and re-opening after a failure retries it.
+  // Keying on the chosen endpoint too is what makes the picker do anything: the
+  // command carries the address, so changing the address has to re-issue it.
   useEffect(() => {
-    if (isStandalone) loadInstallCommand();
-  }, [isStandalone, loadInstallCommand]);
+    if (isOpen) loadInstallCommand();
+  }, [isOpen, loadInstallCommand]);
 
-  const isOpen = Boolean(isStandalone) || isExpanded;
+  const hasCheckedIn = pendingAgents.length > 0;
+  const checkedInNames = pendingAgents.map((a) => agentDisplayName(a, a.id)).join(', ');
+
+  // Restarted whenever the command changes, so re-issuing it for a different
+  // endpoint gives that address its own fair wait rather than inheriting the
+  // previous one's expired clock.
+  const [isCheckInOverdue, setIsCheckInOverdue] = useState(false);
+  useEffect(() => {
+    setIsCheckInOverdue(false);
+    if (!installCommand || hasCheckedIn) return undefined;
+    const timer = setTimeout(() => setIsCheckInOverdue(true), CHECK_IN_OVERDUE_MS);
+    return () => clearTimeout(timer);
+  }, [installCommand, hasCheckedIn]);
+
   if (!isOpen) {
     return (
       <section className="add-agent">
-        <button
-          type="button"
-          onClick={() => {
-            setIsExpanded(true);
-            loadInstallCommand();
-          }}
-        >
+        <button type="button" onClick={() => setIsExpanded(true)}>
           Add agent
         </button>
       </section>
     );
   }
-
-  const hasCheckedIn = pendingAgents.length > 0;
-  const checkedInNames = pendingAgents.map((a) => agentDisplayName(a, a.id)).join(', ');
 
   return (
     <section
@@ -147,6 +185,30 @@ export default function AddAgentPanel({
       <ol className="add-agent__steps">
         <li className="add-agent__step" data-state={stepState(Boolean(installCommand), true)}>
           <h3>Run this on the new machine</h3>
+
+          {/* The address is part of the command, so it is chosen here rather
+              than buried in settings the operator would have to go and read. */}
+          {endpoints.length === 0 ? (
+            <p className="add-agent__warning">
+              No agent endpoints are configured, so this command will use the address you are
+              browsing ({globalThis.location.origin}). An agent on another network will not be able
+              to reach it. Add an endpoint in Settings → Connectivity.
+            </p>
+          ) : (
+            <label htmlFor="add-agent-endpoint" className="add-agent__endpoint">
+              Endpoint
+              <select
+                id="add-agent-endpoint"
+                value={selectedEndpoint}
+                onChange={(e) => setChosenEndpoint(e.target.value)}
+              >
+                {endpoints.map((e) => (
+                  <option key={e.id} value={e.id}>{`${e.label} — ${e.url}`}</option>
+                ))}
+              </select>
+            </label>
+          )}
+
           <AddAgentInstallStep
             installCommand={installCommand}
             errorMessage={installError}
@@ -171,6 +233,16 @@ export default function AddAgentPanel({
               <h3>Waiting for the machine to check in</h3>
               <span className="add-agent__chip">listening…</span>
               <p>The moment it enrolls it appears here — no need to reload.</p>
+              {/* Spec §6 item 3: an agent that cannot reach the server cannot
+                  say so, so after long enough this names the address to check
+                  rather than leaving "listening…" to imply progress. */}
+              {isCheckInOverdue && (
+                <p className="add-agent__warning">
+                  Nothing has checked in yet. The agent was told to dial{' '}
+                  <code>{selectedEndpointUrl || globalThis.location.origin}</code> — confirm that
+                  address resolves and is reachable from the machine you installed on.
+                </p>
+              )}
             </>
           )}
         </li>

@@ -74,8 +74,17 @@ export const revokeAgent = (id, reason) => client.post(`/agents/${id}/revoke`, {
 export const setAgentCapabilities = (id, capabilities) =>
   client.put(`/agents/${id}/capabilities`, { capabilities });
 export const deleteAgent = (id) => client.delete(`/agents/${id}`);
-export const getInstallCommand = () => client.get('/agents/install-command');
+// `endpointId` names one of the operator-declared agent endpoints. Omitting it
+// is the pre-existing behaviour — the server derives the address from the host
+// the browser is on — so an install with nothing configured is unchanged.
+export const getInstallCommand = (endpointId) =>
+  client.get('/agents/install-command', { params: endpointId ? { endpoint: endpointId } : {} });
 export const triggerAgentUpdate = (id, version) => client.post(`/agents/${id}/update`, { version });
+
+// Agents enrolled per endpoint URL. An endpoint with no agents is the only
+// positive evidence an operator gets that an address they declared is
+// unreachable — the agent that would report it is the one that cannot connect.
+export const getEndpointUsage = () => client.get('/agents/endpoint-usage');
 
 // Fleet redesign §1.2: the sparkline series for the Agents page, deliberately a
 // second endpoint rather than a flag on /agents/presence. The two reads have

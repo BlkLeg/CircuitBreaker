@@ -124,6 +124,37 @@ async def test_get_agent_detail_includes_capabilities(client, factories, viewer_
 
 
 @pytest.mark.asyncio
+async def test_get_agent_detail_names_the_endpoint_the_agent_dialed(
+    client, factories, viewer_headers
+):
+    """The stored address has to leave the database to be worth storing.
+
+    `ws_agents` writes `enrolled_via_endpoint` from the agent's hello, but the
+    agent-detail view is the only place an operator can compare the address an
+    agent actually used against the one they meant to hand it.
+    """
+    agent = factories.agent(status="active", enrolled_via_endpoint="https://cb.example.com")
+
+    resp = await client.get(f"/api/v1/agents/{agent.id}", headers=viewer_headers)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["enrolled_via_endpoint"] == "https://cb.example.com"
+
+
+@pytest.mark.asyncio
+async def test_get_agent_detail_reports_no_endpoint_for_an_older_agent(
+    client, factories, viewer_headers
+):
+    """An agent that enrolled before this existed reports null, not a guess."""
+    agent = factories.agent(status="active")
+
+    resp = await client.get(f"/api/v1/agents/{agent.id}", headers=viewer_headers)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["enrolled_via_endpoint"] is None
+
+
+@pytest.mark.asyncio
 async def test_get_agent_detail_includes_hardware_proposal(client, factories, viewer_headers):
     from app.db.models import Hardware
 

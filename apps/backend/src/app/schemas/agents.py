@@ -70,6 +70,10 @@ class AgentRead(AgentSummary):
     enrolled_at: datetime
     approved_at: datetime | None
     connected_since: datetime | None
+    # The address the agent reported dialing, as it dialed it. NULL for an
+    # agent that enrolled before the server recorded it, or one running a build
+    # that does not report it — deliberately distinct from "dialed nothing".
+    enrolled_via_endpoint: str | None = None
     # Last-reported outbound-spool backlog (Task 16, D-12). NULL means the
     # agent has never reported one — a build predating `HeartbeatPayload` —
     # which is deliberately distinct from 0 ("reported, and drained").

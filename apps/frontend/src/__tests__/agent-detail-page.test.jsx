@@ -190,6 +190,33 @@ describe('AgentDetailPage', () => {
     expect(screen.getByText('Approved')).toBeInTheDocument();
   });
 
+  // Slice A: the address the agent actually dialed. Without it, an agent that
+  // enrolled through the wrong endpoint is indistinguishable from one that
+  // enrolled through the right one until it stops reporting.
+  it('names the address the agent enrolled through', async () => {
+    const api = await import('../api/agents');
+    api.getAgent.mockResolvedValue({
+      data: { ...apiDefaults.agent, enrolled_via_endpoint: 'https://cb.example.com' },
+    });
+
+    renderDetail();
+
+    expect(await screen.findByText('Enrolled via')).toBeInTheDocument();
+    expect(screen.getByText('https://cb.example.com')).toBeInTheDocument();
+  });
+
+  it('shows a dash for an agent that enrolled before the address was recorded', async () => {
+    const api = await import('../api/agents');
+    api.getAgent.mockResolvedValue({
+      data: { ...apiDefaults.agent, enrolled_via_endpoint: null },
+    });
+
+    renderDetail();
+
+    const term = await screen.findByText('Enrolled via');
+    expect(term.nextSibling).toHaveTextContent('—');
+  });
+
   it('renders host-telemetry config toggles the server registry declares but the frontend has no copy of', async () => {
     renderDetail();
 

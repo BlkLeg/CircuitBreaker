@@ -47,6 +47,10 @@ const CAPABILITY_LABELS = {
   local_discovery: 'Local discovery',
 };
 
+// "Not recorded" rather than "none": agents that enrolled before the server
+// started storing the address they dialed have nothing to show here.
+const EM_DASH = '—';
+
 // Task 14: there is no local copy of the host-telemetry defaults any more.
 // `capabilityDefaults` below is fetched from
 // GET /api/v1/agents/capability-defaults — the server's single
@@ -660,6 +664,18 @@ export default function AgentDetailPage() {
           Connected since {new Date(presence.connected_since).toLocaleString()}
         </p>
       )}
+
+      {/* Slice A: the address this agent actually dialed, as it reported it.
+          An agent enrolled through an endpoint that later stops resolving is
+          otherwise indistinguishable from one that never had a problem, and
+          the em dash is honest about agents that enrolled before the server
+          started recording it. */}
+      <dl className="agent-detail-page__enrollment">
+        <dt>Enrolled via</dt>
+        <dd>
+          {agent.enrolled_via_endpoint ? <code>{agent.enrolled_via_endpoint}</code> : EM_DASH}
+        </dd>
+      </dl>
 
       <section aria-label="Capabilities">
         <h2>Capabilities</h2>
