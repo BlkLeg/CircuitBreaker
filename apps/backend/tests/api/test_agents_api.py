@@ -2350,7 +2350,7 @@ async def test_install_command_uses_the_scheme_the_proxy_terminated(
 
     seen: dict[str, str] = {}
 
-    def _capture(db, server_url, endpoint_id=None):
+    def _capture(db, server_url, endpoint_id=None, enroll_token=None):
         seen["server_url"] = server_url
         raise ValueError("stop here — the URL is the whole assertion")
 
@@ -2373,7 +2373,7 @@ async def test_install_command_uses_the_host_the_proxy_was_asked_for(
 
     seen: dict[str, str] = {}
 
-    def _capture(db, server_url, endpoint_id=None):
+    def _capture(db, server_url, endpoint_id=None, enroll_token=None):
         seen["server_url"] = server_url
         raise ValueError("stop here — the URL is the whole assertion")
 
