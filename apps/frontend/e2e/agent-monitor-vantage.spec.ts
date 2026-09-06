@@ -134,7 +134,10 @@ test('a device this agent discovered opens a monitor form with that agent as the
 }) => {
   await stubApi(page, OVERRIDES);
 
-  await page.goto(`/agents/${AGENT_ID}`);
+  // The discovered-devices table lives on the detail page's Discovery tab
+  // (Task 14). Deep-linking with ?tab= rather than clicking is deliberate:
+  // it is the same contract the rest of this test asserts about links.
+  await page.goto(`/agents/${AGENT_ID}?tab=discovery`);
   await waitForRouteSettled(page);
   await expectNoErrorBoundary(page, 'agent detail');
 
