@@ -238,3 +238,62 @@
   gap: var(--space-2);
   flex-wrap: wrap;
 }
+
+/* ── KeyValue ───────────────────────────────────────────────────────────── */
+
+/* Two columns, labels sized to their content, so values line up as a column an
+   eye can run down. Values are monospace and tabular because most of them are
+   numbers or identifiers that get compared against something else. */
+.cb-kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.cb-kv dt {
+  color: var(--color-text-muted);
+}
+
+.cb-kv dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── CopyField ──────────────────────────────────────────────────────────── */
+
+.cb-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.cb-copy code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  background: rgba(60, 56, 54, 0.5);
+  padding: 1px var(--space-1);
+  border-radius: 3px;
+  color: var(--color-text);
+}
+
+.cb-copy__btn {
+  background: none;
+  border: 0;
+  padding: 0 2px;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  font: inherit;
+  line-height: 1;
+}
+
+.cb-copy__btn:hover {
+  color: var(--color-primary);
+}
+.cb-copy__btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
