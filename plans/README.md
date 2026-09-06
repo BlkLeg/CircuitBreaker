@@ -35,7 +35,8 @@ catalogued in the index below.
 
 | Plan | Date | Status |
 |---|---|---|
-| [Agent endpoints (slice A)](./2026-09-05-agent-endpoints-slice-a.md) | 2026-09-05 | **Active** — eleven tasks giving an operator a declared address for agents to dial, replacing the browsed `Host` that made the agent undeployable outside the LAN. Slice A of [`docs/design/2026-09-05-agent-reachability-design.md`](../docs/design/2026-09-05-agent-reachability-design.md); slice B (unattended enrollment tokens) is unwritten. |
+| [Unattended agent enrollment (slice B)](./2026-09-06-agent-unattended-enrollment-slice-b.md) | 2026-09-06 | **Active** — twelve tasks giving an operator a short-lived, scoped token so a machine enrols with nobody at the approval screen. Slice B of [`docs/design/2026-09-05-agent-reachability-design.md`](../docs/design/2026-09-05-agent-reachability-design.md), and depends on slice A: a token is scoped to an endpoint. |
+| [Agent endpoints (slice A)](./2026-09-05-agent-endpoints-slice-a.md) | 2026-09-05 | **Complete** — eleven tasks giving an operator a declared address for agents to dial, replacing the browsed `Host` that made the agent undeployable outside the LAN. Landed `d7be441e`..`0af2e501`, plus the fix wave in `22ef2ecd` (the emitted command carries `?endpoint=`), `81bc4dd6` (an endpoint URL with a path is refused) and `26e8211f`. Slice A of [`docs/design/2026-09-05-agent-reachability-design.md`](../docs/design/2026-09-05-agent-reachability-design.md). |
 
 ## Update delivery (2026-08-25)
 

@@ -259,15 +259,15 @@ def _token_capability_scope(capabilities: dict[str, Any] | None) -> dict[str, An
     return scope
 
 
-def _token_to_read(db: Session, row: AgentEnrollmentToken) -> dict[str, Any]:
+def _token_to_read(row: AgentEnrollmentToken, counts: Mapping[int, int]) -> dict[str, Any]:
     """Render one token row, with the count of agents that came through it.
 
     Never includes the token: the row cannot reproduce it, and this shape is
-    what both the listing and the revoke response return.
+    what both the listing and the revoke response return. `counts` comes from
+    `agent_enrollment_tokens.agent_counts`, so a listing costs one query rather
+    than one per row.
     """
-    count = db.execute(
-        select(func.count()).select_from(Agent).where(Agent.enrollment_token_id == row.id)
-    ).scalar_one()
+    count = counts.get(row.id, 0)
     return {
         "id": row.id,
         "label": row.label,
@@ -338,7 +338,7 @@ def post_enrollment_token(
         ),
         severity="warn",
     )
-    rendered = _token_to_read(db, row)
+    rendered = _token_to_read(row, agent_enrollment_tokens.agent_counts(db))
     db.commit()
     return {**rendered, "token": plaintext}
 
@@ -355,7 +355,8 @@ def get_enrollment_tokens(
     """
     from app.services import agent_enrollment_tokens
 
-    return [_token_to_read(db, row) for row in agent_enrollment_tokens.list_tokens(db)]
+    counts = agent_enrollment_tokens.agent_counts(db)
+    return [_token_to_read(row, counts) for row in agent_enrollment_tokens.list_tokens(db)]
 
 
 @router.post("/enrollment-tokens/{token_id}/revoke", response_model=EnrollmentTokenRead)
@@ -386,7 +387,7 @@ def post_revoke_enrollment_token(
         details=f"label={row.label} uses={row.uses} max_uses={row.max_uses}",
         severity="warn",
     )
-    rendered = _token_to_read(db, row)
+    rendered = _token_to_read(row, agent_enrollment_tokens.agent_counts(db))
     db.commit()
     return rendered
 

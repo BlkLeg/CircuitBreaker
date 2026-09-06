@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
@@ -129,6 +129,26 @@ def list_tokens(db: Session) -> list[AgentEnrollmentToken]:
         .scalars()
         .all()
     )
+
+
+def agent_counts(db: Session) -> dict[int, int]:
+    """How many agents enrolled through each token, keyed by token id.
+
+    One grouped read rather than a count per row: a listing renders every
+    token, and asking the database once is what keeps that from growing with
+    the fleet. Mirrors `agent_endpoints.usage_counts`.
+
+    Lives here rather than in the route because routes stay thin (CLAUDE.md),
+    which tests/build's api ratchet enforces.
+    """
+    from app.db.models import Agent
+
+    rows = db.execute(
+        select(Agent.enrollment_token_id, func.count())
+        .where(Agent.enrollment_token_id.is_not(None))
+        .group_by(Agent.enrollment_token_id)
+    ).all()
+    return {token_id: count for token_id, count in rows}
 
 
 def consume_token(db: Session, token: str) -> ConsumedToken | None:

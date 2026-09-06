@@ -84,6 +84,60 @@ regardless.
 That is correct on a single-network homelab and wrong everywhere else; declaring one endpoint is
 what makes it right on purpose rather than by accident.
 
+### Unattended enrollment
+
+The default flow is *attended*: the machine prints a fingerprint, and you approve it in the UI.
+That is the only flow in which **no bearer secret exists at all**, and it stays the default.
+
+For a machine nobody will be sitting at — a VM from a launch template, a container image, a
+provisioning script — you can mint an **enrollment token** instead. Go to **Agents → Add agent**,
+choose *Unattended*, and press **Generate token**. The command it produces enrols the machine and
+approves it in one step.
+
+**A token is a bearer credential.** Anything that presents it enrols, with the capabilities you
+scoped it to, until it is used up or expires. That is a real reduction in security posture and it
+is why every bound below is required rather than optional:
+
+| Bound | Default | Maximum |
+|---|---|---|
+| Time to live | 1 hour | 24 hours |
+| Uses | 1 | — |
+| Endpoint | the one you picked | one, always |
+| Capabilities | the ones you scoped | — |
+
+Tokens look like `cbe_` followed by 43 characters. The prefix exists so secret scanners and log
+redaction have something stable to match; this repo's own scanner has a rule for it.
+
+**It is shown once.** The server stores only a SHA-256 of it, so there is no way to read it back —
+if you lose it, mint another and revoke the first.
+
+**Deliver it through the environment, never as an argument.** The command already does this:
+
+```sh
+CB_ENROLL_TOKEN='cbe_…' sudo -E sh /tmp/cb-agent-install.sh
+```
+
+`sudo -E` is load-bearing — `sudo` scrubs the environment by default, and without it the token
+never reaches the script and the machine falls back to waiting for a human. Arguments are visible
+in `ps`, and land in shell history and cloud-init logs; the token is never passed as one, and is
+never baked into the script itself, which an unauthenticated route serves.
+
+**What the machine does with it.** The installer writes it to `/etc/circuit-breaker/enroll-token`,
+mode `0600`, owned by `cb-agent`. The agent sends it inside the Noise-encrypted enrollment channel
+— never in plaintext on the wire, even to something terminating TLS — and unlinks the file once
+the server confirms the enrolment. A spent token left on disk is a stale secret with no purpose.
+
+**Revoking.** **Settings → Connectivity → Enrollment Tokens** lists every token with its remaining
+uses and how many agents came through it, and revokes any that is still live. Revoking does not
+disturb agents that already enrolled through it — they hold their own device identity and never
+present the token again. Tokens are never deleted, so an agent can always name the one it came
+from.
+
+**Multi-use tokens.** `max_uses` above 1 exists because a single-use token breaks the case that
+motivates the feature: one token in a launch template, N instances booting, only the first
+enrolling. It is also the widest version of the trade above — the credential enrols anything
+presenting it, N times, for its whole TTL. Prefer a short TTL over a large `max_uses`.
+
 ### Get the command
 
 Go to **Agents → Add agent**. Pick the endpoint this machine should dial, and the panel
@@ -165,16 +219,20 @@ Running as root, in order:
    spool_cap_bytes = 67108864
    ```
 
-6. Adds `cb-agent` to the `docker` group **only if** `docker` is already on the host.
-7. Widens `net.ipv4.ping_group_range` to include the `cb-agent` group, if it does not already.
+6. Writes `/etc/circuit-breaker/enroll-token` (mode `0600`, owned by `cb-agent`) **only if**
+   `CB_ENROLL_TOKEN` is set in its environment. See *Unattended enrollment* above. The agent
+   erases this file after a successful enrolment.
+7. Adds `cb-agent` to the `docker` group **only if** `docker` is already on the host.
+8. Widens `net.ipv4.ping_group_range` to include the `cb-agent` group, if it does not already.
    This is what lets the agent send ICMP without `CAP_NET_RAW`. It reads the *effective* value
    rather than looking for a line, and widens as a **union** — groups your host already allowed
    keep their ping. A host sitting on the kernel default `1 0` ("no group may") becomes exactly
    the `cb-agent` group, not everyone. A range that already covers `cb-agent` is left untouched.
-8. Writes `/etc/systemd/system/cb-agent.service` and runs `systemctl daemon-reload`.
-9. Runs `sudo -u cb-agent /usr/local/bin/cb-agent enroll`, which prints the device fingerprint
-   and pairing code and waits for you to approve.
-10. Runs `systemctl enable --now cb-agent`.
+9. Writes `/etc/systemd/system/cb-agent.service` and runs `systemctl daemon-reload`.
+10. Runs `sudo -u cb-agent /usr/local/bin/cb-agent enroll`. Attended, this prints the device
+    fingerprint and pairing code and waits for you to approve. With a token present it sends the
+    token instead, is approved immediately, erases the token file, and returns.
+11. Runs `systemctl enable --now cb-agent`.
 
 ---
 
@@ -338,7 +396,7 @@ publishes.
 
 | Purpose | URL | Protocol |
 |---|---|---|
-| Enrollment | `wss://your-server/api/v1/agents/enroll` | WebSocket over TLS |
+| Enrollment | `wss://your-server/api/v1/agents/enroll` | WebSocket over TLS (carries the enrollment token, inside Noise) |
 | Live link | `wss://your-server/api/v1/agents/link` | WebSocket over TLS |
 | Self-update download | `https://your-server/api/v1/agents/binary/{version}/{os}/{arch}` | HTTPS GET |
 | Reachability preflight (once, by `curl`) | `https://your-server/api/v1/health` | HTTPS GET |
@@ -639,6 +697,27 @@ Fix the address by picking a different endpoint in **Agents → Add agent** (or 
 **Settings → Connectivity → Agent Endpoints**) and re-copying the command. Editing the URL inside
 the command by hand does not work: the `?endpoint=` id is what the server reads, and the
 `script_sha256` is computed over that variant.
+
+### An unattended install never appears in the UI
+
+The installer succeeded and the service is running, but the agent is not in the fleet. The
+enrolment was refused, and it is refused the same way for every cause — deliberately, so that the
+enrolment endpoint cannot be used to find out which tokens are live. Check in this order:
+
+| Check | Where |
+|---|---|
+| Was the token spent? | **Settings → Connectivity → Enrollment Tokens** — uses against max |
+| Had it expired? | same screen; the default life is one hour |
+| Was it revoked? | same screen |
+| Did the token reach the script at all? | `sudo` without `-E` scrubs it; the command uses `sudo -E` for exactly this |
+| Did you edit the command? | the token must stay an environment assignment, not an argument |
+
+`journalctl -u cb-agent` on the host shows the dial and the refusal. The server logs the refusal
+with the client IP and never the token.
+
+The fix is always a fresh token: mint another in **Agents → Add agent** and re-run the command it
+gives you. A refused enrolment leaves nothing behind on the server, so there is nothing to clean
+up first.
 
 ### Agent shows offline in the UI
 

@@ -117,7 +117,16 @@ def test_deferred_core_to_services_imports_do_not_grow() -> None:
 #: Direct session operations inside `api/`. Route F6: routes should stay thin and
 #: delegate to services. Re-measured at 579 across 41 files on 2026-09-03.
 #: EXACT — see `_assert_exact`.
-_MAX_DIRECT_DB_CALLS_IN_API = 579
+#:
+#: 2026-09-06, 579 -> 582. Slice B (unattended enrollment) adds three, and all
+#: three are `db.commit()` at a transaction boundary, not a query in a route:
+#: the mint and revoke routes in `agents.py`, and the token branch in
+#: `ws_agents.enroll_stream`. Every neighbouring handler commits at exactly this
+#: level — `post_approve`, `post_tls_pin_rotate`, and the attended enroll path
+#: beside the new branch. The one genuine query the slice needed *is* in a
+#: service: `agent_enrollment_tokens.agent_counts`, moved there when this gate
+#: caught it, which is the gate doing its job.
+_MAX_DIRECT_DB_CALLS_IN_API = 582
 
 
 def test_direct_db_access_in_api_does_not_grow() -> None:

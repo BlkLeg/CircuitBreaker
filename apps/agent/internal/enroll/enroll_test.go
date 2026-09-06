@@ -316,21 +316,17 @@ func TestReadEnrollToken_TrimsTheTrailingNewlineTheInstallerWrites(t *testing.T)
 	}
 }
 
-func TestReadEnrollToken_ReportsAFileItCannotRead(t *testing.T) {
+func TestReadEnrollToken_ReportsAPathItCannotRead(t *testing.T) {
 	// Present but unreadable is a misconfiguration an operator can fix, and is
 	// the one case worth failing on rather than silently falling back to the
 	// attended flow they did not ask for.
-	dir := t.TempDir()
-	path := filepath.Join(dir, "enroll-token")
-	if err := os.WriteFile(path, []byte("cbe_abc"), 0o000); err != nil {
-		t.Fatal(err)
-	}
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: mode 0000 is still readable")
-	}
-
-	if _, err := readEnrollToken(path); err == nil {
-		t.Fatal("an unreadable token file must be reported, not ignored")
+	//
+	// A directory rather than a mode-0000 file: root can read 0000, so that
+	// version of this test had to skip under root, and a skip needs a register
+	// row (REL-19). os.ReadFile on a directory fails for every uid, which
+	// exercises the same branch with no exemption to justify.
+	if _, err := readEnrollToken(t.TempDir()); err == nil {
+		t.Fatal("an unreadable token path must be reported, not ignored")
 	}
 }
 

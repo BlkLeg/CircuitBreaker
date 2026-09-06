@@ -76,6 +76,10 @@ Categories are not managed here — they are created inline while editing hardwa
   the App URL on purpose: the address that reaches your server from an agent is often not the
   one that reaches it from a browser. Scheme and host only, no path. See
   [cb-agent → Install](agent.md#choose-the-address-the-agent-will-dial).
+- Enrollment Tokens — short-lived credentials that let a machine enrol with nobody at the
+  approval screen. Lists what has been minted, how many agents came through each, and revokes any
+  that is still live. Mint them from **Agents → Add agent**; the value itself is shown once and
+  never stored. See [cb-agent → Unattended enrollment](agent.md#unattended-enrollment).
 
 ### Email Notifications & SMTP
 

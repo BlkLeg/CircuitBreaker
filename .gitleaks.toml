@@ -3,6 +3,19 @@
 [extend]
 useDefault = true
 
+# Slice B mints agent enrollment tokens as `cbe_` plus 32 random bytes,
+# base64url and unpadded (43 characters). They are short-lived bearer
+# credentials that enrol an agent with no human present, so one reaching a
+# commit is worth stopping. The prefix exists for exactly this: it gives
+# scanners and log redaction a stable thing to match. The regex is pinned
+# against the minting code by
+# tests/build/test_enrollment_token_never_shipped.py, so the two cannot drift.
+[[rules]]
+id = "circuitbreaker-agent-enrollment-token"
+description = "Circuit Breaker agent enrollment token (cbe_)"
+regex = '''cbe_[A-Za-z0-9_-]{43}'''
+keywords = ["cbe_"]
+
 [[allowlists]]
 id = "alembic-revisions"
 description = "Alembic migration revision IDs (hex hashes) are not API keys"
