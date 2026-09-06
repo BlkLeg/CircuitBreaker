@@ -157,8 +157,13 @@ address a browser uses and the address an agent uses can legitimately differ,
 which is the entire LAN-versus-FQDN case. It is a reasonable seed for the first
 endpoint the operator is offered.
 
-URLs are validated by the existing `core/url_validation.py`, which already
-rejects non-HTTP(S) schemes.
+URLs get a **scheme-and-host check only** — HTTP(S), non-empty host, trailing
+slash stripped. Deliberately *not* `core/url_validation.py`: its
+`_is_forbidden_address` rejects private addresses unless `allow_private` is set,
+so it would refuse `https://192.168.0.51` — precisely the LAN endpoint an
+operator most needs to declare. It also resolves DNS, which answers the wrong
+question: what matters is whether the address resolves from the *agent*, and the
+server cannot know that (§6).
 
 ### 3.2 `agent_enrollment_tokens`
 
