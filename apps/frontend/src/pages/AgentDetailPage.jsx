@@ -17,12 +17,11 @@ import DiscoveryScopeSection from '../components/agents/DiscoveryScopeSection';
 import AgentIdentityHeader from '../components/agents/AgentIdentityHeader';
 import AgentStateBanner from '../components/agents/AgentStateBanner';
 import AgentLiveStrip from '../components/agents/AgentLiveStrip';
+import AgentEventsPanel from '../components/agents/AgentEventsPanel';
+import AgentCapabilitiesPanel from '../components/agents/AgentCapabilitiesPanel';
+import AgentHardwarePanel from '../components/agents/AgentHardwarePanel';
 import { agentDisplayName } from '../lib/agentLabel';
-import {
-  describeAgentEvent,
-  operatorErrorMessage,
-  updateDispatchMessage,
-} from '../lib/agentErrors';
+import { operatorErrorMessage, updateDispatchMessage } from '../lib/agentErrors';
 import { TAB_KEYS } from '../lib/agentComposition';
 import { serverClockOffsetMs } from '../utils/serverClock';
 import { formatTimestamp } from '../lib/time';
@@ -35,12 +34,6 @@ import RemoteProbeConfigEditor, {
   REMOTE_PROBE_MAX_CONCURRENT,
   REMOTE_PROBE_MIN_CONCURRENT,
 } from '../components/agents/RemoteProbeConfigEditor';
-
-const CAPABILITY_LABELS = {
-  host_telemetry: 'Host telemetry',
-  remote_probe: 'Remote probe',
-  local_discovery: 'Local discovery',
-};
 
 // Task 14: there is no local copy of the host-telemetry defaults any more.
 // `capabilityDefaults` below is fetched from
@@ -673,38 +666,10 @@ export default function AgentDetailPage() {
 
 // ── Temporary tab bodies ────────────────────────────────────────────────────
 //
-// Tasks 15, 16 and 17 each replace one of these with a real component under
+// Tasks 16 and 17 each replace one of these with a real component under
 // components/agents/. They live here, rather than as placeholder text, so that
 // this task changes the page's *shape* and nothing else: every behaviour the
 // suites lock down is the same markup, moved onto the tab that owns it.
-
-// Replaced by AgentEventsPanel in Task 15.
-function AgentEventsPanel({ events }) {
-  return (
-    <section aria-label="Events">
-      <h2>Events</h2>
-      {/* AGT-15. This list used to render `JSON.stringify(e.detail)`, which
-          put wire-protocol internals — frame types, sequence numbers, raw
-          validation-error text off the link — straight in front of an
-          operator, and would have carried anything a future payload added
-          with it. Every row now goes through describeAgentEvent, which
-          allow-lists the keys it will show per event type and redacts what it
-          does show. See lib/agentErrors.js. */}
-      <ul>
-        {events.map((event) => {
-          const described = describeAgentEvent(event);
-          return (
-            <li key={event.id}>
-              <span>{formatTimestamp(event.created_at)}</span> — <strong>{described.label}</strong>
-              {described.detail && <span> — {described.detail}</span>}
-            </li>
-          );
-        })}
-      </ul>
-    </section>
-  );
-}
-AgentEventsPanel.propTypes = { events: PropTypes.array.isRequired };
 
 // Replaced by AgentTelemetryTab in Task 16, which cuts SUMMARY_LABELS,
 // formatMetric, formatBytes, DeviceTable and HistoryChart across with it.
@@ -876,6 +841,8 @@ function AgentOverviewTab({
   presence,
   capabilityDefaults,
   hostDefaults,
+  capabilitiesLocked,
+  blockedReason,
   onToggleCapability,
   onUpdateHostConfig,
   online,
@@ -888,18 +855,12 @@ function AgentOverviewTab({
         </p>
       )}
 
-      <section aria-label="Capabilities">
-        <h2>Capabilities</h2>
-        {Object.entries(CAPABILITY_LABELS).map(([key, label]) => (
-          <label key={key}>
-            <input
-              type="checkbox"
-              checked={normalizeCapability(agent.capabilities?.[key]).enabled}
-              onChange={(e) => onToggleCapability(key, e.target.checked)}
-            />
-            {label}
-          </label>
-        ))}
+      <AgentCapabilitiesPanel
+        capabilities={agent.capabilities}
+        locked={capabilitiesLocked}
+        blockedReason={blockedReason}
+        onToggle={onToggleCapability}
+      >
         {normalizeCapability(agent.capabilities?.host_telemetry).enabled &&
           (capabilityDefaults === null ? (
             <p>Loading capability settings…</p>
@@ -939,19 +900,9 @@ function AgentOverviewTab({
                 ))}
             </fieldset>
           ))}
-      </section>
+      </AgentCapabilitiesPanel>
 
-      <section aria-label="Linked hardware">
-        <h2>Linked hardware</h2>
-        {presence?.hardware ? (
-          <p>
-            {presence.hardware.name}
-            {presence.hardware.hostname ? ` (${presence.hardware.hostname})` : ''}
-          </p>
-        ) : (
-          <p>No hardware linked</p>
-        )}
-      </section>
+      <AgentHardwarePanel hardware={presence?.hardware ?? null} />
     </>
   );
 }

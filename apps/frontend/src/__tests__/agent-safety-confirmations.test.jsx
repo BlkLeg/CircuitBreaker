@@ -177,10 +177,12 @@ describe('update dispatch', () => {
 });
 
 describe('granting a capability that expands what the agent may do', () => {
-  // getByLabelText alone is ambiguous for "Host telemetry": the page also has
-  // a <section aria-label="Host telemetry">. Narrow to the checkbox itself.
-  const toggle = (label) =>
-    screen.getAllByLabelText(label).find((element) => element.type === 'checkbox');
+  // Task 15: the capability controls are AgentCapabilitiesPanel's switches
+  // rather than bare checkboxes, so they are addressed by their role. That
+  // also settles what used to be an ambiguity here — "Host telemetry" is the
+  // name of a switch and of the telemetry tab's region, and only one of them
+  // is a switch.
+  const toggle = (label) => screen.getByRole('switch', { name: label });
 
   it('confirms before letting an agent probe the network, and says what that means', async () => {
     renderDetail();

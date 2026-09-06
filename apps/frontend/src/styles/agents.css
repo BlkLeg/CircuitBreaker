@@ -1069,3 +1069,34 @@
     animation: none;
   }
 }
+
+/* ── Detail-page event feed ─────────────────────────────────────────────────
+   A fixed-width timestamp column so the labels beside it line up into a
+   readable second column; the feed is scanned down the labels, not across the
+   times. */
+
+.agent-events {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: var(--fs-sm);
+}
+
+.agent-events li {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid rgba(80, 73, 69, 0.35);
+}
+
+.agent-events li:last-child {
+  border-bottom: 0;
+}
+
+.agent-events time {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  flex: none;
+  width: 132px;
+}
