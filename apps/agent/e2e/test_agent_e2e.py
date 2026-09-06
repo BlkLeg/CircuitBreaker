@@ -6010,3 +6010,141 @@ def test_tampered_agent_binary_is_refused():
         client.close()
         _down(env=enforce_env)
         (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+
+
+def test_agent_enrolls_unattended_from_a_token_and_the_token_is_spent():
+    """Slice B: a machine with a token enrols and is approved with nobody
+    watching, and the token cannot be used a second time.
+
+    The property under test is an absence: **no `/approve` call is made
+    anywhere in this test.** Every other enrollment scenario in this file goes
+    through `_enroll_agent`, which reads a pairing code and approves; this one
+    proves the path that does neither.
+
+    One harness limitation, disclosed rather than papered over: the token
+    reaches the container as a bind-mounted file, and a bind mount cannot be
+    unlinked from inside. The agent's erase-after-use is therefore exercised by
+    `internal/enroll`'s unit tests rather than here — `clearEnrollToken` is
+    best-effort by design, so the failure it hits is logged and the enrollment
+    still succeeds, which is exactly what this test observes.
+    """
+    _up_server()
+    token_file = E2E_DIR / "enroll-token"
+    try:
+        client = _new_client()
+        _wait_until(lambda: client.get("/api/v1/bootstrap/status").status_code == 200, timeout=60)
+        admin = _bootstrap_admin(client)
+        headers = {"Authorization": f"Bearer {admin}"}
+        client.headers.update(headers)
+
+        material = _fetch_install_material(client, headers)
+        _write_agent_toml(material["server_pk"], material["tls_pin"])
+
+        # An endpoint has to exist before a token can be scoped to one. Its URL
+        # is the address the agent already dials in this harness, so the token
+        # names the same server the agent.toml above points at.
+        settings = client.put(
+            "/api/v1/settings",
+            json={
+                "agent_endpoints": [
+                    {"id": "e2e1", "label": "E2E", "url": AGENT_SERVER_URL},
+                ]
+            },
+            headers=headers,
+        )
+        assert settings.status_code == 200, settings.text
+
+        minted = client.post(
+            "/api/v1/agents/enrollment-tokens",
+            json={"label": "e2e", "endpoint_id": "e2e1", "ttl_seconds": 3600, "max_uses": 1},
+            headers=headers,
+        )
+        assert minted.status_code == 201, minted.text
+        plaintext = minted.json()["token"]
+        token_id = minted.json()["id"]
+        assert plaintext.startswith("cbe_")
+
+        # One line with the trailing newline the installer's `printf '%s\n'`
+        # writes and the agent trims.
+        #
+        # Mode 0644, not the 0600 the installer sets. A bind mount carries the
+        # host's ownership, and the container runs as `cb-agent` — a different
+        # uid — so 0600 is unreadable there and the agent (correctly) refuses
+        # to guess: `enroll: read token: permission denied`. On a real host the
+        # installer writes the file as root and chowns it, which is asserted
+        # where it belongs, in test_agent_install.py's token-block tests. What
+        # this scenario is for is the enrollment, not the file mode.
+        if token_file.is_dir() and not token_file.is_symlink():
+            token_file.rmdir()
+        token_file.write_text(f"{plaintext}\n")
+        token_file.chmod(0o644)
+        mount = f"{token_file}:/etc/circuit-breaker/enroll-token:ro"
+
+        subprocess.run([*COMPOSE, "build", "cb-agent"], check=True, cwd=E2E_DIR)
+        first = subprocess.run(
+            [*COMPOSE, "run", "--rm", "-v", mount, "cb-agent", "enroll"],
+            cwd=E2E_DIR,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        transcript = first.stdout + first.stderr
+        assert "approved — connecting" in transcript, transcript
+        assert "pairing code" not in transcript, (
+            "an unattended enrollment must not print a pairing code — nobody is "
+            f"there to read it:\n{transcript}"
+        )
+
+        # Active, with no `/approve` call anywhere above. `enrollment_token_id`
+        # is provenance the API does not surface per agent, so the link is
+        # asserted from the token's side instead — `agent_count` is computed
+        # from exactly that column.
+        agents = client.get("/api/v1/agents", headers=headers).json()
+        assert len(agents) == 1, agents
+        assert agents[0]["status"] == "active", agents[0]
+        # The list returns summaries; `enrolled_via_endpoint` is on the detail.
+        detail = client.get(f"/api/v1/agents/{agents[0]['id']}", headers=headers).json()
+        assert detail["enrolled_via_endpoint"] == AGENT_SERVER_URL, detail
+
+        tokens = client.get("/api/v1/agents/enrollment-tokens", headers=headers).json()
+        row = next(t for t in tokens if t["id"] == token_id)
+        assert row["uses"] == 1, row
+        assert row["agent_count"] == 1, row
+
+        # Re-running on the SAME machine is the daemon restarting, not a second
+        # enrollment: its device key is already active, so the server answers
+        # "already enrolled" before it ever looks at the token. A restart must
+        # not quietly spend a use.
+        again = subprocess.run(
+            [*COMPOSE, "run", "--rm", "-v", mount, _AGENT_SERVICE, "enroll"],
+            cwd=E2E_DIR,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        assert again.returncode == 0, again.stdout + again.stderr
+        listed = client.get("/api/v1/agents/enrollment-tokens", headers=headers).json()
+        assert next(t for t in listed if t["id"] == token_id)["uses"] == 1, listed
+
+        # The bound that makes max_uses mean something. A genuinely different
+        # machine — cb-agent-2 has its own state volume and therefore its own
+        # device key — presenting the same spent token is refused, and the
+        # fleet does not grow.
+        before = len(client.get("/api/v1/agents", headers=headers).json())
+        subprocess.run([*COMPOSE, "build", _AGENT_2_SERVICE], check=True, cwd=E2E_DIR)
+        second = subprocess.run(
+            [*COMPOSE, "run", "--rm", "-v", mount, _AGENT_2_SERVICE, "enroll"],
+            cwd=E2E_DIR,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        assert second.returncode != 0, second.stdout + second.stderr
+        assert len(client.get("/api/v1/agents", headers=headers).json()) == before
+    finally:
+        token_file.unlink(missing_ok=True)
+        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+        _down()
