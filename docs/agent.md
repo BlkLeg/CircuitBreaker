@@ -49,28 +49,74 @@ All three are capability grants the server issues. None of them can be turned on
 
 ## Install
 
+### Choose the address the agent will dial
+
+An agent dials one address, forever. It is written into `server_url` in
+`/etc/circuit-breaker/agent.toml` at install time and the agent never derives another one, so
+choosing it is the first install decision — not an afterthought.
+
+**It is not the address you browse.** The address that reaches your server from a laptop on the
+LAN is frequently not the address that reaches it from a VPS, a VLAN with its own DNS, or the
+far side of a tunnel. Circuit Breaker therefore asks you which address this agent should use
+rather than guessing from the browser's request.
+
+Declare the addresses your agents can reach under **Settings → Connectivity → Agent Endpoints**.
+Each is a label and a base URL:
+
+| Label | URL |
+|---|---|
+| `LAN` | `https://192.168.0.51` |
+| `Public` | `https://cb.example.com` |
+
+The URL must be a scheme and host only — `https://example.com/cb` is rejected when you save it,
+because every fetch is built as `{url}/install-agent.sh` or `{url}/api/v1/...` and a base with a
+path produces a 404 you would otherwise only discover on the target machine. A trailing slash is
+fine and is stripped.
+
+This is deliberately **not** the *App URL* field beside it. That one is browser-facing and goes
+into invite links; the address an agent uses can legitimately differ from the one a person uses.
+
+The panel shows how many agents enrolled through each endpoint, counted by URL — so an endpoint
+you delete still accounts for the agents that came through it, which keep dialing that address
+regardless.
+
+**With no endpoints declared**, the install command falls back to the address your browser used.
+That is correct on a single-network homelab and wrong everywhere else; declaring one endpoint is
+what makes it right on purpose rather than by accident.
+
 ### Get the command
 
-Go to **Agents → Add agent**. The panel generates the install command for you and shows two
-things you are meant to check before running it: which TLS mode it was built for, and the
-SHA-256 of the script it pipes.
+Go to **Agents → Add agent**. Pick the endpoint this machine should dial, and the panel
+regenerates the command for it. It also shows two things you are meant to check before running
+it: which TLS mode it was built for, and the SHA-256 of the script it pipes.
 
 The command comes in one of two forms depending on your server's certificate.
 
 **Publicly trusted certificate (e.g. Let's Encrypt):**
 
 ```sh
-curl -fsSL https://your-server/install-agent.sh | sudo sh
+curl -fsSL 'https://cb.example.com/install-agent.sh?endpoint=<id>' | sudo sh
 ```
 
 **Self-signed certificate** — the command downloads first, verifies the digest, and only then
 runs it, because `-k` skips certificate verification for the download:
 
 ```sh
-curl -fsSLk https://your-server/install-agent.sh -o /tmp/cb-agent-install.sh && \
+curl -fsSLk 'https://cb.example.com/install-agent.sh?endpoint=<id>' -o /tmp/cb-agent-install.sh && \
   echo "<script_sha256>  /tmp/cb-agent-install.sh" | sha256sum -c && \
   sudo sh /tmp/cb-agent-install.sh
 ```
+
+The `?endpoint=<id>` is not cosmetic and must not be edited out. The command runs on the *target*
+machine, and that machine's `curl` is the only thing `GET /install-agent.sh` ever sees — the id
+is what tells it which address to bake in. Drop it and the route falls back to deriving one from
+its own request, which is the guess the endpoint exists to replace; the published
+`script_sha256` is computed over the endpoint variant, so `sha256sum -c` would also fail and read
+as tampering. Copy the command whole. With no endpoints declared the command carries no
+`?endpoint=` at all, which is the documented fallback rather than a defect.
+
+Deleting an endpoint invalidates its install commands: the URL 404s rather than quietly
+producing a command for a different address.
 
 The `<script_sha256>` is filled in by the panel. Compare it against what the panel shows before
 you run the script. `GET /install-agent.sh` is unauthenticated by design — it embeds only the
@@ -91,14 +137,25 @@ The script maps `uname -m` itself:
 
 Running as root, in order:
 
-1. Creates the service user if it does not exist:
+1. **Checks it can reach the server**, with `GET {server_url}/api/v1/health` through the same TLS
+   trust the agent itself will use — pinning the same SPKI under a self-signed certificate. This
+   runs before anything on the host is touched, so a wrong address costs nothing and says so:
+
+   ```
+   Cannot reach https://cb.example.com from this machine.
+   The agent would dial that address forever and never appear in the UI.
+   ```
+
+   The server cannot make this check for you: it never dials an agent, so the target machine is
+   the first thing that can answer "is this address reachable from here?".
+2. Creates the service user if it does not exist:
    `useradd --system --no-create-home --shell /usr/sbin/nologin cb-agent`.
-2. Downloads the binary from `${SERVER_URL}/api/v1/agents/binary/<version>/linux/<arch>` and
+3. Downloads the binary from `${SERVER_URL}/api/v1/agents/binary/<version>/linux/<arch>` and
    verifies it against a SHA-256 digest embedded in the script itself (`sha256sum -c`).
-3. Installs it to `/var/lib/cb-agent/versions/<version>/cb-agent`, points
+4. Installs it to `/var/lib/cb-agent/versions/<version>/cb-agent`, points
    `/var/lib/cb-agent/current` at it, and points `/usr/local/bin/cb-agent` at *that*. The
    two-level symlink is what makes self-update and rollback atomic.
-4. Writes `/etc/circuit-breaker/agent.toml`:
+5. Writes `/etc/circuit-breaker/agent.toml`:
 
    ```toml
    server_url = "https://your-server"
@@ -108,14 +165,16 @@ Running as root, in order:
    spool_cap_bytes = 67108864
    ```
 
-5. Adds `cb-agent` to the `docker` group **only if** `docker` is already on the host.
-6. Appends `net.ipv4.ping_group_range = 0 2147483647` to `/etc/sysctl.conf` if that setting is
-   not already there, and applies it. This is what lets the agent send ICMP without
-   `CAP_NET_RAW`.
-7. Writes `/etc/systemd/system/cb-agent.service` and runs `systemctl daemon-reload`.
-8. Runs `sudo -u cb-agent /usr/local/bin/cb-agent enroll`, which prints the device fingerprint
+6. Adds `cb-agent` to the `docker` group **only if** `docker` is already on the host.
+7. Widens `net.ipv4.ping_group_range` to include the `cb-agent` group, if it does not already.
+   This is what lets the agent send ICMP without `CAP_NET_RAW`. It reads the *effective* value
+   rather than looking for a line, and widens as a **union** — groups your host already allowed
+   keep their ping. A host sitting on the kernel default `1 0` ("no group may") becomes exactly
+   the `cb-agent` group, not everyone. A range that already covers `cb-agent` is left untouched.
+8. Writes `/etc/systemd/system/cb-agent.service` and runs `systemctl daemon-reload`.
+9. Runs `sudo -u cb-agent /usr/local/bin/cb-agent enroll`, which prints the device fingerprint
    and pairing code and waits for you to approve.
-9. Runs `systemctl enable --now cb-agent`.
+10. Runs `systemctl enable --now cb-agent`.
 
 ---
 
@@ -282,7 +341,8 @@ publishes.
 | Enrollment | `wss://your-server/api/v1/agents/enroll` | WebSocket over TLS |
 | Live link | `wss://your-server/api/v1/agents/link` | WebSocket over TLS |
 | Self-update download | `https://your-server/api/v1/agents/binary/{version}/{os}/{arch}` | HTTPS GET |
-| Installer fetch (once, by `curl`) | `https://your-server/install-agent.sh` | HTTPS GET |
+| Reachability preflight (once, by `curl`) | `https://your-server/api/v1/health` | HTTPS GET |
+| Installer fetch (once, by `curl`) | `https://your-server/install-agent.sh?endpoint=<id>` | HTTPS GET |
 
 If `server_url` uses `http://`, the WebSocket scheme becomes `ws://` — the agent rewrites only
 the scheme, never the host or port.
@@ -347,8 +407,10 @@ things — running the installer, and running `cb-agent uninstall`.
 
 There is exactly one, and it is not a Linux capability:
 
-- **`net.ipv4.ping_group_range`**, set system-wide by the installer to `0 2147483647`. This lets
-  unprivileged processes open ICMP *datagram* sockets. It is what avoids granting the agent
+- **`net.ipv4.ping_group_range`**, widened system-wide by the installer to include the
+  `cb-agent` group — as a union with whatever the host already allowed, never a replacement, and
+  not at all when the existing range already covers it. This lets unprivileged processes in that
+  range open ICMP *datagram* sockets. It is what avoids granting the agent
   `CAP_NET_RAW` — the agent has **no** `CAP_NET_RAW` and cannot craft or capture raw packets.
   Without this sysctl, ICMP probes report themselves as unavailable rather than failing
   silently.
@@ -555,6 +617,28 @@ journalctl -u cb-agent -f
 `cb-agent status` reads `/var/lib/cb-agent/status.json`. If it says *"no status recorded yet"*,
 the daemon has never run or has not reached its first link attempt — that is a service problem,
 not a connection problem. Check `systemctl status cb-agent`.
+
+### The installer says it cannot reach the server
+
+```
+Cannot reach https://cb.example.com from this machine.
+```
+
+The reachability preflight refused before touching the host, so there is nothing to undo — no
+`cb-agent` user, no binary, no unit. The address in the command is not reachable *from this
+machine*, which is a different question from whether it works from your browser.
+
+| Check | How |
+|---|---|
+| The address is right for **this** network | Would you have picked the LAN endpoint for a VPS? |
+| DNS resolves it here | `getent hosts cb.example.com` |
+| Outbound is permitted | `curl -fsSLk https://cb.example.com/api/v1/health` |
+| The certificate is the one the pin expects | A pin mismatch fails the preflight too — see *TLS pin mismatch* |
+
+Fix the address by picking a different endpoint in **Agents → Add agent** (or declaring one under
+**Settings → Connectivity → Agent Endpoints**) and re-copying the command. Editing the URL inside
+the command by hand does not work: the `?endpoint=` id is what the server reads, and the
+`script_sha256` is computed over that variant.
 
 ### Agent shows offline in the UI
 

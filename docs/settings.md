@@ -72,6 +72,10 @@ Categories are not managed here — they are created inline while editing hardwa
 - Auto-Discovery settings (the same panel as Discovery → Scan Settings)
 - Discovery Engine v2 (always-on mDNS/SSDP listener)
 - External Access — the App URL used in invite links
+- Agent Endpoints — the addresses agents dial, chosen per agent at install time. Separate from
+  the App URL on purpose: the address that reaches your server from an agent is often not the
+  one that reaches it from a browser. Scheme and host only, no path. See
+  [cb-agent → Install](agent.md#choose-the-address-the-agent-will-dial).
 
 ### Email Notifications & SMTP
 
