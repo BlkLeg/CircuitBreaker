@@ -227,16 +227,12 @@ def get_endpoint_usage(
     unreachable: the agent that would report the failure is the one that
     cannot connect to report it.
 
-    Keyed by URL rather than endpoint id so a deleted endpoint still accounts
-    for the agents that came through it — those agents keep dialing that
-    address whether or not it is still in the list.
+    The grouping lives in services/agent_endpoints, not here: routes stay thin
+    (CLAUDE.md), and tests/build's api/ ratchet enforces it.
     """
-    rows = db.execute(
-        select(Agent.enrolled_via_endpoint, func.count())
-        .where(Agent.enrolled_via_endpoint.is_not(None))
-        .group_by(Agent.enrolled_via_endpoint)
-    ).all()
-    return {url: count for url, count in rows}
+    from app.services import agent_endpoints
+
+    return agent_endpoints.usage_counts(db)
 
 
 @router.get("/install-command", response_model=InstallCommandResponse)

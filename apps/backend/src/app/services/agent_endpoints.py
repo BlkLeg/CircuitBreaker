@@ -11,9 +11,10 @@ import secrets
 from typing import Any
 from urllib.parse import urlparse
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.db.models import AppSettings
+from app.db.models import Agent, AppSettings
 
 # A scheme-and-host check, deliberately NOT core.url_validation: its
 # `_is_forbidden_address` rejects private addresses unless `allow_private` is
@@ -87,3 +88,22 @@ def find_endpoint(db: Session, endpoint_id: str) -> dict[str, str] | None:
         if endpoint.get("id") == endpoint_id:
             return endpoint
     return None
+
+
+def usage_counts(db: Session) -> dict[str, int]:
+    """How many agents enrolled through each endpoint, keyed by URL.
+
+    Keyed by URL rather than endpoint id so a deleted endpoint still accounts
+    for the agents that came through it — those agents keep dialing that
+    address whether or not it is still in the list.
+
+    Agents that enrolled before the server recorded the address are excluded
+    rather than bucketed under a placeholder: they are not evidence that any
+    particular endpoint works.
+    """
+    rows = db.execute(
+        select(Agent.enrolled_via_endpoint, func.count())
+        .where(Agent.enrolled_via_endpoint.is_not(None))
+        .group_by(Agent.enrolled_via_endpoint)
+    ).all()
+    return {url: count for url, count in rows}
