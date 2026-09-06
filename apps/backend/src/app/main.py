@@ -2408,15 +2408,26 @@ async def favicon_file():
 
 
 @app.get("/install-agent.sh", include_in_schema=False)
-def get_install_agent_script(request: Request) -> Response:
+def get_install_agent_script(request: Request, endpoint: str | None = None) -> Response:
     from app.core import agent_crypto
     from app.core.forwarded import forwarded_base_url
     from app.db.session import SessionLocal
-    from app.services import agent_install
+    from app.services import agent_endpoints, agent_install
 
-    # Same reason as GET /api/v1/agents/install-command — see forwarded_base_url.
-    server_url = forwarded_base_url(request)
     with SessionLocal() as db:
+        # Same rule as GET /api/v1/agents/install-command: absent falls back,
+        # unknown is refused. The two must agree, because the digest the UI
+        # publishes is computed over whatever this route renders.
+        if endpoint is None:
+            server_url = forwarded_base_url(request)
+        else:
+            selected = agent_endpoints.find_endpoint(db, endpoint)
+            if selected is None:
+                raise HTTPException(
+                    status_code=404, detail=f"No agent endpoint with id {endpoint!r}"
+                )
+            server_url = selected["url"]
+
         cert = agent_install._active_certificate(db)
         tls_mode, tls_pin = agent_install._tls_mode_and_pin(cert)
         # Task 28: same successor-preferred key selection as
