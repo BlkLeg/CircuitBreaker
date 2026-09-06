@@ -31,6 +31,12 @@ catalogued in the index below.
 | [Server contract](./2026-08-18-v1-server-contract.md) | 2026-08-18 | **Complete** — all four tasks landed in `b01ea7ac` (SRV-03, RC-05 health split), `5fb72c9d` (SRV-05 `cb config validate` and the packaged `--config-validate`), `2280ae0f` (SRV-06, GOV-05 CLI convergence), with the contract documents following in `59a953f7` and `0d55c660`. **The tasks are done; the requirements are not closed.** SRV-03 ships four of its five states — no degraded state, and readiness does not reject writes; SRV-06 covers two of its six journeys; RC-05 emits none of its named metrics. All five stay `in_progress` in the ledger. Read the plan's self-review before assuming otherwise. |
 | [Governance hygiene](./2026-08-18-v1-governance-hygiene.md) | 2026-08-18 | **Complete** — all eight tasks landed: `d3428099` + `781a1630` (GOV-12 tracked-file policy; the first commit scrubbed `apps/agent/e2e/.env` but never removed it from the index, and its own policy test caught that), `df8ca7db` (GOV-10/11/14/16), `ad6d7388` (GOV-06 agent docs, GOV-01/08 strict docs build and link check), `1ef4528b` (GOV-02/03 screenshot provenance), `8ccf3642` (GOV-13 — this index), `7bab6c74` (NPM-01–15 excepted under ADR-0004, ledger reconciled). CI actually runs the policy suite as of `dff324fd`. Open by design: GOV-02's anonymisation is not performed, GOV-12's history was never scrubbed, GOV-07's threat model and API reference are unwritten. GOV-12's history review and the index-enforcement test have since landed: `tests/build/test_record_indexes.py` fails when a report, patch record or plan is added without an index row, and it caught one on its first run — this section's own 2026-08-25 plan. |
 
+## Agent reachability (2026-09-05)
+
+| Plan | Date | Status |
+|---|---|---|
+| [Agent endpoints (slice A)](./2026-09-05-agent-endpoints-slice-a.md) | 2026-09-05 | **Active** — eleven tasks giving an operator a declared address for agents to dial, replacing the browsed `Host` that made the agent undeployable outside the LAN. Slice A of [`docs/design/2026-09-05-agent-reachability-design.md`](../docs/design/2026-09-05-agent-reachability-design.md); slice B (unattended enrollment tokens) is unwritten. |
+
 ## Update delivery (2026-08-25)
 
 | Plan | Date | Status |

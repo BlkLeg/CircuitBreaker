@@ -5,6 +5,7 @@ import StatTile from '../common/StatTile';
 import EmptyState from '../common/EmptyState';
 import Banner from '../common/Banner';
 import { normalizeCapability } from '../../api/agents';
+import { formatDuration } from '../../lib/time';
 import '../../styles/agents.css';
 
 // ── moved verbatim from AgentDetailPage.jsx ─────────────────────────────────
@@ -27,9 +28,13 @@ const SUMMARY_LABELS = {
 function formatMetric(key, value) {
   if (value == null) return 'Unavailable';
   if (key.endsWith('_pct')) return `${value.toFixed(1)}%`;
-  if (key.endsWith('_bps')) return `${Math.round(value).toLocaleString()} B/s`;
+  // The same rate and duration renderings the fleet row uses. This tile and
+  // that row report the same metric from the same host, so "20,973,103 B/s"
+  // here beside "↓21.0 MB/s" there was one number in two languages — and the
+  // raw form is the one nobody can read at a glance.
+  if (key.endsWith('_bps')) return formatRate(value);
   if (key === 'max_temp_c') return `${value.toFixed(1)} °C`;
-  if (key === 'uptime_s') return `${Math.floor(value / 3600)}h`;
+  if (key === 'uptime_s') return formatDuration(value) ?? 'Unavailable';
   return Number(value).toFixed(2);
 }
 
@@ -50,33 +55,121 @@ function formatBytes(bytes) {
   return `${unit === 0 ? value : value.toFixed(1)} ${units[unit]}`;
 }
 
-function DeviceTable({ title, rows }) {
-  if (!rows?.length) return null;
+// Link rates in decimal units — the base FleetRow uses, and the base every
+// NIC, switch and speedtest an operator cross-checks against quotes. Unlike
+// the sizes above, which are base-1024 because that is what df reports.
+const RATE_UNITS = ['B/s', 'kB/s', 'MB/s', 'GB/s'];
+const BYTES_PER_KILOBYTE = 1000;
+
+function formatRate(bytesPerSecond) {
+  let value = bytesPerSecond;
+  let unit = 0;
+  while (value >= BYTES_PER_KILOBYTE && unit < RATE_UNITS.length - 1) {
+    value /= BYTES_PER_KILOBYTE;
+    unit += 1;
+  }
+  // eslint-disable-next-line security/detect-object-injection -- `unit` is an integer index the loop above bounds against a module-level literal array
+  return `${unit === 0 ? Math.round(value) : value.toFixed(1)} ${RATE_UNITS[unit]}`;
+}
+
+// Device rows are free-form maps (frame.go: `[]map[string]any`), so the columns
+// are whatever the collector sent and every unit has to be read off the key.
+// These suffixes are the collector's own vocabulary — collect/host/host.go
+// emits `*_bytes`, `*_bps`, `*_pct`, `*_c` and `*_mbps` — so a column a later
+// version adds arrives formatted without a change here.
+//
+// The unit belongs in the cell, beside the digits an operator is comparing,
+// which leaves the header free to drop it: "total", not "total bytes" above a
+// column reading 953.9 GB. `read`/`read/s` keep their distinct headers because
+// disks report both.
+const HEADER_SUFFIXES = [
+  ['_bytes', ''],
+  ['_bps', '/s'],
+  ['_pct', ' %'],
+  ['_mbps', ''],
+  ['_c', ''],
+];
+
+function headerFor(column) {
+  const match = HEADER_SUFFIXES.find(([suffix]) => column.endsWith(suffix));
+  const label = match ? `${column.slice(0, -match[0].length)}${match[1]}` : column;
+  return label.replaceAll('_', ' ');
+}
+
+function formatDeviceValue(column, value) {
+  // '' is how a sysfs read that found an empty file arrives, and it is an
+  // absence like any other — a blank cell cannot be told from a broken one.
+  if (value == null || value === '') return '—';
+  // A read-only mount reported as "false" is a word an operator has to stop
+  // and parse; yes/no is the answer to the question the column asks.
+  if (typeof value === 'boolean') return value ? 'yes' : 'no';
+  if (typeof value !== 'number') return String(value);
+  if (column.endsWith('_bytes')) return formatBytes(value);
+  if (column.endsWith('_bps')) return formatRate(value);
+  if (column.endsWith('_pct')) return `${value.toFixed(1)}%`;
+  if (column.endsWith('_mbps')) return `${value.toLocaleString()} Mb/s`;
+  if (column.endsWith('_c')) return `${value.toFixed(1)} °C`;
+  return value.toLocaleString();
+}
+
+/** The table itself, for the one caller that already has a panel around it. */
+function DeviceRows({ rows }) {
   const columns = Object.keys(rows[0]);
+  // Numbers right-align so their digits stack into place columns, which is the
+  // difference between reading four sizes and comparing them. The header goes
+  // with them: a left-aligned "TOTAL" over right-aligned sizes sits above the
+  // wrong column and reads as a label for its neighbour.
+  //
+  // Decided per column over every row rather than from the first one, because
+  // the first row is exactly where a sensor that reported nothing puts a null.
+  const numeric = new Set(
+    columns.filter((column) =>
+      // eslint-disable-next-line security/detect-object-injection -- `column` is a key of the payload rows this table derived its own header from
+      rows.some((row) => typeof row[column] === 'number')
+    )
+  );
   return (
-    <div className="agent-telemetry__table">
-      <h3>{title}</h3>
-      <div className="table-scroll">
-        <table>
-          <thead>
-            <tr>
+    <div className="table-scroll agent-telemetry__scroll">
+      <table className="agent-telemetry__grid">
+        <thead>
+          <tr>
+            {columns.map((column) => (
+              <th key={column} data-numeric={numeric.has(column) ? 'true' : undefined}>
+                {headerFor(column)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={row.id ?? row.name ?? row.device ?? row.mountpoint ?? index}>
               {columns.map((column) => (
-                <th key={column}>{column.replaceAll('_', ' ')}</th>
+                <td key={column} data-numeric={numeric.has(column) ? 'true' : undefined}>
+                  {/* eslint-disable-next-line security/detect-object-injection -- `column` is a key of the payload row this table derived its own header from */}
+                  {formatDeviceValue(column, row[column])}
+                </td>
               ))}
             </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, index) => (
-              <tr key={row.id ?? row.name ?? row.device ?? row.mountpoint ?? index}>
-                {columns.map((column) => (
-                  // eslint-disable-next-line security/detect-object-injection -- `column` is a key of the payload row this table derived its own header from
-                  <td key={column}>{String(row[column] ?? '—')}</td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+DeviceRows.propTypes = { rows: PropTypes.array.isRequired };
+
+function DeviceTable({ title, rows }) {
+  if (!rows?.length) return null;
+  return (
+    <div className="agent-telemetry__table">
+      {/* Bodyless so the table meets the panel border rather than floating
+          inside a second inset box — the same treatment the discovery tables
+          get. The count is in the head because these lists are long enough
+          that "how many" is a question on its own. */}
+      <Panel title={title} summary={`${rows.length}`} bodyless>
+        <DeviceRows rows={rows} />
+      </Panel>
     </div>
   );
 }
@@ -181,19 +274,25 @@ ReadinessBanners.propTypes = { faults: PropTypes.array.isRequired };
 function HostTelemetrySettings({ config, defaults, onChange }) {
   return (
     <Panel title="Host telemetry settings">
-      <fieldset>
-        <legend>Host telemetry settings</legend>
-        <label>
-          Cadence{' '}
-          <input
-            type="number"
-            min={MIN_CADENCE_S}
-            max={MAX_CADENCE_S}
-            value={config.interval_s ?? defaults.interval_s}
-            onChange={(event) => onChange({ interval_s: Number(event.target.value) })}
-          />{' '}
-          seconds
-        </label>
+      {/* The cadence sits outside the fieldset below: it governs how often
+          every collector runs, and grouping it under "Collectors" would read
+          as one more thing to switch on. */}
+      <label className="agent-telemetry__cadence">
+        Cadence
+        <input
+          type="number"
+          min={MIN_CADENCE_S}
+          max={MAX_CADENCE_S}
+          value={config.interval_s ?? defaults.interval_s}
+          onChange={(event) => onChange({ interval_s: Number(event.target.value) })}
+        />
+        seconds
+      </label>
+      <fieldset className="agent-telemetry__collectors">
+        {/* The panel is already titled, so this names the group rather than
+            repeating the panel: these are which collectors run, not what the
+            panel is. */}
+        <legend>Collectors</legend>
         {Object.keys(defaults)
           .filter((key) => key.startsWith('include_'))
           .map((key) => (
@@ -335,13 +434,24 @@ export default function AgentTelemetryTab({
           </label>
         }
       >
-        <div className="agent-telemetry__charts">
-          <HistoryChart label="CPU" metric="cpu_pct" points={history} />
-          <HistoryChart label="Memory" metric="mem_pct" points={history} />
-          <HistoryChart label="Disk" metric="root_disk_pct" points={history} />
-          <HistoryChart label="Network receive" metric="net_rx_bps" points={history} />
-          <HistoryChart label="Temperature" metric="max_temp_c" points={history} />
-        </div>
+        {/* Every chart needs two points to be a line, so a fresh agent draws
+            none of them and the panel was an empty box. Saying so is the
+            difference between "nothing yet" and "this failed to render". */}
+        {history.length < 2 ? (
+          <EmptyState
+            icon="◴"
+            message="Not enough history to chart yet"
+            hint={`Charts appear once this agent has reported twice in the selected ${historyRange} window.`}
+          />
+        ) : (
+          <div className="agent-telemetry__charts">
+            <HistoryChart label="CPU" metric="cpu_pct" points={history} />
+            <HistoryChart label="Memory" metric="mem_pct" points={history} />
+            <HistoryChart label="Disk" metric="root_disk_pct" points={history} />
+            <HistoryChart label="Network receive" metric="net_rx_bps" points={history} />
+            <HistoryChart label="Temperature" metric="max_temp_c" points={history} />
+          </div>
+        )}
       </Panel>
 
       <DeviceTable title="Filesystems" rows={telemetry.latest.payload?.filesystems} />
@@ -355,7 +465,7 @@ export default function AgentTelemetryTab({
           may reach DeviceTable; handing it the dict would make
           Object.keys(rows[0]) a nonsense header. */}
       {docker && (
-        <Panel title="Docker" summary={`${docker.running} of ${docker.total} running`}>
+        <Panel title="Docker">
           <p>
             {docker.running} of {docker.total} containers running
           </p>
@@ -366,7 +476,15 @@ export default function AgentTelemetryTab({
               body="This host reports more than 100 containers; only the first 100 are collected and the sample is marked degraded."
             />
           )}
-          <DeviceTable title="Containers" rows={docker.containers} />
+          {/* A heading and a plain table rather than another DeviceTable: this
+              is already inside the Docker panel, and a panel nested in a panel
+              draws a border around a border to say one thing. */}
+          {docker.containers?.length > 0 && (
+            <>
+              <h4 className="agent-telemetry__subtitle">Containers</h4>
+              <DeviceRows rows={docker.containers} />
+            </>
+          )}
         </Panel>
       )}
 
