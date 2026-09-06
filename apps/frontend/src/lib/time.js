@@ -76,6 +76,32 @@ export function formatTimestamp(isoString, timezone) {
   return formatElapsed(null, isoString, timezone);
 }
 
+const SECONDS_PER_MINUTE = 60;
+const SECONDS_PER_HOUR = 3600;
+const SECONDS_PER_DAY = 86400;
+
+/**
+ * Format a span of seconds as a duration — "3d 4h", "5h 12m", "8m".
+ *
+ * Not the same job as formatElapsed: that answers "how long ago", this answers
+ * "how long", and an uptime of 273600 seconds is the second question. Two
+ * units at most, because the third is never what the reader wanted: nobody
+ * reads "3d 4h 12m 6s" for an uptime.
+ *
+ * @param {number|null} seconds
+ * @returns {string|null} null when there is no measurement to state, so the
+ *   caller decides how to say so.
+ */
+export function formatDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  const days = Math.floor(seconds / SECONDS_PER_DAY);
+  const hours = Math.floor((seconds % SECONDS_PER_DAY) / SECONDS_PER_HOUR);
+  const minutes = Math.floor((seconds % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return minutes > 0 ? `${minutes}m` : '<1m';
+}
+
 /**
  * Format a timestamp as a full absolute date+time string in the given timezone.
  *
@@ -113,34 +139,4 @@ export function formatAbsolute(isoString, timezone) {
       timeZoneName: 'short',
     }).format(dt);
   }
-}
-
-const SECONDS_PER_MINUTE = 60;
-const SECONDS_PER_HOUR = 3600;
-const SECONDS_PER_DAY = 86400;
-
-/**
- * Render a span of seconds the way an operator says it out loud.
- *
- * Lifted here from FleetRow so the fleet table and the telemetry tab render
- * the same host's uptime identically. They read the same `uptime_s` off the
- * same sample, and "25h" in one place beside "1d 1h" in the other was one
- * number in two languages.
- *
- * Coarse on purpose: the largest two units carry the meaning, and seconds on
- * a multi-day uptime are churn that makes the cell change every render.
- *
- * @param {number} seconds Span in seconds.
- * @returns {string|null} null for a negative or non-finite span — the caller
- *   decides what an absent value looks like, rather than inheriting a "0m"
- *   that would read as a real measurement.
- */
-export function formatDuration(seconds) {
-  if (!Number.isFinite(seconds) || seconds < 0) return null;
-  const days = Math.floor(seconds / SECONDS_PER_DAY);
-  const hours = Math.floor((seconds % SECONDS_PER_DAY) / SECONDS_PER_HOUR);
-  const minutes = Math.floor((seconds % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE);
-  if (days > 0) return `${days}d ${hours}h`;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  return minutes > 0 ? `${minutes}m` : '<1m';
 }
