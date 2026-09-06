@@ -4037,13 +4037,8 @@ body {
   width: 100%;
   height: 6rem;
 }
-.agent-telemetry__table {
-  margin-top: 1rem;
-}
-.agent-telemetry .table-scroll {
-  max-width: 100%;
-  overflow-x: auto;
-}
+/* The device tables' own rules live in agents.css beside the rest of the agent
+   pages; only the chart grid above is still styled from here. */
 
 /* ── Assigned probes (Slice 3, §7) ──────────────────────────────────────────
    Shipped unstyled: the section, its two status vocabularies and the config

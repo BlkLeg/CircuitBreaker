@@ -1128,3 +1128,156 @@
   flex: none;
   width: 132px;
 }
+
+/* ── Detail-page telemetry tab ──────────────────────────────────────────────
+   The tab's own shell. Its panels arrived with no rhythm between them and its
+   two status lines with no styling at all, so a page of real telemetry ran
+   together into one block of text. */
+
+.agent-telemetry {
+  display: flex;
+  flex-direction: column;
+  gap: var(--panel-gap);
+}
+
+/* "Live · Last sample … · Cadence 30s · Agent only" — provenance for every
+   number above it, and deliberately quieter than any of them. */
+.agent-telemetry__status {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A backlog draining is the one thing on this line that is not provenance but
+   a condition, so it is the one thing that carries a colour. */
+.agent-telemetry__catchup {
+  display: inline-block;
+  padding: 1px var(--space-2);
+  border: 1px solid var(--color-warning);
+  border-radius: 999px;
+  color: var(--color-warning);
+  font-size: var(--fs-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: help;
+}
+
+.agent-telemetry__cadence,
+.agent-telemetry__collectors label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-sm);
+}
+
+.agent-telemetry__cadence input {
+  width: 5rem;
+}
+
+/* Two columns at most: these are short phrases ("docker", "filesystems"), and
+   one per line down a wide panel is a column of whitespace. */
+.agent-telemetry__collectors {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: var(--space-1) var(--space-4);
+}
+
+.agent-telemetry__collectors legend {
+  padding: 0 var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+/* ── Detail-page device tables ──────────────────────────────────────────────
+   Filesystems, disks, interfaces, temperatures and containers. These shipped
+   with a class hook and no rules at all, so they rendered as browser-default
+   tables: no cell padding, so the size columns ran together into one string,
+   and no numeric alignment, so nothing could be compared down a column.
+
+   The rows are free-form maps from the collector, which is why this is one
+   rule set keyed off `data-numeric` rather than a per-column layout — the
+   stylesheet cannot know which columns a host will report. */
+
+/* No margin: the section above is a flex column and owns the gap between its
+   children. A margin here would add to it rather than replace it. */
+.agent-telemetry__table {
+  min-width: 0;
+}
+
+/* One host reports a single filesystem; another reports forty hwmon sensors.
+   Capping the scroller stops one collector from owning the page, and the count
+   in the panel head says how much is below the fold. */
+.agent-telemetry__scroll {
+  max-width: 100%;
+  max-height: 22rem;
+  overflow: auto;
+}
+
+.agent-telemetry__grid {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+
+.agent-telemetry__grid th,
+.agent-telemetry__grid td {
+  text-align: left;
+  padding: var(--space-1) var(--panel-pad);
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.agent-telemetry__grid tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* Sticky because the scroller above means the header can leave the viewport
+   while its own rows are still on screen. */
+.agent-telemetry__grid th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--color-surface-raised);
+  color: var(--color-text-muted);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+/* Right-aligned and tabular so digits stack into place columns: this is the
+   difference between reading four sizes and comparing them. The header follows
+   its own column — left-aligned over right-aligned numbers, it sits above the
+   gap and labels the column beside it. */
+.agent-telemetry__grid th[data-numeric='true'],
+.agent-telemetry__grid td[data-numeric='true'] {
+  text-align: right;
+}
+
+.agent-telemetry__grid td[data-numeric='true'] {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The device, mount point and interface names are identifiers an operator
+   copies into a shell, so they read in the same font they will be typed in. */
+.agent-telemetry__grid td:first-child {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+.agent-telemetry__subtitle {
+  margin: var(--space-3) 0 var(--space-1);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--color-text-muted);
+}
