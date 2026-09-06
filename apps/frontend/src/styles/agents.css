@@ -1070,6 +1070,15 @@
   }
 }
 
+/* Task 18: the discovery groups are bodyless Panels so their tables meet the
+   panel border. Their hint paragraphs are not tables, so they take the padding
+   the missing body would have given them. */
+.cb-panel .agent-discovery__hint,
+.cb-panel .agent-discovery__history-link {
+  margin: 0;
+  padding: var(--space-2) var(--panel-pad);
+}
+
 /* ── Detail-page event feed ─────────────────────────────────────────────────
    A fixed-width timestamp column so the labels beside it line up into a
    readable second column; the feed is scanned down the labels, not across the

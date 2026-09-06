@@ -6,6 +6,9 @@ import { runCheck, updateMonitor } from '../../api/monitor';
 // AGT-15: no agent surface echoes a server `detail` unredacted — lib/agentErrors.js.
 import { operatorErrorMessage, redactSensitive } from '../../lib/agentErrors';
 import { useToast } from '../common/Toast';
+import Panel from '../common/Panel';
+import Banner from '../common/Banner';
+import EmptyState from '../common/EmptyState';
 
 // `monitor_items.probe_execution_status` (db/models.py:272) — the *vantage's*
 // condition, which is orthogonal to `last_status` (whether the target is up).
@@ -135,30 +138,27 @@ export default function AssignedProbesSection({ agentId, probes, granted, onChan
       }
     });
 
+  // The concurrency envelope, which is what the section is a reading of: how
+  // much of this vantage's capacity is committed.
+  const summary = probes
+    ? `${probes.active_runs} of ${probes.max_concurrent} concurrent checks in use · ${assignments.length} assigned`
+    : 'Loading assigned probes…';
+
   return (
-    <section aria-label="Assigned probes" className="agent-probes">
-      <h2>Assigned probes</h2>
+    <Panel title="Assigned probes" summary={summary}>
       {!granted && (
-        <p className="agent-probes__disabled">
-          Remote probing is disabled for this agent. Assigned monitors keep their last known target
-          state and stay probe-unavailable until it is re-enabled.
-        </p>
+        <Banner
+          tone="warn"
+          title="Remote probing is disabled"
+          body="Remote probing is disabled for this agent. Assigned monitors keep their last known target state and stay probe-unavailable until it is re-enabled."
+        />
       )}
-      <p className="agent-probes__concurrency">
-        {probes ? (
-          <>
-            {probes.active_runs} of {probes.max_concurrent} concurrent checks in use ·{' '}
-            {assignments.length} assigned
-          </>
-        ) : (
-          'Loading assigned probes…'
-        )}
-      </p>
       {probes && assignments.length === 0 && (
-        <p>
-          No monitors run from this agent. Assign one with &ldquo;Run from&rdquo; on a
-          monitor&apos;s form.
-        </p>
+        <EmptyState
+          icon="◎"
+          message="No monitors run from this agent."
+          hint="Assign one with “Run from” on a monitor’s form."
+        />
       )}
       {assignments.length > 0 && (
         <div className="table-scroll">
@@ -247,7 +247,7 @@ export default function AssignedProbesSection({ agentId, probes, granted, onChan
         </div>
       )}
       {children}
-    </section>
+    </Panel>
   );
 }
 

@@ -10,6 +10,10 @@ import {
 } from '../../api/discovery';
 import { useToast } from '../common/Toast';
 import ConfirmDialog from '../common/ConfirmDialog';
+import Panel from '../common/Panel';
+import Banner from '../common/Banner';
+import EmptyState from '../common/EmptyState';
+import KeyValue from '../common/KeyValue';
 // AGT-15: no agent surface echoes a server `detail` unredacted — see lib/agentErrors.js.
 import { operatorErrorMessage } from '../../lib/agentErrors';
 import LocalDiscoveryConfigEditor, {
@@ -392,16 +396,16 @@ export default function DiscoveryScopeSection({
   };
 
   return (
-    <section aria-label="Discovery scope" className="agent-discovery">
-      <h2>Discovery scope</h2>
+    <Panel title="Discovery scope" summary={discovery ? `${effective.length} scanned` : 'Loading…'}>
       {!granted && (
-        <p className="agent-discovery__disabled">
-          Local discovery is disabled for this agent. Its subnets stay configured and its results
-          and job history are retained; nothing is scanned from here until it is re-enabled.
-        </p>
+        <Banner
+          tone="warn"
+          title="Local discovery is disabled"
+          body="Local discovery is disabled for this agent. Its subnets stay configured and its results and job history are retained; nothing is scanned from here until it is re-enabled."
+        />
       )}
       {!discovery ? (
-        <p>Loading discovery scope…</p>
+        <EmptyState message="Loading discovery scope…" />
       ) : (
         <>
           <p className="agent-discovery__eligibility" data-eligible={discovery.eligible}>
@@ -431,8 +435,7 @@ export default function DiscoveryScopeSection({
           {groups
             .filter((group) => group.rows.length > 0)
             .map((group) => (
-              <div className="agent-discovery__group" key={group.title}>
-                <h3>{group.title}</h3>
+              <Panel key={group.title} title={group.title} bodyless>
                 <p className="agent-discovery__hint">{group.hint}</p>
                 <div className="table-scroll">
                   <table className="data-table" aria-label={group.title}>
@@ -501,7 +504,7 @@ export default function DiscoveryScopeSection({
                     </tbody>
                   </table>
                 </div>
-              </div>
+              </Panel>
             ))}
 
           <p className="agent-discovery__effective-list">
@@ -514,20 +517,30 @@ export default function DiscoveryScopeSection({
             </p>
           )}
 
-          <dl className="agent-discovery__limits">
-            <dt>Scope mode</dt>
-            <dd>{discovery.limits?.scope_mode || '—'}</dd>
-            <dt>Addresses per job</dt>
-            <dd>{ceiling}</dd>
-            <dt>Concurrent hosts</dt>
-            <dd>{discovery.limits?.max_concurrent_hosts}</dd>
-            <dt>Host timeout</dt>
-            <dd>{discovery.limits?.host_timeout_ms} ms</dd>
-            <dt>Job timeout</dt>
-            <dd>{discovery.limits?.job_timeout_seconds} s</dd>
-            <dt>TCP ports</dt>
-            <dd>{(discovery.limits?.tcp_ports ?? []).join(', ') || 'none'}</dd>
-          </dl>
+          <Panel title="Scope limits">
+            <KeyValue
+              rows={[
+                ['Scope mode', discovery.limits?.scope_mode || '—'],
+                ['Addresses per job', ceiling],
+                ['Concurrent hosts', discovery.limits?.max_concurrent_hosts],
+                // A missing limit renders KeyValue's em dash rather than a
+                // bare unit: "— " reads as absent, " ms" reads as zero.
+                [
+                  'Host timeout',
+                  discovery.limits?.host_timeout_ms == null
+                    ? null
+                    : `${discovery.limits.host_timeout_ms} ms`,
+                ],
+                [
+                  'Job timeout',
+                  discovery.limits?.job_timeout_seconds == null
+                    ? null
+                    : `${discovery.limits.job_timeout_seconds} s`,
+                ],
+                ['TCP ports', (discovery.limits?.tcp_ports ?? []).join(', ') || 'none'],
+              ]}
+            />
+          </Panel>
 
           {/* Same shape as the host-telemetry warnings on this page: a degraded
               or stale collector is what turns an otherwise-fine agent into a
@@ -544,202 +557,209 @@ export default function DiscoveryScopeSection({
             </aside>
           ))}
 
-          <div className="table-scroll">
-            <table className="data-table" aria-label="Collector readiness">
-              <thead>
-                <tr>
-                  <th>Collector</th>
-                  <th>State</th>
-                  <th>Detail</th>
-                  <th>Gating</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(discovery.readiness ?? []).map((row) => (
-                  <tr key={row.collector}>
-                    <td>{row.collector}</td>
-                    <td>
-                      <span
-                        className="agent-discovery__readiness"
-                        data-state={row.state ?? 'unknown'}
-                      >
-                        {/* A collector that has never reported is rendered, not
+          <Panel title="Collector readiness" bodyless>
+            <div className="table-scroll">
+              <table className="data-table" aria-label="Collector readiness">
+                <thead>
+                  <tr>
+                    <th>Collector</th>
+                    <th>State</th>
+                    <th>Detail</th>
+                    <th>Gating</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(discovery.readiness ?? []).map((row) => (
+                    <tr key={row.collector}>
+                      <td>{row.collector}</td>
+                      <td>
+                        <span
+                          className="agent-discovery__readiness"
+                          data-state={row.state ?? 'unknown'}
+                        >
+                          {/* A collector that has never reported is rendered, not
                             omitted: an absent row is what makes a job refuse
                             with `readiness_unknown`, and it is a different
                             operator problem from one that reported unavailable. */}
-                        {row.state ?? 'Never reported'}
-                        {row.stale ? ' (stale)' : ''}
-                      </span>
-                    </td>
-                    <td>{row.reason ?? '—'}</td>
-                    <td>{row.required ? 'Required' : 'Optional'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <h3>Active work</h3>
-          {(discovery.active_jobs ?? []).length === 0 ? (
-            <p>No discovery job is running from this agent.</p>
-          ) : (
-            discovery.active_jobs.map((job) => (
-              <p className="agent-discovery__active" key={job.id}>
-                {titleCase(job.status)} · {job.target_cidr ?? 'no target'}
-                {job.progress_phase ? ` · ${job.progress_phase}` : ''}
-                {job.progress_message ? ` — ${job.progress_message}` : ''}
-              </p>
-            ))
-          )}
-
-          <h3>Recent discovery jobs</h3>
-          <div className="table-scroll">
-            <table className="data-table" aria-label="Recent discovery jobs">
-              <thead>
-                <tr>
-                  <th>Job</th>
-                  <th>Status</th>
-                  <th>Target</th>
-                  <th>Hosts found</th>
-                  <th>Started</th>
-                  <th>Detail</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(discovery.recent_jobs ?? []).map((job) => (
-                  <tr key={job.id}>
-                    <td>{job.id}</td>
-                    <td>{job.status}</td>
-                    <td>{job.target_cidr ?? '—'}</td>
-                    <td>{job.hosts_found}</td>
-                    <td>{formatTimestamp(job.started_at ?? job.created_at)}</td>
-                    <td>{humanize(job.error_reason) ?? job.progress_message ?? '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p className="agent-discovery__history-link">
-            {/* The agent name, linked into discovery history — this list is a
-                bounded page, and the history view is where the whole record
-                lives. */}
-            <Link to={`/discovery?agent=${agentId}`}>{agentName}</Link> has more discovery history.
-          </p>
-
-          <h3>Devices found by this agent</h3>
-          <p className="agent-discovery__hint">
-            Creating a monitor from a device here opens the monitor form with the device and this
-            agent already chosen as the vantage. Check type, interval and alert policy stay yours. A
-            device has to be accepted into inventory from the review queue before it can be
-            monitored — a monitor points at an inventory record, not at a pending finding.
-          </p>
-          {devices.length === 0 ? (
-            <p>This agent has not reported any discovered devices yet.</p>
-          ) : (
-            <div className="table-scroll">
-              <table className="data-table" aria-label="Devices found by this agent">
-                <thead>
-                  <tr>
-                    <th>Address</th>
-                    <th>Name</th>
-                    <th>Review</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {devices.map((device) => {
-                    const monitorLink = monitorLinkFor(device, agentId);
-                    return (
-                      <tr key={device.id}>
-                        <td>{device.ip_address}</td>
-                        <td>{device.hostname ?? '—'}</td>
-                        <td>{titleCase(humanize(device.merge_status)) ?? '—'}</td>
-                        <td>
-                          {monitorLink ? (
-                            <Link className="btn btn-sm" to={monitorLink}>
-                              Create monitor
-                            </Link>
-                          ) : (
-                            <span className="agent-discovery__hint">Accept it first</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          <h3>Discovery subnets</h3>
-          {/* A hold is neither a delete nor a stop, and the row offers the
-              control, so the row has to say which of the three it is. */}
-          <p className="agent-discovery__hint">
-            Pausing a subnet withholds its future scheduled scans. Nothing is deleted — the subnet,
-            its results and its job history stay — and a scan already queued or running is not
-            stopped. That is a different state from Disabled, which is the subnet&apos;s own
-            setting.
-          </p>
-          {(discovery.profiles ?? []).length === 0 ? (
-            <p>No discovery subnets are assigned to this agent yet.</p>
-          ) : (
-            <div className="table-scroll">
-              <table className="data-table" aria-label="Discovery subnets">
-                <thead>
-                  <tr>
-                    <th>Subnet</th>
-                    <th>Origin</th>
-                    <th>Cadence</th>
-                    <th>State</th>
-                    <th>Last run</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {discovery.profiles.map((profile) => (
-                    <tr key={profile.id}>
-                      <td>{profile.cidr ?? profile.name}</td>
-                      {/* `managed_by = "system"` is a subnet the bootstrap owns
-                          and may re-upsert; anything else an operator wrote. */}
-                      <td>{profile.managed_by === 'system' ? 'Automatic' : 'Operator'}</td>
-                      <td>
-                        <CadenceInput
-                          profile={profile}
-                          disabled={busy}
-                          onCommit={(cron) => handleCadence(profile.id, cron)}
-                        />
+                          {row.state ?? 'Never reported'}
+                          {row.stale ? ' (stale)' : ''}
+                        </span>
                       </td>
-                      {/* `paused_at` is "held since", not a flag: an operator
-                          asking why a subnet stopped scanning wants the date. */}
-                      <td>
-                        {profile.paused_at
-                          ? `Paused since ${formatTimestamp(profile.paused_at)}`
-                          : profile.enabled
-                            ? 'Scheduled'
-                            : 'Disabled'}
-                      </td>
-                      <td>{formatTimestamp(profile.last_run)}</td>
-                      <td className="agent-discovery__actions">
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => handleProfilePause(profile, !profile.paused_at)}
-                        >
-                          {profile.paused_at ? 'Resume' : 'Pause'}
-                        </button>
-                      </td>
+                      <td>{row.reason ?? '—'}</td>
+                      <td>{row.required ? 'Required' : 'Optional'}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          )}
+          </Panel>
+
+          <Panel title="Active work">
+            {(discovery.active_jobs ?? []).length === 0 ? (
+              <EmptyState message="No discovery job is running from this agent." />
+            ) : (
+              discovery.active_jobs.map((job) => (
+                <p className="agent-discovery__active" key={job.id}>
+                  {titleCase(job.status)} · {job.target_cidr ?? 'no target'}
+                  {job.progress_phase ? ` · ${job.progress_phase}` : ''}
+                  {job.progress_message ? ` — ${job.progress_message}` : ''}
+                </p>
+              ))
+            )}
+          </Panel>
+
+          <Panel title="Recent discovery jobs" bodyless>
+            <div className="table-scroll">
+              <table className="data-table" aria-label="Recent discovery jobs">
+                <thead>
+                  <tr>
+                    <th>Job</th>
+                    <th>Status</th>
+                    <th>Target</th>
+                    <th>Hosts found</th>
+                    <th>Started</th>
+                    <th>Detail</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(discovery.recent_jobs ?? []).map((job) => (
+                    <tr key={job.id}>
+                      <td>{job.id}</td>
+                      <td>{job.status}</td>
+                      <td>{job.target_cidr ?? '—'}</td>
+                      <td>{job.hosts_found}</td>
+                      <td>{formatTimestamp(job.started_at ?? job.created_at)}</td>
+                      <td>{humanize(job.error_reason) ?? job.progress_message ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="agent-discovery__history-link">
+              {/* The agent name, linked into discovery history — this list is a
+                  bounded page, and the history view is where the whole record
+                  lives. */}
+              <Link to={`/discovery?agent=${agentId}`}>{agentName}</Link> has more discovery
+              history.
+            </p>
+          </Panel>
+
+          <Panel title="Devices found by this agent" bodyless>
+            <p className="agent-discovery__hint">
+              Creating a monitor from a device here opens the monitor form with the device and this
+              agent already chosen as the vantage. Check type, interval and alert policy stay yours.
+              A device has to be accepted into inventory from the review queue before it can be
+              monitored — a monitor points at an inventory record, not at a pending finding.
+            </p>
+            {devices.length === 0 ? (
+              <EmptyState message="This agent has not reported any discovered devices yet." />
+            ) : (
+              <div className="table-scroll">
+                <table className="data-table" aria-label="Devices found by this agent">
+                  <thead>
+                    <tr>
+                      <th>Address</th>
+                      <th>Name</th>
+                      <th>Review</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {devices.map((device) => {
+                      const monitorLink = monitorLinkFor(device, agentId);
+                      return (
+                        <tr key={device.id}>
+                          <td>{device.ip_address}</td>
+                          <td>{device.hostname ?? '—'}</td>
+                          <td>{titleCase(humanize(device.merge_status)) ?? '—'}</td>
+                          <td>
+                            {monitorLink ? (
+                              <Link className="btn btn-sm" to={monitorLink}>
+                                Create monitor
+                              </Link>
+                            ) : (
+                              <span className="agent-discovery__hint">Accept it first</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Panel>
+
+          <Panel title="Discovery subnets" bodyless>
+            {/* A hold is neither a delete nor a stop, and the row offers the
+                control, so the row has to say which of the three it is. */}
+            <p className="agent-discovery__hint">
+              Pausing a subnet withholds its future scheduled scans. Nothing is deleted — the
+              subnet, its results and its job history stay — and a scan already queued or running is
+              not stopped. That is a different state from Disabled, which is the subnet&apos;s own
+              setting.
+            </p>
+            {(discovery.profiles ?? []).length === 0 ? (
+              <EmptyState message="No discovery subnets are assigned to this agent yet." />
+            ) : (
+              <div className="table-scroll">
+                <table className="data-table" aria-label="Discovery subnets">
+                  <thead>
+                    <tr>
+                      <th>Subnet</th>
+                      <th>Origin</th>
+                      <th>Cadence</th>
+                      <th>State</th>
+                      <th>Last run</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {discovery.profiles.map((profile) => (
+                      <tr key={profile.id}>
+                        <td>{profile.cidr ?? profile.name}</td>
+                        {/* `managed_by = "system"` is a subnet the bootstrap owns
+                          and may re-upsert; anything else an operator wrote. */}
+                        <td>{profile.managed_by === 'system' ? 'Automatic' : 'Operator'}</td>
+                        <td>
+                          <CadenceInput
+                            profile={profile}
+                            disabled={busy}
+                            onCommit={(cron) => handleCadence(profile.id, cron)}
+                          />
+                        </td>
+                        {/* `paused_at` is "held since", not a flag: an operator
+                          asking why a subnet stopped scanning wants the date. */}
+                        <td>
+                          {profile.paused_at
+                            ? `Paused since ${formatTimestamp(profile.paused_at)}`
+                            : profile.enabled
+                              ? 'Scheduled'
+                              : 'Disabled'}
+                        </td>
+                        <td>{formatTimestamp(profile.last_run)}</td>
+                        <td className="agent-discovery__actions">
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => handleProfilePause(profile, !profile.paused_at)}
+                          >
+                            {profile.paused_at ? 'Resume' : 'Pause'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Panel>
         </>
       )}
 
       {granted &&
         (defaults === null ? (
-          <p>Loading local discovery settings…</p>
+          <EmptyState message="Loading local discovery settings…" />
         ) : (
           <LocalDiscoveryConfigEditor
             key={editorRevision}
@@ -763,7 +783,7 @@ export default function DiscoveryScopeSection({
           setEditorRevision((revision) => revision + 1);
         }}
       />
-    </section>
+    </Panel>
   );
 }
 

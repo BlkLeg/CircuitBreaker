@@ -334,6 +334,40 @@ describe('Agent Detail — discovery scope', () => {
     vi.restoreAllMocks();
   });
 
+  it('keeps the disabled-discovery wording exactly as written', async () => {
+    // Task 18 moved this sentence into a Banner. It is the only place the page
+    // says that nothing is lost by disabling — subnets, results and history
+    // all survive — so the assertion is byte for byte.
+    const { getAgent } = await import('../api/agents');
+    getAgent.mockResolvedValue({
+      data: {
+        ...apiDefaults.agent,
+        capabilities: { ...apiDefaults.agent.capabilities, local_discovery: false },
+      },
+    });
+    renderDetail();
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Discovery' }));
+    const section = await screen.findByRole('region', { name: 'Discovery scope' });
+    expect(
+      within(section).getByText(
+        'Local discovery is disabled for this agent. Its subnets stay configured and its results and job history are retained; nothing is scanned from here until it is re-enabled.'
+      )
+    ).toBeInTheDocument();
+  });
+
+  it('is reachable as a region by its heading', async () => {
+    renderDetail();
+    // Panel names the region from its own title, and each of the section's
+    // groups is a panel of its own now, so the whole thing stays navigable by
+    // heading.
+    const section = await scopeSection();
+    expect(section).toBeInTheDocument();
+    expect(
+      within(section).getByRole('region', { name: 'Collector readiness' })
+    ).toBeInTheDocument();
+  });
+
   it('renders automatic subnets, central exclusions and routed overrides with different provenance', async () => {
     renderDetail();
     const section = await scopeSection();

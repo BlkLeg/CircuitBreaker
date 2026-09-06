@@ -284,6 +284,35 @@ describe('Agent Detail — assigned probes', () => {
     ).toBeInTheDocument();
   });
 
+  it('keeps the disabled-probing wording exactly as written', async () => {
+    // Task 18 moved this sentence into a Banner. It is the operator's only
+    // explanation of why assignments are listed but nothing is running, so
+    // the assertion is byte for byte: a later tidy-up fails here rather than
+    // drifting.
+    const { getAgent } = await import('../api/agents');
+    getAgent.mockResolvedValue({
+      data: {
+        ...apiDefaults.agent,
+        capabilities: { ...apiDefaults.agent.capabilities, remote_probe: false },
+      },
+    });
+    renderDetail();
+
+    const section = await probesSection();
+    expect(
+      within(section).getByText(
+        'Remote probing is disabled for this agent. Assigned monitors keep their last known target state and stay probe-unavailable until it is re-enabled.'
+      )
+    ).toBeInTheDocument();
+  });
+
+  it('is reachable as a region by its heading', async () => {
+    renderDetail();
+    // Panel names the region from its own title, so the section stays
+    // navigable by heading rather than by an aria-label a refactor can drop.
+    expect(await probesSection()).toBeInTheDocument();
+  });
+
   it('offers open, check now, reassign and return-to-server actions', async () => {
     const { runCheck, updateMonitor } = await import('../api/monitor');
     const { listProbeEligibleAgents } = await import('../api/agents');
