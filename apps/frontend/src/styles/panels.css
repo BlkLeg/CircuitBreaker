@@ -503,3 +503,82 @@
   color: var(--color-bg);
   line-height: 13px;
 }
+
+/* ── DetailHeader ───────────────────────────────────────────────────────── */
+
+/* Sticky, because the identity of the thing being looked at must not scroll
+   away from the numbers describing it. --header-height is the app chrome this
+   sits beneath; see main.css. */
+.cb-detail-head {
+  position: sticky;
+  top: var(--header-height);
+  z-index: 5;
+  padding: var(--space-4) var(--space-4) 0;
+  background: var(--color-surface-raised);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.cb-detail-head__back {
+  font-size: var(--fs-xs);
+  color: var(--color-text-muted);
+  text-decoration: none;
+}
+
+.cb-detail-head__back:hover {
+  color: var(--color-primary);
+}
+
+.cb-detail-head__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.cb-detail-head__title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 650;
+  font-family: var(--font-mono);
+  letter-spacing: 0.2px;
+}
+
+.cb-detail-head__chips {
+  display: flex;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+}
+.cb-detail-head__actions {
+  margin-left: auto;
+  display: flex;
+  gap: var(--space-2);
+}
+
+/* Each item is its own element, so the separator is a real adjacent-sibling
+   rule rather than a hyphen baked into a string. */
+.cb-meta {
+  display: flex;
+  flex-wrap: wrap;
+  margin: var(--space-2) 0 var(--space-3);
+  font-size: var(--fs-sm);
+  color: var(--color-text-muted);
+}
+
+.cb-meta__item {
+  padding-right: var(--space-2);
+}
+
+.cb-meta__item + .cb-meta__item {
+  margin-left: var(--space-2);
+  border-left: 1px solid var(--color-border);
+  padding-left: var(--space-2);
+}
+
+.cb-detail-head__strip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-2) 0 var(--space-3);
+  border-top: 1px solid rgba(80, 73, 69, 0.4);
+  overflow-x: auto;
+}
