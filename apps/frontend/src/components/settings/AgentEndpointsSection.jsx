@@ -35,8 +35,8 @@ const S = {
 // "no agents have enrolled" is a claim about the address, not about the fetch.
 function usageLabel(usage, url) {
   if (!usage) return null;
-
-  // server's own count map and `url` a key read out of it, not a path.
+  // `usage` is the server's own count map and `url` a key read out of it, not a path.
+  // eslint-disable-next-line security/detect-object-injection
   const count = usage[url] ?? 0;
   if (count === 0) return 'no agents have enrolled through this address yet';
   return `${count} agent${count === 1 ? '' : 's'} enrolled`;
