@@ -407,6 +407,11 @@ class Agent(Base):
     os_version: Mapped[str | None] = mapped_column(String, nullable=True)
     arch: Mapped[str | None] = mapped_column(String, nullable=True)
     agent_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The server_url this agent reported dialing at enrollment. The server has
+    # no other way to know: it never connects to the agent, so an endpoint that
+    # nothing can reach is otherwise invisible — the agent that would report the
+    # failure is the one that cannot connect to report it.
+    enrolled_via_endpoint: Mapped[str | None] = mapped_column(String, nullable=True)
     # Task 24: the version a queued self-update is expected to land the agent
     # on, set by POST /{agent_id}/update and cleared once that outcome is
     # resolved — either `version_changed` fires on a reconnect whose hello
