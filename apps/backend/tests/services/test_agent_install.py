@@ -118,6 +118,21 @@ def test_render_install_script_creates_versioned_symlink_layout():
     assert 'install -m 0755 "$TMP_BIN" /usr/local/bin/cb-agent' not in script
 
 
+def test_script_preflights_the_server_before_touching_the_machine():
+    """A wrong address must fail at step one naming the address, not three
+    steps later inside a binary download."""
+    script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex="de" * 32,
+        tls_pin="pin",
+        manifest={"1.0.0": {"linux-amd64": "a" * 64}},
+    )
+    preflight_at = script.index("/api/v1/health")
+    useradd_at = script.index("useradd")
+    assert preflight_at < useradd_at, "preflight must run before the machine is modified"
+    assert "Cannot reach" in script
+
+
 def test_build_install_command_self_signed_includes_hash_verification(
     db_session, app_cfg, monkeypatch
 ):

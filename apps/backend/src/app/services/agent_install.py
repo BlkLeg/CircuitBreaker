@@ -46,6 +46,18 @@ cb_curl() {{
   fi
 }}
 
+# Reachability preflight. The server cannot test this for us: it never connects
+# to an agent, so the first machine that can answer "is this address reachable
+# from here?" is this one. Failing here, before a user or a systemd unit exists,
+# means a wrong CB_SERVER_URL costs nothing and says so precisely.
+if ! cb_curl "${{CB_SERVER_URL}}/api/v1/health" >/dev/null 2>&1; then
+  echo "Cannot reach ${{CB_SERVER_URL}} from this machine." >&2
+  echo "The agent would dial that address forever and never appear in the UI." >&2
+  echo "Check that the address is correct for THIS network, that DNS resolves" >&2
+  echo "it here, and that outbound HTTPS to it is permitted." >&2
+  exit 1
+fi
+
 if ! id cb-agent >/dev/null 2>&1; then
   useradd --system --no-create-home --shell /usr/sbin/nologin cb-agent
 fi
