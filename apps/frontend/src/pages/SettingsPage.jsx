@@ -247,6 +247,7 @@ CveSecuritySection.propTypes = {
 import NotificationsManager from '../components/settings/NotificationsManager';
 import OAuthProvidersManager from '../components/settings/OAuthProvidersManager';
 import AgentEndpointsSection from '../components/settings/AgentEndpointsSection';
+import EnrollmentTokensSection from '../components/settings/EnrollmentTokensSection';
 
 export default function SettingsPage() {
   const { settings: ctxSettings, reloadSettings } = useSettings();
@@ -1137,6 +1138,10 @@ export default function SettingsPage() {
                     usage={endpointUsage}
                     onSave={handleSaveAgentEndpoints}
                   />
+                </SettingSection>
+
+                <SettingSection title="Enrollment Tokens" className="settings-section--full">
+                  <EnrollmentTokensSection />
                 </SettingSection>
               </div>
             )}
