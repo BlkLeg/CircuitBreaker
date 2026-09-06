@@ -37,17 +37,33 @@ describe('FleetRow pending cells', () => {
     const { container } = renderRow();
     const cell = container.querySelector('.fleet-pending');
     const items = cell.querySelectorAll('.fleet-pending__item');
-    expect(items.length).toBeGreaterThanOrEqual(2);
+    // PENDING carries a fingerprint, so there are exactly three fields: the
+    // label, the platform, and the fingerprint chip. An exact count means a
+    // future regression that reverted only the label to a bare text node
+    // (leaving the other two fields wrapped) cannot pass this test.
+    expect(items.length).toBe(3);
     items.forEach((item) => {
       expect(item.tagName).toBe('SPAN');
     });
   });
 
   it('no longer concatenates the status with the platform', () => {
-    renderRow();
-    expect(screen.queryByText(/approvallinux/)).toBeNull();
-    expect(screen.getByText('Waiting for approval')).toBeTruthy();
-    expect(screen.getByText('linux / amd64')).toBeTruthy();
+    // screen.getByText / queryByText match a node's own direct text-node
+    // children only (@testing-library/dom's getNodeText), never descendant
+    // text — so a query for /approvallinux/ can never match here whether the
+    // cell is buggy or fixed, and asserted nothing. `cell.textContent` DOES
+    // concatenate descendants, so it can actually see what the user sees.
+    const { container } = renderRow();
+    const cell = container.querySelector('.fleet-pending');
+    expect(cell.textContent).toContain('Waiting for approval');
+    expect(cell.textContent).toContain('linux / amd64');
+    // The property that makes the defect class unreachable: no bare text
+    // node can sit between the fields, because a text node cannot satisfy an
+    // adjacent-sibling separator rule.
+    const bareText = [...cell.childNodes].filter(
+      (node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim() !== ''
+    );
+    expect(bareText).toEqual([]);
   });
 
   it('still abbreviates the fingerprint while keeping the full value reachable', () => {
