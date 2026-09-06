@@ -1426,6 +1426,16 @@ class AppSettings(Base):
     map_title: Mapped[str] = mapped_column(String, nullable=False, default="Topology")
     graph_uplink_overrides: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     map_default_filters: Mapped[dict | None] = mapped_column(JSONB)  # JSONB as of v0.2.0
+    # The addresses agents are told to dial, declared by the operator. Distinct
+    # from `api_base_url` above, which is the browser-facing URL: the address a
+    # browser uses and the address an agent uses can legitimately differ, and
+    # that difference is the whole LAN-versus-FQDN case this exists for.
+    # Entries are {"id": str, "label": str, "url": str}. `id` is minted once and
+    # never reused, because a label is mutable and cannot identify an endpoint
+    # in an install command generated days earlier.
+    # Empty means "not configured" — the install flow then falls back to
+    # forwarded_base_url exactly as it does today.
+    agent_endpoints: Mapped[list | None] = mapped_column(JSONB, nullable=False, default=list)
     # Font preferences
     ui_font: Mapped[str] = mapped_column(String, nullable=False, default="inter")
     ui_font_size: Mapped[str] = mapped_column(String, nullable=False, default="medium")
