@@ -27,3 +27,33 @@ async def test_a_bad_url_is_rejected_with_a_readable_message(client, auth_header
     )
     assert resp.status_code == 422
     assert "scheme" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_a_url_with_a_path_is_rejected(client, auth_headers):
+    """`https://example.com/cb` validates today and then cannot work: every
+    fetch is built as `{url}/install-agent.sh`, so it becomes
+    `https://example.com/cb/install-agent.sh` and 404s on the target machine,
+    after the operator has already saved it and pasted the command."""
+    resp = await client.put(
+        "/api/v1/settings",
+        json={"agent_endpoints": [{"label": "Subpath", "url": "https://example.com/cb"}]},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert "Subpath" in detail, detail
+    assert "path" in detail.lower(), detail
+
+
+@pytest.mark.asyncio
+async def test_a_bare_host_with_a_trailing_slash_is_still_accepted(client, auth_headers):
+    """The slash is stripped before the path check, so the shape a browser's
+    address bar hands the operator keeps working."""
+    resp = await client.put(
+        "/api/v1/settings",
+        json={"agent_endpoints": [{"label": "Public", "url": "https://example.com/"}]},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["agent_endpoints"][0]["url"] == "https://example.com"

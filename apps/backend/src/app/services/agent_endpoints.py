@@ -50,6 +50,16 @@ def normalize_endpoints(raw: list[dict[str, Any]]) -> list[dict[str, str]]:
             raise ValueError(f"endpoint '{label}' has an unsupported URL scheme: {parsed.scheme!r}")
         if not parsed.netloc:
             raise ValueError(f"endpoint '{label}' has no host")
+        # Every fetch is built as `{url}/install-agent.sh` or
+        # `{url}/api/v1/...`, so a base with a path produces
+        # `https://example.com/cb/install-agent.sh` — a 404 the operator only
+        # discovers on the target machine, long after saving. The trailing
+        # slash was stripped above, so a bare `https://example.com/` still
+        # passes.
+        if parsed.path:
+            raise ValueError(
+                f"endpoint '{label}' must be a scheme and host only, with no path: {parsed.path}"
+            )
 
         endpoint_id = str(entry.get("id") or "").strip() or _mint_id()
         if endpoint_id in seen:
