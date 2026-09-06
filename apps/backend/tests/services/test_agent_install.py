@@ -764,10 +764,32 @@ async def test_unknown_endpoint_id_is_refused_rather_than_silently_substituted(
 
 
 @pytest.mark.asyncio
-async def test_absent_endpoint_falls_back_to_the_browsed_host(client, auth_headers):
-    """Existing installs and existing commands keep working untouched."""
-    resp = await client.get("/api/v1/agents/install-command", headers=auth_headers)
-    assert resp.status_code in (200, 503)
+async def test_absent_endpoint_falls_back_to_the_browsed_host(
+    client, auth_headers, letsencrypt_certificate
+):
+    """Existing installs and existing commands keep working untouched.
+
+    `status_code in (200, 503)` was the whole assertion here, which passes
+    whether or not the fallback exists at all. Name the address instead: the
+    forwarded host is what the operator browsed, and with no endpoint chosen
+    it must be the one baked into the command, with no `?endpoint=` on the
+    download link for `/install-agent.sh` to resolve.
+
+    `letsencrypt_certificate` supplies the cert `_tls_mode_and_pin` fails
+    closed without, so a missing pin cannot turn this into a vacuous 503.
+    """
+    resp = await client.get(
+        "/api/v1/agents/install-command",
+        headers={
+            **auth_headers,
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "browsed.example.com",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    command = resp.json()["command"]
+    assert _download_url(command) == "https://browsed.example.com/install-agent.sh", command
 
 
 # ── The emitted command must carry the choice, not just honour it ────────────
