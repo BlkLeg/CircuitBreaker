@@ -412,6 +412,12 @@ class Agent(Base):
     # nothing can reach is otherwise invisible — the agent that would report the
     # failure is the one that cannot connect to report it.
     enrolled_via_endpoint: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Slice B: which enrollment token this agent came through, when it came
+    # through one. Nullable and never back-filled — every agent enrolled before
+    # this slice, and every attended enrollment after it, has none.
+    enrollment_token_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("agent_enrollment_tokens.id"), nullable=True
+    )
     # Task 24: the version a queued self-update is expected to land the agent
     # on, set by POST /{agent_id}/update and cleared once that outcome is
     # resolved — either `version_changed` fires on a reconnect whose hello
@@ -547,6 +553,44 @@ class AgentCapabilityGrant(Base):
             name="uq_agent_capability_grants_agent_capability",
         ),
     )
+
+
+class AgentEnrollmentToken(Base):
+    """A short-lived bearer credential that enrolls an agent with no human present.
+
+    The plaintext is returned once at mint and never stored — `token_hash` is
+    SHA-256 of it, mirroring `user_service._hash_token`. `max_uses` exists
+    because a single-use token breaks the case that motivates the feature: one
+    token baked into a launch template, N instances booting, only the first
+    enrolling (design §3.2).
+
+    Rows are revoked, never deleted, so `agents.enrollment_token_id` stays
+    resolvable for the life of every agent that came through one.
+    """
+
+    __tablename__ = "agent_enrollment_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    label: Mapped[str] = mapped_column(String, nullable=False)
+    # The address this token's agents are told to dial. Stored as the URL
+    # rather than the endpoint id so deleting an endpoint does not orphan a
+    # token that is still live — the same reasoning that keys
+    # agent_endpoints.usage_counts by URL.
+    endpoint_url: Mapped[str] = mapped_column(String, nullable=False)
+    # The grant scope applied on auto-approval — the same shape
+    # POST /{agent_id}/approve accepts for `capabilities`.
+    capabilities: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    max_uses: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    uses: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    __table_args__ = (Index("ix_agent_enrollment_tokens_token_hash", "token_hash"),)
 
 
 class AgentEvent(Base):
