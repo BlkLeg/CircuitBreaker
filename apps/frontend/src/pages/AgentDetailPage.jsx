@@ -22,6 +22,8 @@ import AgentOverviewTab from '../components/agents/AgentOverviewTab';
 import { agentDisplayName } from '../lib/agentLabel';
 import { operatorErrorMessage, updateDispatchMessage } from '../lib/agentErrors';
 import { TAB_KEYS } from '../lib/agentComposition';
+import { useTabActivity } from '../hooks/useTabActivity';
+import { hotMetrics } from '../lib/agentThresholds';
 import { serverClockOffsetMs } from '../utils/serverClock';
 import { formatTimestamp } from '../lib/time';
 import AgentStateChip from '../components/agents/AgentStateChip';
@@ -135,9 +137,37 @@ export default function AgentDetailPage() {
     if (!page.tabs.includes(activeTab)) selectTab(DEFAULT_TAB);
   }, [page.tabs, activeTab, selectTab]);
 
+  const hot = useMemo(() => hotMetrics(telemetry?.latest?.summary), [telemetry]);
+
+  // A signal that changed on every sample would leave the dot permanently lit,
+  // which is the same as having no dot. Only a threshold crossing is news —
+  // the same rule, from the same list, that decides which tiles flash.
+  //
+  // `null` while a source is still unresolved, because useTabActivity treats
+  // that as "not known yet" and baselines it in silence. Without it the first
+  // discovery fetch and the first event page would each raise an indicator for
+  // work that was already done when the page opened.
+  const activeJobIds =
+    discovery === null ? null : (discovery.active_jobs ?? []).map((job) => job.id).join(',');
+  const signals = useMemo(
+    () => ({
+      telemetry: telemetry === null ? null : hot.join(','),
+      discovery: activeJobIds,
+      events: loading ? null : events.length,
+    }),
+    [hot, telemetry, activeJobIds, loading, events.length]
+  );
+
+  const indicators = useTabActivity({ activeTab, signals });
+
   const tabs = useMemo(
-    () => page.tabs.map((key) => ({ key, label: TAB_LABELS[key] })),
-    [page.tabs]
+    () =>
+      page.tabs.map((key) => ({
+        key,
+        label: TAB_LABELS[key],
+        indicator: indicators[key] ?? null,
+      })),
+    [page.tabs, indicators]
   );
 
   const stripMetrics = useMemo(
@@ -154,8 +184,9 @@ export default function AgentDetailPage() {
         points: history
           .map((point) => point.summary?.[key])
           .filter((value) => typeof value === 'number'),
+        hot: hot.includes(key),
       })),
-    [telemetry, history]
+    [telemetry, history, hot]
   );
 
   const applyCapabilityToggle = async (capability, enabled) => {
