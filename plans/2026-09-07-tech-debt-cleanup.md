@@ -322,7 +322,7 @@ split (`discovery_admission`, `discovery_dispatch`), §2.4's `discoveryApi` and
 `LIBRARY_ICONS` consolidation, and §2.6's agent `main.go` split (1,844 → 138).
 
 Browser verification for §2.5 is three new Playwright specs — `settings-tabs`,
-`oobe-first-run`, `map-interaction` — taking the Chromium suite from 20 to 34.
+`oobe-first-run`, `map-interaction` — taking the Chromium suite from 20 tests to 33.
 
 ---
 
