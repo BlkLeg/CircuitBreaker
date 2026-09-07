@@ -1,0 +1,1000 @@
+// The daemon: everything `cb-agent` does when it runs as a service — the link
+// options, the collector runtimes, the spool, and the state that ties them
+// together.
+//
+// This was the bulk of main.go. Same package, so this is a file boundary and
+// not an API one: the split is for whoever has to read `startDaemonState`
+// without scrolling past the uninstall path to reach it.
+
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"sort"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"circuitbreaker.dev/cb-agent/internal/capability"
+	"circuitbreaker.dev/cb-agent/internal/collect"
+	discovercollect "circuitbreaker.dev/cb-agent/internal/collect/discover"
+	hostcollect "circuitbreaker.dev/cb-agent/internal/collect/host"
+	probecollect "circuitbreaker.dev/cb-agent/internal/collect/probe"
+	"circuitbreaker.dev/cb-agent/internal/config"
+	"circuitbreaker.dev/cb-agent/internal/enroll"
+	"circuitbreaker.dev/cb-agent/internal/frame"
+	"circuitbreaker.dev/cb-agent/internal/hostinfo"
+	"circuitbreaker.dev/cb-agent/internal/link"
+	"circuitbreaker.dev/cb-agent/internal/netscope"
+	"circuitbreaker.dev/cb-agent/internal/spool"
+	"circuitbreaker.dev/cb-agent/internal/status"
+	"circuitbreaker.dev/cb-agent/internal/update"
+)
+
+func runDaemon() {
+	cfg, err := config.Load("/etc/circuit-breaker/agent.toml")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
+		os.Exit(1)
+	}
+	// Before anything logs, so log_level applies to the whole run.
+	if err := configureLogging(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
+		os.Exit(1)
+	}
+	key, err := enroll.LoadOrCreateDeviceKey(config.StateDir())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Before enrolling, not after: enrollment is a network call, and — even
+	// now that a failed one retries below instead of exiting — a retry loop
+	// that never gets past a broken update is exactly the case the rollback
+	// window exists for. That was F-8 — the rollback safety net was
+	// unavailable in exactly the case it exists for. This check reads the
+	// marker's durable deadline off disk and needs no server at all.
+	rollbackExpiredUpdate(config.StateDir(), update.CurrentLinkPath(config.StateDir()), time.Now(), func() error {
+		return syscall.Exec(installedBinaryPath, os.Args, os.Environ())
+	})
+
+	// Built here, before enrollment rather than after it, so a SIGTERM/SIGINT
+	// during a retrying first enrollment stops the process promptly instead
+	// of only taking effect once (or if) enrollment eventually succeeds.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Skip the network round trip entirely once the server has ever
+	// confirmed this device active (enroll.MarkEnrolled, written from Run's
+	// "active" case) — the population that matters, since every already-
+	// enrolled agent restart used to pay for the exact call this avoids. An
+	// agent upgrading into this build has no marker yet and falls through to
+	// the retry loop below, which the server answers with "active"
+	// immediately for a device it already knows, writing the marker there.
+	if shouldEnroll(config.StateDir()) {
+		if err := retryEnroll(ctx, cfg, key, AgentVersion, config.StateDir()); err != nil {
+			// Only returns non-nil when ctx was canceled while waiting
+			// between attempts — a real enrollment failure retries forever
+			// instead of returning an error. Exit quietly: the signal itself
+			// is why we are stopping, not a fault worth reporting.
+			return
+		}
+	}
+
+	rt, err := startDaemonState(cfg, key, AgentVersion, ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
+		os.Exit(1)
+	}
+	defer rt.Close()
+	statusWriter := rt.statusWriter
+	queueReadiness := rt.queueReadiness
+
+	currentLink := update.CurrentLinkPath(config.StateDir())
+
+	// swapped (whether Swap actually completed for this marker — see
+	// update.ReadMarker) is deliberately not consulted here to decide
+	// whether to spawn watchForRollback at all: it's still spawned either
+	// way, and watchForRollback itself makes that determination after its
+	// own ReadMarker call once rollbackWindow elapses. Keeping the decision
+	// in one place (rather than duplicating it here as a fast-path) is what
+	// TestWatchForRollback_CrashBeforeSwapDoesNotRollBackToStaleBackup
+	// exercises directly.
+	if pendingVersion, _, _, present, _ := update.ReadMarker(config.StateDir()); present {
+		log.Printf("cb-agent: resuming after update to %s — watching for a successful link", pendingVersion)
+		// Capture the configured window before starting the goroutine. Tests
+		// shorten the package seam and restore it during cleanup; a goroutine
+		// must never keep reading that mutable seam after construction.
+		window := rollbackWindow
+		go watchForRollback(config.StateDir(), currentLink, pendingVersion, window, func() error {
+			return syscall.Exec(installedBinaryPath, os.Args, os.Environ())
+		})
+	}
+
+	var confirmOnce sync.Once
+	onConnected := func() {
+		confirmOnce.Do(func() {
+			_, prevVersionDir, _, present, err := update.ReadMarker(config.StateDir())
+			if err != nil {
+				log.Printf("cb-agent: %v", err)
+			}
+			if err := update.ClearMarker(config.StateDir()); err != nil {
+				log.Printf("cb-agent: %v", err)
+			}
+			if present {
+				// The confirmed update's marker is gone — prune every
+				// stale version directory except the one still live and
+				// the one just confirmed away from, mirroring the old
+				// scheme's single-".previous"-backup retention (Section 5,
+				// specs/2026-08-05-cb-agent-self-update-fix-design.md).
+				if err := update.PruneVersions(config.StateDir(), currentLink, prevVersionDir); err != nil {
+					log.Printf("cb-agent: %v", err)
+				}
+			}
+		})
+		if err := statusWriter.SetAccepted(); err != nil {
+			log.Printf("cb-agent: status: %v", err)
+		}
+		// Order matters: the link is up before the forced report, otherwise
+		// queueReadiness drops it as unlinked. This is the one forced send
+		// per connection — it delivers whatever state changed during the
+		// outage, and it stamps the rate-limit budget, so the reconciliation
+		// ticker cannot immediately double-send behind it.
+		rt.linked.Store(true)
+		queueReadiness(true)
+	}
+
+	onRejected := func(reason string) {
+		if err := statusWriter.SetRejected(reason); err != nil {
+			log.Printf("cb-agent: status: %v", err)
+		}
+	}
+
+	onDisconnected := func(cause error) {
+		// Stop spending the readiness budget on frames runOnce would discard;
+		// the next OnConnected re-arms the send with the newest payload.
+		rt.linked.Store(false)
+		if err := statusWriter.SetDisconnected(cause); err != nil {
+			log.Printf("cb-agent: status: %v", err)
+		}
+	}
+
+	onUpdate := func(payload json.RawMessage, send link.SendUpdateStatus) error {
+		var instr update.Instruction
+		if err := json.Unmarshal(payload, &instr); err != nil {
+			return err
+		}
+		if err := send(instr.Version, "started", ""); err != nil {
+			log.Printf("cb-agent: send started update.status: %v", err)
+		}
+		// Resolved once and reused for the signature fetch below: two calls
+		// could straddle an inbound tls.pin.rotate and fetch the binary and
+		// its signature under different trust policies.
+		trust := link.ResolveTrust(cfg, config.StateDir())
+		tmpPath, err := update.Download(cfg, trust, instr)
+		if err != nil {
+			if sendErr := send(instr.Version, "failed", err.Error()); sendErr != nil {
+				log.Printf("cb-agent: send failed update.status: %v", sendErr)
+			}
+			return err
+		}
+		if err := update.VerifySHA256(tmpPath, instr.SHA256); err != nil {
+			os.Remove(tmpPath)
+			if sendErr := send(instr.Version, "failed", err.Error()); sendErr != nil {
+				log.Printf("cb-agent: send failed update.status: %v", sendErr)
+			}
+			return err
+		}
+		// Slice 4.2 (F3): the SHA-256 above proves the download matches what
+		// the *server* said. That is worth nothing against a compromised
+		// server, which can serve any binary along with a matching digest.
+		// The detached signature is checked against a key embedded at build
+		// time, which the server cannot influence.
+		//
+		// Placed before WriteMarker deliberately: a refused update must
+		// leave no rollback marker behind, because nothing was installed.
+		sigPath, sigErr := update.DownloadSignature(cfg, trust, instr)
+		if sigPath != "" {
+			defer os.Remove(sigPath)
+		}
+		verifyErr := sigErr
+		if verifyErr == nil {
+			verifyErr = update.VerifySignature(tmpPath, sigPath)
+		}
+		switch update.UpdateDecision(verifyErr, update.SignatureEnforced()) {
+		case update.DecisionRefuse:
+			os.Remove(tmpPath)
+			if sendErr := send(instr.Version, "failed", verifyErr.Error()); sendErr != nil {
+				log.Printf("cb-agent: send failed update.status: %v", sendErr)
+			}
+			return verifyErr
+		case update.DecisionWarn:
+			log.Printf("cb-agent: WARNING: update to %s was installed without a "+
+				"verified signature (%v). Set CB_AGENT_UPDATE_ENFORCE_SIGNATURE=1 to "+
+				"refuse instead; see `make agent-signing-key` if this build has no "+
+				"embedded key.", instr.Version, verifyErr)
+		}
+		// Task 25: the rollback marker must be durably written *before* the
+		// binary is actually replaced, not after. If a crash lands between
+		// these two steps, the marker still correctly names the version
+		// that was about to be installed — a recoverable state, since the
+		// swap never ran and there's nothing to roll back. Writing the
+		// marker only after a successful Swap would instead let a crash in
+		// that window leave a replaced (and possibly broken) binary running
+		// with no marker at all — no rollback safety net.
+		if err := update.WriteMarker(config.StateDir(), instr.Version); err != nil {
+			os.Remove(tmpPath)
+			if sendErr := send(instr.Version, "failed", err.Error()); sendErr != nil {
+				log.Printf("cb-agent: send failed update.status: %v", sendErr)
+			}
+			return err
+		}
+		prevVersionDir, err := update.Swap(tmpPath, instr.Version, config.StateDir())
+		if err != nil {
+			// The swap never happened — clear the marker rather than
+			// leaving a stale one that would (harmlessly, but pointlessly)
+			// send a future restart into a rollback attempt against a
+			// version that was never installed.
+			if clearErr := update.ClearMarker(config.StateDir()); clearErr != nil {
+				log.Printf("cb-agent: %v", clearErr)
+			}
+			if sendErr := send(instr.Version, "failed", err.Error()); sendErr != nil {
+				log.Printf("cb-agent: send failed update.status: %v", sendErr)
+			}
+			return err
+		}
+		// Swap succeeded — durably transition the marker from
+		// phasePendingSwap to phasePendingConfirm and record prevVersionDir
+		// (see update.MarkSwapped's doc comment) so a restart's
+		// watchForRollback can trust which version directory is genuinely
+		// this update's own backup, not a stale one from some earlier,
+		// already-confirmed update. The swap itself has already happened
+		// and can't be undone from here, so a failure here is logged, not
+		// treated as a failed update: it only costs this particular update
+		// its rollback safety net (see MarkSwapped's doc comment), not
+		// correctness.
+		// The deadline is stamped here, not at process start, so it measures
+		// from the swap itself and survives the crash-loop an update that
+		// breaks connectivity produces — see update.RollbackIfExpired.
+		if err := update.MarkSwapped(config.StateDir(), instr.Version, prevVersionDir, time.Now().Add(rollbackWindow)); err != nil {
+			log.Printf("cb-agent: %v — update to %s already installed but will not be protected by the rollback window", err, instr.Version)
+		}
+		// Reported now, immediately before re-exec: a successful re-exec
+		// replaces this process's image and never returns here, so
+		// "succeeded" can't instead be sent by link.go after OnUpdate
+		// returns (see SendUpdateStatus's doc comment).
+		if err := send(instr.Version, "succeeded", ""); err != nil {
+			log.Printf("cb-agent: send succeeded update.status: %v", err)
+		}
+		log.Printf("cb-agent: updated to %s — re-executing", instr.Version)
+		if d := resolveReExecDelay(); d > 0 {
+			time.Sleep(d)
+		}
+		return syscall.Exec(installedBinaryPath, os.Args, os.Environ())
+	}
+
+	if err := link.Run(ctx, rt.linkOptions(cfg, key, AgentVersion, linkHooks{
+		onUpdate:       onUpdate,
+		onConnected:    onConnected,
+		onRejected:     onRejected,
+		onDisconnected: onDisconnected,
+	})); err != nil && ctx.Err() == nil {
+		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// linkHooks are the connection-lifecycle handlers runDaemon owns rather than
+// startDaemonState: each turns a connection event into an update-marker
+// decision, a re-exec or a status-file write, and those depend on runDaemon's
+// own process-lifetime state (the confirm-once guard, the current-version
+// symlink, os.Args) rather than on anything daemonRuntime holds.
+//
+// The zero value is legal, because link.Run nil-defaults every one of these
+// four — which is what lets a test drive the *inbound* bindings without an
+// update marker, a status file or a re-exec target.
+type linkHooks struct {
+	onUpdate       func(payload json.RawMessage, send link.SendUpdateStatus) error
+	onConnected    func()
+	onRejected     func(reason string)
+	onDisconnected func(cause error)
+}
+
+// linkOptions assembles the one link.Options the daemon runs with.
+//
+// It is a method on daemonRuntime rather than a literal inside runDaemon
+// because these bindings are the *only* delivery path for a server -> agent
+// frame, and a missing one is not a compile error — it is a frame type the
+// agent decodes, accepts, and silently drops. That is exactly how
+// `discovery.request` came to be unwired: the runtime was constructed,
+// configured and started, its own tests passed, and nothing ever handed it a
+// dispatch, so a scan job sat at `running` until its dispatch deadline
+// expired. Reachable options are what let a test assert the bindings rather
+// than trust them.
+func (rt *daemonRuntime) linkOptions(
+	cfg *config.Config, key *enroll.DeviceKey, agentVersion string, hooks linkHooks,
+) link.Options {
+	return link.Options{
+		Config: cfg, Key: key, AgentVersion: agentVersion,
+		StateDir:          config.StateDir(),
+		OnCapabilitiesSet: rt.onCapabilitiesSet,
+		// All four are their runtime's own methods rather than wrappers: they
+		// run on link's inbound goroutine, and internal/collect/probe's and
+		// internal/collect/discover's contract is precisely that none of them
+		// dials, resolves nor blocks on a consumer there. Anything wrapped
+		// around them would be a place for that property to be lost.
+		OnProbeAssign:      rt.probeRuntime.Assign,
+		OnProbeCancel:      rt.probeRuntime.Cancel,
+		OnDiscoveryRequest: rt.discoverRuntime.Request,
+		OnDiscoveryCancel:  rt.discoverRuntime.Cancel,
+		OnUpdate:           hooks.onUpdate,
+		OnConnected:        hooks.onConnected,
+		OnRejected:         hooks.onRejected,
+		OnDisconnected:     hooks.onDisconnected,
+		ReportPendingUpdateOutcome: func() (string, bool) {
+			version, ok, _ := update.ReadRollbackReport(config.StateDir())
+			return version, ok
+		},
+		ClearPendingUpdateOutcome: func() {
+			if err := update.ClearRollbackReport(config.StateDir()); err != nil {
+				log.Printf("cb-agent: %v", err)
+			}
+		},
+		Spool:         rt.sp,
+		DataFrames:    rt.dataFrames,
+		ControlFrames: rt.controlFrames,
+		OnSpoolStats: func(depth int, bytes int64) {
+			if err := rt.statusWriter.SetSpoolStats(depth, bytes); err != nil {
+				log.Printf("cb-agent: status: %v", err)
+			}
+			// Eviction only ever happens inside an Enqueue, and every
+			// Enqueue reports its stats through here, so this is the one
+			// callback that runs on the exact occasions the loss can change.
+			// Nil-safe: linkOptions is only built with a live spool.
+			if rt.sp != nil {
+				if err := rt.statusWriter.SetSpoolEvictions(rt.sp.EvictionStats()); err != nil {
+					log.Printf("cb-agent: status: %v", err)
+				}
+			}
+		},
+	}
+}
+
+// daemonRuntime is everything startDaemonState builds and runDaemon needs
+// afterwards: the capability gate, the runtime status writer, the outbound
+// data-frame spool, the two frame channels link.Run drains, the probe and
+// discovery runtimes that linkOptions binds link's inbound callbacks to
+// (probe.assign/probe.cancel and discovery.request/discovery.cancel
+// respectively), the closures (queueReadiness, publishReadiness,
+// applyHostConfig, applyProbeConfig, applyDiscoveryConfig) that the link's
+// callbacks fire, and the linked flag those callbacks flip.
+// Bundling them in a struct is what lets the startup sequence be exercised by
+// a test without executing the full daemon (link.Run, signal handling, the
+// update-rollback watcher).
+type daemonRuntime struct {
+	capGate       *capability.Gate
+	statusWriter  *status.Writer
+	sp            *spool.Spool
+	dataFrames    chan frame.Frame
+	controlFrames chan frame.Frame
+
+	// linked mirrors the link's connected state. runOnce discards control
+	// frames until the connection is established (internal/link), so
+	// queueReadiness consults it before spending the readiness budget on a
+	// frame that would be thrown away. runDaemon's OnConnected/OnDisconnected
+	// own the writes.
+	linked *atomic.Bool
+
+	// probeRuntime executes server-assigned monitor checks. It exists whether
+	// or not `remote_probe` is granted — applyProbeConfig is what enables or
+	// disables it — so linkOptions can bind link's callbacks to it
+	// unconditionally and an assignment sent to an ungranted agent is refused
+	// with a `rejected` result instead of being silently swallowed.
+	probeRuntime *probecollect.Runtime
+
+	// discoverRuntime executes server-dispatched local-network discovery. Like
+	// probeRuntime it exists whether or not `local_discovery` is granted, and for
+	// a sharper reason than symmetry: once the grant is off, the backend's own
+	// grant gate (agent_link.dispatch_frame) drops this agent's terminal
+	// discovery.finding, so a dispatch that arrived at a nil handler would be a
+	// scan job nothing ever closes — it would hang for its whole dispatch
+	// deadline. A constructed runtime refuses it with a terminal `rejected`
+	// summary instead, which is the frame that closes the job.
+	discoverRuntime *discovercollect.Runtime
+
+	queueReadiness   func(force bool)
+	publishReadiness func(items []frame.Readiness)
+	applyHostConfig  func()
+	// applyProbeConfig re-reads the gate's `remote_probe` grant and pushes the
+	// scope and concurrency it names into probeRuntime, or disables it. It is
+	// called from onCapabilitiesSet directly rather than from a
+	// capability.Gate.Changes() subscription: that channel delivers at most
+	// one coalesced signal, nothing consumes it, and a consumer would race the
+	// direct call applyHostConfig already makes.
+	applyProbeConfig func()
+	// applyDiscoveryConfig is applyProbeConfig's counterpart for
+	// `local_discovery`: it re-derives this host's scope, rebuilds the validator
+	// from the gate's current grant and pushes both into discoverRuntime, or
+	// disables it outright. Called from onCapabilitiesSet for the same reason
+	// applyProbeConfig is, and never from a Gate.Changes() subscription.
+	//
+	// Rebuilding the validator rather than the runtime is the whole of Task 14's
+	// grant-change path: nothing restarts, every dispatch in flight keeps running,
+	// and the next request is judged against the new authorization.
+	applyDiscoveryConfig func()
+
+	// onCapabilitiesSet is the capabilities.set handler internal/link fires.
+	// It lives here rather than in runDaemon because it is the thing that
+	// turns a server grant payload into installed state plus the readiness
+	// rows that report what could not be honored (D-6), and that is startup
+	// state, not link plumbing.
+	onCapabilitiesSet func(payload json.RawMessage) error
+	stop              func()
+}
+
+// Close synchronously stops every background component created by
+// startDaemonState before closing its spool. Tests rely on the synchronous
+// boundary so no collector can write into a state directory after cleanup
+// begins; production uses the same boundary during daemon shutdown.
+func (rt *daemonRuntime) Close() error {
+	if rt.stop != nil {
+		rt.stop()
+	}
+	return rt.sp.Close()
+}
+
+// newHostCollector constructs the host-telemetry collector applyHostConfig
+// installs. It is a var rather than a direct call purely as a test seam —
+// startDaemonState's defining property is that it starts the collector
+// goroutine, and no test may read the real /proc or /sys. Production never
+// reassigns it. (Same pattern as rollbackWindow above.)
+var newHostCollector = func(cfg capability.HostConfig) collect.Collector {
+	return hostcollect.New(cfg)
+}
+
+// newProbeRuntime, probeReadiness and hostNetworkFacts are the probe half of
+// the same seam, and exist for the same reason: the production checkers open
+// real sockets, readiness opens an unprivileged ICMP socket, and the scope
+// evaluator's input is whatever interfaces the machine happens to have. No
+// test may depend on any of the three. Production never reassigns them.
+var newProbeRuntime = func(out chan<- frame.Frame) *probecollect.Runtime {
+	return probecollect.New(out, probecollect.Options{})
+}
+
+var probeReadiness = probecollect.Readiness
+
+// newDiscoverRuntime and discoverReadiness are the discovery half of the same
+// seam, for the same reason again: the production collectors open ICMP and TCP
+// sockets, and readiness dumps the kernel's neighbor cache, opens an
+// unprivileged ICMP socket and reads this machine's resolver configuration. No
+// test may depend on any of it. Production never reassigns either.
+//
+// The runtime is constructed with RuntimeOptions' defaults for every collector
+// and with no Validator, deliberately: a Runtime without one scans nothing, so a
+// wiring mistake reads as a refusal rather than as an approval. applyDiscoveryConfig
+// installs the real one, built from the grant, before the first request can arrive.
+var newDiscoverRuntime = func(out chan<- frame.Frame) *discovercollect.Runtime {
+	return discovercollect.NewRuntime(out, discovercollect.RuntimeOptions{})
+}
+
+// discoverReadiness takes a context where probeReadiness takes none, because one
+// of discovery's four checks is a real kernel round trip (see discover.Readiness).
+// The daemon's own lifetime context is what bounds it, so a wedged netlink socket
+// cannot outlive the daemon that asked.
+var discoverReadiness = discovercollect.Readiness
+
+// hostNetworkFacts reports this host's directly connected networks. It has two
+// readers: netscope.Derive needs them to turn the server's grant config into
+// the scope this agent enforces for itself (§3), and every capability.readiness
+// frame carries them so the server's copy is refreshed mid-session rather than
+// only at reconnect (Slice 4 D-8). It is hostinfo's own hello enumerator, not a
+// second one — the server compares the two reports for equality to decide
+// whether the scope generation moved, so two enumerators that disagreed by a
+// single sort order would churn it forever.
+//
+// It is re-read on every call rather than captured once at startup, so an
+// interface that comes up after the daemon started is reflected at the next
+// readiness report instead of at the next restart.
+var hostNetworkFacts = hostinfo.Networks
+
+// probeInterfaceFacts re-labels the hello report as the scope evaluator's
+// input. The two structs carry identical JSON, but internal/netscope must not
+// import internal/frame (the backend decodes the same facts out of
+// agent_networks.facts), so the copy lives here rather than becoming a
+// dependency edge.
+func probeInterfaceFacts(networks []frame.NetworkFacts) []netscope.InterfaceFacts {
+	facts := make([]netscope.InterfaceFacts, 0, len(networks))
+	for _, n := range networks {
+		facts = append(facts, netscope.InterfaceFacts{Name: n.Name, Flags: n.Flags, Addrs: n.Addrs})
+	}
+	return facts
+}
+
+// startDaemonState performs the daemon's startup sequence in the one order
+// that is actually safe, and hands runDaemon back everything that sequence
+// produced. The order is load-bearing, top to bottom:
+//
+//  1. auditStateDir — before any daemon-loop state write (see its doc
+//     comment). Nothing below may run against a state directory this process
+//     does not own.
+//  2. the capability gate, restored from its cached grant, so step 5 knows
+//     whether host telemetry is granted at all.
+//  3. the status writer, fully constructed and seeded with the cached grants
+//     and the startup identity readiness, *before* step 5 captures it. This
+//     is what removes the data race: the collector goroutine step 6 starts
+//     reads statusWriter, and a nil-then-assign ordering made that read
+//     unsynchronized (and silently swallowed the first readiness report).
+//  4. the spool — spool.Open's unclean-shutdown recovery must be reflected in
+//     status.json before the first connection attempt.
+//  5. the readiness/collector closures, which capture 2, 3 and 4.
+//  6. the probe and discovery runtimes and their apply*Config closures, which
+//     capture 5. Both runtimes are constructed and started here, before the
+//     gate's grant is pushed into either, so linkOptions can bind link's probe and
+//     discovery callbacks to them unconditionally — work dispatched to an
+//     ungranted agent is then refused with a terminal `rejected` frame, which is
+//     what closes the server-side run or job, rather than dropped on a nil
+//     handler.
+//  7. the readiness reconciliation ticker, which only offers the report
+//     built by 5 to the link.
+//  8. applyHostConfig(), applyProbeConfig() and applyDiscoveryConfig() last,
+//     because they are the steps that start the collector goroutine — whose very
+//     first collection fires immediately — and open (or actively close) this
+//     agent's probe and discovery scopes.
+//
+// ctx is the daemon's lifetime context; the collector goroutine and both
+// runtimes' workers are children of it, so canceling ctx stops all three.
+func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion string, ctx context.Context) (*daemonRuntime, error) {
+	// These package variables are test seams. Capture them synchronously so
+	// the daemon goroutines never race a test restoring the production values.
+	reportInterval := readinessReportInterval
+	tickInterval := reconcileTickInterval
+
+	// (1) Audit the dedicated-user file-permission model
+	// (specs/2026-07-26-cb-agent-design.md §4.1) before this daemon writes
+	// any state: identity (device.key), cached grant (grants.json), and
+	// runtime status (status.json) must all be owned by the user this
+	// process is actually running as, and mode 0600. Ownership drift aborts
+	// startup outright (see auditStateDir's doc comment); mode drift is
+	// corrected in place.
+	if err := auditStateDir(config.StateDir(), os.Geteuid(), os.Getegid()); err != nil {
+		return nil, err
+	}
+
+	// (2) The capability gate, restored from its on-disk cache — a restart
+	// while disconnected must not make the agent forget its last-known
+	// grants. A corrupt or unreadable cache is logged and treated as "no
+	// grants", never as a startup failure.
+	capGate := capability.New(config.StateDir())
+	// Faults isolate per capability (D-6): one unreadable cached grant no
+	// longer costs the agent every capability it had. They are held here and
+	// published once publishReadiness exists, so the daemon re-reports them
+	// on its first connection instead of swallowing them.
+	cachedGrantFaults, err := capGate.LoadCached()
+	if err != nil {
+		log.Printf("cb-agent: %v", err)
+	}
+
+	// (3) statusWriter is the source `cb-agent status` reads from — see
+	// internal/status. It is constructed here, before anything captures it,
+	// and seeded with the cached grants and the readiness this host can
+	// report before any link attempt (readiness has no network dependency —
+	// see hostinfo.Collect). MergeReadiness, not a whole-slice replacement,
+	// so the collector's own host.* rows and this identity row coexist.
+	identityReadiness := hostinfo.Collect(agentVersion, cfg.ServerURL).Readiness
+	statusWriter := status.NewWriter(config.StateDir(), agentVersion, key.FingerprintGrouped())
+	if err := statusWriter.SetGrants(capGate.Grants()); err != nil {
+		log.Printf("cb-agent: status: %v", err)
+	}
+	if err := statusWriter.MergeReadiness(identityReadiness); err != nil {
+		log.Printf("cb-agent: status: %v", err)
+	}
+
+	// (4) sp is the outbound *data* frame spool (internal/spool) — never
+	// heartbeat/control traffic, see frame.IsDataFrame. Opening it here, at
+	// daemon startup and before the link ever connects, is what makes an
+	// unclean shutdown's persisted backlog recover (spool.Open's load()) and
+	// become visible in `cb-agent status` before this run's first connection
+	// attempt even completes.
+	sp, err := openSpool(cfg, config.StateDir(), statusWriter)
+	if err != nil {
+		return nil, err
+	}
+
+	// (5) The closures. readinessState is the daemon's single source of
+	// truth for collector readiness: publishReadiness upserts into it and is
+	// the *only* producer of readinessPayload, so the collector, the
+	// capability-disable path and any future collector all report through
+	// one sink and every frame carries the full merged set. It is seeded
+	// with the startup identity report because the backend never persists
+	// hello.readiness — capability.readiness is the only ingest path, so an
+	// entry that travels only in hello never reaches the server at all.
+	// queueReadiness rate-limits those frames to one per
+	// readinessReportInterval unless forced (a changed report, or a fresh
+	// connection); applyHostConfig (re)installs the host collector to match
+	// the gate's current grant.
+	dataFrames := make(chan frame.Frame, 8)
+	controlFrames := make(chan frame.Frame, 8)
+	// The interface enumerator is captured here, once, rather than read from
+	// its package var at each use. publishReadiness runs on the host
+	// collector's own goroutine as well as on the link's, and a test that
+	// restores the seam in t.Cleanup while that goroutine is still collecting
+	// would race with it. Production never reassigns it, so the capture costs
+	// nothing and makes the seam a construction-time one.
+	networkFacts := hostNetworkFacts
+	var linked atomic.Bool
+	var readinessMu sync.Mutex
+	readinessState := make(map[string]frame.Readiness, len(identityReadiness)+len(hostcollect.CollectorNames))
+	for _, r := range identityReadiness {
+		readinessState[r.Collector] = r
+	}
+	var readinessPayload json.RawMessage
+	var readinessSentAt time.Time
+	// The last networks report that was actually enumerated. capability.readiness
+	// carries `networks` with no omitempty (D-8) so that an agent which has lost
+	// every interface can send `[]` and replace the server's copy — which means
+	// there is no encoding for "I could not look". hostinfo.Networks returns nil
+	// for exactly that case, and sending it as `[]` would tell the server every
+	// interface was gone: a wiped scope and a bumped generation every time
+	// /sys/class/net was momentarily unreadable. Repeating the last real report
+	// is the one answer that is true either way, and record_network_facts'
+	// change gate makes the repeat free. The seed is `[]` rather than nil so the
+	// very first frame is still a JSON array; an agent that has never once
+	// enumerated its interfaces has nothing truer to say.
+	lastNetworks := []frame.NetworkFacts{}
+	// A force that has been asked for but not yet spent. The send below is
+	// deliberately non-blocking — controlFrames is bounded and publishReadiness
+	// runs on the host collector's goroutine, which must not stall behind the
+	// link's websocket writer — so a forced frame can be dropped outright. By
+	// then publishReadiness has already overwritten readinessPayload, which
+	// makes the dropped change the new dedup baseline: no later publish of the
+	// same state computes `changed` again, and the reconcile tick's unforced
+	// call is refused by the readinessReportInterval floor. Remembering the
+	// unspent force is what stops that change from being silently swallowed
+	// for a whole report interval — a networks-only change (D-8) has no other
+	// re-reporter, and the server would sit on a stale scope until then.
+	readinessForcePending := false
+	queueReadiness := func(force bool) {
+		// Unlinked: runOnce drops control frames until the connection is
+		// established (internal/link), so sending here would consume the
+		// rate-limit budget for a frame nobody receives — and leave the
+		// agent readiness-dark for up to readinessReportInterval after it
+		// reconnects. Returning *without* stamping readinessSentAt is the
+		// point; OnConnected's queueReadiness(true) re-arms the send.
+		if !linked.Load() {
+			return
+		}
+		readinessMu.Lock()
+		defer readinessMu.Unlock()
+		readinessForcePending = readinessForcePending || force
+		if len(readinessPayload) == 0 || (!readinessForcePending && time.Since(readinessSentAt) < reportInterval) {
+			return
+		}
+		select {
+		case controlFrames <- frame.Frame{Type: frame.TypeCapabilityReadiness, TS: time.Now().UTC(), Payload: append(json.RawMessage(nil), readinessPayload...)}:
+			readinessSentAt = time.Now()
+			// Only a frame that actually left clears the debt. The payload sent
+			// is always the newest one, so a single send settles however many
+			// forces piled up behind a busy writer.
+			readinessForcePending = false
+		default:
+		}
+	}
+	publishReadiness := func(items []frame.Readiness) {
+		// Enumerated before the lock: this is a syscall into the kernel's
+		// interface list, and readinessMu is also taken by queueReadiness on
+		// the link's own goroutine.
+		networks := networkFacts()
+		readinessMu.Lock()
+		if networks == nil {
+			networks = lastNetworks
+		}
+		lastNetworks = networks
+		for _, r := range items {
+			readinessState[r.Collector] = r
+		}
+		merged := make([]frame.Readiness, 0, len(readinessState))
+		for _, r := range readinessState {
+			merged = append(merged, r)
+		}
+		sort.Slice(merged, func(i, j int) bool { return merged[i].Collector < merged[j].Collector })
+		// No nil guard on statusWriter: it is assigned above, before this
+		// closure can exist, and the compiler enforces that via :=.
+		if err := statusWriter.MergeReadiness(merged); err != nil {
+			log.Printf("cb-agent: status: %v", err)
+		}
+		payload, err := json.Marshal(frame.CapabilityReadinessPayload{Readiness: merged, Networks: networks})
+		if err != nil {
+			readinessMu.Unlock()
+			return
+		}
+		changed := !bytes.Equal(readinessPayload, payload)
+		readinessPayload = payload
+		readinessMu.Unlock()
+		queueReadiness(changed)
+	}
+	var collectorMu sync.Mutex
+	var hostRunner *collect.Runner
+	applyHostConfig := func() {
+		collectorMu.Lock()
+		defer collectorMu.Unlock()
+		if hostRunner != nil {
+			hostRunner.Stop()
+			hostRunner = nil
+		}
+		hostCfg, enabled := capGate.HostConfig()
+		if !enabled {
+			// The grant is gone, so nothing will ever report these
+			// collectors again — and ingest_readiness only upserts, it never
+			// deletes. Actively overwriting every host collector with
+			// "disabled" is therefore the only way the server's rows stop
+			// saying "Live" (D-4). Driving it off hostcollect.CollectorNames
+			// rather than a local list is what keeps a newly added probe
+			// from being left behind at a stale state.
+			items := make([]frame.Readiness, 0, len(hostcollect.CollectorNames))
+			for _, name := range hostcollect.CollectorNames {
+				items = append(items, frame.Readiness{Collector: name, State: "disabled"})
+			}
+			publishReadiness(items)
+			return
+		}
+		// Re-enabling needs no symmetric "enabling" report: the runner's very
+		// first collection fires immediately (internal/collect's Runner.run)
+		// and hostcollect.Collect populates readiness for every name in
+		// CollectorNames on every run, error or not — so the disabled rows
+		// above are overwritten by that first report. That coupling is the
+		// reason neither list may drift from the other.
+		hostRunner = collect.NewRunner(newHostCollector(hostCfg), dataFrames)
+		hostRunner.OnReadiness = publishReadiness
+		hostRunner.Reset(ctx, time.Duration(hostCfg.IntervalS)*time.Second)
+	}
+
+	// (6) The probe runtime. Results are data frames, so they go to
+	// dataFrames — never controlFrames: probe.result spools through an outage
+	// instead of being dropped while disconnected, and link's assertDataFrame
+	// panics the other way round. Started before applyProbeConfig runs so
+	// there is a dispatcher and a result pump waiting for the first
+	// assignment; ctx is the daemon's, so a shutdown cancels every open run.
+	probeRuntime := newProbeRuntime(dataFrames)
+	probeRuntime.Start(ctx)
+	applyProbeConfig := func() {
+		cfg, granted := capGate.RemoteProbeConfig()
+		if !granted {
+			// Disable, not just "stop accepting": a revoked grant must stop
+			// probing now rather than at the end of the current deadline, and
+			// every run still open is closed out with a `cancelled` result so
+			// the backend is not left waiting one out.
+			probeRuntime.Disable("remote_probe is not granted on this agent")
+			// The same D-4 reasoning as applyHostConfig's disable branch:
+			// ingest_readiness only ever upserts, so a row nothing will report
+			// again has to be actively overwritten or Agent Detail shows this
+			// vantage as probe-ready forever. Driving it off
+			// probecollect.ProbeNames rather than a local list is what keeps a
+			// newly added check type from being left behind at a stale state.
+			items := make([]frame.Readiness, 0, len(probecollect.ProbeNames))
+			for _, name := range probecollect.ProbeNames {
+				items = append(items, frame.Readiness{Collector: name, State: "disabled"})
+			}
+			publishReadiness(items)
+			return
+		}
+		// The scope this agent enforces is derived here, from *this host's*
+		// own interfaces plus the server's normalized grant config — never
+		// from anything host-editable (§3, and see Gate.RemoteProbeConfig).
+		// Configure needs no restart: an in-flight check keeps running, and a
+		// raised concurrency limit is picked up by the dispatcher within one
+		// poll.
+		scope := netscope.Derive(probeInterfaceFacts(networkFacts()), cfg.Config)
+		probeRuntime.Configure(scope, cfg.MaxConcurrent)
+		publishReadiness(probeReadiness())
+	}
+
+	// (6b) The discovery runtime. Findings — including the terminal summary that
+	// closes the scan job — are data frames, so they go to dataFrames: a
+	// discovery.finding spools through an outage instead of being dropped while
+	// disconnected, which is the whole reason its finding ids are replay-stable
+	// digests rather than fresh samples. Started before applyDiscoveryConfig runs
+	// so there is a dispatcher and a finding pump waiting for the first request;
+	// ctx is the daemon's, so a shutdown cancels every open dispatch and closes
+	// each of them out with a `cancelled` summary.
+	discoverRuntime := newDiscoverRuntime(dataFrames)
+	discoverRuntime.Start(ctx)
+	applyDiscoveryConfig := func() {
+		cfg, granted := capGate.LocalDiscoveryConfig()
+		if !granted {
+			// Disable, not just "stop accepting", for a reason sharper than the
+			// probe half's: D-14 requires a revoked grant to stop scanning now,
+			// and once `local_discovery` is off the backend's own grant gate
+			// drops this agent's terminal discovery.finding — so a dispatch left
+			// running would produce findings nobody accepts and a job nothing
+			// ever closes. Disable cancels each one in flight, and each is closed
+			// out with a `cancelled` summary while the grant that carries it is
+			// still installed.
+			discoverRuntime.Disable("local_discovery is not granted on this agent")
+			// The same D-4 reasoning as the two disable branches above:
+			// ingest_readiness only ever upserts, so a row nothing will report
+			// again has to be actively overwritten or Agent Detail keeps reading
+			// this vantage as a discovery-ready one. Driving it off
+			// discover.DiscoverNames rather than a local list is what keeps a
+			// newly added discovery method from being left behind at a stale
+			// state, and publishing through publishReadiness is what puts these
+			// rows on the same single frame Task 13 gave `networks` to.
+			items := make([]frame.Readiness, 0, len(discovercollect.DiscoverNames))
+			for _, name := range discovercollect.DiscoverNames {
+				items = append(items, frame.Readiness{Collector: name, State: "disabled"})
+			}
+			publishReadiness(items)
+			return
+		}
+		// The same derivation applyProbeConfig makes, from the same enumerator:
+		// this host's own interfaces plus the server's normalized grant config,
+		// never anything host-editable (§3). There is deliberately no second
+		// enumerator — the server compares the facts this agent reports against
+		// the ones it stored to decide whether the scope generation moved, and two
+		// enumerators that disagreed would churn it forever.
+		//
+		// Configure needs no restart: a dispatch in flight keeps running against
+		// the authorization it was admitted under, and the next request is judged
+		// against this validator. A grant change that *invalidates* live work is
+		// D-16's scope-version path, which the server drives with an explicit
+		// discovery.cancel per dispatch, because only the server knows which jobs
+		// it has already closed.
+		scope := netscope.Derive(probeInterfaceFacts(networkFacts()), cfg.Config)
+		discoverRuntime.Configure(scope, discovercollect.NewValidator(cfg, nil))
+		publishReadiness(discoverReadiness(ctx))
+	}
+
+	// onCapabilitiesSet installs a server grant payload. Per-capability faults
+	// are not frame failures — returning nil for a fault-only outcome is what
+	// stops internal/link's runOnce from logging the whole capabilities.set as
+	// failed — they are reported as capability.<name> = degraded through the
+	// same publishReadiness sink every collector uses. Only a payload that is
+	// not a grant map at all is an error, and that leaves the gate untouched.
+	onCapabilitiesSet := func(payload json.RawMessage) error {
+		faults, err := capGate.ApplyGrants(payload)
+		if err != nil {
+			return err
+		}
+		if err := statusWriter.SetGrants(capGate.Grants()); err != nil {
+			log.Printf("cb-agent: status: %v", err)
+		}
+		publishReadiness(capabilityReadiness(capGate.Snapshot(), faults))
+		applyHostConfig()
+		applyProbeConfig()
+		applyDiscoveryConfig()
+		return nil
+	}
+
+	// The cached grant's faults, now that there is somewhere to report them.
+	// Publishing "ready" for the capabilities that loaded cleanly is what lets
+	// a corrected config clear a previously degraded row.
+	publishReadiness(capabilityReadiness(capGate.Snapshot(), cachedGrantFaults))
+
+	// (7) Reconciliation. The 15-minute floor in queueReadiness needs
+	// something to push against: without this ticker the only caller is a
+	// successful collection, so a disabled or persistently failing collector
+	// silently stops reporting altogether — precisely the state the server
+	// most needs to hear about. It queues rather than sends: queueReadiness
+	// is the single funnel, and controlFrames is drained by the one
+	// websocket writer in internal/link's runOnce select loop.
+	go func() {
+		ticker := time.NewTicker(tickInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				queueReadiness(false)
+			}
+		}
+	}()
+
+	// (8) Last: this starts the collector goroutine, whose first collection
+	// fires immediately (internal/collect's Runner.run), and opens (or, for an
+	// ungranted capability, actively closes) this agent's probe and discovery
+	// scopes.
+	applyHostConfig()
+	applyProbeConfig()
+	applyDiscoveryConfig()
+
+	return &daemonRuntime{
+		capGate:              capGate,
+		statusWriter:         statusWriter,
+		sp:                   sp,
+		dataFrames:           dataFrames,
+		controlFrames:        controlFrames,
+		linked:               &linked,
+		probeRuntime:         probeRuntime,
+		discoverRuntime:      discoverRuntime,
+		queueReadiness:       queueReadiness,
+		publishReadiness:     publishReadiness,
+		applyHostConfig:      applyHostConfig,
+		applyProbeConfig:     applyProbeConfig,
+		applyDiscoveryConfig: applyDiscoveryConfig,
+		onCapabilitiesSet:    onCapabilitiesSet,
+		stop: func() {
+			collectorMu.Lock()
+			if hostRunner != nil {
+				hostRunner.Stop()
+				hostRunner = nil
+			}
+			collectorMu.Unlock()
+			probeRuntime.Stop()
+			discoverRuntime.Stop()
+		},
+	}, nil
+}
+
+// capabilityFaultRemediation is the operator-facing instruction attached to
+// every capability.<name> = degraded readiness row.
+const capabilityFaultRemediation = "correct this capability's configuration in Agent Detail"
+
+// capabilityReadiness turns an installed grant snapshot plus the faults it was
+// installed with into one readiness row per capability: degraded (with the
+// reason) for a capability whose configuration could not be honored as sent,
+// ready for every capability that applied cleanly. Reporting the clean ones too
+// is what makes a corrected configuration clear its own degraded row —
+// ingest_readiness only ever upserts, so a row the UI should stop showing must
+// be actively overwritten.
+func capabilityReadiness(snapshot capability.Snapshot, faults []capability.GrantFault) []frame.Readiness {
+	reasons := make(map[string]string, len(faults))
+	for _, f := range faults {
+		reasons[f.Capability] = f.Reason
+	}
+	items := make([]frame.Readiness, 0, len(snapshot))
+	for name := range snapshot {
+		if reason, ok := reasons[name]; ok {
+			items = append(items, frame.Readiness{
+				Collector:   "capability." + name,
+				State:       "degraded",
+				Reason:      reason,
+				Remediation: capabilityFaultRemediation,
+			})
+			continue
+		}
+		items = append(items, frame.Readiness{Collector: "capability." + name, State: "ready"})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Collector < items[j].Collector })
+	return items
+}
+
+// openSpool opens the outbound data-frame spool at stateDir, defaulting its
+// capacity to spool.DefaultCapBytes when cfg leaves SpoolCapBytes at its
+// zero value (no spool_cap_bytes configured in agent.toml), and reports the
+// spool's post-recovery depth/size into statusWriter. spool.Open's load()
+// does the actual unclean-shutdown recovery (internal/spool); calling it
+// here, before the daemon's first link attempt, is what makes that recovery
+// happen at daemon startup rather than never.
+func openSpool(cfg *config.Config, stateDir string, statusWriter *status.Writer) (*spool.Spool, error) {
+	capBytes := cfg.SpoolCapBytes
+	if capBytes <= 0 {
+		capBytes = spool.DefaultCapBytes
+	}
+	sp, err := spool.Open(stateDir, capBytes)
+	if err != nil {
+		return nil, err
+	}
+	size, err := sp.SizeBytes()
+	if err != nil {
+		return nil, err
+	}
+	if err := statusWriter.SetSpoolStats(sp.Len(), size); err != nil {
+		log.Printf("cb-agent: status: %v", err)
+	}
+	// The eviction record survives restarts (spool.Open reloads
+	// queue.evicted), so it has to be published into status.json at startup
+	// too — otherwise `cb-agent status` would report no loss at all until the
+	// next eviction, which is precisely the silence this reporting exists to
+	// end.
+	if err := statusWriter.SetSpoolEvictions(sp.EvictionStats()); err != nil {
+		log.Printf("cb-agent: status: %v", err)
+	}
+	return sp, nil
+}
