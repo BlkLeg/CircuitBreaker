@@ -1,0 +1,62 @@
+import AxeBuilder from '@axe-core/playwright';
+import { expect, test } from '@playwright/test';
+import { expectNoErrorBoundary, stubApi, waitForRouteSettled } from './fixtures/api';
+
+/**
+ * The topology map with real nodes on the canvas.
+ *
+ * The map has six Vitest tests against 3,025 lines, and every one of them
+ * renders the page with an empty graph — so the canvas, the node components and
+ * the sidebar have no coverage at all with data in them. The existing WCAG
+ * sweep scans `/map` for the same reason and hits the same empty page.
+ *
+ * That gap is why `MapPage` was left whole when `SettingsPage` and
+ * `OOBEWizardPage` were split: there was nothing to refactor against. This is
+ * the start of the safety net that a later split needs.
+ */
+
+const HARDWARE = [
+  { id: 1, name: 'edge-router', type: 'hardware', vendor: 'MikroTik', status: 'active' },
+  { id: 2, name: 'nas-01', type: 'hardware', vendor: 'Synology', status: 'active' },
+];
+
+const GRAPH = {
+  nodes: [
+    { id: 'hardware-1', type: 'hardware', label: 'edge-router', data: { entity_id: 1 } },
+    { id: 'hardware-2', type: 'hardware', label: 'nas-01', data: { entity_id: 2 } },
+  ],
+  edges: [{ id: 'e1', source: 'hardware-1', target: 'hardware-2', type: 'smart' }],
+};
+
+const POPULATED = { hardware: HARDWARE, graph: GRAPH, 'graph/topology': GRAPH };
+
+test.describe('topology map', () => {
+  test('renders a populated graph and mounts its lazy canvas', async ({ page }) => {
+    await stubApi(page, POPULATED);
+    await page.goto('/map');
+    await waitForRouteSettled(page);
+
+    await expectNoErrorBoundary(page, 'map with nodes');
+    // `SigmaMap` is behind `lazyRoute`, so this also covers the chunk resolving
+    // against a real build — the failure class this suite was built for.
+    await expect(page.locator('.map-page')).toBeVisible();
+  });
+
+  test('has no serious or critical WCAG violations with nodes on the canvas', async ({ page }) => {
+    await stubApi(page, POPULATED);
+    await page.goto('/map');
+    await waitForRouteSettled(page);
+    await expect(page.locator('.map-page')).toBeVisible();
+
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
+      .analyze();
+    const serious = results.violations.filter((v) =>
+      ['serious', 'critical'].includes(v.impact ?? '')
+    );
+    expect(
+      serious.map((v) => `${v.id}: ${v.nodes.length} node(s) — ${v.help}`),
+      'serious/critical WCAG violations on the populated map'
+    ).toEqual([]);
+  });
+});
