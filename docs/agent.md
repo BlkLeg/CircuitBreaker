@@ -885,9 +885,37 @@ without waiting for a reconnect.
 | Observation | Meaning |
 |---|---|
 | Depth grows while `link: connected` | The link is flapping — check for a reconnect loop in the journal |
-| Depth stays flat at the cap | Frames are being evicted; the outage is longer than the buffer |
+| Depth stays flat at the cap | Frames are being evicted; the outage is longer than the buffer. The loss is reported explicitly — see below |
 | Depth falls slowly after reconnect | Normal. Catch-up is deliberately paced at 4 frames (or 256 KiB) per 100 ms so a backlog cannot stall live telemetry |
 | Depth never falls | The drain is failing — look for send errors in the journal |
+
+### When the spool discards data
+
+Eviction is not silent. Every eviction batch writes a `WARNING` line to the agent's log naming
+what was destroyed, the record is persisted to `/var/lib/cb-agent/queue.evicted` (cumulative for
+the life of the state directory — the agent never resets it), and `cb-agent status` reports it
+whenever it is non-zero:
+
+```
+spool loss: 9412 observation(s) (33554432 bytes) were permanently discarded because the spool hit its size cap
+  destroyed window: 2026-09-01T00:00:00Z .. 2026-09-03T18:30:00Z (this data is gone and cannot be recovered)
+  most recently discarded: 2026-09-03T18:30:05Z
+  remedy: raise spool_cap_bytes in agent.toml so a longer outage fits, then restart the agent
+```
+
+The same four numbers ride `hello` and every `heartbeat`, so the server records them on the
+agent's row, writes a permanent `spool_evicted` audit event each time the reported total rises,
+and the fleet table and Telemetry tab both show the loss as its own critical state. It is
+deliberately kept apart from the catch-up indicator: a backlog drains, and this does not.
+
+A **decrease** in the reported total is recorded as `spool_eviction_counter_reset` rather than
+being ignored — the agent never resets the counter itself, so a decrease means its state
+directory was recreated, which is itself worth knowing.
+
+The server counts its own losses too. Frames it refuses on ingest — because the capability is
+switched off, or the agent is not approved — are counted on the agent's row and shown on the
+Telemetry tab. The matching audit events are rate-limited to one a minute; the counter is not,
+so it is the honest total.
 
 Every spooled frame carries its original timestamp, so recovered data lands in the right time
 bucket rather than bunching at the reconnect moment. Delivery is at-least-once by construction;

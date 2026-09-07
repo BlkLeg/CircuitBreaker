@@ -169,6 +169,22 @@ class AgentPresenceRead(BaseModel):
     spool_depth: int | None = None
     spool_bytes: int | None = None
     spool_reported_at: datetime | None = None
+    # What that agent's spool has *permanently destroyed*, and the window of
+    # observations that is gone. A separate group from the three above rather
+    # than a flag on them, because they describe different futures: a backlog
+    # drains, and this does not. The fleet table shows both, and phase 4's
+    # "this reading is stale" is a third, equally separate fact — the row must
+    # be able to say "history was destroyed" and "the current backlog is
+    # unknown" at the same time, since an operator needs both.
+    #
+    # `None` means "never reported" (an agent predating the fields) and stays
+    # distinct from 0 ("reported, and nothing has been destroyed"), so the UI
+    # renders nothing rather than a reassuring zero.
+    spool_evicted_frames: int | None = None
+    spool_evicted_bytes: int | None = None
+    spool_evicted_oldest_at: datetime | None = None
+    spool_evicted_newest_at: datetime | None = None
+    spool_evicted_reported_at: datetime | None = None
 
 
 class AgentSeriesPoint(BaseModel):

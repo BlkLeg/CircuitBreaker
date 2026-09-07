@@ -174,6 +174,39 @@ func TestPrintStatus_ReflectsWriterState(t *testing.T) {
 			wantAll: []string{
 				"spool: depth=7 bytes=12345",
 			},
+			// A healthy agent must not be told about a loss it has not had:
+			// a permanent "spool loss: 0" line is a line operators learn to
+			// skip, which would defeat it on the one agent where it matters.
+			wantNot: []string{"spool loss"},
+		},
+		{
+			// The point of Phase 3: destroyed history is stated in plain
+			// words, names the window that is gone, and names the remedy.
+			name: "permanently discarded observations are reported in full",
+			mutate: func(w *status.Writer) error {
+				return w.SetSpoolEvictions(spool.EvictionStats{
+					Frames:          9412,
+					Bytes:           33554432,
+					OldestDroppedTS: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+					NewestDroppedTS: time.Date(2026, 9, 3, 18, 30, 0, 0, time.UTC),
+					LastEvictedAt:   time.Date(2026, 9, 3, 18, 30, 5, 0, time.UTC),
+				})
+			},
+			wantAll: []string{
+				"spool loss: 9412 observation(s) (33554432 bytes) were permanently discarded",
+				"destroyed window: 2026-09-01T00:00:00Z .. 2026-09-03T18:30:00Z",
+				"cannot be recovered",
+				"spool_cap_bytes in agent.toml",
+			},
+		},
+		{
+			// An agent that reports eviction state with nothing destroyed is
+			// as silent as one that predates the field. Zero is not news.
+			name: "an explicit zero eviction record prints nothing",
+			mutate: func(w *status.Writer) error {
+				return w.SetSpoolEvictions(spool.EvictionStats{})
+			},
+			wantNot: []string{"spool loss"},
 		},
 	}
 

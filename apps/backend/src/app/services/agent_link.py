@@ -117,6 +117,27 @@ async def _handle_heartbeat(db: Session, agent: Agent, frame: AgentFrame) -> Non
         # always ship) but the semantics have to hold regardless of sender.
         size_bytes = payload.spool_bytes if "spool_bytes" in payload.model_fields_set else None
         agent_registry.record_spool_stats(agent, payload.spool_depth, size_bytes)
+    if "spool_evicted_frames" in payload.model_fields_set:
+        # What the agent's spool permanently destroyed to stay under its cap.
+        #
+        # It rides the heartbeat rather than `capability.violation` or a
+        # readiness row, and the reasoning is recorded here because it is the
+        # kind of choice that gets re-argued: the heartbeat already carries
+        # spool state and this server already gates that on key *presence*, so
+        # neither side needs a new mechanism; it re-asserts every 20s, so a
+        # heartbeat lost to a dropped connection self-heals rather than losing
+        # the report; `capability.violation` has a closed vocabulary about
+        # scope refusals that an eviction would corrupt; and readiness is
+        # about a collector's ability to run, which is not what failed — the
+        # collector ran, the buffer beneath it overflowed.
+        agent_registry.record_spool_evictions(
+            db,
+            agent,
+            payload.spool_evicted_frames,
+            payload.spool_evicted_bytes,
+            payload.spool_evicted_oldest_ts,
+            payload.spool_evicted_newest_ts,
+        )
     # The connection-ownership registry (Task 8) is *not* refreshed here.
     # It used to be, via agent_registry.refresh_agent_connection(agent.id)
     # — but that call only ever has access to agent_registry's default,
@@ -159,6 +180,14 @@ async def _handle_host_telemetry(db: Session, agent: Agent, frame: AgentFrame) -
     try:
         await agent_telemetry.ingest_host_sample(db, agent, frame.payload, frame.ts)
     except agent_telemetry.InvalidHostTelemetry as exc:
+        # The sample is now gone. Count it *outside* the throttle below: the
+        # event row is rate-limited to one a minute on purpose, so the audit
+        # trail undercounts, and an operator must still be able to see how
+        # many samples this server actually threw away. `ingest_host_sample`
+        # raises this for an agent whose status is not `active`, which is a
+        # perfectly ordinary steady state — one an agent can sit in for days,
+        # silently losing every sample it sends.
+        agent_registry.record_refused_frame(agent, agent_registry.REFUSAL_INVALID_HOST_TELEMETRY)
         record, count = agent_telemetry.recordable_violation(agent.id)
         if record:
             agent_registry.record_event(
@@ -185,6 +214,9 @@ async def _handle_probe_result(db: Session, agent: Agent, frame: AgentFrame) -> 
     try:
         await agent_probe.ingest_probe_result(db, agent, frame.payload)
     except agent_probe.InvalidProbeResult as exc:
+        # Counted outside the throttle, for the reason `_handle_host_telemetry`
+        # sets out: the event row is one a minute, the loss is not.
+        agent_registry.record_refused_frame(agent, agent_registry.REFUSAL_INVALID_PROBE_RESULT)
         record, count = agent_telemetry.recordable_violation(agent.id)
         if record:
             agent_registry.record_event(
@@ -219,6 +251,10 @@ async def _handle_discovery_finding(db: Session, agent: Agent, frame: AgentFrame
     try:
         await agent_discovery.ingest_discovery_finding(db, agent, frame.payload)
     except agent_discovery.InvalidDiscoveryFinding as exc:
+        # Before the `audited` early return, not after: that branch wrote its
+        # own event but the finding was still refused and dropped, and the
+        # counter measures frames destroyed, not rows written.
+        agent_registry.record_refused_frame(agent, agent_registry.REFUSAL_INVALID_DISCOVERY_FINDING)
         if exc.audited:
             return
         record, count = agent_telemetry.recordable_violation(agent.id)
@@ -544,6 +580,15 @@ def receive_frame(
 async def dispatch_frame(db: Session, agent: Agent, frame: AgentFrame) -> None:
     required = CAPABILITY_FOR_TYPE.get(frame.type)
     if required is not None and not agent_registry.grants_dict(db, agent.id).get(required, False):
+        # This gate drops the frame entirely — a `telemetry.host` sample from
+        # an agent whose `host_telemetry` grant is off is destroyed here, not
+        # queued. Counting it alongside the audit row is what lets an operator
+        # see the *volume* of what a withheld grant is discarding, rather than
+        # only that it happened at least once.
+        # Unconditional here: every key of CAPABILITY_FOR_TYPE is a data
+        # frame carrying an observation, so reaching this branch always means
+        # a measurement was destroyed.
+        agent_registry.record_refused_frame(agent, agent_registry.REFUSAL_CAPABILITY_WITHHELD)
         agent_registry.record_event(
             db,
             agent.id,

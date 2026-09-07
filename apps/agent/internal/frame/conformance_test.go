@@ -142,6 +142,24 @@ func roundTripHelloPayload(t *testing.T, raw json.RawMessage) {
 	if !slicesEqualIgnoringNil(first.PrimaryMACs, second.PrimaryMACs) {
 		t.Errorf("HelloPayload.PrimaryMACs round-trip mismatch: got %v, want %v", second.PrimaryMACs, first.PrimaryMACs)
 	}
+	compareEvictionFields(t, "HelloPayload",
+		evictionFields{first.SpoolEvictedFrames, first.SpoolEvictedBytes, first.SpoolEvictedOldestTS, first.SpoolEvictedNewestTS},
+		evictionFields{second.SpoolEvictedFrames, second.SpoolEvictedBytes, second.SpoolEvictedOldestTS, second.SpoolEvictedNewestTS})
+	// hello's eviction group carries no omitempty either, for the same
+	// reason: an old agent's silence and a current agent's explicit zero must
+	// not encode identically.
+	helloKeys := map[string]json.RawMessage{}
+	if err := json.Unmarshal(reencoded, &helloKeys); err != nil {
+		t.Fatalf("HelloPayload re-decode as map error = %v", err)
+	}
+	for _, key := range []string{
+		"spool_evicted_frames", "spool_evicted_bytes",
+		"spool_evicted_oldest_ts", "spool_evicted_newest_ts",
+	} {
+		if _, ok := helloKeys[key]; !ok {
+			t.Errorf("re-encoded HelloPayload %s omits %q — the eviction group may not carry omitempty", reencoded, key)
+		}
+	}
 	if len(first.Readiness) != len(second.Readiness) || (len(first.Readiness) > 0 && !reflect.DeepEqual(first.Readiness, second.Readiness)) {
 		t.Errorf("HelloPayload.Readiness round-trip mismatch: got %+v, want %+v", second.Readiness, first.Readiness)
 	}
@@ -309,17 +327,67 @@ func roundTripHeartbeatPayload(t *testing.T, raw json.RawMessage) {
 	if err := json.Unmarshal(reencoded, &keys); err != nil {
 		t.Fatalf("HeartbeatPayload re-decode as map error = %v", err)
 	}
-	for _, key := range []string{"spool_depth", "spool_bytes"} {
+	// The eviction counters join the backlog pair under the same rule: an
+	// explicit 0 ("reports eviction state, destroyed nothing") must stay
+	// distinguishable from an absent key ("predates the field"), which is
+	// only true while none of them carries omitempty.
+	for _, key := range []string{
+		"spool_depth", "spool_bytes",
+		"spool_evicted_frames", "spool_evicted_bytes",
+		"spool_evicted_oldest_ts", "spool_evicted_newest_ts",
+	} {
 		if _, ok := keys[key]; !ok {
-			t.Errorf("re-encoded HeartbeatPayload %s omits %q — neither field may carry omitempty", reencoded, key)
+			t.Errorf("re-encoded HeartbeatPayload %s omits %q — none of these fields may carry omitempty", reencoded, key)
 		}
 	}
 	var second HeartbeatPayload
 	if err := json.Unmarshal(reencoded, &second); err != nil {
 		t.Fatalf("HeartbeatPayload re-decode error = %v", err)
 	}
-	if first != second {
+	if first.SpoolDepth != second.SpoolDepth || first.SpoolBytes != second.SpoolBytes ||
+		first.TLSPinSuccessorReady != second.TLSPinSuccessorReady ||
+		first.TLSPinSuccessorFingerprint != second.TLSPinSuccessorFingerprint {
 		t.Errorf("HeartbeatPayload round-trip mismatch: got %+v, want %+v", second, first)
+	}
+	compareEvictionFields(t, "HeartbeatPayload",
+		evictionFields{first.SpoolEvictedFrames, first.SpoolEvictedBytes, first.SpoolEvictedOldestTS, first.SpoolEvictedNewestTS},
+		evictionFields{second.SpoolEvictedFrames, second.SpoolEvictedBytes, second.SpoolEvictedOldestTS, second.SpoolEvictedNewestTS})
+}
+
+// evictionFields is the four-field spool-loss group hello and heartbeat both
+// carry, lifted into one shape so a single comparison covers both.
+type evictionFields struct {
+	frames int64
+	bytes  int64
+	oldest *time.Time
+	newest *time.Time
+}
+
+// compareEvictionFields checks a round trip of the spool-loss group. The
+// timestamps are pointers precisely so "nothing was destroyed" is a JSON
+// `null` rather than a year-1 instant the backend would persist as a real
+// observation time, so nil-vs-set is itself part of the contract and is
+// asserted rather than being tolerated.
+func compareEvictionFields(t *testing.T, what string, first, second evictionFields) {
+	t.Helper()
+	if first.frames != second.frames || first.bytes != second.bytes {
+		t.Errorf("%s eviction counters round-trip mismatch: got %d/%d, want %d/%d",
+			what, second.frames, second.bytes, first.frames, first.bytes)
+	}
+	for _, pair := range []struct {
+		name string
+		a, b *time.Time
+	}{
+		{"spool_evicted_oldest_ts", first.oldest, second.oldest},
+		{"spool_evicted_newest_ts", first.newest, second.newest},
+	} {
+		if (pair.a == nil) != (pair.b == nil) {
+			t.Errorf("%s.%s round-trip changed nil-ness: got %v, want %v", what, pair.name, pair.b, pair.a)
+			continue
+		}
+		if pair.a != nil && !pair.a.Equal(*pair.b) {
+			t.Errorf("%s.%s round-trip mismatch: got %v, want %v", what, pair.name, *pair.b, *pair.a)
+		}
 	}
 }
 

@@ -134,6 +134,51 @@ function SpoolChip({ depth }) {
 
 SpoolChip.propTypes = { depth: PropTypes.number.isRequired };
 
+// The critical-tone sibling of SpoolChip, for history the agent has already
+// destroyed. Deliberately a second chip rather than a `tone` prop on the one
+// above, and rendered *alongside* it rather than instead of it: the backlog
+// and the loss are independent facts with independent futures — the backlog
+// drains, the loss does not — and an agent in trouble usually has both. One
+// chip that changed colour would make the row able to state only whichever
+// fact the code happened to check first.
+//
+// `lost` rather than `spool`, so the two are not read as one number in two
+// moods.
+function SpoolLossChip({ frames, oldestAt, newestAt }) {
+  const definition = agentStateDefinition('spool_evicted');
+  const window =
+    oldestAt && newestAt
+      ? ` The gap covers ${new Date(oldestAt).toLocaleString()} to ${new Date(newestAt).toLocaleString()}.`
+      : '';
+  const explanation = `${definition.summary}${window} What to do: ${definition.action}`;
+  return (
+    <span
+      className="fleet-chip"
+      data-tone="critical"
+      data-state="spool_evicted"
+      title={explanation}
+    >
+      lost {frames}
+      <span className="sr-only"> — {explanation}</span>
+    </span>
+  );
+}
+
+SpoolLossChip.propTypes = {
+  frames: PropTypes.number.isRequired,
+  oldestAt: PropTypes.string,
+  newestAt: PropTypes.string,
+};
+
+// Whether this row has a destroyed-history fact to state. `null`/undefined is
+// "never reported" (a build predating the counters) and an explicit 0 is a
+// real report of no loss — both render nothing, and neither is a zero the
+// operator could mistake for a confirmation the other way round.
+function spoolLossOf(agent) {
+  const frames = agent?.spool_evicted_frames;
+  return typeof frames === 'number' && frames > 0 ? frames : null;
+}
+
 // The states the status cell already renders in its own dense vocabulary (the
 // dot, the presence word, the status chip, the spool chip). Rendering an
 // AgentStateChip for these too would say the same thing twice in a 34px row;
@@ -146,6 +191,9 @@ const STATES_THE_ROW_ALREADY_SHOWS = new Set([
   'rejected',
   'pending_approval',
   'spool_pressure',
+  // Rendered as its own chip below, in both the online and the offline cell,
+  // so an AgentStateChip for it would say the same thing twice in a 34px row.
+  'spool_evicted',
 ]);
 
 function AgentCell({ agent }) {
@@ -196,6 +244,11 @@ function StatusCell({ agent, state, states }) {
   // its own operator action, so an operator never has to open the agent to
   // learn that something other than "up or down" is wrong with it.
   const advisory = states.filter((item) => !STATES_THE_ROW_ALREADY_SHOWS.has(item.code));
+  // Suppressed while the agent is offline only because OfflineCell renders the
+  // very same chip in the metric columns — the fact must appear exactly once
+  // per row, not zero times and not twice. Presence-unknown still shows it
+  // here, since OfflineCell does not run for that case.
+  const spoolLoss = agent.online === false ? null : spoolLossOf(agent);
   return (
     <td className="fleet-cell">
       <span className="fleet-dot" data-state={state} />
@@ -205,6 +258,16 @@ function StatusCell({ agent, state, states }) {
           predicts trouble before anything goes red, so it sits beside the
           status word rather than hidden in the metric columns. */}
       {hasBacklog && <SpoolChip depth={agent.spool_depth} />}
+      {/* Beside the backlog chip, never in place of it. A spool that has
+          already overflowed is normally still full, and the row has to be
+          able to say both. */}
+      {spoolLoss !== null && (
+        <SpoolLossChip
+          frames={spoolLoss}
+          oldestAt={agent.spool_evicted_oldest_at}
+          newestAt={agent.spool_evicted_newest_at}
+        />
+      )}
       {advisory.map((item) => (
         <AgentStateChip key={item.code} state={item} />
       ))}
@@ -325,10 +388,21 @@ function OfflineCell({ agent }) {
   // Spool depth matters most here: it is what the agent will replay when it
   // comes back, and whether it is about to hit its local cap.
   const hasSpool = typeof agent.spool_depth === 'number' && agent.spool_depth > 0;
+  // And whether it has already run out of room: an agent that is offline long
+  // enough to fill its spool is exactly the case where the loss is happening
+  // right now and nobody is watching the detail page.
+  const spoolLoss = spoolLossOf(agent);
   return (
     <td className="fleet-cell fleet-muted" colSpan={METRIC_COLUMN_SPAN}>
       {offlineSummary(agent)}
       {hasSpool && <SpoolChip depth={agent.spool_depth} />}
+      {spoolLoss !== null && (
+        <SpoolLossChip
+          frames={spoolLoss}
+          oldestAt={agent.spool_evicted_oldest_at}
+          newestAt={agent.spool_evicted_newest_at}
+        />
+      )}
     </td>
   );
 }

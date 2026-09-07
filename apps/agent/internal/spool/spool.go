@@ -4,11 +4,13 @@ package spool
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"circuitbreaker.dev/cb-agent/internal/frame"
 )
@@ -60,6 +62,11 @@ type Spool struct {
 	// maintained incrementally on load/enqueue/commit/compact so SizeBytes
 	// is O(1) instead of re-encoding the whole queue.
 	bytes int64
+	// evictedPath / evicted are the permanent record of what the
+	// drop-oldest policy has destroyed — see evictions.go. Cumulative for
+	// the life of the state directory and never reset by this package.
+	evictedPath string
+	evicted     EvictionStats
 }
 
 // entry is one queued frame plus the encoded length (including its trailing
@@ -76,9 +83,17 @@ func Open(stateDir string, capBytes int64) (*Spool, error) {
 		return nil, fmt.Errorf("spool: create state dir: %w", err)
 	}
 	s := &Spool{
-		path:     filepath.Join(stateDir, queueFilename),
-		headPath: filepath.Join(stateDir, headFilename),
-		capBytes: capBytes,
+		path:        filepath.Join(stateDir, queueFilename),
+		headPath:    filepath.Join(stateDir, headFilename),
+		evictedPath: filepath.Join(stateDir, evictedFilename),
+		capBytes:    capBytes,
+	}
+	// Before load(): the eviction record describes history this state
+	// directory has already destroyed, and an agent restart must not be able
+	// to zero it. A read failure is fatal to Open for the same reason —
+	// continuing with a blank record would silently under-report the loss.
+	if err := s.loadEvictions(); err != nil {
+		return nil, err
 	}
 	if err := s.load(); err != nil {
 		return nil, err
@@ -261,16 +276,65 @@ func (s *Spool) Enqueue(f frame.Frame) error {
 	s.entries = append(s.entries, entry{f: f, n: int64(len(data)) + 1})
 	s.bytes += int64(len(data)) + 1
 
-	evicted := false
+	// Eviction is the drop-oldest policy the spool has always had. What is
+	// new is that it is recorded and said out loud: `batch` accumulates this
+	// one Enqueue's losses so the log line below fires once per batch rather
+	// than once per destroyed frame, and s.evicted accumulates them for the
+	// life of the state directory.
+	var batch EvictionStats
 	for s.bytes > s.capBytes && len(s.entries)-s.head > 1 {
-		s.bytes -= s.entries[s.head].n
+		dropped := s.entries[s.head]
+		s.bytes -= dropped.n
 		s.head++
-		evicted = true
+		batch.Frames++
+		batch.Bytes += dropped.n
+		// The dropped frame's own TS, not time.Now(): the fact worth
+		// recording is which observations were lost, not when the eviction
+		// ran. LastEvictedAt below is the wall-clock half.
+		batch.widen(dropped.f.TS)
 	}
-	if evicted {
-		return s.compactLocked()
+	if batch.Frames == 0 {
+		return nil
 	}
-	return nil
+
+	s.evicted.Frames += batch.Frames
+	s.evicted.Bytes += batch.Bytes
+	s.evicted.widen(batch.OldestDroppedTS)
+	s.evicted.widen(batch.NewestDroppedTS)
+	s.evicted.LastEvictedAt = time.Now().UTC()
+
+	// WARNING-level by intent, and unconditional: this is the only local
+	// signal that observations were permanently destroyed, and an operator
+	// reading the agent log must not have to already suspect it to find it.
+	log.Printf(
+		"cb-agent: spool: WARNING permanently discarded %d buffered observation(s) (%d bytes) covering %s..%s "+
+			"to stay under the %d-byte cap; cumulative loss for this agent is %d observation(s) / %d bytes. "+
+			"This data is gone and cannot be recovered — raise spool_cap_bytes in agent.toml if the outage window matters.",
+		batch.Frames, batch.Bytes,
+		formatEvictedTS(batch.OldestDroppedTS), formatEvictedTS(batch.NewestDroppedTS),
+		s.capBytes, s.evicted.Frames, s.evicted.Bytes,
+	)
+
+	// Persisted before the compaction that actually rewrites the queue, so a
+	// crash between the two leaves the record over-stating nothing and
+	// under-stating nothing: the frames are already gone from s.entries.
+	// A write failure is loud but not fatal to Enqueue — the frame the caller
+	// handed us *is* spooled, and returning an error here would tell it
+	// otherwise and invite a double-handle.
+	if err := s.persistEvictionsLocked(); err != nil {
+		log.Printf("cb-agent: spool: WARNING could not persist the eviction record: %v", err)
+	}
+	return s.compactLocked()
+}
+
+// formatEvictedTS renders one end of a destroyed window for the log line.
+// A frame that carried no timestamp leaves the bound unknown, and saying so
+// is better than printing year 1 as though it were a real observation time.
+func formatEvictedTS(ts time.Time) string {
+	if ts.IsZero() {
+		return "unknown"
+	}
+	return ts.UTC().Format(time.RFC3339)
 }
 
 func (s *Spool) appendLine(data []byte) error {

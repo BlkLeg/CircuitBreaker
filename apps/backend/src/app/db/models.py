@@ -528,6 +528,57 @@ class Agent(Base):
     spool_reported_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # What the agent's spool has *permanently destroyed* to stay inside its
+    # byte cap, cumulatively for the life of its state directory, reported on
+    # `hello` and refreshed on every `heartbeat` (migration 0110).
+    #
+    # Distinct from the three columns above in the way that matters most: a
+    # backlog drains and these do not. `spool_depth` merely stopping its rise
+    # was the *only* symptom of eviction before these existed, and it reads
+    # identically to a healthy drain — which is how a homelab could lose days
+    # of history and never be told.
+    #
+    # `_oldest_at`/`_newest_at` bound the window of observations that is gone,
+    # taken from the destroyed frames' own timestamps rather than from when
+    # the eviction ran: "which history is missing" is the operator's question,
+    # not "when did the buffer overflow".
+    #
+    # NULL means "never reported" — an agent predating the fields — and stays
+    # distinct from 0 ("reported, and nothing has been destroyed"). Nothing
+    # may backfill these; see `agent_registry.record_spool_evictions`, which
+    # gates on wire-key presence, and treats a *decrease* as a state-directory
+    # reset rather than quietly taking the max.
+    spool_evicted_frames: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    spool_evicted_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    spool_evicted_oldest_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    spool_evicted_newest_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    spool_evicted_reported_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Data frames *this server* refused from this agent and dropped on the
+    # floor — the capability gate in `agent_link.dispatch_frame`, and the
+    # `Invalid*` catches in its telemetry/probe/discovery handlers.
+    #
+    # It exists because the matching audit rows are rate-limited to one a
+    # minute through `agent_telemetry.recordable_violation`, so the event
+    # trail undercounts by design. That throttle is correct — thousands of
+    # identical rows bury the trail — but it means an operator reading events
+    # cannot tell nine refusals from nine thousand. This counter is not
+    # throttled, so they can. NULL = nothing has ever been refused.
+    refused_frames: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    refused_frames_last_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    refused_frames_last_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Reserved for the delivery-acknowledgement handshake a later phase adds:
+    # whether this agent and this server negotiated per-frame data acks. It
+    # ships with migration 0110 so these agent columns land in one upgrade
+    # step for a self-hoster, and is deliberately unread until then.
+    data_ack_negotiated: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(

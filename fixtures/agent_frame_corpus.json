@@ -408,6 +408,45 @@
     }
   },
   {
+    "description": "heartbeat \u2014 spool evicted, history permanently destroyed",
+    "json": {
+      "v": 1, "type": "heartbeat", "seq": 45, "ts": "2026-09-06T12:05:40Z",
+      "payload": {
+        "spool_depth": 4096, "spool_bytes": 67108864,
+        "spool_evicted_frames": 9412, "spool_evicted_bytes": 33554432,
+        "spool_evicted_oldest_ts": "2026-09-01T00:00:00Z",
+        "spool_evicted_newest_ts": "2026-09-03T18:30:00Z"
+      }
+    }
+  },
+  {
+    "description": "heartbeat \u2014 reports eviction state with nothing destroyed (explicit zeros, null bounds)",
+    "json": {
+      "v": 1, "type": "heartbeat", "seq": 46, "ts": "2026-09-06T12:06:00Z",
+      "payload": {
+        "spool_depth": 0, "spool_bytes": 0,
+        "spool_evicted_frames": 0, "spool_evicted_bytes": 0,
+        "spool_evicted_oldest_ts": null, "spool_evicted_newest_ts": null
+      }
+    }
+  },
+  {
+    "description": "hello \u2014 at-connect eviction snapshot after a long outage",
+    "json": {
+      "v": 1, "type": "hello", "seq": 0, "ts": "2026-09-06T12:06:20Z",
+      "payload": {
+        "device_pk": "ab12cd34", "hostname": "box4.local", "machine_id_hash": "0badf00d",
+        "os": "linux", "os_version": "6.9", "arch": "amd64", "agent_version": "0.4.0",
+        "primary_macs": ["aa:bb:cc:33:44:55"],
+        "readiness": [{"collector": "host.core", "state": "ready"}],
+        "spool_depth": 4096, "capability_schema": 2,
+        "spool_evicted_frames": 9412, "spool_evicted_bytes": 33554432,
+        "spool_evicted_oldest_ts": "2026-09-01T00:00:00Z",
+        "spool_evicted_newest_ts": "2026-09-03T18:30:00Z"
+      }
+    }
+  },
+  {
     "description": "hello \u2014 with non-zero spool_depth",
     "json": {
       "v": 1, "type": "hello", "seq": 0, "ts": "2026-08-06T12:05:40Z",

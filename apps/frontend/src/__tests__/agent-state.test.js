@@ -412,6 +412,56 @@ describe('capability health and spool pressure', () => {
   });
 });
 
+describe('permanently destroyed history', () => {
+  const base = { status: 'active', online: true, lastSeenAt: iso(5), now: NOW };
+
+  it('raises a critical state naming the destroyed window', () => {
+    const state = deriveAgentStates({
+      ...base,
+      spoolEvictedFrames: 9412,
+      spoolEvictedBytes: 33554432,
+      spoolEvictedOldestAt: '2026-08-20T00:00:00Z',
+      spoolEvictedNewestAt: '2026-08-22T00:00:00Z',
+    }).find((s) => s.code === 'spool_evicted');
+
+    expect(state).toBeTruthy();
+    expect(state.tone).toBe('critical');
+    expect(state.detail.frames).toBe(9412);
+    expect(state.detail.oldestAt).toBe('2026-08-20T00:00:00Z');
+    expect(state.detail.newestAt).toBe('2026-08-22T00:00:00Z');
+  });
+
+  it('outranks spool pressure — a loss that already happened beats one predicted', () => {
+    const order = codes(deriveAgentStates({ ...base, spoolDepth: 5000, spoolEvictedFrames: 12 }));
+    expect(order.indexOf('spool_evicted')).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('spool_evicted')).toBeLessThan(order.indexOf('spool_pressure'));
+  });
+
+  it('coexists with the backlog state rather than replacing it', () => {
+    // They are different facts with different futures — the backlog drains and
+    // the loss does not — and an agent in trouble normally has both. Phase 4
+    // adds a third (the reading is stale); none of them may overwrite another.
+    const held = codes(deriveAgentStates({ ...base, spoolDepth: 5000, spoolEvictedFrames: 12 }));
+    expect(held).toContain('spool_evicted');
+    expect(held).toContain('spool_pressure');
+  });
+
+  it('survives an offline agent — the loss happens during the outage', () => {
+    const held = codes(deriveAgentStates({ ...base, online: false, spoolEvictedFrames: 12 }));
+    expect(held).toContain('spool_evicted');
+  });
+
+  it('says nothing for an explicit zero or for an agent that never reported', () => {
+    expect(codes(deriveAgentStates({ ...base, spoolEvictedFrames: 0 }))).not.toContain(
+      'spool_evicted'
+    );
+    expect(codes(deriveAgentStates({ ...base, spoolEvictedFrames: null }))).not.toContain(
+      'spool_evicted'
+    );
+    expect(codes(deriveAgentStates({ ...base }))).not.toContain('spool_evicted');
+  });
+});
+
 describe('fleetRowStateInput', () => {
   it('maps a merged presence row onto the derivation input', () => {
     const row = {
@@ -424,6 +474,8 @@ describe('fleetRowStateInput', () => {
     };
     const input = fleetRowStateInput(row, { now: NOW });
     expect(input.telemetryIntervalSeconds).toBe(60);
+    // The eviction group rides the same presence row.
+    expect(input.spoolEvictedFrames).toBeUndefined();
     expect(input.hasTelemetryHistory).toBe(true);
     expect(codes(deriveAgentStates(input))).toContain('stale_telemetry');
   });

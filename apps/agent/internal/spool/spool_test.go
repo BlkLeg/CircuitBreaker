@@ -92,14 +92,22 @@ func TestEnqueue_DropsOldestWhenOverCap(t *testing.T) {
 	// A tiny cap that fits only a couple of frames, to exercise eviction
 	// without a 64MB fixture.
 	const tinyCap = 300
-	s, err := Open(t.TempDir(), tinyCap)
+	dir := t.TempDir()
+	s, err := Open(dir, tinyCap)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
 	defer s.Close()
 
+	// The frames are stamped on a fixed, strictly increasing grid rather than
+	// with time.Now(), so the destroyed *window* the stats report is checkable
+	// against known instants instead of against the clock the test runs on.
+	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	firstTS := base
 	for i := uint64(0); i < 10; i++ {
-		if err := s.Enqueue(testFrame(i)); err != nil {
+		f := testFrame(i)
+		f.TS = base.Add(time.Duration(i) * time.Minute)
+		if err := s.Enqueue(f); err != nil {
 			t.Fatalf("Enqueue(%d) error = %v", i, err)
 		}
 	}
@@ -122,6 +130,98 @@ func TestEnqueue_DropsOldestWhenOverCap(t *testing.T) {
 	// Eviction compacts, so the file must not still carry the dropped frames.
 	if lines, want := lineCount(t, filepath.Join(filepath.Dir(s.path), queueFilename)), s.Len(); lines != want {
 		t.Errorf("queue.jsonl lines = %d, want %d — eviction must rewrite the file", lines, want)
+	}
+
+	// The policy is unchanged; what must also hold now is that the loss was
+	// *recorded*. A spool that drops observations and reports nothing is the
+	// defect this half of the test exists to catch: depth simply stops
+	// rising, and nothing else on the agent or the server ever says why.
+	stats := s.EvictionStats()
+	dropped := int64(10 - s.Len())
+	if stats.Frames != dropped {
+		t.Errorf("EvictionStats().Frames = %d, want %d (10 enqueued, %d still queued)", stats.Frames, dropped, s.Len())
+	}
+	if stats.Bytes <= 0 {
+		t.Errorf("EvictionStats().Bytes = %d, want the encoded size of the dropped frames", stats.Bytes)
+	}
+	// The window comes from the dropped frames' own TS, not from wall-clock
+	// now, so it must sit inside the span the fixtures were stamped with.
+	if stats.OldestDroppedTS.IsZero() || stats.NewestDroppedTS.IsZero() {
+		t.Fatalf("EvictionStats() timestamps = %v..%v, want the destroyed window", stats.OldestDroppedTS, stats.NewestDroppedTS)
+	}
+	if stats.NewestDroppedTS.Before(stats.OldestDroppedTS) {
+		t.Errorf("EvictionStats() window %v..%v is inverted", stats.OldestDroppedTS, stats.NewestDroppedTS)
+	}
+	if !stats.OldestDroppedTS.Before(firstTS) && !stats.OldestDroppedTS.Equal(firstTS) {
+		t.Errorf("EvictionStats().OldestDroppedTS = %v, want the *oldest* dropped frame's own TS (<= %v)", stats.OldestDroppedTS, firstTS)
+	}
+	if stats.LastEvictedAt.IsZero() {
+		t.Error("EvictionStats().LastEvictedAt is zero — an eviction happened and must be stamped")
+	}
+
+	// And it must survive an agent restart. The record is the audit trail for
+	// permanently destroyed data; a restart that zeroes it is indistinguishable
+	// from never having lost anything.
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	reopened, err := Open(dir, tinyCap)
+	if err != nil {
+		t.Fatalf("re-Open() error = %v", err)
+	}
+	defer reopened.Close()
+	if got := reopened.EvictionStats(); got != stats {
+		t.Errorf("EvictionStats() after reopen = %+v, want %+v — the record must persist across a restart", got, stats)
+	}
+
+	// Cumulative, never reset: more eviction on the reopened spool adds to
+	// the reloaded total rather than starting a fresh count.
+	for i := uint64(10); i < 20; i++ {
+		if err := reopened.Enqueue(testFrame(i)); err != nil {
+			t.Fatalf("Enqueue(%d) after reopen error = %v", i, err)
+		}
+	}
+	if after := reopened.EvictionStats(); after.Frames <= stats.Frames {
+		t.Errorf("EvictionStats().Frames after further eviction = %d, want > %d (cumulative)", after.Frames, stats.Frames)
+	}
+}
+
+// TestEvictionStats_ZeroWhenNothingEvicted pins the other half of the
+// contract: a spool that has never breached its cap reports an empty record,
+// with zero bounds rather than fabricated ones. `cb-agent status` and the
+// server's UI both key "say nothing" off exactly this.
+func TestEvictionStats_ZeroWhenNothingEvicted(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir, DefaultCapBytes)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer s.Close()
+	for i := uint64(0); i < 5; i++ {
+		if err := s.Enqueue(testFrame(i)); err != nil {
+			t.Fatalf("Enqueue(%d) error = %v", i, err)
+		}
+	}
+	if got := (s.EvictionStats()); got != (EvictionStats{}) {
+		t.Errorf("EvictionStats() = %+v, want the zero value with nothing evicted", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, evictedFilename)); !os.IsNotExist(err) {
+		t.Errorf("os.Stat(%s) err = %v, want the record file to be absent until something is destroyed", evictedFilename, err)
+	}
+}
+
+// TestOpen_RefusesACorruptEvictionRecord pins that a damaged record fails
+// Open rather than resetting to zero. Silently starting the count over is the
+// exact failure mode this file exists to prevent — it would read as "this
+// agent has never lost anything", which is a stronger and falser claim than
+// "this agent cannot tell you".
+func TestOpen_RefusesACorruptEvictionRecord(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, evictedFilename), []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("write corrupt record: %v", err)
+	}
+	if _, err := Open(dir, DefaultCapBytes); err == nil {
+		t.Fatal("Open() error = nil, want a failure rather than a silently reset eviction record")
 	}
 }
 

@@ -278,6 +278,63 @@ def test_heartbeat_empty_payload_is_distinguishable_from_an_explicit_zero_backlo
     )
 
 
+def test_spool_eviction_group_is_present_absent_not_zero_valued():
+    """Phase 3, and the same rule D-12 set for the backlog, applied to the
+    counters that say history was *permanently destroyed*.
+
+    The Go side carries no ``omitempty`` on any of the four, so a current
+    agent always emits them — explicit ``0`` with ``null`` bounds when it has
+    destroyed nothing. An agent that predates the group omits them entirely.
+    Only presence separates "confirmed clean" from "never said", and writing a
+    fabricated 0 for the second would claim a confirmation that never
+    happened. Both ``hello`` and ``heartbeat`` carry the group, because
+    eviction happens while the agent is disconnected and the reconnect is the
+    first moment this server can learn of it at all.
+    """
+    for model in (HeartbeatPayload, HelloPayload):
+        old_agent = model.model_validate({})
+        assert old_agent.spool_evicted_frames == 0
+        assert old_agent.spool_evicted_oldest_ts is None
+        assert "spool_evicted_frames" not in old_agent.model_fields_set
+
+        clean = model.model_validate(
+            {
+                "spool_evicted_frames": 0,
+                "spool_evicted_bytes": 0,
+                "spool_evicted_oldest_ts": None,
+                "spool_evicted_newest_ts": None,
+            }
+        )
+        assert "spool_evicted_frames" in clean.model_fields_set
+        assert clean.spool_evicted_oldest_ts is None
+
+        lossy = model.model_validate(
+            {
+                "spool_evicted_frames": 9412,
+                "spool_evicted_bytes": 33554432,
+                "spool_evicted_oldest_ts": "2026-09-01T00:00:00Z",
+                "spool_evicted_newest_ts": "2026-09-03T18:30:00Z",
+            }
+        )
+        assert lossy.spool_evicted_frames == 9412
+        assert lossy.spool_evicted_bytes == 33554432
+        assert lossy.spool_evicted_oldest_ts is not None
+        assert lossy.spool_evicted_newest_ts is not None
+        assert model.model_validate_json(lossy.model_dump_json()) == lossy
+
+    heartbeats = [entry["json"]["payload"] for entry in _corpus_entries_of_type(TYPE_HEARTBEAT)]
+    assert any(p.get("spool_evicted_frames") for p in heartbeats), (
+        "corpus must cover a heartbeat reporting destroyed history"
+    )
+    assert any("spool_evicted_frames" in p and not p["spool_evicted_frames"] for p in heartbeats), (
+        "corpus must cover a heartbeat reporting eviction state with nothing destroyed"
+    )
+    hellos = [entry["json"]["payload"] for entry in _corpus_entries_of_type(TYPE_HELLO)]
+    assert any(p.get("spool_evicted_frames") for p in hellos), (
+        "corpus must cover hello's at-connect eviction snapshot"
+    )
+
+
 def test_probe_payloads_survive_the_typed_models_by_name():
     """The probe payloads' collection fields have to be asserted by name, not just round-tripped.
 

@@ -213,6 +213,31 @@ type HelloPayload struct {
 	CapabilitySchema int            `json:"capability_schema,omitempty"`
 	Networks         []NetworkFacts `json:"networks,omitempty"`
 
+	// SpoolEvicted* is the at-connect snapshot of what the outbound spool has
+	// *permanently destroyed* to stay inside its byte cap — see
+	// spool.EvictionStats. It rides hello as well as heartbeat because the
+	// loss happens overwhelmingly while the agent is disconnected, so the
+	// reconnect is the first moment the server can be told about it at all;
+	// waiting for the first heartbeat would leave a 20s window in which the
+	// server knows the agent is back but not that history is missing.
+	//
+	// These four carry no `omitempty`, unlike every field above them, and
+	// that break with the surrounding style is deliberate — the same rule
+	// HeartbeatPayload's doc comment sets out below. An explicit 0 ("this
+	// agent reports eviction state and has destroyed nothing") must stay
+	// distinguishable from an absent key ("this agent predates the field"),
+	// and the server gates persistence on the key's presence. With
+	// `omitempty` a healthy agent and an old build would send the same bytes
+	// and the server could only ever guess.
+	//
+	// The timestamps are pointers so an agent that has evicted nothing sends
+	// an explicit `null` rather than a fabricated year-1 instant that would
+	// persist as a real datetime server-side.
+	SpoolEvictedFrames   int64      `json:"spool_evicted_frames"`
+	SpoolEvictedBytes    int64      `json:"spool_evicted_bytes"`
+	SpoolEvictedOldestTS *time.Time `json:"spool_evicted_oldest_ts"`
+	SpoolEvictedNewestTS *time.Time `json:"spool_evicted_newest_ts"`
+
 	// TLSPinKind reports which TLS trust policy this connection's handshake
 	// actually matched — "current" or "successor" — so the server can show
 	// an operator how much of the fleet has already accepted an advertised
@@ -310,6 +335,37 @@ type CapabilityReadinessPayload struct {
 type HeartbeatPayload struct {
 	SpoolDepth int   `json:"spool_depth"`
 	SpoolBytes int64 `json:"spool_bytes"`
+
+	// SpoolEvicted* reports what the spool has permanently destroyed to stay
+	// inside its byte cap, cumulatively for the life of the agent's state
+	// directory (see spool.EvictionStats).
+	//
+	// It rides the heartbeat rather than `capability.violation` or a
+	// readiness row, and the reasoning belongs next to the field because it
+	// is the kind of decision that gets re-litigated:
+	//
+	//   - The heartbeat already carries spool state, and the server already
+	//     gates persistence of it on key *presence*, so there is nothing new
+	//     to invent on either side.
+	//   - It re-asserts every 20s, so a heartbeat lost to a dropped
+	//     connection self-heals on the next one. A one-shot event frame would
+	//     need its own retry to be trustworthy, and the whole point of this
+	//     field is that the loss record is trustworthy.
+	//   - `capability.violation` has a closed vocabulary about scope refusals
+	//     the agent made on the server's behalf. Eviction is not a refusal
+	//     and not about scope; putting it there would corrupt a vocabulary
+	//     the server validates against.
+	//   - `capability.readiness` is about a collector's *ability to run*.
+	//     The collector ran fine — the buffer under it overflowed.
+	//
+	// No `omitempty`, for the same reason SpoolDepth/SpoolBytes carry none:
+	// an explicit 0 must stay distinguishable from "this agent predates the
+	// field". Pointer timestamps so "nothing evicted" is an explicit `null`
+	// rather than a year-1 instant the server would store as real.
+	SpoolEvictedFrames   int64      `json:"spool_evicted_frames"`
+	SpoolEvictedBytes    int64      `json:"spool_evicted_bytes"`
+	SpoolEvictedOldestTS *time.Time `json:"spool_evicted_oldest_ts"`
+	SpoolEvictedNewestTS *time.Time `json:"spool_evicted_newest_ts"`
 
 	// TLSPinSuccessorReady repeats hello's field of the same name on every
 	// heartbeat, and that repetition is the point rather than redundancy.

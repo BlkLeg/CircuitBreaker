@@ -850,6 +850,16 @@ async def get_agents_presence(
             spool_depth=agent.spool_depth,
             spool_bytes=agent.spool_bytes,
             spool_reported_at=agent.spool_reported_at,
+            # Permanently destroyed history, from the same already-loaded row.
+            # It rides the fleet presence poll rather than the detail page
+            # alone because the loss is fleet-shaped: an outage that fills one
+            # agent's spool usually filled several, and an operator should not
+            # have to open each agent to find out which.
+            spool_evicted_frames=agent.spool_evicted_frames,
+            spool_evicted_bytes=agent.spool_evicted_bytes,
+            spool_evicted_oldest_at=agent.spool_evicted_oldest_at,
+            spool_evicted_newest_at=agent.spool_evicted_newest_at,
+            spool_evicted_reported_at=agent.spool_evicted_reported_at,
         )
         for agent in agents
     ]
@@ -1520,6 +1530,22 @@ def get_agent_telemetry(
             "depth": agent.spool_depth,
             "bytes": agent.spool_bytes,
             "reported_at": agent.spool_reported_at,
+            # Two independent losses, deliberately kept apart from the backlog
+            # above and from each other. `evicted_*` is what the *agent*
+            # destroyed when its disk buffer filled; `refused_*` is what *this
+            # server* dropped on ingest. They have different remedies — raise
+            # the agent's `spool_cap_bytes` versus fix the grant or the agent
+            # status — so collapsing them into one "lost" number would name
+            # neither. All `None` for an agent that has never reported, which
+            # the UI renders as nothing rather than as a reassuring zero.
+            "evicted_frames": agent.spool_evicted_frames,
+            "evicted_bytes": agent.spool_evicted_bytes,
+            "evicted_oldest_at": agent.spool_evicted_oldest_at,
+            "evicted_newest_at": agent.spool_evicted_newest_at,
+            "evicted_reported_at": agent.spool_evicted_reported_at,
+            "refused_frames": agent.refused_frames,
+            "refused_last_at": agent.refused_frames_last_at,
+            "refused_last_reason": agent.refused_frames_last_reason,
         },
         "hardware_id": agent.hardware_id,
     }

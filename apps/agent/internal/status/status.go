@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"circuitbreaker.dev/cb-agent/internal/frame"
+	"circuitbreaker.dev/cb-agent/internal/spool"
 )
 
 const filename = "status.json"
@@ -78,6 +79,15 @@ type Status struct {
 	// to zero once the connection is healthy again.
 	SpoolDepth int   `json:"spool_depth"`
 	SpoolBytes int64 `json:"spool_bytes"`
+
+	// SpoolEvictions is what the spool's drop-oldest policy has permanently
+	// destroyed, cumulatively for the life of this state directory (see
+	// spool.EvictionStats). It is a separate field from the two above, and
+	// deliberately so: SpoolDepth/SpoolBytes describe a backlog that will
+	// drain, and this describes history that will not come back. Folding the
+	// loss into the depth is what made it invisible in the first place —
+	// depth simply stopped rising.
+	SpoolEvictions spool.EvictionStats `json:"spool_evictions"`
 
 	// UpdatedAt is set on every write, independent of which fields changed.
 	UpdatedAt time.Time `json:"updated_at"`
@@ -203,6 +213,20 @@ func (w *Writer) SetSpoolStats(depth int, bytes int64) error {
 	defer w.mu.Unlock()
 	w.cur.SpoolDepth = depth
 	w.cur.SpoolBytes = bytes
+	return w.persistLocked()
+}
+
+// SetSpoolEvictions records what the spool has permanently destroyed.
+//
+// A separate method rather than two more arguments on SetSpoolStats: the two
+// are written by different callers on different occasions (the backlog moves
+// on every spool mutation, the loss only when the cap is actually breached),
+// and a six-argument setter would force every caller of one to restate the
+// other — which is exactly how a stale zero gets written over a real loss.
+func (w *Writer) SetSpoolEvictions(stats spool.EvictionStats) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.cur.SpoolEvictions = stats
 	return w.persistLocked()
 }
 

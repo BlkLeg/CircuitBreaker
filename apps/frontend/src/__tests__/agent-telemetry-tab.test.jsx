@@ -166,3 +166,62 @@ describe('AgentTelemetryTab', () => {
     expect(screen.queryByLabelText(/cadence/i)).toBeNull();
   });
 });
+
+describe('the permanent-loss banner (plan Phase 3)', () => {
+  const LOSS = {
+    depth: 4096,
+    bytes: 67108864,
+    evicted_frames: 9412,
+    evicted_bytes: 33554432,
+    evicted_oldest_at: '2026-09-01T00:00:00Z',
+    evicted_newest_at: '2026-09-03T18:30:00Z',
+  };
+
+  it('names the destroyed observations, the size and the window', () => {
+    renderTab({ telemetry: withLatest({ spool: LOSS }) });
+
+    expect(screen.getByText(/Part of this host.s history is permanently missing/)).toBeTruthy();
+    expect(screen.getByText(/permanently discarded 9,412 buffered observations/)).toBeTruthy();
+    expect(screen.getByText(/The gap covers/)).toBeTruthy();
+  });
+
+  it('counts the frames this server refused separately from what the agent destroyed', () => {
+    // Two losses with two different remedies. Collapsing them into one number
+    // would name neither.
+    renderTab({
+      telemetry: withLatest({
+        spool: { depth: 0, refused_frames: 512, refused_last_reason: 'capability_withheld' },
+      }),
+    });
+
+    const body = screen.getByText(/refused and dropped 512 frames/);
+    expect(body).toBeTruthy();
+    expect(body.textContent).toMatch(/host telemetry capability is switched off/);
+  });
+
+  it('sits alongside the catch-up indicator, not inside it', () => {
+    // Catch-up clears when the backlog drains; this does not. One replacing
+    // the other is exactly how the loss stayed invisible.
+    renderTab({ telemetry: withLatest({ spool: LOSS }) });
+
+    expect(screen.getByText(/4096 samples buffered/)).toBeTruthy();
+    expect(screen.getByText(/permanently missing/)).toBeTruthy();
+  });
+
+  it('still renders before any sample has arrived', () => {
+    renderTab({ telemetry: { latest: null, readiness: [], spool: LOSS } });
+
+    expect(screen.getByText(/permanently missing/)).toBeTruthy();
+  });
+
+  it('renders nothing when the counters are null or zero', () => {
+    const { unmount } = renderTab({ telemetry: withLatest({ spool: { depth: 0 } }) });
+    expect(screen.queryByText(/permanently missing/)).toBeNull();
+    unmount();
+
+    renderTab({
+      telemetry: withLatest({ spool: { depth: 0, evicted_frames: 0, refused_frames: 0 } }),
+    });
+    expect(screen.queryByText(/permanently missing/)).toBeNull();
+  });
+});

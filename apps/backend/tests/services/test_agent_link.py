@@ -1244,3 +1244,121 @@ async def test_hundred_capability_violations_in_one_minute_write_at_most_one_row
     serialized = json.dumps(detail)
     assert "leaked-banner-bytes" not in serialized
     assert "leaked-evidence-value" not in serialized
+
+
+# ── Phase 3: this server also destroys data, and now counts it ──────────────
+
+
+@pytest.mark.asyncio
+async def test_capability_gate_counts_the_frame_it_destroys(db_session, factories):
+    """The gate does not queue a frame from an ungranted agent — it drops it.
+    The audit row says that happened at least once; the counter says how much
+    was thrown away."""
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="host_telemetry", enabled=False)
+
+    for _ in range(3):
+        frame = AgentFrame(type="telemetry.host", ts="2026-07-27T12:00:00Z", payload={"cpu": 0.5})
+        await agent_link.dispatch_frame(db_session, agent, frame)
+
+    db_session.expire_all()
+    assert agent.refused_frames == 3
+    assert agent.refused_frames_last_reason == "capability_withheld"
+    assert agent.refused_frames_last_at is not None
+
+
+@pytest.mark.asyncio
+async def test_refused_host_telemetry_is_counted_even_when_the_event_is_throttled(
+    db_session, factories
+):
+    """`ingest_host_sample` rejects every sample from an agent whose status is
+    not `active` — an ordinary state an agent can sit in for days. The audit
+    row is rate-limited to one a minute on purpose, so it undercounts; the
+    counter must not."""
+    from app.db.models import AgentEvent
+
+    agent = factories.agent(status="pending")
+    factories.agent_capability_grant(agent, capability="host_telemetry", enabled=True)
+
+    for _ in range(25):
+        frame = AgentFrame(
+            type="telemetry.host",
+            ts="2026-07-27T12:00:00Z",
+            payload={"schema": 1, "sample_id": "a" * 32, "status": "healthy", "summary": {}},
+        )
+        await agent_link.dispatch_frame(db_session, agent, frame)
+
+    db_session.expire_all()
+    assert agent.refused_frames == 25
+    assert agent.refused_frames_last_reason == "invalid_host_telemetry"
+    # The throttled audit trail is exactly what the counter compensates for.
+    recorded = (
+        db_session.query(AgentEvent)
+        .filter_by(agent_id=agent.id, event_type="protocol_violation")
+        .count()
+    )
+    assert recorded < 25
+
+
+@pytest.mark.asyncio
+async def test_a_successfully_ingested_frame_is_not_counted_as_refused(db_session, factories):
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="host_telemetry", enabled=True)
+
+    from app.core.time import utcnow
+
+    frame = AgentFrame(
+        type="telemetry.host",
+        # Inside the retention window: an old fixture timestamp would be
+        # refused for a reason that has nothing to do with what is under test.
+        ts=utcnow().isoformat(),
+        payload={"schema": 1, "sample_id": "b" * 32, "status": "healthy", "summary": {}},
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    db_session.expire_all()
+    assert agent.refused_frames is None
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_persists_reported_evictions(db_session, factories):
+    agent = factories.agent(status="active")
+
+    frame = AgentFrame(
+        type="heartbeat",
+        ts="2026-09-06T12:00:00Z",
+        payload={
+            "spool_depth": 4096,
+            "spool_bytes": 67108864,
+            "spool_evicted_frames": 9412,
+            "spool_evicted_bytes": 33554432,
+            "spool_evicted_oldest_ts": "2026-09-01T00:00:00Z",
+            "spool_evicted_newest_ts": "2026-09-03T18:30:00Z",
+        },
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    db_session.expire_all()
+    assert agent.spool_evicted_frames == 9412
+    assert agent.spool_evicted_bytes == 33554432
+    assert agent.spool_evicted_oldest_at is not None
+    assert agent.spool_evicted_newest_at is not None
+
+
+@pytest.mark.asyncio
+async def test_an_old_heartbeat_leaves_the_eviction_columns_null(db_session, factories):
+    """Old agent -> new server. `{}` and a spool-only heartbeat both predate
+    the eviction group and must not have zeros invented for them."""
+    agent = factories.agent(status="active")
+
+    frame = AgentFrame(
+        type="heartbeat",
+        ts="2026-09-06T12:00:00Z",
+        payload={"spool_depth": 0, "spool_bytes": 0},
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    db_session.expire_all()
+    assert agent.spool_depth == 0
+    assert agent.spool_evicted_frames is None
+    assert agent.spool_evicted_reported_at is None

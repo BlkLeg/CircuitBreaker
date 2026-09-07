@@ -118,6 +118,28 @@ class HelloPayload(BaseModel):
     readiness: list[Readiness] = Field(default_factory=list)
     networks: list[NetworkFacts] = Field(default_factory=list)
     spool_depth: int = 0
+    # What the agent's outbound spool has *permanently destroyed* to stay
+    # inside its byte cap, cumulatively for the life of its state directory.
+    #
+    # Optional-with-default like every field around them, so an agent that
+    # predates the group still validates. That default is exactly why callers
+    # must gate persistence on ``"spool_evicted_frames" in
+    # payload.model_fields_set`` and never on truthiness: the Go side carries
+    # no ``omitempty``, so a current agent always sends the keys — an explicit
+    # ``0`` meaning "reports eviction state and has destroyed nothing" — while
+    # an older agent omits them entirely and must leave the columns NULL
+    # ("never reported"). Fabricating a 0 for the older agent would claim it
+    # had confirmed no data loss, which is the opposite of what it said.
+    #
+    # The two timestamps bound the window of observations that is gone, taken
+    # from the destroyed frames' own ``ts`` values. They are ``| None``
+    # because an agent that has evicted nothing sends an explicit ``null``
+    # rather than a year-1 instant that would persist as a real claim about
+    # when an observation was taken.
+    spool_evicted_frames: int = 0
+    spool_evicted_bytes: int = 0
+    spool_evicted_oldest_ts: datetime | None = None
+    spool_evicted_newest_ts: datetime | None = None
     capability_schema: int = 1
     tls_pin_kind: str | None = None
     # Whether the agent already holds an advertised successor TLS trust
@@ -199,6 +221,28 @@ class HeartbeatPayload(BaseModel):
 
     spool_depth: int = 0
     spool_bytes: int = 0
+    # What the agent's outbound spool has *permanently destroyed* to stay
+    # inside its byte cap, cumulatively for the life of its state directory.
+    #
+    # Optional-with-default like every field around them, so an agent that
+    # predates the group still validates. That default is exactly why callers
+    # must gate persistence on ``"spool_evicted_frames" in
+    # payload.model_fields_set`` and never on truthiness: the Go side carries
+    # no ``omitempty``, so a current agent always sends the keys — an explicit
+    # ``0`` meaning "reports eviction state and has destroyed nothing" — while
+    # an older agent omits them entirely and must leave the columns NULL
+    # ("never reported"). Fabricating a 0 for the older agent would claim it
+    # had confirmed no data loss, which is the opposite of what it said.
+    #
+    # The two timestamps bound the window of observations that is gone, taken
+    # from the destroyed frames' own ``ts`` values. They are ``| None``
+    # because an agent that has evicted nothing sends an explicit ``null``
+    # rather than a year-1 instant that would persist as a real claim about
+    # when an observation was taken.
+    spool_evicted_frames: int = 0
+    spool_evicted_bytes: int = 0
+    spool_evicted_oldest_ts: datetime | None = None
+    spool_evicted_newest_ts: datetime | None = None
     # Repeats hello's field of the same name on every heartbeat. hello is
     # sent once per connection, so an agent holding a live socket when a
     # `tls.pin.rotate` arrives could not otherwise tell the server it applied

@@ -107,6 +107,7 @@ export const STATE_ORDER = [
   'capability_degraded',
   'stale_telemetry',
   'never_reported',
+  'spool_evicted',
   'spool_pressure',
   'last_seen_lagging',
   'online',
@@ -213,6 +214,22 @@ const DEFINITIONS = {
     tone: INFO,
     summary: 'Host telemetry is granted but this agent has never delivered a sample.',
     action: 'Give it one cadence interval. If nothing arrives, check collector readiness.',
+  },
+  // Ordered above spool_pressure deliberately. Backlog is a prediction —
+  // buffered data that will arrive late. This is the outcome that prediction
+  // was warning about, and it has already happened: the data is gone. They
+  // are also independent states rather than two points on one scale, and both
+  // can hold at once (a spool that has already overflowed usually still has a
+  // full backlog behind it), which is why deriveAgentStates pushes each on its
+  // own condition instead of choosing between them.
+  spool_evicted: {
+    label: 'History discarded',
+    icon: 'FileX2',
+    tone: CRITICAL,
+    summary:
+      'This agent’s local buffer filled and it permanently discarded its oldest observations. That data is gone and cannot be recovered — it is a gap in this host’s history, not a delay.',
+    action:
+      'Restore the link so the buffer can drain, then raise spool_cap_bytes in the agent’s agent.toml so a longer outage fits next time.',
   },
   spool_pressure: {
     label: 'Spool backlog',
@@ -349,6 +366,10 @@ export function updateStateFromEvents(events) {
  * @param {Array} [input.readiness] AgentCapabilityReadiness rows.
  * @param {object|null} [input.update] From updateStateFromEvents.
  * @param {number|null} [input.spoolDepth]
+ * @param {number|null} [input.spoolEvictedFrames] Cumulative frames the agent destroyed; null = never reported.
+ * @param {number|null} [input.spoolEvictedBytes]
+ * @param {string|null} [input.spoolEvictedOldestAt] ISO bound of the destroyed window.
+ * @param {string|null} [input.spoolEvictedNewestAt] ISO bound of the destroyed window.
  * @param {number|null} [input.clockSkewSeconds] Signed browser-minus-server.
  * @param {number} [input.now] Client epoch ms; injectable for tests.
  * @returns {Array<object>} Ordered state descriptors.
@@ -365,6 +386,10 @@ export function deriveAgentStates(input = {}) {
     readiness,
     update,
     spoolDepth,
+    spoolEvictedFrames,
+    spoolEvictedBytes,
+    spoolEvictedOldestAt,
+    spoolEvictedNewestAt,
     clockSkewSeconds,
     now = Date.now(),
   } = input;
@@ -449,6 +474,27 @@ export function deriveAgentStates(input = {}) {
     }
   }
 
+  // Independent of online/offline and of the backlog rule below, and both of
+  // those are deliberate. Eviction happens while the agent is disconnected, so
+  // gating it on a live link would hide it during exactly the outage that
+  // caused it; and it is a permanent fact, so it must not be displaced by a
+  // backlog reading that is merely large — or, once phase 4 lands, by one that
+  // is merely stale. "History was destroyed" and "the current backlog is
+  // unknown" are different claims about different things and an operator needs
+  // both at once.
+  //
+  // Absent input never becomes a healthy answer: null means "never reported"
+  // (a build predating the counters) and produces no state at all, while an
+  // explicit 0 is a real report of no loss and equally produces none.
+  if (Number.isFinite(spoolEvictedFrames) && spoolEvictedFrames > 0) {
+    push('spool_evicted', {
+      frames: spoolEvictedFrames,
+      bytes: Number.isFinite(spoolEvictedBytes) ? spoolEvictedBytes : null,
+      oldestAt: spoolEvictedOldestAt ?? null,
+      newestAt: spoolEvictedNewestAt ?? null,
+    });
+  }
+
   if (Number.isFinite(spoolDepth) && spoolDepth >= SPOOL_PRESSURE_DEPTH) {
     push('spool_pressure', {
       depth: spoolDepth,
@@ -493,6 +539,10 @@ export function fleetRowStateInput(agent, { clockSkewSeconds = null, now = Date.
     hasTelemetryHistory: agent?.latest != null,
     telemetryIntervalSeconds: agent?.capabilities?.host_telemetry?.config?.interval_s,
     spoolDepth: agent?.spool_depth,
+    spoolEvictedFrames: agent?.spool_evicted_frames,
+    spoolEvictedBytes: agent?.spool_evicted_bytes,
+    spoolEvictedOldestAt: agent?.spool_evicted_oldest_at,
+    spoolEvictedNewestAt: agent?.spool_evicted_newest_at,
     clockSkewSeconds,
     now,
   };

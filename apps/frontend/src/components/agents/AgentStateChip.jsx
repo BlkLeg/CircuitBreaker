@@ -8,6 +8,7 @@ import {
   CloudOff,
   Database,
   Download,
+  FileX2,
   HelpCircle,
   Hourglass,
   PowerOff,
@@ -48,6 +49,7 @@ const ICONS = new Map([
   ['CloudOff', CloudOff],
   ['Database', Database],
   ['Download', Download],
+  ['FileX2', FileX2],
   ['HelpCircle', HelpCircle],
   ['Hourglass', Hourglass],
   ['PowerOff', PowerOff],
@@ -69,6 +71,16 @@ export function stateDetailText(state) {
   }
   if (state.code === 'spool_pressure' && Number.isFinite(detail.depth)) {
     return `${detail.depth} samples are buffered on the agent.`;
+  }
+  if (state.code === 'spool_evicted' && Number.isFinite(detail.frames)) {
+    // Named window when the agent reported one, bare count otherwise: an
+    // older report may carry the count with no bounds, and inventing a window
+    // for it would be a more precise claim than the agent actually made.
+    const window =
+      detail.oldestAt && detail.newestAt
+        ? ` covering ${new Date(detail.oldestAt).toLocaleString()} to ${new Date(detail.newestAt).toLocaleString()}`
+        : '';
+    return `${detail.frames} observations were permanently discarded${window}.`;
   }
   if (state.code === 'capability_degraded' && detail.collectors?.length) {
     return `Affected: ${detail.collectors.join(', ')}.`;

@@ -579,6 +579,115 @@ function faultsOf(telemetry) {
   );
 }
 
+// Human phrasing for `spool.refused_last_reason`, whose values are a closed
+// set of server-side constants (agent_registry.REFUSAL_*). An unknown value
+// falls through to the raw string rather than being hidden: a reason nobody
+// wrote copy for is still more use to an operator than silence.
+const REFUSAL_REASONS = {
+  capability_withheld: 'the host telemetry capability is switched off for this agent',
+  invalid_host_telemetry: 'the samples were rejected on arrival (often: the agent is not approved)',
+  invalid_probe_result: 'the probe results were rejected on arrival',
+  invalid_discovery_finding: 'the discovery findings were rejected on arrival',
+};
+
+function refusalReasonText(reason) {
+  if (!reason) return null;
+  return Object.hasOwn(REFUSAL_REASONS, reason)
+    ? // eslint-disable-next-line security/detect-object-injection -- guarded by Object.hasOwn on a module-level literal, so no prototype key can be reached
+      REFUSAL_REASONS[reason]
+    : reason;
+}
+
+/**
+ * The permanent-loss banner (plan Phase 3).
+ *
+ * Two independent losses, reported together because an operator's question is
+ * "is any of this host's history missing", but never merged into one number:
+ *
+ *   - `evicted_*` — the *agent* filled its local buffer and discarded its
+ *     oldest observations. Remedy: raise `spool_cap_bytes`.
+ *   - `refused_*` — *this server* dropped frames on arrival. Remedy: fix the
+ *     grant, or approve the agent.
+ *
+ * It is rendered alongside the catch-up indicator, never inside it, and that
+ * separation is the whole point. Catch-up describes data that is late and
+ * clears when the backlog drains; this describes data that is gone and never
+ * clears. Folding the second into the first is how the loss stayed invisible:
+ * the backlog simply stopped rising.
+ *
+ * Renders nothing when both counts are absent (an agent predating the
+ * counters) or zero (reported, and nothing was lost) — a zeroed banner would
+ * train an operator to ignore the one that matters.
+ */
+function SpoolLossBanner({ spool }) {
+  const evicted = typeof spool?.evicted_frames === 'number' ? spool.evicted_frames : 0;
+  const refused = typeof spool?.refused_frames === 'number' ? spool.refused_frames : 0;
+  if (evicted <= 0 && refused <= 0) return null;
+
+  const parts = [];
+  if (evicted > 0) {
+    const size = formatBytes(spool.evicted_bytes);
+    parts.push(
+      `The agent permanently discarded ${evicted.toLocaleString()} buffered observation${
+        evicted === 1 ? '' : 's'
+      }${size ? ` (${size})` : ''} because its local spool reached its size cap.`
+    );
+    if (spool.evicted_oldest_at && spool.evicted_newest_at) {
+      parts.push(
+        `The gap covers ${new Date(spool.evicted_oldest_at).toLocaleString()} to ${new Date(
+          spool.evicted_newest_at
+        ).toLocaleString()}.`
+      );
+    }
+  }
+  if (refused > 0) {
+    const why = refusalReasonText(spool.refused_last_reason);
+    parts.push(
+      `This server refused and dropped ${refused.toLocaleString()} frame${
+        refused === 1 ? '' : 's'
+      } from this agent${why ? `; most recently because ${why}` : ''}.`
+    );
+  }
+
+  return (
+    <Banner
+      tone="danger"
+      icon="⚠"
+      title="Part of this host’s history is permanently missing"
+      body={parts.join(' ')}
+      detail={
+        <>
+          <p>
+            This is a gap, not a delay. Nothing will backfill it — the observations no longer exist
+            anywhere. It is reported separately from the catch-up indicator for exactly that reason:
+            catch-up clears when the backlog drains, and this does not clear.
+          </p>
+          {evicted > 0 && (
+            <p>
+              The agent&rsquo;s spool is a fixed-size disk buffer. When it fills during an outage it
+              discards its oldest observations to keep accepting new ones. Raise{' '}
+              <code>spool_cap_bytes</code> in the agent&rsquo;s <code>agent.toml</code> so a longer
+              outage fits, then restart the agent. Restoring the link lets the remaining backlog
+              drain.
+            </p>
+          )}
+          {refused > 0 && (
+            <p>
+              Refusals happen on this server, not on the agent: a frame arrives and is dropped
+              because the capability it needs is switched off, or because the agent is not in an
+              approved state. Check this agent&rsquo;s capabilities and its status. The count is not
+              rate-limited, unlike the matching rows in the agent&rsquo;s event history, so it is
+              the honest total.
+            </p>
+          )}
+        </>
+      }
+    />
+  );
+}
+
+SpoolLossBanner.propTypes = { spool: PropTypes.object };
+
 function ReadinessBanners({ faults }) {
   return faults.map((item) => (
     <Banner
@@ -703,6 +812,10 @@ export default function AgentTelemetryTab({
   if (!telemetry?.latest) {
     return (
       <section aria-label="Host telemetry" className="agent-telemetry">
+        {/* Above the readiness banners: a collector that is degraded is a
+            thing to fix, and destroyed history is a thing that has already
+            happened to this host. */}
+        <SpoolLossBanner spool={telemetry?.spool} />
         <ReadinessBanners faults={faults} />
         <Panel title="System metrics">
           <EmptyState icon="◴" message="No host samples received yet." />
@@ -722,6 +835,11 @@ export default function AgentTelemetryTab({
 
   return (
     <section aria-label="Host telemetry" className="agent-telemetry">
+      {/* Persistent, and outside the faults block on purpose: readiness faults
+          come and go with a collector, and this one stays for as long as the
+          agent keeps reporting the loss. */}
+      <SpoolLossBanner spool={telemetry.spool} />
+
       {faults.length > 0 && (
         <div className="agent-telemetry__faults">
           <ReadinessBanners faults={faults} />

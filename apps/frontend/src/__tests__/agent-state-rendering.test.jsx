@@ -186,3 +186,46 @@ describe('the fleet row', () => {
     expect(within(row).getByText('pending').textContent).toMatch(/Compare the fingerprint/);
   });
 });
+
+describe('permanently destroyed history in a fleet row (plan Phase 3)', () => {
+  it('renders a critical loss chip carrying the reason and the remedy', () => {
+    renderRow({
+      ...BASE,
+      spool_evicted_frames: 9412,
+      spool_evicted_bytes: 33554432,
+      spool_evicted_oldest_at: '2026-08-20T00:00:00Z',
+      spool_evicted_newest_at: '2026-08-22T00:00:00Z',
+    });
+
+    const chip = screen.getByText(/lost 9412/).closest('.fleet-chip');
+    expect(chip).toBeTruthy();
+    expect(chip.getAttribute('data-tone')).toBe('critical');
+    // The remedy has to reach a screen-reader user, who cannot hover a title.
+    expect(chip.textContent).toMatch(/spool_cap_bytes/);
+    expect(chip.textContent).toMatch(/cannot be recovered/);
+  });
+
+  it('shows the loss chip beside the backlog chip, not instead of it', () => {
+    // Two facts with two futures: the backlog drains, the loss does not. A
+    // single chip that changed colour could only ever state one of them.
+    renderRow({ ...BASE, spool_depth: 4096, spool_evicted_frames: 12 });
+
+    expect(screen.getByText(/spool 4096/)).toBeTruthy();
+    expect(screen.getByText(/lost 12/)).toBeTruthy();
+  });
+
+  it('shows the loss chip on an offline row, where the loss is happening', () => {
+    renderRow({ ...BASE, online: false, last_seen_at: OLD(), spool_evicted_frames: 12 });
+
+    expect(screen.getByText(/lost 12/)).toBeTruthy();
+  });
+
+  it('renders nothing for an explicit zero or an agent that never reported', () => {
+    const { unmount } = renderRow({ ...BASE, spool_evicted_frames: 0 });
+    expect(screen.queryByText(/lost /)).toBeNull();
+    unmount();
+
+    renderRow({ ...BASE, spool_evicted_frames: null });
+    expect(screen.queryByText(/lost /)).toBeNull();
+  });
+});

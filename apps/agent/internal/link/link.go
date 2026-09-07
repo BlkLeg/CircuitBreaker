@@ -656,11 +656,30 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 		return opts.Spool.Len(), size
 	}
 
+	// spoolEvictions reads what the spool has permanently destroyed, in the
+	// four-field wire form both hello and heartbeat carry. Nil-safe on the
+	// same terms as spoolStats: a link with no spool has destroyed nothing,
+	// and reports an explicit zero with null bounds rather than staying
+	// silent — silence is reserved to mean "this agent predates the field".
+	spoolEvictions := func() (int64, int64, *time.Time, *time.Time) {
+		if opts.Spool == nil {
+			return 0, 0, nil, nil
+		}
+		stats := opts.Spool.EvictionStats()
+		return stats.Frames, stats.Bytes, optionalTime(stats.OldestDroppedTS), optionalTime(stats.NewestDroppedTS)
+	}
+
 	helloPayload := hostinfo.Collect(opts.AgentVersion, opts.Config.ServerURL)
 	// The at-connect backlog snapshot (D-12). The heartbeat below reports
 	// the same numbers live, which is what lets a server-side catch-up
 	// indicator clear without waiting for a reconnect.
 	helloPayload.SpoolDepth, _ = spoolStats()
+	// What this agent has permanently destroyed while it was away. Reported
+	// at connect as well as on every heartbeat because eviction happens
+	// during the outage, so the reconnect is the earliest the server can
+	// learn of it.
+	helloPayload.SpoolEvictedFrames, helloPayload.SpoolEvictedBytes,
+		helloPayload.SpoolEvictedOldestTS, helloPayload.SpoolEvictedNewestTS = spoolEvictions()
 	// Which TLS trust policy this connection's own handshake matched (F4) —
 	// "current", "successor", or "" for a plain ws:// dial with no
 	// certificate to classify (dev/test). Reported so the server can show an
@@ -792,9 +811,18 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 	// its columns NULL for it. See frame.HeartbeatPayload.
 	sendHeartbeat := func() error {
 		depth, bytes := spoolStats()
+		evictedFrames, evictedBytes, evictedOldest, evictedNewest := spoolEvictions()
 		payload, err := json.Marshal(frame.HeartbeatPayload{
 			SpoolDepth: depth,
 			SpoolBytes: bytes,
+			// Re-asserted every interval for the same durability reason the
+			// TLS pin flags below are: a single frame announcing destroyed
+			// history could be lost with nothing to retry it, and the one
+			// thing this record must be is trustworthy.
+			SpoolEvictedFrames:   evictedFrames,
+			SpoolEvictedBytes:    evictedBytes,
+			SpoolEvictedOldestTS: evictedOldest,
+			SpoolEvictedNewestTS: evictedNewest,
 			// Re-asserted every interval so a rotation applied on a live
 			// socket reaches the server without waiting for a reconnect —
 			// see the field's own doc comment.
@@ -1322,4 +1350,17 @@ func drainPending(conn *websocket.Conn, deadline time.Time) int {
 		}
 		n++
 	}
+}
+
+// optionalTime renders a spool eviction bound for the wire: a real instant
+// stays itself, and the zero value becomes an explicit JSON `null`. The
+// distinction matters on the server, where the columns are nullable and a
+// year-1 timestamp would persist as a genuine — and wildly wrong — claim
+// about when an observation was taken.
+func optionalTime(ts time.Time) *time.Time {
+	if ts.IsZero() {
+		return nil
+	}
+	utc := ts.UTC()
+	return &utc
 }

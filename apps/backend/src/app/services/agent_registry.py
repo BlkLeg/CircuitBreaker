@@ -312,6 +312,21 @@ def update_hello_metadata(
         # `spool_bytes` field, so the size is genuinely unknown here — None,
         # not 0 — and the heartbeat that follows within 20s fills it in.
         record_spool_stats(agent, payload.spool_depth, None)
+    if "spool_evicted_frames" in fields_set:
+        # The at-connect eviction snapshot. It rides `hello` as well as the
+        # heartbeat because eviction happens overwhelmingly *while the agent
+        # is disconnected* — the reconnect is the first moment this server can
+        # be told history was destroyed at all, and waiting for the first
+        # heartbeat would leave a window in which the agent is visibly back
+        # and the loss is not yet visible.
+        record_spool_evictions(
+            db,
+            agent,
+            payload.spool_evicted_frames,
+            payload.spool_evicted_bytes,
+            payload.spool_evicted_oldest_ts,
+            payload.spool_evicted_newest_ts,
+        )
     return cancellation
 
 
@@ -349,6 +364,146 @@ def record_spool_stats(agent: Agent, depth: int, size_bytes: int | None = None) 
         agent.spool_bytes = size_bytes
     agent.spool_reported_at = utcnow()
     return True
+
+
+# The two `agent_events` types `record_spool_evictions` writes. They are
+# separate types rather than one with a flag because they are opposite
+# claims: one says history was destroyed, the other says the record of that
+# destruction was itself thrown away when the agent's state directory was
+# recreated. An operator filtering the audit trail needs to see the second at
+# least as much as the first.
+EVENT_SPOOL_EVICTED = "spool_evicted"
+EVENT_SPOOL_EVICTION_COUNTER_RESET = "spool_eviction_counter_reset"
+
+
+def record_spool_evictions(
+    db: Session,
+    agent: Agent,
+    frames: int,
+    size_bytes: int,
+    oldest_at: datetime | None,
+    newest_at: datetime | None,
+) -> bool:
+    """Record what the agent's spool has permanently destroyed, returning
+    whether anything actually changed.
+
+    The agent's spool is capped and drops its oldest buffered observations to
+    make room. That policy is fine. That it used to happen *silently* was not:
+    the only symptom was that the reported `spool_depth` stopped rising, which
+    looks exactly like a backlog draining. These columns, and the event this
+    writes, are the permanent record that history was destroyed — the event is
+    the audit trail, and it is the point of the whole mechanism.
+
+    `frames`/`size_bytes` are the agent's cumulative totals, not a delta.
+    `oldest_at`/`newest_at` bound the window of observations that is gone,
+    taken from the destroyed frames' own timestamps.
+
+    Change-gated exactly as `record_spool_stats` is, and for the same reason:
+    heartbeats arrive every 20 seconds per connected agent and the steady
+    state is "unchanged", so writing unconditionally would be one row UPDATE
+    per agent per 20s carrying no new information. `spool_evicted_reported_at`
+    therefore means "when the reported loss last *changed*".
+
+    Two directions, both of which write:
+
+    * An **increase** means more history was destroyed since the last report.
+      That gets a `spool_evicted` event as well as the column update — a
+      permanent, timestamped row saying so, which survives the counters being
+      overwritten later.
+    * A **decrease** means the agent's state directory was recreated, because
+      the agent never resets this counter itself. That is overwritten, not
+      ignored, and records a `spool_eviction_counter_reset`. Taking `max()` of
+      the two would look conservative and would in fact hide a reset — and a
+      reset is itself a fact worth knowing, since it means an eviction record
+      was thrown away.
+
+    Callers gate this on `"spool_evicted_frames" in payload.model_fields_set`,
+    never on the value: an agent predating the field omits it and must leave
+    the columns NULL ("never reported"), while a current agent sends an
+    explicit 0 meaning "reports eviction state, and has destroyed nothing".
+    Caller owns the commit.
+    """
+    previous = agent.spool_evicted_frames
+    unchanged = (
+        previous == frames
+        and agent.spool_evicted_bytes == size_bytes
+        and agent.spool_evicted_oldest_at == oldest_at
+        and agent.spool_evicted_newest_at == newest_at
+    )
+    if unchanged:
+        return False
+
+    if previous is not None and frames < previous:
+        record_event(
+            db,
+            agent.id,
+            EVENT_SPOOL_EVICTION_COUNTER_RESET,
+            detail={
+                "previous_frames": previous,
+                "previous_bytes": agent.spool_evicted_bytes,
+                "reported_frames": frames,
+                "reported_bytes": size_bytes,
+            },
+        )
+    elif frames > (previous or 0):
+        # `previous or 0` deliberately folds NULL in with 0 here: a first-ever
+        # report of a non-zero loss is news and must be audited, and a
+        # first-ever report of zero is not.
+        record_event(
+            db,
+            agent.id,
+            EVENT_SPOOL_EVICTED,
+            detail={
+                "frames": frames,
+                "bytes": size_bytes,
+                "new_frames": frames - (previous or 0),
+                "oldest_dropped_at": oldest_at.isoformat() if oldest_at else None,
+                "newest_dropped_at": newest_at.isoformat() if newest_at else None,
+            },
+        )
+
+    agent.spool_evicted_frames = frames
+    agent.spool_evicted_bytes = size_bytes
+    agent.spool_evicted_oldest_at = oldest_at
+    agent.spool_evicted_newest_at = newest_at
+    agent.spool_evicted_reported_at = utcnow()
+    return True
+
+
+# The closed vocabulary `record_refused_frame` accepts. Short, because the
+# column is bounded (`String(64)`) and these are internal constants, not
+# operator- or agent-authored text.
+REFUSAL_CAPABILITY_WITHHELD = "capability_withheld"
+REFUSAL_INVALID_HOST_TELEMETRY = "invalid_host_telemetry"
+REFUSAL_INVALID_PROBE_RESULT = "invalid_probe_result"
+REFUSAL_INVALID_DISCOVERY_FINDING = "invalid_discovery_finding"
+
+_MAX_REFUSAL_REASON_CHARS = 64
+
+
+def record_refused_frame(agent: Agent, reason: str) -> None:
+    """Count one data frame *this server* refused from `agent` and dropped.
+
+    The agent's eviction counters above are only half the honesty. Several
+    ingest paths on this side drop a data frame outright — the capability gate
+    in `agent_link.dispatch_frame`, and the `Invalid*` catches in its host
+    telemetry, probe result and discovery finding handlers — and each of them
+    records an `agent_events` row that is rate-limited to one per minute by
+    `agent_telemetry.recordable_violation`. The throttle is right: thousands
+    of identical rows bury the audit trail an operator has to read. But it
+    means the trail *undercounts by design*, and "this server refused 9,412
+    samples from this agent" is not a fact an operator should have to infer.
+
+    So this counter is deliberately **not** rate-limited. Only the event row
+    is, and that stays exactly as it is. NULL stays "nothing has ever been
+    refused", distinct from 0, so nothing has to backfill.
+
+    Caller owns the commit — every call site sits inside a handler whose
+    commit `dispatch_frame` already performs.
+    """
+    agent.refused_frames = (agent.refused_frames or 0) + 1
+    agent.refused_frames_last_at = utcnow()
+    agent.refused_frames_last_reason = reason[:_MAX_REFUSAL_REASON_CHARS]
 
 
 def _normalized_network_facts(networks: list[NetworkFacts]) -> list[dict[str, Any]]:

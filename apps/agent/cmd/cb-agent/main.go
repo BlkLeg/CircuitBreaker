@@ -627,6 +627,15 @@ func (rt *daemonRuntime) linkOptions(
 			if err := rt.statusWriter.SetSpoolStats(depth, bytes); err != nil {
 				log.Printf("cb-agent: status: %v", err)
 			}
+			// Eviction only ever happens inside an Enqueue, and every
+			// Enqueue reports its stats through here, so this is the one
+			// callback that runs on the exact occasions the loss can change.
+			// Nil-safe: linkOptions is only built with a live spool.
+			if rt.sp != nil {
+				if err := rt.statusWriter.SetSpoolEvictions(rt.sp.EvictionStats()); err != nil {
+					log.Printf("cb-agent: status: %v", err)
+				}
+			}
 		},
 	}
 }
@@ -1252,6 +1261,14 @@ func openSpool(cfg *config.Config, stateDir string, statusWriter *status.Writer)
 	if err := statusWriter.SetSpoolStats(sp.Len(), size); err != nil {
 		log.Printf("cb-agent: status: %v", err)
 	}
+	// The eviction record survives restarts (spool.Open reloads
+	// queue.evicted), so it has to be published into status.json at startup
+	// too — otherwise `cb-agent status` would report no loss at all until the
+	// next eviction, which is precisely the silence this reporting exists to
+	// end.
+	if err := statusWriter.SetSpoolEvictions(sp.EvictionStats()); err != nil {
+		log.Printf("cb-agent: status: %v", err)
+	}
 	return sp, nil
 }
 
@@ -1447,7 +1464,35 @@ func printStatus(w io.Writer, stateDir string) error {
 	}
 
 	fmt.Fprintf(w, "spool: depth=%d bytes=%d\n", st.SpoolDepth, st.SpoolBytes)
+	printSpoolLoss(w, st.SpoolEvictions)
 	return nil
+}
+
+// printSpoolLoss reports permanently destroyed observations, and prints
+// nothing at all when there are none.
+//
+// Silence on zero is the deliberate half. A "spool loss: 0" line on every
+// healthy agent trains an operator to skip the line, which would defeat the
+// point on the one agent where it is not zero. Where it does print, it says
+// in plain words that the data is gone — not "evicted", which reads as
+// housekeeping — names the window that was destroyed, and names the single
+// setting that would have prevented it.
+func printSpoolLoss(w io.Writer, stats spool.EvictionStats) {
+	if stats.Frames <= 0 {
+		return
+	}
+	fmt.Fprintf(w,
+		"spool loss: %d observation(s) (%d bytes) were permanently discarded because the spool hit its size cap\n",
+		stats.Frames, stats.Bytes)
+	if !stats.OldestDroppedTS.IsZero() && !stats.NewestDroppedTS.IsZero() {
+		fmt.Fprintf(w, "  destroyed window: %s .. %s (this data is gone and cannot be recovered)\n",
+			stats.OldestDroppedTS.UTC().Format(time.RFC3339),
+			stats.NewestDroppedTS.UTC().Format(time.RFC3339))
+	}
+	if !stats.LastEvictedAt.IsZero() {
+		fmt.Fprintf(w, "  most recently discarded: %s\n", stats.LastEvictedAt.UTC().Format(time.RFC3339))
+	}
+	fmt.Fprintln(w, "  remedy: raise spool_cap_bytes in agent.toml so a longer outage fits, then restart the agent")
 }
 
 // sortedKeys returns m's keys sorted, so printStatus's grants listing has a
