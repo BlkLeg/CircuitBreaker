@@ -260,6 +260,33 @@ Target: no page over **800 lines** except Map canvas if measurement shows split 
 
 **Verify UI in the browser** after each page split: map pan/select/save, OOBE first-run, settings save, icon picker. Screenshot ≠ verification.
 
+#### Outcome (2026-09-07)
+
+| Page | Before | After | Note |
+|---|---|---|---|
+| `SettingsPage.jsx` | 1,886 | 556 | one component per tab under `pages/settings/` |
+| `OOBEWizardPage.jsx` | 2,215 | 291 | seven steps, a context, and `useOOBEWizard` |
+| `MapPage.jsx` | 3,025 | 3,025 | **not split — see below** |
+
+**`MapPage` was measured and left whole**, which this section's own hedge allows. The
+measurement: the two JSX blocks worth extracting need 29 and 34 values from the page
+(header/toolbar, modal cluster), and of the three handler groups only quick-create is
+genuinely separable — nine dependencies against nineteen for the label drag and
+thirty-six for the uplink editor. Every available cut trades one long file for a
+thirty-prop component or a large state restructure, and it would be done against six
+Vitest tests that all render an *empty* graph.
+
+So the precondition came first: `e2e/map-interaction.spec.ts` renders a populated graph
+in Chromium, mounts the lazy Sigma canvas against a real build, and runs axe over it —
+the first coverage the map has had with nodes on it. A real split needs more of that,
+and needs the page state consolidated into a `useMapState` hook (the way `useOOBEWizard`
+now holds the wizard's) before components can take props instead of thirty of them.
+
+Verification for the two pages that were split is `e2e/settings-tabs.spec.ts` and
+`e2e/oobe-first-run.spec.ts`. Both were checked to fail when a single value is withheld
+from a split component, so they gate rather than decorate.
+
+
 ### 2.6 Agent `cmd/cb-agent/main.go` (1,844) and `internal/link/link.go` (1,478)
 
 Extract flag/config wiring from `main.go`; keep `link.go` protocol-critical and CODEOWNERS-protected. Smaller PRs; run `apps/agent/e2e`.
