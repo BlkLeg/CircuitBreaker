@@ -65,17 +65,6 @@ type inflightFrame struct {
 	// positional commit then discarded that many never-sent frames on top of
 	// the ones eviction had already destroyed. See spool.Spool's `origin`.
 	pos int64
-	// sentAt is when this frame was written to the socket, and it is what the
-	// ack-stall deadline is measured from.
-	//
-	// Per entry rather than one clock for the window, because the window's
-	// head moves for two very different reasons. An acknowledgement releasing
-	// frames is progress and restarts the deadline; cap eviction destroying
-	// them is not progress at all, and a single clock reset on eviction
-	// disabled the stall detector precisely at the cap — where every producer
-	// enqueue evicts from the head, so a server that reads and pings but
-	// never acknowledges reset the deadline on every drain tick, forever.
-	sentAt time.Time
 }
 
 // dataFrameSender owns this connection's outbound flow for *data* frames
@@ -132,14 +121,23 @@ type dataFrameSender struct {
 	// leading prefix of this slice and never a hole in the middle.
 	inflight      []inflightFrame
 	inflightBytes int64
-	// lastAckProgress is when an acknowledgement last released at least one
-	// frame from the window. Zero until one has on this connection.
+	// unackedSince starts the current unacknowledged stretch: the moment this
+	// connection last had frames in flight with no acknowledgement having
+	// released any of them since. Zero when there is no such stretch.
 	//
-	// It is only half of the stall clock — see ackWaitingSince. The other
-	// half is per-entry, because the window's oldest entry can change without
-	// any progress being made at all: cap eviction destroys frames from the
-	// head, which is exactly where the in-flight window sits.
-	lastAckProgress time.Time
+	// It measures the *stretch*, deliberately, and not any particular frame's
+	// wait. Only two things touch it: it starts when the window goes from
+	// empty to in-flight with no stretch already running, and it restarts
+	// when an ack actually releases something, which is the only progress
+	// there is. Cap eviction is not progress and moves it not at all — the
+	// frames it destroys were never delivered either, and a deadline that
+	// eviction can push forward is a deadline that stops existing at the cap,
+	// where every producer enqueue evicts from the head. Two commits got this
+	// wrong in two different ways: one restarted the clock on eviction, and
+	// one measured from the oldest *surviving* frame's send time, which a
+	// producer above roughly 1.5 frames/s evades simply by replacing the
+	// whole window inside the deadline.
+	unackedSince time.Time
 }
 
 // newDataFrameSender constructs a dataFrameSender. onSpoolStats may be nil.
@@ -299,10 +297,15 @@ func (d *dataFrameSender) drainBurst(maxFrames int, maxBytes int64) error {
 		if err != nil {
 			return err
 		}
-		d.inflight = append(d.inflight, inflightFrame{
-			seq: seq, bytes: size, pos: res.Start + int64(i), sentAt: time.Now(),
-		})
+		d.inflight = append(d.inflight, inflightFrame{seq: seq, bytes: size, pos: res.Start + int64(i)})
 		d.inflightBytes += size
+		// Starts a stretch only when there is not one already running. A
+		// stretch the cap emptied by destroying every frame in it has not
+		// ended — nothing was acknowledged — so refilling the window
+		// continues it rather than starting over.
+		if d.unackedSince.IsZero() {
+			d.unackedSince = time.Now()
+		}
 	}
 	// One report per burst, not per frame: the depth a caller cares about is
 	// the one at the end of the tick. Nothing was committed, so the depth has
@@ -394,9 +397,14 @@ func (d *dataFrameSender) onDataAck(watermark uint64) error {
 	}
 	d.inflight = append(d.inflight[:0], d.inflight[released:]...)
 	d.inflightBytes -= releasedBytes
-	// Real progress: the deadline restarts from here for whatever is still
-	// waiting. This is the *only* thing that restarts it.
-	d.lastAckProgress = time.Now()
+	// Real progress, and the only thing that is. The stretch restarts for
+	// whatever is still outstanding, and ends outright when this released the
+	// last of it — an idle link is not a stalled one.
+	if len(d.inflight) == 0 {
+		d.unackedSince = time.Time{}
+	} else {
+		d.unackedSince = time.Now()
+	}
 
 	// By position, never by count. If the cap destroyed some of these while
 	// they were in flight, a count would discard that many *unsent* frames
@@ -448,47 +456,28 @@ func (d *dataFrameSender) dropEvicted(origin int64) {
 	}
 	d.inflight = append(d.inflight[:0], d.inflight[dropped:]...)
 	d.inflightBytes -= droppedBytes
-	// Deliberately touches no clock. The deadline is derived from the oldest
-	// surviving entry's own sentAt (see ackWaitingSince), so it moves forward
-	// by exactly as much as the destroyed frames were older than the ones
-	// behind them — and no further.
+	// Deliberately touches d.unackedSince not at all, including when it
+	// empties the window: destroying an unacknowledged frame is not the
+	// server acknowledging it, so the stretch continues into whatever the
+	// next drain sends. Anything else — restarting the clock here, or
+	// deriving it from the surviving entries — hands a never-acking server an
+	// indefinite reprieve at the cap, which is the one state the detector
+	// exists for.
 	//
-	// Restarting it here instead is a defect this code had for one commit,
-	// and it disabled the stall detector in the one state it exists for: at
-	// the cap every producer enqueue evicts from the head, this runs on every
-	// drain tick, and a server that read the socket and pinged but never
-	// acknowledged had its 45s deadline pushed out indefinitely while the
-	// spool kept destroying observations.
+	// The window cannot stay empty here: eviction only happens at the cap, so
+	// there is a backlog behind these frames and the same tick refills from
+	// it.
 }
 
-// ackWaitingSince is when the oldest frame still in the window started waiting
-// to be acknowledged: its own send time, or the moment of the last real
-// acknowledgement if that came later.
-//
-// Both halves are needed and neither is sufficient. The send time alone would
-// keep faulting a connection that *is* delivering, just slowly enough that an
-// old frame is still outstanding; the last-progress time alone would be reset
-// by an acknowledgement that released some other, newer frame. Zero when the
-// window is empty.
-func (d *dataFrameSender) ackWaitingSince() time.Time {
-	if len(d.inflight) == 0 {
-		return time.Time{}
-	}
-	since := d.inflight[0].sentAt
-	if d.lastAckProgress.After(since) {
-		since = d.lastAckProgress
-	}
-	return since
-}
-
-// ackStallError reports the connection dead when frames have been in flight
-// for ackStallTimeout with no acknowledgement releasing any of them. Nil
-// while the window is empty — an idle link is not a stalled one.
+// ackStallError reports the connection dead when the current unacknowledged
+// stretch has run for ackStallTimeout. Nil while the window is empty — an
+// idle link is not a stalled one, and a stretch with nothing in flight is
+// dormant rather than over.
 func (d *dataFrameSender) ackStallError() error {
-	if len(d.inflight) == 0 {
+	if len(d.inflight) == 0 || d.unackedSince.IsZero() {
 		return nil
 	}
-	if time.Since(d.ackWaitingSince()) < ackStallTimeout {
+	if time.Since(d.unackedSince) < ackStallTimeout {
 		return nil
 	}
 	return fmt.Errorf("%w (%d frame(s) unacknowledged for %s)",

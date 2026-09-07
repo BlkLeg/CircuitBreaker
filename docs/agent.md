@@ -920,17 +920,30 @@ whenever it is non-zero:
 spool loss: 9412 observation(s) (33554432 bytes) were permanently discarded — the spool could not keep them
   destroyed window: 2026-09-01T00:00:00Z .. 2026-09-03T18:30:00Z (this data is gone and cannot be recovered)
   most recently discarded: 2026-09-03T18:30:05Z
-  usual cause: the spool hit its size cap during an outage and dropped its oldest observations
+  most recent cause: the spool hit its size cap during an outage and dropped its oldest observations
     remedy: raise spool_cap_bytes in agent.toml so a longer outage fits, then restart the agent
-  other cause: the spool could not write at all (full disk, read-only state directory)
-    remedy: check this agent's log for a 'could not be buffered' line, and free or remount the disk
+  this counter also records observations the spool could not write at all, if any earlier ones were
 ```
 
-Two causes share the counter. The size cap is the usual one. The other is a spool that could not
-accept the write at all — a full disk, a read-only `/var/lib/cb-agent` — which since acknowledged
-delivery ends the observation, because every data frame is spooled before it can reach a socket
-and there is no live path around it. The count is exact either way; the agent's log line names
-which happened, and the loss is reported to the server identically.
+Two causes share the counter, and their remedies are opposite. The size cap is the usual one. The
+other is a spool that could not accept the write at all — a full disk, a read-only
+`/var/lib/cb-agent` — which since acknowledged delivery ends the observation, because every data
+frame is spooled before it can reach a socket and there is no live path around it. When that is
+what happened most recently, the same block names it instead, carrying the underlying error, and
+does not offer a size cap as the fix:
+
+```
+  most recent cause: the spool could not write at all (spool write failed: open /var/lib/cb-agent/spool/queue.jsonl: read-only file system)
+    remedy: free or remount this agent's state directory, then restart the agent
+  raising spool_cap_bytes will not help this: the observations never reached the buffer
+```
+
+The count is exact either way, the loss is reported to the server identically, and an agent
+upgraded from a version that predates the recorded cause simply lists both possibilities until
+its next loss. The record is written through on every loss, never batched, so a restart — which
+is what an operator does after freeing the disk — finds the same total the running agent was
+reporting. Only the log line is rate-limited, to one per minute, since the conditions that cause
+this are sustained by nature.
 
 The same four numbers ride `hello` and every `heartbeat`, so the server records them on the
 agent's row, writes a permanent `spool_evicted` audit event each time the reported total rises,
@@ -968,7 +981,12 @@ Practical consequences:
 - Up to 64 frames (4 MiB) may be in flight unacknowledged at once. A connection that dies with a
   full window re-sends at most those 64, which the server deduplicates.
 - If the server keeps reading but stops acknowledging for 45 seconds, the agent ends the
-  connection and reconnects on the fast ladder. Nothing was committed, so nothing was lost.
+  connection and reconnects on the fast ladder. Nothing was committed, so nothing was lost. The
+  45 seconds measure the unacknowledged *stretch* — the time since the window last had nothing
+  outstanding, or since an acknowledgement last released something. Frames the size cap destroys
+  while they are in flight do not restart it: they were not delivered either, and at the cap the
+  head of the spool is the in-flight window, so a clock that eviction could move would stop
+  existing in precisely the state this timeout exists for.
 - During a real backlog, the newest sample now queues *behind* the backlog rather than jumping it.
   That is more honest, not less: the old order landed a fresh sample in the middle of an
   hours-long hole, so the chart read current while the history was missing.

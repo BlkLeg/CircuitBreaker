@@ -981,13 +981,129 @@ func TestDataFrameSender_AckStallSurvivesContinuousCapEviction(t *testing.T) {
 		6*ackStallTimeout, sp.EvictionStats().Frames, len(sender.inflight))
 }
 
-// TestDataFrameSender_AckStallDeadlineTracksTheOldestSurvivingFrame is the
-// other side of the same rule: eviction *may* move the deadline, just never to
-// now. A destroyed frame's wait no longer counts, and the frame behind it is
-// judged from when it was actually sent.
-func TestDataFrameSender_AckStallDeadlineTracksTheOldestSurvivingFrame(t *testing.T) {
+// TestDataFrameSender_AckStallClockIgnoresEvictionEntirely is the C1
+// regression, and it is the deterministic half of the rule the previous
+// attempt got wrong.
+//
+// That attempt derived the deadline from the oldest *surviving* in-flight
+// entry's own send time. It is not evadable by a slow producer, but it is
+// wholly evadable by a normal one: an entry leaves the window only by
+// acknowledgement (never, in this fault) or by eviction, and eviction walks
+// the whole 64-entry window in 64 enqueues. Churn the window inside the
+// deadline — about 1.5 frames/s at the cap, which a handful of probes plus
+// discovery clears easily — and no surviving entry is ever old enough to trip
+// anything, however long the server refuses to acknowledge.
+//
+// The clock measures the stretch, not the frames in it: eviction is not
+// progress, so destroying the window and refilling it must leave the deadline
+// exactly where it was.
+func TestDataFrameSender_AckStallClockIgnoresEvictionEntirely(t *testing.T) {
+	const held = 8
+	fixture, capBytes := numberedFixture(t, held*3, held)
+	sp := newTestSpool(t, capBytes)
+	for i := 1; i <= held; i++ {
+		if err := sp.Enqueue(fixture[i]); err != nil {
+			t.Fatalf("Enqueue(%d) error = %v", i, err)
+		}
+	}
+
+	wire := &fakeWire{}
+	sender := ackingSender(t, sp, wire)
+	if err := sender.drainBurst(held, spool.DefaultCapBytes); err != nil {
+		t.Fatalf("first drainBurst() error = %v", err)
+	}
+	started := sender.unackedSince
+	if started.IsZero() {
+		t.Fatal("unackedSince is zero with frames in flight")
+	}
+
+	// Churn the entire window: enough enqueues to evict every frame in
+	// flight, then a drain that prunes them and refills with brand new sends.
+	time.Sleep(10 * time.Millisecond)
+	for i := held + 1; i <= held*2; i++ {
+		if err := sp.Enqueue(fixture[i]); err != nil {
+			t.Fatalf("Enqueue(%d) error = %v", i, err)
+		}
+	}
+	if err := sender.drainBurst(held, spool.DefaultCapBytes); err != nil {
+		t.Fatalf("second drainBurst() error = %v", err)
+	}
+	if sp.EvictionStats().Frames < held {
+		t.Fatalf("only %d frame(s) evicted, want at least %d — the fixture is not churning the window",
+			sp.EvictionStats().Frames, held)
+	}
+	if len(sender.inflight) == 0 {
+		t.Fatal("window is empty after the refill — the fixture is not exercising the churn")
+	}
+
+	if got := sender.unackedSince; !got.Equal(started) {
+		t.Errorf("unackedSince = %v after the cap destroyed and replaced the whole window, want %v "+
+			"unchanged — eviction is not progress and must not move the deadline", got, started)
+	}
+}
+
+// TestDataFrameSender_AckStallFiresUnderAFastProducerAtTheCap is the
+// behavioural side of C1: the scenario the rate threshold let through.
+//
+// A producer fast enough to replace the in-flight window inside the deadline
+// held a never-acknowledging server forever, destroying observations the whole
+// time, because every frame the detector looked at had just been sent.
+func TestDataFrameSender_AckStallFiresUnderAFastProducerAtTheCap(t *testing.T) {
+	original := ackStallTimeout
+	ackStallTimeout = 60 * time.Millisecond
+	t.Cleanup(func() { ackStallTimeout = original })
+
+	const held = maxInflightFrames
+	// Sized so the producer below churns the whole window several times over
+	// within one deadline — the rate that used to switch the detector off.
+	const perTick = 24
+	fixture, capBytes := numberedFixture(t, held+perTick*400, held)
+	sp := newTestSpool(t, capBytes)
+	for i := 1; i <= held; i++ {
+		if err := sp.Enqueue(fixture[i]); err != nil {
+			t.Fatalf("Enqueue(%d) error = %v", i, err)
+		}
+	}
+
+	wire := &fakeWire{}
+	sender := ackingSender(t, sp, wire)
+	if err := sender.drainBurst(held, spool.DefaultCapBytes); err != nil {
+		t.Fatalf("drainBurst() error = %v", err)
+	}
+
+	deadline := time.Now().Add(8 * ackStallTimeout)
+	next := held + 1
+	for time.Now().Before(deadline) {
+		for range perTick {
+			if next >= len(fixture) {
+				break
+			}
+			if err := sp.Enqueue(fixture[next]); err != nil {
+				t.Fatalf("Enqueue(%d) error = %v", next, err)
+			}
+			next++
+		}
+		err := sender.drainBurst(perTick, spool.DefaultCapBytes)
+		if errors.Is(err, errAckStall) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("drainBurst() error = %v, want nil or errAckStall", err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("no stall after %s with nothing acknowledged (%d observations destroyed, %d in flight) — "+
+		"a producer fast enough to churn the window inside the deadline still evades the detector",
+		8*ackStallTimeout, sp.EvictionStats().Frames, len(sender.inflight))
+}
+
+// TestDataFrameSender_AckStallClockRestartsOnlyOnRealProgress pins the other
+// direction: a connection that is delivering must not be faulted. An
+// acknowledgement that releases something restarts the stretch; one that
+// releases nothing does not.
+func TestDataFrameSender_AckStallClockRestartsOnlyOnRealProgress(t *testing.T) {
 	const held = 4
-	fixture, capBytes := numberedFixture(t, held*2, held)
+	fixture, capBytes := numberedFixture(t, held, held)
 	sp := newTestSpool(t, capBytes)
 	for i := 1; i <= held; i++ {
 		if err := sp.Enqueue(fixture[i]); err != nil {
@@ -1000,39 +1116,50 @@ func TestDataFrameSender_AckStallDeadlineTracksTheOldestSurvivingFrame(t *testin
 	if err := sender.drainBurst(2, spool.DefaultCapBytes); err != nil {
 		t.Fatalf("first drainBurst() error = %v", err)
 	}
-	firstBurst := sender.ackWaitingSince()
-	if firstBurst.IsZero() {
-		t.Fatal("ackWaitingSince() is zero with frames in flight")
-	}
+	started := sender.unackedSince
 
-	time.Sleep(15 * time.Millisecond)
+	// Sending more does not excuse the frames already waiting.
+	time.Sleep(5 * time.Millisecond)
 	if err := sender.drainBurst(2, spool.DefaultCapBytes); err != nil {
 		t.Fatalf("second drainBurst() error = %v", err)
 	}
-	if got := sender.ackWaitingSince(); !got.Equal(firstBurst) {
-		t.Errorf("ackWaitingSince() = %v after a second burst, want the first burst's %v — "+
-			"sending more must not excuse the frames already waiting", got, firstBurst)
+	if got := sender.unackedSince; !got.Equal(started) {
+		t.Errorf("unackedSince = %v after a second burst, want the first burst's %v", got, started)
 	}
 
-	// Evict the first burst. The deadline must move to the *second* burst's
-	// send time — later than the first, and still firmly in the past.
-	for i := held + 1; i <= held+2; i++ {
-		if err := sp.Enqueue(fixture[i]); err != nil {
-			t.Fatalf("Enqueue(%d) error = %v", i, err)
-		}
+	// An ack that releases nothing is not progress.
+	if err := sender.onDataAck(0); err != nil {
+		t.Fatalf("onDataAck(0) error = %v", err)
 	}
-	before := time.Now()
-	sender.dropEvicted(sp.Origin())
-	got := sender.ackWaitingSince()
-	if got.IsZero() {
-		t.Fatal("the whole window was pruned — the fixture evicted more than the first burst")
+	if got := sender.unackedSince; !got.Equal(started) {
+		t.Errorf("unackedSince = %v after an ack that released nothing, want %v unchanged", got, started)
 	}
-	if !got.After(firstBurst) {
-		t.Errorf("ackWaitingSince() = %v after evicting the first burst, want later than %v",
-			got, firstBurst)
+
+	// An ack that releases something is, and the stretch restarts for what is
+	// still outstanding.
+	time.Sleep(5 * time.Millisecond)
+	if err := sender.onDataAck(2); err != nil {
+		t.Fatalf("onDataAck(2) error = %v", err)
 	}
-	if !got.Before(before) {
-		t.Errorf("ackWaitingSince() = %v, want strictly before %v — eviction must never reset "+
-			"the deadline to now", got, before)
+	if len(sender.inflight) == 0 {
+		t.Fatal("the ack released the whole window — this case needs frames still outstanding")
+	}
+	if got := sender.unackedSince; !got.After(started) {
+		t.Errorf("unackedSince = %v after a partial ack, want later than %v — a delivering "+
+			"connection must not be faulted", got, started)
+	}
+
+	// Acknowledging everything ends the stretch: an idle link is not stalled.
+	if err := sender.onDataAck(uint64(held)); err != nil {
+		t.Fatalf("onDataAck(%d) error = %v", held, err)
+	}
+	if len(sender.inflight) != 0 {
+		t.Fatalf("%d frame(s) still in flight after acknowledging everything", len(sender.inflight))
+	}
+	if !sender.unackedSince.IsZero() {
+		t.Errorf("unackedSince = %v with an empty window, want zero", sender.unackedSince)
+	}
+	if err := sender.ackStallError(); err != nil {
+		t.Errorf("ackStallError() = %v on an idle link, want nil", err)
 	}
 }

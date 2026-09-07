@@ -389,7 +389,11 @@ func Run(ctx context.Context, opts Options) error {
 						// read. A loss that is real but invisible is the
 						// one outcome this whole effort forbids.
 						log.Printf("link: spooling outbound data frame: %v", err)
-						opts.Spool.RecordDestroyed(stamped, "spool write failed")
+						// The error, not just "write failed": this string is
+						// what `cb-agent status` prints back as the cause,
+						// and "read-only file system" or "no space left on
+						// device" is the whole answer an operator needs.
+						opts.Spool.RecordDestroyed(stamped, fmt.Sprintf("spool write failed: %v", err))
 						if opts.OnSpoolStats != nil {
 							size, _ := opts.Spool.SizeBytes()
 							opts.OnSpoolStats(opts.Spool.Len(), size)

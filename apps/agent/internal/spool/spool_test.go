@@ -913,3 +913,156 @@ func TestRecordDestroyed_ReportsOncePerWindowButCountsEveryLoss(t *testing.T) {
 		t.Errorf("EvictionStats().Frames = %d, want %d", got, lost+1)
 	}
 }
+
+// stampedFrame is testFrame with a chosen observation time, for the tests that
+// care which *window* of history a loss line claims to cover.
+func stampedFrame(seq uint64, ts time.Time) frame.Frame {
+	f := testFrame(seq)
+	f.TS = ts.UTC()
+	return f
+}
+
+// TestRecordDestroyed_PermanentRecordSurvivesARestartMidWindow is the C2
+// regression.
+//
+// Throttling the log line is right; throttling the *persist* with it was not.
+// The record is documented as cumulative for the life of the state directory
+// and is the audit trail for destroyed data, so a restart inside the reporting
+// window — which is exactly what an operator does after freeing the disk that
+// caused the losses — must not find a smaller number than the one the running
+// agent was reporting. The server treats any decrease as the state directory
+// having been recreated and writes a permanent audit event saying so, which
+// would be a confidently wrong claim about data loss layered on top of real
+// data loss.
+func TestRecordDestroyed_PermanentRecordSurvivesARestartMidWindow(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir, DefaultCapBytes)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	const lost = 25
+	for i := uint64(1); i <= lost; i++ {
+		s.RecordDestroyed(testFrame(i), "spool write failed")
+	}
+	live := s.EvictionStats()
+	if live.Frames != lost {
+		t.Fatalf("in-memory EvictionStats().Frames = %d, want %d", live.Frames, lost)
+	}
+
+	// No Close: a full disk is as likely to end in a kill as in a clean stop,
+	// and the record has to be right either way.
+	restarted, err := Open(dir, DefaultCapBytes)
+	if err != nil {
+		t.Fatalf("reopen error = %v", err)
+	}
+	got := restarted.EvictionStats()
+	if got.Frames != lost {
+		t.Errorf("after restart the permanent record reports %d of %d destroyed observation(s) — "+
+			"batching the persist loses them outright, and a cumulative counter that goes down "+
+			"makes the server log a false state-directory reset", got.Frames, lost)
+	}
+	if got.Bytes != live.Bytes {
+		t.Errorf("after restart the record reports %d bytes, want %d", got.Bytes, live.Bytes)
+	}
+	if !got.LastEvictedAt.Equal(live.LastEvictedAt) {
+		t.Errorf("after restart LastEvictedAt = %v, want %v", got.LastEvictedAt, live.LastEvictedAt)
+	}
+}
+
+// TestRecordDestroyed_BatchedLineNamesTheWholeDestroyedWindow checks the
+// batched line describes the hole it is reporting.
+//
+// It printed the triggering frame's timestamp — the *newest* in the batch —
+// followed by "..", which reads as "the hole starts here" when the hole in
+// fact ends there. `cb-agent status` sends operators to this exact line, so
+// pointing them at the wrong end of the gap is worse than a stray log string.
+func TestRecordDestroyed_BatchedLineNamesTheWholeDestroyedWindow(t *testing.T) {
+	var logs bytes.Buffer
+	restore := logging.UseWriter(&logs, logging.LevelWarn)
+	defer restore()
+
+	s, err := Open(t.TempDir(), DefaultCapBytes)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	base := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	const lost = 25
+	for i := uint64(1); i <= lost; i++ {
+		s.RecordDestroyed(stampedFrame(i, base.Add(time.Duration(i)*time.Second)), "spool write failed")
+	}
+	// Reopen the window so the batch behind the first line is reported.
+	s.mu.Lock()
+	s.lastDestroyedReport = time.Now().Add(-2 * destroyedReportInterval)
+	s.mu.Unlock()
+	s.RecordDestroyed(stampedFrame(lost+1, base.Add(time.Duration(lost+1)*time.Second)), "spool write failed")
+
+	// The batched line covers frames 2..26 — everything since the first loss,
+	// which reported on its own.
+	want := "covering " + base.Add(2*time.Second).Format(time.RFC3339) +
+		".." + base.Add(time.Duration(lost+1)*time.Second).Format(time.RFC3339)
+	if !strings.Contains(logs.String(), want) {
+		t.Errorf("batched loss line does not name the window it destroyed, want %q:\n%s", want, logs.String())
+	}
+}
+
+// TestRecordDestroyed_RecordsWhichCauseDestroyedTheData covers the operator
+// question `cb-agent status` could not answer.
+//
+// Both the size cap and a refused write fold into one counter, deliberately —
+// the operator-facing fact is identical. But the *remedies* are opposite, and
+// with only a count the status output has to list both and ask the operator to
+// go grep. The record now carries the most recent cause so it can say which
+// one actually happened.
+func TestRecordDestroyed_RecordsWhichCauseDestroyedTheData(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir, DefaultCapBytes)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	s.RecordDestroyed(testFrame(1), "spool write failed")
+	if got := s.EvictionStats().LastDestroyedReason; got != "spool write failed" {
+		t.Errorf("LastDestroyedReason = %q, want %q", got, "spool write failed")
+	}
+
+	restarted, err := Open(dir, DefaultCapBytes)
+	if err != nil {
+		t.Fatalf("reopen error = %v", err)
+	}
+	if got := restarted.EvictionStats().LastDestroyedReason; got != "spool write failed" {
+		t.Errorf("after restart LastDestroyedReason = %q, want %q", got, "spool write failed")
+	}
+}
+
+// TestEnqueue_CapEvictionRecordsItselfAsTheCause is the other half: the size
+// cap is a cause too, and the one the status output should name when it is
+// what happened most recently.
+func TestEnqueue_CapEvictionRecordsItselfAsTheCause(t *testing.T) {
+	restore := logging.UseWriter(io.Discard, logging.LevelWarn)
+	defer restore()
+
+	f := testFrame(1)
+	encoded, err := frame.Encode(f)
+	if err != nil {
+		t.Fatalf("Encode() error = %v", err)
+	}
+	// Room for two frames, so the third evicts the first.
+	s, err := Open(t.TempDir(), int64(len(encoded)+1)*2)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	for i := uint64(1); i <= 3; i++ {
+		if err := s.Enqueue(testFrame(i)); err != nil {
+			t.Fatalf("Enqueue(%d) error = %v", i, err)
+		}
+	}
+	stats := s.EvictionStats()
+	if stats.Frames == 0 {
+		t.Fatal("nothing was evicted — the fixture is not at the cap")
+	}
+	if stats.LastDestroyedReason != CapEvictionReason {
+		t.Errorf("LastDestroyedReason = %q, want %q", stats.LastDestroyedReason, CapEvictionReason)
+	}
+}

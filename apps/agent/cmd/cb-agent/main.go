@@ -1500,10 +1500,33 @@ func printSpoolLoss(w io.Writer, stats spool.EvictionStats) {
 	if !stats.LastEvictedAt.IsZero() {
 		fmt.Fprintf(w, "  most recently discarded: %s\n", stats.LastEvictedAt.UTC().Format(time.RFC3339))
 	}
-	fmt.Fprintln(w, "  usual cause: the spool hit its size cap during an outage and dropped its oldest observations")
-	fmt.Fprintln(w, "    remedy: raise spool_cap_bytes in agent.toml so a longer outage fits, then restart the agent")
-	fmt.Fprintln(w, "  other cause: the spool could not write at all (full disk, read-only state directory)")
-	fmt.Fprintln(w, "    remedy: check this agent's log for a 'could not be buffered' line, and free or remount the disk")
+	printSpoolLossCause(w, stats.LastDestroyedReason)
+}
+
+// printSpoolLossCause names what destroyed data most recently and gives that
+// cause's remedy, keeping the other one in view without pretending it is
+// equally likely.
+//
+// An empty reason is a record written by an agent that predates the field —
+// upgrades happen on the operator's schedule, and a status output that
+// asserts a cause it does not know would be the same confidently-wrong
+// reporting in a new place. That case lists both, as it did before.
+func printSpoolLossCause(w io.Writer, reason string) {
+	switch {
+	case reason == "":
+		fmt.Fprintln(w, "  usual cause: the spool hit its size cap during an outage and dropped its oldest observations")
+		fmt.Fprintln(w, "    remedy: raise spool_cap_bytes in agent.toml so a longer outage fits, then restart the agent")
+		fmt.Fprintln(w, "  other cause: the spool could not write at all (full disk, read-only state directory)")
+		fmt.Fprintln(w, "    remedy: check this agent's log for a 'could not be buffered' line, and free or remount the disk")
+	case reason == spool.CapEvictionReason:
+		fmt.Fprintf(w, "  most recent cause: %s and dropped its oldest observations\n", reason)
+		fmt.Fprintln(w, "    remedy: raise spool_cap_bytes in agent.toml so a longer outage fits, then restart the agent")
+		fmt.Fprintln(w, "  this counter also records observations the spool could not write at all, if any earlier ones were")
+	default:
+		fmt.Fprintf(w, "  most recent cause: the spool could not write at all (%s)\n", reason)
+		fmt.Fprintln(w, "    remedy: free or remount this agent's state directory, then restart the agent")
+		fmt.Fprintln(w, "  raising spool_cap_bytes will not help this: the observations never reached the buffer")
+	}
 }
 
 // sortedKeys returns m's keys sorted, so printStatus's grants listing has a

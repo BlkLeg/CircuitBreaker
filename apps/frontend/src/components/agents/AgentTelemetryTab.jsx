@@ -632,8 +632,13 @@ function refusalReasonText(reason) {
  * Two independent losses, reported together because an operator's question is
  * "is any of this host's history missing", but never merged into one number:
  *
- *   - `evicted_*` — the *agent* filled its local buffer and discarded its
- *     oldest observations. Remedy: raise `spool_cap_bytes`.
+ *   - `evicted_*` — the *agent* destroyed observations it could not keep.
+ *     Two causes, one counter: the local buffer filled and dropped its
+ *     oldest, or the buffer could not be written at all (full disk,
+ *     read-only state directory) — every data frame is spooled before it can
+ *     reach a socket, so a refused write ends the observation. The remedies
+ *     are opposite, so the banner names both and `cb-agent status` on the
+ *     host names which one actually happened.
  *   - `refused_*` — *this server* dropped frames on arrival. Remedy: fix the
  *     grant, or approve the agent.
  *

@@ -45,7 +45,21 @@ type EvictionStats struct {
 	OldestDroppedTS time.Time `json:"oldest_dropped_ts"`
 	NewestDroppedTS time.Time `json:"newest_dropped_ts"`
 	LastEvictedAt   time.Time `json:"last_evicted_at"`
+	// LastDestroyedReason names what destroyed data most recently. The two
+	// causes fold into one counter on purpose — "this host's history has a
+	// hole in it" is the same fact either way — but their remedies are
+	// opposite, and without this the status output can only list both and
+	// send the operator to the log. Added alongside the existing fields
+	// rather than replacing any, and omitted when empty, so a record written
+	// by an older agent still loads.
+	LastDestroyedReason string `json:"last_destroyed_reason,omitempty"`
 }
+
+// CapEvictionReason is what the drop-oldest policy records itself as in
+// EvictionStats.LastDestroyedReason. Exported because `cb-agent status` has
+// to tell it apart from a refused write to print the right remedy. Phrased
+// for an operator reading that output, not as an error code.
+const CapEvictionReason = "the spool hit its size cap during an outage"
 
 // widen folds one dropped frame's own timestamp into the destroyed window.
 // A zero ts (a frame that carried none) is ignored rather than dragging the
@@ -63,25 +77,28 @@ func (e *EvictionStats) widen(ts time.Time) {
 	}
 }
 
-// destroyedReportInterval bounds how often RecordDestroyed writes a log line
-// and re-persists the record.
+// destroyedReportInterval bounds how often RecordDestroyed writes a log line.
 //
-// The counters themselves stay exact and are updated on every call — it is
-// only the *reporting* that batches, exactly as Enqueue's eviction path
-// batches a whole drop-oldest run into one line and one write. The condition
-// that drives this is by nature sustained (a full disk stays full), so an
-// unthrottled line and an fsync per sample would be a log storm layered on top
-// of a storage failure, and the persist fails too, adding a second line each
-// time.
+// The line only. The condition driving these losses is by nature sustained —
+// a full disk stays full — so an unthrottled line per sample would be a log
+// storm layered on top of a storage failure, and the first loss in a window
+// always reports immediately, so an isolated failure is never silent.
 //
-// Delaying the persist costs nothing the server can see: `EvictionStats` reads
-// the in-memory record, which every hello and heartbeat reports from and which
-// is always current. The only thing that can lag is what survives a restart,
-// and lagging by at most one interval of an ongoing failure is a far better
-// trade than writing to a disk that is already refusing writes.
+// The record itself is written through on every call. Batching that too was a
+// real defect: the argument for it was that `EvictionStats` reads the
+// in-memory record, so hello, heartbeat and the status file are always
+// current — which is true, and irrelevant. What it missed is the restart. A
+// full disk usually ends with an operator freeing it and restarting the
+// agent, and a persist batched behind a one-minute window loses up to a
+// minute of losses *outright* at that point, not late. The permanent record
+// then goes down, and the server reads any decrease as the state directory
+// having been recreated and writes an audit event saying so — a confidently
+// wrong claim about data loss, on top of real data loss, which is the exact
+// failure this whole mechanism exists to end.
 //
-// The first loss in a window always reports immediately, so an isolated
-// failure is never silent.
+// The cost of write-through is one failing write syscall per destroyed
+// observation on a disk that is already refusing writes. That is a cheap
+// price for a counter that is true across a restart.
 const destroyedReportInterval = time.Minute
 
 // RecordDestroyed folds one observation this spool could not buffer at all
@@ -114,30 +131,46 @@ func (s *Spool) RecordDestroyed(f frame.Frame, reason string) {
 	s.evicted.Bytes += size
 	s.evicted.widen(f.TS)
 	s.evicted.LastEvictedAt = time.Now().UTC()
+	s.evicted.LastDestroyedReason = reason
 
-	s.destroyedPending++
-	s.destroyedPendingBytes += size
+	s.destroyedPending.Frames++
+	s.destroyedPending.Bytes += size
+	s.destroyedPending.widen(f.TS)
+
+	// Written through, never batched — see destroyedReportInterval. The error
+	// is held rather than logged here so a sustained failure does not emit a
+	// line per sample; it is reported with the batched loss line below, which
+	// is the same line an operator is already being pointed at.
+	persistErr := s.persistEvictionsLocked()
+
 	if !s.lastDestroyedReport.IsZero() &&
 		time.Since(s.lastDestroyedReport) < destroyedReportInterval {
 		return
 	}
-	pending, pendingBytes := s.destroyedPending, s.destroyedPendingBytes
-	s.destroyedPending, s.destroyedPendingBytes = 0, 0
+	pending := s.destroyedPending
+	s.destroyedPending = EvictionStats{}
 	s.lastDestroyedReport = time.Now()
 
 	// Errorf, not Warnf: cap eviction is a policy working as designed, while
 	// this is the spool failing to do its job at all — and unlike eviction it
 	// will keep happening, silently, for as long as the underlying condition
 	// lasts.
+	//
+	// Both ends of the window, oldest first. Printing the triggering frame's
+	// timestamp — the newest of the batch — followed by ".." told an operator
+	// the hole started where it in fact ended.
 	logging.Errorf(
-		"cb-agent: spool: WARNING permanently lost %d observation(s) (%d bytes) covering %s.. that "+
+		"cb-agent: spool: WARNING permanently lost %d observation(s) (%d bytes) covering %s..%s that "+
 			"could not be buffered (%s) — there is no other copy; cumulative loss for this agent is "+
 			"%d observation(s) / %d bytes.",
-		pending, pendingBytes, formatEvictedTS(f.TS), reason,
-		s.evicted.Frames, s.evicted.Bytes,
+		pending.Frames, pending.Bytes,
+		formatEvictedTS(pending.OldestDroppedTS), formatEvictedTS(pending.NewestDroppedTS),
+		reason, s.evicted.Frames, s.evicted.Bytes,
 	)
-	if err := s.persistEvictionsLocked(); err != nil {
-		logging.Errorf("cb-agent: spool: could not persist the eviction record: %v", err)
+	if persistErr != nil {
+		// A record that could not be written is a loss the next restart will
+		// not be able to report at all.
+		logging.Errorf("cb-agent: spool: could not persist the eviction record: %v", persistErr)
 	}
 }
 

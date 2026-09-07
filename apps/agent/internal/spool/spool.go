@@ -90,12 +90,15 @@ type Spool struct {
 	// the life of the state directory and never reset by this package.
 	evictedPath string
 	evicted     EvictionStats
-	// destroyedPending / lastDestroyedReport batch RecordDestroyed's log line
-	// and its persist — see destroyedReportInterval. The `evicted` record
-	// above is updated on every call regardless and is never batched.
-	destroyedPending      int64
-	destroyedPendingBytes int64
-	lastDestroyedReport   time.Time
+	// destroyedPending / lastDestroyedReport batch RecordDestroyed's *log
+	// line* — see destroyedReportInterval. Only the line: the `evicted`
+	// record above is updated and persisted on every call, because it is the
+	// audit trail for destroyed data and a restart must not find less of it
+	// than the running agent was reporting. destroyedPending accumulates the
+	// count, bytes and observation window of the losses since the last line
+	// so that line can describe the whole hole rather than its newest end.
+	destroyedPending    EvictionStats
+	lastDestroyedReport time.Time
 }
 
 // entry is one queued frame plus the encoded length (including its trailing
@@ -332,6 +335,7 @@ func (s *Spool) Enqueue(f frame.Frame) error {
 	s.evicted.widen(batch.OldestDroppedTS)
 	s.evicted.widen(batch.NewestDroppedTS)
 	s.evicted.LastEvictedAt = time.Now().UTC()
+	s.evicted.LastDestroyedReason = CapEvictionReason
 
 	// logging.Warnf, not log.Printf. internal/logging.Configure points the
 	// standard log package at a gate that forwards only while Info is
