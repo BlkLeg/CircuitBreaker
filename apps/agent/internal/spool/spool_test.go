@@ -681,3 +681,170 @@ func TestSpool_HealsTornFinalLineOnLoad(t *testing.T) {
 	// the torn line it decodes as nothing at all.
 	wantSeqs(t, reopened.Peek(10, DefaultCapBytes), 1, 2, 99)
 }
+
+// TestSpool_PositionsSurviveCommitAndEviction pins the property the whole
+// position mechanism exists for: an absolute position names the same frame
+// however the head moves underneath it.
+//
+// The head moves for two reasons — a commit, and the drop-oldest cap policy —
+// and a caller holding frames across a round trip cannot tell which happened,
+// or how far. Head-relative bookkeeping is therefore unsafe for it: `Commit(n)`
+// and a head-relative skip both mean "the first n live frames", and both name
+// different frames after an eviction than they did when the caller decided on
+// them.
+func TestSpool_PositionsSurviveCommitAndEviction(t *testing.T) {
+	s, err := Open(t.TempDir(), DefaultCapBytes)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	for i := uint64(0); i < 6; i++ {
+		if err := s.Enqueue(testFrame(i)); err != nil {
+			t.Fatalf("Enqueue(%d) error = %v", i, err)
+		}
+	}
+
+	if got := s.Origin(); got != 0 {
+		t.Fatalf("Origin() = %d on a fresh spool, want 0", got)
+	}
+	res := s.PeekAt(FromHead, 3, DefaultCapBytes)
+	if len(res.Frames) != 3 || res.Start != 0 || res.Origin != 0 {
+		t.Fatalf("PeekAt(FromHead) = %d frames at %d (origin %d), want 3 at 0 (origin 0)",
+			len(res.Frames), res.Start, res.Origin)
+	}
+	if res.Frames[0].Seq != 0 {
+		t.Errorf("PeekAt(FromHead) first frame seq = %d, want 0", res.Frames[0].Seq)
+	}
+
+	// Look past what is already in flight, by position.
+	res = s.PeekAt(3, 3, DefaultCapBytes)
+	if len(res.Frames) != 3 || res.Start != 3 {
+		t.Fatalf("PeekAt(3) = %d frames at %d, want 3 at 3", len(res.Frames), res.Start)
+	}
+	if res.Frames[0].Seq != 3 {
+		t.Errorf("PeekAt(3) first frame seq = %d, want 3", res.Frames[0].Seq)
+	}
+
+	// Committing through position 2 discards exactly the first three.
+	if err := s.CommitThrough(2); err != nil {
+		t.Fatalf("CommitThrough(2) error = %v", err)
+	}
+	if got := s.Len(); got != 3 {
+		t.Errorf("Len() = %d after CommitThrough(2), want 3", got)
+	}
+	if got := s.Origin(); got != 3 {
+		t.Errorf("Origin() = %d after CommitThrough(2), want 3", got)
+	}
+
+	// Replaying a watermark that has already been applied frees nothing more
+	// — the alternative is discarding live frames a second time.
+	if err := s.CommitThrough(2); err != nil {
+		t.Fatalf("CommitThrough(2) replay error = %v", err)
+	}
+	if got := s.Len(); got != 3 {
+		t.Errorf("Len() = %d after replaying CommitThrough(2), want 3", got)
+	}
+
+	res = s.PeekAt(FromHead, 1, DefaultCapBytes)
+	if len(res.Frames) != 1 || res.Frames[0].Seq != 3 || res.Start != 3 {
+		t.Errorf("PeekAt(FromHead) after a commit = seq %v at %d, want seq 3 at 3",
+			res.Frames, res.Start)
+	}
+}
+
+// TestSpool_CommitThroughIgnoresPositionsTheCapDestroyed is the spool half of
+// the loss this mechanism prevents.
+//
+// A caller that sent frames and is waiting for them to be acknowledged holds
+// positions at the head of the backlog — which is exactly where cap eviction
+// takes from. If its commit were a count, it would discard that many frames
+// from the *new* head: never-sent frames, destroyed silently, on top of the
+// ones eviction already destroyed and reported.
+func TestSpool_CommitThroughIgnoresPositionsTheCapDestroyed(t *testing.T) {
+	first := testFrame(0)
+	encoded, err := frame.Encode(first)
+	if err != nil {
+		t.Fatalf("Encode() error = %v", err)
+	}
+	// Room for exactly four of these.
+	s, err := Open(t.TempDir(), int64(len(encoded)+1)*4)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	for i := uint64(0); i < 8; i++ {
+		if err := s.Enqueue(testFrame(i)); err != nil {
+			t.Fatalf("Enqueue(%d) error = %v", i, err)
+		}
+	}
+	origin := s.Origin()
+	if origin == 0 {
+		t.Fatal("nothing was evicted — the cap is too generous for this fixture")
+	}
+	remaining := s.Len()
+
+	// A watermark for frames the cap already destroyed must free nothing.
+	if err := s.CommitThrough(origin - 1); err != nil {
+		t.Fatalf("CommitThrough(%d) error = %v", origin-1, err)
+	}
+	if got := s.Len(); got != remaining {
+		t.Errorf("Len() = %d after committing through a destroyed position, want %d — "+
+			"%d never-sent frame(s) were discarded", got, remaining, remaining-got)
+	}
+
+	// A watermark straddling the eviction frees only the part still present.
+	if err := s.CommitThrough(origin); err != nil {
+		t.Fatalf("CommitThrough(%d) error = %v", origin, err)
+	}
+	if got := s.Len(); got != remaining-1 {
+		t.Errorf("Len() = %d after committing through the new head, want %d", got, remaining-1)
+	}
+}
+
+// TestRecordDestroyed_CountsAnObservationTheSpoolCouldNotBuffer covers the
+// other way an observation dies: not the cap, but a spool that could not
+// accept the write at all — a full disk, a read-only /var.
+//
+// Since every data frame is now spooled before it can reach a socket, a
+// refused write is the end of that observation, and it lands in the same
+// permanent record cap eviction writes to. The operator-facing fact is
+// identical, and a loss that is real but invisible is the one outcome the
+// whole eviction-reporting effort exists to prevent.
+func TestRecordDestroyed_CountsAnObservationTheSpoolCouldNotBuffer(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir, DefaultCapBytes)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if got := s.EvictionStats().Frames; got != 0 {
+		t.Fatalf("EvictionStats().Frames = %d on a fresh spool, want 0", got)
+	}
+
+	observed := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	lost := testFrame(1)
+	lost.TS = observed
+	s.RecordDestroyed(lost, "spool write failed")
+
+	stats := s.EvictionStats()
+	if stats.Frames != 1 {
+		t.Errorf("EvictionStats().Frames = %d, want 1", stats.Frames)
+	}
+	if stats.Bytes <= 0 {
+		t.Errorf("EvictionStats().Bytes = %d, want the frame's encoded size", stats.Bytes)
+	}
+	if !stats.OldestDroppedTS.Equal(observed) || !stats.NewestDroppedTS.Equal(observed) {
+		t.Errorf("destroyed window = %v..%v, want both %v — the bound must be the observation's "+
+			"own time, not when the write failed", stats.OldestDroppedTS, stats.NewestDroppedTS, observed)
+	}
+	if stats.LastEvictedAt.IsZero() {
+		t.Error("LastEvictedAt is zero — the wall-clock half of the record was not written")
+	}
+
+	// Persisted, so a restart still reports it. This is a record of destroyed
+	// data; forgetting it across a restart would understate the loss.
+	reopened, err := Open(dir, DefaultCapBytes)
+	if err != nil {
+		t.Fatalf("re-Open() error = %v", err)
+	}
+	if got := reopened.EvictionStats().Frames; got != 1 {
+		t.Errorf("EvictionStats().Frames after reopen = %d, want 1", got)
+	}
+}

@@ -4,6 +4,7 @@ package link
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -80,6 +81,34 @@ func (w *fakeWire) payloadOrder(t *testing.T) []int {
 		out = append(out, p.N)
 	}
 	return out
+}
+
+// numberedFixture builds `total` numbered data frames once — reused rather
+// than rebuilt, because numberedDataFrame stamps time.Now() and the encoded
+// length of an RFC3339 timestamp varies with its trailing zeros — and returns
+// them alongside a byte cap that holds exactly `held` of them.
+//
+// The cap is `held` times the *largest* frame, so the first `held` enqueues
+// are guaranteed not to evict however the timestamps encoded. A cap-eviction
+// test whose fixture evicts during setup is testing nothing.
+//
+// The returned slice is 1-indexed to match the payload numbers; index 0 is
+// unused.
+func numberedFixture(t *testing.T, total, held int) ([]frame.Frame, int64) {
+	t.Helper()
+	frames := make([]frame.Frame, total+1)
+	widest := 0
+	for i := 1; i <= total; i++ {
+		frames[i] = numberedDataFrame(i)
+		encoded, err := frame.Encode(frames[i])
+		if err != nil {
+			t.Fatalf("Encode(%d) error = %v", i, err)
+		}
+		if len(encoded)+1 > widest {
+			widest = len(encoded) + 1
+		}
+	}
+	return frames, int64(widest * held)
 }
 
 // newTestSpool opens a spool in a temp dir, failing the test on error.
@@ -473,7 +502,7 @@ func TestDataFrameSender_InflightByteWindowBoundsUnackedFrames(t *testing.T) {
 		t.Errorf("sent %d frames, want fewer than the %d-frame window — the byte window must bind first",
 			wire.count(), maxInflightFrames)
 	}
-	// The byte window is a threshold, not a hard ceiling: PeekFrom always
+	// The byte window is a threshold, not a hard ceiling: PeekAt always
 	// returns its first frame so an oversized one cannot wedge the queue, so
 	// the overshoot is bounded by exactly one frame and no more.
 	if limit := maxInflightBytes + int64(fat) + 1024; sender.inflightBytes > limit {
@@ -727,5 +756,156 @@ func TestDataFrameSender_ReportsSpoolStats(t *testing.T) {
 	}
 	if len(reportedDepth) != 3 || reportedDepth[2] != 0 {
 		t.Fatalf("reportedDepth after ack = %v, want [1 1 0]", reportedDepth)
+	}
+}
+
+// TestDataFrameSender_CapEvictionNeverCommitsAnUnsentFrame is the C1
+// regression, and the one case where commit-on-ack is strictly more dangerous
+// than commit-on-write unless the spool is asked by position.
+//
+// Under commit-on-ack the frames at the head of the backlog *are* the
+// in-flight window, and the producer keeps enqueueing into the same spool from
+// another goroutine. At the cap — the state the spool exists for, after a long
+// outage — an enqueue evicts from that head. A count-based `Commit(k)` cannot
+// tell the head moved: it discards k frames from the *new* head, of which the
+// evicted ones' worth were never sent, never acknowledged, and never recorded
+// as destroyed. A cap-full reconnect therefore lost roughly twice what
+// eviction reported, and half of it silently.
+//
+// The invariant asserted here is absolute: a frame may leave this spool only
+// by being acknowledged or by being counted in the eviction record. Nothing
+// else may make one disappear.
+func TestDataFrameSender_CapEvictionNeverCommitsAnUnsentFrame(t *testing.T) {
+	const (
+		held  = 4
+		total = 8
+	)
+	fixture, capBytes := numberedFixture(t, total, held)
+
+	sp := newTestSpool(t, capBytes)
+	for i := 1; i <= held; i++ {
+		if err := sp.Enqueue(fixture[i]); err != nil {
+			t.Fatalf("Enqueue(%d) error = %v", i, err)
+		}
+	}
+	if sp.Len() != held || sp.EvictionStats().Frames != 0 {
+		t.Fatalf("fixture setup evicted %d frame(s) and holds %d, want 0 and %d — the cap is too "+
+			"tight for the frames this test buffers before it starts",
+			sp.EvictionStats().Frames, sp.Len(), held)
+	}
+
+	wire := &fakeWire{}
+	sender := ackingSender(t, sp, wire)
+
+	// Put every buffered frame on the wire, unacknowledged.
+	if err := sender.drainBurst(held, spool.DefaultCapBytes); err != nil {
+		t.Fatalf("drainBurst() error = %v", err)
+	}
+	if wire.count() != held {
+		t.Fatalf("sent %d frames, want %d", wire.count(), held)
+	}
+
+	// …and now the producer keeps collecting, exactly as it does on a real
+	// agent. These enqueues push the spool over its cap and evict from the
+	// head — which is where the in-flight frames are.
+	for i := held + 1; i <= total; i++ {
+		if err := sp.Enqueue(fixture[i]); err != nil {
+			t.Fatalf("Enqueue(%d) error = %v", i, err)
+		}
+	}
+	evicted := int(sp.EvictionStats().Frames)
+	if evicted == 0 {
+		t.Fatalf("the fixture evicted nothing — cap %d is too generous to exercise the race", capBytes)
+	}
+	if evicted > held {
+		t.Fatalf("the fixture evicted %d frames, more than the %d in flight — it is no longer testing "+
+			"an eviction that lands *inside* the window", evicted, held)
+	}
+
+	// The server acknowledges everything it was sent.
+	if err := sender.onDataAck(wire.seq); err != nil {
+		t.Fatalf("onDataAck() error = %v", err)
+	}
+
+	// Eviction is FIFO, so the destroyed frames are exactly n = 1..evicted,
+	// and the acknowledged ones are n = 1..held. Everything above both must
+	// still be on disk: nobody sent it and nobody acknowledged it.
+	firstSurvivor := max(evicted, held) + 1
+	want := make([]int, 0, total)
+	for n := firstSurvivor; n <= total; n++ {
+		want = append(want, n)
+	}
+
+	remaining := sp.Peek(total, spool.DefaultCapBytes)
+	got := make([]int, 0, len(remaining))
+	for _, f := range remaining {
+		var p struct {
+			N int `json:"n"`
+		}
+		if err := json.Unmarshal(f.Payload, &p); err != nil {
+			t.Fatalf("unmarshal remaining payload %s: %v", f.Payload, err)
+		}
+		got = append(got, p.N)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("spool holds %v after an eviction inside the in-flight window, want %v — "+
+			"%d frame(s) that were never sent were committed away", got, want, len(want)-len(got))
+	}
+
+	// And the accounting closes: everything enqueued is either still here,
+	// acknowledged, or counted as destroyed. Nothing may vanish unrecorded.
+	acked := held - evicted
+	if accounted := len(got) + acked + evicted; accounted != total {
+		t.Errorf("accounted for %d of %d enqueued frames (%d on disk, %d acked, %d recorded destroyed)",
+			accounted, total, len(got), acked, evicted)
+	}
+}
+
+// TestDataFrameSender_EvictedInflightFramesStopHoldingTheWindowOpen is the
+// bookkeeping half of the same fix. An entry whose frame the cap destroyed can
+// never be acknowledged, so leaving it in the window would occupy budget
+// forever and run the ack-stall clock down against an observation that no
+// longer exists.
+func TestDataFrameSender_EvictedInflightFramesStopHoldingTheWindowOpen(t *testing.T) {
+	const held = 4
+	fixture, capBytes := numberedFixture(t, held*2, held)
+	sp := newTestSpool(t, capBytes)
+	for i := 1; i <= held; i++ {
+		if err := sp.Enqueue(fixture[i]); err != nil {
+			t.Fatalf("Enqueue(%d) error = %v", i, err)
+		}
+	}
+
+	wire := &fakeWire{}
+	sender := ackingSender(t, sp, wire)
+	if err := sender.drainBurst(held, spool.DefaultCapBytes); err != nil {
+		t.Fatalf("drainBurst() error = %v", err)
+	}
+	if len(sender.inflight) != held {
+		t.Fatalf("in-flight window holds %d, want %d", len(sender.inflight), held)
+	}
+
+	// Evict the whole window out from under the sender.
+	for i := held + 1; i <= held*2; i++ {
+		if err := sp.Enqueue(fixture[i]); err != nil {
+			t.Fatalf("Enqueue(%d) error = %v", i, err)
+		}
+	}
+
+	// The next tick notices and forgets them — and then gets on with sending
+	// what actually is still there, rather than sitting on a window full of
+	// ghosts.
+	if err := sender.drainBurst(held, spool.DefaultCapBytes); err != nil {
+		t.Fatalf("second drainBurst() error = %v", err)
+	}
+	for _, f := range sender.inflight {
+		if f.pos < sp.Origin() {
+			t.Errorf("in-flight entry at position %d is below the live head %d — it names a frame "+
+				"the cap already destroyed", f.pos, sp.Origin())
+		}
+	}
+	if wire.count() <= held {
+		t.Errorf("sent %d frames total, want more than the %d evicted ones — the window never reopened",
+			wire.count(), held)
 	}
 }

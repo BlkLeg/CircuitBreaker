@@ -658,7 +658,7 @@ function SpoolLossBanner({ spool }) {
     parts.push(
       `The agent permanently discarded ${evicted.toLocaleString()} buffered observation${
         evicted === 1 ? '' : 's'
-      }${size ? ` (${size})` : ''} because its local spool reached its size cap.`
+      }${size ? ` (${size})` : ''} because its local spool could not keep them.`
     );
     if (spool.evicted_oldest_at && spool.evicted_newest_at) {
       parts.push(
@@ -691,13 +691,20 @@ function SpoolLossBanner({ spool }) {
             catch-up clears when the backlog drains, and this does not clear.
           </p>
           {evicted > 0 && (
-            <p>
-              The agent&rsquo;s spool is a fixed-size disk buffer. When it fills during an outage it
-              discards its oldest observations to keep accepting new ones. Raise{' '}
-              <code>spool_cap_bytes</code> in the agent&rsquo;s <code>agent.toml</code> so a longer
-              outage fits, then restart the agent. Restoring the link lets the remaining backlog
-              drain.
-            </p>
+            <>
+              <p>
+                The agent&rsquo;s spool is a fixed-size disk buffer. When it fills during an outage
+                it discards its oldest observations to keep accepting new ones. Raise{' '}
+                <code>spool_cap_bytes</code> in the agent&rsquo;s <code>agent.toml</code> so a
+                longer outage fits, then restart the agent. Restoring the link lets the remaining
+                backlog drain.
+              </p>
+              <p>
+                The cap is the usual cause but not the only one: a full disk or a read-only state
+                directory stops the spool accepting writes at all, and an observation it cannot
+                buffer has nowhere else to go. The agent&rsquo;s own log says which happened.
+              </p>
+            </>
           )}
           {refused > 0 && (
             <p>

@@ -935,10 +935,19 @@ async def link_stream(websocket: WebSocket) -> None:
         return acked_seq is None or handled_seq > acked_seq
 
     def note_handled(seq: int) -> None:
-        """Advance the watermark past one terminally handled frame."""
+        """Advance the watermark past one terminally handled frame.
+
+        A sequence number at or below the watermark is dropped rather than
+        counted. It happens for a `decreasing_sequence` rejection, whose
+        terminal seq is by definition behind, and counting it would drift
+        `frames_since_ack` away from what its name and the coalescing
+        threshold mean — the number of frames the agent is still waiting to
+        hear about.
+        """
         nonlocal handled_seq, frames_since_ack
-        if handled_seq is None or seq > handled_seq:
-            handled_seq = seq
+        if handled_seq is not None and seq <= handled_seq:
+            return
+        handled_seq = seq
         frames_since_ack += 1
 
     async def flush_data_ack(force: bool = False) -> bool:

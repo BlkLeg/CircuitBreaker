@@ -58,6 +58,29 @@ type Spool struct {
 	// head is the consumed prefix: entries[:head] have been delivered and
 	// are pending compaction, entries[head:] are the live backlog.
 	head int
+	// origin is the absolute position of entries[head] — how many frames
+	// have left the live backlog since this Spool was opened, whether by
+	// Commit or by cap eviction.
+	//
+	// It exists because positional bookkeeping is not safe for a caller that
+	// holds frames across a round trip. `Commit(n)` and a head-relative peek
+	// both describe "the first n live frames", and the drop-oldest policy in
+	// Enqueue advances head underneath them — from another goroutine, since
+	// the producer enqueues while the link drains. For a caller that commits
+	// immediately after writing (drainCommitOnWrite) the window is a few
+	// microseconds wide; for one that commits only when the *server*
+	// acknowledges, it is a whole ack round trip, and the frames at the head
+	// are precisely the ones in flight. An eviction in that window made
+	// Commit discard that many never-sent frames on top of the ones eviction
+	// had already destroyed — a silent, uncounted loss of roughly twice the
+	// evicted amount.
+	//
+	// Positions are stable across both eviction and commit, so PeekAt and
+	// CommitThrough let such a caller name exactly the frames it means. They
+	// are per-Spool-instance and deliberately not persisted: the only caller
+	// that needs them holds them for the life of one connection, which cannot
+	// outlive the process.
+	origin int64
 	// bytes is the encoded size (including newlines) of entries[head:],
 	// maintained incrementally on load/enqueue/commit/compact so SizeBytes
 	// is O(1) instead of re-encoding the whole queue.
@@ -286,6 +309,7 @@ func (s *Spool) Enqueue(f frame.Frame) error {
 		dropped := s.entries[s.head]
 		s.bytes -= dropped.n
 		s.head++
+		s.origin++
 		batch.Frames++
 		batch.Bytes += dropped.n
 		// The dropped frame's own TS, not time.Now(): the fact worth
@@ -371,27 +395,69 @@ func (s *Spool) appendLine(data []byte) error {
 // The first frame is always returned regardless of maxBytes, so a frame
 // larger than one tick's byte budget cannot wedge the queue forever.
 func (s *Spool) Peek(maxFrames int, maxBytes int64) []frame.Frame {
-	return s.PeekFrom(0, maxFrames, maxBytes)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.peekLocked(0, maxFrames, maxBytes)
 }
 
-// PeekFrom is Peek, starting `skip` frames into the undelivered backlog
-// instead of at its head.
+// FromHead asks PeekAt to start at the head of the live backlog, whatever
+// absolute position that currently is.
+const FromHead int64 = -1
+
+// PeekResult is one PeekAt answer, positioned in the spool's absolute stream
+// so the caller can hold it across a round trip. See Spool.origin.
+type PeekResult struct {
+	Frames []frame.Frame
+	// Start is the absolute position of Frames[0]. Meaningless when Frames
+	// is empty. It can be *greater* than the `from` the caller asked for:
+	// cap eviction may have destroyed everything between the two, and the
+	// gap is the caller's evidence of exactly that.
+	Start int64
+	// Origin is the absolute position of the live backlog's head at the
+	// moment of this peek. Everything below it has left the spool — some
+	// committed, some destroyed by the cap — and is reported in the same
+	// call so a caller cannot race between reading one and the other.
+	Origin int64
+}
+
+// PeekAt returns up to maxFrames live frames starting at absolute position
+// `from` (FromHead for the oldest undelivered frame), stopping once their
+// encoded size would exceed maxBytes. It mutates nothing.
 //
-// It exists for commit-on-ack (internal/link's dataFrameSender): once a frame
-// is only committed when the *server* acknowledges it, the frames already in
-// flight are still undelivered and still sit at the head of the backlog. The
-// next drain tick therefore has to look past them, and `skip` is how many.
-// Peek's own head-relative view is what a caller that commits on write wants,
-// and both callers share one implementation so the byte budget and the
-// always-return-the-first-frame rule cannot drift apart.
+// This is the peek half of position-based delivery — see Spool.origin for why
+// a head-relative index is not safe to hold across a round trip. A `from`
+// below the current head is not an error: the frames it named are gone, and
+// the result's Start and Origin say so.
 //
-// skip beyond the end of the backlog returns nil rather than erroring: a
-// window that is already wider than the queue simply has nothing more to
-// send this tick.
-func (s *Spool) PeekFrom(skip, maxFrames int, maxBytes int64) []frame.Frame {
+// The first frame is always returned regardless of maxBytes, so a frame
+// larger than one tick's byte budget cannot wedge the queue forever.
+func (s *Spool) PeekAt(from int64, maxFrames int, maxBytes int64) PeekResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	skip := 0
+	if from > s.origin {
+		skip = int(from - s.origin)
+	}
+	return PeekResult{
+		Frames: s.peekLocked(skip, maxFrames, maxBytes),
+		Start:  s.origin + int64(skip),
+		Origin: s.origin,
+	}
+}
+
+// Origin is the absolute position of the oldest undelivered frame. It only
+// ever increases, and a caller holding positions below it is holding frames
+// that have left the spool.
+func (s *Spool) Origin() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.origin
+}
+
+// peekLocked is the shared body of Peek and PeekAt, so the byte budget and
+// the always-return-the-first-frame rule cannot drift between them.
+func (s *Spool) peekLocked(skip, maxFrames int, maxBytes int64) []frame.Frame {
 	if maxFrames <= 0 || skip < 0 {
 		return nil
 	}
@@ -400,9 +466,6 @@ func (s *Spool) PeekFrom(skip, maxFrames int, maxBytes int64) []frame.Frame {
 		return nil
 	}
 	live = live[skip:]
-	if len(live) == 0 {
-		return nil
-	}
 	out := make([]frame.Frame, 0, min(maxFrames, len(live)))
 	var total int64
 	for _, e := range live {
@@ -418,15 +481,43 @@ func (s *Spool) PeekFrom(skip, maxFrames int, maxBytes int64) []frame.Frame {
 	return out
 }
 
-// Commit discards the first n undelivered frames — the ones the caller has
-// now actually sent. n is clamped to what is available, so committing more
-// than was peeked (or committing an empty spool) is a no-op rather than an
-// error. Nothing is discarded before this call, which is what makes a crash
-// mid-burst re-send rather than lose.
+// Commit discards the first n undelivered frames. n is clamped to what is
+// available, so committing more than was peeked (or committing an empty
+// spool) is a no-op rather than an error. Nothing is discarded before this
+// call, which is what makes a crash mid-burst re-send rather than lose.
+//
+// It is the count-based primitive CommitThrough is built on, and it is only
+// safe for a caller that can be certain the head has not moved since it chose
+// n — which, with a producer enqueueing from another goroutine and a
+// drop-oldest cap policy, no caller holding frames across a send can be. Use
+// CommitThrough instead: it names frames by position and cannot be fooled by
+// an eviction.
 func (s *Spool) Commit(n int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.commitLocked(n)
+}
 
+// CommitThrough discards every live frame whose absolute position is at or
+// below pos — the commit half of position-based delivery.
+//
+// A pos already below the head is a no-op rather than an error, and that is
+// the whole point: those frames left the spool while the caller was waiting
+// for its acknowledgement, either because the caller itself committed them or
+// because cap eviction destroyed them. A positional Commit could not tell the
+// difference and would discard that many *unsent* frames instead. Eviction
+// already counted what it destroyed (see EvictionStats), so nothing here is
+// lost silently.
+func (s *Spool) CommitThrough(pos int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if pos < s.origin {
+		return nil
+	}
+	return s.commitLocked(int(pos - s.origin + 1))
+}
+
+func (s *Spool) commitLocked(n int) error {
 	if n <= 0 {
 		return nil
 	}
@@ -441,6 +532,7 @@ func (s *Spool) Commit(n int) error {
 		consumed += e.n
 	}
 	s.head += n
+	s.origin += int64(n)
 	s.bytes -= consumed
 
 	if s.head >= compactHeadThreshold || s.consumedBytesLocked() > s.capBytes/4 {

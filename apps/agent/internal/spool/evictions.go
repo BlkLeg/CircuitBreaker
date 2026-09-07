@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	"circuitbreaker.dev/cb-agent/internal/frame"
+	"circuitbreaker.dev/cb-agent/internal/logging"
 )
 
 // evictedFilename records, cumulatively and for the life of the state
@@ -57,6 +60,51 @@ func (e *EvictionStats) widen(ts time.Time) {
 	}
 	if e.NewestDroppedTS.IsZero() || ts.After(e.NewestDroppedTS) {
 		e.NewestDroppedTS = ts
+	}
+}
+
+// RecordDestroyed folds one observation this spool could not buffer at all
+// into the same permanent loss record cap eviction writes to, and says so at
+// error level.
+//
+// The cap is the dominant reason a spool destroys an observation, but it is
+// not the only one: a full disk, a read-only /var, or a state directory that
+// vanished all make Enqueue fail, and since every data frame is now spooled
+// *before* it can reach a socket, a refused write is the end of that
+// observation. Counting it here rather than inventing a second counter is
+// deliberate — the operator-facing fact is identical ("this host's history
+// has a hole in it, and nothing will backfill it"), the fleet view and the
+// Telemetry tab already read this record, and a loss that is real but
+// invisible is the exact failure this whole effort exists to end. `reason`
+// separates the causes in the log, which is where an operator goes next.
+//
+// Callers must already know the frame is gone: this records a loss, it does
+// not cause one.
+func (s *Spool) RecordDestroyed(f frame.Frame, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data, err := frame.Encode(f)
+	size := int64(0)
+	if err == nil {
+		size = int64(len(data)) + 1
+	}
+	s.evicted.Frames++
+	s.evicted.Bytes += size
+	s.evicted.widen(f.TS)
+	s.evicted.LastEvictedAt = time.Now().UTC()
+
+	// Errorf, not Warnf: cap eviction is a policy working as designed, while
+	// this is the spool failing to do its job at all — and unlike eviction it
+	// will keep happening, silently, for as long as the underlying condition
+	// lasts.
+	logging.Errorf(
+		"cb-agent: spool: WARNING permanently lost one observation from %s (%s) — it could not be "+
+			"buffered and there is no other copy; cumulative loss for this agent is %d observation(s) / %d bytes.",
+		formatEvictedTS(f.TS), reason, s.evicted.Frames, s.evicted.Bytes,
+	)
+	if err := s.persistEvictionsLocked(); err != nil {
+		logging.Errorf("cb-agent: spool: could not persist the eviction record: %v", err)
 	}
 }
 

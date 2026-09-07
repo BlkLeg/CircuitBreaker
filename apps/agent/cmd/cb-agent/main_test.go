@@ -3136,7 +3136,21 @@ func TestDiscoveryRuntime_RequestAndCancelFramesReachTheRuntime(t *testing.T) {
 	// frame type. The hooks are left zero — link.Run nil-defaults them, and none of the
 	// update-marker or status-file work they do is what is under test here.
 	linkCfg := &config.Config{ServerURL: srv.url, ServerStaticPK: srv.serverPKHex}
-	go func() { _ = link.Run(ctx, rt.linkOptions(linkCfg, key, "0.1.0-test", linkHooks{})) }()
+	// Waited on rather than left running: link.Run owns goroutines that write
+	// into this test's TempDir (the spool, and status.json via OnSpoolStats),
+	// and every data frame now goes through the spool rather than past it — so
+	// a Run still shutting down when the test returns races TempDir's cleanup
+	// and fails the test on an unlinkat that has nothing to do with what it
+	// asserts.
+	linkDone := make(chan struct{})
+	go func() {
+		defer close(linkDone)
+		_ = link.Run(ctx, rt.linkOptions(linkCfg, key, "0.1.0-test", linkHooks{}))
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-linkDone
+	})
 
 	stub.awaitRead(t)
 	srv.sendCancel()

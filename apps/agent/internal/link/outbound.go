@@ -26,7 +26,7 @@ import (
 // 4 MiB is the same bound expressed in bytes, so 64 unusually fat frames
 // cannot put an unbounded amount of memory (or socket buffer) in flight.
 //
-// Both are thresholds rather than hard ceilings: spool.PeekFrom always
+// Both are thresholds rather than hard ceilings: spool.PeekAt always
 // returns its first frame regardless of the byte budget, so that one frame
 // larger than a whole tick's budget cannot wedge the queue forever. The
 // window can therefore overshoot maxInflightBytes by at most one frame, which
@@ -52,11 +52,19 @@ const (
 var ackStallTimeout = 45 * time.Second
 
 // inflightFrame is one data frame written to the socket and not yet
-// acknowledged: the sequence number this connection assigned it, and the
-// encoded size that number of bytes occupies in the window.
+// acknowledged: the sequence number this connection assigned it, the encoded
+// size it occupies in the window, and where it sits in the spool.
 type inflightFrame struct {
 	seq   uint64
 	bytes int64
+	// pos is the frame's *absolute* position in the spool's stream, not its
+	// index in the live backlog. The two differ the moment the drop-oldest
+	// cap policy runs, and under commit-on-ack the frames at the head of the
+	// backlog are exactly these — so an eviction between a send and its
+	// acknowledgement shifts every live index underneath this window. A
+	// positional commit then discarded that many never-sent frames on top of
+	// the ones eviction had already destroyed. See spool.Spool's `origin`.
+	pos int64
 }
 
 // dataFrameSender owns this connection's outbound flow for *data* frames
@@ -199,14 +207,23 @@ func (d *dataFrameSender) sendLive(f frame.Frame) error {
 	return nil
 }
 
-// hasBacklog reports whether there is anything to catch up on — or anything
-// in flight waiting to be acknowledged, since an unacknowledged frame is
-// still an undelivered one and still sits in the spool. Nil-safe: a nil spool
-// is the normal case for several callers (Uninstall's one-shot connection,
-// and this package's non-spool tests), and runOnce's drain ticker fires
-// against all of them.
+// hasBacklog reports whether there is anything to catch up on, or anything in
+// flight still waiting to be acknowledged.
+//
+// The second clause is tested explicitly rather than inferred from the first.
+// An unacknowledged frame is normally still in the spool, so Len() > 0 usually
+// covers it — but cap eviction can destroy an in-flight frame, and then the
+// window is non-empty while the backlog is not. Leaning on the usual case
+// would skip the tick that prunes those entries and the ack-stall check with
+// it, which is how a window closed by frames that no longer exist would stay
+// closed. Nil-safe: a nil spool is the normal case for several callers
+// (Uninstall's one-shot connection, and this package's non-spool tests), and
+// runOnce's drain ticker fires against all of them.
 func (d *dataFrameSender) hasBacklog() bool {
-	return d.spool != nil && d.spool.Len() > 0
+	if d.spool == nil {
+		return false
+	}
+	return len(d.inflight) > 0 || d.spool.Len() > 0
 }
 
 // drainBurst advances this connection's catch-up by one tick.
@@ -235,6 +252,12 @@ func (d *dataFrameSender) drainBurst(maxFrames int, maxBytes int64) error {
 		return d.drainCommitOnWrite(maxFrames, maxBytes)
 	}
 
+	// Before anything else: the cap may have destroyed frames this window is
+	// still waiting on, and an entry for a frame that no longer exists can
+	// never be acknowledged. Left in place it would hold the window closed
+	// and run the stall clock down against nothing.
+	d.dropEvicted(d.spool.Origin())
+
 	if err := d.ackStallError(); err != nil {
 		return err
 	}
@@ -248,11 +271,14 @@ func (d *dataFrameSender) drainBurst(maxFrames int, maxBytes int64) error {
 		return nil
 	}
 
-	batch := d.spool.PeekFrom(len(d.inflight), budgetFrames, budgetBytes)
-	if len(batch) == 0 {
+	// Asked for by position, not by "skip the ones I already sent": eviction
+	// can have moved the head past some of them, and a head-relative skip
+	// would then step over frames that were never sent at all.
+	res := d.spool.PeekAt(d.nextSendPos(), budgetFrames, budgetBytes)
+	if len(res.Frames) == 0 {
 		return nil
 	}
-	for _, f := range batch {
+	for i, f := range res.Frames {
 		seq, size, err := d.send(f)
 		if err != nil {
 			return err
@@ -260,7 +286,7 @@ func (d *dataFrameSender) drainBurst(maxFrames int, maxBytes int64) error {
 		if len(d.inflight) == 0 {
 			d.ackWaitSince = time.Now()
 		}
-		d.inflight = append(d.inflight, inflightFrame{seq: seq, bytes: size})
+		d.inflight = append(d.inflight, inflightFrame{seq: seq, bytes: size, pos: res.Start + int64(i)})
 		d.inflightBytes += size
 	}
 	// One report per burst, not per frame: the depth a caller cares about is
@@ -285,14 +311,14 @@ func (d *dataFrameSender) drainBurst(maxFrames int, maxBytes int64) error {
 // frame the server stored from one written into a socket the server never
 // read. Both make WriteMessage return nil.
 func (d *dataFrameSender) drainCommitOnWrite(maxFrames int, maxBytes int64) error {
-	batch := d.spool.Peek(maxFrames, maxBytes)
-	if len(batch) == 0 {
+	res := d.spool.PeekAt(spool.FromHead, maxFrames, maxBytes)
+	if len(res.Frames) == 0 {
 		return nil
 	}
 
 	var sendErr error
 	sent := 0
-	for _, f := range batch {
+	for _, f := range res.Frames {
 		if _, _, err := d.send(f); err != nil {
 			sendErr = err
 			break
@@ -301,7 +327,13 @@ func (d *dataFrameSender) drainCommitOnWrite(maxFrames int, maxBytes int64) erro
 	}
 
 	if sent > 0 {
-		if err := d.spool.Commit(sent); err != nil {
+		// By position here too, even though this path commits within
+		// microseconds of the peek. The window is narrow, not closed: the
+		// producer enqueues from another goroutine and can evict inside it,
+		// and a count would then discard never-sent frames exactly as it did
+		// on the acknowledged path. A narrow silent loss is still a silent
+		// loss.
+		if err := d.spool.CommitThrough(res.Start + int64(sent) - 1); err != nil {
 			if sendErr != nil {
 				return fmt.Errorf("link: spooled resend failed (%w) and commit also failed: %v", sendErr, err)
 			}
@@ -333,12 +365,14 @@ func (d *dataFrameSender) onDataAck(watermark uint64) error {
 	}
 	released := 0
 	var releasedBytes int64
+	through := int64(-1)
 	for _, f := range d.inflight {
 		if f.seq > watermark {
 			break
 		}
 		released++
 		releasedBytes += f.bytes
+		through = f.pos
 	}
 	if released == 0 {
 		return nil
@@ -347,11 +381,59 @@ func (d *dataFrameSender) onDataAck(watermark uint64) error {
 	d.inflightBytes -= releasedBytes
 	d.ackWaitSince = time.Now()
 
-	if err := d.spool.Commit(released); err != nil {
+	// By position, never by count. If the cap destroyed some of these while
+	// they were in flight, a count would discard that many *unsent* frames
+	// from behind them — a silent loss on top of one the eviction record at
+	// least reports. CommitThrough discards exactly the acknowledged frames
+	// that are still there and nothing else.
+	if err := d.spool.CommitThrough(through); err != nil {
 		return fmt.Errorf("link: committing %d acknowledged frame(s): %w", released, err)
 	}
 	d.reportStats()
 	return nil
+}
+
+// nextSendPos is the absolute spool position the next drain tick should start
+// from: one past the newest frame in flight, or the head of the backlog when
+// nothing is.
+func (d *dataFrameSender) nextSendPos() int64 {
+	if n := len(d.inflight); n > 0 {
+		return d.inflight[n-1].pos + 1
+	}
+	return spool.FromHead
+}
+
+// dropEvicted forgets in-flight entries whose frames the spool's cap policy
+// has already destroyed — everything positioned below the live backlog's
+// current head.
+//
+// Those frames are gone and will never be acknowledged, so their entries can
+// only do harm: they occupy the in-flight window, and they keep the ack-stall
+// clock running against observations that no longer exist. The loss itself is
+// already counted and logged by the eviction that caused it (see
+// spool.EvictionStats), so nothing is reported here — this is bookkeeping,
+// not a second loss.
+//
+// Evicted entries are always a leading prefix: entries are appended in
+// increasing position order and eviction only ever removes from the head.
+func (d *dataFrameSender) dropEvicted(origin int64) {
+	dropped := 0
+	var droppedBytes int64
+	for _, f := range d.inflight {
+		if f.pos >= origin {
+			break
+		}
+		dropped++
+		droppedBytes += f.bytes
+	}
+	if dropped == 0 {
+		return
+	}
+	d.inflight = append(d.inflight[:0], d.inflight[dropped:]...)
+	d.inflightBytes -= droppedBytes
+	// The clock was measuring frames that no longer exist; restart it against
+	// whatever is genuinely still waiting.
+	d.ackWaitSince = time.Now()
 }
 
 // ackStallError reports the connection dead when frames have been in flight

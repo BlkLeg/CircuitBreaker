@@ -7,12 +7,15 @@ observation it should have kept". That is a wiring question, and only the
 wiring can answer it.
 """
 
+import contextlib
 import json
 from datetime import UTC, datetime
 
 import pytest
+from starlette.websockets import WebSocketDisconnect
 
 from app.core.agent_crypto import get_server_static_keypair
+from app.services import agent_link
 from tests.api.test_ws_agents_link import _active_agent_with_key, _send_hello
 from tests.helpers.agent_noise_client import TestNoiseInitiator
 
@@ -296,8 +299,18 @@ def test_link_freezes_acknowledgement_after_an_undecryptable_frame(db_session, w
     with caplog.at_level(logging.WARNING, logger="app.api.ws_agents"):
         with ws_client.websocket_connect("/api/v1/agents/link") as ws:
             initiator, _ = _connect(ws, agent_priv, server_pub, ack_data=True)
+            # Establish a working ack first. Without this the test would pass
+            # just as happily if the bad ciphertext desynced the responder so
+            # that nothing after it decrypted at all — "no acks arrived" would
+            # then be true for entirely the wrong reason, and the freeze it
+            # claims to cover would be untested.
+            for seq in range(1, 5):
+                _send_frame(initiator, ws, seq=seq)
+            before = _read_until_ping(initiator, ws)
+            assert _acks(before), "the fixture never reached a working ack"
+
             ws.send_bytes(b"not-a-valid-noise-ciphertext")
-            for seq in range(1, 8):
+            for seq in range(5, 12):
                 _send_frame(initiator, ws, seq=seq)
             frames = _read_until_ping(initiator, ws)
 
@@ -355,4 +368,83 @@ def test_link_acks_a_frame_the_capability_gate_destroyed(db_session, ws_client):
     refreshed = db_session.get(Agent, agent.id)
     assert refreshed.refused_frames == 4, (
         "the fixture did not actually exercise the capability gate's refusal path"
+    )
+
+
+def test_link_never_acks_a_frame_whose_handler_raised(db_session, ws_client, monkeypatch):
+    """No acknowledgement may ever name a frame this server did not store.
+
+    `note_handled` sits after `await dispatch_frame` because that call commits:
+    at that point the frame is durably persisted (or deliberately refused and
+    counted), which is what makes the acknowledgement a statement about the
+    database rather than about having read a socket.
+
+    Being honest about what this can and cannot catch: moving `note_handled`
+    one line up is, on today's loop, unobservable — nothing flushes between the
+    two statements, and an exception escaping `dispatch_frame` tears the
+    connection down before the next flush can run, so the watermark dies
+    unsent either way. The regression that *is* reachable is the plausible
+    one: a future change that decides a handler blowing up should not kill the
+    link, swallows the exception and carries on. Combined with a premature
+    `note_handled` that immediately starts acknowledging observations this
+    server threw away.
+
+    So both halves are asserted — the frame is never acknowledged, and the
+    connection does drop — and the second assertion's message says what has to
+    be re-established if that ever changes.
+    """
+    real_dispatch = agent_link.dispatch_frame
+
+    async def exploding_dispatch(db, agent, frame):
+        if frame.seq >= 5:
+            raise RuntimeError("handler blew up while storing the sample")
+        await real_dispatch(db, agent, frame)
+
+    monkeypatch.setattr("app.services.agent_link.dispatch_frame", exploding_dispatch)
+
+    _agent, agent_priv = _active_agent_with_key(db_session)
+    _, server_pub = get_server_static_keypair()
+
+    frames: list[dict] = []
+    dropped = False
+    try:
+        with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+            initiator, _ = _connect(ws, agent_priv, server_pub, ack_data=True)
+            for seq in range(1, 5):
+                _send_frame(initiator, ws, seq=seq)
+            frames.extend(_read_until_ping(initiator, ws))
+            assert [a["payload"]["seq"] for a in _acks(frames)] == [4], (
+                "the fixture never reached a working ack, so it cannot show one being withheld"
+            )
+
+            # Now the one whose handler raises — and a few behind it, so a
+            # server that swallowed the failure and carried on would have
+            # every reason to emit another ack.
+            for seq in range(5, 10):
+                _send_frame(initiator, ws, seq=seq)
+            # Read until the socket dies (the expected outcome) or two more
+            # pings have gone by — long enough that a server which swallowed
+            # the failure and carried on would have flushed an ack by now,
+            # short enough that this does not sit on the suite's timeout.
+            pings = 0
+            with contextlib.suppress(WebSocketDisconnect, RuntimeError, ValueError, OSError):
+                while pings < 2:
+                    frame = json.loads(initiator.decrypt(ws.receive_bytes()))
+                    frames.append(frame)
+                    if frame["type"] == "ping":
+                        pings += 1
+    except RuntimeError as exc:  # re-raised by the test client on teardown
+        if "handler blew up" not in str(exc):
+            raise
+        dropped = True
+
+    acked = [a["payload"]["seq"] for a in _acks(frames)]
+    assert 5 not in acked and max(acked) == 4, (
+        f"a frame whose handler raised was acknowledged — acks = {acked}. The agent would have "
+        f"discarded an observation this server never stored."
+    )
+    assert dropped, (
+        "the connection survived a handler that raised. That may be a deliberate change, but the "
+        "watermark's honesty currently rests on it: nothing else stops a frame being acknowledged "
+        "between `note_handled` and a commit that never happened."
     )

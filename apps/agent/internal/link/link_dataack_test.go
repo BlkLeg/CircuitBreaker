@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -330,4 +332,77 @@ func (b *syncBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+// TestRun_ASpoolThatCannotAcceptAWriteCountsTheObservationAsLost covers the
+// availability trade this phase inverted, and makes the inversion visible.
+//
+// Every data frame is now spooled *before* it can reach a socket, so a spool
+// that refuses the write — a full disk, a read-only /var, a state directory
+// that vanished — ends that observation, where before the change a live send
+// might still have carried it. There is deliberately no live fallback: a
+// fallback would jump the whole backlog and commit on write, which are exactly
+// the two properties this phase removed, and reintroducing them on a rare
+// failure path would make the delivery guarantee conditional on a state
+// nothing else can observe.
+//
+// What must not happen is losing it *silently*. The loss lands in the same
+// permanent record cap eviction writes to, which the fleet view and the
+// Telemetry tab already read.
+func TestRun_ASpoolThatCannotAcceptAWriteCountsTheObservationAsLost(t *testing.T) {
+	originalTick := drainTickInterval
+	drainTickInterval = 5 * time.Millisecond
+	defer func() { drainTickInterval = originalTick }()
+
+	srv := newSpoolTestServerMode(t, 0, ackNegotiatedLive)
+	dir := t.TempDir()
+	sp, err := spool.Open(dir, spool.DefaultCapBytes)
+	if err != nil {
+		t.Fatalf("spool.Open() error = %v", err)
+	}
+	// Wedge the queue file after the spool has opened, so every subsequent
+	// append fails the way a full or read-only filesystem would. A directory
+	// where a file is expected is the portable way to do that — a chmod
+	// would be a no-op for a test running as root, which is how the mono
+	// image's own entrypoint starts.
+	if err := os.Mkdir(filepath.Join(dir, "queue.jsonl"), 0o700); err != nil {
+		t.Fatalf("wedging the queue file: %v", err)
+	}
+
+	dataFrames := make(chan frame.Frame, 4)
+	connected, stop := srv.runAgainstWithProducer(t, sp, dataFrames)
+	defer stop()
+	select {
+	case <-connected:
+	case <-time.After(5 * time.Second):
+		t.Fatal("never connected")
+	}
+
+	observed := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	doomed := numberedDataFrame(1)
+	doomed.TS = observed
+	dataFrames <- doomed
+
+	waitFor(t, 5*time.Second, "the unbufferable observation to be recorded as lost", func() bool {
+		return sp.EvictionStats().Frames >= 1
+	})
+
+	stats := sp.EvictionStats()
+	if stats.Frames != 1 {
+		t.Errorf("EvictionStats().Frames = %d, want 1", stats.Frames)
+	}
+	if stats.Bytes <= 0 {
+		t.Errorf("EvictionStats().Bytes = %d, want the lost frame's size", stats.Bytes)
+	}
+	if !stats.OldestDroppedTS.Equal(observed) {
+		t.Errorf("destroyed window starts at %v, want the observation's own time %v",
+			stats.OldestDroppedTS, observed)
+	}
+	if got := sp.Len(); got != 0 {
+		t.Errorf("spool Len() = %d, want 0 — the write failed, so nothing is buffered", got)
+	}
+	if got := srv.countOfType(fakeDataFrameType); got != 0 {
+		t.Errorf("server saw %d data frames, want 0 — a frame the spool refused has no other path "+
+			"to the wire, and pretending otherwise is what the counter exists to prevent", got)
+	}
 }

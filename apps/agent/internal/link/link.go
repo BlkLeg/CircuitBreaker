@@ -365,8 +365,35 @@ func Run(ctx context.Context, opts Options) error {
 						log.Printf("link: refusing to spool non-data frame type %q", f.Type)
 						continue
 					}
-					if err := opts.Spool.Enqueue(stampObserved(f)); err != nil {
+					stamped := stampObserved(f)
+					if err := opts.Spool.Enqueue(stamped); err != nil {
+						// The observation is gone. Every data frame now
+						// reaches the wire through the spool, so a spool
+						// that refuses the write — a full disk, a
+						// read-only /var, a state directory that vanished
+						// — is the end of it, where before this change a
+						// live send might still have carried it.
+						//
+						// It is not sent live as a fallback, and that is a
+						// decision rather than an omission: a live send
+						// would jump the whole backlog and would be
+						// committed the moment the socket took it, which
+						// are exactly the two properties this phase
+						// removed. Reintroducing both on a rare failure
+						// path would make the delivery guarantee
+						// conditional on a state nothing else can observe.
+						//
+						// So it is counted instead, into the same
+						// permanent record cap eviction writes to, which
+						// the fleet view and the Telemetry tab already
+						// read. A loss that is real but invisible is the
+						// one outcome this whole effort forbids.
 						log.Printf("link: spooling outbound data frame: %v", err)
+						opts.Spool.RecordDestroyed(stamped, "spool write failed")
+						if opts.OnSpoolStats != nil {
+							size, _ := opts.Spool.SizeBytes()
+							opts.OnSpoolStats(opts.Spool.Len(), size)
+						}
 						continue
 					}
 					if opts.OnSpoolStats != nil {
