@@ -167,7 +167,7 @@ def _tls_details(url: str, timeout: float) -> dict | None:
                 "days_remaining": days,
             }
         }
-    except Exception:  # noqa: BLE001 — cert capture is auxiliary, never fails a check
+    except Exception:  # cert capture is auxiliary, never fails a check
         return None
 
 
@@ -175,7 +175,7 @@ def collect_http(host: str, params: dict) -> CheckResult:
     url = params.get("url") or f"http://{host}/"
     try:
         resp, latency = _request(url, params)
-    except Exception as exc:  # noqa: BLE001 — network failure is a datum, not an error
+    except Exception as exc:  # network failure is a datum, not an error
         return CheckResult(
             up=False,
             samples=[Sample("avail", 0.0, error_reason="http_error")],

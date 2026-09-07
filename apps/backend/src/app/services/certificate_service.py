@@ -256,7 +256,7 @@ def _activate_if_served(db: Session, cert: Certificate) -> None:
             details=f"domain={cert.domain} reason={exc.reason}",
             severity="error",
         )
-    except Exception as exc:  # noqa: BLE001 — the renewal succeeded; say so and keep it
+    except Exception as exc:  # the renewal succeeded; say so and keep it
         _logger.error(
             "Renewed %s but could not write it to the TLS directory: %s", cert.domain, exc
         )

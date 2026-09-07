@@ -180,7 +180,7 @@ def redact_config(provider_type: str, config: dict[str, Any]) -> dict[str, Any]:
         if not plaintext and ciphertext:
             try:
                 plaintext = get_vault().decrypt(str(ciphertext))
-            except Exception:  # noqa: BLE001 — never let a bad key break a read
+            except Exception:  # never let a bad key break a read
                 redacted[key] = MASK
                 continue
 

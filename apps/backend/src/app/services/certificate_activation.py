@@ -143,7 +143,7 @@ def _reload_tls() -> tuple[bool, str]:
 
         try:
             call_helper("reload_nginx", {})
-        except Exception as exc:  # noqa: BLE001 — reported, not raised: the write succeeded
+        except Exception as exc:  # reported, not raised: the write succeeded
             return False, f"host helper could not reload nginx: {exc}"
         return True, "nginx reloaded via cb-helperd"
 

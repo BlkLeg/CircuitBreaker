@@ -6,7 +6,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
-from app.db.models import (  # noqa: F401 (Service used for reactive cascade)
+from app.db.models import (  # Service used for reactive cascade
     ComputeUnit,
     Doc,
     EntityDoc,

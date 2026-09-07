@@ -636,7 +636,7 @@ def _generate_and_persist_vault_key(db: Session) -> str | None:
         get_vault().reinitialize(new_key)
         _logger.info("Vault key generated and stored during OOBE bootstrap.")
         return new_key
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _logger.warning("Vault key generation during OOBE failed: %s", exc)
         return None
 
@@ -805,7 +805,7 @@ def bootstrap_initialize(
             from app.services.settings_service import update_settings
 
             update_settings(db, AppSettingsUpdate(**settings_bootstrap), user_id=user.id)  # type: ignore[arg-type]
-        except Exception as settings_exc:  # noqa: BLE001
+        except Exception as settings_exc:
             _logger.warning("Bootstrap settings setup during OOBE failed: %s", settings_exc)
 
     _set_onboarding_step(db, "finish")
@@ -953,7 +953,7 @@ def bootstrap_initialize_oauth(
             from app.services.settings_service import update_settings
 
             update_settings(db, AppSettingsUpdate(**settings_bootstrap), user_id=user.id)  # type: ignore[arg-type]
-        except Exception as settings_exc:  # noqa: BLE001
+        except Exception as settings_exc:
             _logger.warning("OAuth bootstrap settings setup failed: %s", settings_exc)
 
     _set_onboarding_step(db, "finish")
@@ -996,7 +996,7 @@ def get_onboarding_or_fallback(db: Session) -> OnboardingStepResponse:
                 current_step=row.step,
                 previous_step=row.previous_step,
             )
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return OnboardingStepResponse(current_step="start", previous_step="start")
 
@@ -1031,7 +1031,7 @@ def _set_onboarding_step(db: Session, step: str) -> None:
             row = Onboarding(id=1, step=step, previous_step="summary")
             db.add(row)
             db.commit()
-    except Exception:  # noqa: BLE001
+    except Exception:
         db.rollback()
 
 

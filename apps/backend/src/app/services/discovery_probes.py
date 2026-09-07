@@ -531,7 +531,7 @@ async def _run_lldp_probe(ip: str, community: str, port: int = 161) -> list[dict
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _detect_default_gateway(target_cidr: str = "") -> str | None:  # noqa: ARG001
+def _detect_default_gateway(target_cidr: str = "") -> str | None:
     """Auto-detect the default gateway IP for the current host.
 
     Strategy:

@@ -225,7 +225,7 @@ def refresh_db_pool_gauges() -> None:
         db_pool_checked_out.set(pool.checkedout())
         db_pool_checked_in.set(pool.checkedin())
         db_pool_overflow.set(pool.overflow())
-    except Exception as exc:  # noqa: BLE001 - a scrape must never fail on instrumentation
+    except Exception as exc:  # a scrape must never fail on instrumentation
         _logger.warning("[slo_metrics] db pool gauge refresh failed: %s", exc)
 
 
@@ -260,7 +260,7 @@ async def run_event_loop_lag_sampler() -> None:
             elapsed = time.perf_counter() - started
             lag = max(0.0, elapsed - _LOOP_LAG_SAMPLE_INTERVAL_SECONDS)
             record_loop_lag(lag)
-        except Exception as exc:  # noqa: BLE001 - a broken sampler must not crash the process
+        except Exception as exc:  # a broken sampler must not crash the process
             _logger.warning("[slo_metrics] event loop lag sample failed: %s", exc)
 
 

@@ -40,7 +40,7 @@ def _num_delivered(msg: Any) -> int:
     """
     try:
         return int(msg.metadata.num_delivered)
-    except Exception:  # noqa: BLE001 - absent metadata must not decide a drop
+    except Exception:  # absent metadata must not decide a drop
         _logger.warning("dead_letter: message carried no delivery metadata; treating as attempt 0")
         return 0
 
@@ -48,7 +48,7 @@ def _num_delivered(msg: Any) -> int:
 async def _safe(coro: Any, what: str) -> None:
     try:
         await coro
-    except Exception as exc:  # noqa: BLE001 - the loop must survive a failed ack path
+    except Exception as exc:  # the loop must survive a failed ack path
         _logger.warning("dead_letter: %s failed: %s", what, exc)
 
 
@@ -92,7 +92,7 @@ async def handle_failed_delivery(
                 delivered_count=delivered,
             )
             db.commit()
-    except Exception as exc:  # noqa: BLE001 - see the docstring: nak is the safe fallback
+    except Exception as exc:  # see the docstring: nak is the safe fallback
         _logger.error(
             "dead_letter: could not park %s after %d deliveries (%s) — naking instead",
             msg.subject,

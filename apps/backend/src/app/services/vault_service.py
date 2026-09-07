@@ -72,7 +72,7 @@ def is_vault_key_valid(db: Session, candidate: str) -> bool:
         if cfg and cfg.vault_key_hash:
             if hmac.compare_digest(_sha256(candidate_norm), cfg.vault_key_hash):
                 return True
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _logger.warning(
             "Could not verify vault key against database hash (reason: %s)",
             type(exc).__name__,
@@ -124,7 +124,7 @@ def load_vault_key(db: Session) -> str | None:
                 _key_source = "environment"
                 _active_key = env_key
                 return env_key
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _logger.warning(
                 "Could not verify CB_VAULT_KEY against database hash (reason: %s) — "
                 "falling through to file / database sources.",
@@ -180,7 +180,7 @@ def load_vault_key(db: Session) -> str | None:
                         "DB column cleared — key is no longer stored in plaintext.",
                         _DATA_ENV_PATH,
                     )
-                except Exception as migrate_exc:  # noqa: BLE001
+                except Exception as migrate_exc:
                     _logger.warning(
                         "Could not migrate vault key from database to file (reason: %s). "
                         "Set the CB_VAULT_KEY environment variable to remove the key "
@@ -190,7 +190,7 @@ def load_vault_key(db: Session) -> str | None:
                     _key_source = "database"
                 _active_key = db_key
                 return db_key
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _logger.warning(
             "Could not read vault key from database (reason: %s)",
             type(exc).__name__,
@@ -283,7 +283,7 @@ def rotate_vault_key(db: Session) -> None:
         _cfg_p = db.get(AppSettings, 1)
         if _cfg_p and _cfg_p.smtp_password_enc:
             _probe, _probe_label = _cfg_p.smtp_password_enc, "AppSettings.smtp_password_enc"
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     if _probe is None:
         try:
@@ -295,14 +295,14 @@ def rotate_vault_key(db: Session) -> None:
             if _pp:
                 _probe = _pp.snmp_community_encrypted
                 _probe_label = f"DiscoveryProfile(id={_pp.id})"
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     if _probe is None:
         try:
             _pc = db.query(Credential).first()
             if _pc and _pc.encrypted_value:
                 _probe, _probe_label = _pc.encrypted_value, f"Credential(id={_pc.id})"
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     if _probe is not None:
         try:
@@ -462,7 +462,7 @@ def rotate_vault_key(db: Session) -> None:
             entity_id=1,
             details=f"new_key_hash_prefix={_sha256(new_key_str)[:16]}",
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 
@@ -512,7 +512,7 @@ def initialize_vault_key(db: Session) -> None:
             entity_id=getattr(cfg, "id", 1),
             details=f"new_key_hash_prefix={_sha256(new_key_str)[:16]}",
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 
@@ -534,7 +534,7 @@ def _count_encrypted_secrets(db: Session) -> int:
         acme: object = cfg.acme_dns_config if cfg else None
         if isinstance(acme, dict) and any(k.endswith("_enc") and acme[k] for k in acme):
             count += 1
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     try:
         count += (
@@ -542,11 +542,11 @@ def _count_encrypted_secrets(db: Session) -> int:
             .filter(DiscoveryProfile.snmp_community_encrypted.isnot(None))
             .count()
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     try:
         count += db.query(Credential).count()
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     try:
         # Sink webhook URLs live as ``<key>_enc`` inside a JSONB blob. A legacy
@@ -555,7 +555,7 @@ def _count_encrypted_secrets(db: Session) -> int:
             config = sink.provider_config
             if isinstance(config, dict) and any(k.endswith("_enc") and config[k] for k in config):
                 count += 1
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return count
 
@@ -574,7 +574,7 @@ def _resolve_vault_status(db: Session) -> str:
         cfg = db.get(AppSettings, 1)
         if cfg and cfg.vault_key_hash and current_key:
             return "healthy" if _sha256(current_key) == cfg.vault_key_hash else "degraded"
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return "healthy"
 
@@ -588,7 +588,7 @@ def get_vault_status(db: Session) -> dict:
         cfg = db.get(AppSettings, 1)
         if cfg and cfg.vault_key_rotated_at:
             last_rotated = cfg.vault_key_rotated_at.isoformat()
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     return {

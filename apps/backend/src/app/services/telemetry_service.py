@@ -139,7 +139,7 @@ async def get_telemetry_for_hardware(hardware_id: int, db: Session) -> Telemetry
     cached: dict[str, Any] | None = None
     try:
         cached = await get_cached_telemetry(hardware_id)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _logger.debug("Telemetry cache read failed hw:%d: %s", hardware_id, exc)
 
     if cached:
@@ -182,7 +182,7 @@ async def get_telemetry_for_hardware(hardware_id: int, db: Session) -> Telemetry
                 },
                 ttl=_CACHE_TTL_SECONDS,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _logger.debug("Telemetry cache backfill failed hw:%d: %s", hardware_id, exc)
         return response
 
@@ -248,7 +248,7 @@ async def write_telemetry(
 
     try:
         await cache_telemetry(hardware_id, cache_payload, ttl=_CACHE_TTL_SECONDS)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _logger.debug("Telemetry cache write failed hw:%d: %s", hardware_id, exc)
 
     try:
@@ -260,7 +260,7 @@ async def write_telemetry(
                 "hardware_id": hardware_id,
             },
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _logger.debug("Telemetry publish failed hw:%d: %s", hardware_id, exc)
 
     return TelemetryResponse(

@@ -17,7 +17,7 @@ from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.db.models import CVEEntry  # noqa: F401 — ensure model metadata is loaded
+from app.db.models import CVEEntry
 
 _logger = logging.getLogger(__name__)
 

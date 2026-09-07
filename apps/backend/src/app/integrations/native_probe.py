@@ -155,7 +155,7 @@ def _probe_http(target: str, timeout: int = 5) -> tuple[str, float | None]:
         # the refusal is logged where the silent version left no trace at all.
         _logger.warning("[native_probe] refused HTTP probe of %s: %s", target, exc)
         return "down", None
-    except Exception as exc:  # noqa: BLE001 — a probe reports down; it never breaks the loop
+    except Exception as exc:  # a probe reports down; it never breaks the loop
         _logger.debug("[native_probe] HTTP probe failed for %s: %s", target, exc)
         return "down", None
 

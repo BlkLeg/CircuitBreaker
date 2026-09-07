@@ -59,7 +59,7 @@ async def tick(
         # is the one failure the whole engine is built to make impossible.
         try:
             await probe_reconcile.reconcile(db)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.error("monitor-scheduler reconcile failed: %s", exc, exc_info=True)
             db.rollback()
         return await enqueue_due(
@@ -101,7 +101,7 @@ async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
             if have_lock:
                 try:
                     await tick(SessionLocal, nats_client.js_publish)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.error("monitor-scheduler tick failed: %s", exc, exc_info=True)
             _touch_healthy()
             try:

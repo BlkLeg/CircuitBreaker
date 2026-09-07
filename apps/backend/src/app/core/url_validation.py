@@ -273,7 +273,7 @@ def _reaches_through_proxy(client: httpx.AsyncClient | httpx.Client | None, url:
         return True
     try:
         return client._transport_for_url(httpx.URL(url)) is not client._transport
-    except Exception:  # noqa: BLE001 -- unreadable internals must not break the send
+    except Exception:  # unreadable internals must not break the send
         return True
 
 

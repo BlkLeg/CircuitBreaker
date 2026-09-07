@@ -202,7 +202,7 @@ async def _process_batch(msgs: list[Any]) -> None:
 
         try:
             await cache_telemetry(hw_id, cache_payload, ttl=_CACHE_TTL_SECONDS)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _logger.debug("Telemetry ingest cache failed hw:%d: %s", hw_id, exc)
 
         try:
@@ -210,7 +210,7 @@ async def _process_batch(msgs: list[Any]) -> None:
                 hw_id,
                 {"entity_type": "hardware", "hardware_id": hw_id, **cache_payload},
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _logger.debug("Telemetry ingest publish failed hw:%d: %s", hw_id, exc)
 
 
@@ -278,7 +278,7 @@ async def run_ingest_loop(stop_event: asyncio.Event) -> None:
         # ── Process ───────────────────────────────────────────────────────────
         try:
             await _process_batch(msgs)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _logger.error("Telemetry ingest batch failed: %s", exc, exc_info=True)
             # NAK so NATS redelivers after the ack-wait period — but only while
             # the message still has a delivery budget. Once it is spent the
@@ -298,7 +298,7 @@ async def run_ingest_loop(stop_event: asyncio.Event) -> None:
         for msg in msgs:
             try:
                 await msg.ack()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 _logger.debug("Telemetry ingest ACK failed: %s", exc)
 
     _logger.info("Telemetry ingest worker stopped.")

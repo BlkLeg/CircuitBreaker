@@ -250,7 +250,7 @@ async def close_stream_socket(websocket: Any, *, component: str, code: int) -> N
             if websocket.client_state is WebSocketState.DISCONNECTED:
                 return
         await websocket.close(code=code)
-    except Exception as exc:  # noqa: BLE001 - counted below, never propagated
+    except Exception as exc:  # counted below, never propagated
         record_stream_fault(f"{component}.close", exc, fault=FAULT_PEER_GONE)
 
 

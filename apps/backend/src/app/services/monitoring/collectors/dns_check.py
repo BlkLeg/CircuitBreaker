@@ -26,7 +26,7 @@ def _resolve(hostname: str, params: dict) -> tuple[list[str], float]:
     t0 = time.monotonic()
     try:
         answer = resolver.resolve(hostname, record_type)
-    except Exception as exc:  # noqa: BLE001 — normalized for the collector
+    except Exception as exc:  # normalized for the collector
         raise DnsLookupError(str(exc)) from exc
     latency = round((time.monotonic() - t0) * 1000, 2)
     return [str(r) for r in answer], latency

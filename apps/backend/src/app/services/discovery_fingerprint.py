@@ -150,7 +150,7 @@ async def _read_capped(resp: httpx.Response, limit: int) -> str:
 
 # ── Optional dependency guards ────────────────────────────────────────────────
 try:
-    import zeroconf as _zeroconf_check  # noqa: F401 — availability check only
+    import zeroconf as _zeroconf_check  # availability check only
 
     del _zeroconf_check
 
@@ -325,7 +325,7 @@ async def _run_mdns_multicast_listener(duration_s: float = 8.0) -> list[dict]:
                     break
                 rtype, _, _, rdlen = _struct.unpack_from("!HHIH", data, offset)
                 offset += 10
-                _rdata = data[offset : offset + rdlen]  # noqa: F841
+                _rdata = data[offset : offset + rdlen]
                 offset += rdlen
 
                 if rtype == 12:  # PTR — service advertisement
@@ -486,14 +486,14 @@ async def _run_mdns_browse(timeout: float = 8.0) -> list[dict]:  # noqa: ASYNC10
         await aiozc.zeroconf.async_wait_for_start()
 
         class _InstanceListener(ServiceListener):
-            def add_service(self, zc: Any, type_: str, name: str) -> None:  # noqa: A002
+            def add_service(self, zc: Any, type_: str, name: str) -> None:
                 # name is the fully-qualified instance name (not the type)
                 found_instances.append((type_, name))
 
-            def remove_service(self, zc: Any, type_: str, name: str) -> None:  # noqa: A002
+            def remove_service(self, zc: Any, type_: str, name: str) -> None:
                 pass
 
-            def update_service(self, zc: Any, type_: str, name: str) -> None:  # noqa: A002
+            def update_service(self, zc: Any, type_: str, name: str) -> None:
                 pass
 
         listener = _InstanceListener()

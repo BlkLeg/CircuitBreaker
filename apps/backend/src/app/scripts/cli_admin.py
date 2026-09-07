@@ -250,7 +250,7 @@ def migration_status() -> MigrationStatus:
         with engine.connect() as connection:
             context = MigrationContext.configure(connection)
             current = tuple(context.get_current_heads())
-    except Exception as exc:  # noqa: BLE001 - the CLI is the boundary
+    except Exception as exc:  # the CLI is the boundary
         raise AdminError(f"Could not read the database's migration state: {exc}") from exc
 
     if set(current) == set(heads):
@@ -279,7 +279,7 @@ def apply_migrations() -> None:
 
     try:
         run_alembic_upgrade()
-    except Exception as exc:  # noqa: BLE001 - the CLI is the boundary
+    except Exception as exc:  # the CLI is the boundary
         raise AdminError(f"Migration failed: {exc}") from exc
 
 

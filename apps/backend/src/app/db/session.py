@@ -57,7 +57,7 @@ def _set_tenant_on_checkout(dbapi_conn: Any, connection_record: Any, connection_
         from app.middleware.tenant_middleware import current_tenant_id
 
         tid = current_tenant_id.get(None)
-    except Exception:  # noqa: BLE001
+    except Exception:
         tid = None
 
     try:
@@ -69,7 +69,7 @@ def _set_tenant_on_checkout(dbapi_conn: Any, connection_record: Any, connection_
                 cursor.execute("SELECT set_config('app.current_tenant', '', true)", ())
         finally:
             cursor.close()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # Runs on every pool checkout, so this cannot be an unthrottled log
         # line — but it also must not stay at DEBUG: a connection handed out
         # with `app.current_tenant` unset is a connection whose row-level

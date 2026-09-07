@@ -96,7 +96,7 @@ from app.core.sql_hardening import build_audit_partition_sql
 from app.core.startup_validation import validate_core_dependencies, validate_startup_secrets
 from app.core.time import utcnow
 from app.core.write_admission import WriteAdmissionMiddleware
-from app.db import models  # noqa: F401 — import to register all model metadata with Base
+from app.db import models
 from app.db.models import IntegrationConfig
 from app.db.session import engine, get_db, get_session_context
 from app.middleware.csrf import CSRFMiddleware
@@ -444,7 +444,7 @@ def _run_discovery_enrichment_backfill() -> None:
 def _assert_required_schema() -> None:
     try:
         existing_tables = _get_existing_schema_tables()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _logger.critical("Database schema check failed before startup: %s", exc, exc_info=True)
         raise SystemExit(1) from exc
 
@@ -458,7 +458,7 @@ def _assert_required_schema() -> None:
         try:
             run_alembic_upgrade()
             existing_tables = _get_existing_schema_tables()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _logger.critical(
                 "Database schema repair failed before startup: %s",
                 exc,
@@ -601,7 +601,7 @@ async def lifespan(app: FastAPI):
         try:
             run_alembic_upgrade()
             _logger.info("Alembic migrations applied (or already at head).")
-        except Exception as _me:  # noqa: BLE001
+        except Exception as _me:
             _logger.critical(
                 "Auto-migrate failed: %s — fix the database or run "
                 "'make migrate' / 'alembic upgrade head', then restart.",
@@ -698,7 +698,7 @@ async def lifespan(app: FastAPI):
                     "until OOBE completes and a vault key is generated.",
                     _vault_svc._DATA_ENV_PATH,
                 )
-    except Exception as _ve:  # noqa: BLE001
+    except Exception as _ve:
         _logger.critical("Vault init failed during startup: %s", _ve, exc_info=True)
         raise SystemExit(1) from _ve
 
@@ -720,7 +720,7 @@ async def lifespan(app: FastAPI):
                 _logger.info("Native integration bootstrapped (id=%d)", _native.id)
             else:
                 _logger.debug("Native integration already exists (id=%d)", _native.id)
-        except Exception as _ne:  # noqa: BLE001
+        except Exception as _ne:
             _logger.warning("Native integration bootstrap failed: %s", _ne)
 
     # ── Redis (telemetry cache + pub/sub) ────────────────────────────────

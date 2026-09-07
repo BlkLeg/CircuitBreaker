@@ -78,7 +78,7 @@ async def poll_one(item: dict) -> PollOutcome:
     try:
         async with _sema:
             result: CheckResult = await asyncio.to_thread(collector, item["host"], item["params"])
-    except Exception as exc:  # noqa: BLE001 — a probe crash is a down datum
+    except Exception as exc:  # a probe crash is a down datum
         logger.debug("Check crashed for monitor %s: %s", item["item_id"], exc)
         result = CheckResult(
             up=False,
@@ -144,7 +144,7 @@ async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
     while not (shutdown_event and shutdown_event.is_set()):
         try:
             msgs = await psub.fetch(_FETCH_BATCH, timeout=1.0)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             if "Timeout" not in type(exc).__name__:
                 logger.warning("monitor-poll fetch error: %s", exc)
             _touch_healthy()
@@ -178,7 +178,7 @@ async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
         if parsed:
             try:
                 await process_batch([item for _, item in parsed], SessionLocal)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.error("monitor-poll batch failed, isolating: %s", exc, exc_info=True)
                 # Failure handling was per-batch despite the comment claiming
                 # otherwise: only the *delivery budget* was checked per message.
@@ -215,7 +215,7 @@ async def _process_individually(parsed: list[tuple[Any, dict]]) -> None:
     for m, item in parsed:
         try:
             await process_batch([item], SessionLocal)
-        except Exception as exc:  # noqa: BLE001 - attributed to this message, not the batch
+        except Exception as exc:  # attributed to this message, not the batch
             logger.error("monitor-poll: message failed in isolation: %s", exc, exc_info=True)
             await handle_failed_delivery(
                 m,

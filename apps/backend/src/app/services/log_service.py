@@ -136,7 +136,7 @@ def write_log(
     # UnboundLocalError raised while handling the original error.
     try:
         from app.core.audit_chain import AuditChainLockTimeout
-    except Exception:  # noqa: BLE001 - never raises, by contract
+    except Exception:  # never raises, by contract
         _logger.exception("write_log could not import the audit chain (action=%r)", action)
         return
 
@@ -172,7 +172,7 @@ def write_log(
 
             if getattr(cfg, "audit_log_hide_ip", False):
                 effective_ip = None
-        except Exception:  # noqa: BLE001
+        except Exception:
             _logger.debug("write_log: could not load settings for IP redaction", exc_info=True)
 
         _now_iso = utcnow_iso()
@@ -276,7 +276,7 @@ def write_log(
         # Still announced live: the event occurred, so a realtime audit consumer
         # must see it now rather than whenever the spool is next drained.
         _publish_audit_to_redis(action, entity_type, entity_id, actor_id, severity, _now_iso)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _logger.exception("write_log failed (action=%r)", action)
 
 

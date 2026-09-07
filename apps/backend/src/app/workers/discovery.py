@@ -91,7 +91,7 @@ async def process_job(msg: Any, semaphore: asyncio.Semaphore) -> None:
         )
         try:
             await msg.ack()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("Failed to ack a discarded discovery.jobs message: %s", exc)
 
 

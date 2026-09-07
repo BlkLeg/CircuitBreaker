@@ -69,11 +69,11 @@ def apply_proxmox_overrides(
         for outcome in outcomes:
             try:
                 result.append(_apply_one(outcome, targets_by_item, hw_map, cu_map, cutoff))
-            except Exception as exc:  # noqa: BLE001 — a defect here degrades to the raw outcome
+            except Exception as exc:  # a defect here degrades to the raw outcome
                 logger.warning("Proxmox override crashed, using raw outcome: %s", exc)
                 result.append(outcome)
         return result
-    except Exception as exc:  # noqa: BLE001 — never fail the batch over this feature
+    except Exception as exc:  # never fail the batch over this feature
         logger.warning("Proxmox override batch prefetch crashed, using raw outcomes: %s", exc)
         return outcomes
 

@@ -1125,7 +1125,7 @@ async def publish_discovery_cancels(cancellation: DiscoveryCancellation) -> int:
             published = await agent_registry.publish_agent_control_frame(
                 cancel.agent_id, {"type": TYPE_DISCOVERY_CANCEL, "payload": payload}
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             _logger.warning(
                 "discovery cancel for job %s could not be published", cancel.job_id, exc_info=True
             )
@@ -1134,7 +1134,7 @@ async def publish_discovery_cancels(cancellation: DiscoveryCancellation) -> int:
     for job_update in cancellation.job_updates:
         try:
             await discovery_service._emit_ws_event("job_update", job_update)
-        except Exception:  # noqa: BLE001
+        except Exception:
             _logger.debug("discovery cancel job_update could not be emitted", exc_info=True)
     return delivered
 

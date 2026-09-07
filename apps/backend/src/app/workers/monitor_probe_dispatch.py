@@ -214,7 +214,7 @@ async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
     while not (shutdown_event and shutdown_event.is_set()):
         try:
             msgs = await psub.fetch(_FETCH_BATCH, timeout=1.0)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             if "Timeout" not in type(exc).__name__:
                 logger.warning("monitor-probe-dispatch fetch error: %s", exc)
             _touch_healthy()
@@ -236,7 +236,7 @@ async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
         if run_ids:
             try:
                 await process_messages(run_ids, SessionLocal)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.error("monitor-probe-dispatch batch failed: %s", exc, exc_info=True)
                 for m in msgs:
                     await _safe_nak(m)

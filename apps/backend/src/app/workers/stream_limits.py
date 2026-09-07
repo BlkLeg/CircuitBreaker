@@ -92,5 +92,5 @@ async def update_stream_limits(js: Any, cfg: dict[str, Any]) -> None:
             update["duplicate_window"] = max_age
         await js.update_stream(**update)
         _logger.info("NATS %s stream limits updated", name)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _logger.warning("NATS %s stream limits update failed: %s", name, exc)

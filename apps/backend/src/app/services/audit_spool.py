@@ -90,7 +90,7 @@ def defer(fields: dict[str, Any], *, reason: str) -> None:
             fields.get("action"),
             reason,
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         _logger.exception(
             "AUDIT ENTRY LOST (action=%r): could not be chained and could not be spooled either",
             fields.get("action"),

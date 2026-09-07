@@ -184,7 +184,7 @@ def _build_snapshot_sync(
         db_gz_path = inner / "db.sql.gz"
         err_path = staging / "pg_dump.err"
         with err_path.open("wb") as errf:
-            proc = subprocess.Popen(  # noqa: S603
+            proc = subprocess.Popen(
                 ["pg_dump", "--no-password"],
                 env=_pg_env_from_url(db_url),
                 stdout=subprocess.PIPE,
