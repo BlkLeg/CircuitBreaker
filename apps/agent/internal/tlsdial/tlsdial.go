@@ -20,7 +20,9 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"fmt"
+	"net"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -127,13 +129,13 @@ func (t Trust) Matches(cert *x509.Certificate) (int, bool) {
 // &websocket.Dialer{} literal leaves Proxy nil — silently bypassing any
 // configured proxy — rather than falling back to a default.
 func NewDialer(trust Trust) *websocket.Dialer {
-	cfg := trust.tlsConfig()
-	if cfg == nil {
-		return websocket.DefaultDialer
-	}
+	// Never websocket.DefaultDialer, even on the unpinned path. That is a
+	// package-level global shared by every caller in the process, so
+	// configuring the returned dialer — as the keepalive below does — would
+	// reach into unrelated call sites. A fresh value per call costs nothing.
 	return &websocket.Dialer{
 		Proxy:           http.ProxyFromEnvironment,
-		TLSClientConfig: cfg,
+		TLSClientConfig: trust.tlsConfig(), // nil is fine: gorilla reads it as defaults
 		// Carried over from websocket.DefaultDialer deliberately. gorilla
 		// applies this only `if d.HandshakeTimeout != 0`, so a bare literal
 		// left the pinned path — the one every real deployment takes,
@@ -141,6 +143,34 @@ func NewDialer(trust Trust) *websocket.Dialer {
 		// all, while the unpinned fallback kept the 45s one. A half-open
 		// connection then hangs the caller forever.
 		HandshakeTimeout: websocket.DefaultDialer.HandshakeTimeout,
+		NetDialContext:   keepAliveDialer().DialContext,
+	}
+}
+
+// keepAliveDialer builds the TCP dialer both the websocket dialer and the HTTP
+// transport use.
+//
+// The keepalive is what makes a black-holed link — a firewall DROP, an evicted
+// NAT entry, a Wi-Fi drop — surface as a real ECONNRESET/ETIMEDOUT in about
+// thirty seconds, rather than as sixty seconds of silence hitting the read
+// deadline. That matters because silence is ambiguous: it is classified
+// unreachable, while a reset on a session we had already established is
+// classified as the peer coming back and earns the fast ladder.
+//
+// All three fields are set on purpose. Setting only Idle would leave Linux's
+// tcp_keepalive_intvl x _probes at roughly eleven minutes, which is well past
+// the read deadline and so buys nothing. On platforms that do not support the
+// full config Go applies what it can and the 60s read deadline remains the
+// backstop, so nothing regresses.
+func keepAliveDialer() *net.Dialer {
+	return &net.Dialer{
+		Timeout: 15 * time.Second, // TCP connect only; the 45s handshake budget covers the rest
+		KeepAliveConfig: net.KeepAliveConfig{
+			Enable:   true,
+			Idle:     15 * time.Second,
+			Interval: 5 * time.Second,
+			Count:    3,
+		},
 	}
 }
 
@@ -150,5 +180,6 @@ func NewDialer(trust Trust) *websocket.Dialer {
 func NewTransport(trust Trust) *http.Transport {
 	t := &http.Transport{Proxy: http.ProxyFromEnvironment}
 	t.TLSClientConfig = trust.tlsConfig()
+	t.DialContext = keepAliveDialer().DialContext
 	return t
 }

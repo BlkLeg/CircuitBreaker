@@ -35,51 +35,117 @@ func TestBackoffDelay_StaysWithinBaseToBasePlusQuarter(t *testing.T) {
 	}
 }
 
-// TestBackoffState_ResetsOnStableAdvancesOnFailure simulates Run's retry
-// loop calling backoffState.next once per completed connection attempt,
-// feeding it a scripted sequence of "was this run stable (reached an
-// accepted hello.ack)?" outcomes. It asserts both the resulting attempt
-// counter (drives the next call's floor) and that the returned delay
-// itself falls within the jittered bounds for that attempt — i.e. a
-// stable run truly resets progression to the 1s floor rather than merely
-// resetting some unrelated bookkeeping value, and consecutive failures
-// keep progressing exactly as backoffBaseDuration/backoffDelay already do.
-func TestBackoffState_ResetsOnStableAdvancesOnFailure(t *testing.T) {
-	cases := []struct {
-		name        string
-		stable      []bool
-		wantAttempt []int // b.attempt after each call, in order
-	}{
-		{
-			name:        "three consecutive failures progress the exponential counter",
-			stable:      []bool{false, false, false},
-			wantAttempt: []int{1, 2, 3},
-		},
-		{
-			name:        "a stable run resets to the floor even mid-progression, then failures resume climbing",
-			stable:      []bool{false, false, true, false},
-			wantAttempt: []int{1, 2, 1, 2},
-		},
-		{
-			name:        "repeated stability keeps the counter pinned at the floor",
-			stable:      []bool{true, true, true},
-			wantAttempt: []int{1, 1, 1},
-		},
+// The unreachable ladder is unchanged, so the two tests above still pin it.
+// These cover what is new: a second, non-exponential ladder, and a counter that
+// resets on acceptance rather than on surviving an arbitrary window.
+
+func TestFastBackoff_ClimbsThenHoldsForever(t *testing.T) {
+	want := []time.Duration{
+		250 * time.Millisecond,
+		500 * time.Millisecond,
+		1 * time.Second,
+		2 * time.Second,
+		4 * time.Second,
+		8 * time.Second,
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			var b backoffState
-			for i, stable := range c.stable {
-				delay := b.next(stable)
-				if b.attempt != c.wantAttempt[i] {
-					t.Errorf("call #%d next(%v): attempt = %d, want %d", i, stable, b.attempt, c.wantAttempt[i])
-				}
-				usedAttempt := c.wantAttempt[i] - 1 // the pre-increment attempt backoffDelay was computed against
-				wantBase := backoffBaseDuration(usedAttempt)
-				if delay < wantBase || delay > wantBase+wantBase/4+1 {
-					t.Errorf("call #%d next(%v): delay = %v, want in [%v, %v]", i, stable, delay, wantBase, wantBase+wantBase/4)
-				}
-			}
-		})
+	for attempt, expect := range want {
+		if got := fastBackoffBaseDuration(attempt); got != expect {
+			t.Errorf("fastBackoffBaseDuration(%d) = %v, want %v", attempt, got, expect)
+		}
 	}
+	// The hold is the point: a host that is answering will answer again, so
+	// there is nothing to be gained by escalating into the minutes the way the
+	// unreachable ladder does.
+	for _, attempt := range []int{len(want), len(want) + 1, 50, 5000} {
+		if got := fastBackoffBaseDuration(attempt); got != fastBackoffHold {
+			t.Errorf("fastBackoffBaseDuration(%d) = %v, want the %v hold", attempt, got, fastBackoffHold)
+		}
+	}
+	if got := fastBackoffBaseDuration(-1); got != want[0] {
+		t.Errorf("fastBackoffBaseDuration(-1) = %v, want the floor %v", got, want[0])
+	}
+}
+
+// The regression this whole change exists for: a server restart used to walk
+// the exponential ladder into the minutes, so recovery was decided by which
+// rung the agent happened to be standing on. On the coming-back ladder the
+// worst case is the hold.
+func TestBackoffState_ComingBackNeverExceedsTheHold(t *testing.T) {
+	var b backoffState
+	for i := 0; i < 40; i++ {
+		delay := b.next(runOutcome{class: classComingBack})
+		if delay > fastBackoffHold+fastBackoffHold/4+1 {
+			t.Fatalf("attempt #%d: delay = %v, want <= the jittered %v hold", i, delay, fastBackoffHold)
+		}
+	}
+}
+
+func TestBackoffState_LaddersAndResets(t *testing.T) {
+	fast0 := fastBackoffBaseDuration(0)
+
+	t.Run("an accepted hello.ack resets the ladder without needing to survive a window", func(t *testing.T) {
+		var b backoffState
+		b.next(runOutcome{class: classUnreachable})
+		b.next(runOutcome{class: classUnreachable})
+		if b.attempt != 2 {
+			t.Fatalf("setup: attempt = %d, want 2", b.attempt)
+		}
+		// Accepted, then dropped after a healthy interval. The old code kept
+		// climbing unless the run also survived 30s.
+		delay := b.next(runOutcome{class: classComingBack, reachedHelloAck: true, upFor: time.Minute})
+		if b.attempt != 1 {
+			t.Errorf("attempt = %d, want the ladder reset to 1", b.attempt)
+		}
+		if delay < fast0 || delay > fast0+fast0/4+1 {
+			t.Errorf("delay = %v, want the coming-back floor %v", delay, fast0)
+		}
+	})
+
+	t.Run("switching class restarts that class's ladder rather than inheriting a rung", func(t *testing.T) {
+		var b backoffState
+		for i := 0; i < 8; i++ { // climb the unreachable ladder to its cap
+			b.next(runOutcome{class: classUnreachable})
+		}
+		delay := b.next(runOutcome{class: classComingBack})
+		if delay < fast0 || delay > fast0+fast0/4+1 {
+			t.Errorf("delay = %v, want the coming-back floor %v — an unreachable host that "+
+				"starts answering must not inherit the slow ladder's rung", delay, fast0)
+		}
+	})
+
+	t.Run("a flapping link is forced onto the slow ladder", func(t *testing.T) {
+		var b backoffState
+		flap := runOutcome{class: classComingBack, reachedHelloAck: true, upFor: time.Second}
+		for i := 0; i < flapThreshold; i++ {
+			b.next(flap)
+		}
+		if b.class != classUnreachable {
+			t.Fatalf("class = %v, want %v after %d flaps", b.class, classUnreachable, flapThreshold)
+		}
+		// And a healthy session clears the count again.
+		b.next(runOutcome{class: classComingBack, reachedHelloAck: true, upFor: time.Minute})
+		if b.flapCount != 0 {
+			t.Errorf("flapCount = %d, want 0 after a session that outlived the flap window", b.flapCount)
+		}
+	})
+
+	t.Run("a refusal uses its own per-reason delay and leaves the ladder alone", func(t *testing.T) {
+		var b backoffState
+		b.next(runOutcome{class: classUnreachable})
+		before := b.attempt
+
+		delay := b.next(runOutcome{class: classRefused, refusal: errPendingApproval})
+		if b.attempt != before {
+			t.Errorf("attempt = %d, want it untouched at %d — a refusal is not a ladder position",
+				b.attempt, before)
+		}
+		want := refusedDelay(errPendingApproval)
+		if delay < want || delay > want+want/4+1 {
+			t.Errorf("delay = %v, want ~%v", delay, want)
+		}
+		// Approval is worth asking about far more often than revocation.
+		if refusedDelay(errPendingApproval) >= refusedDelay(errRevoked) {
+			t.Error("pending approval should be retried more eagerly than a revocation")
+		}
+	})
 }

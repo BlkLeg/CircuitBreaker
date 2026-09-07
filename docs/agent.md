@@ -29,7 +29,24 @@ instructions — travels inside that single encrypted session.
 
 **You do not need an inbound firewall rule.** The agent binds no listening socket at all; there
 is nothing on the host for anything to connect *to*. If the connection drops, the agent
-reconnects on exponential backoff with jitter, starting at 1 second and capping at 5 minutes.
+classifies *why* and picks a reconnect schedule from that.
+
+| What happened | Schedule |
+|---|---|
+| The server is coming back — a restart, a warming worker, a graceful close, a rate-limit refusal, or anything that answered at all | 0.25s, 0.5s, 1s, 2s, 4s, 8s, then **every 15s for as long as it takes** |
+| The host or the network is genuinely gone — no route, DNS failure, sixty seconds of silence | 1s doubling to a 5-minute ceiling, as before |
+| The server refused this identity | 30s while waiting for approval; 5 minutes if it does not recognise the device; 30 minutes if the enrolment was revoked or rejected |
+
+Both schedules carry up to 25% jitter so a fleet does not reconnect in lockstep.
+The distinction matters more than it sounds: with one escalating schedule for
+every failure, recovery from a planned restart was decided by whichever rung the
+agent happened to have climbed to, which in practice meant anywhere from thirty
+seconds to twenty minutes for the same restart. A server that is answering now
+gets asked again within fifteen seconds, indefinitely.
+
+Any accepted `hello.ack` resets the schedule. A link that is accepted and then
+dropped three times inside five seconds is treated as flapping and falls back to
+the slower one.
 
 What it does while connected:
 
@@ -1095,8 +1112,9 @@ Work through these in order — each is independently able to break every agent:
    publicly trusted certificate are unaffected.
 4. **Redis state is not restored, and does not need to be.** Presence keys (60 s TTL), pairing
    codes, rate-limit counters and queued update instructions all live only in Redis. Agents show
-   offline until each reconnects on its own backoff — up to 5 minutes for one that had been
-   failing for a while. Any pairing code minted before the restore is gone; mint a new one.
+   offline until each reconnects on its own schedule — within about fifteen seconds for an
+   agent that can reach the server, longer only for one that genuinely cannot. Any pairing code
+   minted before the restore is gone; mint a new one.
 5. **Server URL.** If the restored server is reachable at a different address, edit `server_url`
    in `/etc/circuit-breaker/agent.toml` on each agent and restart. Agents cannot be told this
    over the link — they have to reach the server to be told anything.
@@ -1123,15 +1141,18 @@ Two consequences worth knowing before it happens:
 - **Presence is Redis-backed too** (60 s TTL), so the fleet view will show everything offline —
   which in this case is accurate rather than misleading.
 
-**Recovery.** Bring Redis back; nothing else is required. Agents reconnect on their own backoff,
-up to about 5 minutes for one that had been failing for a while. No re-enrollment, no key
+**Recovery.** Bring Redis back; nothing else is required. Agents reconnect on their own
+schedule, within about fifteen seconds each — a `close 1013` from the rate gate while Redis is
+still starting is classified as "the server is coming back", so it does not push an agent onto
+the slow schedule. No re-enrollment, no key
 rotation, and no agent-side action: their identity lives in `/var/lib/cb-agent` and in the
 server's database, neither of which Redis touches. Telemetry gathered during the outage is
 spooled on each agent and drains on reconnect; watch the spool depths fall to confirm.
 
 If Redis is going to be down for a planned window, expect the fleet to be offline for its
-duration, and size the window against the agents' 5-minute reconnect ceiling rather than
-expecting instant recovery.
+duration and to come back within about fifteen seconds of Redis returning. The 5-minute ceiling
+applies only to agents that genuinely cannot reach the server, so it is no longer the number to
+size a maintenance window against.
 
 ---
 

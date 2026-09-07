@@ -1088,24 +1088,21 @@ func TestRun_OnDisconnectedNotCalledOnCleanShutdown(t *testing.T) {
 	}
 }
 
-// TestRunOnce_DropBeforeStabilityWindowIsNotStable drives an accepted
-// hello.ack and then has the fake server close the connection immediately
-// — well before stabilityWindow elapses. runOnce must report stable=false:
-// an accepted hello.ack alone isn't enough to reset backoff, the connection
-// also has to survive the stability window (Finding 1 of the task-4
-// review).
-func TestRunOnce_DropBeforeStabilityWindowIsNotStable(t *testing.T) {
-	originalWindow := stabilityWindow
-	stabilityWindow = 300 * time.Millisecond
-	defer func() { stabilityWindow = originalWindow }()
+// The stability window is gone: an accepted hello.ack now resets the reconnect
+// ladder on its own, and a link that keeps being accepted and then dropping is
+// caught by the flap floor in backoffState instead (see backoff_test.go). What
+// runOnce still owes the retry loop is an honest report of *whether* it was
+// accepted and for how long, which is what these two cover.
 
+func TestRunOnce_ReportsAcceptanceAndHowLongTheRunLasted(t *testing.T) {
 	serverPriv, serverPub := generateTestKeypair(t)
 
 	upgrader := websocket.Upgrader{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			t.Fatalf("upgrade: %v", err)
+			t.Errorf("upgrade: %v", err)
+			return
 		}
 		defer conn.Close()
 
@@ -1123,88 +1120,6 @@ func TestRunOnce_DropBeforeStabilityWindowIsNotStable(t *testing.T) {
 
 		_, helloCt, err := conn.ReadMessage()
 		if err != nil {
-			t.Errorf("expected a hello frame after handshake: %v", err)
-			return
-		}
-		if _, err := responder.Decrypt(helloCt); err != nil {
-			t.Errorf("decrypt hello: %v", err)
-			return
-		}
-
-		ack := map[string]any{
-			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
-			"payload": map[string]any{"accepted": true, "agent_id": 1},
-		}
-		ackBytes, _ := json.Marshal(ack)
-		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(ackBytes))
-		// Deliberately drop the connection right after the accepted
-		// hello.ack — well inside stabilityWindow (300ms) — by returning
-		// immediately, which fires the deferred conn.Close().
-	}))
-	defer srv.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
-	dir := t.TempDir()
-	key, err := enroll.LoadOrCreateDeviceKey(dir)
-	if err != nil {
-		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
-	}
-
-	var connectedCount int32
-	opts := Options{
-		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
-		Key:    key, AgentVersion: "0.1.0-test",
-		OnConnected: func() {
-			atomic.AddInt32(&connectedCount, 1)
-		},
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	stable, _ := runOnce(ctx, opts)
-
-	if atomic.LoadInt32(&connectedCount) == 0 {
-		t.Fatal("OnConnected never fired — accepted hello.ack should still trigger it")
-	}
-	if stable {
-		t.Error("runOnce reported stable=true for a connection that dropped before stabilityWindow elapsed, want false")
-	}
-}
-
-// TestRunOnce_StaysUpPastStabilityWindowIsStable drives an accepted
-// hello.ack and keeps the connection alive past stabilityWindow (the test
-// context deadline extends beyond it). runOnce must report stable=true
-// once the window has elapsed while the connection is still up.
-func TestRunOnce_StaysUpPastStabilityWindowIsStable(t *testing.T) {
-	originalWindow := stabilityWindow
-	stabilityWindow = 150 * time.Millisecond
-	defer func() { stabilityWindow = originalWindow }()
-
-	serverPriv, serverPub := generateTestKeypair(t)
-
-	upgrader := websocket.Upgrader{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Fatalf("upgrade: %v", err)
-		}
-		defer conn.Close()
-
-		responder := newTestResponderSession(t, serverPriv, serverPub)
-		_, msg1, err := conn.ReadMessage()
-		if err != nil {
-			return
-		}
-		msg2, err := responder.ReadHandshakeMessage(msg1)
-		if err != nil {
-			t.Errorf("responder handshake: %v", err)
-			return
-		}
-		conn.WriteMessage(websocket.BinaryMessage, msg2)
-
-		_, helloCt, err := conn.ReadMessage()
-		if err != nil {
-			t.Errorf("expected a hello frame after handshake: %v", err)
 			return
 		}
 		if _, err := responder.Decrypt(helloCt); err != nil {
@@ -1219,8 +1134,6 @@ func TestRunOnce_StaysUpPastStabilityWindowIsStable(t *testing.T) {
 		ackBytes, _ := json.Marshal(ack)
 		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(ackBytes))
 
-		// Stay up well past stabilityWindow (150ms) — keep reading so the
-		// connection isn't torn down by the client's own writes stalling.
 		for {
 			_, ct, err := conn.ReadMessage()
 			if err != nil {
@@ -1244,28 +1157,103 @@ func TestRunOnce_StaysUpPastStabilityWindowIsStable(t *testing.T) {
 	opts := Options{
 		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
 		Key:    key, AgentVersion: "0.1.0-test",
-		OnConnected: func() {
-			atomic.AddInt32(&connectedCount, 1)
-		},
+		OnConnected: func() { atomic.AddInt32(&connectedCount, 1) },
 	}
 
-	// Deadline comfortably past stabilityWindow (150ms) so runOnce is still
-	// connected when the window elapses, then returns via ctx.Err().
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
 	defer cancel()
-	stable, err := runOnce(ctx, opts)
+	outcome, err := runOnce(ctx, opts)
 
 	if atomic.LoadInt32(&connectedCount) == 0 {
 		t.Fatal("OnConnected never fired")
 	}
-	if !stable {
-		t.Error("runOnce reported stable=false for a connection that stayed up past stabilityWindow, want true")
+	if !outcome.reachedHelloAck {
+		t.Error("reachedHelloAck = false for a session the server accepted, want true")
+	}
+	if outcome.upFor <= 0 {
+		t.Errorf("upFor = %v, want a positive duration measured from the accepted hello.ack", outcome.upFor)
 	}
 	if err != context.DeadlineExceeded {
 		t.Errorf("runOnce err = %v, want context.DeadlineExceeded", err)
 	}
 }
 
+// A server that accepts the socket and completes Noise but never sends an
+// accepted hello.ack — a cold connection pool in the seconds after a restart —
+// used to cost a full 60s read deadline *and* advance the backoff, because a
+// run that never reached hello.ack was indistinguishable from one that failed
+// outright. It now fails fast and classifies as the server coming back.
+func TestRunOnce_HelloAckTimeoutFailsFastAndIsTransient(t *testing.T) {
+	original := helloAckTimeout
+	helloAckTimeout = 200 * time.Millisecond
+	defer func() { helloAckTimeout = original }()
+
+	serverPriv, serverPub := generateTestKeypair(t)
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		responder := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			t.Errorf("responder handshake: %v", err)
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+
+		// Read the hello and then stall — never ack. This is the shape of a
+		// server whose socket is up but whose database is still warming.
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	opts := Options{
+		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
+		Key:    key, AgentVersion: "0.1.0-test",
+	}
+
+	// Generous relative to helloAckTimeout, tight relative to the 60s read
+	// deadline: if the deadline is not armed this test times out instead.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	outcome, err := runOnce(ctx, opts)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, errHelloAckTimeout) {
+		t.Fatalf("runOnce err = %v, want errHelloAckTimeout", err)
+	}
+	if outcome.reachedHelloAck {
+		t.Error("reachedHelloAck = true, want false — the server never accepted the session")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("runOnce took %v, want it bounded by helloAckTimeout (%v)", elapsed, helloAckTimeout)
+	}
+	if got := classifyFailure(err, outcome.reachedHelloAck); got != classComingBack {
+		t.Errorf("classifyFailure = %v, want %v — a stalled server is one that is coming back", got, classComingBack)
+	}
+}
 func (s *testResponderSession) RekeySend() { s.send.Rekey() }
 func (s *testResponderSession) RekeyRecv() { s.recv.Rekey() }
 

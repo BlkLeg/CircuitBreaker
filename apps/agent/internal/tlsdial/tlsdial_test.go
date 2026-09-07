@@ -399,3 +399,50 @@ func TestNewDialer_DialsThroughHTTPSProxy(t *testing.T) {
 		t.Errorf("message = %q, want %q", msg, "hello")
 	}
 }
+
+// NewDialer must never hand back websocket.DefaultDialer. It is a package-level
+// global shared by every caller in the process, so configuring the returned
+// value — as the keepalive does — would reach into unrelated call sites. The
+// unpinned branch used to return it directly.
+func TestNewDialer_NeverReturnsTheSharedDefaultDialer(t *testing.T) {
+	for _, trust := range []Trust{{Mode: "public"}, {Mode: "pinned", Pins: []string{"AAAA"}}} {
+		d := NewDialer(trust)
+		if d == websocket.DefaultDialer {
+			t.Fatalf("NewDialer(%+v) returned the shared websocket.DefaultDialer", trust)
+		}
+		if d.HandshakeTimeout != websocket.DefaultDialer.HandshakeTimeout {
+			t.Errorf("NewDialer(%+v) HandshakeTimeout = %v, want the default %v",
+				trust, d.HandshakeTimeout, websocket.DefaultDialer.HandshakeTimeout)
+		}
+		if d.Proxy == nil {
+			t.Errorf("NewDialer(%+v) has a nil Proxy, which silently bypasses HTTPS_PROXY", trust)
+		}
+		if d.NetDialContext == nil {
+			t.Errorf("NewDialer(%+v) has no NetDialContext, so TCP keepalive is not configured", trust)
+		}
+	}
+	if websocket.DefaultDialer.NetDialContext != nil {
+		t.Error("websocket.DefaultDialer.NetDialContext was mutated — the global leaked")
+	}
+}
+
+// The full triple matters: Idle alone leaves Linux's tcp_keepalive_intvl x
+// _probes at roughly eleven minutes, well past the 60s read deadline, so it
+// would detect nothing the deadline did not already catch.
+func TestKeepAliveDialer_ConfiguresTheFullProbeSchedule(t *testing.T) {
+	d := keepAliveDialer()
+	if !d.KeepAliveConfig.Enable {
+		t.Fatal("keepalive is not enabled")
+	}
+	if d.KeepAliveConfig.Idle <= 0 || d.KeepAliveConfig.Interval <= 0 || d.KeepAliveConfig.Count <= 0 {
+		t.Fatalf("incomplete keepalive schedule: %+v", d.KeepAliveConfig)
+	}
+	detect := d.KeepAliveConfig.Idle + d.KeepAliveConfig.Interval*time.Duration(d.KeepAliveConfig.Count)
+	if detect >= 60*time.Second {
+		t.Errorf("keepalive detects a black hole in %v, want well under the 60s read deadline "+
+			"so a dead link surfaces as a reset rather than as silence", detect)
+	}
+	if d.Timeout <= 0 {
+		t.Error("no TCP connect timeout")
+	}
+}

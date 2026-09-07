@@ -92,19 +92,22 @@ var (
 	drainBytesPerTick  int64 = 256 << 10
 )
 
-// stabilityWindow is how long a connection must stay up after an accepted
-// hello.ack before Run treats the run as "stable" and resets reconnect
-// backoff to its floor. Gating on hello.ack alone isn't enough: a link that
-// connects, gets accepted, then drops almost immediately (e.g. a transient
-// server-side error one heartbeat tick later) would otherwise reset backoff
-// on every cycle, defeating exponential backoff for a flapping link and
-// risking a reconnect storm against the server. 30s — 1.5x the default
-// heartbeatInterval — is a judgment call (not specified numerically in the
-// brief/spec): long enough that a connection which drops shortly after
-// accept clearly doesn't qualify, short enough not to meaningfully delay
-// backoff recovery for a genuinely healthy link. A var, not a const, so
-// tests can shrink it.
-var stabilityWindow = 30 * time.Second
+// helloAckTimeout bounds the wait between a completed Noise handshake and an
+// accepted hello.ack.
+//
+// Without it that wait inherits readTimeout — sixty seconds — because the
+// handshake deadline is cleared once Noise completes and the reader re-arms at
+// the steady-state value. A server that accepts the socket and then stalls
+// warming a cold connection pool, which is exactly what a server does in the
+// seconds after a restart, therefore cost a full minute *and* advanced the
+// backoff, since a run that never reached hello.ack looks identical to one that
+// failed outright.
+//
+// 15s rather than the 10s handshake budget: once TLS and Noise are done,
+// hello.ack is a handful of queries in one session, and the extra headroom
+// costs nothing against a ladder that now retries in 250ms. A var, not a const,
+// so tests can shrink it.
+var helloAckTimeout = 15 * time.Second
 
 // rekeyIntervalEnvOverride is a narrowly-scoped, test-only escape hatch: if
 // set to a positive integer number of seconds, it replaces the production
@@ -359,13 +362,29 @@ func Run(ctx context.Context, opts Options) error {
 			return ctx.Err()
 		}
 		live.Store(false)
-		stable, err := runOnce(ctx, opts)
+		outcome, err := runOnce(ctx, opts)
 		live.Store(false)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		delay := backoff.next(stable)
-		log.Printf("link: disconnected (%v) — reconnecting in %s", err, delay)
+		// runOnce only sets the class for a refusal it recognised; everything
+		// else is classified here, from the one error it returned. That error
+		// is the sole product of every dial, read and write path, so one call
+		// covers them all.
+		if outcome.class != classRefused {
+			outcome.class = classifyFailure(err, outcome.reachedHelloAck)
+			// A host we were talking to seconds ago is, on the balance of
+			// evidence, the same host coming back — whatever the errno says.
+			// Costs one 250ms attempt; the next consecutive failure falls back
+			// to the real class, so it cannot become a storm. This is what
+			// catches the mono image's dominant restart signature, which is
+			// connection-refused rather than a clean close.
+			if outcome.reachedHelloAck && outcome.class == classUnreachable {
+				outcome.class = classComingBack
+			}
+		}
+		delay := backoff.next(outcome)
+		log.Printf("link: disconnected (%v) [%s] — reconnecting in %s", err, outcome.class, delay)
 		opts.OnDisconnected(err)
 		select {
 		case <-ctx.Done():
@@ -588,10 +607,10 @@ func dialAndHandshake(
 // not sufficient: a connection that drops before the window elapses does
 // not count as stable, so a flapping link keeps its backoff progression
 // instead of resetting to the floor every cycle.
-func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
+func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) {
 	u, err := url.Parse(opts.Config.ServerURL)
 	if err != nil {
-		return false, fmt.Errorf("link: invalid server_url: %w", err)
+		return outcome, fmt.Errorf("link: invalid server_url: %w", err)
 	}
 	u.Scheme = strings.Replace(u.Scheme, "http", "ws", 1)
 	u.Path = "/api/v1/agents/link"
@@ -614,7 +633,7 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 		break
 	}
 	if conn == nil {
-		return false, err
+		return outcome, err
 	}
 	defer conn.Close()
 
@@ -657,14 +676,14 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 	helloFrame := frame.Frame{V: 1, Type: frame.TypeHello, Seq: 0, TS: time.Now().UTC()}
 	helloFrame.Payload, err = json.Marshal(helloPayload)
 	if err != nil {
-		return false, fmt.Errorf("link: encode hello payload: %w", err)
+		return outcome, fmt.Errorf("link: encode hello payload: %w", err)
 	}
 	helloBytes, err := frame.Encode(helloFrame)
 	if err != nil {
-		return false, fmt.Errorf("link: %w", err)
+		return outcome, fmt.Errorf("link: %w", err)
 	}
 	if err := conn.WriteMessage(websocket.BinaryMessage, session.Encrypt(helloBytes)); err != nil {
-		return false, fmt.Errorf("link: send hello: %w", err)
+		return outcome, fmt.Errorf("link: send hello: %w", err)
 	}
 
 	// opts.OnConnected fires from the hello.ack case below, once the server
@@ -752,11 +771,19 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 	// performs a fresh Noise handshake, giving both sides fresh split keys.
 	var outboundRekeyGen uint64
 	var connectedFired bool
-	// stableC fires once the connection has stayed up for stabilityWindow
-	// past its first accepted hello.ack. It starts nil (blocks forever in
-	// the select below) until that hello.ack arrives; a nil channel there
-	// is safe and never selects.
-	var stableC <-chan time.Time
+	// acceptedAt is when this connection's first accepted hello.ack arrived.
+	// The retry loop uses it to measure how long the run lasted after being
+	// accepted, which is what distinguishes an honest reconnect from a link
+	// that is flapping. Zero until that hello.ack arrives.
+	var acceptedAt time.Time
+	// Measured on every exit path rather than at each return: runOnce leaves
+	// through a dozen of them, and a duration that is only right on some of
+	// them would make the flap floor fire arbitrarily.
+	defer func() {
+		if !acceptedAt.IsZero() {
+			outcome.upFor = time.Since(acceptedAt)
+		}
+	}()
 
 	// sendHeartbeat emits the 20s liveness frame, carrying the live spool
 	// backlog (D-12). The payload used to be a hardcoded `{}`; it now always
@@ -876,15 +903,24 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 	}
 	sender := newDataFrameSender(opts.Spool, sendDataFrame, opts.OnSpoolStats)
 
+	// Bounds the hello.ack wait. A select arm rather than a read deadline: the
+	// reader's deadline has to keep refreshing on every inbound frame for the
+	// steady-state case, so it cannot also express a one-shot budget.
+	helloAckDeadline := time.After(helloAckTimeout)
+
 	for {
 		select {
 		case <-ctx.Done():
-			return stable, ctx.Err()
+			return outcome, ctx.Err()
+		case <-helloAckDeadline:
+			if !connectedFired {
+				return outcome, errHelloAckTimeout
+			}
 		case err := <-readErrCh:
-			return stable, fmt.Errorf("link: connection lost: %w", err)
+			return outcome, fmt.Errorf("link: connection lost: %w", err)
 		case f := <-opts.DataFrames:
 			if err := sender.sendLive(f); err != nil {
-				return stable, err
+				return outcome, err
 			}
 		case <-drainTicker.C:
 			// Paced catch-up for frames spooled during an outage. This is an
@@ -899,7 +935,7 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 				continue
 			}
 			if err := sender.drainBurst(drainFramesPerTick, drainBytesPerTick); err != nil {
-				return stable, err
+				return outcome, err
 			}
 		case f := <-opts.ControlFrames:
 			if !connectedFired {
@@ -917,7 +953,7 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 				continue
 			}
 			if writeErr := conn.WriteMessage(websocket.BinaryMessage, session.Encrypt(data)); writeErr != nil {
-				return stable, writeErr
+				return outcome, writeErr
 			}
 		case f := <-incoming:
 			switch f.Type {
@@ -930,6 +966,17 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 				if !ack.Accepted {
 					log.Printf("link: hello.ack rejected: %s", ack.Reason)
 					opts.OnRejected(ack.Reason)
+					// A refusal we understand ends the run rather than sitting
+					// on a socket the server has already said no to. It carries
+					// its own ladder (refusedDelay): "approve me" is worth
+					// asking about often, "you are revoked" is not. A reason we
+					// do not recognise falls through to the old behaviour and
+					// waits for the server to close.
+					if refusal := refusalError(ack.Reason); refusal != nil {
+						outcome.class = classRefused
+						outcome.refusal = refusal
+						return outcome, refusal
+					}
 					continue
 				}
 				if len(ack.Capabilities) > 0 {
@@ -940,16 +987,17 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 						log.Printf("link: applying hello.ack capabilities: %v", applyErr)
 					}
 				}
-				// The server accepted this session — fire OnConnected and
-				// start the stability-window timer exactly once per
-				// connection, even though the server may re-send hello.ack
-				// later (e.g. to push a refreshed capabilities set). stable
-				// only flips true if the connection is still up when
-				// stableC fires below; a drop before then leaves it false.
+				// The server accepted this session — fire OnConnected exactly
+				// once per connection, even though the server may re-send
+				// hello.ack later (e.g. to push a refreshed capabilities set).
+				// Recording the acceptance is what resets the reconnect ladder:
+				// being accepted at all is the signal, not surviving some
+				// arbitrary window afterwards.
 				if !connectedFired {
 					connectedFired = true
+					outcome.reachedHelloAck = true
+					acceptedAt = time.Now()
 					opts.OnConnected()
-					stableC = time.After(stabilityWindow)
 					// Task 24: report an update outcome a previous process
 					// couldn't send live (the rollback case — see
 					// ReportPendingUpdateOutcome's doc comment) now that this
@@ -971,10 +1019,10 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 				}
 			case frame.TypePing:
 				if err := sendHeartbeat(); err != nil {
-					return stable, err
+					return outcome, err
 				}
 			case frame.TypeDisconnect:
-				return stable, errors.New("link: server requested disconnect")
+				return outcome, errors.New("link: server requested disconnect")
 			case frame.TypeCapabilitiesSet:
 				if err := opts.OnCapabilitiesSet(f.Payload); err != nil {
 					log.Printf("link: applying capabilities.set: %v", err)
@@ -1022,18 +1070,12 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 			}
 		case <-ticker.C:
 			if err := sendHeartbeat(); err != nil {
-				return stable, err
+				return outcome, err
 			}
 		case <-rekeyTicker.C:
 			if err := sendRekey(); err != nil {
-				return stable, err
+				return outcome, err
 			}
-		case <-stableC:
-			// The connection has stayed up for stabilityWindow since its
-			// first accepted hello.ack — reset backoff to the floor on the
-			// next reconnect. stableC only ever fires once (time.After),
-			// so no need to clear it back to nil afterward.
-			stable = true
 		}
 	}
 }
