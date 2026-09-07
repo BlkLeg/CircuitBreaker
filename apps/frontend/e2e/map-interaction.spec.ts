@@ -59,4 +59,45 @@ test.describe('topology map', () => {
       'serious/critical WCAG violations on the populated map'
     ).toEqual([]);
   });
+
+  test('Escape dismisses the node context menu', async ({ page }) => {
+    await stubApi(page, POPULATED);
+    await page.goto('/map');
+    await waitForRouteSettled(page);
+    await expect(page.locator('.map-page')).toBeVisible();
+
+    const node = page.locator('.react-flow__node').first();
+    await expect(node).toBeVisible();
+    await node.click({ button: 'right' });
+
+    const menu = page.locator('.context-menu');
+    await expect(menu).toBeVisible();
+
+    // The Escape handler cancels every transient editor tool in one action
+    // (useMapEditorUi.cancelActiveTool) alongside closing the menus.
+    await page.keyboard.press('Escape');
+
+    await expect(menu).toBeHidden();
+    await expectNoErrorBoundary(page, 'map after Escape');
+  });
+
+  test('Escape cancels an open editor dialog', async ({ page }) => {
+    await stubApi(page, POPULATED);
+    await page.goto('/map');
+    await waitForRouteSettled(page);
+    await expect(page.locator('.map-page')).toBeVisible();
+
+    await page.locator('.react-flow__node').first().click({ button: 'right' });
+    await page.getByRole('button', { name: 'Edit Icon' }).click();
+
+    // `iconPickerOpen` is owned by useMapEditorUi, so unlike the context menu
+    // this asserts cancelActiveTool actually ran.
+    const picker = page.getByPlaceholder('Search icons');
+    await expect(picker).toBeVisible();
+
+    await page.keyboard.press('Escape');
+
+    await expect(picker).toBeHidden();
+    await expectNoErrorBoundary(page, 'map after cancelling the icon picker');
+  });
 });

@@ -1,0 +1,129 @@
+/**
+ * Transient map editor UI state: draw modes, drafts, menus and dialogs.
+ *
+ * These sixteen fields were sixteen separate useState calls, and every one of
+ * them had to be reset by hand in the Escape handler. Owning them together
+ * makes "cancel whatever is active" one action instead of a list that a new
+ * tool can silently fall off the end of.
+ */
+/* eslint-disable security/detect-object-injection -- indexes the IDLE fixture's own keys */
+import { act, renderHook } from '@testing-library/react';
+import { describe, expect, it } from 'vitest';
+import { useMapEditorUi } from '../hooks/useMapEditorUi';
+
+const IDLE = {
+  mapLabelMenuOpenId: null,
+  boundaryDrawMode: false,
+  boundaryDraft: null,
+  editingBoundaryId: null,
+  editingBoundaryName: '',
+  lineDrawMode: null,
+  lineDrawDraft: null,
+  createNodeModal: { isOpen: false, position: null },
+  iconPickerOpen: false,
+  iconPickerNode: null,
+  quickActionModal: null,
+  quickActionValue: '',
+  quickCreateModal: { open: false, mode: null, title: '', sourceLabel: '', initialValues: {} },
+  quickCreateRows: [],
+  quickCreateRowErrors: {},
+};
+
+describe('useMapEditorUi', () => {
+  it('starts idle with the documented defaults', () => {
+    const { result } = renderHook(() => useMapEditorUi());
+
+    for (const [field, value] of Object.entries(IDLE)) {
+      expect(result.current[field]).toEqual(value);
+    }
+    expect(result.current.deleteConflictModal.open).toBe(false);
+    expect(result.current.deleteConflictModal.forcing).toBe(false);
+  });
+
+  it('updates a field through its setter', () => {
+    const { result } = renderHook(() => useMapEditorUi());
+
+    act(() => result.current.setBoundaryDrawMode(true));
+
+    expect(result.current.boundaryDrawMode).toBe(true);
+  });
+
+  it('supports functional updates like useState', () => {
+    const { result } = renderHook(() => useMapEditorUi());
+
+    act(() => result.current.setQuickCreateRows([{ id: 1 }]));
+    act(() => result.current.setQuickCreateRows((rows) => [...rows, { id: 2 }]));
+
+    expect(result.current.quickCreateRows).toEqual([{ id: 1 }, { id: 2 }]);
+  });
+
+  it('keeps setter identities stable across renders', () => {
+    const { result, rerender } = renderHook(() => useMapEditorUi());
+    const before = result.current.setBoundaryDrawMode;
+
+    act(() => result.current.setIconPickerOpen(true));
+    rerender();
+
+    // These are used in effect dependency arrays across MapPage.
+    expect(result.current.setBoundaryDrawMode).toBe(before);
+  });
+
+  it('cancelActiveTool returns every transient field to idle', () => {
+    const { result } = renderHook(() => useMapEditorUi());
+
+    act(() => {
+      result.current.setBoundaryDrawMode(true);
+      result.current.setBoundaryDraft({ x: 1 });
+      result.current.setEditingBoundaryId('b-1');
+      result.current.setEditingBoundaryName('Rack');
+      result.current.setLineDrawMode('ethernet');
+      result.current.setLineDrawDraft({ x: 2 });
+      result.current.setMapLabelMenuOpenId('l-1');
+      result.current.setCreateNodeModal({ isOpen: true, position: { x: 0, y: 0 } });
+      result.current.setIconPickerOpen(true);
+      result.current.setIconPickerNode({ id: 'n-1' });
+      result.current.setQuickActionModal({ action: 'alias' });
+      result.current.setQuickActionValue('typed');
+      result.current.setQuickCreateModal({ open: true, mode: 'service' });
+      result.current.setQuickCreateRows([{ id: 1 }]);
+      result.current.setQuickCreateRowErrors({ 1: 'bad' });
+    });
+
+    act(() => result.current.cancelActiveTool());
+
+    for (const [field, value] of Object.entries(IDLE)) {
+      expect(result.current[field]).toEqual(value);
+    }
+  });
+
+  it('cancelActiveTool closes the delete-conflict modal but keeps its context', () => {
+    const { result } = renderHook(() => useMapEditorUi());
+
+    act(() =>
+      result.current.setDeleteConflictModal({
+        open: true,
+        nodeId: 'hw-1',
+        nodeRefId: 42,
+        nodeType: 'hardware',
+        nodeLabel: 'NAS',
+        blockers: [{ edgeId: 'e-1' }],
+        reason: 'in use',
+        forcing: true,
+      })
+    );
+
+    act(() => result.current.cancelActiveTool());
+
+    // Matches the previous Escape behavior: `{ ...m, open: false, forcing: false }`.
+    expect(result.current.deleteConflictModal).toEqual({
+      open: false,
+      nodeId: 'hw-1',
+      nodeRefId: 42,
+      nodeType: 'hardware',
+      nodeLabel: 'NAS',
+      blockers: [{ edgeId: 'e-1' }],
+      reason: 'in use',
+      forcing: false,
+    });
+  });
+});

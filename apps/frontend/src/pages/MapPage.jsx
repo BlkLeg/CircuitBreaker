@@ -116,6 +116,7 @@ import { useMapDataLoad } from '../hooks/useMapDataLoad';
 import { useMapTabs } from '../hooks/useMapTabs';
 import { useMapRealTimeUpdates } from '../hooks/useMapRealTimeUpdates';
 import { useMapMutations } from '../hooks/useMapMutations';
+import { useMapEditorUi } from '../hooks/useMapEditorUi';
 import { useTelemetryStream } from '../hooks/useTelemetryStream';
 import { useTopologyStream, topologyEmitter } from '../hooks/useTopologyStream';
 import { canEdit, isAdmin } from '../utils/rbac';
@@ -225,19 +226,50 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
 
   // Edge override state — { edgeId: { source_side, target_side, control_point? } }
   const [edgeOverrides, setEdgeOverrides] = useState({});
+  // Transient editor UI — draw modes, drafts, menus and dialogs. Owned together
+  // so cancelling is one action rather than a hand-maintained list of setters.
+  const {
+    mapLabelMenuOpenId,
+    setMapLabelMenuOpenId,
+    boundaryDrawMode,
+    setBoundaryDrawMode,
+    boundaryDraft,
+    setBoundaryDraft,
+    editingBoundaryId,
+    setEditingBoundaryId,
+    editingBoundaryName,
+    setEditingBoundaryName,
+    lineDrawMode,
+    setLineDrawMode,
+    lineDrawDraft,
+    setLineDrawDraft,
+    createNodeModal,
+    setCreateNodeModal,
+    iconPickerOpen,
+    setIconPickerOpen,
+    iconPickerNode,
+    setIconPickerNode,
+    quickActionModal,
+    setQuickActionModal,
+    quickActionValue,
+    setQuickActionValue,
+    quickCreateModal,
+    setQuickCreateModal,
+    quickCreateRows,
+    setQuickCreateRows,
+    quickCreateRowErrors,
+    setQuickCreateRowErrors,
+    deleteConflictModal,
+    setDeleteConflictModal,
+    cancelActiveTool,
+  } = useMapEditorUi();
+
   const [boundaries, setBoundaries] = useState([]);
   const [mapLabels, setMapLabels] = useState([]);
-  const [mapLabelMenuOpenId, setMapLabelMenuOpenId] = useState(null);
-  const [boundaryDrawMode, setBoundaryDrawMode] = useState(false);
-  const [boundaryDraft, setBoundaryDraft] = useState(null);
-  const [editingBoundaryId, setEditingBoundaryId] = useState(null);
   const pendingZonePresetRef = useRef(null); // holds ZONE_PRESETS entry when zone draw is started
-  const [editingBoundaryName, setEditingBoundaryName] = useState('');
   const [selectedBoundaryId, setSelectedBoundaryId] = useState(null);
   const resizingBoundaryRef = useRef(null);
   const [visualLines, setVisualLines] = useState([]);
-  const [lineDrawMode, setLineDrawMode] = useState(null);
-  const [lineDrawDraft, setLineDrawDraft] = useState(null);
   const [selectedVisualLineId, setSelectedVisualLineId] = useState(null);
   // Pending connection action (new connect or reconnect), resolved by type picker
   const [pendingConnection, setPendingConnection] = useState(null);
@@ -411,13 +443,8 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
   const handleTelemetrySidebarBoundsChange = useCallback((rect) => {
     telemetrySidebarBoundsRef.current = rect;
   }, []);
-  const [createNodeModal, setCreateNodeModal] = useState({ isOpen: false, position: null });
-  const [iconPickerOpen, setIconPickerOpen] = useState(false);
-  const [iconPickerNode, setIconPickerNode] = useState(null);
   const [lldpJobId, setLldpJobId] = useState(null);
   const lldpEnrichingRef = useRef(false);
-  const [quickActionModal, setQuickActionModal] = useState(null);
-  const [quickActionValue, setQuickActionValue] = useState('');
   const [quickActionSaving, setQuickActionSaving] = useState(false);
   const [roleModal, setRoleModal] = useState({
     open: false,
@@ -426,27 +453,8 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     currentRole: '',
     isEdit: false,
   });
-  const [quickCreateModal, setQuickCreateModal] = useState({
-    open: false,
-    mode: null,
-    title: '',
-    sourceLabel: '',
-    initialValues: {},
-  });
-  const [quickCreateRows, setQuickCreateRows] = useState([]);
-  const [quickCreateRowErrors, setQuickCreateRowErrors] = useState({});
   const [quickCreateSaving, setQuickCreateSaving] = useState(false);
   const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
-  const [deleteConflictModal, setDeleteConflictModal] = useState({
-    open: false,
-    nodeId: null,
-    nodeRefId: null,
-    nodeType: null,
-    nodeLabel: '',
-    blockers: [],
-    reason: '',
-    forcing: false,
-  });
 
   // Scan import banner + modal state
   const [scanImportPending, setScanImportPending] = useState(null);
@@ -513,33 +521,18 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
         clearLabelPointerListeners();
         closeAllMenus();
         setPendingConnection(null);
-        setBoundaryDrawMode(false);
-        setBoundaryDraft(null);
-        setLineDrawMode(null);
-        setLineDrawDraft(null);
-        setMapLabelMenuOpenId(null);
-        setEditingBoundaryId(null);
-        setEditingBoundaryName('');
-        setCreateNodeModal({ isOpen: false, position: null });
-        setIconPickerOpen(false);
-        setIconPickerNode(null);
-        setQuickActionModal(null);
-        setQuickActionValue('');
-        setQuickCreateModal({
-          open: false,
-          mode: null,
-          title: '',
-          sourceLabel: '',
-          initialValues: {},
-        });
-        setQuickCreateRows([]);
-        setQuickCreateRowErrors({});
-        setDeleteConflictModal((m) => ({ ...m, open: false, forcing: false }));
+        cancelActiveTool();
       }
     }
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [clearBoundaryPointerListeners, clearLabelPointerListeners, closeAllMenus]);
+  }, [
+    clearBoundaryPointerListeners,
+    clearLabelPointerListeners,
+    closeAllMenus,
+    setPendingConnection,
+    cancelActiveTool,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -557,7 +550,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     };
     document.addEventListener('pointerdown', onPointerDown);
     return () => document.removeEventListener('pointerdown', onPointerDown);
-  }, [mapLabelMenuOpenId]);
+  }, [setMapLabelMenuOpenId, mapLabelMenuOpenId]);
 
   // Selected node side panel
   const [selectedNode, setSelectedNode] = useState(null);
@@ -873,7 +866,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
         }),
       });
     },
-    [canMapEdit, contextMenuOpenRef, screenToFlowPosition, setContextMenu]
+    [setCreateNodeModal, canMapEdit, contextMenuOpenRef, screenToFlowPosition, setContextMenu]
   );
 
   const handleCreateNode = useCallback(
@@ -904,7 +897,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
         toast.error('Failed to create node: ' + err.message);
       }
     },
-    [envFilter, fetchData, mapId, updateNodePos, toast]
+    [setCreateNodeModal, envFilter, fetchData, mapId, updateNodePos, toast]
   );
 
   const handleUpdateStatusAction = useCallback(
@@ -934,7 +927,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
       });
       setQuickActionValue(currentValue);
     },
-    [toast]
+    [setQuickActionModal, setQuickActionValue, toast]
   );
 
   const handleAliasAction = useCallback(
@@ -959,7 +952,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
       });
       setQuickActionValue(targetNode.data?.label || '');
     },
-    [toast]
+    [setQuickActionModal, setQuickActionValue, toast]
   );
 
   const submitAliasQuickAction = useCallback(
@@ -1022,6 +1015,8 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
       setQuickActionSaving(false);
     }
   }, [
+    setQuickActionModal,
+    setQuickActionValue,
     fetchData,
     quickActionModal,
     quickActionValue,
@@ -1077,46 +1072,55 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     [fetchData, roleModal.isEdit, roleModal.nodeRefId, toast]
   );
 
-  const openQuickCreateModal = useCallback((mode, nodeId, kindHint = null) => {
-    const targetNode = nodesRef.current.find((n) => n.id === nodeId) || null;
-    const initialValues = getDefaultQuickCreateValues(mode, targetNode, kindHint);
-    setQuickCreateModal({
-      open: true,
-      mode,
-      title: getQuickCreateTitle(mode),
-      sourceLabel: targetNode?.data?.label || 'selected node',
-      initialValues,
-    });
-    setQuickCreateRows([makeBulkRow(mode, initialValues)]);
-    setQuickCreateRowErrors({});
-  }, []);
+  const openQuickCreateModal = useCallback(
+    (mode, nodeId, kindHint = null) => {
+      const targetNode = nodesRef.current.find((n) => n.id === nodeId) || null;
+      const initialValues = getDefaultQuickCreateValues(mode, targetNode, kindHint);
+      setQuickCreateModal({
+        open: true,
+        mode,
+        title: getQuickCreateTitle(mode),
+        sourceLabel: targetNode?.data?.label || 'selected node',
+        initialValues,
+      });
+      setQuickCreateRows([makeBulkRow(mode, initialValues)]);
+      setQuickCreateRowErrors({});
+    },
+    [setQuickCreateModal, setQuickCreateRowErrors, setQuickCreateRows]
+  );
 
-  const updateQuickCreateRow = useCallback((rowId, key, value) => {
-    setQuickCreateRows((rows) =>
-      rows.map((row) => (row.id === rowId ? { ...row, [key]: value } : row))
-    );
-    setQuickCreateRowErrors((prev) => {
-      if (!prev[rowId]) return prev;
-      return { ...prev, [rowId]: '' };
-    });
-  }, []);
+  const updateQuickCreateRow = useCallback(
+    (rowId, key, value) => {
+      setQuickCreateRows((rows) =>
+        rows.map((row) => (row.id === rowId ? { ...row, [key]: value } : row))
+      );
+      setQuickCreateRowErrors((prev) => {
+        if (!prev[rowId]) return prev;
+        return { ...prev, [rowId]: '' };
+      });
+    },
+    [setQuickCreateRowErrors, setQuickCreateRows]
+  );
 
   const addQuickCreateRow = useCallback(() => {
     setQuickCreateRows((rows) => [
       ...rows,
       makeBulkRow(quickCreateModal.mode, quickCreateModal.initialValues),
     ]);
-  }, [quickCreateModal.initialValues, quickCreateModal.mode]);
+  }, [setQuickCreateRows, quickCreateModal.initialValues, quickCreateModal.mode]);
 
-  const removeQuickCreateRow = useCallback((rowId) => {
-    setQuickCreateRows((rows) => rows.filter((row) => row.id !== rowId));
-    setQuickCreateRowErrors((prev) => {
-      if (!prev[rowId]) return prev;
-      const next = { ...prev };
-      delete next[rowId];
-      return next;
-    });
-  }, []);
+  const removeQuickCreateRow = useCallback(
+    (rowId) => {
+      setQuickCreateRows((rows) => rows.filter((row) => row.id !== rowId));
+      setQuickCreateRowErrors((prev) => {
+        if (!prev[rowId]) return prev;
+        const next = { ...prev };
+        delete next[rowId];
+        return next;
+      });
+    },
+    [setQuickCreateRowErrors, setQuickCreateRows]
+  );
 
   const handleBulkQuickCreateSubmit = useCallback(
     async (event) => {
@@ -1170,7 +1174,16 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
       setQuickCreateRowErrors({});
       setQuickCreateSaving(false);
     },
-    [fetchData, quickCreateModal.initialValues, quickCreateModal.mode, quickCreateRows, toast]
+    [
+      setQuickCreateModal,
+      setQuickCreateRowErrors,
+      setQuickCreateRows,
+      fetchData,
+      quickCreateModal.initialValues,
+      quickCreateModal.mode,
+      quickCreateRows,
+      toast,
+    ]
   );
 
   const handleQuickCreateAction = useCallback(
@@ -1354,6 +1367,8 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
       }
     },
     [
+      setIconPickerNode,
+      setIconPickerOpen,
       fetchData,
       handleAliasAction,
       handleDeleteNodeAction,
@@ -1388,7 +1403,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
         toast.error(err?.message || 'Failed to update icon');
       }
     },
-    [fetchData, iconPickerNode, toast]
+    [setIconPickerNode, setIconPickerOpen, fetchData, iconPickerNode, toast]
   );
 
   const handleNodeContextMenu = useCallback(
@@ -1662,7 +1677,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
         setError('Failed to persist label deletion: ' + err.message);
       });
     },
-    [saveLayoutSnapshot]
+    [setMapLabelMenuOpenId, saveLayoutSnapshot]
   );
 
   const startMapLabelDrag = useCallback(
@@ -1720,7 +1735,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
         };
       });
     },
-    [clampPickerPosition]
+    [setBoundaryDraft, clampPickerPosition]
   );
 
   const {
