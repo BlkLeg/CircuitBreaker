@@ -1,5 +1,7 @@
 # Verification Phase 2 — T3 First Slice: Boot-and-Exercise on One Fedora VM — Implementation Plan
 
+> **Historical.** This plan's work landed; see `plans/README.md` for status and commits.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Prove that the rpm this repo builds installs on a clean Fedora host, that the service *starts*, and that it reaches `/readyz` — the first check in the project's history that would have caught #87 or #81.

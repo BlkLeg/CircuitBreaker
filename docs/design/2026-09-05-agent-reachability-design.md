@@ -1,5 +1,7 @@
 # Agent reachability and unattended enrollment
 
+> **Historical.** This plan's work landed; see `plans/README.md` for status and commits.
+
 **Status:** design, approved 2026-09-05. Supersedes nothing; additive to Phase 4.
 **Scope:** how an agent anywhere reaches a Circuit Breaker server, and how it
 enrolls without a human present.

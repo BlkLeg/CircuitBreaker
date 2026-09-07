@@ -1,5 +1,10 @@
 # Agents Page Redesign — Design
 
+> **Superseded.** This design's scope (the fleet list page: `FleetTable`,
+> `FleetRow`, `AddAgentPanel`) landed and is now prior art for
+> `specs/2026-09-05-agent-console-redesign-design.md`, which covers the
+> remaining agent detail page work.
+
 **Date:** 2026-08-14
 **Status:** Approved design, not yet implemented
 **Scope:** `apps/frontend/src/pages/AgentsPage.jsx` and the fleet-read side of the agents API

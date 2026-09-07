@@ -1,7 +1,11 @@
 # Navigation wedge baseline — 2026-09-01
 
-The before-baseline for H1's remediation (R1), which is **not shipped**. Reproduce
-with `make nav-wedge`.
+The before-baseline for H1's remediation (R1). At the time this baseline was
+taken, R1 was not shipped; it has since landed — see
+[`docs/evidence/known_bugs-v1.0.0-rc.1.md`](./known_bugs-v1.0.0-rc.1.md) item 1,
+marked FIXED on 2026-09-06 in commit `04ee269f`. The numbers below are the
+pre-fix measurement and are unchanged by the fix landing. Reproduce the
+before-state with `make nav-wedge`.
 
 `2026-09-01-nav-wedge-baseline.json` is a distilled copy of the harness output.
 The raw file lands in `apps/frontend/test-results/`, which is gitignored, so the

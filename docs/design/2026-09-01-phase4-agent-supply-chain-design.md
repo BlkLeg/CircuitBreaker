@@ -1,5 +1,7 @@
 # Phase 4 — Agent supply chain and release-operations hardening
 
+> **Historical.** This plan's work landed; see `plans/README.md` for status and commits.
+
 **Date:** 2026-09-01 · **Route:** `docs/evidence/2026-08-30-production-readiness-route.md` §3 Phase 4 · **Findings:** F4, F3, F17
 **Status:** design approved, not yet implemented.
 
