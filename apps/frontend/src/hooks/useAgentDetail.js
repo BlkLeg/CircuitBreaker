@@ -323,6 +323,21 @@ export function useAgentDetail(id, { activeTab = 'overview' } = {}) {
       readiness: telemetry?.readiness,
       update: updateStateFromEvents(events),
       spoolDepth: telemetry?.spool?.depth ?? null,
+      // The eviction group rides the same `spool` object the depth comes from.
+      // Omitting it made the detail page and the fleet row disagree about the
+      // same agent: the row flagged permanently destroyed history as critical
+      // while the page it links to — the page an operator opens *because* of
+      // that chip — derived no such state, so its chips, its state banner and
+      // composeAgentPage's severity all read healthy.
+      //
+      // `?? null` rather than `?? 0`: null is "never reported" (an agent
+      // predating the counters) and must produce no state, while an explicit 0
+      // is a real report of no loss and equally produces none. Neither may
+      // become a fabricated zero the operator could read as a confirmation.
+      spoolEvictedFrames: telemetry?.spool?.evicted_frames ?? null,
+      spoolEvictedBytes: telemetry?.spool?.evicted_bytes ?? null,
+      spoolEvictedOldestAt: telemetry?.spool?.evicted_oldest_at ?? null,
+      spoolEvictedNewestAt: telemetry?.spool?.evicted_newest_at ?? null,
       clockSkewSeconds: offsetMs == null ? null : offsetMs / 1000,
     });
   }, [agent, online, telemetry, interval, events]);

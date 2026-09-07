@@ -3,14 +3,31 @@ package spool
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"circuitbreaker.dev/cb-agent/internal/frame"
+	"circuitbreaker.dev/cb-agent/internal/logging"
 )
+
+// TestMain silences the eviction warnings the other tests in this package
+// legitimately produce. They are WARNING lines by design, so without this
+// every eviction test writes several to the suite's stderr and buries a real
+// failure. TestEnqueue_EvictionIsAudibleAtWarnLogLevel overrides this for its
+// own duration, which is what keeps the silencing from hiding the very
+// behaviour the package is meant to guarantee.
+func TestMain(m *testing.M) {
+	restore := logging.UseWriter(io.Discard, logging.LevelWarn)
+	code := m.Run()
+	restore()
+	os.Exit(code)
+}
 
 func testFrame(seq uint64) frame.Frame {
 	return frame.Frame{V: 1, Type: "telemetry.host", Seq: seq, TS: time.Now().UTC(), Payload: json.RawMessage(`{}`)}
@@ -141,22 +158,43 @@ func TestEnqueue_DropsOldestWhenOverCap(t *testing.T) {
 	if stats.Frames != dropped {
 		t.Errorf("EvictionStats().Frames = %d, want %d (10 enqueued, %d still queued)", stats.Frames, dropped, s.Len())
 	}
-	if stats.Bytes <= 0 {
-		t.Errorf("EvictionStats().Bytes = %d, want the encoded size of the dropped frames", stats.Bytes)
+	// The exact sum, not merely "> 0". The frames were enqueued in order and
+	// eviction is strictly oldest-first, so the destroyed bytes are the
+	// encoded sizes of exactly seqs [0, dropped) — computable, and therefore
+	// worth asserting rather than approximating.
+	var wantBytes int64
+	for i := int64(0); i < dropped; i++ {
+		f := testFrame(uint64(i))
+		f.TS = base.Add(time.Duration(i) * time.Minute)
+		encoded, encodeErr := frame.Encode(f)
+		if encodeErr != nil {
+			t.Fatalf("Encode() error = %v", encodeErr)
+		}
+		wantBytes += int64(len(encoded)) + 1
 	}
-	// The window comes from the dropped frames' own TS, not from wall-clock
-	// now, so it must sit inside the span the fixtures were stamped with.
-	if stats.OldestDroppedTS.IsZero() || stats.NewestDroppedTS.IsZero() {
-		t.Fatalf("EvictionStats() timestamps = %v..%v, want the destroyed window", stats.OldestDroppedTS, stats.NewestDroppedTS)
+	if stats.Bytes != wantBytes {
+		t.Errorf("EvictionStats().Bytes = %d, want %d (the encoded size of the dropped frames)", stats.Bytes, wantBytes)
 	}
-	if stats.NewestDroppedTS.Before(stats.OldestDroppedTS) {
-		t.Errorf("EvictionStats() window %v..%v is inverted", stats.OldestDroppedTS, stats.NewestDroppedTS)
+	// Both bounds are asserted against the *known instants the fixtures were
+	// stamped with*, not merely against each other. "Widen from the dropped
+	// entries' own f.TS, not from wall-clock now" is the requirement, and an
+	// implementation that stamped NewestDroppedTS with time.Now() would pass
+	// every non-zero/ordering check while being exactly wrong.
+	wantOldest := firstTS
+	wantNewest := base.Add(time.Duration(dropped-1) * time.Minute)
+	if !stats.OldestDroppedTS.Equal(wantOldest) {
+		t.Errorf("EvictionStats().OldestDroppedTS = %v, want %v — the oldest dropped frame's own TS", stats.OldestDroppedTS, wantOldest)
 	}
-	if !stats.OldestDroppedTS.Before(firstTS) && !stats.OldestDroppedTS.Equal(firstTS) {
-		t.Errorf("EvictionStats().OldestDroppedTS = %v, want the *oldest* dropped frame's own TS (<= %v)", stats.OldestDroppedTS, firstTS)
+	if !stats.NewestDroppedTS.Equal(wantNewest) {
+		t.Errorf("EvictionStats().NewestDroppedTS = %v, want %v — the newest dropped frame's own TS, not wall clock", stats.NewestDroppedTS, wantNewest)
 	}
 	if stats.LastEvictedAt.IsZero() {
 		t.Error("EvictionStats().LastEvictedAt is zero — an eviction happened and must be stamped")
+	}
+	// LastEvictedAt is the one wall-clock field, and must not have been
+	// confused with the window: it describes when the destruction ran.
+	if !stats.LastEvictedAt.After(wantNewest) {
+		t.Errorf("EvictionStats().LastEvictedAt = %v, want a wall-clock instant after the destroyed window's end %v", stats.LastEvictedAt, wantNewest)
 	}
 
 	// And it must survive an agent restart. The record is the audit trail for
@@ -183,6 +221,79 @@ func TestEnqueue_DropsOldestWhenOverCap(t *testing.T) {
 	}
 	if after := reopened.EvictionStats(); after.Frames <= stats.Frames {
 		t.Errorf("EvictionStats().Frames after further eviction = %d, want > %d (cumulative)", after.Frames, stats.Frames)
+	}
+}
+
+// TestEnqueue_EvictionIsAudibleAtWarnLogLevel pins the severity of the
+// eviction line, which is not a cosmetic detail.
+//
+// internal/logging.Configure points the standard `log` package at a gate that
+// forwards a record only while Info is enabled, so a log.Printf line vanishes
+// entirely at `log_level = "warn"` no matter what word it contains. "warn" is
+// the setting an operator picks to quieten a homelab box — so emitting this
+// through log.Printf would mean the single local signal that data was
+// permanently destroyed could be switched off by someone reducing noise, and
+// this whole mechanism would be silent again for exactly the audience it was
+// built for.
+//
+// It also pins "once per eviction batch, not once per destroyed frame": the
+// fat frame below displaces several small ones in a single Enqueue, which is
+// the shape a real cap breach takes and the only shape that can tell the two
+// rules apart.
+func TestEnqueue_EvictionIsAudibleAtWarnLogLevel(t *testing.T) {
+	var captured bytes.Buffer
+	restore := logging.UseWriter(&captured, logging.LevelWarn)
+	defer restore()
+
+	const cap = 1000
+	s, err := Open(t.TempDir(), cap)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer s.Close()
+
+	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	for i := uint64(0); i < 10; i++ {
+		f := testFrame(i)
+		f.TS = base.Add(time.Duration(i) * time.Minute)
+		if err := s.Enqueue(f); err != nil {
+			t.Fatalf("Enqueue(%d) error = %v", i, err)
+		}
+	}
+	if captured.Len() != 0 {
+		t.Fatalf("log before any eviction = %q, want silence", captured.String())
+	}
+
+	// One frame big enough to displace several at once.
+	fat := fatFrame(10, 400)
+	fat.TS = base.Add(10 * time.Minute)
+	if err := s.Enqueue(fat); err != nil {
+		t.Fatalf("Enqueue(fat) error = %v", err)
+	}
+
+	out := captured.String()
+	if !strings.Contains(out, "permanently discarded") {
+		t.Fatalf("log at level=warn = %q, want the eviction warning — a line an operator quietening the agent must still receive", out)
+	}
+	if got := strings.Count(out, "permanently discarded"); got != 1 {
+		t.Errorf("eviction warning appeared %d times, want exactly 1 for a single eviction batch", got)
+	}
+	match := regexp.MustCompile(`permanently discarded (\d+) buffered`).FindStringSubmatch(out)
+	if match == nil {
+		t.Fatalf("eviction warning = %q, want it to name the destroyed count", out)
+	}
+	count, convErr := strconv.Atoi(match[1])
+	if convErr != nil {
+		t.Fatalf("Atoi(%q) error = %v", match[1], convErr)
+	}
+	if count < 2 {
+		t.Fatalf("the batch destroyed %d frame(s); this test cannot distinguish per-batch from per-frame logging unless it destroys several at once", count)
+	}
+	// The line has to be actionable on its own, not merely present.
+	for _, want := range []string{"2026-09-01T00:00:00Z", "spool_cap_bytes", "cannot be recovered"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("eviction warning = %q, want it to name %q", out, want)
+		}
 	}
 }
 

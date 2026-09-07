@@ -37,6 +37,7 @@ from app.core.time import utcnow, utcnow_iso
 from app.db.models import Agent, AgentEvent, Hardware, ScanJob, ScanResult, Tenant
 from app.services import (
     agent_discovery,
+    agent_link,
     discovery_eligibility,
     discovery_merge,
     discovery_service,
@@ -1205,6 +1206,42 @@ async def test_a_host_finding_spooled_before_a_cancel_is_refused_but_never_audit
     assert excinfo.value.audited is True
     assert _results(db_session, job) == []
     assert emitted == []
+
+
+async def test_a_finding_refused_with_audited_still_increments_the_refusal_counter(
+    db_session, factories, emitted
+):
+    """The ordering guard for `_handle_discovery_finding` (plan Phase 3).
+
+    `agent_link` calls `record_refused_frame` *before* the `if exc.audited:
+    return` early return, and the two lines are one move apart. Moving the
+    counter below the return would leave every test in the suite green while
+    ceiling breaches and post-cancel findings stopped being counted forever —
+    the two cases where the largest volumes are refused.
+
+    The distinction the counter measures is frames destroyed, not rows written.
+    `audited` decides only what the audit trail says; it does not make the
+    finding any less discarded, and this test is what says so. It runs through
+    `dispatch_frame` rather than `ingest_discovery_finding` because the counter
+    lives in the handler, which is exactly the code path being pinned.
+    """
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent, dispatch_status="cancelled", status="cancelled")
+
+    frame = agent_link.AgentFrame(type="discovery.finding", ts=utcnow_iso(), payload=_payload(job))
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    db_session.expire_all()
+    refreshed = db_session.get(Agent, agent.id)
+    assert refreshed.refused_frames == 1, (
+        "an audited refusal is still a destroyed finding and must be counted — "
+        "record_refused_frame has to run before the `audited` early return"
+    )
+    assert refreshed.refused_frames_last_reason == "invalid_discovery_finding"
+    # `audited` still does its own job: no violation row, and no rate-limit
+    # window consumed on frames nobody is at fault for.
+    assert _events(db_session, agent) == []
+    assert _results(db_session, job) == []
 
 
 async def test_host_finding_without_an_address_is_rejected(db_session, factories, emitted):

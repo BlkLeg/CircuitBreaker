@@ -1362,3 +1362,35 @@ async def test_an_old_heartbeat_leaves_the_eviction_columns_null(db_session, fac
     assert agent.spool_depth == 0
     assert agent.spool_evicted_frames is None
     assert agent.spool_evicted_reported_at is None
+
+
+@pytest.mark.asyncio
+async def test_refused_probe_result_is_counted(db_session, factories):
+    """The third of the four terminal refusals. A probe result that fails
+    ingest is destroyed exactly as a telemetry sample is, and the monitor it
+    belonged to simply never hears the answer."""
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="remote_probe", enabled=True)
+
+    frame = AgentFrame(type="probe.result", ts="2026-09-06T12:00:00Z", payload={})
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    db_session.expire_all()
+    assert agent.refused_frames == 1
+    assert agent.refused_frames_last_reason == "invalid_probe_result"
+    assert agent.refused_frames_last_at is not None
+
+
+@pytest.mark.asyncio
+async def test_refused_discovery_finding_is_counted(db_session, factories):
+    """The fourth. A refused finding is a host that was seen on the network and
+    will not reach the review queue."""
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="local_discovery", enabled=True)
+
+    frame = AgentFrame(type="discovery.finding", ts="2026-09-06T12:00:00Z", payload={})
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    db_session.expire_all()
+    assert agent.refused_frames == 1
+    assert agent.refused_frames_last_reason == "invalid_discovery_finding"

@@ -539,7 +539,7 @@ There is exactly one, and it is not a Linux capability:
 | `/var/lib/cb-agent/device.key` | `0600` | `cb-agent` |
 | `/var/lib/cb-agent/grants.json` | `0600` | `cb-agent` |
 | `/var/lib/cb-agent/status.json` | `0600` | `cb-agent` |
-| `/var/lib/cb-agent/queue.jsonl`, `queue.head` | `0600` | `cb-agent` |
+| `/var/lib/cb-agent/queue.jsonl`, `queue.head`, `queue.evicted` | `0600` | `cb-agent` |
 | `/etc/circuit-breaker/agent.toml` | written by the installer as root under its umask — it holds no secret, only the server's public key and TLS pin | root |
 
 At every daemon start the agent audits `device.key`, `grants.json` and `status.json` plus the
@@ -685,7 +685,8 @@ Root is required. In order, it:
    - `/usr/local/bin/cb-agent`
    - `/etc/circuit-breaker/agent.toml`
    - `/var/lib/cb-agent/` in full — `device.key`, `grants.json`, `status.json`, the spool
-     (`queue.jsonl` / `queue.head`), and every versioned binary under `versions/`
+     (`queue.jsonl` / `queue.head`) and its permanent-loss record (`queue.evicted`), and every
+     versioned binary under `versions/`
 4. Removes `/etc/circuit-breaker/` **only if removing `agent.toml` left it empty**. On a host
    that also runs the Circuit Breaker server, that directory holds the server's own
    `config.toml` and `circuit-breaker.env` (which carries `CB_VAULT_KEY`) — removing it would
@@ -868,7 +869,8 @@ Fix the *agent's* clock first — but if several agents report skew at once, sus
 ### Spool pressure
 
 While disconnected, data frames are written to `/var/lib/cb-agent/queue.jsonl` (with
-`/var/lib/cb-agent/queue.head` marking how much has already been delivered), capped at 64 MiB by
+`/var/lib/cb-agent/queue.head` marking how much has already been delivered, and
+`/var/lib/cb-agent/queue.evicted` recording what has been permanently discarded), capped at 64 MiB by
 default (`spool_cap_bytes` in `agent.toml`, `67108864` as installed). When the cap is reached
 the **oldest** frames are dropped. Control frames are never spooled — replaying a stale probe
 assignment is worse than losing it.

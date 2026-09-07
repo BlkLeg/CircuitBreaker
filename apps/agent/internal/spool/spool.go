@@ -4,7 +4,6 @@ package spool
 import (
 	"bufio"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"circuitbreaker.dev/cb-agent/internal/frame"
+	"circuitbreaker.dev/cb-agent/internal/logging"
 )
 
 const (
@@ -303,10 +303,14 @@ func (s *Spool) Enqueue(f frame.Frame) error {
 	s.evicted.widen(batch.NewestDroppedTS)
 	s.evicted.LastEvictedAt = time.Now().UTC()
 
-	// WARNING-level by intent, and unconditional: this is the only local
-	// signal that observations were permanently destroyed, and an operator
-	// reading the agent log must not have to already suspect it to find it.
-	log.Printf(
+	// logging.Warnf, not log.Printf. internal/logging.Configure points the
+	// standard log package at a gate that forwards only while Info is
+	// enabled, so a log.Printf line — whatever word it contains — disappears
+	// entirely at `log_level = "warn"`. That is precisely the setting an
+	// operator reduces noise with on a homelab box, and losing the one signal
+	// that data was destroyed to a noise-reduction setting would reproduce
+	// this task's whole defect one layer down.
+	logging.Warnf(
 		"cb-agent: spool: WARNING permanently discarded %d buffered observation(s) (%d bytes) covering %s..%s "+
 			"to stay under the %d-byte cap; cumulative loss for this agent is %d observation(s) / %d bytes. "+
 			"This data is gone and cannot be recovered — raise spool_cap_bytes in agent.toml if the outage window matters.",
@@ -322,7 +326,10 @@ func (s *Spool) Enqueue(f frame.Frame) error {
 	// handed us *is* spooled, and returning an error here would tell it
 	// otherwise and invite a double-handle.
 	if err := s.persistEvictionsLocked(); err != nil {
-		log.Printf("cb-agent: spool: WARNING could not persist the eviction record: %v", err)
+		// Errorf, a level above the eviction line itself: the loss has
+		// happened either way, but a record that could not be written is a
+		// loss the next restart will not be able to report at all.
+		logging.Errorf("cb-agent: spool: could not persist the eviction record: %v", err)
 	}
 	return s.compactLocked()
 }

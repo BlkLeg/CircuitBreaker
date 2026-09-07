@@ -187,6 +187,53 @@ describe('useAgentDetail', () => {
     expect(result.current.page.tabs).toContain('overview');
   });
 
+  it('derives spool_evicted, so the detail page agrees with the fleet row', async () => {
+    // The row flags permanently destroyed history as critical and links here.
+    // Before this was wired, the page an operator opened *because* of that
+    // chip derived no such state — same agent, two answers.
+    api.getAgentTelemetry.mockResolvedValue({
+      data: {
+        latest: null,
+        readiness: [],
+        spool: {
+          depth: 4096,
+          evicted_frames: 9412,
+          evicted_bytes: 33554432,
+          evicted_oldest_at: '2026-09-01T00:00:00Z',
+          evicted_newest_at: '2026-09-03T18:30:00Z',
+        },
+      },
+    });
+
+    const { result } = mount('overview');
+    await waitFor(() => expect(result.current.agent).toBeTruthy());
+    await waitFor(() =>
+      expect(result.current.states.some((s) => s.code === 'spool_evicted')).toBe(true)
+    );
+
+    const state = result.current.states.find((s) => s.code === 'spool_evicted');
+    expect(state.tone).toBe('critical');
+    expect(state.detail.frames).toBe(9412);
+    expect(state.detail.oldestAt).toBe('2026-09-01T00:00:00Z');
+    expect(state.detail.newestAt).toBe('2026-09-03T18:30:00Z');
+    // And it reaches the page composition, which is what the detail page's
+    // chips and its state banner render from.
+    const composed = [result.current.page.primary, ...result.current.page.secondary];
+    expect(composed.some((s) => s?.code === 'spool_evicted')).toBe(true);
+  });
+
+  it('derives no loss state from a null or zero eviction report', async () => {
+    // null = "never reported" (a build predating the counters); 0 = "reported,
+    // and nothing was destroyed". Neither may become a fabricated warning, and
+    // neither may become a fabricated reassurance.
+    api.getAgentTelemetry.mockResolvedValue({
+      data: { latest: null, readiness: [], spool: { depth: 0, evicted_frames: 0 } },
+    });
+    const { result } = mount('overview');
+    await waitFor(() => expect(result.current.agent).toBeTruthy());
+    expect(result.current.states.some((s) => s.code === 'spool_evicted')).toBe(false);
+  });
+
   it('exposes a freshness reading for the header pill', async () => {
     const { result } = mount('overview');
     await waitFor(() => expect(result.current.agent).toBeTruthy());

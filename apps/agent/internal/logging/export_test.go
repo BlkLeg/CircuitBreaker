@@ -8,10 +8,7 @@ import (
 // useForTest redirects output and pins a level for one test, returning the
 // restore function. Test-only, so the production API keeps no writer seam.
 func useForTest(w io.Writer, l Level) func() {
-	mu.Lock()
-	previousOut, previousLevel := out, level
-	out, level = w, l
-	mu.Unlock()
+	restoreStream := UseWriter(w, l)
 
 	previousFlags := log.Flags()
 	previousWriter := log.Writer()
@@ -19,9 +16,7 @@ func useForTest(w io.Writer, l Level) func() {
 	log.SetOutput(gate{})
 
 	return func() {
-		mu.Lock()
-		out, level = previousOut, previousLevel
-		mu.Unlock()
+		restoreStream()
 		log.SetFlags(previousFlags)
 		log.SetOutput(previousWriter)
 	}

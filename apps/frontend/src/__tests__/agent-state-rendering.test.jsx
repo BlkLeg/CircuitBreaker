@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import FleetRow from '../components/agents/FleetRow';
-import AgentStateChip from '../components/agents/AgentStateChip';
+import AgentStateChip, { stateDetailText } from '../components/agents/AgentStateChip';
+import AgentStateBanner from '../components/agents/AgentStateBanner';
 import { STATE_ORDER, agentStateDefinition, deriveAgentStates } from '../lib/agentState';
 
 /**
@@ -227,5 +228,58 @@ describe('permanently destroyed history in a fleet row (plan Phase 3)', () => {
 
     renderRow({ ...BASE, spool_evicted_frames: null });
     expect(screen.queryByText(/lost /)).toBeNull();
+  });
+});
+
+describe('the spool_evicted chip and banner on the agent detail page', () => {
+  // The fleet row suppresses AgentStateChip for this code (its own `lost N`
+  // chip says it more densely), so the detail page is the only consumer of
+  // stateDetailText's spool_evicted branch. Until useAgentDetail passed the
+  // eviction fields through, the page could not produce the state at all and
+  // the branch was unreachable. These tests are what make it reachable.
+  const STATE = {
+    code: 'spool_evicted',
+    ...agentStateDefinition('spool_evicted'),
+    detail: {
+      frames: 9412,
+      bytes: 33554432,
+      oldestAt: '2026-09-01T00:00:00Z',
+      newestAt: '2026-09-03T18:30:00Z',
+    },
+  };
+
+  it('names the count and the destroyed window', () => {
+    const text = stateDetailText(STATE);
+    expect(text).toMatch(/9412 observations were permanently discarded/);
+    expect(text).toMatch(/covering/);
+  });
+
+  it('states the bare count when the agent reported no window', () => {
+    // An older report can carry the count with no bounds. Inventing a window
+    // for it would be a more precise claim than the agent actually made.
+    const text = stateDetailText({ ...STATE, detail: { frames: 12 } });
+    expect(text).toBe('12 observations were permanently discarded.');
+  });
+
+  it('says nothing when there is no count to state', () => {
+    expect(stateDetailText({ ...STATE, detail: {} })).toBeNull();
+  });
+
+  it('reaches the detail chip with its reason and remedy in the accessible name', () => {
+    render(<AgentStateChip state={STATE} />);
+    const chip = document.querySelector('.fleet-chip');
+    expect(chip.getAttribute('data-tone')).toBe('critical');
+    expect(chip.textContent).toMatch(/History discarded/);
+    expect(chip.textContent).toMatch(/9412 observations were permanently discarded/);
+    expect(chip.textContent).toMatch(/spool_cap_bytes/);
+  });
+
+  it('reaches the detail page state banner as a danger tone', () => {
+    // agentState's `critical` maps onto Banner's `danger` at the boundary.
+    render(<AgentStateBanner state={STATE} />);
+    const banner = document.querySelector('.cb-banner');
+    expect(banner.getAttribute('data-tone')).toBe('danger');
+    expect(banner.textContent).toMatch(/History discarded/);
+    expect(banner.textContent).toMatch(/9412 observations were permanently discarded/);
   });
 });
