@@ -52,8 +52,8 @@ from app.services import (
     agent_registry,
     agent_telemetry,
     discovery_bootstrap,
+    discovery_dispatch,
     discovery_profiles_service,
-    discovery_service,
 )
 
 ACTOR = "test-admin"
@@ -363,7 +363,7 @@ async def test_start_after_delay_defers_the_scan_off_the_reporting_path(
 ):
     started: list[int] = []
     monkeypatch.setattr(
-        discovery_service, "schedule_discovery_scan_job", lambda job_id: started.append(job_id)
+        discovery_dispatch, "schedule_discovery_scan_job", lambda job_id: started.append(job_id)
     )
 
     deferred_starts.real(4242, 0)
@@ -717,7 +717,7 @@ def app_settings(db_session):  # type: ignore[no-untyped-def]
     whole test to keep the identity map from collecting it — scaffolding that
     could not have failed if the column were dropped, which is precisely how the
     global scope stayed unstorable behind six green tests. It now writes the
-    column `discovery_service.global_agent_discovery_paused` reads.
+    column `discovery_admission.global_agent_discovery_paused` reads.
     """
     from app.services.settings_service import get_or_create_settings
 

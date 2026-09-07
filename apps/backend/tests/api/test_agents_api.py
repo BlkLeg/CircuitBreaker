@@ -2141,7 +2141,7 @@ async def test_pausing_through_the_capabilities_route_stops_the_crons_immediatel
     schedule. `profiles_due_for_scheduling` is asked once per
     `reload_discovery_jobs`, so a write that did not rebuild would leave the
     already-registered cron with its fire times and the operator with a hold they
-    were told they had. `discovery_service.profile_scheduling_held` re-reads the
+    were told they had. `discovery_admission.profile_scheduling_held` re-reads the
     same three scopes when a cron fires and would keep the scan from running, but
     it is the second line and not the first: the schedule an operator reads off
     `next_scheduled` has to stop showing runs that will not happen."""

@@ -38,6 +38,7 @@ from app.db.models import Agent, AgentEvent, Hardware, ScanJob, ScanResult, Tena
 from app.services import (
     agent_discovery,
     agent_link,
+    discovery_dispatch,
     discovery_eligibility,
     discovery_merge,
     discovery_service,
@@ -1058,7 +1059,7 @@ def test_the_terminal_vocabulary_has_no_partial_status() -> None:
     read by the history filter, the history query and the review badge; a sixth
     value is a cross-cutting change with no product requirement behind it, so an
     interrupted scan is `failed` with its findings kept instead."""
-    assert set(discovery_service.TERMINAL_JOB_STATUSES) == {"completed", "failed", "cancelled"}
+    assert set(discovery_dispatch.TERMINAL_JOB_STATUSES) == {"completed", "failed", "cancelled"}
     assert "partial" not in set(agent_discovery.STATUS_FOR_OUTCOME.values())
 
 

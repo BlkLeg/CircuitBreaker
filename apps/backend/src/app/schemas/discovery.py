@@ -323,7 +323,7 @@ class EligibleDiscoveryAgent(BaseModel):
     override covers it), and the grant's per-job ceilings are surfaced because
     they are what refuses an otherwise-fine agent.
 
-    `reason` and `detail` are `discovery_service.AgentExecutionLocationError`'s —
+    `reason` and `detail` are `discovery_admission.AgentExecutionLocationError`'s —
     the *same* pair `POST /discovery/scan` refuses with, produced by the same
     call — so the selector can never advertise an agent the next request rejects.
     """

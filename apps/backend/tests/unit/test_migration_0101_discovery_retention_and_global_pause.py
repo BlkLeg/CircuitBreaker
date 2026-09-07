@@ -196,7 +196,7 @@ def test_every_foreign_key_into_the_purged_tables_is_accounted_for(db_session):
 
 
 def test_the_global_pause_column_exists_and_holds_nobody_by_default(db_session):
-    """A2: the storage `discovery_service.global_agent_discovery_paused` reads.
+    """A2: the storage `discovery_admission.global_agent_discovery_paused` reads.
 
     NOT NULL with a `false` server default, because the column lands on a table
     that already has its singleton row and "not paused" is the only backfill

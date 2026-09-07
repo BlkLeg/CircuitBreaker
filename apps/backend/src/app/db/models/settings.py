@@ -117,7 +117,7 @@ class AppSettings(Base):
     # to this value, never the other way around.
     lan_discovery_desired: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Slice 4 plan §3/§6 (Task 26 / M14): the fleet-wide hold on *agent-executed*
-    # discovery, read by `discovery_service.global_agent_discovery_paused` and
+    # discovery, read by `discovery_admission.global_agent_discovery_paused` and
     # written by `POST /api/v1/discovery/pause`. Deliberately narrower
     # than `discovery_enabled`, which is the product's master discovery switch:
     # a second flag that also silenced the server's own crons would mean holding

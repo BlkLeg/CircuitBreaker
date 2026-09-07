@@ -114,7 +114,7 @@ def schedule_result_processed_event(result_id: int, status: str) -> None:
     `pending_count` the frame carries — the badge's authoritative number, which
     the client cannot recompute — silently drifted and never recovered.
 
-    `discovery_service.schedule_discovery_scan_job` is the model: use the
+    `discovery_dispatch.schedule_discovery_scan_job` is the model: use the
     running loop when there is one, otherwise the loop `main.py`'s lifespan
     registered, and close the coroutine rather than abandon it unawaited when
     there is neither (REL-08).

@@ -68,7 +68,7 @@ The untrusted values still reach `scan_results` verbatim, because a review queue
 that sanitizes its own evidence is not evidence.
 
 **The terminal summary** takes every check above and then closes the job
-through `discovery_service.finalize_agent_job` — terminal status, timestamps,
+through `discovery_dispatch.finalize_agent_job` — terminal status, timestamps,
 the ordinary `scan_completed`/`scan_failed` audit row and the ordinary
 `job_update`/`job_progress` events — while writing no `ScanResult` of its own
 and touching none of the counters the host findings accumulated (D-10).
@@ -120,6 +120,8 @@ from app.schemas.discovery import ScanResultOut
 from app.services import (
     agent_registry,
     agent_telemetry,
+    discovery_admission,
+    discovery_dispatch,
     discovery_eligibility,
     discovery_enrich,
     discovery_result_service,
@@ -532,10 +534,10 @@ async def dispatch_discovery_job(db: Session, job_id: int) -> bool:
     # `_claim` has already committed, so an over-cardinality job would take a
     # lease and then die on a pydantic error with the row left `running`.
     # Refusing here closes it with a D-4 reason instead. Creation time asks the
-    # same question in `discovery_service.validate_agent_execution_location`;
+    # same question in `discovery_admission.validate_agent_execution_location`;
     # this is the dispatch-time half, because `target_cidr` is an editable column.
     if len(targets) > MAX_DISCOVERY_TARGETS:
-        await discovery_service.finalize_agent_job(
+        await discovery_dispatch.finalize_agent_job(
             db,
             job,
             "failed",
@@ -564,7 +566,7 @@ async def dispatch_discovery_job(db: Session, job_id: int) -> bool:
         if reason in _WAITING_REASONS:
             _release_to_waiting(db, job, reason, dispatch_id=dispatch_id)
             return False
-        await discovery_service.finalize_agent_job(
+        await discovery_dispatch.finalize_agent_job(
             db,
             job,
             "failed",
@@ -577,28 +579,28 @@ async def dispatch_discovery_job(db: Session, job_id: int) -> bool:
     # re-asked against the *live* grant through the same readers §3's
     # creation-time checkpoint used. An administrator can narrow `tcp_ports` or
     # `max_addresses_per_job` between a profile save and the job it produces.
-    nmap_arguments = discovery_service.job_nmap_arguments(db, job)
-    requested_ports = discovery_service.granted_tcp_ports(config)
-    ungranted = discovery_service.first_ungranted_tcp_port(nmap_arguments, requested_ports)
+    nmap_arguments = discovery_admission.job_nmap_arguments(db, job)
+    requested_ports = discovery_admission.granted_tcp_ports(config)
+    ungranted = discovery_admission.first_ungranted_tcp_port(nmap_arguments, requested_ports)
     if ungranted is not None:
-        await discovery_service.finalize_agent_job(
+        await discovery_dispatch.finalize_agent_job(
             db,
             job,
             "failed",
             error_reason=ERROR_DISPATCH_FAILED,
-            error_text=_reason(discovery_service.REASON_PORT_NOT_GRANTED, str(ungranted)),
+            error_text=_reason(discovery_admission.REASON_PORT_NOT_GRANTED, str(ungranted)),
         )
         return False
 
-    ceiling = discovery_service.granted_address_ceiling(config)
+    ceiling = discovery_admission.granted_address_ceiling(config)
     count = agent_scope.address_count(targets)
     if count > ceiling:
-        await discovery_service.finalize_agent_job(
+        await discovery_dispatch.finalize_agent_job(
             db,
             job,
             "failed",
             error_reason=ERROR_DISPATCH_FAILED,
-            error_text=_reason(discovery_service.REASON_ADDRESS_LIMIT, f"{count}>{ceiling}"),
+            error_text=_reason(discovery_admission.REASON_ADDRESS_LIMIT, f"{count}>{ceiling}"),
         )
         return False
 
@@ -630,7 +632,7 @@ async def dispatch_discovery_job(db: Session, job_id: int) -> bool:
         # A True with no subscriber is "not guaranteed" rather than "delivered",
         # and that case is the dispatch deadline's, not this branch's.
         _logger.warning("discovery dispatch: job %s could not be published", job_id)
-        await discovery_service.finalize_agent_job(
+        await discovery_dispatch.finalize_agent_job(
             db, job, "failed", error_reason=ERROR_DISPATCH_FAILED
         )
         return False
@@ -717,7 +719,7 @@ def _claim(db: Session, job: ScanJob, *, scope_version: str, deadline_at: dateti
                 started_at=utcnow_iso(),
                 progress_phase=PHASE_DISPATCHED,
                 progress_message="",
-                source_type=discovery_service.SOURCE_TYPE_AGENT,
+                source_type=discovery_admission.SOURCE_TYPE_AGENT,
             )
             .execution_options(synchronize_session=False)
         ),
@@ -821,7 +823,7 @@ class DiscoveryCancellation:
 
     Deliberately inert on its own. `job_updates` carries the `job_update`
     payloads the closed rows produce, because these jobs are closed by a bulk
-    write rather than by `discovery_service.finalize_agent_job` and would
+    write rather than by `discovery_dispatch.finalize_agent_job` and would
     otherwise go terminal with no client ever hearing about it.
     """
 
@@ -919,8 +921,8 @@ def _transition_terminal(
     values: dict[str, Any] = {
         "status": status,
         "completed_at": closed_at,
-        "dispatch_status": discovery_service._DISPATCH_STATUS_FOR_JOB_STATUS[status],
-        "progress_phase": discovery_service._PROGRESS_PHASE_FOR_JOB_STATUS[status],
+        "dispatch_status": discovery_dispatch._DISPATCH_STATUS_FOR_JOB_STATUS[status],
+        "progress_phase": discovery_dispatch._PROGRESS_PHASE_FOR_JOB_STATUS[status],
         "progress_message": progress_message,
     }
     # Left untouched rather than nulled when unnamed: a cancellation an operator
@@ -1181,7 +1183,7 @@ def _request_ports(nmap_arguments: str | None, granted: frozenset[int]) -> list[
     otherwise. A job that named none gets the grant's list, which is what the
     agent would clamp to anyway.
     """
-    requested = discovery_service.requested_tcp_ports(nmap_arguments, granted)
+    requested = discovery_admission.requested_tcp_ports(nmap_arguments, granted)
     return sorted(requested) if requested else sorted(granted)
 
 
@@ -1339,7 +1341,7 @@ async def _finalize_from_summary(
             job.hosts_found or 0,
         )
 
-    await discovery_service.finalize_agent_job(
+    await discovery_dispatch.finalize_agent_job(
         db,
         job,
         status,
@@ -1553,7 +1555,7 @@ async def _record_host_finding(
     #
     # This does not weaken the rule that an agent-authored row reaches the
     # inventory only when a user accepts it. That rule is about *creating* a
-    # `Hardware` row — see `discovery_service.finalize_agent_job` — and
+    # `Hardware` row — see `discovery_dispatch.finalize_agent_job` — and
     # enrichment never creates, never overwrites a value that is already set,
     # and never names a device.
     discovery_result_service.deduplicate_pending_result(db, result)
@@ -1671,7 +1673,7 @@ async def _close_over_ceiling(db: Session, agent: Agent, job: ScanJob, ceiling: 
         "job_progress",
         {
             "job_id": job.id,
-            "phase": discovery_service._PROGRESS_PHASE_FOR_JOB_STATUS["failed"],
+            "phase": discovery_dispatch._PROGRESS_PHASE_FOR_JOB_STATUS["failed"],
             "message": error_text,
             "percent": 100,
         },

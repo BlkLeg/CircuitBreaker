@@ -18,8 +18,8 @@ from sqlalchemy.exc import IntegrityError
 
 from app.db.models import DiscoveryProfile
 from app.schemas.discovery import DiscoveryProfileCreate, DiscoveryProfileUpdate
+from app.services import discovery_admission, discovery_profiles_service
 from app.services import discovery_eligibility as elig
-from app.services import discovery_profiles_service, discovery_service
 
 ACTOR = "test-admin"
 
@@ -354,7 +354,7 @@ def test_a_target_larger_than_the_grants_address_ceiling_is_refused(db_session, 
         _agent_profile(db_session, agent, cidr="10.20.0.0/16")
 
     detail = _rejection(exc_info)
-    assert detail["reason"] == discovery_service.REASON_ADDRESS_LIMIT
+    assert detail["reason"] == discovery_admission.REASON_ADDRESS_LIMIT
     assert detail["detail"] == "65536>1024"
 
 
@@ -365,7 +365,7 @@ def test_a_port_outside_the_grant_is_refused(db_session, factories):
         _agent_profile(db_session, agent, cidr="10.20.30.0/24", nmap_arguments="-p 9999")
 
     detail = _rejection(exc_info)
-    assert detail["reason"] == discovery_service.REASON_PORT_NOT_GRANTED
+    assert detail["reason"] == discovery_admission.REASON_PORT_NOT_GRANTED
     assert detail["detail"] == "9999"
 
 
@@ -504,7 +504,7 @@ def test_an_update_that_names_ports_is_validated(db_session, factories):
             db_session, profile.id, DiscoveryProfileUpdate(nmap_arguments="-p 9999"), ACTOR
         )
 
-    assert _rejection(exc_info)["reason"] == discovery_service.REASON_PORT_NOT_GRANTED
+    assert _rejection(exc_info)["reason"] == discovery_admission.REASON_PORT_NOT_GRANTED
 
 
 # ── The scan-type vocabulary is judged against the merged profile (§3, D-6) ───

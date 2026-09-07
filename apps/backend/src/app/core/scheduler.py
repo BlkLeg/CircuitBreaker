@@ -103,7 +103,7 @@ def reload_discovery_jobs(db: Session) -> None:
     or is disabled. Register CronTrigger jobs for active profiles.
     Job IDs follow the pattern: "discovery_profile_{profile_id}"
 
-    Which profiles are due is `discovery_service.profiles_due_for_scheduling`'s
+    Which profiles are due is `discovery_admission.profiles_due_for_scheduling`'s
     answer, not a query written here: Slice 4 plan §3 lets an operator pause
     automatic discovery globally, per agent or per subnet, and a pause has to be
     a decision of the discovery domain rather than of the module that turns the
@@ -111,8 +111,8 @@ def reload_discovery_jobs(db: Session) -> None:
     it owns before re-registering, withholding a profile here is the whole
     mechanism: nothing is deleted, and the profile resumes on the next reload.
     """
+    from app.services.discovery_admission import profiles_due_for_scheduling
     from app.services.discovery_scheduler import run_scan_job_by_profile
-    from app.services.discovery_service import profiles_due_for_scheduling
 
     # Remove all existing discovery jobs
     scheduler = get_scheduler()

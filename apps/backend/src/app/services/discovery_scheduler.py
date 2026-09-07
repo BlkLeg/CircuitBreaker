@@ -33,7 +33,7 @@ def main_loop() -> asyncio.AbstractEventLoop | None:
 
     An accessor rather than a re-exported global: `_main_loop` is None at import
     time, so a caller that did `from ... import _main_loop` would capture the
-    None and never see the loop. `discovery_service.schedule_discovery_scan_job`
+    None and never see the loop. `discovery_dispatch.schedule_discovery_scan_job`
     needs the live value because it can be reached from a `run_in_executor`
     worker thread, which has no running loop of its own.
     """
@@ -69,7 +69,7 @@ def _schedule_queued_scan_jobs(db: Session) -> None:
     # Imported here, not at module scope: `agent_discovery` imports
     # `discovery_service`, which imports this module.
     from app.services.agent_discovery import PHASE_WAITING_FOR_AGENT
-    from app.services.discovery_service import schedule_discovery_scan_job
+    from app.services.discovery_dispatch import schedule_discovery_scan_job
 
     settings = get_or_create_settings(db)
     available_slots = _max_concurrent_scans(settings) - _running_scan_count(db)
@@ -97,7 +97,7 @@ async def _run_profile_job_async(profile_id: int) -> None:
     """Internal async helper to create and run a profile job.
 
     The job inherits the profile's execution location and is then routed by
-    `discovery_service.execute_scan_job`, which is the one branch between the
+    `discovery_dispatch.execute_scan_job`, which is the one branch between the
     server scanner and an agent. Both halves matter: a job created without
     `scan_agent_id` could not be routed anywhere even by a correct router, and a
     cron that called `run_scan_job` directly would run an agent-targeted profile
@@ -114,12 +114,13 @@ async def _run_profile_job_async(profile_id: int) -> None:
     `app.startup.scheduler.register_discovery_profile_crons`), and what let the per-agent hold
     be written and not applied before that.
     """
-    from app.services.discovery_service import execute_scan_job  # lazy import
+    from app.services.discovery_dispatch import execute_scan_job  # lazy import
 
     db = SessionLocal()
     try:
         from app.db.models import DiscoveryProfile
-        from app.services.discovery_service import create_scan_job, profile_scheduling_held
+        from app.services.discovery_admission import profile_scheduling_held
+        from app.services.discovery_service import create_scan_job
 
         profile = db.query(DiscoveryProfile).filter(DiscoveryProfile.id == profile_id).first()
         if not profile or not profile.enabled:

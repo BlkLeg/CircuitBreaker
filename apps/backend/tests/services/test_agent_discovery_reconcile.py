@@ -46,7 +46,7 @@ from app.services import (
     agent_discovery,
     agent_discovery_reconcile,
     agent_registry,
-    discovery_service,
+    discovery_dispatch,
 )
 
 _SUBNET = "10.61.0.0/24"
@@ -187,7 +187,7 @@ def handed_off(monkeypatch):  # type: ignore[no-untyped-def]
     """
     handled: list[int] = []
     monkeypatch.setattr(
-        discovery_service, "schedule_discovery_scan_job", lambda job_id: handled.append(job_id)
+        discovery_dispatch, "schedule_discovery_scan_job", lambda job_id: handled.append(job_id)
     )
     return handled
 
@@ -653,7 +653,7 @@ def test_two_real_workers_expire_one_dead_lease_exactly_once(setup_db, monkeypat
     nothing to do.
     """
     barrier = threading.Barrier(2)
-    original = discovery_service.finalize_agent_job
+    original = discovery_dispatch.finalize_agent_job
 
     async def barriered(db, job, status, **kwargs):  # type: ignore[no-untyped-def]
         # Inside the pass, after selection and before the compare-and-set: the
@@ -662,8 +662,8 @@ def test_two_real_workers_expire_one_dead_lease_exactly_once(setup_db, monkeypat
         barrier.wait(timeout=10)
         return await original(db, job, status, **kwargs)
 
-    monkeypatch.setattr(discovery_service, "finalize_agent_job", barriered)
-    monkeypatch.setattr(discovery_service, "schedule_discovery_scan_job", lambda job_id: None)
+    monkeypatch.setattr(discovery_dispatch, "finalize_agent_job", barriered)
+    monkeypatch.setattr(discovery_dispatch, "schedule_discovery_scan_job", lambda job_id: None)
     monkeypatch.setattr(agent_registry, "is_agent_online", AsyncMock(return_value=False))
     monkeypatch.setattr(agent_registry, "get_agent_connection_owner", AsyncMock(return_value=None))
     monkeypatch.setattr(
@@ -717,7 +717,7 @@ def test_two_real_workers_retry_one_parked_job_exactly_once(setup_db, monkeypatc
 
     monkeypatch.setattr(agent_discovery, "derive_discovery_scope", barriered_derive)
     monkeypatch.setattr(agent_registry, "publish_agent_control_frame", AsyncMock(side_effect=spy))
-    monkeypatch.setattr(discovery_service, "schedule_discovery_scan_job", lambda job_id: None)
+    monkeypatch.setattr(discovery_dispatch, "schedule_discovery_scan_job", lambda job_id: None)
     monkeypatch.setattr(agent_registry, "is_agent_online", AsyncMock(return_value=True))
     monkeypatch.setattr(
         agent_registry, "get_agent_connection_owner", AsyncMock(return_value="worker-1")
@@ -757,7 +757,7 @@ async def test_the_scheduled_pass_runs_on_the_event_loop_holding_its_own_lock(
     """Both halves of the registration contract, in one pass.
 
     **On the loop**, because the drain calls
-    `discovery_service.schedule_discovery_scan_job`, which starts the
+    `discovery_dispatch.schedule_discovery_scan_job`, which starts the
     server-scan executor with `asyncio.create_task` — that raises where there is
     no running loop, and it is a live defect on the neighbouring path
     (`_scan_finalize` calls the same drain from a `run_in_executor` worker

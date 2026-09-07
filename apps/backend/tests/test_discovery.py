@@ -4,6 +4,11 @@ Tests for the discovery scan API: POST /api/v1/discovery/scan and GET /api/v1/di
 
 import pytest
 
+from app.services import (
+    discovery_admission,
+    discovery_dispatch,
+)
+
 SCAN_URL = "/api/v1/discovery/scan"
 JOBS_URL = "/api/v1/discovery/jobs"
 PROFILES_URL = "/api/v1/discovery/profiles"
@@ -660,64 +665,58 @@ def test_scan_job_for_an_eligible_agent_is_created(db_session, factories):
 
 @pytest.mark.parametrize("status", ["pending", "rejected", "revoked"])
 def test_scan_job_for_a_non_active_agent_is_rejected(db_session, factories, status):
-    from app.services import discovery_service
 
     agent = _eligible_agent(factories, status=status)
-    with pytest.raises(discovery_service.AgentExecutionLocationError) as exc_info:
+    with pytest.raises(discovery_admission.AgentExecutionLocationError) as exc_info:
         _create_agent_scan(db_session, agent)
     assert exc_info.value.reason == "agent_inactive"
     assert exc_info.value.detail == status
 
 
 def test_scan_job_for_an_ungranted_agent_is_rejected(db_session, factories):
-    from app.services import discovery_service
 
     agent = factories.agent(status="active")
     factories.agent_network(agent, facts=_AGENT_INTERFACES)
     factories.agent_capability_readiness(agent, collector="discovery.tcp", state="ready")
 
-    with pytest.raises(discovery_service.AgentExecutionLocationError) as exc_info:
+    with pytest.raises(discovery_admission.AgentExecutionLocationError) as exc_info:
         _create_agent_scan(db_session, agent)
     assert exc_info.value.reason == "capability_disabled"
 
 
 def test_scan_job_for_a_degraded_collector_is_rejected(db_session, factories):
-    from app.services import discovery_service
 
     agent = _eligible_agent(factories, readiness="degraded")
-    with pytest.raises(discovery_service.AgentExecutionLocationError) as exc_info:
+    with pytest.raises(discovery_admission.AgentExecutionLocationError) as exc_info:
         _create_agent_scan(db_session, agent)
     assert exc_info.value.reason == "readiness_degraded"
 
 
 def test_scan_job_with_an_out_of_scope_target_is_rejected(db_session, factories):
-    from app.services import discovery_service
 
     agent = _eligible_agent(factories)
-    with pytest.raises(discovery_service.AgentExecutionLocationError) as exc_info:
+    with pytest.raises(discovery_admission.AgentExecutionLocationError) as exc_info:
         _create_agent_scan(db_session, agent, target_cidr="192.168.50.0/24")
     assert exc_info.value.reason == "out_of_scope"
     assert exc_info.value.detail == "out_of_scope:192.168.50.0/24"
 
 
 def test_scan_job_larger_than_the_address_ceiling_is_rejected(db_session, factories):
-    from app.services import discovery_service
 
     agent = _eligible_agent(
         factories,
         interfaces=[{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.20.0.5/16"]}],
     )
-    with pytest.raises(discovery_service.AgentExecutionLocationError) as exc_info:
+    with pytest.raises(discovery_admission.AgentExecutionLocationError) as exc_info:
         _create_agent_scan(db_session, agent, target_cidr="10.20.0.0/16")
     assert exc_info.value.reason == "address_limit_exceeded"
     assert exc_info.value.detail == "65536>1024"
 
 
 def test_scan_job_naming_an_ungranted_port_is_rejected(db_session, factories):
-    from app.services import discovery_service
 
     agent = _eligible_agent(factories)
-    with pytest.raises(discovery_service.AgentExecutionLocationError) as exc_info:
+    with pytest.raises(discovery_admission.AgentExecutionLocationError) as exc_info:
         _create_agent_scan(db_session, agent, nmap_arguments="-p 9999")
     assert exc_info.value.reason == "port_not_granted"
     assert exc_info.value.detail == "9999"
@@ -725,11 +724,10 @@ def test_scan_job_naming_an_ungranted_port_is_rejected(db_session, factories):
 
 def test_a_rejected_scan_job_writes_no_row(db_session, factories):
     from app.db.models import ScanJob
-    from app.services import discovery_service
 
     agent = _eligible_agent(factories)
     before = db_session.query(ScanJob).count()
-    with pytest.raises(discovery_service.AgentExecutionLocationError):
+    with pytest.raises(discovery_admission.AgentExecutionLocationError):
         _create_agent_scan(db_session, agent, target_cidr="192.168.50.0/24")
     assert db_session.query(ScanJob).count() == before
 
@@ -738,13 +736,12 @@ def test_vlan_derived_targets_are_validated_too(db_session, factories):
     """VLAN ids resolve to CIDRs inside `create_scan_job`, so the indirection is
     not a way past the scope check."""
     from app.db.models import Network
-    from app.services import discovery_service
 
     db_session.add(Network(name="vlan-908", cidr="192.168.61.0/24", vlan_id=908))
     db_session.flush()
     agent = _eligible_agent(factories)
 
-    with pytest.raises(discovery_service.AgentExecutionLocationError) as exc_info:
+    with pytest.raises(discovery_admission.AgentExecutionLocationError) as exc_info:
         _create_agent_scan(db_session, agent, target_cidr=None, vlan_ids=[908])
     assert exc_info.value.reason == "out_of_scope"
 
@@ -827,10 +824,10 @@ def routed_jobs(monkeypatch, db_session):
 
     def _schedule(job_id: int) -> None:
         started.append(
-            asyncio.ensure_future(discovery_service.execute_scan_job(db_session, job_id))
+            asyncio.ensure_future(discovery_dispatch.execute_scan_job(db_session, job_id))
         )
 
-    monkeypatch.setattr(discovery_service, "schedule_discovery_scan_job", _schedule)
+    monkeypatch.setattr(discovery_dispatch, "schedule_discovery_scan_job", _schedule)
 
     async def drain() -> None:
         if started:
@@ -1072,7 +1069,7 @@ async def test_adhoc_scan_still_answers_a_plain_bad_request_generically(
 def test_first_ungranted_tcp_port(arguments, expected):
     """The `-p` spec is the only port set a discovery request can name today, and
     the grant is what decides whether the agent may open any of it."""
-    from app.services.discovery_service import first_ungranted_tcp_port
+    from app.services.discovery_admission import first_ungranted_tcp_port
 
     granted = (22, 53, 80, 443, 445, 3389, 8000, 8080, 8443)
     assert first_ungranted_tcp_port(arguments, granted) == expected
@@ -1081,7 +1078,7 @@ def test_first_ungranted_tcp_port(arguments, expected):
 def test_an_empty_grant_allows_no_port():
     """The Go validator's rule verbatim: a port outside the grant is a capability
     violation, not a missing default, so an empty list grants nothing."""
-    from app.services.discovery_service import first_ungranted_tcp_port
+    from app.services.discovery_admission import first_ungranted_tcp_port
 
     assert first_ungranted_tcp_port("-p 22", ()) == 22
 
@@ -1258,7 +1255,7 @@ def _let_another_writer_finish_the_job(db_session, monkeypatch, **winning_values
     writing it.
 
     That window is real and uncoordinated: the endpoint reads the row, checks its
-    status, and only then writes, while `discovery_service.finalize_agent_job`
+    status, and only then writes, while `discovery_dispatch.finalize_agent_job`
     accepts the agent's terminal summary on the `/link` connection and
     `_scan_finalize` ends a server scan on its own thread. The interleaving is
     made deterministic by wrapping the endpoint's own write; the winning row is
@@ -2185,7 +2182,7 @@ def test_the_purge_ages_out_a_result_a_device_was_merged_from(db_session, factor
 # an agent that has silently disappeared from a dropdown is the failure mode this
 # endpoint exists to prevent.
 #
-# The verdict is `discovery_service.validate_agent_execution_location`, the same
+# The verdict is `discovery_admission.validate_agent_execution_location`, the same
 # function `POST /discovery/scan` and `POST /discovery/profiles` refuse with, so
 # the listing and the refusal cannot disagree about a reason or drift apart when
 # a new one is added. In particular that means the listing judges with
@@ -2384,7 +2381,7 @@ async def test_an_offline_agent_is_still_a_choosable_discovery_vantage(
 #
 # Task 25 landed the *reading* half of all three pause scopes: which profiles
 # `core.scheduler.reload_discovery_jobs` may register a cron for is
-# `discovery_service.profiles_due_for_scheduling`'s answer, and a profile with
+# `discovery_admission.profiles_due_for_scheduling`'s answer, and a profile with
 # `paused_at` set is withheld from it. These are the writers for the per-subnet
 # scope.
 #
@@ -2656,15 +2653,14 @@ async def test_the_fleet_hold_is_what_the_agent_detail_page_reports(
     """`AgentDiscoveryRead.globally_paused` is the field §6 renders the hold
     from, and it is fed by the same reader the scheduler uses — so the route and
     the page cannot disagree about whether the fleet is held."""
-    from app.services import discovery_service
 
     _eligible_agent(factories)
 
     await client.post(PAUSE_URL, headers=auth_headers)
-    assert discovery_service.global_agent_discovery_paused(db_session) is True
+    assert discovery_admission.global_agent_discovery_paused(db_session) is True
 
     await client.post(RESUME_URL, headers=auth_headers)
-    assert discovery_service.global_agent_discovery_paused(db_session) is False
+    assert discovery_admission.global_agent_discovery_paused(db_session) is False
 
 
 @pytest.mark.asyncio
@@ -2683,7 +2679,7 @@ async def test_resuming_the_fleet_requires_admin(client, viewer_headers):
 # Restart survival (Phase D close-out): the startup path asks the same question
 # ---------------------------------------------------------------------------
 #
-# Task 25 made `discovery_service.profiles_due_for_scheduling` the one place
+# Task 25 made `discovery_admission.profiles_due_for_scheduling` the one place
 # that decides whether a profile gets a cron, and every *runtime* writer of the
 # three holds goes through `core.scheduler.reload_discovery_jobs`, which asks it.
 # `app.main`'s startup registration is the second, easily-forgotten caller: it is
@@ -2754,7 +2750,6 @@ def test_a_restart_does_not_reschedule_a_profile_whose_agent_is_held(db_session,
     """M14's per-agent hold lives in the `local_discovery` grant, so a restart
     that re-read only `discovery_profiles` could not see it at all."""
     from app.db.models import AgentCapabilityGrant
-    from app.services import discovery_service
 
     agent = _eligible_agent(factories)
     profile = _agent_profile_row(db_session, agent)
@@ -2765,7 +2760,7 @@ def test_a_restart_does_not_reschedule_a_profile_whose_agent_is_held(db_session,
         .filter_by(agent_id=agent.id, capability="local_discovery")
         .one()
     )
-    grant.config = {discovery_service.AGENT_DISCOVERY_PAUSE_KEY: True}
+    grant.config = {discovery_admission.AGENT_DISCOVERY_PAUSE_KEY: True}
     db_session.flush()
 
     assert profile.id not in _startup_schedule(db_session)
@@ -2811,11 +2806,10 @@ def _held_scopes(db_session, profile):
     Both readers, asked about the same row, so a fix that taught one scope to the
     fire-time gate and not to the startup gate cannot pass.
     """
-    from app.services import discovery_service
 
-    due = {p.id for p in discovery_service.profiles_due_for_scheduling(db_session)}
+    due = {p.id for p in discovery_admission.profiles_due_for_scheduling(db_session)}
     return (
-        discovery_service.profile_scheduling_held(db_session, profile),
+        discovery_admission.profile_scheduling_held(db_session, profile),
         profile.id not in due,
     )
 
@@ -2835,7 +2829,6 @@ def test_the_two_pause_readers_agree_that_a_held_subnet_is_held(db_session, fact
 
 def test_the_two_pause_readers_agree_that_a_held_agents_profile_is_held(db_session, factories):
     from app.db.models import AgentCapabilityGrant
-    from app.services import discovery_service
 
     agent = _eligible_agent(factories)
     profile = _agent_profile_row(db_session, agent)
@@ -2844,7 +2837,7 @@ def test_the_two_pause_readers_agree_that_a_held_agents_profile_is_held(db_sessi
         .filter_by(agent_id=agent.id, capability="local_discovery")
         .one()
     )
-    grant.config = {discovery_service.AGENT_DISCOVERY_PAUSE_KEY: True}
+    grant.config = {discovery_admission.AGENT_DISCOVERY_PAUSE_KEY: True}
     db_session.flush()
 
     assert _held_scopes(db_session, profile) == (True, True)
@@ -2912,14 +2905,14 @@ def cron_session_on_the_test_connection(db_session, monkeypatch):
 def executed_jobs(monkeypatch):
     """Records what `_run_profile_job_async` handed to the router, and runs none
     of it — the router's next step is a real network scan or an agent dispatch."""
-    from app.services import discovery_service
+    from app.services import discovery_dispatch
 
     seen: list[int] = []
 
     async def _record(db, job_id):  # type: ignore[no-untyped-def]
         seen.append(job_id)
 
-    monkeypatch.setattr(discovery_service, "execute_scan_job", _record)
+    monkeypatch.setattr(discovery_dispatch, "execute_scan_job", _record)
     return seen
 
 

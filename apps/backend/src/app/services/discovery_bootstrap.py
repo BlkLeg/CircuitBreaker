@@ -57,6 +57,8 @@ from app.db.models import Agent, DiscoveryProfile
 from app.schemas.discovery import DiscoveryProfileCreate, DiscoveryProfileUpdate
 from app.services import (
     agent_registry,
+    discovery_admission,
+    discovery_dispatch,
     discovery_eligibility,
     discovery_profiles_service,
     discovery_service,
@@ -243,7 +245,7 @@ async def run_bootstrap(db: Session, agent_id: int) -> BootstrapOutcome:
     config = discovery_grant_config(db, agent_id)
     scope = discovery_eligibility.derive_discovery_scope(db, agent_id, config)
     wanted = eligible_subnets(
-        scope, address_ceiling=discovery_service.granted_address_ceiling(config)
+        scope, address_ceiling=discovery_admission.granted_address_ceiling(config)
     )
 
     stored = _system_profiles(db, agent_id)
@@ -261,7 +263,7 @@ async def run_bootstrap(db: Session, agent_id: int) -> BootstrapOutcome:
     # profiles are still upserted because a pause must delete nothing — the row
     # is what carries the subnet's identity, its cron and its history, and
     # `enabled = 0` is reserved for a subnet that has actually gone away.
-    paused = discovery_service.agent_scheduling_paused(db, agent_id)
+    paused = discovery_admission.agent_scheduling_paused(db, agent_id)
 
     created: list[int] = []
     reenabled: list[int] = []
@@ -470,7 +472,7 @@ def _start_after_delay(job_id: int, delay_s: float) -> None:
             job_id,
         )
         return
-    loop.call_later(delay_s, discovery_service.schedule_discovery_scan_job, job_id)
+    loop.call_later(delay_s, discovery_dispatch.schedule_discovery_scan_job, job_id)
 
 
 def schedule_bootstrap(agent_id: int) -> bool:

@@ -12,7 +12,7 @@ The consumer body is what settles which way to resolve that. It used to run
 masscan, then nmap, and then throw both results away: no `ScanResult` row, no
 `ScanJob` transition, no broadcast, nothing a scan is for. It was never the other
 half of a discovery pipeline. Scheduled and operator-triggered discovery both go
-through `services/discovery_service.execute_scan_job`, which either scans from
+through `services/discovery_dispatch.execute_scan_job`, which either scans from
 the server (`run_scan_job`) or dispatches to an agent
 (`agent_discovery.dispatch_discovery_job`); neither touches this queue.
 
@@ -86,7 +86,7 @@ async def process_job(msg: Any, semaphore: asyncio.Semaphore) -> None:
         logger.error(
             "Discarding a message on discovery.jobs (%d bytes): this worker has no "
             "publisher and no result path for that subject. Discovery runs through "
-            "discovery_service.execute_scan_job, not this queue.",
+            "discovery_dispatch.execute_scan_job, not this queue.",
             len(getattr(msg, "data", b"") or b""),
         )
         try:

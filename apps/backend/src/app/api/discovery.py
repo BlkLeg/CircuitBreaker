@@ -53,17 +53,17 @@ from app.schemas.proxmox import ProxmoxDiscoverRunOut
 from app.services import (
     agent_discovery,
     agent_registry,
+    discovery_admission,
+    discovery_dispatch,
     discovery_eligibility,
     discovery_profiles_service,
     discovery_result_service,
     discovery_service,
 )
 from app.services.bulk_suggest import get_vendor_catalog, suggest_bulk_actions
+from app.services.discovery_admission import AgentExecutionLocationError
 from app.services.discovery_safe import is_docker_socket_available
-from app.services.discovery_service import (
-    AgentExecutionLocationError,
-    _has_raw_socket_privilege,
-)
+from app.services.discovery_service import _has_raw_socket_privilege
 from app.services.log_service import write_log
 from app.services.proxmox_service import get_proxmox_discover_run, list_proxmox_discover_runs
 from app.services.settings_service import get_or_create_settings
@@ -296,7 +296,7 @@ def _execution_location_verdict(
     on the latter would advertise an agent that the very next request refuses.
     """
     try:
-        discovery_service.validate_agent_execution_location(
+        discovery_admission.validate_agent_execution_location(
             db, scan_agent_id=agent_id, targets=targets
         )
     except AgentExecutionLocationError as exc:
@@ -343,7 +343,7 @@ async def get_eligible_discovery_agents(
                 )
             ).scalars()
         }
-    paused_agents = discovery_service.paused_agent_ids(db, agent_ids)
+    paused_agents = discovery_admission.paused_agent_ids(db, agent_ids)
 
     rows = []
     for agent in agents:
@@ -365,9 +365,9 @@ async def get_eligible_discovery_agents(
                 scope_networks=list(scope.networks),
                 direct_networks=list(scope.direct_networks),
                 excluded_networks=list(scope.excluded_networks),
-                max_addresses_per_job=discovery_service.granted_address_ceiling(config),
+                max_addresses_per_job=discovery_admission.granted_address_ceiling(config),
                 max_concurrent_hosts=_max_concurrent_hosts(config),
-                tcp_ports=sorted(discovery_service.granted_tcp_ports(config)),
+                tcp_ports=sorted(discovery_admission.granted_tcp_ports(config)),
                 active_jobs=active_jobs.get(agent.id, 0),
                 assigned_profiles=assigned.get(agent.id, 0),
                 # Answered independently of `eligible`, which short-circuits on
@@ -449,10 +449,10 @@ def _set_profile_pause(
 
     `reload_discovery_jobs` is what applies it to the live schedule — that
     function removes every discovery job it owns and re-registers from
-    `discovery_service.profiles_due_for_scheduling`, which is where the three
+    `discovery_admission.profiles_due_for_scheduling`, which is where the three
     pause scopes are read (Task 25). Without the reload the column would be
     correct while `next_scheduled` kept advertising runs that
-    `discovery_service.profile_scheduling_held` would then refuse at fire time —
+    `discovery_admission.profile_scheduling_held` would then refuse at fire time —
     a hold the operator could not see they had.
 
     Pausing an already-held profile leaves the original timestamp: `paused_at` is
@@ -516,7 +516,7 @@ def _set_global_pause(db: Session, actor: str, *, paused: bool) -> GlobalDiscove
     """Hold or release automatic discovery for the whole agent fleet.
 
     Scoped to **agent-executed** profiles, exactly as
-    `discovery_service.global_agent_discovery_paused` documents:
+    `discovery_admission.global_agent_discovery_paused` documents:
     `app_settings.discovery_enabled` is already the product's master discovery
     switch, and a second flag that also stopped the server's own crons would
     mean an operator holding an agent fleet silently stopped scanning the
@@ -529,10 +529,10 @@ def _set_global_pause(db: Session, actor: str, *, paused: bool) -> GlobalDiscove
 
     `reload_discovery_jobs` is what applies it to the live schedule, as in both
     sibling routes: it drops every discovery job it owns and re-registers from
-    `discovery_service.profiles_due_for_scheduling`, which is where the three
+    `discovery_admission.profiles_due_for_scheduling`, which is where the three
     pause scopes are read. Without it the column would be correct while
     `next_scheduled` kept advertising runs that
-    `discovery_service.profile_scheduling_held` would then refuse at fire time.
+    `discovery_admission.profile_scheduling_held` would then refuse at fire time.
     """
     settings = get_or_create_settings(db)
     # The mapped column by name, never a constant plus `setattr`: a
@@ -637,7 +637,7 @@ async def run_profile_scan(
 
     # B2: async def endpoint runs on the event loop — asyncio.create_task works here
     try:
-        discovery_service.schedule_discovery_scan_job(job.id)
+        discovery_dispatch.schedule_discovery_scan_job(job.id)
     except Exception as exc:
         _logger.exception("Failed to schedule scan job %s", job.id)
         raise HTTPException(status_code=500, detail="Failed to start scan.") from exc
@@ -739,7 +739,7 @@ async def run_adhoc_scan(
 
     try:
         for job_id in job_ids:
-            discovery_service.schedule_discovery_scan_job(job_id)
+            discovery_dispatch.schedule_discovery_scan_job(job_id)
     except Exception as task_exc:
         _logger.exception("Failed to schedule scan job(s) %s: %s", job_ids, task_exc)
         raise HTTPException(
@@ -814,7 +814,7 @@ def _close_cancelled_job(db: Session, job: ScanJob) -> agent_discovery.JobCancel
 
     Both arms are compare-and-sets predicated on the job still being open, so
     this endpoint can never overwrite a status some other writer got to first —
-    `discovery_service.finalize_agent_job` accepting the agent's terminal summary
+    `discovery_dispatch.finalize_agent_job` accepting the agent's terminal summary
     on the `/link` connection, `agent_discovery._transition_terminal` closing the
     job for a scope or grant change, or `_scan_finalize` ending a server scan.
     Those three and this are now the complete set of terminal writers for a scan
@@ -1056,7 +1056,7 @@ async def enrich_opnsense_job(
     if not private_ips:
         raise HTTPException(status_code=400, detail="No private IPs found — nothing to enrich")
 
-    bg_tasks.add_task(discovery_service.run_opnsense_enrich, job_id, private_ips)
+    bg_tasks.add_task(discovery_dispatch.run_opnsense_enrich, job_id, private_ips)
 
     log_audit(
         db,
@@ -1076,7 +1076,7 @@ def lldp_enrich(
     db: Session = Depends(get_db),
 ):
     from app.db.models import Hardware
-    from app.services.discovery_service import enqueue_lldp_job
+    from app.services.discovery_dispatch import enqueue_lldp_job
 
     hw_rows = (
         db.execute(select(Hardware).where(Hardware.id.in_(payload.hardware_ids))).scalars().all()

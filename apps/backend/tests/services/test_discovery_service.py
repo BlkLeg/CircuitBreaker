@@ -1,5 +1,7 @@
 import pytest
 
+from app.services import discovery_dispatch
+
 
 def test_arp_stub_injected_for_arp_only_host() -> None:
     """ARP-only IPs (phones with no open ports) get a stub in nmap_results."""
@@ -420,7 +422,7 @@ def test_the_queued_drain_leaves_a_job_parked_for_its_agent_to_its_deadline_owne
     from datetime import timedelta
 
     from app.core.time import utcnow
-    from app.services import discovery_scheduler, discovery_service
+    from app.services import discovery_dispatch, discovery_scheduler
 
     _raise_the_ceiling(db_session)
     agent = _backlog_agent(db_session, factories)
@@ -434,7 +436,7 @@ def test_the_queued_drain_leaves_a_job_parked_for_its_agent_to_its_deadline_owne
 
     handed: list[int] = []
     monkeypatch.setattr(
-        discovery_service, "schedule_discovery_scan_job", lambda job_id: handed.append(job_id)
+        discovery_dispatch, "schedule_discovery_scan_job", lambda job_id: handed.append(job_id)
     )
 
     discovery_scheduler._schedule_queued_scan_jobs(db_session)
@@ -471,9 +473,9 @@ async def test_a_parked_job_keeps_its_original_deadline_when_an_unrelated_job_fi
     # SAVEPOINT. Everything downstream of it — the claim, the eligibility check,
     # the parking — is the production code.
     async def _route(job_id: int) -> None:
-        await discovery_service.execute_scan_job(db_session, job_id)
+        await discovery_dispatch.execute_scan_job(db_session, job_id)
 
-    monkeypatch.setattr(discovery_service, "_execute_scan_job_in_session", _route)
+    monkeypatch.setattr(discovery_dispatch, "_execute_scan_job_in_session", _route)
 
     with (
         patch.object(discovery_service, "SessionLocal", return_value=db_session),
@@ -501,7 +503,7 @@ async def test_an_agent_job_over_the_concurrency_ceiling_is_not_dispatched(
     """B2. `_claim` sets `status='running'`, so a dispatched agent job consumes a
     `max_concurrent_scans` slot from everyone else's point of view. A direct
     dispatch that never asked for one is a job exempt from a limit it spends."""
-    from app.services import agent_discovery, discovery_service
+    from app.services import agent_discovery
     from app.services.settings_service import get_or_create_settings
 
     settings = get_or_create_settings(db_session)
@@ -526,7 +528,7 @@ async def test_an_agent_job_over_the_concurrency_ceiling_is_not_dispatched(
 
     monkeypatch.setattr(agent_discovery, "dispatch_discovery_job", _spy)
 
-    await discovery_service.execute_scan_job(db_session, job.id)
+    await discovery_dispatch.execute_scan_job(db_session, job.id)
 
     assert dispatched == []
     db_session.refresh(job)
@@ -544,7 +546,7 @@ async def test_an_agent_job_with_a_free_slot_still_reaches_the_dispatcher(
 ) -> None:  # type: ignore[no-untyped-def]
     """The other half of B2's ceiling: it may not become a gate that refuses
     every agent job."""
-    from app.services import agent_discovery, discovery_service
+    from app.services import agent_discovery
 
     _raise_the_ceiling(db_session)
     agent = _backlog_agent(db_session, factories)
@@ -564,7 +566,7 @@ async def test_an_agent_job_with_a_free_slot_still_reaches_the_dispatcher(
 
     monkeypatch.setattr(agent_discovery, "dispatch_discovery_job", _spy)
 
-    await discovery_service.execute_scan_job(db_session, job.id)
+    await discovery_dispatch.execute_scan_job(db_session, job.id)
 
     assert dispatched == [job.id]
 
@@ -581,10 +583,10 @@ async def test_finalizing_in_an_executor_thread_still_drains_the_backlog(
     import asyncio
     from unittest.mock import patch
 
-    from app.services import discovery_scheduler, discovery_service
+    from app.services import discovery_dispatch, discovery_scheduler, discovery_service
 
     loop = asyncio.get_running_loop()
-    # What `main.py`'s lifespan does at startup, undone by monkeypatch here.
+    # What the lifespan does at startup, undone by monkeypatch here.
     monkeypatch.setattr(discovery_scheduler, "_main_loop", loop)
 
     _raise_the_ceiling(db_session)
@@ -596,7 +598,7 @@ async def test_finalizing_in_an_executor_thread_still_drains_the_backlog(
     async def _route(job_id: int) -> None:
         started.append(job_id)
 
-    monkeypatch.setattr(discovery_service, "_execute_scan_job_in_session", _route)
+    monkeypatch.setattr(discovery_dispatch, "_execute_scan_job_in_session", _route)
 
     with (
         patch.object(discovery_service, "SessionLocal", return_value=db_session),

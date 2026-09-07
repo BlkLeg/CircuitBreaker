@@ -85,8 +85,8 @@ from app.services import (
     agent_tls_pin,
     agent_update,
     certificate_service,
+    discovery_admission,
     discovery_eligibility,
-    discovery_service,
     monitor_service,
 )
 from app.services.monitoring import probe_eligibility
@@ -1245,7 +1245,7 @@ def _discovery_scope_entries(scope: agent_scope.EffectiveScope) -> list[Discover
 def _grant_int(config: Mapping[str, Any], key: str) -> int:
     """One integer grant setting, or 0 for anything that is not one.
 
-    Tolerant on purpose, matching `discovery_service.granted_address_ceiling` and
+    Tolerant on purpose, matching `discovery_admission.granted_address_ceiling` and
     `granted_tcp_ports`: `_structured_grant` merges the registry default over the
     *stored* value without re-normalizing it, so this renders whatever is on the
     row. A malformed legacy value must show as 0 on a detail page, never turn the
@@ -1267,11 +1267,11 @@ def _discovery_limits(config: dict[str, Any]) -> DiscoveryLimits:
     merged = defaults | config
     return DiscoveryLimits(
         scope_mode=str(merged.get("scope_mode") or ""),
-        max_addresses_per_job=discovery_service.granted_address_ceiling(merged),
+        max_addresses_per_job=discovery_admission.granted_address_ceiling(merged),
         max_concurrent_hosts=_grant_int(merged, "max_concurrent_hosts"),
         host_timeout_ms=_grant_int(merged, "host_timeout_ms"),
         job_timeout_seconds=_grant_int(merged, "job_timeout_seconds"),
-        tcp_ports=sorted(discovery_service.granted_tcp_ports(merged)),
+        tcp_ports=sorted(discovery_admission.granted_tcp_ports(merged)),
     )
 
 
@@ -1357,8 +1357,8 @@ async def _agent_discovery_read(db: Session, agent_id: int) -> AgentDiscoveryRea
         agent_id=agent_id,
         online=await agent_registry.is_agent_online(agent_id),
         granted=bool((grant or {}).get("enabled")),
-        paused=bool(config.get(discovery_service.AGENT_DISCOVERY_PAUSE_KEY) is True),
-        globally_paused=discovery_service.global_agent_discovery_paused(db),
+        paused=bool(config.get(discovery_admission.AGENT_DISCOVERY_PAUSE_KEY) is True),
+        globally_paused=discovery_admission.global_agent_discovery_paused(db),
         eligible=decision.ok,
         reason=decision.reason,
         detail=decision.detail,
@@ -1391,7 +1391,7 @@ async def get_agent_discovery(
 def _discovery_pause_flag(db: Session, agent_id: int) -> bool:
     """The agent's `auto_discovery_paused` hold as the scheduler reads it.
 
-    `is True` and not truthiness, matching `discovery_service.paused_agent_ids`:
+    `is True` and not truthiness, matching `discovery_admission.paused_agent_ids`:
     the normalizer stores a real boolean (Task 3), and agreeing with the reader
     that actually withholds the crons is what makes a "did this change?"
     comparison here mean the same thing as "does the schedule change?".
@@ -1403,7 +1403,7 @@ def _discovery_pause_flag(db: Session, agent_id: int) -> bool:
         discovery_eligibility.CAPABILITY
     )
     config = (grant or {}).get("config") or {}
-    return config.get(discovery_service.AGENT_DISCOVERY_PAUSE_KEY) is True
+    return config.get(discovery_admission.AGENT_DISCOVERY_PAUSE_KEY) is True
 
 
 async def _set_agent_discovery_pause(
@@ -1413,7 +1413,7 @@ async def _set_agent_discovery_pause(
 
     A grant write rather than a column of its own because that is already the
     per-agent settings store the UI edits, the registry normalizes and
-    `capabilities.set` carries — and because `discovery_service.paused_agent_ids`,
+    `capabilities.set` carries — and because `discovery_admission.paused_agent_ids`,
     which is what actually withholds the crons, reads it there.
 
     Three things this is deliberately **not**:
@@ -1442,7 +1442,7 @@ async def _set_agent_discovery_pause(
         {
             discovery_eligibility.CAPABILITY: {
                 "enabled": enabled,
-                "config": {discovery_service.AGENT_DISCOVERY_PAUSE_KEY: paused},
+                "config": {discovery_admission.AGENT_DISCOVERY_PAUSE_KEY: paused},
             }
         },
         actor_user_id=actor_user_id,
@@ -1907,10 +1907,10 @@ async def put_capabilities(
     # same hold `POST /{id}/discovery/pause` writes — and a hold has to be
     # effective when it is written, whichever route wrote it. The flag is read
     # once per `reload_discovery_jobs`, by
-    # `discovery_service.profiles_due_for_scheduling`. A write that did not
+    # `discovery_admission.profiles_due_for_scheduling`. A write that did not
     # rebuild the schedule would be accepted, reported back as paused, and leave
     # `next_scheduled` advertising runs that
-    # `discovery_service.profile_scheduling_held` would refuse at fire time — the
+    # `discovery_admission.profile_scheduling_held` would refuse at fire time — the
     # second line of the gate, not a substitute for this one. Read before the
     # write, like
     # `was_discovering` above: `set_capability_grants` merges the new config over

@@ -67,7 +67,12 @@ from app.core.job_lock import run_with_advisory_lock
 from app.core.time import utcnow
 from app.db.models import ScanJob
 from app.db.session import SessionLocal
-from app.services import agent_discovery, agent_registry, discovery_scheduler, discovery_service
+from app.services import (
+    agent_discovery,
+    agent_registry,
+    discovery_dispatch,
+    discovery_scheduler,
+)
 from app.services.settings_service import get_or_create_settings
 
 _logger = logging.getLogger(__name__)
@@ -227,7 +232,7 @@ async def _expire(db: Session, job: ScanJob, error_reason: str) -> bool:
     them — which is what makes this pass idempotent without a lock, and the lock
     a defence against wasted work rather than against corruption.
     """
-    closed = await discovery_service.finalize_agent_job(
+    closed = await discovery_dispatch.finalize_agent_job(
         db, job, "failed", error_reason=error_reason, error_text=error_reason
     )
     if not closed:
@@ -338,7 +343,7 @@ async def _drain_queued_jobs(db: Session) -> tuple[int, int]:
         if slots <= 0:
             break
         if job.scan_agent_id is None:
-            discovery_service.schedule_discovery_scan_job(job.id)
+            discovery_dispatch.schedule_discovery_scan_job(job.id)
             scheduled += 1
         else:
             if job.progress_phase == agent_discovery.PHASE_WAITING_FOR_AGENT and not presence.get(
@@ -380,7 +385,7 @@ async def run_agent_discovery_reconciliation() -> None:
 
     A coroutine on purpose. `AsyncIOScheduler` runs a coroutine job on the event
     loop and a plain function in its thread pool, and this pass belongs on the
-    loop: `discovery_service.schedule_discovery_scan_job` starts the server-scan
+    loop: `discovery_dispatch.schedule_discovery_scan_job` starts the server-scan
     executor, and its first choice is `asyncio.create_task` on the calling
     thread's loop. Off the loop it no longer raises — it falls back to
     `run_coroutine_threadsafe` on `discovery_scheduler.main_loop()`, which is

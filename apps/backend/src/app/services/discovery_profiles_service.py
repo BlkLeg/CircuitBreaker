@@ -102,7 +102,7 @@ def _validate_execution_location(
 ) -> None:
     """Refuse a profile the named agent could not run (plan §3, §7 checkpoint 1).
 
-    Delegates to `discovery_service.validate_agent_execution_location`, which is
+    Delegates to `discovery_admission.validate_agent_execution_location`, which is
     also what job creation calls: plan §3 requires the *same* preconditions at
     profile save and at job creation, and two implementations of them would be
     two answers. Imported inside the function because that module is a large one
@@ -122,11 +122,11 @@ def _validate_execution_location(
     if scan_agent_id is None:
         return
 
-    from app.services.discovery_network import resolve_vlans_to_cidrs
-    from app.services.discovery_service import (
+    from app.services.discovery_admission import (
         AgentExecutionLocationError,
         validate_agent_execution_location,
     )
+    from app.services.discovery_network import resolve_vlans_to_cidrs
 
     targets, _ = resolve_vlans_to_cidrs(db, list(vlan_ids or []))
     if cidr and cidr.strip():

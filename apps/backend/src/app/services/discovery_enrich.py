@@ -20,7 +20,7 @@ This module closes that gap, under three rules that are the whole design:
   is an untrusted remote executor, and `discovery_service._auto_merge_known_devices`
   already established that its hostname is an observation and not a fact.
 
-Those three are also the answer to `discovery_service.finalize_agent_job`'s rule
+Those three are also the answer to `discovery_dispatch.finalize_agent_job`'s rule
 that an agent-authored row must not reach the inventory without review. That rule
 names its own reason — `discovery_merge._auto_merge_result` *creates* a
 `Hardware` row — and none of the three things it guards against happen here.

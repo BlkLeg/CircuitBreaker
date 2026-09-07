@@ -19,7 +19,7 @@ _logger = logging.getLogger(__name__)
 def register_discovery_profile_crons(scheduler: "BaseScheduler", db: "Session") -> None:
     """Give every discovery profile that is due one a cron, at process start.
 
-    Which profiles those are is `discovery_service.profiles_due_for_scheduling`'s
+    Which profiles those are is `discovery_admission.profiles_due_for_scheduling`'s
     answer and nothing else's. That function is where Slice 4 plan §3/§6's three
     pause scopes are read — the fleet-wide `app_settings.agent_discovery_paused`,
     the per-agent `local_discovery.auto_discovery_paused` grant key, and the
@@ -44,9 +44,9 @@ def register_discovery_profile_crons(scheduler: "BaseScheduler", db: "Session") 
     from apscheduler.triggers.cron import CronTrigger
 
     from app.core.scheduler import DISCOVERY_PROFILE_MISFIRE_GRACE_S
-    from app.services import discovery_service
+    from app.services import discovery_admission, discovery_service
 
-    for profile in discovery_service.profiles_due_for_scheduling(db):
+    for profile in discovery_admission.profiles_due_for_scheduling(db):
         try:
             trigger = CronTrigger.from_crontab(profile.schedule_cron)
             scheduler.add_job(

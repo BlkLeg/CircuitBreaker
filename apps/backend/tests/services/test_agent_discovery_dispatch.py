@@ -46,6 +46,8 @@ from app.schemas.agent_frame import (
 from app.services import (
     agent_discovery,
     agent_registry,
+    discovery_admission,
+    discovery_dispatch,
     discovery_eligibility,
     discovery_scheduler,
     discovery_service,
@@ -157,7 +159,7 @@ def test_creating_an_agent_job_persists_the_execution_location(db_session, facto
     )
 
     assert job.scan_agent_id == agent.id
-    assert job.source_type == discovery_service.SOURCE_TYPE_AGENT
+    assert job.source_type == discovery_admission.SOURCE_TYPE_AGENT
     # D-17: tenant is derived from the agent, never accepted from a request.
     assert job.tenant_id == agent.tenant_id
     assert job.tenant_id is not None
@@ -172,7 +174,7 @@ def test_creating_a_server_job_names_no_agent_and_keeps_its_source_type(
     job = discovery_service.create_scan_job(db_session, target_cidr=_SUBNET, scan_types=["nmap"])
 
     assert job.scan_agent_id is None
-    assert job.source_type != discovery_service.SOURCE_TYPE_AGENT
+    assert job.source_type != discovery_admission.SOURCE_TYPE_AGENT
     assert job.tenant_id is None
 
 
@@ -182,7 +184,7 @@ def test_creation_time_validation_still_runs_when_the_job_is_persisted(
     """In addition to the dispatch-time re-check, never instead of it: routing
     the job must not have quietly replaced §3's first checkpoint."""
     calls: list[int | None] = []
-    original = discovery_service.validate_agent_execution_location
+    original = discovery_admission.validate_agent_execution_location
 
     def spy(db, **kwargs):  # type: ignore[no-untyped-def]
         calls.append(kwargs.get("scan_agent_id"))
@@ -239,7 +241,7 @@ async def test_an_agent_job_routes_to_the_dispatcher_and_not_the_server_scanner(
     agent = _agent(db_session, factories)
     job = _job(db_session, agent)
 
-    await discovery_service.execute_scan_job(db_session, job.id)
+    await discovery_dispatch.execute_scan_job(db_session, job.id)
 
     assert dispatcher == [job.id]
     assert server_scanner == []
@@ -252,7 +254,7 @@ async def test_a_server_job_still_routes_to_the_server_scanner(
     agent dispatcher would pass every assertion above."""
     job = _job(db_session, _agent(db_session, factories), scan_agent_id=None, source_type="manual")
 
-    await discovery_service.execute_scan_job(db_session, job.id)
+    await discovery_dispatch.execute_scan_job(db_session, job.id)
 
     assert dispatcher == []
     assert server_scanner == ["run_scan_job"]
@@ -338,7 +340,7 @@ async def test_a_scheduled_agent_profile_produces_an_agent_job_with_no_server_ac
             ]
         assert len(jobs) == 1, jobs
         assert jobs[0].scan_agent_id == agent_id
-        assert jobs[0].source_type == discovery_service.SOURCE_TYPE_AGENT
+        assert jobs[0].source_type == discovery_admission.SOURCE_TYPE_AGENT
         assert dispatcher == [jobs[0].id]
         assert server_scanner == []
 
@@ -604,7 +606,7 @@ async def test_a_port_the_grant_no_longer_allows_fails_the_job_at_dispatch(
     db_session.refresh(job)
     assert job.status == "failed"
     assert job.error_reason == agent_discovery.ERROR_DISPATCH_FAILED
-    assert discovery_service.REASON_PORT_NOT_GRANTED in (job.error_text or "")
+    assert discovery_admission.REASON_PORT_NOT_GRANTED in (job.error_text or "")
     assert published == []
 
 
@@ -624,7 +626,7 @@ async def test_a_target_over_the_live_address_ceiling_fails_the_job_at_dispatch(
     db_session.refresh(job)
     assert job.status == "failed"
     assert job.error_reason == agent_discovery.ERROR_DISPATCH_FAILED
-    assert discovery_service.REASON_ADDRESS_LIMIT in (job.error_text or "")
+    assert discovery_admission.REASON_ADDRESS_LIMIT in (job.error_text or "")
     assert published == []
 
 
