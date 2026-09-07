@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import { graphApi } from '../api/client';
 import {
   NODE_STYLES,
@@ -78,6 +78,9 @@ export function useMapDataLoad({
   getLayoutName,
   toast,
 }) {
+  // Monotonic id for the newest in-flight topology request; see fetchData.
+  const requestGenerationRef = useRef(0);
+
   const getIncludeCSV = useCallback((types) => {
     const MAP = new Map([
       ['hardware', 'hardware'],
@@ -165,6 +168,15 @@ export function useMapDataLoad({
   );
 
   const fetchData = useCallback(async () => {
+    // Request-generation guard. Changing map, environment, included types or
+    // Cloud View re-issues this fetch, and the responses are not ordered: a
+    // slower earlier request could otherwise resolve last and overwrite the
+    // canvas with stale topology. Every await below is followed by a staleness
+    // check, so only the newest in-flight request may touch state.
+    const generation = requestGenerationRef.current + 1;
+    requestGenerationRef.current = generation;
+    const isStale = () => requestGenerationRef.current !== generation;
+
     setLoading(true);
     setError(null);
     try {
@@ -174,6 +186,7 @@ export function useMapDataLoad({
         include: includeCSV,
         ...(mapId != null && { map_id: mapId }),
       });
+      if (isStale()) return;
 
       const rawN = res.data.nodes.map((n) => {
         const nodeShell = {
@@ -343,6 +356,7 @@ export function useMapDataLoad({
       } catch (err) {
         console.error('Layout parse/fetch failed:', err);
       }
+      if (isStale()) return;
 
       setEdgeMode(savedEdgeMode || 'smoothstep');
       setEdgeLabelVisible(savedEdgeLabelVisible ?? true);
@@ -465,9 +479,9 @@ export function useMapDataLoad({
         }
       }, 50);
     } catch (err) {
-      setError(err.message || 'Failed to load topology');
+      if (!isStale()) setError(err.message || 'Failed to load topology');
     } finally {
-      setLoading(false);
+      if (!isStale()) setLoading(false);
     }
   }, [
     mapId,
