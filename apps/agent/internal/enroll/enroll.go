@@ -75,12 +75,29 @@ func clearEnrollToken(path string) {
 	}
 }
 
+// ErrRejected and ErrRevoked are the sentinels for Run's two authoritative
+// refusal outcomes — an operator explicitly declining or revoking this
+// device, as opposed to any of the ordinary transient failures above (a dial
+// error, a stalled handshake, a closed connection). Exported, unlike the
+// generic errors.New this package used to return here, so a caller retrying
+// Run (cmd/cb-agent's retryEnroll) can tell "the operator said no" apart from
+// "the network is having a bad day" with errors.Is and answer each
+// differently — see retryEnroll's doc comment.
+var (
+	ErrRejected = errors.New("enroll: enrollment was rejected")
+	ErrRevoked  = errors.New("enroll: agent was revoked")
+)
+
 // Run takes trust as a resolved tlsdial.Trust rather than resolving it
 // itself: internal/link already imports internal/enroll for DeviceKey, so
 // enroll importing internal/link back (to call link.ResolveTrust) would be
 // an import cycle. cmd/cb-agent/main.go resolves it once via
 // link.ResolveTrust(cfg, config.StateDir()) and passes the result in.
-func Run(cfg *config.Config, key *DeviceKey, agentVersion string, trust tlsdial.Trust) error {
+//
+// stateDir is where MarkEnrolled writes its durable marker once the server
+// confirms "active" — see that function's doc comment for why runDaemon
+// needs it and why it is written only here, only after that confirmation.
+func Run(cfg *config.Config, key *DeviceKey, agentVersion string, trust tlsdial.Trust, stateDir string) error {
 	remotePub, err := hex.DecodeString(cfg.ServerStaticPK)
 	if err != nil || len(remotePub) != 32 {
 		return fmt.Errorf("enroll: invalid server_static_pk in config: %w", err)
@@ -191,12 +208,22 @@ func Run(cfg *config.Config, key *DeviceKey, agentVersion string, trust tlsdial.
 			if token != "" {
 				clearEnrollToken(enrollTokenPath)
 			}
+			// Written after "active", never before: a marker written on
+			// speculation would let a later restart skip Run for a device the
+			// server never actually confirmed. A failure to persist it is
+			// logged rather than turned into an error — the enrollment itself
+			// already succeeded, and failing it now over a marker write would
+			// turn a cosmetic problem (one extra Run call on the next restart)
+			// into an outage.
+			if err := MarkEnrolled(stateDir); err != nil {
+				log.Printf("enroll: %v", err)
+			}
 			fmt.Println("approved — connecting")
 			return nil
 		case "rejected":
-			return errors.New("enroll: enrollment was rejected")
+			return ErrRejected
 		case "revoked":
-			return errors.New("enroll: agent was revoked")
+			return ErrRevoked
 		}
 	}
 }

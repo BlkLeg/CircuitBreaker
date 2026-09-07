@@ -156,8 +156,11 @@ func TestRun_PrintsPairingCodeAndReturnsOnActive(t *testing.T) {
 	}
 
 	cfg := &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])}
-	if err := Run(cfg, key, "0.1.0-test", tlsdial.Trust{Mode: tlsdial.ModePublic}); err != nil {
+	if err := Run(cfg, key, "0.1.0-test", tlsdial.Trust{Mode: tlsdial.ModePublic}, dir); err != nil {
 		t.Fatalf("Run() error = %v, want nil (status=active)", err)
+	}
+	if !IsEnrolled(dir) {
+		t.Fatal("IsEnrolled() = false after Run returned nil on status=active")
 	}
 }
 
@@ -198,14 +201,15 @@ func TestRun_StalledServerDoesNotBlockForever(t *testing.T) {
 	srv := upgradeAndStall(t)
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
 
-	key, err := LoadOrCreateDeviceKey(t.TempDir())
+	dir := t.TempDir()
+	key, err := LoadOrCreateDeviceKey(dir)
 	if err != nil {
 		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
 	}
 	cfg := &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])}
 
 	done := make(chan error, 1)
-	go func() { done <- Run(cfg, key, "0.1.0-test", tlsdial.Trust{Mode: tlsdial.ModePublic}) }()
+	go func() { done <- Run(cfg, key, "0.1.0-test", tlsdial.Trust{Mode: tlsdial.ModePublic}, dir) }()
 
 	select {
 	case err := <-done:
@@ -274,13 +278,14 @@ func TestRun_ApprovalMayTakeLongerThanTheHandshakeDeadline(t *testing.T) {
 	defer srv.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
-	key, err := LoadOrCreateDeviceKey(t.TempDir())
+	dir := t.TempDir()
+	key, err := LoadOrCreateDeviceKey(dir)
 	if err != nil {
 		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
 	}
 	cfg := &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])}
 
-	if err := Run(cfg, key, "0.1.0-test", tlsdial.Trust{Mode: tlsdial.ModePublic}); err != nil {
+	if err := Run(cfg, key, "0.1.0-test", tlsdial.Trust{Mode: tlsdial.ModePublic}, dir); err != nil {
 		t.Fatalf("Run() error = %v, want nil — a slow approval is not a timeout", err)
 	}
 }

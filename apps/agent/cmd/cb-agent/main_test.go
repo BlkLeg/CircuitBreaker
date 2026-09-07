@@ -3216,3 +3216,265 @@ func TestConfigureLogging_RejectsAnUnknownLevel(t *testing.T) {
 		t.Errorf("error %q does not name the offending value", err)
 	}
 }
+
+// ── Task 2: the agent must survive a server outage at startup ──────────────
+//
+// runDaemon used to call enroll.Run synchronously and os.Exit(1) on any
+// failure, so an agent that restarted while the server was down — or that
+// was enrolling for the very first time against one that simply was not up
+// yet — died immediately and crash-looped under systemd's or Docker's
+// restart policy, collecting and spooling nothing for as long as the outage
+// lasted. shouldEnroll and retryEnroll below are what replace that.
+
+func TestShouldEnroll_TrueWithoutAMarkerFalseWithOne(t *testing.T) {
+	dir := t.TempDir()
+	if !shouldEnroll(dir) {
+		t.Fatal("shouldEnroll() = false with no marker, want true")
+	}
+	if err := enroll.MarkEnrolled(dir); err != nil {
+		t.Fatalf("MarkEnrolled() error = %v", err)
+	}
+	if shouldEnroll(dir) {
+		t.Fatal("shouldEnroll() = true with the marker present, want false")
+	}
+}
+
+func TestRetryEnroll_UnreachableServerRetriesInsteadOfExitingAndStopsOnCancellation(t *testing.T) {
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+	// Port 1 is privileged and nothing in this test environment listens on
+	// it, so every dial fails immediately — exactly the "server is down"
+	// case this loop exists for.
+	cfg := &config.Config{ServerURL: "ws://127.0.0.1:1", ServerStaticPK: strings.Repeat("ab", 32)}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- retryEnroll(ctx, cfg, key, "0.1.0-test", dir) }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("retryEnroll() returned %v after the first failure, want it to keep retrying", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("retryEnroll() error = nil after context cancellation, want ctx.Err()")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("retryEnroll() did not return within 5s of context cancellation")
+	}
+
+	if enroll.IsEnrolled(dir) {
+		t.Fatal("IsEnrolled() = true after every attempt failed against an unreachable server")
+	}
+}
+
+// newEnrollRefusalServer stands in for the backend's enrollment endpoint just
+// long enough to complete the Noise handshake, read (and discard) the
+// agent's hello, and answer with one hello.ack-shaped frame carrying the
+// given status — "rejected" or "revoked", enroll.Run's two authoritative
+// refusal outcomes.
+func newEnrollRefusalServer(t *testing.T, statusValue string) (wsURL, serverPubHex string) {
+	t.Helper()
+	serverPriv, serverPub := generateDaemonTestKeypair(t)
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		responder := newDaemonTestResponder(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.readHandshakeMessage(msg1)
+		if err != nil {
+			return
+		}
+		if err := conn.WriteMessage(websocket.BinaryMessage, msg2); err != nil {
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil { // the hello frame, discarded
+			return
+		}
+
+		final := map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"agent_id": 1, "status": statusValue},
+		}
+		finalBytes, err := json.Marshal(final)
+		if err != nil {
+			t.Errorf("marshal final status: %v", err)
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, responder.encrypt(finalBytes))
+	}))
+	t.Cleanup(srv.Close)
+	return "ws" + strings.TrimPrefix(srv.URL, "http"), hex.EncodeToString(serverPub[:])
+}
+
+func TestRetryEnroll_RejectedWritesStatusAndKeepsRetryingRatherThanExiting(t *testing.T) {
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+	wsURL, serverPubHex := newEnrollRefusalServer(t, "rejected")
+	cfg := &config.Config{ServerURL: wsURL, ServerStaticPK: serverPubHex}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- retryEnroll(ctx, cfg, key, "0.1.0-test", dir) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		st, ok, err := status.Read(dir)
+		if err != nil {
+			t.Fatalf("status.Read() error = %v", err)
+		}
+		if ok && st.LinkState == status.LinkRejected {
+			if st.LastError != "rejected" {
+				t.Errorf("LastError = %q, want %q", st.LastError, "rejected")
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("status.json never recorded the rejection within 5s")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	select {
+	case err := <-done:
+		t.Fatalf("retryEnroll() returned %v after one rejection, want it to keep retrying on the slow schedule", err)
+	default:
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("retryEnroll() error = nil after context cancellation, want ctx.Err()")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("retryEnroll() did not return within 5s of context cancellation")
+	}
+
+	if enroll.IsEnrolled(dir) {
+		t.Fatal("IsEnrolled() = true after a rejected enrollment")
+	}
+}
+
+func TestRetryEnroll_RevokedWritesStatusAndKeepsRetrying(t *testing.T) {
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+	wsURL, serverPubHex := newEnrollRefusalServer(t, "revoked")
+	cfg := &config.Config{ServerURL: wsURL, ServerStaticPK: serverPubHex}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- retryEnroll(ctx, cfg, key, "0.1.0-test", dir) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		st, ok, err := status.Read(dir)
+		if err != nil {
+			t.Fatalf("status.Read() error = %v", err)
+		}
+		if ok && st.LinkState == status.LinkRejected && st.LastError == "revoked" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("status.json never recorded the revocation within 5s")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("retryEnroll() error = nil after context cancellation, want ctx.Err()")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("retryEnroll() did not return within 5s of context cancellation")
+	}
+}
+
+func TestRetryEnroll_SucceedsOnceTheServerAccepts(t *testing.T) {
+	// The upgrade path: an agent with no marker yet — this build's first run
+	// after upgrading from one that predates enroll.MarkEnrolled — must still
+	// reach an ordinary "active" outcome through retryEnroll, exactly as the
+	// direct Run call runDaemon used to make.
+	serverPriv, serverPub := generateDaemonTestKeypair(t)
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		responder := newDaemonTestResponder(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.readHandshakeMessage(msg1)
+		if err != nil {
+			return
+		}
+		if err := conn.WriteMessage(websocket.BinaryMessage, msg2); err != nil {
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		final := map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"agent_id": 1, "status": "active"},
+		}
+		finalBytes, _ := json.Marshal(final)
+		conn.WriteMessage(websocket.BinaryMessage, responder.encrypt(finalBytes))
+	}))
+	t.Cleanup(srv.Close)
+
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+	cfg := &config.Config{
+		ServerURL:      "ws" + strings.TrimPrefix(srv.URL, "http"),
+		ServerStaticPK: hex.EncodeToString(serverPub[:]),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- retryEnroll(ctx, cfg, key, "0.1.0-test", dir) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("retryEnroll() error = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("retryEnroll() did not return within 5s against a server that accepts immediately")
+	}
+	if !enroll.IsEnrolled(dir) {
+		t.Fatal("IsEnrolled() = false after retryEnroll succeeded")
+	}
+}
