@@ -254,6 +254,17 @@
       "compensating_control": "The allowlist matches the literal rather than a path, so a real vault key in any of the restore tests still fails the gate, and the next test asserting the same round-trip is covered without widening the suppression to another directory.",
       "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
+    },
+    {
+      "id": "GITLEAKS-CONFIG-011",
+      "tool": "gitleaks-config",
+      "selector": "superdesign-content-hash-manifest",
+      "owner": "security-owner",
+      "reviewer": "release-owner",
+      "reason": "The design tool rewrites .superdesign/resume.json on every session, mapping each source file it read to the SHA-256 of that file's contents. generic-api-key reads a quoted 64-hex value beside a quoted label as a credential, so a session that touched only CSS turned the gate red on state holding no secret. A digest of a tracked source file discloses nothing: anyone who can read the manifest can read the file and recompute it.",
+      "compensating_control": "The allowlist matches the manifest's line shape -- a quoted source path with a file extension, a colon, a quoted 64-hex digest -- rather than allowlisting the path. A path entry would have been strictly worse than it looks: gitleaks drops a path-allowlisted file before applying any rule, so it would have silently stopped the cbe_ enrollment-token rule from firing inside that file. Verified against gitleaks 8.30.1 that a token planted in resume.json is still found under this entry, and that the same digest written as CB_VAULT_KEY = \"<hex>\" is still a finding. tests/build/test_superdesign_hash_manifest_allowlist.py fails if a paths key ever returns, if regexTarget stops being \"line\", or if the regex starts matching a credential assignment.",
+      "expiry": "2026-11-13",
+      "requirements": ["SEC-18", "RC-08"]
     }
   ]
 }

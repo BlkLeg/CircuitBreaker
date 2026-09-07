@@ -127,3 +127,33 @@ regexes = ['MIIBVgIBADAN']
 id = "test-vault-key-literal"
 description = "base64 of the ASCII string \"test-vault-key\", a stub-snapshot fixture for restore.sh round-trip assertions"
 regexes = ['dGVzdC12YXVsdC1rZXk=']
+
+# The design tool (.superdesign) keeps a resume manifest mapping each source
+# file it has read to the SHA-256 of that file's contents. generic-api-key
+# scores those digests as credentials, so a design session that touched nothing
+# but CSS turned the secret gate red on state holding no secret at all.
+#
+# Matched on the LINE, and deliberately without a `paths` key. A global
+# allowlist with `paths` does not narrow a scan, it removes the file from it:
+# gitleaks drops a path-allowlisted file before applying any rule, so pairing
+# `paths` with `regexes` -- with or without matchCondition = "AND" -- would
+# quietly stop the cbe_ rule above from ever firing inside resume.json.
+# Verified against gitleaks 8.30.1: a planted enrollment token in that file is
+# found by this config and vanishes under every `paths` variant.
+#
+# What is excused is therefore a shape, not a file and not a value: a quoted
+# source path carrying an extension, a colon, and a quoted 64-hex digest. The
+# same digest written as `CB_VAULT_KEY = "<hex>"` is a different shape and is
+# still a finding -- in resume.json as anywhere else. Matching the secret alone
+# would have allowlisted every bare 64-hex string in the repo, which is exactly
+# what a hex-encoded key looks like.
+#
+# tests/build/test_superdesign_hash_manifest_allowlist.py holds this to all
+# three properties: it covers what the manifest really contains, it refuses
+# credential shapes carrying an identical value, and it fails if `paths` ever
+# comes back.
+[[allowlists]]
+id = "superdesign-content-hash-manifest"
+description = "Design-tool content hashes are file digests, not credentials"
+regexTarget = "line"
+regexes = ['"[^"]+\.(?:jsx|js|ts|tsx|css|md|json|html)": "[a-f0-9]{64}"']
