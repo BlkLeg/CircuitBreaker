@@ -297,7 +297,7 @@ nav-wedge: ## Opt-in Chromium navigation wedge-rate run (NAV_WEDGE_REPEATS defau
 
 # This target is NOT `scripts/ci/tier0-static.sh`, and that is deliberate
 # rather than an oversight: lint-staged (root package.json) runs `make lint`
-# on every commit that touches a staged .ts/.tsx/.py file, so it has to stay
+# on every commit that touches a staged .js/.jsx/.py file, so it has to stay
 # ruff+mypy+eslint fast. tier0-static.sh is the definition of record for the
 # full Tier 0 gate (ADR 0005) — it also runs the Alembic single-head check,
 # the tests/build repo-policy suite and the release-control ledger validator,
