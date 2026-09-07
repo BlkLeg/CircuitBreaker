@@ -39,6 +39,10 @@ const BASE = {
   capabilities: { host_telemetry: { enabled: true, config: { interval_s: 30 } } },
   latest: { collected_at: RECENT(), cpu_pct: 12, mem_pct: 30 },
   spool_depth: 0,
+  // With no report time the row reads the backlog as unknown rather than as
+  // drained, which is a different row from the healthy one these cases are
+  // about. Phase 4's own cases live in fleet-row.test.jsx.
+  spool_reported_at: RECENT(),
 };
 
 const renderRow = (agent, props = {}) =>

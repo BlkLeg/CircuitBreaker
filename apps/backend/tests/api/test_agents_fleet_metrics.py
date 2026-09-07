@@ -324,6 +324,53 @@ async def test_presence_carries_the_spool_backlog_with_null_distinct_from_zero(
     assert silent_row["spool_reported_at"] is None
 
 
+@pytest.mark.asyncio
+async def test_presence_marks_a_backlog_reading_stale_once_it_stops_being_current(
+    client, factories, viewer_headers, monkeypatch
+):
+    """The fleet table must never state a frozen number as a measurement.
+
+    An agent reports its spool only while connected, so the row keeps its
+    pre-outage value for the entire outage. Observed live: an agent offline for
+    hours with 1,195 undelivered frames on disk, rendered by the table as
+    "no backlog" because the stored depth was 0. `spool_stale` is what lets the
+    row say "unknown" instead, and it is computed here rather than in the
+    browser so the answer does not depend on the viewer's clock.
+    """
+    _offline_redis(monkeypatch)
+    fresh = factories.agent(
+        status="active",
+        spool_depth=42,
+        spool_bytes=8192,
+        spool_reported_at=utcnow() - timedelta(seconds=20),
+    )
+    # The observed shape: a stored 0 that nobody has been able to refresh.
+    frozen_zero = factories.agent(
+        status="active",
+        spool_depth=0,
+        spool_bytes=0,
+        spool_reported_at=utcnow() - timedelta(hours=3),
+    )
+    never_reported = factories.agent(status="active")
+
+    resp = await client.get("/api/v1/agents/presence", headers=viewer_headers)
+
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert _row_for(body, fresh)["spool_stale"] is False
+    assert _row_for(body, frozen_zero)["spool_stale"] is True
+    # The depth itself is still shipped: the last known value is information,
+    # and it is the pairing with `spool_stale` — not withholding it — that
+    # stops it reading as current.
+    assert _row_for(body, frozen_zero)["spool_depth"] == 0
+
+    # Never reported has no reading for freshness to be a property of. The row
+    # renders nothing for it (`spool_depth is None`), so this only has to not
+    # claim the absent number is current.
+    assert _row_for(body, never_reported)["spool_stale"] is True
+
+
 # ── `GET /agents/metrics/series` — bucketing, cap and scope ──────────────────
 
 

@@ -8,6 +8,7 @@ import {
   CloudOff,
   Database,
   Download,
+  EyeOff,
   FileX2,
   HelpCircle,
   Hourglass,
@@ -49,6 +50,7 @@ const ICONS = new Map([
   ['CloudOff', CloudOff],
   ['Database', Database],
   ['Download', Download],
+  ['EyeOff', EyeOff],
   ['FileX2', FileX2],
   ['HelpCircle', HelpCircle],
   ['Hourglass', Hourglass],
@@ -71,6 +73,19 @@ export function stateDetailText(state) {
   }
   if (state.code === 'spool_pressure' && Number.isFinite(detail.depth)) {
     return `${detail.depth} samples are buffered on the agent.`;
+  }
+  if (state.code === 'spool_unknown') {
+    // Deliberately never a bare number. The last known depth is stated as what
+    // it is — a value from a named moment in the past — and a last-known 0 is
+    // spelled out rather than dropped, because "it was 0 when we last heard"
+    // is the exact reading that used to render as "no backlog".
+    const when = detail.reportedAt
+      ? ` on ${new Date(detail.reportedAt).toLocaleString()}`
+      : ' the last time it connected';
+    if (Number.isFinite(detail.lastKnownDepth)) {
+      return `It last reported ${detail.lastKnownDepth} buffered${when}.`;
+    }
+    return `Nothing has been reported${when}.`;
   }
   if (state.code === 'spool_evicted' && Number.isFinite(detail.frames)) {
     // Named window when the agent reported one, bare count otherwise: an

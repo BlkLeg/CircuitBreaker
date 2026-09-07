@@ -94,6 +94,24 @@ DEVICE_KEY_ROTATION_WINDOW_SECONDS = 15 * 60
 # `start_device_key_rotation` without going through that schema layer.
 _HEX_PK_RE = re.compile(r"^[0-9a-f]{64}$")
 
+# Presence cadence, and the throttle that keeps a 20s-per-agent heartbeat from
+# becoming a 20s-per-agent row UPDATE. They live up here with the other module
+# constants rather than beside the presence helpers that use them because
+# `record_spool_stats` reads the throttle too: the spool column is refreshed on
+# exactly this interval, which is what lets `spool_reading_is_stale` below
+# treat it as "when the agent last told us its backlog".
+_PRESENCE_TTL_SECONDS = 60
+_LAST_SEEN_WRITE_THROTTLE_SECONDS = 60
+
+# How old a reported backlog may be before it stops being a measurement of
+# *now*: the 20s heartbeat, plus the 60s write throttle above, plus slack.
+#
+# Deliberately larger than `_PRESENCE_TTL_SECONDS` rather than equal to it. A
+# reading can be stale while presence is still live, and collapsing the two
+# would make "connected" imply "current" — which is the assumption that let an
+# agent with 1,195 frames on disk render as `spool_depth = 0`.
+_SPOOL_FRESH_SECONDS = 120
+
 
 def create_pending_agent(db: Session, **fields: Any) -> Agent:
     agent = Agent(status="pending", **fields)
@@ -343,9 +361,19 @@ def record_spool_stats(agent: Agent, depth: int, size_bytes: int | None = None) 
     arrive every 20 seconds per connected agent and the steady state is
     "depth 0, unchanged", so writing unconditionally would issue one row
     UPDATE per agent per 20s forever — a fleet-wide write storm carrying no
-    new information. `spool_reported_at` is therefore "when the reported
-    backlog last *changed*", not "when an agent last mentioned its spool";
-    liveness already has `last_seen_at` and Redis presence.
+    new information. That protection is why an unchanged report is throttled
+    rather than simply written: at most one row update per agent per
+    `_LAST_SEEN_WRITE_THROTTLE_SECONDS`, the same ceiling
+    `refresh_presence_heartbeat` already applies to `last_seen_at`.
+
+    `spool_reported_at` therefore means "when the agent last told us its
+    backlog", not "when the reported backlog last changed". The difference is
+    the whole point: freshness has to be derivable from this column (see
+    `spool_reading_is_stale`), and under the change-only rule a connected
+    agent sitting at a steady depth stopped refreshing it, so a perfectly
+    current reading was indistinguishable from one frozen by an outage. Rows
+    written by the older code carry an older timestamp and read as stale,
+    which is the correct answer for them.
 
     Callers gate this on `"spool_depth" in payload.model_fields_set`, never
     on the value: an agent that predates spool reporting sends an empty
@@ -357,13 +385,54 @@ def record_spool_stats(agent: Agent, depth: int, size_bytes: int | None = None) 
     changed = agent.spool_depth != depth
     if size_bytes is not None and agent.spool_bytes != size_bytes:
         changed = True
-    if not changed:
+    now = utcnow()
+    if not changed and not _spool_report_is_due(agent, now):
         return False
     agent.spool_depth = depth
     if size_bytes is not None:
         agent.spool_bytes = size_bytes
-    agent.spool_reported_at = utcnow()
+    agent.spool_reported_at = now
     return True
+
+
+def _spool_report_is_due(agent: Agent, now: datetime) -> bool:
+    """Whether an *unchanged* spool report is old enough to be worth re-stamping.
+
+    A NULL timestamp is due by definition: the row has a depth recorded with no
+    record of when, which is the one shape `spool_reading_is_stale` cannot tell
+    apart from a genuinely old reading.
+    """
+    reported_at = agent.spool_reported_at
+    if reported_at is None:
+        return True
+    return (now - reported_at).total_seconds() >= _LAST_SEEN_WRITE_THROTTLE_SECONDS
+
+
+def spool_reading_is_stale(agent: Agent) -> bool:
+    """Whether this agent's stored backlog is too old to be stated as current.
+
+    An agent reports its spool only while it is connected — on `hello`, then on
+    each heartbeat. So `spool_depth` freezes at its last value the moment the
+    link drops and stays there for the whole outage, which is precisely the
+    stretch during which the real backlog is growing. Rendering that frozen
+    number is a claim this server cannot support: an agent offline for hours
+    with 1,195 undelivered frames on disk read as `spool_depth = 0`, and a UI
+    showed it as "no backlog" — no information at all, displayed as if it were
+    a measurement.
+
+    A row that has never been reported (`spool_reported_at IS NULL`) is stale
+    for the same reason: there is no reading for freshness to be a property of.
+    Callers that must distinguish "unknown backlog" from "this agent predates
+    spool reporting" read `spool_depth IS NULL` for the second, exactly as they
+    already do.
+
+    Computed on the server rather than in the browser on purpose: whether a
+    number is current must not depend on the viewer's clock.
+    """
+    reported_at = agent.spool_reported_at
+    if reported_at is None:
+        return True
+    return (utcnow() - reported_at).total_seconds() > _SPOOL_FRESH_SECONDS
 
 
 # The two `agent_events` types `record_spool_evictions` writes. They are
@@ -1473,10 +1542,6 @@ def record_event(
             severity="info",
         )
     return event
-
-
-_PRESENCE_TTL_SECONDS = 60
-_LAST_SEEN_WRITE_THROTTLE_SECONDS = 60
 
 
 def _presence_key(agent_id: int) -> str:

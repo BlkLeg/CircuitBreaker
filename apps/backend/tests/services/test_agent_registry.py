@@ -1,11 +1,12 @@
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import event
 
+from app.core.time import utcnow
 from app.services import agent_registry as svc
 
 # The registry default (`CAPABILITY_DEFINITIONS["remote_probe"]`), spelled out
@@ -567,10 +568,14 @@ def test_record_spool_stats_records_an_explicit_zero_backlog(db_session, factori
     assert agent.spool_bytes == 0
 
 
-def test_unchanged_spool_stats_do_not_rewrite_the_row(db_session, factories):
+def test_unchanged_spool_stats_do_not_rewrite_the_row_inside_the_throttle_window(
+    db_session, factories
+):
     """Heartbeats arrive every 20s per agent, and the steady state is
     "depth 0, unchanged". Re-stamping the row on every one of them would be
-    a fleet-wide UPDATE storm for no new information."""
+    a fleet-wide UPDATE storm for no new information — so an unchanged report
+    inside `_LAST_SEEN_WRITE_THROTTLE_SECONDS` is still a no-op. (The test
+    below covers the other side: once that window passes, it writes.)"""
     agent = factories.agent(status="active")
     assert svc.record_spool_stats(agent, 0, 0) is True
     db_session.commit()
@@ -582,6 +587,71 @@ def test_unchanged_spool_stats_do_not_rewrite_the_row(db_session, factories):
     assert agent.spool_reported_at == first_reported_at
     assert agent.spool_depth == 0
     assert agent.spool_bytes == 0
+
+
+def test_unchanged_spool_stats_are_re_stamped_once_the_throttle_window_passes(
+    db_session, factories
+):
+    """The write storm is what the no-op protects against, not the timestamp.
+
+    Under the old change-only rule a connected agent sitting at a steady depth
+    stopped refreshing `spool_reported_at` entirely, so a perfectly current
+    reading and one frozen by a two-hour outage were the same row. Freshness
+    has to be derivable from this column, so an unchanged report still writes —
+    once per throttle window, which keeps the ceiling at one row update per
+    agent per minute rather than one per 20s heartbeat.
+    """
+    agent = factories.agent(status="active")
+    assert svc.record_spool_stats(agent, 0, 0) is True
+    stale_stamp = utcnow() - timedelta(seconds=svc._LAST_SEEN_WRITE_THROTTLE_SECONDS + 1)
+    agent.spool_reported_at = stale_stamp
+    db_session.commit()
+
+    wrote = svc.record_spool_stats(agent, 0, 0)
+
+    assert wrote is True
+    assert agent.spool_reported_at > stale_stamp
+    # …and nothing about the reading itself was invented in the process.
+    assert agent.spool_depth == 0
+    assert agent.spool_bytes == 0
+
+
+def test_spool_reading_is_stale_only_past_the_freshness_window(db_session, factories, monkeypatch):
+    """Both boundaries, because the whole point of the field is that the answer
+    flips from "this is the backlog" to "we do not know" at a defined age.
+
+    `utcnow` is pinned rather than compared against a live clock: at exactly
+    the boundary the microseconds the call itself takes are the difference
+    between the two answers, and a test that flips on scheduling noise proves
+    nothing about the rule.
+    """
+    agent = factories.agent(status="active")
+    now = utcnow()
+    monkeypatch.setattr(svc, "utcnow", lambda: now)
+
+    agent.spool_reported_at = now - timedelta(seconds=svc._SPOOL_FRESH_SECONDS)
+    assert svc.spool_reading_is_stale(agent) is False
+
+    agent.spool_reported_at = now - timedelta(seconds=svc._SPOOL_FRESH_SECONDS + 1)
+    assert svc.spool_reading_is_stale(agent) is True
+
+
+def test_spool_reading_is_stale_when_nothing_was_ever_reported(db_session, factories):
+    """NULL is not "fresh and empty". There is no reading for freshness to be a
+    property of, and answering False would put a fabricated 0 on screen."""
+    agent = factories.agent(status="active")
+
+    assert agent.spool_reported_at is None
+    assert svc.spool_reading_is_stale(agent) is True
+
+
+def test_a_reading_can_be_stale_while_the_agent_is_still_present(db_session, factories):
+    """`_SPOOL_FRESH_SECONDS` sits deliberately above `_PRESENCE_TTL_SECONDS`.
+
+    Collapsing the two would make "connected" imply "current", which is the
+    assumption this whole rule exists to break.
+    """
+    assert svc._SPOOL_FRESH_SECONDS > svc._PRESENCE_TTL_SECONDS
 
 
 def test_record_spool_stats_with_unknown_size_leaves_the_byte_column_alone(db_session, factories):

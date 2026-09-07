@@ -882,7 +882,24 @@ spool: depth=1284 bytes=3947160
 ```
 
 Depth is also reported to the server on every heartbeat, so the fleet view shows backlog
-without waiting for a reconnect.
+without waiting for a reconnect — but **only while the agent is connected**. The moment the
+link drops, the number stored on the server freezes at whatever it was, and it stays frozen
+for the whole of the outage, which is precisely the stretch during which the real backlog is
+growing.
+
+The server therefore ages the reading: a depth last reported more than two minutes ago is
+marked stale, and the UI stops presenting it as a measurement. The fleet row shows `spool ?`
+(or `spool ? (last known N)`) and the Telemetry tab replaces its live "Catching up" indicator
+with a last-known value and the time it was reported. This matters most in the case that looks
+harmless: an agent that went offline with a drained spool keeps `depth=0` on the server, and
+rendering that as "no backlog" while `queue.jsonl` fills up is not a small number — it is no
+number at all, shown as if it were one.
+
+Staleness is computed on the server so the answer does not depend on the clock of the browser
+looking at it. It is deliberately independent of both presence (a reading can be stale while
+the agent is still connected — a very quiet fleet, a slow heartbeat) and of the eviction
+counters below: "history was destroyed" and "the current backlog is unknown" are different
+facts, and an agent that has been gone long enough usually has both.
 
 | Observation | Meaning |
 |---|---|
@@ -890,6 +907,7 @@ without waiting for a reconnect.
 | Depth stays flat at the cap | Frames are being evicted; the outage is longer than the buffer. The loss is reported explicitly — see below |
 | Depth falls slowly after reconnect | Normal. Catch-up is deliberately paced at 4 frames (or 256 KiB) per 100 ms so a backlog cannot stall live telemetry |
 | Depth never falls | The drain is failing — look for send errors in the journal |
+| UI shows `spool ?` or "Backlog unknown" | The agent has not reported a depth recently, usually because it is offline. Run `cb-agent status` on the host for the real number |
 
 ### When the spool discards data
 

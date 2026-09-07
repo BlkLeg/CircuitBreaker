@@ -30,6 +30,10 @@ const agent = (overrides = {}) => ({
   capabilities: { host_telemetry: { enabled: true, config: { interval_s: 30 } } },
   latest: { collected_at: RECENT() },
   spool_depth: 0,
+  // A backlog reading that is not current cannot support a warning about its
+  // own size, so a fixture that means "this agent is buffering" has to say
+  // when it last said so — otherwise it describes an unknown backlog instead.
+  spool_reported_at: RECENT(),
   ...overrides,
 });
 

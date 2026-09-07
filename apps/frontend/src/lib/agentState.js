@@ -40,6 +40,7 @@
  */
 
 import { serverNow } from '../utils/serverClock';
+import { SPOOL_READING_FRESH_SECONDS } from './constants';
 
 const MS_PER_SECOND = 1000;
 
@@ -109,6 +110,14 @@ export const STATE_ORDER = [
   'never_reported',
   'spool_evicted',
   'spool_pressure',
+  // Below spool_pressure, and the two are mutually exclusive by construction:
+  // a stale reading suppresses the pressure warning, because a warning derived
+  // from a number nobody can currently measure is a lie with extra steps. It
+  // sits below rather than above because it carries strictly less information
+  // than a live backlog does — but it is emphatically *not* below
+  // `spool_evicted`, which it cannot displace: destroyed history is a
+  // cumulative fact that stays true however fresh the current reading is.
+  'spool_unknown',
   'last_seen_lagging',
   'online',
 ];
@@ -240,6 +249,25 @@ const DEFINITIONS = {
     action:
       'Check the link between the agent and this server; the backlog drains on its own once it is healthy.',
   },
+  // The honest answer when the last reading is too old to be called current.
+  // An agent reports its backlog only while connected, so the stored number
+  // freezes for the whole of the outage in which the backlog is growing. The
+  // failure this replaces was not a wrong number, it was a number at all:
+  // `spool_depth = 0` on an agent with 1,195 undelivered frames on disk,
+  // rendered as "no backlog".
+  spool_unknown: {
+    label: 'Backlog unknown',
+    // `info`, not `warn`: nothing has been observed to be wrong. Saying "we
+    // cannot see this" in the same tone as "this is going wrong" would swap
+    // one wrong claim for another, and `info` is already this vocabulary's
+    // tone for an unknown (`presence_unknown` uses it).
+    icon: 'EyeOff',
+    tone: INFO,
+    summary:
+      'This agent reports its spool backlog only while it is connected, so the last value it sent is older than the reading is useful for. The real backlog is unknown, and it grows for as long as the link is down.',
+    action:
+      'Restore the agent’s link to this server. The next heartbeat replaces this with a real number.',
+  },
   last_seen_lagging: {
     label: 'Check-in lagging',
     icon: 'Clock',
@@ -287,6 +315,29 @@ export function lastSeenFreshness(lastSeenAt, now = Date.now()) {
   if (seconds <= LAST_SEEN_FRESH_SECONDS) return 'fresh';
   if (seconds <= LAST_SEEN_LAGGING_SECONDS) return 'lagging';
   return 'stale';
+}
+
+/**
+ * Whether an agent's reported spool backlog is too old to be shown as current.
+ *
+ * The server answers this (`agent_registry.spool_reading_is_stale`) and ships
+ * the answer — `spool_stale` on a fleet presence row, `stale` inside the
+ * detail page's `spool` block — so that "is this number current" never depends
+ * on the viewer's clock. Pass whichever of the two the caller has.
+ *
+ * The timestamp fallback is for a rebuilt frontend talking to a server that
+ * has not been restarted yet, and it fails towards "unknown": no timestamp at
+ * all means no basis for calling the number current. Any server that reports a
+ * depth also reports when, so a depth with no timestamp is not a shape a real
+ * response has — but if one arrives, "unknown" is the honest reading of it.
+ *
+ * @param {{stale?: boolean, reportedAt?: string|null}} reading
+ * @param {number} [now] Client epoch ms; injectable for tests.
+ */
+export function spoolReadingIsStale({ stale, reportedAt } = {}, now = Date.now()) {
+  if (typeof stale === 'boolean') return stale;
+  const age = secondsSince(reportedAt, now);
+  return age == null || age > SPOOL_READING_FRESH_SECONDS;
 }
 
 /**
@@ -366,6 +417,8 @@ export function updateStateFromEvents(events) {
  * @param {Array} [input.readiness] AgentCapabilityReadiness rows.
  * @param {object|null} [input.update] From updateStateFromEvents.
  * @param {number|null} [input.spoolDepth]
+ * @param {boolean} [input.spoolStale] Server's verdict on whether spoolDepth is current.
+ * @param {string|null} [input.spoolReportedAt] ISO of when the agent last reported the depth.
  * @param {number|null} [input.spoolEvictedFrames] Cumulative frames the agent destroyed; null = never reported.
  * @param {number|null} [input.spoolEvictedBytes]
  * @param {string|null} [input.spoolEvictedOldestAt] ISO bound of the destroyed window.
@@ -386,6 +439,8 @@ export function deriveAgentStates(input = {}) {
     readiness,
     update,
     spoolDepth,
+    spoolStale,
+    spoolReportedAt,
     spoolEvictedFrames,
     spoolEvictedBytes,
     spoolEvictedOldestAt,
@@ -495,7 +550,24 @@ export function deriveAgentStates(input = {}) {
     });
   }
 
-  if (Number.isFinite(spoolDepth) && spoolDepth >= SPOOL_PRESSURE_DEPTH) {
+  // The backlog reading, in the two moods it can be in. Only one of these
+  // fires: a stale number cannot support a warning about its own size, and a
+  // fresh one has no unknown to declare.
+  //
+  // Neither touches `spool_evicted` above. That state is a cumulative fact —
+  // history the agent has already destroyed — and it stays true no matter how
+  // old the current reading is. An agent can perfectly well have lost history
+  // *and* have an unknown current backlog, and an operator needs to be told
+  // both; letting the staleness rule swallow the loss would hide the permanent
+  // fact behind the temporary one.
+  //
+  // `spoolStale` is only consulted when there is a reading to qualify: a depth
+  // of null is "never reported" and produces no state either way.
+  const backlogIsStale = Number.isFinite(spoolDepth) && spoolStale === true;
+  if (backlogIsStale) {
+    push('spool_unknown', { lastKnownDepth: spoolDepth, reportedAt: spoolReportedAt ?? null });
+  }
+  if (!backlogIsStale && Number.isFinite(spoolDepth) && spoolDepth >= SPOOL_PRESSURE_DEPTH) {
     push('spool_pressure', {
       depth: spoolDepth,
       severity: spoolDepth >= SPOOL_CRITICAL_DEPTH ? CRITICAL : WARN,
@@ -539,6 +611,14 @@ export function fleetRowStateInput(agent, { clockSkewSeconds = null, now = Date.
     hasTelemetryHistory: agent?.latest != null,
     telemetryIntervalSeconds: agent?.capabilities?.host_telemetry?.config?.interval_s,
     spoolDepth: agent?.spool_depth,
+    // The server's verdict when it sends one, the timestamp when it does not.
+    // Derived here rather than in FleetRow so the row's chip, the fleet filter
+    // counts and the detail page all read one answer.
+    spoolStale: spoolReadingIsStale(
+      { stale: agent?.spool_stale, reportedAt: agent?.spool_reported_at },
+      now
+    ),
+    spoolReportedAt: agent?.spool_reported_at ?? null,
     spoolEvictedFrames: agent?.spool_evicted_frames,
     spoolEvictedBytes: agent?.spool_evicted_bytes,
     spoolEvictedOldestAt: agent?.spool_evicted_oldest_at,

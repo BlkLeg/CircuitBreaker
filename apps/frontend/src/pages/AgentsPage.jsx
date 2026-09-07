@@ -75,6 +75,20 @@ function withPresence(agent, presence) {
     spool_depth: presence.spool_depth,
     spool_bytes: presence.spool_bytes,
     spool_reported_at: presence.spool_reported_at,
+    // Whether that depth is a measurement of now or the last thing the agent
+    // managed to say. Computed server-side; without it here the row would fall
+    // back to reading `spool_reported_at` against this browser's clock.
+    spool_stale: presence.spool_stale,
+    // The eviction group travels with them. It has to be listed explicitly:
+    // this function copies named fields rather than spreading `presence`, so a
+    // field the endpoint sends and this list omits reaches the row as
+    // undefined — which for the loss chip is indistinguishable from "this
+    // agent never reported one", and silently disables it fleet-wide.
+    spool_evicted_frames: presence.spool_evicted_frames,
+    spool_evicted_bytes: presence.spool_evicted_bytes,
+    spool_evicted_oldest_at: presence.spool_evicted_oldest_at,
+    spool_evicted_newest_at: presence.spool_evicted_newest_at,
+    spool_evicted_reported_at: presence.spool_evicted_reported_at,
   };
 }
 

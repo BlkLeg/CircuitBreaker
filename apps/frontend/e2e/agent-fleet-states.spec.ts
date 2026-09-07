@@ -74,6 +74,10 @@ const PRESENCE = [
     hardware: null,
     latest: { collected_at: RECENT, cpu_pct: 10, mem_pct: 22, root_disk_pct: 40 },
     spool_depth: 0,
+    // The server ages the backlog reading and ships the verdict; a row without
+    // it describes an agent whose backlog is unknown, not a healthy one.
+    spool_reported_at: RECENT,
+    spool_stale: false,
   },
   {
     agent_id: 2,
@@ -84,6 +88,8 @@ const PRESENCE = [
     hardware: null,
     latest: { collected_at: RECENT, cpu_pct: 11, mem_pct: 20, root_disk_pct: 41 },
     spool_depth: 0,
+    spool_reported_at: RECENT,
+    spool_stale: false,
   },
   {
     agent_id: 3,
@@ -93,7 +99,12 @@ const PRESENCE = [
     capabilities: GRANT,
     hardware: null,
     latest: null,
+    // Offline for hours, so the last thing it managed to say about its spool is
+    // hours old too. The row must not restate 12 as though it were the backlog
+    // now — the backlog has been growing ever since.
     spool_depth: 12,
+    spool_reported_at: LONG_AGO,
+    spool_stale: true,
   },
   {
     agent_id: 4,
@@ -104,6 +115,8 @@ const PRESENCE = [
     hardware: null,
     latest: { collected_at: LONG_AGO, cpu_pct: 9 },
     spool_depth: 4200,
+    spool_reported_at: RECENT,
+    spool_stale: false,
   },
 ];
 
@@ -120,6 +133,10 @@ test('a populated fleet states each condition in text, not only in colour', asyn
 
   // Offline, and said so in words beside the dot.
   await expect(fleetRow(page, 'branch-nas')).toContainText('offline');
+
+  // …and its backlog stated as last-known rather than as current, because an
+  // agent reports its spool only while it is connected.
+  await expect(fleetRow(page, 'branch-nas')).toContainText('spool ? (last known 12)');
 
   // Stale telemetry on a machine whose link is still up — the case that read as
   // a healthy green row before AGT-14, because presence and measurement were

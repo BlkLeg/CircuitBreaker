@@ -157,6 +157,50 @@ describe('AgentsPage', () => {
     expect(within(table).getByText('rack-a-switch')).toBeInTheDocument();
   });
 
+  it('carries every spool fact from the presence row onto the fleet row', async () => {
+    // `withPresence` copies named fields rather than spreading the response, so
+    // a field the endpoint sends and that list omits arrives as `undefined` —
+    // which the row cannot tell apart from "this agent never reported one", and
+    // which therefore disables the chip silently and fleet-wide. That is not
+    // hypothetical: the eviction group shipped on the endpoint and on the row
+    // and was missing from this list, so the loss chip could never fire in the
+    // real app. All three groups are asserted together for that reason.
+    getAgentsPresence.mockResolvedValue({
+      data: [
+        {
+          agent_id: 2,
+          online: false,
+          connected_since: null,
+          last_seen_at: new Date(Date.now() - 3 * 3600 * 1000).toISOString(),
+          capabilities: { host_telemetry: { enabled: true, config: { interval_s: 30 } } },
+          hardware: null,
+          latest: null,
+          spool_depth: 0,
+          spool_bytes: 0,
+          spool_reported_at: new Date(Date.now() - 3 * 3600 * 1000).toISOString(),
+          spool_stale: true,
+          spool_evicted_frames: 9412,
+          spool_evicted_bytes: 33554432,
+          spool_evicted_oldest_at: '2026-09-01T00:00:00Z',
+          spool_evicted_newest_at: '2026-09-03T18:30:00Z',
+          spool_evicted_reported_at: '2026-09-03T18:30:05Z',
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/agents']}>
+        <AgentsPage />
+      </MemoryRouter>
+    );
+
+    const table = await screen.findByRole('table');
+    // The backlog, stated as unknown rather than as a frozen zero…
+    await waitFor(() => expect(within(table).getByText(/spool \?/)).toBeInTheDocument());
+    // …and the destroyed history beside it, not instead of it.
+    expect(within(table).getByText(/lost 9412/)).toBeInTheDocument();
+  });
+
   it('inserts a newly enrolled agent as a pending row without waiting for the poll', async () => {
     mockUseAgentLive.mockReturnValue({ statuses: new Map(), connected: true });
     getAgent.mockResolvedValue({

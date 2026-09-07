@@ -169,6 +169,22 @@ class AgentPresenceRead(BaseModel):
     spool_depth: int | None = None
     spool_bytes: int | None = None
     spool_reported_at: datetime | None = None
+    # Whether the three fields above are old enough that they describe the
+    # past rather than now (`agent_registry.spool_reading_is_stale`). Computed
+    # on the server, not in the browser: an agent reports its backlog only
+    # while connected, so the number freezes for the whole of the outage in
+    # which the backlog is actually growing, and "is this current" must not
+    # depend on the viewer's clock.
+    #
+    # Named `spool_stale` rather than `stale` because it qualifies exactly the
+    # `spool_*` group on this row and nothing else — a bare `stale` on a fleet
+    # row would read as a claim about the agent.
+    #
+    # Defaults False only so the model is constructible without it; every
+    # response sets it explicitly. A client that receives no such key is
+    # talking to a server predating this field and derives freshness from
+    # `spool_reported_at` itself.
+    spool_stale: bool = False
     # What that agent's spool has *permanently destroyed*, and the window of
     # observations that is gone. A separate group from the three above rather
     # than a flag on them, because they describe different futures: a backlog

@@ -437,6 +437,12 @@ describe('AgentDetailPage', () => {
   });
   // ── Task 16 / D-12: the spool catch-up indicator ──────────────────────────
 
+  // A backlog the agent reported seconds ago. The tab renders a live catch-up
+  // indicator only for a reading it can still call current — a spool block
+  // with no `reported_at` describes an unknown backlog instead, which is a
+  // different indicator (see agent-telemetry-tab.test.jsx).
+  const FRESHLY_REPORTED = () => new Date(Date.now() - 15_000).toISOString();
+
   function telemetryWithSpool(spool) {
     return {
       data: {
@@ -454,7 +460,9 @@ describe('AgentDetailPage', () => {
 
   it('shows a catch-up indicator while the agent has a spool backlog', async () => {
     const { getAgentTelemetry } = await import('../api/agents');
-    getAgentTelemetry.mockResolvedValue(telemetryWithSpool({ depth: 120, bytes: 240000 }));
+    getAgentTelemetry.mockResolvedValue(
+      telemetryWithSpool({ depth: 120, bytes: 240000, reported_at: FRESHLY_REPORTED() })
+    );
 
     renderDetail();
     await openTab('Telemetry');
@@ -467,7 +475,9 @@ describe('AgentDetailPage', () => {
 
   it('renders no catch-up indicator once the backlog has drained', async () => {
     const { getAgentTelemetry } = await import('../api/agents');
-    getAgentTelemetry.mockResolvedValue(telemetryWithSpool({ depth: 0, bytes: 0 }));
+    getAgentTelemetry.mockResolvedValue(
+      telemetryWithSpool({ depth: 0, bytes: 0, reported_at: FRESHLY_REPORTED() })
+    );
 
     renderDetail();
     await openTab('Telemetry');
@@ -526,7 +536,11 @@ describe('AgentDetailPage', () => {
   it('shows the catch-up indicator for an agent with a backlog but no sample yet', async () => {
     const { getAgentTelemetry } = await import('../api/agents');
     getAgentTelemetry.mockResolvedValue({
-      data: { latest: null, readiness: [], spool: { depth: 42, bytes: 1024 } },
+      data: {
+        latest: null,
+        readiness: [],
+        spool: { depth: 42, bytes: 1024, reported_at: new Date().toISOString() },
+      },
     });
 
     renderDetail();
@@ -813,7 +827,10 @@ describe('AgentDetailPage', () => {
       readiness: [],
       capability: { enabled: true, config: { interval_s: 30 } },
       hardware_id: 5,
-      spool: { depth: 0, bytes: 0, reported_at: null },
+      // Reported, drained, and reported *just now*: a depth with no report
+      // time reads as "we cannot say what the backlog is", which is a
+      // different agent from the healthy default these cases assume.
+      spool: { depth: 0, bytes: 0, reported_at: new Date().toISOString() },
     };
     return {
       ...base,

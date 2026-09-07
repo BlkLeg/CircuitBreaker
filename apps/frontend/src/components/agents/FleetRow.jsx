@@ -4,12 +4,13 @@ import PropTypes from 'prop-types';
 import { Link } from 'react-router-dom';
 import Sparkline from './Sparkline';
 import { normalizeCapability } from '../../api/agents';
-import AgentStateChip from './AgentStateChip';
+import AgentStateChip, { stateDetailText } from './AgentStateChip';
 import { agentDisplayName } from '../../lib/agentLabel';
 import {
   agentStateDefinition,
   deriveAgentStates,
   fleetRowStateInput,
+  spoolReadingIsStale,
   versionDrift,
 } from '../../lib/agentState';
 import { elapsedSecondsFromIso, formatDuration, formatElapsed } from '../../lib/time';
@@ -134,6 +135,82 @@ function SpoolChip({ depth }) {
 
 SpoolChip.propTypes = { depth: PropTypes.number.isRequired };
 
+// The same subject as SpoolChip in the one mood it cannot express: the number
+// is real, but it is not from now.
+//
+// An agent reports its backlog only while it is connected, so the stored depth
+// freezes the moment the link drops and stays frozen for the whole outage —
+// which is exactly the stretch in which the backlog is growing. Observed live:
+// an agent offline for hours with 1,195 undelivered frames on disk, whose row
+// read `spool_depth = 0` and rendered as no chip at all. Nothing on the row
+// said "no backlog"; the absence did, which is worse, because an absence
+// cannot be argued with.
+//
+// So the text is a question mark, never a bare number: `spool ?` when the last
+// value was 0, `spool ? (last known N)` when it was not. The last value is
+// still shown — it is information, and withholding it would replace one wrong
+// answer with no answer — but it is shown as what it is, with its timestamp in
+// the title.
+function SpoolUnknownChip({ depth, reportedAt }) {
+  const definition = agentStateDefinition('spool_unknown');
+  const detail = stateDetailText({
+    code: 'spool_unknown',
+    detail: { lastKnownDepth: depth, reportedAt },
+  });
+  const explanation = [definition.summary, detail, `What to do: ${definition.action}`]
+    .filter(Boolean)
+    .join(' ');
+  return (
+    <span
+      className="fleet-chip"
+      data-tone={definition.tone}
+      data-state="spool_unknown"
+      title={explanation}
+    >
+      {depth > 0 ? `spool ? (last known ${depth})` : 'spool ?'}
+      <span className="sr-only"> — {explanation}</span>
+    </span>
+  );
+}
+
+SpoolUnknownChip.propTypes = {
+  depth: PropTypes.number.isRequired,
+  reportedAt: PropTypes.string,
+};
+
+// The four cases the backlog reading can be in, decided once so the online
+// cell and the offline cell cannot disagree about the same agent:
+//
+//   never reported (depth is not a number) — nothing. That agent predates the
+//     field, and a chip would invent a measurement it never took.
+//   stale, any depth                       — the unknown chip, 0 included.
+//   fresh, at or above the warn threshold  — today's chip, unchanged.
+//   fresh, below it                        — nothing. This one really is a
+//     measurement of "no backlog", taken just now.
+//
+// Returns a descriptor rather than a component so both cells can position it
+// themselves; `null` means "render nothing", never "render a zero".
+function spoolReadingOf(agent) {
+  const depth = agent?.spool_depth;
+  if (typeof depth !== 'number') return null;
+  const reportedAt = agent.spool_reported_at ?? null;
+  if (spoolReadingIsStale({ stale: agent.spool_stale, reportedAt })) {
+    return { stale: true, depth, reportedAt };
+  }
+  return depth >= SPOOL_BACKLOG_WARN_DEPTH ? { stale: false, depth, reportedAt } : null;
+}
+
+function SpoolReadingChip({ reading }) {
+  if (!reading) return null;
+  return reading.stale ? (
+    <SpoolUnknownChip depth={reading.depth} reportedAt={reading.reportedAt} />
+  ) : (
+    <SpoolChip depth={reading.depth} />
+  );
+}
+
+SpoolReadingChip.propTypes = { reading: PropTypes.object };
+
 // The critical-tone sibling of SpoolChip, for history the agent has already
 // destroyed. Deliberately a second chip rather than a `tone` prop on the one
 // above, and rendered *alongside* it rather than instead of it: the backlog
@@ -191,6 +268,8 @@ const STATES_THE_ROW_ALREADY_SHOWS = new Set([
   'rejected',
   'pending_approval',
   'spool_pressure',
+  // Its stale-reading counterpart, rendered by the very same chip slot.
+  'spool_unknown',
   // Rendered as its own chip below, in both the online and the offline cell,
   // so an AgentStateChip for it would say the same thing twice in a 34px row.
   'spool_evicted',
@@ -234,10 +313,12 @@ function StatusChip({ status }) {
 StatusChip.propTypes = { status: PropTypes.string.isRequired };
 
 function StatusCell({ agent, state, states }) {
-  const hasBacklog =
-    agent.online === true &&
-    typeof agent.spool_depth === 'number' &&
-    agent.spool_depth >= SPOOL_BACKLOG_WARN_DEPTH;
+  // Suppressed while the agent is offline for the same reason the loss chip
+  // below is: OfflineCell renders this very chip in the metric columns, and
+  // the fact must appear exactly once per row. It is no longer gated on
+  // `online === true`, which used to mean an offline agent got no chip at all
+  // — the silent zero in a different costume.
+  const spoolReading = agent.online === false ? null : spoolReadingOf(agent);
   // AGT-14: everything the row's own dot/word/chips cannot express — stale
   // telemetry, a degraded collector, a queued or failed update, a fully
   // withheld grant, this browser's clock. Each arrives with its own glyph and
@@ -257,7 +338,7 @@ function StatusCell({ agent, state, states }) {
       {/* Design §4: a backlog on a *healthy* agent is the one signal that
           predicts trouble before anything goes red, so it sits beside the
           status word rather than hidden in the metric columns. */}
-      {hasBacklog && <SpoolChip depth={agent.spool_depth} />}
+      <SpoolReadingChip reading={spoolReading} />
       {/* Beside the backlog chip, never in place of it. A spool that has
           already overflowed is normally still full, and the row has to be
           able to say both. */}
@@ -386,8 +467,11 @@ function offlineSummary(agent) {
 
 function OfflineCell({ agent }) {
   // Spool depth matters most here: it is what the agent will replay when it
-  // comes back, and whether it is about to hit its local cap.
-  const hasSpool = typeof agent.spool_depth === 'number' && agent.spool_depth > 0;
+  // comes back, and whether it is about to hit its local cap. It is also the
+  // reading least likely to still be true — this cell only renders for an
+  // agent that is not connected, and a disconnected agent has not been able to
+  // report its backlog since the moment it went away.
+  const spoolReading = spoolReadingOf(agent);
   // And whether it has already run out of room: an agent that is offline long
   // enough to fill its spool is exactly the case where the loss is happening
   // right now and nobody is watching the detail page.
@@ -395,7 +479,7 @@ function OfflineCell({ agent }) {
   return (
     <td className="fleet-cell fleet-muted" colSpan={METRIC_COLUMN_SPAN}>
       {offlineSummary(agent)}
-      {hasSpool && <SpoolChip depth={agent.spool_depth} />}
+      <SpoolReadingChip reading={spoolReading} />
       {spoolLoss !== null && (
         <SpoolLossChip
           frames={spoolLoss}

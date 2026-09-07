@@ -35,7 +35,7 @@ import {
 import { useAgentLive } from './useAgentLive';
 import { useTelemetryStream } from './useTelemetryStream';
 import { useToast } from '../components/common/Toast';
-import { deriveAgentStates, updateStateFromEvents } from '../lib/agentState';
+import { deriveAgentStates, spoolReadingIsStale, updateStateFromEvents } from '../lib/agentState';
 import { telemetryFreshness } from '../lib/agentFreshness';
 import { composeAgentPage } from '../lib/agentComposition';
 import { serverClockOffsetMs } from '../utils/serverClock';
@@ -323,6 +323,15 @@ export function useAgentDetail(id, { activeTab = 'overview' } = {}) {
       readiness: telemetry?.readiness,
       update: updateStateFromEvents(events),
       spoolDepth: telemetry?.spool?.depth ?? null,
+      // …and whether that depth is a measurement of now. The server decides
+      // (`agent_registry.spool_reading_is_stale`) and ships `stale` in the
+      // same block; the timestamp fallback covers a rebuilt frontend against a
+      // server that has not been restarted yet.
+      spoolStale: spoolReadingIsStale({
+        stale: telemetry?.spool?.stale,
+        reportedAt: telemetry?.spool?.reported_at,
+      }),
+      spoolReportedAt: telemetry?.spool?.reported_at ?? null,
       // The eviction group rides the same `spool` object the depth comes from.
       // Omitting it made the detail page and the fleet row disagree about the
       // same agent: the row flagged permanently destroyed history as critical

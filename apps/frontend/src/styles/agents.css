@@ -2269,6 +2269,21 @@
   cursor: help;
 }
 
+/* The same slot when the backlog reading is too old to be current. It keeps
+   the shape and loses the amber and the uppercase: the catch-up pill reads as
+   live motion, and a last-known value is not motion — nothing is being
+   observed to happen. Muted, not warning-toned, because "we cannot see this"
+   is not the same claim as "this is going wrong". */
+.agent-telemetry__last-known {
+  display: inline-block;
+  padding: 1px var(--space-2);
+  border: 1px dashed var(--color-border);
+  border-radius: 999px;
+  color: var(--color-text-muted);
+  font-size: var(--fs-micro);
+  cursor: help;
+}
+
 .agent-telemetry__cadence,
 .agent-telemetry__collectors label {
   display: flex;

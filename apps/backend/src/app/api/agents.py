@@ -850,6 +850,12 @@ async def get_agents_presence(
             spool_depth=agent.spool_depth,
             spool_bytes=agent.spool_bytes,
             spool_reported_at=agent.spool_reported_at,
+            # …and whether those three describe now or only the last moment
+            # the agent could speak. An agent reports its backlog solely while
+            # connected, so the row keeps its pre-outage value for the whole
+            # outage; without this the table renders a frozen 0 as "no
+            # backlog", which is not a small number but no information at all.
+            spool_stale=agent_registry.spool_reading_is_stale(agent),
             # Permanently destroyed history, from the same already-loaded row.
             # It rides the fleet presence poll rather than the detail page
             # alone because the loss is fleet-shaped: an outage that fills one
@@ -1530,6 +1536,12 @@ def get_agent_telemetry(
             "depth": agent.spool_depth,
             "bytes": agent.spool_bytes,
             "reported_at": agent.spool_reported_at,
+            # Whether the three above are a measurement of now or the last
+            # thing the agent managed to say before the link dropped. Server
+            # side (`agent_registry.spool_reading_is_stale`) so the answer does
+            # not depend on the viewer's clock; the tab renders the depth as
+            # last-known, with its timestamp, rather than as live catch-up.
+            "stale": agent_registry.spool_reading_is_stale(agent),
             # Two independent losses, deliberately kept apart from the backlog
             # above and from each other. `evicted_*` is what the *agent*
             # destroyed when its disk buffer filled; `refused_*` is what *this

@@ -6,6 +6,7 @@ import EmptyState from '../common/EmptyState';
 import Banner from '../common/Banner';
 import { normalizeCapability } from '../../api/agents';
 import { formatDuration } from '../../lib/time';
+import { spoolReadingIsStale } from '../../lib/agentState';
 import '../../styles/agents.css';
 
 // ── moved verbatim from AgentDetailPage.jsx ─────────────────────────────────
@@ -312,6 +313,9 @@ function TelemetryWorkbench({ history, latest, historyRange, onHistoryRange, fau
   const selectedPoint = history[selectedIndex];
   const summary = latest.summary ?? {};
   const selectedSummary = selectedPoint?.summary ?? {};
+  // The Spool stat's own wording, resolved once: it decides both the text and
+  // whether the stat carries the "this is last-known" explanation.
+  const spoolText = spoolBufferedText(spool);
   const traces = TRACE_METRICS.map((metric) => {
     const samples = historySamples(history, metric.key);
     const lane = TRACE_LANES.find((candidate) => candidate.key === metric.lane);
@@ -528,7 +532,9 @@ function TelemetryWorkbench({ history, latest, historyRange, onHistoryRange, fau
           </div>
           <div className="agent-telemetry__collector-foot">
             <span>Spool</span>
-            <b>{spool?.depth ?? 0} buffered</b>
+            <b title={spoolText.startsWith('unknown') ? LAST_KNOWN_LABEL : undefined}>
+              {spoolText}
+            </b>
             <span>Projection</span>
             <b>{latest.projected ? 'hardware' : 'agent only'}</b>
           </div>
@@ -560,6 +566,28 @@ const MAX_CADENCE_S = 900;
 const CATCH_UP_LABEL =
   'The agent is replaying host samples it buffered while it could not reach ' +
   'the server. Displayed samples may lag until the backlog drains.';
+
+// The same fact's honest form when the reading is too old to be current. The
+// indicator above describes motion — a backlog draining right now — and an
+// agent reports its backlog only while it is connected, so rendering it from a
+// frozen number animates a measurement nobody has taken.
+const LAST_KNOWN_LABEL =
+  'This agent reports its spool backlog only while it is connected, so this is ' +
+  'the last value it sent rather than the backlog now. The real backlog keeps ' +
+  'growing for as long as the link is down.';
+
+// The workbench's Spool stat. It read `{depth ?? 0} buffered`, which printed a
+// confident "0 buffered" for both an agent that has never reported one and an
+// agent whose last report is hours old — the same silent zero the catch-up
+// indicator had.
+function spoolBufferedText(spool) {
+  const depth = spool?.depth;
+  if (typeof depth !== 'number') return 'not reported';
+  if (spoolReadingIsStale({ stale: spool.stale, reportedAt: spool.reported_at })) {
+    return depth > 0 ? `unknown · last ${depth}` : 'unknown';
+  }
+  return `${depth} buffered`;
+}
 
 /** One metric's series, in the order history returned it. */
 function seriesFor(history, key) {
@@ -784,14 +812,40 @@ export default function AgentTelemetryTab({
   // nothing — but an agent that buffered samples and has never delivered one
   // is exactly when the backlog is worth showing, since nothing else on this
   // tab would explain the empty page.
-  const spoolDepth = telemetry?.spool?.depth ?? 0;
-  const catchUp =
-    spoolDepth > 0 ? (
-      <span className="agent-telemetry__catchup" title={CATCH_UP_LABEL} aria-label={CATCH_UP_LABEL}>
-        Catching up · {spoolDepth} samples buffered
-        {telemetry.spool?.bytes != null && ` (${formatBytes(telemetry.spool.bytes)})`}
+  const spool = telemetry?.spool ?? null;
+  const spoolDepth = typeof spool?.depth === 'number' ? spool.depth : null;
+  // Whether that depth describes now. The server answers it; the timestamp is
+  // the fallback for a rebuilt frontend against an older server.
+  const spoolStale =
+    spoolDepth === null
+      ? false
+      : spoolReadingIsStale({ stale: spool.stale, reportedAt: spool.reported_at });
+  const spoolBytes = spool?.bytes != null ? ` (${formatBytes(spool.bytes)})` : '';
+  // Three outcomes, not two. "Catching up" is live motion and may only be
+  // claimed of a current reading; a stale one says what it actually is — a
+  // value from a named moment — in muted styling, and says it even when that
+  // value is 0, since a stale 0 is the exact reading that rendered as nothing
+  // at all for an agent with 1,195 frames on disk. A depth of null is the only
+  // case that renders nothing: that agent predates spool reporting.
+  let catchUp = null;
+  if (spoolStale) {
+    catchUp = (
+      <span
+        className="agent-telemetry__last-known"
+        title={LAST_KNOWN_LABEL}
+        aria-label={LAST_KNOWN_LABEL}
+      >
+        Backlog unknown · last known {spoolDepth} buffered{spoolBytes}
+        {spool.reported_at && ` at ${new Date(spool.reported_at).toLocaleString()}`}
       </span>
-    ) : null;
+    );
+  } else if (spoolDepth !== null && spoolDepth > 0) {
+    catchUp = (
+      <span className="agent-telemetry__catchup" title={CATCH_UP_LABEL} aria-label={CATCH_UP_LABEL}>
+        Catching up · {spoolDepth} samples buffered{spoolBytes}
+      </span>
+    );
+  }
 
   const hostTelemetry = normalizeCapability(capabilities?.host_telemetry);
   const settings =

@@ -12,6 +12,12 @@ vi.mock('../api/agents', () => ({
 
 const HOST_DEFAULTS = { interval_s: 30 };
 
+// The spool block always carries a report time, because the tab distinguishes
+// a backlog it can still call current from one frozen by an outage. A fixture
+// without it describes the second, which is a different indicator entirely —
+// phase 4's own cases are at the bottom of this file.
+const FRESH_REPORT = () => new Date(Date.now() - 15_000).toISOString();
+
 const withLatest = (overrides = {}) => ({
   capability: { config: { interval_s: 30 } },
   latest: {
@@ -21,7 +27,7 @@ const withLatest = (overrides = {}) => ({
     payload: {},
   },
   readiness: [],
-  spool: { depth: 0 },
+  spool: { depth: 0, reported_at: FRESH_REPORT() },
   ...overrides,
 });
 
@@ -48,12 +54,20 @@ describe('AgentTelemetryTab', () => {
   it('shows the spool backlog even when no sample has ever been delivered', () => {
     // An agent that buffered samples but delivered none is exactly when the
     // backlog is worth showing — nothing else here would explain the blank.
-    renderTab({ telemetry: { latest: null, readiness: [], spool: { depth: 42 } } });
+    renderTab({
+      telemetry: {
+        latest: null,
+        readiness: [],
+        spool: { depth: 42, reported_at: FRESH_REPORT() },
+      },
+    });
     expect(screen.getByText(/42 samples buffered/)).toBeTruthy();
   });
 
   it('shows no backlog indicator for a drained spool', () => {
-    renderTab({ telemetry: { latest: null, readiness: [], spool: { depth: 0 } } });
+    renderTab({
+      telemetry: { latest: null, readiness: [], spool: { depth: 0, reported_at: FRESH_REPORT() } },
+    });
     expect(screen.queryByText(/samples buffered/)).toBeNull();
   });
 
@@ -171,6 +185,7 @@ describe('the permanent-loss banner (plan Phase 3)', () => {
   const LOSS = {
     depth: 4096,
     bytes: 67108864,
+    reported_at: FRESH_REPORT(),
     evicted_frames: 9412,
     evicted_bytes: 33554432,
     evicted_oldest_at: '2026-09-01T00:00:00Z',
@@ -190,7 +205,12 @@ describe('the permanent-loss banner (plan Phase 3)', () => {
     // would name neither.
     renderTab({
       telemetry: withLatest({
-        spool: { depth: 0, refused_frames: 512, refused_last_reason: 'capability_withheld' },
+        spool: {
+          depth: 0,
+          reported_at: FRESH_REPORT(),
+          refused_frames: 512,
+          refused_last_reason: 'capability_withheld',
+        },
       }),
     });
 
@@ -215,7 +235,9 @@ describe('the permanent-loss banner (plan Phase 3)', () => {
   });
 
   it('renders nothing when the counters are null or zero', () => {
-    const { unmount } = renderTab({ telemetry: withLatest({ spool: { depth: 0 } }) });
+    const { unmount } = renderTab({
+      telemetry: withLatest({ spool: { depth: 0, reported_at: FRESH_REPORT() } }),
+    });
     expect(screen.queryByText(/permanently missing/)).toBeNull();
     unmount();
 
@@ -223,5 +245,83 @@ describe('the permanent-loss banner (plan Phase 3)', () => {
       telemetry: withLatest({ spool: { depth: 0, evicted_frames: 0, refused_frames: 0 } }),
     });
     expect(screen.queryByText(/permanently missing/)).toBeNull();
+  });
+});
+
+describe('a backlog reading that is no longer current (plan Phase 4)', () => {
+  const STALE_AT = '2026-09-05T09:00:00Z';
+  const stale = (depth, extra = {}) => ({ depth, reported_at: STALE_AT, stale: true, ...extra });
+
+  it('replaces the live catch-up indicator with a last-known value and its time', () => {
+    // "Catching up · N samples buffered" describes motion — a backlog draining
+    // right now. The agent reports its backlog only while connected, so
+    // rendering that from a frozen number animates a measurement nobody took.
+    renderTab({ telemetry: withLatest({ spool: stale(1195, { bytes: 240000 }) }) });
+
+    expect(screen.getByText(/Backlog unknown · last known 1195 buffered/)).toBeTruthy();
+    expect(screen.queryByText(/Catching up/)).toBeNull();
+  });
+
+  it('drops the live styling with it', () => {
+    // The pill is amber and uppercase because it means "this is happening".
+    // Keeping the treatment while the number is stale would keep the claim.
+    const { container } = renderTab({ telemetry: withLatest({ spool: stale(1195) }) });
+
+    expect(container.querySelector('.agent-telemetry__catchup')).toBeNull();
+    expect(container.querySelector('.agent-telemetry__last-known')).toBeTruthy();
+  });
+
+  it('says so even when the frozen value is zero — the bug this fixes', () => {
+    // The observed shape: hours offline, 1,195 frames on disk, stored depth 0.
+    // The old rule rendered nothing at all for it, which reads as "drained".
+    renderTab({ telemetry: withLatest({ spool: stale(0) }) });
+
+    expect(screen.getByText(/Backlog unknown · last known 0 buffered/)).toBeTruthy();
+  });
+
+  it('renders nothing for an agent that never reported a backlog', () => {
+    // Null predates spool reporting. There is no reading to qualify.
+    renderTab({ telemetry: withLatest({ spool: { depth: null, reported_at: null } }) });
+
+    expect(screen.queryByText(/Backlog unknown/)).toBeNull();
+    expect(screen.queryByText(/Catching up/)).toBeNull();
+  });
+
+  it('keeps the destroyed-history banner beside it', () => {
+    // Phase 3's fact and this one are independent. "History was destroyed" is
+    // cumulative and stays true however stale the current reading is; letting
+    // the unknown swallow it would hide the permanent loss behind a temporary
+    // one.
+    renderTab({
+      telemetry: withLatest({
+        spool: stale(0, { evicted_frames: 9412, evicted_bytes: 33554432 }),
+      }),
+    });
+
+    expect(screen.getByText(/Backlog unknown/)).toBeTruthy();
+    expect(screen.getByText(/permanently missing/)).toBeTruthy();
+  });
+
+  it('never prints a confident "0 buffered" in the workbench spool stat', () => {
+    // Same silent zero, second location: `{depth ?? 0} buffered` read as a
+    // measurement for both a stale reading and one that never happened.
+    // The stat lives in the workbench, which needs two points to draw.
+    const HISTORY = [
+      { collected_at: '2026-09-05T09:00:00Z', summary: { cpu_pct: 10 } },
+      { collected_at: '2026-09-05T09:01:00Z', summary: { cpu_pct: 12 } },
+    ];
+    const { unmount } = renderTab({
+      history: HISTORY,
+      telemetry: withLatest({ spool: stale(1195) }),
+    });
+    expect(screen.getByText(/unknown · last 1195/)).toBeTruthy();
+    unmount();
+
+    renderTab({
+      history: HISTORY,
+      telemetry: withLatest({ spool: { depth: null, reported_at: null } }),
+    });
+    expect(screen.getByText('not reported')).toBeTruthy();
+    expect(screen.queryByText(/0 buffered/)).toBeNull();
   });
 });

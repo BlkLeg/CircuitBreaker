@@ -62,6 +62,7 @@ const presence = [
     capabilities: { host_telemetry: { enabled: true, config: { interval_s: 30 } } },
     latest: { collected_at: RECENT, cpu_pct: 10 },
     spool_depth: 0,
+    spool_reported_at: RECENT,
   },
   {
     agent_id: 2,
@@ -70,6 +71,7 @@ const presence = [
     capabilities: { host_telemetry: { enabled: true, config: { interval_s: 30 } } },
     latest: { collected_at: RECENT, cpu_pct: 11 },
     spool_depth: 0,
+    spool_reported_at: RECENT,
   },
   {
     agent_id: 3,
@@ -78,6 +80,7 @@ const presence = [
     capabilities: { host_telemetry: { enabled: true, config: { interval_s: 30 } } },
     latest: null,
     spool_depth: 0,
+    spool_reported_at: RECENT,
   },
   {
     agent_id: 4,
@@ -89,6 +92,9 @@ const presence = [
     },
     latest: { collected_at: RECENT, cpu_pct: 12 },
     spool_depth: 4000,
+    // Reported just now: a backlog only counts as pressure while the number is
+    // current, since a warning derived from a frozen reading is a lie.
+    spool_reported_at: RECENT,
   },
 ];
 
