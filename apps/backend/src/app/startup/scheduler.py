@@ -77,3 +77,25 @@ def run_discovery_enrichment_backfill() -> None:
             )
     finally:
         db.close()
+
+
+async def shutdown_scheduler(scheduler: "BaseScheduler") -> None:
+    """Stop the scheduler, giving running jobs ten seconds to finish.
+
+    `shutdown(wait=True)` blocks, so it runs in an executor rather than on the
+    event loop the departing workers still need. Past the budget it is forced,
+    because a job that will not finish must not hold the process open past the
+    unit's TimeoutStopSec.
+    """
+    import asyncio
+
+    async def _shutdown() -> None:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: scheduler.shutdown(wait=True))
+
+    try:
+        await asyncio.wait_for(_shutdown(), timeout=10.0)
+        _logger.info("Scheduler shutdown complete")
+    except TimeoutError:
+        _logger.warning("Scheduler shutdown timed out after 10s — forcing stop")
+        scheduler.shutdown(wait=False)

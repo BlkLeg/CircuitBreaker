@@ -4,7 +4,7 @@
 Two defects meet here, both about registration rather than about the work the
 jobs do.
 
-**B43 — the scan-result purge was registered twice.** `app.main.lifespan`
+**B43 — the scan-result purge was registered twice.** `app.startup.jobs`
 registers `discovery_service.purge_old_scan_results` at 03:00 under the id
 `purge_old_scan_results`; `core.scheduler.reload_discovery_jobs` registered the
 same callable, on the same trigger, under the id `discovery_purge`. Every
@@ -53,9 +53,9 @@ from app.core.scheduler import SingleOwnerScheduler, reload_discovery_jobs, run_
 from app.services.discovery_scheduler import purge_old_scan_results
 
 SNAPSHOT_JOB_ID = "daily_db_snapshot"
-#: The id `app.main.lifespan` registers the scan-result purge under.
+#: The id `app.startup.jobs` registers the scan-result purge under.
 LIFESPAN_PURGE_JOB_ID = "purge_old_scan_results"
-#: The grace window `app.main.lifespan` gives the nightly jobs.
+#: The grace window `app.startup.jobs` gives the nightly jobs.
 NIGHTLY_MISFIRE_GRACE_S = 3600
 
 _BACKEND = Path(__file__).resolve().parents[2]
@@ -93,7 +93,7 @@ def _jobs_wrapping(scheduler, target):  # type: ignore[no-untyped-def]
 
 
 def _lifespan_registers_purge(scheduler) -> None:  # type: ignore[no-untyped-def]
-    """Register the purge the way `app.main.lifespan` does."""
+    """Register the purge the way `app.startup.jobs` does."""
     scheduler.add_job(
         purge_old_scan_results,
         trigger=CronTrigger(hour=3, minute=0),
@@ -157,7 +157,7 @@ def test_a_restart_keeps_no_fire_time_for_misfire_grace_to_forgive(fresh_schedul
     explicit `next_run_time` in the past is the state a late wakeup leaves a
     job in.
 
-    Second half, the case the parameter cannot reach. `app.main.lifespan`
+    Second half, the case the parameter cannot reach. `app.startup.jobs`
     constructs a `SingleOwnerScheduler()` per process and the default job store
     is in memory, so the instance that comes up at 02:30 inherits nothing from
     the one that was running yesterday: no jobs at all, and after registering
@@ -231,8 +231,8 @@ def test_a_restart_keeps_no_fire_time_for_misfire_grace_to_forgive(fresh_schedul
 
     # The value under test has to be the value that ships, or the two
     # assertions above are arithmetic on a constant this file made up.
-    main_py = (_BACKEND / "src/app/main.py").read_text()
-    registration = main_py[main_py.index(f'id="{SNAPSHOT_JOB_ID}"') - 400 :][:600]
+    jobs_py = (_BACKEND / "src/app/startup/jobs.py").read_text()
+    registration = jobs_py[jobs_py.index(f'id="{SNAPSHOT_JOB_ID}"') - 400 :][:600]
     assert f"misfire_grace_time={NIGHTLY_MISFIRE_GRACE_S}" in registration, (
         "the nightly snapshot no longer registers with "
         f"misfire_grace_time={NIGHTLY_MISFIRE_GRACE_S}. At APScheduler's default of "
@@ -357,7 +357,7 @@ def test_the_snapshot_registration_does_not_claim_grace_survives_a_restart():
     promises a protection the code cannot provide is worse than no prose — it
     is what a maintainer weighing whether to keep the parameter reads, and it
     was what the *test* next door asserted, which is worse again. Reading only
-    `src/app/main.py` is how the first attempt at this left
+    `src/app/startup/jobs.py` is how the first attempt at this left
     `test_scheduled_snapshot_registration.py` still saying it, so the scan is
     every `.py` file under `src/` and `tests/`: roughly a second, and a new
     file cannot be added outside it.
@@ -422,8 +422,8 @@ def test_the_snapshot_registration_still_addresses_the_restart_case():
     with and the parameter's name invites. *What* it may say is constrained by
     the tree-wide ban above; that it says anything at all is constrained here.
     """
-    main_py = (_BACKEND / "src/app/main.py").read_text()
-    comment = _registration_comment(main_py, SNAPSHOT_JOB_ID)
+    jobs_py = (_BACKEND / "src/app/startup/jobs.py").read_text()
+    comment = _registration_comment(jobs_py, SNAPSHOT_JOB_ID)
 
     assert re.search(_A_RESTART, comment, re.I), (
         "the daily_db_snapshot registration comment no longer mentions a "

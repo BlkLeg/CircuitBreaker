@@ -135,8 +135,8 @@ def test_the_metrics_scrape_path_carries_the_prefix_twice() -> None:
         "app.api.metrics no longer declares its route as '/metrics'; if the "
         "route moved, METRICS_PATH has to move with it."
     )
-    main_source = (ROOT / "apps/backend/src/app/main.py").read_text(encoding="utf-8")
-    assert 'prefix=f"{_V1}/metrics"' in main_source, (
+    routing_source = (ROOT / "apps/backend/src/app/api/routing.py").read_text(encoding="utf-8")
+    assert 'prefix=f"{_V1}/metrics"' in routing_source, (
         "the metrics router's mount prefix changed; re-derive METRICS_PATH."
     )
 

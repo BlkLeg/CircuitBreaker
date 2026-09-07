@@ -101,12 +101,12 @@ def test_the_snapshot_job_is_registered_in_the_lifespan_and_not_in_reload_discov
     that and nothing more.
     """
     backend = Path(__file__).resolve().parents[2]
-    main_py = (backend / "src/app/main.py").read_text()
+    jobs_py = (backend / "src/app/startup/jobs.py").read_text()
     scheduler_py = (backend / "src/app/core/scheduler.py").read_text()
 
-    assert f'id="{SNAPSHOT_JOB_ID}"' in main_py
-    assert "run_scheduled_snapshot" in main_py
+    assert f'id="{SNAPSHOT_JOB_ID}"' in jobs_py
+    assert "run_scheduled_snapshot" in jobs_py
     assert f'id="{SNAPSHOT_JOB_ID}"' not in scheduler_py
 
-    registration = main_py[main_py.index(f'id="{SNAPSHOT_JOB_ID}"') - 400 :][:600]
+    registration = jobs_py[jobs_py.index(f'id="{SNAPSHOT_JOB_ID}"') - 400 :][:600]
     assert "misfire_grace_time=3600" in registration, registration

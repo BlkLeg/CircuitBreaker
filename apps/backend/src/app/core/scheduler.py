@@ -41,7 +41,7 @@ class SingleOwnerScheduler(AsyncIOScheduler):
 _scheduler = SingleOwnerScheduler()
 
 #: Catch-up window for a discovery-profile cron whose fire time was missed.
-#: Named and exported because `app.main` registers the same jobs at startup:
+#: Named and exported because `app.startup.jobs` registers the same jobs at startup:
 #: a profile that changed its catch-up behaviour the moment an unrelated
 #: profile write triggered the first reload of a process would be
 #: untraceable from the outside.
@@ -75,7 +75,7 @@ def shutdown_scheduler() -> None:
 async def run_scheduled_snapshot() -> None:
     """Scheduled wrapper for run_full_snapshot — called by APScheduler daily at 02:00.
 
-    The job body lives here; its *registration* lives in `app.main.lifespan`.
+    The job body lives here; its *registration* lives in `app.startup.jobs`.
     This function used to be registered by `reload_discovery_jobs` below, which
     runs only when an administrator writes a discovery profile — so a process
     that never saw such a write took no full-state snapshot at all, and nothing
@@ -143,7 +143,7 @@ def reload_discovery_jobs(db: Session) -> None:
         except Exception as e:
             logger.error(f"Failed to schedule profile {profile.id}: {e}")
 
-    # The daily scan-result purge is **not** registered here. `app.main.lifespan`
+    # The daily scan-result purge is **not** registered here. `app.startup.jobs`
     # already registers the same callable at 03:00 under the id
     # `purge_old_scan_results`, and this function used to add a second copy of it
     # under the id `discovery_purge` (B43) — so every discovery-profile write left

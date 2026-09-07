@@ -850,12 +850,12 @@ def test_the_interval_job_is_registered_in_the_lifespan_and_not_in_reload_discov
     write and *first removes every job it registered*, so anything registered
     there is silently unregistered the next time an administrator saves a
     profile — the failure mode has no symptom until a dispatch is never
-    expired. The lifespan registers it once, under its own advisory lock.
+    expired. Startup registers it once, under its own advisory lock.
     """
     backend = Path(__file__).resolve().parents[2]
-    main_py = (backend / "src/app/main.py").read_text()
+    jobs_py = (backend / "src/app/startup/jobs.py").read_text()
     scheduler_py = (backend / "src/app/core/scheduler.py").read_text()
 
-    assert f'id="{agent_discovery_reconcile.LOCK_NAME}"' in main_py
-    assert "run_agent_discovery_reconciliation" in main_py
+    assert f'id="{agent_discovery_reconcile.LOCK_NAME}"' in jobs_py
+    assert "run_agent_discovery_reconciliation" in jobs_py
     assert "agent_discovery_reconcile" not in scheduler_py
