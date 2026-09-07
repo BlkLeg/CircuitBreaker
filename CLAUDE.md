@@ -4,7 +4,7 @@ Self-hosted homelab visualization platform: interactive topology across hardware
 services, networks, and clusters. Users are homelabbers and self-hosters who value
 simple, local, visual, zero-lock-in tooling.
 
-**Current version: see `VERSION` (0.4.0 at time of writing).**
+**Current version: see `VERSION` (0.4.2 at time of writing).**
 Repo: https://github.com/BlkLeg/circuitbreaker · Image: `ghcr.io/blkleg/circuitbreaker`
 
 ## Layout

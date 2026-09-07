@@ -39,7 +39,7 @@
     "lint-staged": "^16.3.2"
   },
   "lint-staged": {
-    "*.{ts,tsx,py}": "make lint",
+    "*.{js,jsx,py}": "make lint",
     "apps/**/tests/**": "echo '🚫 Tests blocked from prod paths' && exit 1"
   },
   "dependencies": {

@@ -27,7 +27,7 @@ If you find a bug, please help us squash it by opening an **Issue**. To get it f
 
 ## 🛠️ Development Workflow
 
-We use a **Git Flow**-inspired branching model.
+Branch off of `dev`, and open your pull request against `dev` — never target `main`.
 
 1. **Fork** the repository and clone it locally.
 2. **Branch:** Create a branch for your fix/feature off of the `dev` branch.
@@ -44,12 +44,27 @@ We use a **Git Flow**-inspired branching model.
 make install   # once: creates .venv, installs the backend editable, runs npm install for the frontend
 make dev       # backend + frontend + monitor workers + Dockerized Postgres/Redis/NATS
 make lint      # ruff + mypy on the backend, eslint on the frontend
-make test      # backend integration suite + frontend tests
 ```
+
+| Command | What actually runs |
+|---|---|
+| `make test` | `make test-backend` + `make test-frontend` |
+| `make test-backend` | **only** `tests/integration/` (`pytest ../../tests/integration`), against a live PostgreSQL — **not** the ~310-file `apps/backend/tests` suite |
+| `make test-frontend` | frontend Vitest (`npm test` in `apps/frontend`) |
+| `make verify` | Tier 0 + Tier 1 with `CB_VERIFY_BACKEND=off` — the pre-push gate (measured 3m17s) |
+| `make verify-full` | Tier 0 + Tier 1 with `CB_VERIFY_BACKEND=shards` — includes the backend suite (measured 6m43s) |
+
+**`make test-backend` does not run the backend unit suite.** If you touched code
+under `apps/backend/src/app`, run `make verify-full` (or let CI's sharded gate run
+it) before assuming your change is covered.
 
 `make install` installs the frontend deps under `apps/frontend`. Run `npm install` once at the repo
 root as well — its `prepare` script installs the husky pre-commit hook, which runs `make lint` on
-staged `.ts`, `.tsx`, and `.py` files. `.pre-commit-config.yaml` additionally pins
+staged `.js`, `.jsx`, and `.py` files. The frontend is JavaScript/JSX — do not add `.ts`/`.tsx`
+under `apps/frontend/src/`. (`vite.config.ts`, `vitest.config.ts`, and `playwright.config.ts` at the
+`apps/frontend` package root, and the Playwright specs under `apps/frontend/e2e/`, are the
+documented exceptions: real, intentionally-maintained TypeScript, linted separately by
+`apps/frontend/package.json`'s own lint-staged config.) `.pre-commit-config.yaml` additionally pins
 `gitleaks protect --staged`, `ruff` (with `ruff-format`), and `mypy --strict` if you also use
 `pre-commit`.
 
@@ -81,6 +96,8 @@ scope, and response targets live there, not here.
 * **Keep it Lean:** We target home labbers who might be running this on a Raspberry Pi or an old Optiplex. Efficiency matters.
 * **Documentation:** If you add a feature, update the `README.md` or internal docs.
 * **Commits:** Use descriptive commit messages (e.g., `fix: resolve auth-loop in Firefox` instead of `fixed stuff`).
+* **Generated output:** Never commit `make verify`/`make test` output or the artifacts they write —
+  `artifacts/`, `apps/frontend/coverage/`, and `.coverage` are gitignored and must stay that way.
 
 ---
 
