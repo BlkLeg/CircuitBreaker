@@ -21,7 +21,8 @@ carries a status column.
 
 | Plan | Date | Status |
 |---|---|---|
-| [Technical debt cleanup](./2026-09-07-tech-debt-cleanup.md) | 2026-09-07 | **Active** — phased prune, split, test/doc alignment, and contributor-readiness work. No product features. |
+| [Technical debt cleanup](./2026-09-07-tech-debt-cleanup.md) | 2026-09-07 | **Active** — phased prune, split, test/doc alignment, and contributor-readiness work. No product features. Phase 1 is the work in flight; Phases 2–4 are not shipped. |
+| [Architectural feasibility](./2026-09-07-architectural-feasibility.md) | 2026-09-07 | **Reference** — post-cleanup assessment of layer lint, plugins, repositories, TypeScript, OpenAPI codegen, and OpenTelemetry. Not a work item. Assumes cleanup Phases 1–4 have landed; they have not. |
 
 ## v1.0.0 remediation (2026-08-18)
 
