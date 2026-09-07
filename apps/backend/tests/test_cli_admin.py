@@ -544,7 +544,7 @@ def test_the_cli_resolves_the_same_alembic_ini_the_server_upgrades_with(monkeypa
     """
     import alembic.command
 
-    import app.main as app_main
+    import app.startup.schema as startup_schema
 
     upgraded: list[str] = []
     stamped: list[str] = []
@@ -556,7 +556,7 @@ def test_the_cli_resolves_the_same_alembic_ini_the_server_upgrades_with(monkeypa
     monkeypatch.setattr(
         alembic.command, "stamp", lambda config, revision: stamped.append(config.config_file_name)
     )
-    app_main.run_alembic_upgrade()
+    startup_schema.run_alembic_upgrade()
 
     expected = str(cli_admin.alembic_ini_path())
     assert upgraded == [expected]
@@ -658,21 +658,21 @@ def test_upgrade_goes_through_the_servers_own_path_and_nothing_else(monkeypatch)
     ``pg_advisory_xact_lock`` that serialises it against the API's own
     auto-migrate phase. Calling Alembic directly would skip all three.
     """
-    import app.main as app_main
+    import app.startup.schema as startup_schema
 
     calls: list[int] = []
-    monkeypatch.setattr(app_main, "run_alembic_upgrade", lambda: calls.append(1))
+    monkeypatch.setattr(startup_schema, "run_alembic_upgrade", lambda: calls.append(1))
     cli_admin.apply_migrations()
     assert calls == [1]
 
 
 def test_a_failed_upgrade_is_an_operator_message_not_a_traceback(monkeypatch):
-    import app.main as app_main
+    import app.startup.schema as startup_schema
 
     def _boom() -> None:
         raise RuntimeError("Can't locate revision identified by 'deadbeef'")
 
-    monkeypatch.setattr(app_main, "run_alembic_upgrade", _boom)
+    monkeypatch.setattr(startup_schema, "run_alembic_upgrade", _boom)
     with pytest.raises(AdminError) as excinfo:
         cli_admin.apply_migrations()
     assert "deadbeef" in str(excinfo.value)

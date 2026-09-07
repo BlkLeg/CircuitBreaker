@@ -2720,10 +2720,10 @@ def _profile_ids_registered_on(scheduler) -> set[int]:
 
 def _startup_schedule(db_session) -> set[int]:
     """Rebuild the discovery schedule the way `app.main`'s lifespan does."""
-    from app.main import _register_discovery_profile_crons
+    from app.startup.scheduler import register_discovery_profile_crons
 
     scheduler = _restarted_scheduler()
-    _register_discovery_profile_crons(scheduler, db_session)
+    register_discovery_profile_crons(scheduler, db_session)
     return _profile_ids_registered_on(scheduler)
 
 

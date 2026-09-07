@@ -1,7 +1,7 @@
 """The administration journeys SRV-06 requires of ``cb``: migrations, tokens, users, agents.
 
 Every function here is the *second* caller of something the server already
-owns — ``app.main.run_alembic_upgrade`` for migrations,
+owns — ``app.startup.schema.run_alembic_upgrade`` for migrations,
 ``app.core.security``'s hashing for tokens, ``app.core.token_scopes`` for what
 a scope is, ``app.services.agent_registry`` for agent lifecycle — for the
 reason ``app.cli``'s docstring gives about second copies. A CLI that approved
@@ -180,36 +180,15 @@ def _audit(
 def alembic_ini_path() -> Path:
     """The alembic.ini ``run_alembic_upgrade`` would use, resolved the same way.
 
-    The private helpers are imported from ``app.main`` rather than reimplemented
-    because the layouts they cover (repo checkout, mono container, PyInstaller
-    bundle, deb/rpm share tree) are exactly the ones a packaged `cb migrate` has
-    to work in, and a second list of them would be right until the day the
-    packaging changed. ``test_cli_migrate`` asserts this returns the same file
-    ``run_alembic_upgrade`` hands to Alembic, so the two cannot drift silently.
+    Literally the same way: both call ``startup.paths.alembic_ini_candidates``.
+    The layouts it covers (repo checkout, mono container, PyInstaller bundle,
+    deb/rpm share tree) are exactly the ones a packaged ``cb migrate`` has to
+    work in, and a second copy of that list would be right only until the next
+    packaging change. ``test_cli_migrate`` asserts the two agree.
     """
-    import os
+    from app.startup.paths import alembic_ini_candidates, resolve_existing_path
 
-    import app.main as app_main
-    from app.main import (
-        _ALEMBIC_INI_FILENAME,
-        _bundle_share_candidate,
-        _meipass_candidate,
-        _resolve_existing_path,
-        _share_dir_candidate,
-    )
-
-    main_path = Path(app_main.__file__).resolve()
-    candidates: list[str | Path | None] = [
-        os.environ.get("ALEMBIC_CONFIG"),
-        os.environ.get("CB_ALEMBIC_INI"),
-        _share_dir_candidate("backend", _ALEMBIC_INI_FILENAME),
-        _bundle_share_candidate("backend", _ALEMBIC_INI_FILENAME),
-        _meipass_candidate("backend", _ALEMBIC_INI_FILENAME),
-        main_path.parent.parent.parent / _ALEMBIC_INI_FILENAME,
-    ]
-    if len(main_path.parents) > 4:
-        candidates.append(main_path.parents[4] / "apps" / "backend" / _ALEMBIC_INI_FILENAME)
-    resolved = _resolve_existing_path(*candidates)
+    resolved = resolve_existing_path(*alembic_ini_candidates())
     if resolved is None:
         raise AdminError(
             "Could not locate alembic.ini. Set CB_ALEMBIC_INI to its path — the mono "
@@ -267,7 +246,7 @@ def migration_status() -> MigrationStatus:
 def apply_migrations() -> None:
     """Run pending migrations through the server's own upgrade path.
 
-    ``app.main.run_alembic_upgrade`` is called rather than
+    ``app.startup.schema.run_alembic_upgrade`` is called rather than
     ``alembic upgrade head``, so this shares three things with a server start
     that a bare Alembic invocation would not: the alembic.ini resolution above,
     the legacy-database stamp pre-check, and — through ``migrations/env.py`` —
@@ -275,7 +254,7 @@ def apply_migrations() -> None:
     lock is the reason `cb migrate upgrade` can be run while the stack is
     coming up without racing the API's own auto-migrate phase.
     """
-    from app.main import run_alembic_upgrade
+    from app.startup.schema import run_alembic_upgrade
 
     try:
         run_alembic_upgrade()

@@ -367,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
 
     uvicorn_options = configure_runtime(args)
 
-    from app.main import run_alembic_upgrade
+    from app.startup.schema import run_alembic_upgrade
 
     run_alembic_upgrade()
     # Migrations have been applied above — signal the lifespan handler in every

@@ -121,19 +121,19 @@ def test_owner_without_bypassrls_still_reads_its_own_rows(rls_table):
 
 
 def test_diagnostic_is_quiet_when_the_role_owns_the_tables(rls_table, caplog):
-    from app.main import _rls_bypass_warning
+    from app.startup.schema import rls_bypass_warning
 
     with caplog.at_level(logging.WARNING):
-        message = _rls_bypass_warning(rls_table, ("rls_diag_probe",))
+        message = rls_bypass_warning(rls_table, ("rls_diag_probe",))
     assert message is None, f"warned about a table the role owns: {message}"
 
 
 def test_diagnostic_warns_when_force_rls_actually_binds_the_owner(rls_table):
     """FORCE is the case where ownership stops helping — then the warning is
     correct and must still fire."""
-    from app.main import _rls_bypass_warning
+    from app.startup.schema import rls_bypass_warning
 
     with rls_table.begin() as conn:
         conn.execute(sa.text("ALTER TABLE rls_diag_probe FORCE ROW LEVEL SECURITY"))
-    message = _rls_bypass_warning(rls_table, ("rls_diag_probe",))
+    message = rls_bypass_warning(rls_table, ("rls_diag_probe",))
     assert message is not None and "rls_diag_probe" in message

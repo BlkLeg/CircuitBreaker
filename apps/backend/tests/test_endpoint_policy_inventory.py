@@ -18,7 +18,7 @@ from fastapi.routing import APIRoute, APIWebSocketRoute
 from fastapi.staticfiles import StaticFiles
 from starlette.routing import Mount, Route
 
-import app.main as main_module
+import app.api.static_spa as static_spa_module
 from app.main import app
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -332,14 +332,14 @@ def test_runtime_routes_reconcile_with_public_endpoint_policy():
 
     stale_policy = reviewed_public - runtime_keys
 
-    # main.py branches on `_frontend_dir`: with a build it serves the SPA
+    # `api.static_spa` branches on `_frontend_dir`: with a build it serves the SPA
     # fallback, without one it serves a static landing page at "/". The two are
     # mutually exclusive, so the policy declares both and exactly one is live.
     # Excuse only the one that structurally cannot exist in this configuration
     # (CI runs this suite without building the frontend). The reverse direction
     # below is untouched: whichever route IS live still has to be declared, so
     # neither can go unreviewed.
-    if main_module._frontend_dir is None:
+    if static_spa_module._frontend_dir is None:
         stale_policy = stale_policy - {_SPA_FALLBACK_KEY}
     else:
         stale_policy = stale_policy - {_API_LANDING_KEY}
@@ -456,7 +456,7 @@ def test_full_endpoint_inventory_matches_runtime_routes():
     # comparison and named in the message instead. Everything the inventory
     # exists to protect -- that no route gains or loses an auth or RBAC policy
     # without the record changing -- is still asserted in full.
-    # main.py registers `spa_fallback` at /{full_path:path} when the build
+    # `api.static_spa` registers `spa_fallback` at /{full_path:path} when the build
     # exists and a placeholder `root` at / when it does not, so the pair swaps
     # with the build too. The committed inventory is generated WITH a build
     # (regenerating it without one would silently record the degraded shape as

@@ -1,25 +1,18 @@
 import logging
-import mimetypes
 import os
 import re
-import sys
-import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta  # noqa: F401 — used by models imported transitively
-from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import sqlalchemy as sa
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse, Response
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from sqlalchemy import text
-from sqlalchemy.orm import Session
 
 from app.api import (
     auth,
@@ -62,6 +55,7 @@ from app.api.certificates import router as certificates_router
 from app.api.cve import router as cve_router
 from app.api.discovery import router as discovery_router
 from app.api.events import router as events_router
+from app.api.health import router as health_router
 from app.api.integration_provider import router as integration_provider_router
 from app.api.ip_check import router as ip_check_router
 from app.api.ipam import ipam_router, site_router, vlan_router
@@ -72,6 +66,7 @@ from app.api.notifications import router as notifications_router
 from app.api.proxmox import router as proxmox_router
 from app.api.security_status import router as security_router
 from app.api.settings import router as settings_router
+from app.api.static_spa import register as register_static_spa
 from app.api.system import router as system_router
 from app.api.tenants import router as tenants_router
 from app.api.timezones import router as timezones_router
@@ -98,7 +93,7 @@ from app.core.time import utcnow
 from app.core.write_admission import WriteAdmissionMiddleware
 from app.db import models
 from app.db.models import IntegrationConfig
-from app.db.session import engine, get_db, get_session_context
+from app.db.session import get_session_context
 from app.middleware.csrf import CSRFMiddleware
 from app.middleware.legacy_token import LegacyTokenMiddleware
 from app.middleware.logging_middleware import LoggingMiddleware
@@ -107,6 +102,16 @@ from app.middleware.rate_limit_middleware import TenantRateLimitMiddleware
 from app.middleware.request_id import RequestIdMiddleware, install_request_id_log_filter
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.tenant_middleware import TenantMiddleware
+from app.startup.scheduler import (
+    register_discovery_profile_crons,
+    run_discovery_enrichment_backfill,
+)
+from app.startup.schema import (
+    assert_required_schema,
+    require_timescale_if_configured,
+    run_alembic_upgrade,
+    warn_if_rls_without_bypass,
+)
 
 # ---------------------------------------------------------------------------
 # OAuth param scrubber for uvicorn access logs
@@ -141,386 +146,7 @@ install_global_log_redaction()
 # as before, this adds a filter alongside it rather than replacing one.
 install_request_id_log_filter()
 
-_DOCS_SEED_FILENAME = "DocsPage.md"
-_ALEMBIC_INI_FILENAME = "alembic.ini"
-_FAVICON_FILENAME = "favicon.ico"
-_REQUIRED_SCHEMA_TABLES = frozenset({"app_settings"})
-
-if TYPE_CHECKING:  # imported for annotations only — both are startup-path costs
-    from apscheduler.schedulers.base import BaseScheduler
-    from sqlalchemy.orm import Session
 _logger = logging.getLogger(__name__)
-SERVER_START_TIME = time.time()
-
-
-def _seed_default_docs(db) -> None:
-    """Seed the single shipped default doc on fresh installs.
-
-    Creates one doc from repository root DocsPage.md only when the docs table is empty.
-    """
-    from app.core.markdown_render import render_markdown
-    from app.db.models import Doc, User
-
-    has_users = db.query(User.id).limit(1).first()
-    if has_users:
-        return
-
-    has_docs = db.query(Doc.id).limit(1).first()
-    if has_docs:
-        return
-
-    _p = Path(__file__).resolve()
-    _docs_candidates: list[str | Path | None] = [
-        os.environ.get("CB_DOCS_SEED_FILE"),
-        _share_dir_candidate(_DOCS_SEED_FILENAME),
-        _bundle_share_candidate(_DOCS_SEED_FILENAME),
-        _meipass_candidate(_DOCS_SEED_FILENAME),
-        _p.parents[2] / _DOCS_SEED_FILENAME if len(_p.parents) > 2 else None,
-    ]
-    if len(_p.parents) > 4:
-        _docs_candidates.append(_p.parents[4] / _DOCS_SEED_FILENAME)
-    docs_page_path = _resolve_existing_path(*_docs_candidates)
-    if docs_page_path is None:
-        _logger.warning("Default docs seed file not found in configured resource paths")
-        return
-    if not docs_page_path.exists():
-        _logger.warning("Default docs seed file not found at %s", docs_page_path)
-        return
-
-    body_md = docs_page_path.read_text(encoding="utf-8").strip()
-    if not body_md:
-        _logger.warning("Default docs seed file is empty: %s", docs_page_path)
-        return
-
-    title = "Welcome to Circuit Breaker"
-    first_line = body_md.splitlines()[0].strip()
-    if first_line.startswith("#"):
-        parsed_title = first_line.lstrip("#").strip()
-        if parsed_title:
-            title = parsed_title
-
-    db.add(
-        Doc(
-            title=title,
-            body_md=body_md,
-            body_html=render_markdown(body_md),
-            category="Getting Started",
-            pinned=True,
-            icon="book-open",
-        )
-    )
-    db.commit()
-
-
-def _get_columns(conn, table: str) -> list[str]:
-    """Return the column names for a table (PostgreSQL version)."""
-    from sqlalchemy import text  # local import — text only needed here
-
-    result = conn.execute(
-        text("SELECT column_name FROM information_schema.columns WHERE table_name = :t"),
-        {"t": table},
-    )
-    return [r[0] for r in result]
-
-
-def run_alembic_upgrade():
-    from pathlib import Path
-
-    from alembic import command
-    from alembic.config import Config
-    from sqlalchemy import inspect
-
-    from app.db.session import engine
-
-    # Resolve alembic.ini relative to this file so it works regardless of CWD.
-    # Mono/backend Docker: main.py at /app/backend/src/app/main.py,
-    # alembic.ini at /app/backend/alembic.ini.
-    # Repo: main.py at <root>/apps/backend/src/app/main.py,
-    # alembic.ini at <root>/apps/backend/alembic.ini.
-    _p = Path(__file__).resolve()
-    _alembic_candidates: list[str | Path | None] = [
-        os.environ.get("ALEMBIC_CONFIG"),
-        os.environ.get("CB_ALEMBIC_INI"),
-        _share_dir_candidate("backend", _ALEMBIC_INI_FILENAME),
-        _bundle_share_candidate("backend", _ALEMBIC_INI_FILENAME),
-        _meipass_candidate("backend", _ALEMBIC_INI_FILENAME),
-        _p.parent.parent.parent / _ALEMBIC_INI_FILENAME,
-    ]
-    if len(_p.parents) > 4:
-        _alembic_candidates.append(_p.parents[4] / "apps" / "backend" / _ALEMBIC_INI_FILENAME)
-    alembic_ini_path = _resolve_existing_path(*_alembic_candidates)
-    if alembic_ini_path is None:
-        raise FileNotFoundError("Could not locate alembic.ini for migrations")
-    _alembic_ini = str(alembic_ini_path)
-
-    try:
-        insp = inspect(engine)
-        table_names = set(insp.get_table_names())
-
-        if "users" in table_names and "alembic_version" not in table_names:
-            if os.environ.get("CB_DISABLE_LEGACY_ALEMBIC_STAMP", "").lower() in (
-                "1",
-                "true",
-                "yes",
-            ):
-                raise RuntimeError(
-                    "Legacy database detected (table users exists, alembic_version missing) "
-                    "and CB_DISABLE_LEGACY_ALEMBIC_STAMP is set. "
-                    "Stamp the correct base revision manually (often: alembic stamp "
-                    "a3b4c5d6e7fc), then retry."
-                )
-            # Old DB with no alembic tracking: stamp to the revision just before
-            # 0017 (webhooks/oauth) so upgrade() will run 0017+ and add any
-            # missing columns (e.g. registration_open). Stamping to "head" would
-            # make upgrade a no-op and leave the schema outdated.
-            _logger.warning(
-                "Legacy PostgreSQL schema: Alembic will stamp a3b4c5d6e7fc (0015_proxmox_storage) "
-                "because users exists but alembic_version is missing. "
-                "For imported or hand-built databases set CB_DISABLE_LEGACY_ALEMBIC_STAMP=true "
-                "and stamp manually."
-            )
-            alembic_cfg = Config(_alembic_ini)
-            command.stamp(alembic_cfg, "a3b4c5d6e7fc")  # 0015_proxmox_storage
-    except Exception as e:
-        logging.exception("Migration pre-check failed: %s", e)
-        raise
-
-    alembic_cfg = Config(_alembic_ini)
-    command.upgrade(alembic_cfg, "head")
-
-
-def _require_timescale_if_configured() -> None:
-    """Exit when CB_REQUIRE_TIMESCALE is set but the extension is not available."""
-    if os.environ.get("CB_REQUIRE_TIMESCALE", "").lower() not in ("1", "true", "yes"):
-        return
-    try:
-        with engine.connect() as conn:
-            row = conn.execute(
-                sa.text("SELECT 1 FROM pg_available_extensions WHERE name = 'timescaledb' LIMIT 1")
-            ).scalar()
-        if not row:
-            _logger.critical(
-                "CB_REQUIRE_TIMESCALE is set but TimescaleDB is not available on this "
-                "PostgreSQL instance. Install the extension or unset CB_REQUIRE_TIMESCALE."
-            )
-            raise SystemExit(1)
-    except SystemExit:
-        raise
-    except Exception as exc:
-        _logger.critical("TimescaleDB requirement check failed: %s", exc, exc_info=True)
-        raise SystemExit(1) from exc
-
-
-def _get_existing_schema_tables() -> set[str]:
-    from sqlalchemy import text
-    from sqlalchemy.exc import SQLAlchemyError
-
-    from app.db.session import engine
-
-    query = text(
-        "SELECT c.relname "
-        "FROM pg_class c "
-        "JOIN pg_namespace n ON n.oid = c.relnamespace "
-        "WHERE n.nspname = 'public' AND c.relkind = 'r'"
-    )
-    try:
-        with engine.connect() as conn:
-            rows = conn.execute(query).fetchall()
-            return {row[0] for row in rows}
-    except SQLAlchemyError as exc:
-        _logger.critical("Database schema inspection failed before startup: %s", exc, exc_info=True)
-        raise
-
-
-_RLS_TENANT_TABLES = (
-    "hardware",
-    "services",
-    "networks",
-    "compute_units",
-    "storage",
-    "hardware_clusters",
-    "external_nodes",
-    "ip_addresses",
-    "vlans",
-    "sites",
-    "node_relations",
-    "scan_jobs",
-    "integration_configs",
-    "topologies",
-)
-
-
-def _rls_bypass_warning(bind, tables: tuple[str, ...] = _RLS_TENANT_TABLES) -> str | None:
-    """The message to warn with, or None when the role can read its tenant tables.
-
-    Three ways a role is unaffected by RLS, and this used to check only the first:
-
-    * ``rolbypassrls`` on the role;
-    * owning the table -- PostgreSQL does not apply policies to a table's owner;
-    * unless the table is ``FORCE ROW LEVEL SECURITY``, which binds the owner too.
-
-    Checking only rolbypassrls warned every packaged install that its database
-    was misconfigured when it was not: the packaged role owns the database it
-    migrated, so it owns those tables and reads them normally.
-    (0040_rls_policies ENABLEs RLS and does not FORCE it.)
-
-    That is worth more than log tidiness, because the remedy the message implies
-    is ``ALTER ROLE ... BYPASSRLS`` -- a cluster-wide, unconditional, permanent
-    exemption on every table, where ownership bypass is scoped to owned tables
-    and can be tightened later by adding FORCE. A misleading warning pointing at
-    a privilege escalation is worse than no warning.
-
-    Returned rather than logged so it can be tested against a real database
-    without asserting on log plumbing. Development and CI run as a role that has
-    BYPASSRLS, which is precisely why nothing here was exercised before.
-    """
-    with bind.connect() as conn:
-        if (
-            conn.execute(
-                sa.text("SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user")
-            ).scalar()
-            is True
-        ):
-            return None
-
-        for tbl in tables:
-            row = conn.execute(
-                sa.text(
-                    "SELECT c.relrowsecurity, c.relforcerowsecurity, "
-                    "       pg_get_userbyid(c.relowner) = current_user AS is_owner "
-                    "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
-                    "WHERE n.nspname = 'public' AND c.relname = :t AND c.relkind = 'r'"
-                ),
-                {"t": tbl},
-            ).fetchone()
-            if not row:
-                continue
-            enabled, forced, is_owner = row
-            if not enabled:
-                continue
-            if is_owner and not forced:
-                continue  # owner bypass applies; policies do not restrict this role
-            role = conn.execute(sa.text("SELECT current_user")).scalar()
-            reason = (
-                "the table is FORCE ROW LEVEL SECURITY, so owning it does not help"
-                if forced
-                else "the role neither owns the table nor has BYPASSRLS"
-            )
-            return (
-                f"Row-level security is enabled on public.{tbl} and {reason} "
-                f"(role {role!r}). Tenant-scoped queries may return no rows unless "
-                f"session variables (e.g. app.current_tenant) match policies."
-            )
-    return None
-
-
-def _warn_if_rls_without_bypass() -> None:
-    """Warn once when RLS would actually hide rows from this role."""
-    try:
-        message = _rls_bypass_warning(engine)
-        if message:
-            _logger.warning("%s", message)
-    except Exception:
-        _logger.debug("RLS/BYPASSRLS diagnostic skipped", exc_info=True)
-
-
-def _run_discovery_enrichment_backfill() -> None:
-    """Owns the session for Phase 11's `backfill_pending_matched` call."""
-    from app.db.session import SessionLocal
-    from app.services.discovery_enrich import backfill_pending_matched
-
-    db = SessionLocal()
-    try:
-        enriched = backfill_pending_matched(db)
-        if enriched:
-            _logger.info(
-                "[discovery] enriched %d existing scan results out of the review queue",
-                enriched,
-            )
-    finally:
-        db.close()
-
-
-def _assert_required_schema() -> None:
-    try:
-        existing_tables = _get_existing_schema_tables()
-    except Exception as exc:
-        _logger.critical("Database schema check failed before startup: %s", exc, exc_info=True)
-        raise SystemExit(1) from exc
-
-    missing_tables = sorted(_REQUIRED_SCHEMA_TABLES - existing_tables)
-    if missing_tables:
-        _logger.warning(
-            "Database schema is missing required tables (%s) after the initial migration pass; "
-            "retrying Alembic once.",
-            ", ".join(missing_tables),
-        )
-        try:
-            run_alembic_upgrade()
-            existing_tables = _get_existing_schema_tables()
-        except Exception as exc:
-            _logger.critical(
-                "Database schema repair failed before startup: %s",
-                exc,
-                exc_info=True,
-            )
-            raise SystemExit(1) from exc
-
-        missing_tables = sorted(_REQUIRED_SCHEMA_TABLES - existing_tables)
-        if missing_tables:
-            _logger.critical(
-                "Database schema is still missing required tables (%s). "
-                "Run Alembic against the correct PostgreSQL database with "
-                "'make migrate' or 'alembic upgrade head', then restart.",
-                ", ".join(missing_tables),
-            )
-            raise SystemExit(1)
-
-
-def _register_discovery_profile_crons(scheduler: "BaseScheduler", db: "Session") -> None:
-    """Give every discovery profile that is due one a cron, at process start.
-
-    Which profiles those are is `discovery_service.profiles_due_for_scheduling`'s
-    answer and nothing else's. That function is where Slice 4 plan §3/§6's three
-    pause scopes are read — the fleet-wide `app_settings.agent_discovery_paused`,
-    the per-agent `local_discovery.auto_discovery_paused` grant key, and the
-    per-subnet `discovery_profiles.paused_at` — so **there is exactly one place
-    in the product that decides whether a profile gets a cron**, and both
-    registration sites (this one and `core.scheduler.reload_discovery_jobs`) ask
-    it rather than deciding for themselves.
-
-    This carried a verbatim copy of the predicate that function replaced
-    (`enabled == 1 AND schedule_cron IS NOT NULL AND schedule_cron != ''`), which
-    knew about none of the three holds. Every runtime writer of a hold rebuilds
-    the live scheduler through `reload_discovery_jobs`, so the hold worked — and
-    was then discarded by the next process start, the event *most likely* to
-    follow an operator changing configuration. A pause has to be a property of
-    the database, not of one process's scheduler state.
-
-    `DISCOVERY_PROFILE_MISFIRE_GRACE_S` is shared with `reload_discovery_jobs`
-    deliberately: the first profile write after startup re-registers every one of
-    these jobs, and a cron that silently changed its catch-up behaviour the
-    moment an unrelated profile was saved would be untraceable from the outside.
-    """
-    from apscheduler.triggers.cron import CronTrigger
-
-    from app.core.scheduler import DISCOVERY_PROFILE_MISFIRE_GRACE_S
-    from app.services import discovery_service
-
-    for profile in discovery_service.profiles_due_for_scheduling(db):
-        try:
-            trigger = CronTrigger.from_crontab(profile.schedule_cron)
-            scheduler.add_job(
-                discovery_service.run_scan_job_by_profile,
-                trigger=trigger,
-                args=[profile.id],
-                id=f"discovery_profile_{profile.id}",
-                replace_existing=True,
-                misfire_grace_time=DISCOVERY_PROFILE_MISFIRE_GRACE_S,
-            )
-            _logger.info("Scheduled discovery profile %d (%s)", profile.id, profile.name)
-        except Exception as exc:
-            _logger.warning("Could not schedule profile %d: %s", profile.id, exc)
 
 
 @asynccontextmanager
@@ -611,11 +237,11 @@ async def lifespan(app: FastAPI):
             raise SystemExit(1) from _me
 
     if auto_migrate_enabled:
-        _assert_required_schema()
+        assert_required_schema()
     else:
         _logger.info("Schema validation skipped because migrations were pre-applied.")
-    _require_timescale_if_configured()
-    _warn_if_rls_without_bypass()
+    require_timescale_if_configured()
+    warn_if_rls_without_bypass()
 
     # ── Phase 1b: Warn if default client hash salt is in use ──────────────
     from app.core.security import _DEFAULT_SALT, get_client_salt
@@ -1198,7 +824,7 @@ async def lifespan(app: FastAPI):
 
     # Load the discovery profiles that are due a cron and schedule them.
     with get_session_context() as sched_db:
-        _register_discovery_profile_crons(scheduler, sched_db)
+        register_discovery_profile_crons(scheduler, sched_db)
 
     # Uptime monitoring is handled by the item-based polling engine
     # (workers: monitor_scheduler + monitor_poll). The legacy run_all_monitors_job
@@ -1485,7 +1111,7 @@ async def lifespan(app: FastAPI):
     # unknown devices remain reviewable. Threaded because it owns a synchronous
     # session; a failed backfill is reported without preventing startup.
     try:
-        await asyncio.to_thread(_run_discovery_enrichment_backfill)
+        await asyncio.to_thread(run_discovery_enrichment_backfill)
     except Exception:
         _logger.warning("Discovery enrichment backfill failed at startup", exc_info=True)
 
@@ -2132,381 +1758,13 @@ app.include_router(
 )
 
 
-# ── Health check ───────────────────────────────────────────────────────────
-#
-# Each probe is registered twice: a documented GET and an undocumented HEAD.
-# One `api_route(methods=["GET", "HEAD"])` publishes both methods under the
-# same operation id, and a duplicate operation id is a generation error in
-# every OpenAPI client generator — which is exactly the machine-readable
-# contract SRV-01 requires the headless server to publish.
-
-
-def _health_caller_is_authenticated(request: Request, db) -> bool:
-    """Best-effort auth check for deciding how much health detail to disclose.
-
-    Any failure means "treat as anonymous". This endpoint is the Docker
-    healthcheck and the frontend's liveness poll, so it must keep answering when
-    the database is unreachable — and that is precisely when resolving a user
-    will throw. Taking the session as an argument (rather than opening its own)
-    is safe for that: `get_db` only constructs a lazily-connecting Session, so
-    the dependency itself cannot fail on a down database.
-    """
-    try:
-        from app.core.security import resolve_optional_user_id_sync
-
-        return resolve_optional_user_id_sync(db, request) is not None
-    except Exception:
-        return False
-
-
-async def _probe_dependencies() -> dict[str, str]:
-    """The dependency half of health, shared by /readyz and legacy /health.
-
-    Kept separate from liveness on purpose: a database or Redis outage means
-    "do not send me traffic", not "kill me and start another one". Conflating
-    the two is how a dependency blip turns into a restart storm.
-
-    The probe itself lives in `app.core.health`, which is also what the
-    write-admission guard consults — one implementation, so what readiness
-    reports and what the server actually enforces cannot drift apart.
-    """
-    from app.core.health import probe_dependencies
-
-    return await probe_dependencies()
-
-
-async def _health_snapshot():
-    """Freshly evaluated health for a probe endpoint.
-
-    `max_age_s=0` on purpose: an orchestrator polling every few seconds must
-    never be answered out of a cache it has no way to see. The guard on the
-    write path is the caching consumer.
-    """
-    from app.core.health import current_health
-
-    return await current_health(max_age_s=0.0)
-
-
-@app.head(f"{_V1}/livez", include_in_schema=False)
-@app.get(f"{_V1}/livez")
-async def livez() -> dict[str, object]:
-    """SRV-03 liveness: is this process able to serve at all?
-
-    Deliberately touches no dependency and takes no lock. If this handler runs,
-    the event loop is not wedged, which is the only question a container
-    HEALTHCHECK's restart decision should turn on.
-    """
-    return {"status": "alive", "uptime_s": round(time.time() - SERVER_START_TIME)}
-
-
-@app.head(f"{_V1}/startupz", include_in_schema=False)
-@app.get(f"{_V1}/startupz")
-async def startupz(response: Response) -> dict[str, object]:
-    """SRV-03 startup: has initialisation finished?
-
-    Lets an orchestrator hold off its liveness probe during a slow migration
-    instead of killing the process mid-upgrade.
-    """
-    from app.core.server_state import ServerState, get_state
-
-    state = get_state()
-    started = state is not ServerState.STARTING
-    if not started:
-        response.status_code = 503
-    return {"state": state.value, "started": started}
-
-
-@app.head(f"{_V1}/readyz", include_in_schema=False)
-@app.get(f"{_V1}/readyz")
-async def readyz(response: Response) -> dict[str, object]:
-    """SRV-03 readiness: can this instance safely serve traffic right now?
-
-    503 while STOPPING is what makes SIGTERM drain work — the load balancer
-    stops sending new requests before the process goes away.
-    """
-    from app.core.server_state import ServerState, get_state
-
-    state = get_state()
-    snapshot = await _health_snapshot()
-    checks = dict(snapshot.checks)
-    ready = state is ServerState.READY and all(v == "ok" for v in checks.values())
-    if not ready:
-        response.status_code = 503
-    # `state` stays the lifecycle state it has always been; `health` is the
-    # RC-05 health state derived from it and the dependency verdicts, which is
-    # the only place a *degraded* server is distinguishable from a not-ready
-    # one. `writes_permitted` is not advice — it is what the write-admission
-    # guard is enforcing on this process at this moment.
-    return {
-        "ready": ready,
-        "state": state.value,
-        "checks": checks,
-        "health": snapshot.state.value,
-        "degraded": list(snapshot.degraded),
-        "writes_permitted": snapshot.writes_permitted,
-    }
-
-
-@app.head(f"{_V1}/health", include_in_schema=False)
-@app.get(f"{_V1}/health")
-async def health(request: Request, db: Session = Depends(get_db)):
-    """Legacy combined health, kept at its exact response shape.
-
-    The frontend's connectivity poll, scripts/test-mono-e2e.sh and
-    deploy/setup.sh's install-time wait all read this body, so the shape is
-    load-bearing. The restart-deciding probes moved to /livez; new consumers
-    should use /livez, /readyz or /startupz instead.
-    """
-    from app.core.server_state import ServerState, get_state
-
-    state = get_state()
-    snapshot = await _health_snapshot()
-    checks = dict(snapshot.checks)
-
-    body: dict[str, object] = {
-        "state": state.value,
-        "ready": state == ServerState.READY,
-        "uptime_s": round(time.time() - SERVER_START_TIME),
-        "checks": checks,
-        "health": snapshot.state.value,
-        "degraded": list(snapshot.degraded),
-    }
-
-    # Build version and installed database extensions are unauthenticated
-    # fingerprinting material — they tell a scanner which published CVEs to try
-    # before it has any credentials. Liveness (the fields above) is what the
-    # healthcheck, the reverse proxy, and the frontend poll actually need, so
-    # the detail is reserved for authenticated callers.
-    if _health_caller_is_authenticated(request, db):
-        timescaledb_available: bool | None = None
-        try:
-            with engine.connect() as conn:
-                timescaledb_available = bool(
-                    conn.execute(
-                        text(
-                            "SELECT 1 FROM pg_available_extensions "
-                            "WHERE name = 'timescaledb' LIMIT 1"
-                        )
-                    ).scalar()
-                )
-        except Exception:
-            # Same contract as before the probe was factored out: a database
-            # that cannot answer reports an unknown extension inventory, not a
-            # 500 on the endpoint the healthcheck depends on.
-            timescaledb_available = None
-        body["version"] = settings.app_version
-        body["timescaledb_available"] = timescaledb_available
-
-    return body
-
+# ── Health probes ──────────────────────────────────────────────────────────
+# Unauthenticated by design: the container HEALTHCHECK, nginx and the frontend
+# connectivity poll all read these before any session exists. What they may
+# disclose is decided inside the handlers, not by a mount-level dependency.
+app.include_router(health_router, prefix=_V1)
 
 # ── Static files & SPA fallback ────────────────────────────────────────────
-
-_STATIC_DIR = Path(__file__).parent.parent / "static"
-_FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
-
-
-def _resolve_existing_path(*candidates: str | Path | None) -> Path | None:
-    for candidate in candidates:
-        if not candidate:
-            continue
-        path = Path(candidate).expanduser()
-        if path.exists():
-            return path
-    return None
-
-
-def _share_dir_candidate(*parts: str) -> Path | None:
-    share_dir = os.environ.get("CB_SHARE_DIR")
-    return Path(share_dir).expanduser().joinpath(*parts) if share_dir else None
-
-
-def _bundle_share_candidate(*parts: str) -> Path:
-    return Path(sys.executable).resolve().parent.joinpath("share", *parts)
-
-
-def _meipass_candidate(*parts: str) -> Path | None:
-    meipass = getattr(sys, "_MEIPASS", None)
-    return Path(meipass).joinpath(*parts) if meipass else None
-
-
-def _get_frontend_dir() -> Path | None:
-    # Prefer settings.static_dir which maps to the STATIC_DIR env var.
-    # The Dockerfile sets STATIC_DIR=/app/frontend/dist; the default "../frontend/dist"
-    # is resolved relative to the backend working directory (/app/backend in Docker).
-    sd = Path(settings.static_dir)
-    if not sd.is_absolute():
-        sd = Path.cwd() / sd
-    if sd.exists():
-        return sd
-    # Legacy fallbacks for local dev layouts
-    if _FRONTEND_DIST.exists():
-        return _FRONTEND_DIST
-    if _STATIC_DIR.exists():
-        return _STATIC_DIR
-    return None
-
-
-_frontend_dir = _get_frontend_dir()
-_frontend_root_files: dict[str, Path] = {}
-if _frontend_dir:
-    _frontend_dir_resolved = _frontend_dir.resolve()
-    for _entry in _frontend_dir_resolved.iterdir():
-        if _entry.is_file():
-            _frontend_root_files[_entry.name] = _entry
-
-_uploads_dir = Path(settings.uploads_dir)
-_user_icons_dir = _uploads_dir / "icons"
-_branding_dir_data = _uploads_dir / "branding"
-
-# Ensure directories exist so mounting never fails
-_uploads_dir.mkdir(parents=True, exist_ok=True)
-_user_icons_dir.mkdir(parents=True, exist_ok=True)
-_branding_dir_data.mkdir(parents=True, exist_ok=True)
-
-app.mount("/uploads", StaticFiles(directory=str(_uploads_dir)), name="uploads")
-app.mount("/user-icons", StaticFiles(directory=str(_user_icons_dir)), name="user-icons")
-app.mount("/branding", StaticFiles(directory=str(_branding_dir_data)), name="branding")
-
-
-# ── ACME HTTP-01 challenge ─────────────────────────────────────────────────
-# The CA fetches this path with no credentials, before any certificate exists. nginx serves
-# it directly in the mono image and on a native install; the plain image has no nginx, so the
-# application serves the same webroot certbot writes into. One directory, two servers.
-#
-# This mounts *above* the SPA fallback (`GET /{full_path:path}`), which matches every GET
-# path — anything registered after it is unreachable — and it resolves the webroot per
-# request rather than at import: CB_DATA_DIR is what names it, the directory does not exist
-# until the first issuance, and a `/data` that this process cannot create must not be able to
-# stop the application from importing.
-from app.services.acme_service import webroot as _acme_webroot  # noqa: E402
-
-
-class _AcmeChallengeFiles(StaticFiles):
-    """StaticFiles pinned to `acme_service.webroot()` as it is at request time.
-
-    The assignment below writes shared instance state from a request handler, which is safe
-    here for one reason and only one: `webroot()` reads CB_DATA_DIR, which is fixed for the
-    life of the process, so every request writes the identical value. Starlette's own
-    traversal guard still runs in `super().lookup_path`, so a token containing `..` cannot
-    escape the directory this names.
-    """
-
-    def __init__(self) -> None:
-        super().__init__(directory=None, check_dir=False)
-
-    def lookup_path(self, path: str) -> tuple[str, os.stat_result | None]:
-        self.all_directories = [str(_acme_webroot() / ".well-known" / "acme-challenge")]
-        return super().lookup_path(path)
-
-
-app.mount(
-    "/.well-known/acme-challenge",
-    _AcmeChallengeFiles(),
-    name="acme-challenge",
-)
-
-
-async def _static_cache_middleware(request: Request, call_next):
-    """Add Cache-Control for static uploads so browsers cache icons and branding."""
-    response = await call_next(request)
-    path = request.scope.get("path", "")
-    if path.startswith(("/uploads/", "/user-icons/", "/branding/")) and response.status_code == 200:
-        response.headers.setdefault("Cache-Control", "public, max-age=86400")
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers.setdefault("Content-Security-Policy", "default-src 'none'; img-src 'self'")
-        if path.lower().endswith((".svg", ".svgz", ".html", ".htm", ".xhtml", ".xml")):
-            response.headers["Content-Type"] = "application/octet-stream"
-            response.headers["Content-Disposition"] = "attachment"
-    return response
-
-
-app.middleware("http")(_static_cache_middleware)
-
-
-@app.get("/favicon.ico", include_in_schema=False)
-async def favicon_file():
-    favicon = _branding_dir_data / _FAVICON_FILENAME
-    if favicon.exists():
-        return FileResponse(str(favicon), media_type="image/x-icon")
-    if _frontend_dir and (_frontend_dir / _FAVICON_FILENAME).exists():
-        return FileResponse(str(_frontend_dir / _FAVICON_FILENAME), media_type="image/x-icon")
-    return Response(status_code=404)
-
-
-@app.get("/install-agent.sh", include_in_schema=False)
-def get_install_agent_script(request: Request, endpoint: str | None = None) -> Response:
-    from app.core import agent_crypto
-    from app.core.forwarded import forwarded_base_url
-    from app.db.session import SessionLocal
-    from app.services import agent_endpoints, agent_install
-
-    with SessionLocal() as db:
-        # Same rule as GET /api/v1/agents/install-command: absent falls back,
-        # unknown is refused. The two must agree, because the digest the UI
-        # publishes is computed over whatever this route renders.
-        if endpoint is None:
-            server_url = forwarded_base_url(request)
-        else:
-            selected = agent_endpoints.find_endpoint(db, endpoint)
-            if selected is None:
-                raise HTTPException(
-                    status_code=404, detail=f"No agent endpoint with id {endpoint!r}"
-                )
-            server_url = selected["url"]
-
-        cert = agent_install._active_certificate(db)
-        tls_mode, tls_pin = agent_install._tls_mode_and_pin(cert)
-        # Task 28: same successor-preferred key selection as
-        # agent_install.build_install_command — see its comment.
-        state = agent_crypto.load_server_key_rotation_state(db)
-        server_pub = state.successor_pub if state.successor_pub is not None else state.current_pub
-        script = agent_install.render_install_script(
-            server_url=server_url,
-            server_static_pk_hex=server_pub.hex(),
-            tls_pin=tls_pin,
-            manifest=agent_install.agent_update.load_manifest(),
-        )
-    return Response(content=script, media_type="text/x-shellscript")
-
-
-if _frontend_dir:
-    _assets = _frontend_dir / "assets"
-    if _assets.exists():
-        app.mount("/assets", StaticFiles(directory=str(_assets)), name="assets")
-
-    _icons = _frontend_dir / "icons"
-    if _icons.exists():
-        app.mount("/icons", StaticFiles(directory=str(_icons)), name="icons")
-
-    @app.get(
-        "/{full_path:path}", include_in_schema=False, responses={404: {"description": "Not found"}}
-    )
-    async def spa_fallback(full_path: str, request: Request):
-        # API routes must never fall through to the SPA
-        if full_path.startswith("api/"):
-            raise HTTPException(status_code=404, detail="Not found")
-        # Serve real files from the dist directory (e.g. site.webmanifest, PWA
-        # icons) before falling back to the SPA index.html.  Without this check,
-        # the browser receives HTML when it requests JSON/binary assets and shows
-        # "Manifest: Syntax error" or broken icon errors.
-        frontend_dir_resolved = _frontend_dir.resolve()  # type: ignore[operator]
-        rel_path = PurePosixPath(full_path.lstrip("/"))
-        if any(part in (".", "..") for part in rel_path.parts):
-            raise HTTPException(status_code=404, detail="Not found")
-        if len(rel_path.parts) == 1:
-            candidate = _frontend_root_files.get(rel_path.parts[0])
-        else:
-            candidate = None
-        if candidate and candidate.is_file():
-            content_type, _ = mimetypes.guess_type(candidate.name)
-            return Response(content=candidate.read_bytes(), media_type=content_type)
-        index = frontend_dir_resolved / "index.html"
-        if index.exists():
-            return FileResponse(str(index))
-        return Response(status_code=404)
-else:
-
-    @app.get("/", include_in_schema=False)
-    async def root():
-        return HTMLResponse("<h1>Circuit Breaker API</h1><p>Frontend not built.</p>")
+# Last, and it has to stay last: the fallback claims `GET /{full_path:path}`,
+# so any route registered after this call is unreachable.
+register_static_spa(app)

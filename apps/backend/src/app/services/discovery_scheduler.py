@@ -111,7 +111,7 @@ async def _run_profile_job_async(profile_id: int) -> None:
     cron keeps firing. Registration-time gating alone makes the hold a property of
     one process's scheduler state instead of the database — which is what let a
     process restart discard all three holds (see
-    `app.main._register_discovery_profile_crons`), and what let the per-agent hold
+    `app.startup.scheduler.register_discovery_profile_crons`), and what let the per-agent hold
     be written and not applied before that.
     """
     from app.services.discovery_service import execute_scan_job  # lazy import

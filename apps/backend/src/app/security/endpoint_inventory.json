@@ -4878,11 +4878,11 @@
     {
       "auth_policy": "health",
       "dependency_calls": [
-        "app.db.session.get_db",
-        "app.main.health"
+        "app.api.health.health",
+        "app.db.session.get_db"
       ],
       "disclosure": "bounded health state",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.health",
       "endpoint_name": "health",
       "methods": [
         "GET"
@@ -4896,11 +4896,11 @@
     {
       "auth_policy": "health",
       "dependency_calls": [
-        "app.db.session.get_db",
-        "app.main.health"
+        "app.api.health.health",
+        "app.db.session.get_db"
       ],
       "disclosure": "bounded health state",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.health",
       "endpoint_name": "health",
       "methods": [
         "HEAD"
@@ -5954,10 +5954,10 @@
     {
       "auth_policy": "health",
       "dependency_calls": [
-        "app.main.livez"
+        "app.api.health.livez"
       ],
       "disclosure": "process liveness and uptime",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.health",
       "endpoint_name": "livez",
       "methods": [
         "GET"
@@ -5971,10 +5971,10 @@
     {
       "auth_policy": "health",
       "dependency_calls": [
-        "app.main.livez"
+        "app.api.health.livez"
       ],
       "disclosure": "process liveness and uptime",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.health",
       "endpoint_name": "livez",
       "methods": [
         "HEAD"
@@ -7361,10 +7361,10 @@
     {
       "auth_policy": "health",
       "dependency_calls": [
-        "app.main.readyz"
+        "app.api.health.readyz"
       ],
       "disclosure": "lifecycle state and ok/error per dependency",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.health",
       "endpoint_name": "readyz",
       "methods": [
         "GET"
@@ -7378,10 +7378,10 @@
     {
       "auth_policy": "health",
       "dependency_calls": [
-        "app.main.readyz"
+        "app.api.health.readyz"
       ],
       "disclosure": "lifecycle state and ok/error per dependency",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.health",
       "endpoint_name": "readyz",
       "methods": [
         "HEAD"
@@ -8200,10 +8200,10 @@
     {
       "auth_policy": "health",
       "dependency_calls": [
-        "app.main.startupz"
+        "app.api.health.startupz"
       ],
       "disclosure": "lifecycle state",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.health",
       "endpoint_name": "startupz",
       "methods": [
         "GET"
@@ -8217,10 +8217,10 @@
     {
       "auth_policy": "health",
       "dependency_calls": [
-        "app.main.startupz"
+        "app.api.health.startupz"
       ],
       "disclosure": "lifecycle state",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.health",
       "endpoint_name": "startupz",
       "methods": [
         "HEAD"
@@ -9076,10 +9076,10 @@
     {
       "auth_policy": "public-ui-asset",
       "dependency_calls": [
-        "app.main.favicon_file"
+        "app.api.static_spa.favicon_file"
       ],
       "disclosure": "favicon bytes",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.static_spa",
       "endpoint_name": "favicon_file",
       "methods": [
         "GET"
@@ -9093,10 +9093,10 @@
     {
       "auth_policy": "agent-download",
       "dependency_calls": [
-        "app.main.get_install_agent_script"
+        "app.api.static_spa.get_install_agent_script"
       ],
       "disclosure": "install script",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.static_spa",
       "endpoint_name": "get_install_agent_script",
       "methods": [
         "GET"
@@ -9110,10 +9110,10 @@
     {
       "auth_policy": "public-ui-asset",
       "dependency_calls": [
-        "app.main.spa_fallback"
+        "app.api.static_spa.spa_fallback"
       ],
       "disclosure": "frontend application shell",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.static_spa",
       "endpoint_name": "spa_fallback",
       "methods": [
         "GET"
@@ -9268,7 +9268,7 @@
         "GET",
         "HEAD"
       ],
-      "mount_class": "app.main._AcmeChallengeFiles",
+      "mount_class": "app.api.static_spa._AcmeChallengeFiles",
       "name": "acme-challenge",
       "path": "/.well-known/acme-challenge/{path:path}",
       "public_reason": "ACME HTTP-01 validation must be readable by the certificate authority before any certificate exists.",

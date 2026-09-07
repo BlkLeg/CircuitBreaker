@@ -551,7 +551,7 @@ def profiles_due_for_scheduling(db: Session) -> list[DiscoveryProfile]:
 
     The single place that decides, asked by both registration sites —
     `core.scheduler.reload_discovery_jobs` on every write that can change a
-    schedule, and `app.main._register_discovery_profile_crons` at process start.
+    schedule, and `app.startup.scheduler.register_discovery_profile_crons` at process start.
 
     Lives here rather than in `core/scheduler.py` because which profiles are due
     is a discovery-domain question — the scheduler module's job is to turn the
