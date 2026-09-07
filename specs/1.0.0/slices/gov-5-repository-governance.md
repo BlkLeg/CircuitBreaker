@@ -6,7 +6,8 @@
 ## Primary touchpoints
 
 - `.github/branch-protection.md`, actual GitHub repository settings
-- `.github/instructions/ISSUE_TEMPLATE/` and standard `.github/ISSUE_TEMPLATE/`
+- `.github/ISSUE_TEMPLATE/` (the duplicate draft at `.github/instructions/ISSUE_TEMPLATE/`
+  was removed in the 2026-09-07 Phase 1 tech-debt cleanup)
 - New `.github/CODEOWNERS`, pull-request template, release/changelog/security policies
 
 ## Build sequence

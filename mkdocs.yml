@@ -34,6 +34,7 @@ nav:
       - Knowledge Base: knowledge-base.md
       - cb-agent: agent.md
       - Agent Key Rotation: agent-key-rotation.md
+      - Agent TLS Trust Rotation: tls-trust-rotation.md
       - Settings: settings.md
       - Authentication & Access: auth-access.md
       - Webhooks & Notifications: integrations-webhooks-notifications.md
