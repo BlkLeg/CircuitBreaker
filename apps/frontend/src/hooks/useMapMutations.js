@@ -120,7 +120,7 @@ export function useMapMutations({
         return;
       }
 
-      const deleter = ENTITY_API_DELETE[targetNode.originalType];
+      const deleter = ENTITY_API_DELETE.get(targetNode.originalType);
       if (!deleter || !targetNode._refId) {
         toast.error('Delete is not supported for this node type.');
         return;
@@ -185,7 +185,7 @@ export function useMapMutations({
       !deleteConflictModal.nodeType
     )
       return;
-    const deleter = ENTITY_API_DELETE[deleteConflictModal.nodeType];
+    const deleter = ENTITY_API_DELETE.get(deleteConflictModal.nodeType);
     if (!deleter) {
       toast.error('Delete is not supported for this node type.');
       return;
