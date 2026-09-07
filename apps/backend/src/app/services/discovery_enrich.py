@@ -299,35 +299,49 @@ def log_enrichment(db: Session, result: ScanResult, outcome: EnrichmentOutcome) 
 
 
 def backfill_pending_matched(db: Session, *, batch_limit: int = 1000) -> int:
-    """Enrich the `matched` rows a pre-enrichment build left sitting in the queue.
+    """Repair the existing queue at startup, including stale `new` findings.
 
-    Runs once at startup. Idempotent with no flag to store, because the selector
-    *is* the marker: `state='matched' AND merge_status='pending'` is empty once
-    the pass completes, so a restart costs one index scan. That also means it
-    self-heals — if a future change ever leaves a matched row pending, the next
-    restart drains it rather than requiring a new migration.
-
-    Commits, unlike `enrich_matched_result`: this is the transaction owner.
+    Preserve observations as history, consolidate pending duplicates, and
+    re-match hosts that entered inventory after their original scan. Keyset
+    pagination visits the whole queue even when unknown hosts remain pending.
+    Returns the number enriched; owns commits and post-commit audit logging.
     """
-    rows = (
-        db.execute(
-            select(ScanResult)
-            .where(ScanResult.state == "matched", ScanResult.merge_status == "pending")
-            .order_by(ScanResult.id)
-            .limit(batch_limit)
+    from app.services import discovery_result_service as results
+
+    if batch_limit < 1:
+        raise ValueError("batch_limit must be positive")
+    last_id = 0
+    enriched = 0
+    while True:
+        rows = list(
+            db.scalars(
+                select(ScanResult)
+                .where(ScanResult.id > last_id, ScanResult.merge_status == "pending")
+                .order_by(ScanResult.id)
+                .limit(batch_limit)
+            )
         )
-        .scalars()
-        .all()
-    )
-    outcomes: list[tuple[ScanResult, EnrichmentOutcome]] = []
-    for row in rows:
-        outcome = enrich_matched_result(db, row)
-        if outcome.enriched:
-            outcomes.append((row, outcome))
-    if not outcomes:
-        return 0
-    db.commit()
-    # After the commit, for the reason `log_enrichment` documents.
-    for row, outcome in outcomes:
-        log_enrichment(db, row, outcome)
-    return len(outcomes)
+        if not rows:
+            return enriched
+        last_id = rows[-1].id
+        for tenant in sorted({row.tenant_id or 0 for row in rows}):
+            results.lock_review_queue(db, tenant)
+        outcomes: list[tuple[ScanResult, EnrichmentOutcome]] = []
+        for row in rows:
+            # An accept/ingest may have completed while the lock was awaited.
+            db.refresh(row)
+            if row.merge_status != "pending" or row.source_type in _SKIPPED_SOURCE_TYPES:
+                continue
+            row.ip_address = results.normalize_ip(row.ip_address) or row.ip_address
+            row.mac_address = results.normalize_mac(row.mac_address)
+            if row.state == "new":
+                results.classify_result(db, row)
+            results.deduplicate_pending_result(db, row)
+            outcome = enrich_matched_result(db, row)
+            if outcome.enriched:
+                outcomes.append((row, outcome))
+            db.flush()
+        db.commit()
+        for row, outcome in outcomes:
+            log_enrichment(db, row, outcome)
+        enriched += len(outcomes)

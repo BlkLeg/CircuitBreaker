@@ -1556,6 +1556,7 @@ async def _record_host_finding(
     # `Hardware` row — see `discovery_service.finalize_agent_job` — and
     # enrichment never creates, never overwrites a value that is already set,
     # and never names a device.
+    discovery_result_service.deduplicate_pending_result(db, result)
     enrichment = discovery_enrich.enrich_matched_result(db, result)
     db.flush()
 

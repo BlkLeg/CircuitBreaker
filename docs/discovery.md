@@ -13,7 +13,7 @@ Auto-Discovery helps you find devices and services in your network, then add the
 - Places findings into a review queue.
 - Lets you approve and merge only what you want.
 
-Nothing is added automatically by default — every finding lands in the review queue and waits for you.
+New devices require review by default. Findings that match existing devices can automatically fill missing details and refresh their last-seen time.
 The one exception is opt-in: if you turn on **Auto-Merge New Hosts** under **Discovery → Scan Settings**, newly
 discovered hosts are turned into hardware entities without review.
 
@@ -86,6 +86,10 @@ This is useful after changes like:
 ### 4) Review findings
 
 Open the **Review Queue** to inspect discovered items before import.
+
+Repeated observations of the same device share one pending review item within the same tenant and network scope. The other observations remain in scan history with a `duplicate` status. Different known MAC addresses at a shared IP and distinct conflicts remain separate for review. Docker and Proxmox retain their integration-specific identity handling.
+
+On backend startup, existing pending duplicates are consolidated and older findings are checked against the current inventory. Accepting a finding also rechecks inventory, so accepting stale scan results does not create the same device again.
 
 You can:
 

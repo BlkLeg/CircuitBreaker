@@ -434,7 +434,7 @@ def _run_discovery_enrichment_backfill() -> None:
         enriched = backfill_pending_matched(db)
         if enriched:
             _logger.info(
-                "[discovery] enriched %d previously-matched scan results out of the review queue",
+                "[discovery] enriched %d existing scan results out of the review queue",
                 enriched,
             )
     finally:
@@ -1479,17 +1479,11 @@ async def lifespan(app: FastAPI):
     except Exception:
         _logger.warning("Discovery readiness logging failed at startup", exc_info=True)
 
-    # ── Phase 11: one-time discovery enrichment backfill ───────────────────
-    # Devices a build older than `discovery_enrich` classified `matched` are
-    # sitting in the review queue looking like new hosts, with the data they
-    # carried never written to the device they were matched to. Drain them
-    # through the same function ingest now uses, so the queue an operator opens
-    # after upgrading holds only decisions they actually have to make.
-    #
-    # Idempotent with nothing to remember: the selector *is* the marker, so once
-    # the pass completes a restart costs one index scan. Wrapped because a
-    # backfill is never worth failing a boot over, and threaded because it holds
-    # a synchronous session.
+    # ── Phase 11: reconcile the discovery review queue ─────────────────────
+    # Reclassify stale new observations, enrich known devices, and consolidate
+    # pending duplicates from older builds. The paginated pass is idempotent;
+    # unknown devices remain reviewable. Threaded because it owns a synchronous
+    # session; a failed backfill is reported without preventing startup.
     try:
         await asyncio.to_thread(_run_discovery_enrichment_backfill)
     except Exception:

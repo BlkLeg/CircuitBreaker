@@ -26,6 +26,7 @@ from app.schemas.discovery import ScanResultOut
 from app.services.discovery_fingerprint import _kb_oui_lookup
 from app.services.discovery_network import PORT_SERVICE_MAP, _norm_mac
 from app.services.discovery_proxmox_merge import _merge_proxmox_result
+from app.services.discovery_result_service import classify_result, lock_review_queue
 from app.services.discovery_scheduler import main_loop
 from app.services.log_service import write_log
 from app.services.stream_faults import record_stream_fault
@@ -254,8 +255,13 @@ def _auto_merge_result(db: Session, result: ScanResult, actor: str = "system") -
     Attempt to automatically merge a scan result into the system without manual intervention.
     Called when discovery_auto_merge is true, or via API bulk action.
     """
+    lock_review_queue(db, result.tenant_id)
+    db.flush()
+    db.refresh(result)
     if result.merge_status != "pending":
         return
+    if result.state == "new" and result.source_type not in {"docker", "proxmox"}:
+        classify_result(db, result)
 
     now = utcnow_iso()
 
@@ -285,6 +291,7 @@ def _auto_merge_result(db: Session, result: ScanResult, actor: str = "system") -
         # For simplicity, default to server.
         hw = Hardware(
             name=name,
+            tenant_id=result.tenant_id,
             role="server",
             ip_address=result.ip_address,
             mac_address=result.mac_address,
@@ -448,6 +455,22 @@ def merge_scan_result(
         if result.source_type == "proxmox":
             return _merge_proxmox_result(db, result, overrides, actor, now)
 
+        lock_review_queue(db, result.tenant_id)
+        db.flush()
+        db.refresh(result)
+        if result.merge_status != "pending":
+            raise HTTPException(status_code=409, detail="Result was already processed")
+        if result.state == "new" and result.source_type != "docker":
+            classify_result(db, result)
+            if result.state == "conflict":
+                db.commit()
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Device identity changed since this scan; refresh and review the conflict"
+                    ),
+                )
+
         # CB-CASCADE-005: wrap accept branch in a savepoint for atomicity
         sp = db.begin_nested()
         try:
@@ -520,6 +543,7 @@ def merge_scan_result(
 
                 hw = Hardware(
                     name=name,
+                    tenant_id=result.tenant_id,
                     role=role,
                     ip_address=result.ip_address,
                     mac_address=norm_mac,

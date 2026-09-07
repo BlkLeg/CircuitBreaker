@@ -4,7 +4,7 @@
 same row shape and exactly the same match/conflict verdict for a *single*
 incremental finding, and the rest of `_scan_import` cannot give it: that function
 opens its own `SessionLocal`, needs the `setup` dict `_scan_setup` builds,
-de-duplicates IPs across the whole batch, suppresses prober rows, and finally
+de-duplicates observations across the whole batch, and finally
 **overwrites** `job.hosts_*` instead of incrementing them. Calling it with
 fabricated raw scan data would therefore reset a live job's counters once per
 finding. So the row-building and the matcher move here, `db` arrives as a
@@ -46,7 +46,7 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -126,11 +126,10 @@ def build_and_classify_result(
     network_id = raw.get("network_id")
     vlan_id = raw.get("vlan_id")
 
-    # Unconditional on both paths (see module docstring). `from_agent` now means
-    # exactly one thing: whether the tenant predicate applies.
-    from_agent = discovery_agent_id is not None
+    # Normalize on both paths before making any identity decisions.
     ip = normalize_ip(ip)
     mac_address = normalize_mac(mac_address)
+    lock_review_queue(db, job.tenant_id)
 
     # For docker results, resolve network_id/vlan_id if not already set
     if source == "docker" and network_id is None and ip:
@@ -171,18 +170,39 @@ def build_and_classify_result(
         res.os_vendor = raw["os_vendor_override"]
     if raw.get("os_family_override"):
         res.os_family = raw["os_family_override"]
-    if raw.get("hostname_override"):
-        res.hostname = raw["hostname_override"]
-
     db.add(res)
 
-    # Match against existing hardware
+    classification = classify_result(db, res, job=job)
+    # As before, classification uses the observed hostname, while integrations
+    # may supply a different display name on the resulting row.
+    if raw.get("hostname_override"):
+        res.hostname = raw["hostname_override"]
+    return res, classification
+
+
+def classify_result(db: Session, res: ScanResult, *, job: ScanJob | None = None) -> str:
+    """Re-evaluate an observation against inventory without inserting another row."""
+    job = job or db.get(ScanJob, res.scan_job_id)
+    if job is None:
+        return res.state
+    ip = normalize_ip(res.ip_address) or res.ip_address
+    mac_address = normalize_mac(res.mac_address)
+    res.ip_address = ip
+    res.mac_address = mac_address
+    res.state = CLASSIFICATION_NEW
+    res.matched_entity_type = None
+    res.matched_entity_id = None
+    res.conflicts_json = None
     matched_hardware = _match_hardware(
-        db, job, ip=ip, mac_address=mac_address, from_agent=from_agent
+        db,
+        job,
+        ip=ip,
+        mac_address=mac_address,
+        from_agent=res.discovery_agent_id is not None,
     )
 
     if not matched_hardware:
-        return res, CLASSIFICATION_NEW
+        return CLASSIFICATION_NEW
 
     res.matched_entity_type = "hardware"
     res.matched_entity_id = matched_hardware.id
@@ -200,7 +220,7 @@ def build_and_classify_result(
                 "discovered": mac_address,
             }
         )
-    discovered_hostname = hostname or snmp_data.get("sys_name")
+    discovered_hostname = res.hostname or res.snmp_sys_name
     if (
         discovered_hostname
         and matched_hardware.name
@@ -217,10 +237,103 @@ def build_and_classify_result(
     if conflict_fields:
         res.state = "conflict"
         res.conflicts_json = json.dumps(conflict_fields)  # type: ignore[assignment]
-        return res, CLASSIFICATION_CONFLICT
+        return CLASSIFICATION_CONFLICT
 
     res.state = "matched"
-    return res, CLASSIFICATION_MATCHED
+    return CLASSIFICATION_MATCHED
+
+
+def lock_review_queue(db: Session, tenant_id: int | None) -> None:
+    """Serialize discovery identity decisions until commit, including empty queues.
+
+    A row lock alone cannot protect two workers discovering a host for the first
+    time. This transaction advisory lock is also taken by accept and backfill.
+    The namespace is private to discovery; tenants do not block one another.
+    """
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(1128419921, :tenant)"),
+            {"tenant": tenant_id or 0},
+        )
+
+
+def deduplicate_pending_result(db: Session, result: ScanResult) -> ScanResult:
+    """Keep one actionable observation; retain other findings as scan history.
+
+    Call after the replay-key flush, while holding the tenant's queue lock.
+    Different known MACs at one IP are separate devices. An IP-only observation
+    is ambiguous if that address has more than one known MAC in this network.
+    Docker/Proxmox identities belong to their integration-specific reconcilers.
+    """
+    if (
+        result.merge_status != "pending"
+        or result.state == "matched"
+        or result.source_type in {"docker", "proxmox"}
+    ):
+        return result
+    db.flush()
+    identity = [ScanResult.ip_address == result.ip_address]
+    if result.mac_address:
+        identity.append(func.upper(ScanResult.mac_address) == result.mac_address)
+    candidates = list(
+        db.scalars(
+            select(ScanResult)
+            .where(
+                ScanResult.merge_status == "pending",
+                ScanResult.tenant_id == result.tenant_id,
+                ScanResult.network_id == result.network_id,
+                ScanResult.vlan_id == result.vlan_id,
+                or_(
+                    ScanResult.source_type.is_(None),
+                    ScanResult.source_type.not_in(["docker", "proxmox"]),
+                ),
+                or_(*identity),
+            )
+            .order_by(ScanResult.id)
+        )
+    )
+    macs_at_ip = {
+        normalize_mac(row.mac_address)
+        for row in candidates
+        if row.ip_address == result.ip_address and row.mac_address
+    }
+    compatible = []
+    for row in candidates:
+        mac = normalize_mac(row.mac_address)
+        if mac and result.mac_address and mac != result.mac_address:
+            continue
+        if (not mac or not result.mac_address) and len(macs_at_ip) > 1:
+            continue
+        # Never hide a different conflict, nor turn an agent's hostname into a
+        # server observation that the enrichment path is allowed to trust.
+        if row.state != result.state or row.conflicts_json != result.conflicts_json:
+            continue
+        if row.matched_entity_id != result.matched_entity_id:
+            continue
+        compatible.append(row)
+    if not compatible:
+        return result
+    canonical = compatible[0]
+    for row in compatible[1:]:
+        for attr in (
+            "mac_address",
+            "os_family",
+            "os_vendor",
+            "os_accuracy",
+            "device_type",
+            "device_confidence",
+            "open_ports_json",
+            "lldp_neighbors_json",
+        ):
+            if not getattr(canonical, attr) and getattr(row, attr):
+                setattr(canonical, attr, getattr(row, attr))
+        if canonical.discovery_agent_id == row.discovery_agent_id:
+            for attr in ("hostname", "snmp_sys_name", "snmp_sys_descr", "banner"):
+                if not getattr(canonical, attr) and getattr(row, attr):
+                    setattr(canonical, attr, getattr(row, attr))
+        row.merge_status = "duplicate"
+    db.flush()
+    return canonical
 
 
 def _match_hardware(

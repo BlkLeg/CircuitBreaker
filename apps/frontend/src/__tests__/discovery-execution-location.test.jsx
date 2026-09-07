@@ -382,6 +382,20 @@ describe('useDiscoveryStream — the pending badge', () => {
     vi.unstubAllGlobals();
   });
 
+  it('counts only pending observations, excluding duplicate and enriched history', async () => {
+    const { result } = renderHook(() => useDiscoveryStream());
+    const socket = socketInstances[socketInstances.length - 1];
+    await act(async () => {});
+    act(() => {
+      socket.emitOpen();
+      socket.emitMessage({ status: 'connected' });
+      for (const [id, status] of ['pending', 'duplicate', 'auto_updated', 'accepted'].entries()) {
+        socket.emitMessage({ type: 'result_added', result: { id, merge_status: status } });
+      }
+    });
+    expect(result.current.pendingCount).toBe(1);
+  });
+
   it("replaces its optimistic count with the server's pending_count", async () => {
     const { result } = renderHook(() => useDiscoveryStream());
     const socket = socketInstances[socketInstances.length - 1];

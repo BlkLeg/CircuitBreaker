@@ -439,6 +439,56 @@ async def test_duplicate_finding_inserts_one_result_and_emits_no_second_event(
     assert (stored.finding_count, stored.hosts_found) == (1, 1)
 
 
+async def test_rediscovery_across_agents_and_jobs_is_one_pending_device(
+    db_session, factories, emitted
+):
+    first_agent = _agent(db_session, factories)
+    second_agent = _agent(
+        db_session, factories, tenant=db_session.get(Tenant, first_agent.tenant_id)
+    )
+    jobs = [_job(db_session, agent) for agent in (first_agent, second_agent)]
+    payloads = [_payload(job) for job in jobs]
+    for agent, job, payload in zip((first_agent, second_agent), jobs, payloads, strict=True):
+        assert await agent_discovery.ingest_discovery_finding(db_session, agent, payload) == (
+            agent_discovery.DISPOSITION_ACCEPTED
+        )
+        db_session.refresh(job)
+        assert (job.hosts_found, job.finding_count) == (1, 1)
+    assert _results(db_session, jobs[0])[0].merge_status == "pending"
+    assert _results(db_session, jobs[1])[0].merge_status == "duplicate"
+    assert len(emitted) == 2
+    assert emitted[-1][1]["result"]["merge_status"] == "duplicate"
+    assert (
+        await agent_discovery.ingest_discovery_finding(db_session, second_agent, payloads[1])
+        == agent_discovery.DISPOSITION_DUPLICATE
+    )
+    assert len(_results(db_session, jobs[1])) == 1
+    assert len(emitted) == 2
+
+
+async def test_over_ceiling_rediscovery_rolls_back_pending_row_enrichment(
+    db_session, factories, emitted
+):
+    agent = _agent(db_session, factories)
+    first_job = _job(db_session, agent)
+    await agent_discovery.ingest_discovery_finding(
+        db_session, agent, _payload(first_job, mac_address=None)
+    )
+    first_result = _results(db_session, first_job)[0]
+    second_job = _job(db_session, agent, finding_count=1)
+    from app.schemas.agent_frame import DiscoveryFindingPayload
+
+    finding = DiscoveryFindingPayload.model_validate(_payload(second_job))
+    with pytest.raises(agent_discovery.InvalidDiscoveryFinding):
+        await agent_discovery._record_host_finding(
+            db_session, agent, second_job, finding, finding.ip_address, ceiling=1
+        )
+    db_session.refresh(first_result)
+    assert first_result.mac_address is None
+    assert first_result.merge_status == "pending"
+    assert _results(db_session, second_job) == []
+
+
 async def test_counters_increment_per_accepted_finding(db_session, factories, emitted):
     """D-10: the agent path increments, because it has no batch to write
     absolutely from. `hosts_found` plus exactly one of new/updated/conflict per
@@ -1025,7 +1075,7 @@ async def test_a_deadline_exceeded_summary_keeps_its_findings_and_says_they_are_
     job = _job(db_session, agent)
     for address in ("10.60.0.21", "10.60.0.22"):
         await agent_discovery.ingest_discovery_finding(
-            db_session, agent, _payload(job, ip_address=address)
+            db_session, agent, _payload(job, ip_address=address, mac_address=None)
         )
 
     await agent_discovery.ingest_discovery_finding(

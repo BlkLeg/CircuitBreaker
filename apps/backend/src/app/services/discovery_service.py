@@ -980,15 +980,28 @@ def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
         hosts_conflict = 0
         results_out: list[dict] = []
 
-        # Deduplicate by IP — first entry wins (nmap probe data takes priority over Docker appends)
+        # Collapse identical observations within a batch, but keep distinct MACs
+        # and network scopes at a shared IP. Host probe data still takes priority
+        # over Docker appends, as before.
         _seen_ips: set[str] = set()
+        _seen_identities: set[tuple] = set()
         _deduped: list[dict] = []
         for _r in raw_results:
-            _ip = _r.get("ip")
-            if _ip and _ip in _seen_ips:
+            _ip = discovery_result_service.normalize_ip(_r.get("ip"))
+            _identity = (
+                _ip,
+                discovery_result_service.normalize_mac(_r.get("mac_address")),
+                _r.get("network_id"),
+                _r.get("vlan_id"),
+            )
+            if _ip and (
+                _identity in _seen_identities
+                or (_r.get("source_type", _r.get("source")) == "docker" and _ip in _seen_ips)
+            ):
                 continue
             if _ip:
                 _seen_ips.add(_ip)
+                _seen_identities.add(_identity)
             _deduped.append(_r)
         raw_results = _deduped
 
@@ -997,52 +1010,8 @@ def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
         # on. Audited after the commit below, never inside it.
         _enriched: list[tuple[ScanResult, discovery_enrich.EnrichmentOutcome]] = []
         for raw in raw_results:
-            # Only what the prober-dedup branch below needs. Everything else the
-            # row is built from — the docker network_id resolution, the override
-            # fields, the whole match/conflict verdict — belongs to
-            # discovery_result_service.build_and_classify_result (D-9), which is
-            # the one path both this batch caller and the agent's per-finding
-            # caller go through.
-            ip = raw.get("ip")
-            mac_address = raw.get("mac_address")
-
-            # Dedup: for prober-triggered jobs, skip creating a new ScanResult row
-            # when an identical pending row (same MAC or IP) already exists.
-            if setup.get("triggered_by") == "prober":
-                existing_pending = None
-                if mac_address:
-                    existing_pending = (
-                        db.query(ScanResult)
-                        .filter(
-                            ScanResult.mac_address == mac_address,
-                            ScanResult.merge_status == "pending",
-                        )
-                        .first()
-                    )
-                if not existing_pending and ip:
-                    existing_pending = (
-                        db.query(ScanResult)
-                        .filter(
-                            ScanResult.ip_address == ip,
-                            ScanResult.merge_status == "pending",
-                        )
-                        .first()
-                    )
-                if existing_pending:
-                    # Touch last_seen on matched Hardware if one exists
-                    matched_hw = None
-                    if mac_address:
-                        matched_hw = (
-                            db.query(Hardware).filter(Hardware.mac_address == mac_address).first()
-                        )
-                    if not matched_hw and ip:
-                        matched_hw = db.query(Hardware).filter(Hardware.ip_address == ip).first()
-                    if matched_hw:
-                        matched_hw.last_seen = utcnow_iso()
-                        db.flush()
-                    continue  # skip new ScanResult row creation
-
             res, classification = discovery_result_service.build_and_classify_result(db, job, raw)
+            discovery_result_service.deduplicate_pending_result(db, res)
 
             # A host the inventory already knows is backfilled and dropped out of
             # the review queue rather than queued as though it were new. No-commit
