@@ -17,6 +17,12 @@ carries a status column.
 - **Superseded** — a later plan replaced it.
 - **Reference** — never a work item; a review, an index, or a deferred-item list.
 
+## Technical debt cleanup (2026-09-07)
+
+| Plan | Date | Status |
+|---|---|---|
+| [Technical debt cleanup](./2026-09-07-tech-debt-cleanup.md) | 2026-09-07 | **Active** — phased prune, split, test/doc alignment, and contributor-readiness work. No product features. |
+
 ## v1.0.0 remediation (2026-08-18)
 
 Five plans derived from [`specs/1.0.0/gap-audit-2026-08-18.md`](../specs/1.0.0/gap-audit-2026-08-18.md),
