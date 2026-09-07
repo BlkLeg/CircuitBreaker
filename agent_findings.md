@@ -22,6 +22,8 @@ property of that window, and eviction rewrote that property.
 | 3 | `167d37e8` | deadline = oldest **surviving** entry's `sentAt` | eviction walks all 64 entries in 64 enqueues, so no survivor is ever old | stall detector off above **~1.5 frames/s** |
 | 4 | `4d83558c` | correct clock, but check guarded by `len(inflight) == 0` | `drainBurst` prunes *before* the check and refills *after*, so the window is empty at every check | stall detector off when eviction ≥ **drain budget (4/tick)** |
 
+Closed in `38fbcade`: the check now asks `unackedSince` and nothing else.
+
 Each fix moved the dependency one level further out — count → position → per-entry time
 → stretch time — but every version kept *some* dependency on state that eviction
 touches. Round 4's clock was finally right and the **guard in front of it** was not.
@@ -142,21 +144,28 @@ reported wrongly, is the failure this whole effort exists to end.**
 
 ---
 
-## 5. Carried forward — open at `4d83558c`
+## 5. Carried forward
 
-- `persistEvictionsLocked` does `WriteFile` + `Rename` with **no `Sync`**, while
-  `appendLine` fsyncs. The audit record is less durable than the queue it audits, so
-  `docs/agent.md`'s "a restart finds the same total" holds for a clean or killed
-  restart but not a power cut.
-- **`agent_registry.py`'s "a decrease means the state directory was recreated" is still
-  stronger than the agent can guarantee.** On a read-only or full state directory,
-  `RecordDestroyed` fires *because* the write failed, so the persist fails for the same
-  reason while the in-memory counter keeps rising and is reported on every heartbeat. A
-  restart then shows a decrease that is not a reset. Unavoidable agent-side; the wording
-  and the event's meaning should be softened.
-- **`printSpoolLossCause` branches on an exact prose match** against
-  `spool.CapEvictionReason`, whose own comment invites copy-editing. A reworded sentence
-  silently flips every persisted cap-eviction record into the write-failure branch and
-  hands an operator with a full spool the opposite remedy.
-- Pre-existing and unrelated: `TestOnCapabilitiesSet_DisablingLocalDiscoveryCancels...`
-  fails under 16-way CPU saturation, reproducibly at `167d37e8` as well.
+**Closed in `38fbcade`:**
+
+- `persistEvictionsLocked` now fsyncs the file and its directory before and
+  after the rename, as `appendLine` already did. The audit record is no longer
+  less durable than the queue it audits.
+- `agent_registry.py`'s counter-reset event now means "the record went
+  backwards" rather than asserting a recreated state directory. An agent whose
+  state directory is read-only cannot persist the record *because* that is what
+  is destroying its observations, so its total legitimately goes backwards on
+  restart with nothing having been recreated.
+- `printSpoolLossCause` switches on `last_destroyed_cause`, a machine code.
+  `CapEvictionReason` is display copy again and safe to reword.
+- A persist failure is reported when the run of failures begins, not only when
+  the next log window opens.
+
+**Still open:**
+
+- `TestOnCapabilitiesSet_DisablingLocalDiscoveryCancelsInFlightWorkAndStopsFutureWork`
+  fails under 16-way CPU saturation. Pre-existing — reproduces at `167d37e8`
+  and earlier — and unrelated to any of this. Untriaged.
+- `make verify` runs with `CB_VERIFY_BACKEND=off`, so the pre-push gate does not
+  cover the backend suite. `make verify-full` does, at roughly double the
+  runtime. Worth knowing when a change touches both sides of the agent link.
