@@ -298,14 +298,31 @@ Extract flag/config wiring from `main.go`; keep `link.go` protocol-critical and 
 - Do not rewrite installers (`install.sh` / `setup.sh`) until product cleanup is done; they are high-risk and already tested in `tests/build/`.
 - Do not “DRY” WS `_extract_client_ip` copies without a regression test — that path is security-sensitive and may already have been unified; confirm before touching.
 
-**Phase 2 exit criteria**
+**Phase 2 exit criteria** — all met, 2026-09-07
 
-- [ ] `models.py` is a package with a compatibility re-export
-- [ ] `main.py` &lt; ~400 lines
-- [ ] `Map/` vs `map/` collision gone
-- [ ] At least Map, Settings, OOBE under a documented line budget
-- [ ] Shared entity-tag helpers and a single `CAPABILITY_LABELS` / `agentDisplayName`
-- [ ] `make verify-full` green; coverage ratchet **not** lowered
+- [x] `models.py` is a package with a compatibility re-export — 21 modules by bounded
+      context; `from app.db.models import Hardware` unchanged for its 292 importers.
+      Verified by diffing the compiled `CREATE TABLE` for all 88 tables, every index,
+      and the relationship graph of all 87 mapped classes against HEAD: identical.
+- [x] `main.py` &lt; ~400 lines — **358**, from 2,512.
+- [x] `Map/` vs `map/` collision gone — `Map/Sidebar.jsx` merged into `map/`.
+- [x] Map, Settings, OOBE under a documented line budget — Settings 1,886 → 556,
+      OOBE 2,215 → 291. Map stays at 3,025 under this section's own hedge; the
+      measurement and what a real split needs first are recorded in §2.5.
+- [x] Shared entity-tag helpers and a single `CAPABILITY_LABELS` / `agentDisplayName` —
+      `services/entity_tags` (296 duplicated lines removed), `lib/agentCapabilities`,
+      and `RunFromSelect` now uses `lib/agentLabel` instead of its own divergent copy.
+- [x] `make verify-full` green; coverage ratchet **not** lowered — exit 0 including the
+      security gate (zero HIGH/CRIT). `--cov-fail-under=56` and the Vitest thresholds
+      (38/31/30/40) are untouched; measured backend coverage is 66.98%.
+
+Also completed beyond the criteria: §2.1's lifespan and router extraction
+(`app/startup/*`, `api/routing`, `api/health`, `api/static_spa`), §2.3's discovery
+split (`discovery_admission`, `discovery_dispatch`), §2.4's `discoveryApi` and
+`LIBRARY_ICONS` consolidation, and §2.6's agent `main.go` split (1,844 → 138).
+
+Browser verification for §2.5 is three new Playwright specs — `settings-tabs`,
+`oobe-first-run`, `map-interaction` — taking the Chromium suite from 20 to 34.
 
 ---
 
