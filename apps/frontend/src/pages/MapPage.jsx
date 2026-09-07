@@ -139,7 +139,7 @@ const NODE_TYPES = { iconNode: CustomNode, custom: CustomNode };
 const EDGE_TYPES = { smart: CustomEdge, custom: CustomEdge };
 
 // ── Small module-level helpers ───────────────────────────────────────────────
-import { isLightTheme, omitKey, isHiddenByTag, getQuickCreateTitle } from '../utils/mapHelpers';
+import { isLightTheme, omitKey, isNodeHidden, getQuickCreateTitle } from '../utils/mapHelpers';
 
 // ── Main Component ──────────────────────────────────────────────────────────
 
@@ -678,27 +678,29 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     scheduleTagDebounce(tagFilter);
   }, [tagFilter, scheduleTagDebounce]);
 
-  // Re-apply tag filter client-side (preserves positions via hidden property)
+  // Client-side node visibility (preserves positions via the hidden property).
+  // Tag and hardware-role are evaluated by one predicate over both filters:
+  // as two effects each rewriting `hidden` for every node, whichever ran last
+  // won, so changing one filter could unhide what the other had excluded.
   useEffect(() => {
     const trimmedTag = debouncedTag.trim().toLowerCase();
-    setNodes((prev) => prev.map((n) => ({ ...n, hidden: isHiddenByTag(n, trimmedTag) })));
+    setNodes((prev) =>
+      prev.map((n) => ({
+        ...n,
+        hidden: isNodeHidden(n, { tag: trimmedTag, hwRole: hwRoleFilter }),
+      }))
+    );
+  }, [debouncedTag, hwRoleFilter, setNodes]);
+
+  useEffect(() => {
+    const trimmedTag = debouncedTag.trim().toLowerCase();
     setEdges((prev) =>
       prev.map((e) => {
         if (!trimmedTag) return { ...e, hidden: false };
         return e; // edge visibility handled by ReactFlow when both nodes are hidden
       })
     );
-  }, [debouncedTag, setNodes, setEdges]);
-
-  // Hardware sub-role filter — hide/show hardware nodes by role
-  useEffect(() => {
-    setNodes((prev) =>
-      prev.map((n) => {
-        if (n.originalType !== 'hardware') return n;
-        return { ...n, hidden: hwRoleFilter ? n._hwRole !== hwRoleFilter : false };
-      })
-    );
-  }, [hwRoleFilter, setNodes]);
+  }, [debouncedTag, setEdges]);
 
   const handleSaveFilters = useCallback(async () => {
     setFilterSaving(true);

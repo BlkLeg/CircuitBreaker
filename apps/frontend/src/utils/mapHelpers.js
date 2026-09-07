@@ -30,6 +30,24 @@ export function isHiddenByTag(node, trimmedTag) {
 }
 
 /**
+ * Single source of truth for map node visibility.
+ *
+ * Tag and hardware-role are independent reasons to hide a node, so they are
+ * OR-ed here rather than applied by separate effects. Two effects each writing
+ * `hidden` for every node meant the last one to run won, and changing either
+ * filter could unhide a node the other had excluded.
+ *
+ * @param {object} node - map node carrying `_tags`, `_hwRole`, `originalType`
+ * @param {{tag?: string, hwRole?: string}} filters - active filter values
+ * @returns {boolean} true when the node should be hidden
+ */
+export function isNodeHidden(node, { tag, hwRole } = {}) {
+  if (isHiddenByTag(node, tag)) return true;
+  if (hwRole && node.originalType === 'hardware' && node._hwRole !== hwRole) return true;
+  return false;
+}
+
+/**
  * Returns the modal title for the quick-create shortcut based on the active mode.
  */
 export function getQuickCreateTitle(mode) {
