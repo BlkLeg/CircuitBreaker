@@ -17,6 +17,7 @@ from app.schemas.external_nodes import (
     ExternalNodeUpdate,
     ServiceExternalNodeLink,
 )
+from app.services import entity_tags
 
 # ── Tag helpers (reuse the entity-tag system) ────────────────────────────────
 
@@ -24,40 +25,13 @@ _ENTITY_TYPE = "external"
 
 
 def _sync_tags(db: Session, entity_id: int, tag_names: list[str]) -> None:
-    existing = (
-        db.execute(
-            select(EntityTag).where(
-                EntityTag.entity_type == _ENTITY_TYPE,
-                EntityTag.entity_id == entity_id,
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for et in existing:
-        db.delete(et)
-    db.flush()
-    for name in tag_names:
-        tag = db.execute(select(Tag).where(Tag.name == name)).scalar_one_or_none()
-        if tag is None:
-            tag = Tag(name=name)
-            db.add(tag)
-            db.flush()
-        db.add(EntityTag(entity_type=_ENTITY_TYPE, entity_id=entity_id, tag_id=tag.id))
+    """`entity_tags.sync_tags` with this module's entity type applied."""
+    entity_tags.sync_tags(db, _ENTITY_TYPE, entity_id, tag_names)
 
 
 def _get_tags(db: Session, entity_id: int) -> list[str]:
-    rows = (
-        db.execute(
-            select(EntityTag).where(
-                EntityTag.entity_type == _ENTITY_TYPE,
-                EntityTag.entity_id == entity_id,
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return [row.tag.name for row in rows]
+    """`entity_tags.get_tags_for` with this module's entity type applied."""
+    return entity_tags.get_tags_for(db, _ENTITY_TYPE, entity_id)
 
 
 def _to_dict(db: Session, item: ExternalNode) -> dict:

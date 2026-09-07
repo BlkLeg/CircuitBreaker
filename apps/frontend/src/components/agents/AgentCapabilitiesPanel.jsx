@@ -3,13 +3,9 @@ import PropTypes from 'prop-types';
 import Panel from '../common/Panel';
 import Toggle from '../common/Toggle';
 import { normalizeCapability } from '../../api/agents';
+import { CAPABILITY_LABELS } from '../../lib/agentCapabilities';
 
-/** Moved here from AgentDetailPage; this is the only component that needs it. */
-export const CAPABILITY_LABELS = {
-  host_telemetry: 'Host telemetry',
-  remote_probe: 'Remote probe',
-  local_discovery: 'Local discovery',
-};
+export { CAPABILITY_LABELS };
 
 /** Why a toggle cannot be used, in the operator's terms. */
 const BLOCKED_NOTES = {

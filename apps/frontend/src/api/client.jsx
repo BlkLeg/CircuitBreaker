@@ -643,19 +643,6 @@ export const eventsApi = {
   status: () => client.get('/events/status'),
 };
 
-export const discoveryApi = {
-  getJobs: (params) => client.get('/discovery/jobs', { params }),
-  getJob: (id) => client.get(`/discovery/jobs/${id}`),
-  getResultsWithInference: (jobId) =>
-    client.get(`/discovery/jobs/${jobId}/results`, { params: { with_inference: true } }),
-  batchImport: (jobId, items) => client.post(`/discovery/jobs/${jobId}/batch-import`, { items }),
-  importAsNetwork: (jobId, payload) =>
-    client.post(`/discovery/jobs/${jobId}/import-as-network`, payload),
-  lldpEnrich: (payload) => client.post('/discovery/lldp-enrich', payload),
-  lldpJobResults: (jobId) => client.get(`/discovery/lldp-jobs/${jobId}/results`),
-  lldpApply: (jobId, payload) => client.post(`/discovery/lldp-jobs/${jobId}/apply`, payload),
-};
-
 export const certificatesApi = {
   list: (params) => client.get('/certificates', { params }),
   get: (id) => client.get(`/certificates/${id}`),

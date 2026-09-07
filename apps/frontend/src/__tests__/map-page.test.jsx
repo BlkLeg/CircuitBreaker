@@ -200,7 +200,7 @@ vi.mock('../components/map/DeleteConflictModal', () => ({
 vi.mock('../components/map/WifiOverlay', () => ({
   default: () => null,
 }));
-vi.mock('../components/Map/Sidebar', () => ({
+vi.mock('../components/map/Sidebar', () => ({
   default: () => null,
 }));
 

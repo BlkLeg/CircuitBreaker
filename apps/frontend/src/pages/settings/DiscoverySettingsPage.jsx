@@ -4,45 +4,7 @@ import { settingsApi } from '../../api/client.jsx';
 import { useSettings } from '../../context/SettingsContext';
 import { useToast } from '../../components/common/Toast';
 import DiscoveryReadinessPanel from '../../components/settings/DiscoveryReadinessPanel.jsx';
-
-export function Toggle({ checked, onChange, disabled, ariaLabel }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={ariaLabel}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      style={{
-        position: 'relative',
-        display: 'inline-flex',
-        alignItems: 'center',
-        width: 42,
-        height: 22,
-        borderRadius: 11,
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        background: checked ? 'var(--color-primary)' : 'var(--color-border)',
-        border: 'none',
-        transition: 'background 0.2s',
-        flexShrink: 0,
-      }}
-    >
-      <span
-        style={{
-          position: 'absolute',
-          left: checked ? 22 : 2,
-          width: 18,
-          height: 18,
-          borderRadius: 9,
-          background: 'white',
-          transition: 'left 0.2s',
-          boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
-        }}
-      />
-    </button>
-  );
-}
+import SettingRowSwitch from '../../components/common/SettingRowSwitch';
 
 export default function DiscoverySettingsPage() {
   const toast = useToast();
@@ -163,7 +125,10 @@ export default function DiscoverySettingsPage() {
           label="Enable Auto-Discovery"
           desc="Allow Circuit Breaker to scan your network for devices."
         >
-          <Toggle checked={form.discovery_enabled} onChange={(v) => set('discovery_enabled', v)} />
+          <SettingRowSwitch
+            checked={form.discovery_enabled}
+            onChange={(v) => set('discovery_enabled', v)}
+          />
         </SettingRow>
       </Section>
 
@@ -186,7 +151,7 @@ export default function DiscoverySettingsPage() {
           label="Nmap Active Scanning"
           desc="Persistent safety gate for nmap-based scans (Full and Deep Dive). Keep disabled until you have explicit authorization."
         >
-          <Toggle checked={form.nmap_enabled} onChange={(v) => set('nmap_enabled', v)} />
+          <SettingRowSwitch checked={form.nmap_enabled} onChange={(v) => set('nmap_enabled', v)} />
         </SettingRow>
 
         {!form.nmap_enabled && (
@@ -232,7 +197,7 @@ export default function DiscoverySettingsPage() {
           label="Docker Container Discovery"
           desc="Enumerate running containers via /var/run/docker.sock. Requires mounting the socket in docker-compose."
         >
-          <Toggle
+          <SettingRowSwitch
             checked={form.docker_discovery_enabled}
             onChange={(v) => set('docker_discovery_enabled', v)}
           />
@@ -275,7 +240,7 @@ export default function DiscoverySettingsPage() {
               label="Auto-Cluster Self"
               desc="After each Docker sync, automatically group Circuit Breaker's own containers into a cluster node on the topology map."
             >
-              <Toggle
+              <SettingRowSwitch
                 checked={form.self_cluster_enabled}
                 onChange={(v) => set('self_cluster_enabled', v)}
                 ariaLabel="Auto-Cluster Self"
@@ -349,7 +314,7 @@ export default function DiscoverySettingsPage() {
           label="HTTP Banner Probing"
           desc="Probe open web ports for service identification."
         >
-          <Toggle
+          <SettingRowSwitch
             checked={form.discovery_http_probe}
             onChange={(v) => set('discovery_http_probe', v)}
           />
@@ -383,7 +348,7 @@ export default function DiscoverySettingsPage() {
           label="Auto-Merge New Hosts"
           desc="Automatically create hardware entities from newly discovered hosts."
         >
-          <Toggle
+          <SettingRowSwitch
             checked={form.discovery_auto_merge}
             onChange={(v) => set('discovery_auto_merge', v)}
           />

@@ -1,7 +1,7 @@
 import React from 'react';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import Sidebar from '../components/Map/Sidebar';
+import Sidebar from '../components/map/Sidebar';
 import { telemetryApi } from '../api/client';
 
 vi.mock('../../api/client', () => ({}));
@@ -31,7 +31,7 @@ const proxmoxNode = {
   },
 };
 
-describe('Map/Sidebar CPU row (F-1)', () => {
+describe('map/Sidebar CPU row (F-1)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });

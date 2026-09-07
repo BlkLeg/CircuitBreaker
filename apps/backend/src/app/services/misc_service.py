@@ -4,43 +4,8 @@ from sqlalchemy.orm import Session
 from app.core.time import utcnow
 from app.db.models import EntityTag, MiscItem, Tag
 from app.schemas.misc import MiscItemCreate, MiscItemUpdate
-
-
-def _sync_tags(db: Session, entity_type: str, entity_id: int, tag_names: list[str]) -> None:
-    existing = (
-        db.execute(
-            select(EntityTag).where(
-                EntityTag.entity_type == entity_type,
-                EntityTag.entity_id == entity_id,
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for et in existing:
-        db.delete(et)
-    db.flush()
-    for name in tag_names:
-        tag = db.execute(select(Tag).where(Tag.name == name)).scalar_one_or_none()
-        if tag is None:
-            tag = Tag(name=name)
-            db.add(tag)
-            db.flush()
-        db.add(EntityTag(entity_type=entity_type, entity_id=entity_id, tag_id=tag.id))
-
-
-def get_tags_for(db: Session, entity_type: str, entity_id: int) -> list[str]:
-    rows = (
-        db.execute(
-            select(EntityTag).where(
-                EntityTag.entity_type == entity_type,
-                EntityTag.entity_id == entity_id,
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return [row.tag.name for row in rows]
+from app.services.entity_tags import get_tags_for
+from app.services.entity_tags import sync_tags as _sync_tags
 
 
 def _to_dict(db: Session, item: MiscItem) -> dict:

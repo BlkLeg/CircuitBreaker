@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { discoveryApi, telemetryApi } from '../api/client';
+import { telemetryApi } from '../api/client';
+import { getResultsWithInference } from '../api/discovery';
 import { getTargetSummary } from '../api/monitor';
 import { MONITOR_TARGET_TYPES } from '../components/map/mapConstants';
 import { discoveryEmitter } from './useDiscoveryStream';
@@ -46,7 +47,7 @@ export function useMapRealTimeUpdates({
   // Scan completion → dispatch scan:import-ready when a job finishes with new hosts
   const checkScanForImport = useCallback(async (jobId) => {
     try {
-      const { data: results } = await discoveryApi.getResultsWithInference(jobId);
+      const { data: results } = await getResultsWithInference(jobId);
       const newCount = results.filter((r) => r.is_new).length;
       if (newCount > 0) {
         globalThis.dispatchEvent(

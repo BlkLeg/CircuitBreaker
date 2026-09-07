@@ -8,47 +8,12 @@ from sqlalchemy.orm import Session
 from app.core.time import utcnow
 from app.db.models import ComputeNetwork, ComputeUnit, EntityTag, Service, Tag
 from app.schemas.compute_units import ComputeUnitCreate, ComputeUnitUpdate
+from app.services.entity_tags import get_tags_for
+from app.services.entity_tags import sync_tags as _sync_tags
 from app.services.environments_service import resolve_environment_id
 from app.services.ip_reservation import bulk_conflict_map, check_ip_conflict, resolve_ip_conflict
 
 _logger = logging.getLogger(__name__)
-
-
-def _sync_tags(db: Session, entity_type: str, entity_id: int, tag_names: list[str]) -> None:
-    existing = (
-        db.execute(
-            select(EntityTag).where(
-                EntityTag.entity_type == entity_type,
-                EntityTag.entity_id == entity_id,
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for et in existing:
-        db.delete(et)
-    db.flush()
-    for name in tag_names:
-        tag = db.execute(select(Tag).where(Tag.name == name)).scalar_one_or_none()
-        if tag is None:
-            tag = Tag(name=name)
-            db.add(tag)
-            db.flush()
-        db.add(EntityTag(entity_type=entity_type, entity_id=entity_id, tag_id=tag.id))
-
-
-def get_tags_for(db: Session, entity_type: str, entity_id: int) -> list[str]:
-    rows = (
-        db.execute(
-            select(EntityTag).where(
-                EntityTag.entity_type == entity_type,
-                EntityTag.entity_id == entity_id,
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return [row.tag.name for row in rows]
 
 
 def _to_dict(db: Session, cu: ComputeUnit) -> dict:

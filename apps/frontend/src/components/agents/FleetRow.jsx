@@ -6,6 +6,7 @@ import Sparkline from './Sparkline';
 import { normalizeCapability } from '../../api/agents';
 import AgentStateChip, { stateDetailText } from './AgentStateChip';
 import { agentDisplayName } from '../../lib/agentLabel';
+import { CAPABILITY_LABELS } from '../../lib/agentCapabilities';
 import {
   agentStateDefinition,
   deriveAgentStates,
@@ -60,12 +61,6 @@ const BYTES_PER_KILOBYTE = 1000;
 const RATE_UNITS = ['B/s', 'kB/s', 'MB/s', 'GB/s'];
 const RATE_MEGABYTE_INDEX = 2;
 const RATE_DECIMALS = 1;
-
-const CAPABILITY_LABELS = {
-  host_telemetry: 'Host telemetry',
-  remote_probe: 'Remote probe',
-  local_discovery: 'Local discovery',
-};
 
 // `active` is the unremarkable case and gets no chip; the rest are conditions
 // an operator needs to see without opening the row.

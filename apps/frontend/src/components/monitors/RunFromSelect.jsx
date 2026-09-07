@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
 import { listProbeEligibleAgents } from '../../api/agents';
+import { agentDisplayName } from '../../lib/agentLabel';
 
 /**
  * Prose for `probe_eligibility`'s machine-readable denial vocabulary. The
@@ -28,9 +29,13 @@ export function reasonText(reason) {
   return REASON_TEXT.get(reason) || reason.replace(/_/g, ' ');
 }
 
-export function agentDisplayName(agent) {
-  return agent?.name || `Agent ${agent?.agent_id}`;
-}
+// Re-exported for this module's tests, which read the label a vantage row
+// renders. The implementation is `lib/agentLabel`: this file used to carry its
+// own `agent?.name || \`Agent ${agent?.agent_id}\``, which ignored `hostname`
+// and capitalised the fallback — so the dropdown said "Agent 8" where the
+// refusal beneath it said "branch-office-01". That divergence is the one
+// `agentLabel`'s own docstring warns about.
+export { agentDisplayName };
 
 /** "branch-office — online · ready · in scope" — §7's online/readiness/scope indicators. */
 export function agentOptionLabel(agent) {

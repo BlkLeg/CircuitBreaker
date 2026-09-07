@@ -12,14 +12,8 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useNavigate } from 'react-router-dom';
-import {
-  graphApi,
-  environmentsApi,
-  settingsApi,
-  proxmoxApi,
-  hardwareApi,
-  discoveryApi,
-} from '../api/client';
+import { graphApi, environmentsApi, settingsApi, proxmoxApi, hardwareApi } from '../api/client';
+import { getJob, getResultsWithInference, lldpEnrich } from '../api/discovery';
 import { mapsApi } from '../api/maps';
 import ScanImportModal from '../components/ScanImportModal';
 import LLDPReviewModal from '../components/LLDPReviewModal';
@@ -52,7 +46,7 @@ import HostileNetworkBanner from '../components/security/HostileNetworkBanner';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useCapabilities } from '../hooks/useCapabilities.js';
 import WifiOverlay from '../components/map/WifiOverlay';
-import Sidebar from '../components/Map/Sidebar';
+import Sidebar from '../components/map/Sidebar';
 import LegendPanel from '../components/map/LegendPanel';
 import NodeTypeFilterBar from '../components/map/NodeTypeFilterBar';
 import { useToast } from '../components/common/Toast';
@@ -462,7 +456,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     const handler = async (e) => {
       const { scanId, newCount } = e.detail;
       try {
-        const { data: results } = await discoveryApi.getResultsWithInference(scanId);
+        const { data: results } = await getResultsWithInference(scanId);
         setScanImportPending({ scanId, newCount: results.filter((r) => r.is_new).length, results });
       } catch {
         setScanImportPending({ scanId, newCount, results: null });
@@ -1331,11 +1325,11 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
             return;
           }
           lldpEnrichingRef.current = true;
-          const res = await discoveryApi.lldpEnrich({ hardware_ids: [nd._refId] });
+          const res = await lldpEnrich({ hardware_ids: [nd._refId] });
           const jobId = res.data.job_id;
           const poll = setInterval(async () => {
             try {
-              const jobRes = await discoveryApi.getJob(jobId);
+              const jobRes = await getJob(jobId);
               if (jobRes.data.status === 'completed' || jobRes.data.status === 'failed') {
                 clearInterval(poll);
                 lldpEnrichingRef.current = false;

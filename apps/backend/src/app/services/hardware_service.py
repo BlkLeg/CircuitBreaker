@@ -8,8 +8,6 @@ from sqlalchemy.orm import Session
 from app.core.time import utcnow
 from app.db.models import (  # Service used for reactive cascade
     ComputeUnit,
-    Doc,
-    EntityDoc,
     EntityTag,
     Hardware,
     HardwareClusterMember,
@@ -23,6 +21,15 @@ from app.db.models import (  # Service used for reactive cascade
     UptimeEvent,
 )
 from app.schemas.hardware import HardwareCreate, HardwareUpdate
+from app.services.entity_tags import (
+    get_documents_for as _get_documents_for,
+)
+from app.services.entity_tags import (
+    get_tags_for,
+)
+from app.services.entity_tags import (
+    sync_tags as _sync_tags,
+)
 from app.services.environments_service import resolve_environment_id
 from app.services.ip_reservation import bulk_conflict_map, check_ip_conflict, resolve_ip_conflict
 from app.services.log_service import write_log
@@ -39,63 +46,6 @@ def _norm_mac(mac: str | None) -> str | None:
     if len(cleaned) != 12:
         return mac.strip().upper()  # Can't normalize — return uppercased original
     return ":".join(cleaned[i : i + 2] for i in range(0, 12, 2)).upper()
-
-
-def _sync_tags(db: Session, entity_type: str, entity_id: int, tag_names: list[str]) -> None:
-    """Upsert tags and sync EntityTag rows for the given entity."""
-    existing = (
-        db.execute(
-            select(EntityTag).where(
-                EntityTag.entity_type == entity_type,
-                EntityTag.entity_id == entity_id,
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for et in existing:
-        db.delete(et)
-    db.flush()
-
-    for name in tag_names:
-        tag = db.execute(select(Tag).where(Tag.name == name)).scalar_one_or_none()
-        if tag is None:
-            tag = Tag(name=name)
-            db.add(tag)
-            db.flush()
-        db.add(EntityTag(entity_type=entity_type, entity_id=entity_id, tag_id=tag.id))
-
-
-def get_tags_for(db: Session, entity_type: str, entity_id: int) -> list[str]:
-    rows = (
-        db.execute(
-            select(EntityTag).where(
-                EntityTag.entity_type == entity_type,
-                EntityTag.entity_id == entity_id,
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return [row.tag.name for row in rows]
-
-
-def _get_documents_for(db: Session, entity_type: str, entity_id: int) -> list[dict]:
-    rows = db.execute(
-        select(Doc.id, Doc.title, Doc.category, Doc.icon)
-        .join(EntityDoc, EntityDoc.doc_id == Doc.id)
-        .where(EntityDoc.entity_type == entity_type, EntityDoc.entity_id == entity_id)
-        .order_by(Doc.updated_at.desc())
-    ).all()
-    return [
-        {
-            "id": doc_id,
-            "title": title,
-            "category": category,
-            "icon": icon,
-        }
-        for doc_id, title, category, icon in rows
-    ]
 
 
 def _to_dict(db: Session, hw: Hardware) -> dict:

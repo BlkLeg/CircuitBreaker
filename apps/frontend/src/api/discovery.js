@@ -76,3 +76,21 @@ export const getDiscoveryReadiness = () => client.get('/discovery/readiness');
 // worth rendering before the operator has finished typing a target.
 export const getEligibleDiscoveryAgents = (params = {}) =>
   client.get('/discovery/eligible-agents', { params });
+
+// ── Scan import and LLDP enrichment ──────────────────────────────────────────
+// These five lived on a second `discoveryApi` object in `api/client.jsx`, which
+// also carried its own copies of `getJobs` and `getJob`. Two surfaces for one
+// resource meant a caller had to know which of them a given endpoint had been
+// added to, and the duplicated pair could drift apart without anything failing.
+// One module owns `/discovery` now; the object is gone.
+
+export const getResultsWithInference = (jobId) =>
+  client.get(`/discovery/jobs/${jobId}/results`, { params: { with_inference: true } });
+export const batchImport = (jobId, items) =>
+  client.post(`/discovery/jobs/${jobId}/batch-import`, { items });
+export const importAsNetwork = (jobId, payload) =>
+  client.post(`/discovery/jobs/${jobId}/import-as-network`, payload);
+export const lldpEnrich = (payload) => client.post('/discovery/lldp-enrich', payload);
+export const lldpJobResults = (jobId) => client.get(`/discovery/lldp-jobs/${jobId}/results`);
+export const lldpApply = (jobId, payload) =>
+  client.post(`/discovery/lldp-jobs/${jobId}/apply`, payload);
