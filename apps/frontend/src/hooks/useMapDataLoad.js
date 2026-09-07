@@ -19,6 +19,7 @@ import {
   proxmoxClusterDetected,
 } from '../utils/mapDataUtils';
 import { normalizeConnectionType } from '../components/map/connectionTypes';
+import { buildIncludeCSV } from '../utils/mapHelpers';
 import { isUpdatableEdgeId } from '../components/map/linkMutations';
 import { getDagreLayout, getDagreViewportOptions } from '../utils/layouts';
 import { recalculateAllEdges } from '../utils/bandwidthCalculator';
@@ -87,25 +88,6 @@ export function useMapDataLoad({
   // that races the in-place transform MapPage already applies.
   const cloudViewEnabledRef = useRef(cloudViewEnabled);
   cloudViewEnabledRef.current = cloudViewEnabled;
-
-  const getIncludeCSV = useCallback((types) => {
-    const MAP = new Map([
-      ['hardware', 'hardware'],
-      ['compute', 'compute'],
-      ['service', 'services'],
-      ['storage', 'storage'],
-      ['network', 'networks'],
-      ['misc', 'misc'],
-      ['external', 'external'],
-    ]);
-    return (
-      Array.from(types.entries())
-        .filter(([, v]) => v)
-        .map(([k]) => MAP.get(k))
-        .filter(Boolean)
-        .join(',') || 'hardware'
-    );
-  }, []);
 
   const updateNodePos = useCallback(
     (id, pos) => {
@@ -187,7 +169,7 @@ export function useMapDataLoad({
     setLoading(true);
     setError(null);
     try {
-      const includeCSV = getIncludeCSV(includeTypes);
+      const includeCSV = buildIncludeCSV(includeTypes);
       const res = await graphApi.topology({
         environment_id: envFilter || undefined,
         include: includeCSV,
@@ -519,7 +501,6 @@ export function useMapDataLoad({
     edgeOverridesRef,
     autoPlacedIdsRef,
     hasRestoredViewport,
-    getIncludeCSV,
     setLayoutEngine,
   ]);
 

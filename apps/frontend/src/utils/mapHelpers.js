@@ -55,3 +55,35 @@ export function getQuickCreateTitle(mode) {
   if (mode === 'compute') return 'New Compute Unit';
   return 'New Storage';
 }
+
+/**
+ * Entity key -> the `include` token the topology endpoint matches.
+ * The backend compares against plural forms (see api/graph.py), so `service`
+ * and `network` must be sent as `services` and `networks`.
+ */
+const INCLUDE_TOKENS = new Map([
+  ['hardware', 'hardware'],
+  ['compute', 'compute'],
+  ['service', 'services'],
+  ['storage', 'storage'],
+  ['network', 'networks'],
+  ['misc', 'misc'],
+  ['external', 'external'],
+]);
+
+/**
+ * Builds the topology `include` CSV from the map's entity-type filter.
+ * Shared by both renderers so React Flow and Sigma request the same graph.
+ *
+ * @param {Map<string, boolean>} types - entity key -> included
+ * @returns {string} comma-separated include tokens, never empty
+ */
+export function buildIncludeCSV(types) {
+  return (
+    Array.from(types.entries())
+      .filter(([, v]) => v)
+      .map(([k]) => INCLUDE_TOKENS.get(k))
+      .filter(Boolean)
+      .join(',') || 'hardware'
+  );
+}

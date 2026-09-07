@@ -2264,7 +2264,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
 
             {useSigma ? (
               <React.Suspense fallback={null}>
-                <SigmaMap envFilter={envFilter} includeTypes={includeTypes} />
+                <SigmaMap envFilter={envFilter} includeTypes={includeTypes} mapId={mapId} />
               </React.Suspense>
             ) : (
               <ReactFlow

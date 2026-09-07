@@ -3,6 +3,7 @@ import Graph from 'graphology';
 import Sigma from 'sigma';
 import forceAtlas2 from 'graphology-layout-forceatlas2';
 import { graphApi } from '../../api/client';
+import { buildIncludeCSV } from '../../utils/mapHelpers';
 
 const SIGMA_LAYOUTS = [
   { id: 'forceatlas2', label: 'Force Atlas 2' },
@@ -46,7 +47,7 @@ function applyLayout(graph, layoutId) {
   }
 }
 
-export default function SigmaMap({ envFilter, includeTypes }) {
+export default function SigmaMap({ envFilter, includeTypes, mapId }) {
   const containerRef = useRef(null);
   const sigmaRef = useRef(null);
   const graphRef = useRef(null);
@@ -70,15 +71,13 @@ export default function SigmaMap({ envFilter, includeTypes }) {
     const loadGraph = async () => {
       try {
         setLoading(true);
-        const includeCSV = Array.from(includeTypes.entries())
-          .filter(([, v]) => v)
-          .map(([k]) => k)
-          .join(',');
+        const includeCSV = buildIncludeCSV(includeTypes);
 
         const res = await graphApi.topology({
           environment_id: envFilter || undefined,
           include: includeCSV,
           format: 'sigma',
+          ...(mapId != null && { map_id: mapId }),
         });
 
         if (!active) return;
@@ -116,7 +115,7 @@ export default function SigmaMap({ envFilter, includeTypes }) {
     };
     // sigmaLayout intentionally excluded — layout changes are handled by the effect below
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [envFilter, includeTypes]);
+  }, [envFilter, includeTypes, mapId]);
 
   // Re-apply layout when user changes the layout selector (without reloading data)
   useEffect(() => {
