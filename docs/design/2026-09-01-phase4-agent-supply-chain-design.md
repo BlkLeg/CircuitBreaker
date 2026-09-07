@@ -3,7 +3,9 @@
 > **Historical.** This plan's work landed; see `plans/README.md` for status and commits.
 
 **Date:** 2026-09-01 · **Route:** `docs/evidence/2026-08-30-production-readiness-route.md` §3 Phase 4 · **Findings:** F4, F3, F17
-**Status:** design approved, not yet implemented.
+**Status:** Slices 4.1–4.3 landed 2026-09-02 (commit `490c95b0` closes them in
+the route). Slices 4.4–4.5 are out of scope for this design and remain
+unstarted; see `plans/README.md` for current status and commits.
 
 This covers slices **4.1** (TLS pin-successor rotation), **4.2** (agent binary
 signing) and **4.3** (chained agent authorization events).

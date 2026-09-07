@@ -6,7 +6,9 @@
 > remaining agent detail page work.
 
 **Date:** 2026-08-14
-**Status:** Approved design, not yet implemented
+**Status:** Implemented — the fleet list page (`FleetTable`, `FleetRow`,
+`AddAgentPanel`) shipped. Superseded for remaining scope; see
+`specs/2026-09-05-agent-console-redesign-design.md`
 **Scope:** `apps/frontend/src/pages/AgentsPage.jsx` and the fleet-read side of the agents API
 
 ## Problem
