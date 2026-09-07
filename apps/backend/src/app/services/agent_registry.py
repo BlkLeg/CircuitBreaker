@@ -37,6 +37,7 @@ from app.services.agent_capabilities import (
     default_config_for,
     normalize_grant,
 )
+from app.services.discovery_result_service import normalize_mac
 from app.services.stream_faults import FAULT_DECODE, record_stream_fault
 
 if TYPE_CHECKING:
@@ -1181,8 +1182,9 @@ def propose_hardware_match(db: Session, agent: Agent) -> Hardware | None:
     `Hardware.machine_id_hash` (Task 16) is the strongest signal — a device's
     `/etc/machine-id` hash survives hostname renames and NIC swaps that would
     defeat the MAC/hostname branches below, so it's checked first. Falls
-    through to an exact MAC-address match (any of the agent's reported
-    `primary_macs`), then an exact hostname match, returning the first hit at
+    through to a MAC-address match (any of the agent's reported `primary_macs`,
+    each canonicalised by `normalize_mac` first), then an exact hostname match,
+    returning the first hit at
     whichever confidence tier produces one; `None` if nothing matches at any
     tier.
     """
@@ -1194,7 +1196,16 @@ def propose_hardware_match(db: Session, agent: Agent) -> Hardware | None:
             return match
 
     for mac in agent.primary_macs or []:
-        match = db.execute(select(Hardware).where(Hardware.mac_address == mac)).scalar_one_or_none()
+        # Normalized before comparison, which is what makes this tier fire at
+        # all: the agent reports `net.HardwareAddr.String()` (lowercase) and
+        # `hardware.mac_address` is canonical uppercase-colon, so the bare
+        # equality this used to be could never match.
+        normalized = normalize_mac(mac)
+        if not normalized:
+            continue
+        match = db.execute(
+            select(Hardware).where(Hardware.mac_address == normalized)
+        ).scalar_one_or_none()
         if match is not None:
             return match
 

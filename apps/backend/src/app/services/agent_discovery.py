@@ -121,6 +121,7 @@ from app.services import (
     agent_registry,
     agent_telemetry,
     discovery_eligibility,
+    discovery_enrich,
     discovery_result_service,
     discovery_service,
 )
@@ -1538,6 +1539,26 @@ async def _record_host_finding(
         )
         return DISPOSITION_DUPLICATE
 
+    # A device the inventory already knows is backfilled here and drops out of
+    # the review queue, rather than being queued as though it were new. Inside
+    # the savepoint on purpose, and after the replay guard on purpose:
+    #
+    # * a replayed finding returned above, so it enriches nothing a second time
+    #   (and `enrich_matched_result`'s own `merge_status` guard would refuse it
+    #   anyway);
+    # * the ceiling rollback below now undoes the enrichment along with the
+    #   insert, so the N+1th finding still buys the agent nothing at all;
+    # * `classification` is untouched, so the counter beneath still sees the
+    #   `matched` this was classified as.
+    #
+    # This does not weaken the rule that an agent-authored row reaches the
+    # inventory only when a user accepts it. That rule is about *creating* a
+    # `Hardware` row — see `discovery_service.finalize_agent_job` — and
+    # enrichment never creates, never overwrites a value that is already set,
+    # and never names a device.
+    enrichment = discovery_enrich.enrich_matched_result(db, result)
+    db.flush()
+
     counter = _COUNTER_FOR_CLASSIFICATION[classification]
     admitted = cast(
         "CursorResult[Any]",
@@ -1578,6 +1599,7 @@ async def _record_host_finding(
         job.id,
         classification,
     )
+    discovery_enrich.log_enrichment(db, result, enrichment)
     await discovery_service._emit_ws_event("result_added", {"job_id": job.id, "result": payload})
     return DISPOSITION_ACCEPTED
 

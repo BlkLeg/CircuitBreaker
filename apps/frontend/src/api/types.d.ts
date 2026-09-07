@@ -163,10 +163,21 @@ export interface ScanResult {
   mac_address?: string | null;
   hostname?: string | null;
   os_family?: string | null;
-  state: string;
-  merge_status: 'pending' | 'merged' | 'skipped' | 'conflict';
+  os_vendor?: string | null;
+  // `conflict` is a `state`, and has never been a `merge_status`; `accepted`,
+  // `rejected` and `auto_updated` are all written by the backend and were all
+  // missing here.
+  state: 'new' | 'matched' | 'conflict';
+  merge_status: 'pending' | 'accepted' | 'merged' | 'rejected' | 'auto_updated' | 'skipped';
   matched_entity_type?: string | null;
   matched_entity_id?: number | null;
+  // Resolved per page by the results endpoint; null on the per-finding
+  // WebSocket frames, which carry no lookup.
+  matched_entity_name?: string | null;
+  // JSON array of {field, value} for what enrichment backfilled. `null` means
+  // never enriched; `"[]"` means enriched with nothing left to fill.
+  enriched_fields_json?: string | null;
+  enriched_at?: string | null;
   created_at: string;
 }
 

@@ -40,6 +40,13 @@ export const getVendorCatalog = () => client.get('/discovery/vendor-catalog');
 export const getPendingResults = (params) =>
   client.get('/discovery/results', { params: { status: 'pending', ...params } });
 
+// Devices a scan re-found and `discovery_enrich` backfilled on the spot. They
+// never enter the review queue — that is the point — so `getPendingResults`
+// cannot see them, and the queue asks for them by name to show what was filled
+// in without anyone having to click.
+export const getEnrichedResults = (params) =>
+  client.get('/discovery/results', { params: { status: 'auto_updated', limit: 25, ...params } });
+
 // Every device a given agent's local-discovery scans have turned up, at any
 // merge status — the accepted ones are what Slice 3 §7's "Create monitor from
 // this agent" action builds a monitor from, and those are no longer `pending`.

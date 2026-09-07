@@ -42,6 +42,10 @@ export default function ReviewDrawer({ result, onClose, onAccepted, onRejected }
 
   const isConflict = result.state === 'conflict';
   const isNew = result.state === 'new';
+  // The third state the backend has always produced. This drawer used to treat
+  // `state` as a two-way choice, so a matched row fell through both branches
+  // and rendered an empty body with nothing but Accept and Reject under it.
+  const isMatched = result.state === 'matched';
 
   // Form state
   const [entityType, setEntityType] = useState('hardware');
@@ -72,9 +76,28 @@ export default function ReviewDrawer({ result, onClose, onAccepted, onRejected }
       const payload = {
         action: 'accept',
         entity_type: entityType,
+        // A matched row is an existing device, so accepting it must not rewrite
+        // the answers that device already has. Only fields the operator
+        // actually touched are sent, and `name`/`role` are never among them —
+        // `merge_scan_result` applies overrides with a blanket setattr, so
+        // sending the pre-filled `name` (which defaults to the discovered
+        // hostname, or the bare IP) silently renamed the device on the map.
         overrides: isConflict
           ? overrides
-          : { name, role, mac_address: mac, vendor, os_version: osNotes, ...overrides },
+          : isMatched
+            ? {
+                ...Object.fromEntries(
+                  [
+                    ['mac_address', mac, edited.mac_address],
+                    ['vendor', vendor, edited.vendor],
+                    ['os_version', osNotes, edited.os_version],
+                  ]
+                    .filter(([, , wasEdited]) => wasEdited)
+                    .map(([key, value]) => [key, value])
+                ),
+                ...overrides,
+              }
+            : { name, role, mac_address: mac, vendor, os_version: osNotes, ...overrides },
       };
       const res = await mergeResult(result.id, payload);
       const data = res.data;
@@ -149,7 +172,9 @@ export default function ReviewDrawer({ result, onClose, onAccepted, onRejected }
           }}
         >
           <div>
-            <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Accept Discovered Host</h2>
+            <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>
+              {isMatched ? 'Known Device' : 'Accept Discovered Host'}
+            </h2>
             <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--color-text-muted)' }}>
               Source: {result.scan_job_id ? `scan job #${result.scan_job_id}` : 'network scan'} ·{' '}
               {result.ip_address}
@@ -205,6 +230,57 @@ export default function ReviewDrawer({ result, onClose, onAccepted, onRejected }
           {/* Conflict resolver */}
           {isConflict && conflictRows.length > 0 && (
             <ConflictResolver conflicts={conflictRows} onChange={setOverrides} />
+          )}
+
+          {/* Matched: an existing device, already enriched. Read-only by
+              default — anything empty on it was filled in without asking, and
+              anything not empty is an answer this drawer must not overwrite. */}
+          {isMatched && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: 0 }}>
+                This host is already on the map
+                {result.matched_entity_name ? (
+                  <>
+                    {' as '}
+                    <strong style={{ color: 'var(--color-text)' }}>
+                      {result.matched_entity_name}
+                    </strong>
+                  </>
+                ) : null}
+                . Any details it was missing have already been filled in from this scan; anything it
+                already had was left alone.
+              </p>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead>
+                  <tr style={{ textAlign: 'left', color: 'var(--color-text-muted)' }}>
+                    <th style={{ padding: '4px 8px 4px 0', fontWeight: 600 }}>Field</th>
+                    <th style={{ padding: '4px 0', fontWeight: 600 }}>Discovered</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    ['IP address', result.ip_address],
+                    ['MAC', result.mac_address],
+                    ['Hostname', result.hostname || result.snmp_sys_name],
+                    ['Vendor', result.os_vendor],
+                    ['OS', result.os_family],
+                  ].map(([label, value]) => (
+                    <tr key={label}>
+                      <td
+                        style={{
+                          padding: '4px 8px 4px 0',
+                          color: 'var(--color-text-muted)',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {label}
+                      </td>
+                      <td style={{ padding: '4px 0', fontFamily: 'monospace' }}>{value || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
 
           {/* Normal form for new results */}

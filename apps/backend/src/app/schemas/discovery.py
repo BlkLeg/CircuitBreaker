@@ -395,8 +395,20 @@ class ScanResultOut(BaseModel):
     # list the devices one agent found.
     discovery_agent_id: int | None = None
     merge_status: str
+    # The matched device's display name. Not a column — `matched_entity_id` is a
+    # bare polymorphic integer with no ForeignKey, so nothing can eager-load it.
+    # `discovery_result_service.serialize_results` fills it for a whole page in
+    # one query; producers that validate a single row (the `result_added`
+    # frames) leave it None, which is correct there: the client already has the
+    # device list, and a lookup in the per-finding ingest path is not worth it.
+    matched_entity_name: str | None = None
     reviewed_by: str | None
     reviewed_at: str | None
+    # What `discovery_enrich` backfilled onto the matched device, and when.
+    # `None` means never enriched, `"[]"` means enriched with nothing empty left
+    # to fill — the review queue renders those two differently.
+    enriched_fields_json: str | None = None
+    enriched_at: str | None = None
     created_at: str
     model_config = ConfigDict(from_attributes=True)
 
@@ -404,6 +416,20 @@ class ScanResultOut(BaseModel):
     @classmethod
     def _coerce_open_ports_json(cls, v: Any) -> Any:
         """JSONB column returns a Python list; serialize it so the schema str | None holds."""
+        if isinstance(v, (list, dict)):
+            return json.dumps(v)
+        return v
+
+    @field_validator("enriched_fields_json", mode="before")
+    @classmethod
+    def _coerce_enriched_fields_json(cls, v: Any) -> Any:
+        """Same JSONB-to-string coercion as `open_ports_json` above.
+
+        Deliberately not the shape `conflicts_json` has: that one is written as
+        an already-`json.dumps`ed *string* into a JSONB column, so it round-trips
+        double-encoded. This column stores a real JSON array and is serialized
+        here, once, on the way out.
+        """
         if isinstance(v, (list, dict)):
             return json.dumps(v)
         return v

@@ -224,3 +224,53 @@ def test_prober_dedup_no_new_rows_on_second_run(db_session):
         f"Duplicate rows created: expected {count_after_run1} pending rows after run 2, "
         f"got {count_after_run2}"
     )
+
+
+# ── Case 6: enrichment at import, independent of the auto-merge setting ───────
+
+
+def test_scan_import_enriches_a_known_device_and_keeps_it_out_of_the_queue(db_session):
+    """`_scan_import` backfills a device the inventory already has, so a rescan
+    of the same subnet stops re-queueing hosts that are already on the map.
+
+    Not gated on `discovery_auto_merge`: that setting governs *creating*
+    inventory without review, and enrichment creates nothing.
+    """
+    job_id = _make_job(db_session)
+    hw = _make_hw(db_session, ip="10.0.0.1", mac=None)
+    db_session.commit()
+
+    with (
+        patch("app.services.discovery_service.SessionLocal", return_value=db_session),
+        patch.object(db_session, "close"),
+    ):
+        _scan_import(
+            job_id,
+            {"triggered_by": "manual", "job": None},
+            [{"ip": "10.0.0.1", "mac_address": "aa:bb:cc:dd:ee:ff", "source": "nmap"}],
+        )
+
+    db_session.refresh(hw)
+    assert hw.mac_address == "AA:BB:CC:DD:EE:FF"
+    sr = db_session.query(ScanResult).filter(ScanResult.scan_job_id == job_id).one()
+    assert sr.state == "matched"
+    assert sr.merge_status == "auto_updated"
+
+
+def test_scan_import_still_queues_a_genuinely_new_device(db_session):
+    job_id = _make_job(db_session)
+    db_session.commit()
+
+    with (
+        patch("app.services.discovery_service.SessionLocal", return_value=db_session),
+        patch.object(db_session, "close"),
+    ):
+        _scan_import(
+            job_id,
+            {"triggered_by": "manual", "job": None},
+            [{"ip": "10.0.0.77", "mac_address": "11:22:33:44:55:66", "source": "nmap"}],
+        )
+
+    sr = db_session.query(ScanResult).filter(ScanResult.scan_job_id == job_id).one()
+    assert sr.state == "new"
+    assert sr.merge_status == "pending"

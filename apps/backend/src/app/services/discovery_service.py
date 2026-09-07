@@ -28,7 +28,7 @@ from app.db.models import (
 )
 from app.db.session import SessionLocal, get_session_context
 from app.schemas.discovery import ScanResultOut
-from app.services import discovery_eligibility, discovery_result_service
+from app.services import discovery_eligibility, discovery_enrich, discovery_result_service
 from app.services.agent_capabilities import (
     _LOCAL_DISCOVERY_BOUNDS,
     _LOCAL_DISCOVERY_DEFAULT_CONFIG,
@@ -993,6 +993,9 @@ def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
         raw_results = _deduped
 
         _res_list: list[ScanResult] = []
+        # (result, outcome) for every row enrichment actually filled something
+        # on. Audited after the commit below, never inside it.
+        _enriched: list[tuple[ScanResult, discovery_enrich.EnrichmentOutcome]] = []
         for raw in raw_results:
             # Only what the prober-dedup branch below needs. Everything else the
             # row is built from — the docker network_id resolution, the override
@@ -1041,6 +1044,15 @@ def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
 
             res, classification = discovery_result_service.build_and_classify_result(db, job, raw)
 
+            # A host the inventory already knows is backfilled and dropped out of
+            # the review queue rather than queued as though it were new. No-commit
+            # — the batch's single `db.commit()` below covers it — and no effect on
+            # `classification`, so the counters underneath still see a `matched`.
+            # Audited after that commit, for the reason `log_enrichment` documents.
+            enrichment = discovery_enrich.enrich_matched_result(db, res)
+            if enrichment.enriched and enrichment.fields:
+                _enriched.append((res, enrichment))
+
             # The counters stay here, and stay absolute (D-10): this function
             # owns a whole batch and overwrites `job.hosts_*` at the end, while
             # the agent path increments them one finding at a time. That is the
@@ -1067,6 +1079,11 @@ def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
                     exc_info=True,
                 )
         db.commit()
+
+        # After the commit: `write_log` opens and commits its own work, which
+        # must not happen inside the batch's transaction.
+        for _enriched_res, _enriched_outcome in _enriched:
+            discovery_enrich.log_enrichment(db, _enriched_res, _enriched_outcome)
 
         # Auto-merge
         if auto_merge:
@@ -2324,6 +2341,14 @@ async def finalize_agent_job(
       reaches `discovery_import_service` only when a user accepts it. The
       `discovery_auto_merge` setting describes the server's own scan; an
       untrusted remote executor is not that.
+
+      Note what that forbids, which is **creation** — and with it any write that
+      changes an answer the inventory already holds. It is not a rule about the
+      agent path as such. `discovery_enrich`, which `agent_discovery` *does*
+      call per finding, backfills empty fields on a device the classifier had
+      already matched: it has no create branch, guards every write on the
+      current value being empty, and will not name a device from an agent's
+      hostname. Nothing it writes is a thing this paragraph protects.
     """
     if status not in TERMINAL_JOB_STATUSES:
         raise ValueError(f"{status!r} is not a terminal scan job status")

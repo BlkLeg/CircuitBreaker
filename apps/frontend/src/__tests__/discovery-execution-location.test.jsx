@@ -18,6 +18,7 @@ vi.mock('../api/discovery.js', () => ({
   cancelJob: vi.fn(),
   enrichOpnsenseJob: vi.fn(),
   getPendingResults: vi.fn().mockResolvedValue({ data: [] }),
+  getEnrichedResults: vi.fn().mockResolvedValue({ data: [] }),
   mergeResult: vi.fn().mockResolvedValue({ data: { entity_type: 'hardware', entity_id: 31 } }),
   enhancedBulkMerge: vi.fn().mockResolvedValue({ data: {} }),
   getDiscoveryStatus: vi.fn().mockResolvedValue({ data: { pending_results: 0, active_jobs: [] } }),

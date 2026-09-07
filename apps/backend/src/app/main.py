@@ -424,6 +424,23 @@ def _warn_if_rls_without_bypass() -> None:
         _logger.debug("RLS/BYPASSRLS diagnostic skipped", exc_info=True)
 
 
+def _run_discovery_enrichment_backfill() -> None:
+    """Owns the session for Phase 11's `backfill_pending_matched` call."""
+    from app.db.session import SessionLocal
+    from app.services.discovery_enrich import backfill_pending_matched
+
+    db = SessionLocal()
+    try:
+        enriched = backfill_pending_matched(db)
+        if enriched:
+            _logger.info(
+                "[discovery] enriched %d previously-matched scan results out of the review queue",
+                enriched,
+            )
+    finally:
+        db.close()
+
+
 def _assert_required_schema() -> None:
     try:
         existing_tables = _get_existing_schema_tables()
@@ -1461,6 +1478,22 @@ async def lifespan(app: FastAPI):
         log_discovery_readiness_at_startup()
     except Exception:
         _logger.warning("Discovery readiness logging failed at startup", exc_info=True)
+
+    # ── Phase 11: one-time discovery enrichment backfill ───────────────────
+    # Devices a build older than `discovery_enrich` classified `matched` are
+    # sitting in the review queue looking like new hosts, with the data they
+    # carried never written to the device they were matched to. Drain them
+    # through the same function ingest now uses, so the queue an operator opens
+    # after upgrading holds only decisions they actually have to make.
+    #
+    # Idempotent with nothing to remember: the selector *is* the marker, so once
+    # the pass completes a restart costs one index scan. Wrapped because a
+    # backfill is never worth failing a boot over, and threaded because it holds
+    # a synchronous session.
+    try:
+        await asyncio.to_thread(_run_discovery_enrichment_backfill)
+    except Exception:
+        _logger.warning("Discovery enrichment backfill failed at startup", exc_info=True)
 
     # ── Task 1c: event-loop lag sampler (observability phase 2) ────────────
     # A 100ms sleep loop is free, so this runs by default. Appended to

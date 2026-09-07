@@ -55,6 +55,7 @@ from app.services import (
     agent_registry,
     discovery_eligibility,
     discovery_profiles_service,
+    discovery_result_service,
     discovery_service,
 )
 from app.services.bulk_suggest import get_vendor_catalog, suggest_bulk_actions
@@ -1290,8 +1291,19 @@ def list_results(
     status: str = "pending",
     job_id: int | None = None,
     agent_id: int | None = None,
+    limit: int = Query(200, ge=1, le=1000),
     db: Session = Depends(get_db),
-):
+) -> list[ScanResultOut]:
+    """Scan results at one `merge_status` — `"pending"` is the review queue itself.
+
+    `"auto_updated"` is the other set the UI asks for by name: devices discovery
+    re-found and `discovery_enrich` backfilled, which never entered the queue.
+
+    `limit` is bounded rather than optional. The review queue has been sending it
+    since it was written and this endpoint has been ignoring it, which was
+    harmless while the only queryable set was the pending one an operator drains,
+    and stops being harmless now that `auto_updated` is a set that only grows.
+    """
     q = select(ScanResult)
     if status != "all":
         q = q.where(ScanResult.merge_status == status)
@@ -1302,8 +1314,8 @@ def list_results(
         # discovery_agent_id and must not be attributed to anyone.
         q = q.where(ScanResult.discovery_agent_id == agent_id)
 
-    results = db.scalars(q.order_by(ScanResult.created_at.desc())).all()
-    return results
+    results = db.scalars(q.order_by(ScanResult.created_at.desc()).limit(limit)).all()
+    return discovery_result_service.serialize_results(db, results)
 
 
 @router.post("/results/{result_id}/merge")

@@ -11,6 +11,7 @@ vi.mock('../api/monitor', () => ({
 
 vi.mock('../api/discovery', () => ({
   getPendingResults: vi.fn().mockResolvedValue({ data: { total: 0 } }),
+  getEnrichedResults: vi.fn().mockResolvedValue({ data: [] }),
 }));
 
 vi.mock('../hooks/useDiscoveryStream', () => ({

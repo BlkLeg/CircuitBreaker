@@ -34,7 +34,7 @@ from sqlalchemy import delete, insert
 from sqlalchemy.exc import IntegrityError
 
 from app.core.time import utcnow, utcnow_iso
-from app.db.models import Agent, AgentEvent, ScanJob, ScanResult, Tenant
+from app.db.models import Agent, AgentEvent, Hardware, ScanJob, ScanResult, Tenant
 from app.services import (
     agent_discovery,
     discovery_eligibility,
@@ -1674,3 +1674,101 @@ def test_two_concurrent_terminal_summaries_finalize_exactly_once(
             cleanup.execute(delete(Agent).where(Agent.id == agent_id))
             cleanup.execute(delete(Tenant).where(Tenant.id == tenant_id))
             cleanup.commit()
+
+
+# ── Enrichment of a device the inventory already knows ────────────────────────
+
+
+async def test_a_finding_for_a_known_device_enriches_it_and_never_reaches_the_queue(
+    db_session, factories, emitted
+):
+    """The complaint this whole path exists to answer: a re-found device used to
+    land in the review queue as though it were new, while the MAC it was carrying
+    never reached the `Hardware` row it had already been matched to."""
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent)
+    hw = factories.hardware(
+        name="printer.lan",  # agrees with the reported hostname, so not a conflict
+        ip_address="10.60.0.9",
+        mac_address=None,
+        tenant_id=agent.tenant_id,
+    )
+    db_session.flush()
+
+    await agent_discovery.ingest_discovery_finding(
+        db_session, agent, _payload(job, mac_address="aa:bb:cc:dd:ee:01")
+    )
+
+    (result,) = _results(db_session, job)
+    assert result.state == "matched"
+    assert result.merge_status == "auto_updated"  # never pending, so never queued
+    db_session.refresh(hw)
+    assert hw.mac_address == "AA:BB:CC:DD:EE:01"
+    assert {f["field"] for f in result.enriched_fields_json} >= {"mac_address"}
+
+
+async def test_ingest_enriches_but_never_creates_hardware(db_session, factories, emitted):
+    """The rule `finalize_agent_job` states is about *creation*. A finding with
+    no match must still leave the inventory exactly as it found it."""
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent)
+    before = db_session.query(Hardware).count()
+
+    await agent_discovery.ingest_discovery_finding(db_session, agent, _payload(job))
+
+    (result,) = _results(db_session, job)
+    assert result.state == "new"
+    assert result.merge_status == "pending"  # a genuinely new device still needs a human
+    assert db_session.query(Hardware).count() == before
+
+
+async def test_an_agent_finding_still_may_not_name_a_device_via_ingest(
+    db_session, factories, emitted
+):
+    """The end-to-end twin of the unit case: enrichment did not become a way for
+    a remote executor to name a device the inventory left unnamed."""
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent)
+    hw = factories.hardware(
+        name="printer.lan",
+        ip_address="10.60.0.9",
+        mac_address=None,
+        hostname=None,
+        tenant_id=agent.tenant_id,
+    )
+    db_session.flush()
+
+    await agent_discovery.ingest_discovery_finding(db_session, agent, _payload(job))
+
+    db_session.refresh(hw)
+    # `hostname` was empty and the finding reported one — a server scan would
+    # have filled it. An agent's is an observation, so it does not.
+    assert hw.hostname is None
+    assert hw.mac_address == "AA:BB:CC:DD:EE:01"  # the rest of the row still enriched
+
+
+async def test_a_replayed_finding_does_not_enrich_twice(db_session, factories, emitted):
+    """The replay guard returns before enrichment, so a spool replayed after a
+    reconnect stays as inert as it always was."""
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent)
+    hw = factories.hardware(
+        name="printer.lan",
+        ip_address="10.60.0.9",
+        mac_address=None,
+        tenant_id=agent.tenant_id,
+    )
+    db_session.flush()
+    payload = _payload(job, mac_address="aa:bb:cc:dd:ee:01")
+
+    await agent_discovery.ingest_discovery_finding(db_session, agent, payload)
+    db_session.refresh(hw)
+    hw.vendor = None  # anything a second pass would have refilled
+    db_session.flush()
+
+    await agent_discovery.ingest_discovery_finding(db_session, agent, payload)
+
+    assert len(_results(db_session, job)) == 1
+    db_session.refresh(hw)
+    assert hw.mac_address == "AA:BB:CC:DD:EE:01"
+    assert hw.vendor is None  # the replay wrote nothing

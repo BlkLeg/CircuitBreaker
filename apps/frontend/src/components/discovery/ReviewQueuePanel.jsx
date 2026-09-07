@@ -1,9 +1,14 @@
 /* eslint-disable security/detect-object-injection -- Map used for localEdits; merged keys from buildDefaultEdits */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
-import { Check, Layers, Map as MapIcon, RefreshCw, Server, X } from 'lucide-react';
+import { Check, ChevronRight, Layers, Map as MapIcon, RefreshCw, Server, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { getPendingResults, mergeResult, enhancedBulkMerge } from '../../api/discovery.js';
+import {
+  getEnrichedResults,
+  getPendingResults,
+  mergeResult,
+  enhancedBulkMerge,
+} from '../../api/discovery.js';
 import { createTargetMonitor } from '../../api/monitor.js';
 import { clustersApi } from '../../api/client.jsx';
 import { useToast } from '../common/Toast';
@@ -24,6 +29,37 @@ function isDockerResult(r) {
   } catch {
     return false;
   }
+}
+
+// Field name -> what to call it when telling someone it was filled in.
+const ENRICHED_FIELD_LABELS = {
+  mac_address: 'MAC',
+  ip_address: 'IP',
+  hostname: 'hostname',
+  vendor: 'vendor',
+  vendor_icon_slug: 'icon',
+  os_version: 'OS',
+  discovered_at: 'first-seen date',
+};
+
+/**
+ * Human summary of what enrichment wrote for one result.
+ *
+ * Three cases, and they are genuinely different: a null column means the row
+ * predates enrichment (or was written by the older auto-merge path), an empty
+ * array means the device was already complete and only its last-seen moved, and
+ * a populated one names what was filled.
+ */
+export function describeFilled(enrichedFieldsJson) {
+  let fields = null;
+  try {
+    fields = enrichedFieldsJson ? JSON.parse(enrichedFieldsJson) : null;
+  } catch {
+    fields = null;
+  }
+  if (!Array.isArray(fields) || fields.length === 0) return 'refreshed last seen';
+  const named = fields.map((f) => ENRICHED_FIELD_LABELS[f.field] ?? f.field);
+  return `filled ${named.join(', ')}`;
 }
 
 /** Build initial per-row edit state. */
@@ -80,21 +116,52 @@ Toggle.propTypes = { checked: PropTypes.bool.isRequired, onChange: PropTypes.fun
 
 // ── State pill ────────────────────────────────────────────────────────────────
 
+// Three states, because the backend has always produced three. This used to
+// special-case `conflict` and render everything else as amber "New", so a row
+// the matcher had already tied to a device on the map was indistinguishable
+// from a host nobody had ever seen.
+const STATE_PILLS = {
+  conflict: {
+    label: 'Conflict',
+    fg: '#f87171',
+    bg: 'rgba(239,68,68,0.15)',
+    bd: 'rgba(239,68,68,0.3)',
+    title: 'Matches a device already on the map, but some details disagree',
+  },
+  matched: {
+    label: 'Known',
+    fg: '#34d399',
+    bg: 'rgba(16,185,129,0.15)',
+    bd: 'rgba(16,185,129,0.3)',
+    title: 'Already on the map — empty details were filled in automatically',
+  },
+  new: {
+    label: 'New',
+    fg: '#f59e0b',
+    bg: 'rgba(245,158,11,0.15)',
+    bd: 'rgba(245,158,11,0.3)',
+    title: 'Not in the inventory yet',
+  },
+};
+
 function StatePill({ state }) {
-  const isConflict = state === 'conflict';
+  // An unrecognised state degrades to "New", which is what this rendered for
+  // every non-conflict value before.
+  const pill = STATE_PILLS[state] ?? STATE_PILLS.new;
   return (
     <span
+      title={pill.title}
       style={{
         padding: '2px 7px',
         borderRadius: 4,
         fontSize: 10,
         fontWeight: 600,
-        background: isConflict ? 'rgba(239,68,68,0.15)' : 'rgba(245,158,11,0.15)',
-        color: isConflict ? '#f87171' : '#f59e0b',
-        border: `1px solid ${isConflict ? 'rgba(239,68,68,0.3)' : 'rgba(245,158,11,0.3)'}`,
+        background: pill.bg,
+        color: pill.fg,
+        border: `1px solid ${pill.bd}`,
       }}
     >
-      {isConflict ? 'Conflict' : 'New'}
+      {pill.label}
     </span>
   );
 }
@@ -223,9 +290,27 @@ export default function ReviewQueuePanel({ onCountChange }) {
   const [sourceFilter, setSourceFilter] = useState('all'); // 'all' | 'docker' | 'network'
   const [selectedNetwork, setSelectedNetwork] = useState(null);
   const [pendingAccept, setPendingAccept] = useState(null); // { resultIds: number[] } | null
+  // Devices the scan re-found and enriched on the spot. They are not review
+  // work — nothing here needs a decision — so they live outside `results` and
+  // outside the count the badge is driven from.
+  const [enriched, setEnriched] = useState([]);
+  const [enrichedOpen, setEnrichedOpen] = useState(false);
+  const [enrichedError, setEnrichedError] = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
+    // Settled rather than all: the enriched list is secondary, and a failure
+    // fetching it must never blank the queue an operator came here to work.
+    getEnrichedResults()
+      .then((res) => {
+        setEnriched(Array.isArray(res.data) ? res.data : (res.data?.results ?? []));
+        setEnrichedError(false);
+      })
+      .catch((err) => {
+        console.error('Failed to fetch enriched discovery results:', err);
+        setEnriched([]);
+        setEnrichedError(true);
+      });
     getPendingResults({ limit: 200 })
       .then((res) => {
         const items = Array.isArray(res.data) ? res.data : (res.data?.results ?? []);
@@ -269,6 +354,12 @@ export default function ReviewQueuePanel({ onCountChange }) {
   // Live WS updates — ephemeral skeleton rows during active scan
   useEffect(() => {
     const onAdded = (ev) => {
+      // A device that was already on the map arrives already enriched, so it
+      // belongs in the list below the queue rather than in the queue.
+      if (ev?.merge_status === 'auto_updated') {
+        setEnriched((prev) => [ev, ...prev.filter((r) => r.id !== ev.id)].slice(0, 25));
+        return;
+      }
       if (!ev._ephemeral) return;
       setResults((prev) => {
         const ephId = `_eph_${ev.ip_address}`;
@@ -352,10 +443,20 @@ export default function ReviewQueuePanel({ onCountChange }) {
   // ── Accept helpers ────────────────────────────────────────────────────────
 
   const _buildOverrides = (result, edits) => {
-    const overrides = {
-      name: edits.hostname ?? result.hostname ?? result.snmp_sys_name ?? result.ip_address,
-      role: edits.role ?? (isDockerResult(result) ? 'lxc' : 'server'),
-    };
+    const overrides = {};
+    // For a device already in the inventory, send only what the operator
+    // actually changed. `merge_scan_result` applies overrides with a blanket
+    // setattr, so the defaults below — a name that falls back to the bare IP,
+    // and a role that falls back to "server" — would rename an existing device
+    // and reset its role every time someone accepted a row about it.
+    if (result.state === 'matched') {
+      if (edits.hostname) overrides.name = edits.hostname;
+      if (edits.role) overrides.role = edits.role;
+      if (edits.iconSlug) overrides.vendor_icon_slug = edits.iconSlug;
+      return overrides;
+    }
+    overrides.name = edits.hostname ?? result.hostname ?? result.snmp_sys_name ?? result.ip_address;
+    overrides.role = edits.role ?? (isDockerResult(result) ? 'lxc' : 'server');
     if (edits.iconSlug) overrides.vendor_icon_slug = edits.iconSlug;
     return overrides;
   };
@@ -1089,6 +1190,24 @@ export default function ReviewQueuePanel({ onCountChange }) {
 
                       <td>
                         <StatePill state={r.state} />
+                        {r.matched_entity_type === 'hardware' && r.matched_entity_name && (
+                          <span
+                            title={`Matches the existing device "${r.matched_entity_name}"`}
+                            style={{
+                              display: 'block',
+                              marginTop: 3,
+                              fontSize: 10,
+                              color: 'var(--color-text-muted, #94a3b8)',
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              maxWidth: 140,
+                            }}
+                          >
+                            {'\u2192 '}
+                            {r.matched_entity_name}
+                          </span>
+                        )}
                       </td>
 
                       <td>
@@ -1150,6 +1269,79 @@ export default function ReviewQueuePanel({ onCountChange }) {
             </table>
           </div>
         )}
+      </div>
+
+      {/* Recently enriched — devices the scan re-found and filled in on its own.
+          Collapsed by default: these are not review work, they are a record of
+          work that did not need reviewing. */}
+      <div style={{ marginTop: 18 }}>
+        <button
+          type="button"
+          onClick={() => setEnrichedOpen((open) => !open)}
+          aria-expanded={enrichedOpen}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            background: 'none',
+            border: 'none',
+            padding: '4px 0',
+            cursor: 'pointer',
+            fontSize: 12,
+            fontWeight: 600,
+            color: 'var(--color-text-muted, #94a3b8)',
+          }}
+        >
+          <ChevronRight
+            size={14}
+            style={{
+              transform: enrichedOpen ? 'rotate(90deg)' : 'none',
+              transition: 'transform 120ms',
+            }}
+          />
+          Recently enriched ({enriched.length})
+        </button>
+
+        {enrichedOpen &&
+          (enrichedError ? (
+            <p role="alert" style={{ fontSize: 12, color: '#f87171', margin: '6px 0 0 20px' }}>
+              Could not load enriched devices.
+            </p>
+          ) : enriched.length === 0 ? (
+            <p
+              style={{
+                fontSize: 12,
+                color: 'var(--color-text-muted, #94a3b8)',
+                margin: '6px 0 0 20px',
+              }}
+            >
+              Nothing enriched yet. Devices already on the map are filled in here automatically the
+              next time a scan finds them.
+            </p>
+          ) : (
+            <ul style={{ listStyle: 'none', margin: '6px 0 0', padding: '0 0 0 20px' }}>
+              {enriched.map((r) => (
+                <li
+                  key={r.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'baseline',
+                    gap: 8,
+                    padding: '3px 0',
+                    fontSize: 12,
+                    color: 'var(--color-text-muted, #94a3b8)',
+                  }}
+                >
+                  <code style={{ fontSize: 11 }}>{r.ip_address}</code>
+                  <span>{'\u2192'}</span>
+                  <strong style={{ color: 'var(--color-text, #e2e8f0)' }}>
+                    {r.matched_entity_name ?? 'known device'}
+                  </strong>
+                  <span>{describeFilled(r.enriched_fields_json)}</span>
+                </li>
+              ))}
+            </ul>
+          ))}
       </div>
 
       {/* Icon picker modal */}

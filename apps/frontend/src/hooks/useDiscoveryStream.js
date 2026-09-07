@@ -248,7 +248,17 @@ export function useDiscoveryStream() {
             discoveryEmitter.emit('result:added', { ...msg });
           } else {
             discoveryEmitter.emit('result:added', msg.result);
-            setPendingCount((c) => c + 1);
+            // A device the scan re-found is enriched at ingest and arrives
+            // already `auto_updated`, so it was never pending — counting it
+            // would show a backlog the queue does not contain.
+            //
+            // Written as "not auto_updated" rather than "is pending" on
+            // purpose: a frame from a backend older than this field carries no
+            // `merge_status` at all, and that has to keep counting the way it
+            // always did.
+            if (msg.result?.merge_status !== 'auto_updated') {
+              setPendingCount((c) => c + 1);
+            }
           }
           break;
         case 'result_enriched':

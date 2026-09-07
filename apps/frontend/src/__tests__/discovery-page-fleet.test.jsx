@@ -23,6 +23,7 @@ vi.mock('../api/discovery.js', () => ({
   cancelJob: vi.fn(),
   enrichOpnsenseJob: vi.fn(),
   getPendingResults: vi.fn(),
+  getEnrichedResults: vi.fn().mockResolvedValue({ data: [] }),
   getDiscoveryStatus: vi.fn(),
   startAdHocScan: vi.fn(),
   pauseDiscovery: vi.fn(),

@@ -226,7 +226,10 @@ def test_propose_hardware_match_mac_beats_hostname_when_no_machine_id_match(db_s
     from app.db.models import Hardware
 
     hw_by_hostname = Hardware(name="by-hostname", hostname="box1")
-    hw_by_mac = Hardware(name="by-mac", mac_address="aa:bb:cc:dd:ee:ff")
+    # Canonical uppercase-colon, which is what `hardware.mac_address` holds:
+    # `_norm_mac` writes it on every accept, and migration 0109 canonicalised
+    # the rows that predated that.
+    hw_by_mac = Hardware(name="by-mac", mac_address="AA:BB:CC:DD:EE:FF")
     db_session.add_all([hw_by_hostname, hw_by_mac])
     db_session.flush()
 
@@ -238,6 +241,31 @@ def test_propose_hardware_match_mac_beats_hostname_when_no_machine_id_match(db_s
     match = svc.propose_hardware_match(db_session, agent)
     assert match is not None
     assert match.id == hw_by_mac.id
+
+
+def test_propose_hardware_match_normalizes_the_agents_reported_macs(db_session, factories):
+    """The agent reports `net.HardwareAddr.String()`, which is lowercase, and
+    `hardware.mac_address` is canonical uppercase — so this tier compared two
+    forms that could never be equal and had never once fired. It is the
+    documented middle rung of the confidence ladder, so it has to."""
+    from app.db.models import Hardware
+
+    hw = Hardware(name="by-mac", mac_address="AA:BB:CC:DD:EE:0A")
+    db_session.add(hw)
+    db_session.flush()
+
+    agent = factories.agent(
+        hostname="unrelated-hostname",
+        machine_id_hash=None,
+        # Both the lowercase colon form the agent emits and the dotted form some
+        # switches report resolve to the one address stored above.
+        primary_macs=["aabb.ccdd.ee0a"],
+    )
+
+    match = svc.propose_hardware_match(db_session, agent)
+
+    assert match is not None
+    assert match.id == hw.id
 
 
 def test_propose_hardware_match_falls_back_to_hostname(db_session, factories):

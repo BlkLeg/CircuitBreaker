@@ -89,6 +89,15 @@ class EntityDoc(Base):
 
 class Hardware(Base):
     __tablename__ = "hardware"
+    __table_args__ = (
+        # Migration 0109. The discovery matcher looks a device up by MAC then by
+        # IP on every finding, and enrichment adds a third lookup on top; both
+        # columns were unindexed, so each classification was a sequential scan.
+        # Not unique — duplicate MACs and IPs are tolerated on purpose
+        # (`hardware_service`: "Saving both (freeform-first)").
+        Index("ix_hardware_mac_address", "mac_address"),
+        Index("ix_hardware_ip_address", "ip_address"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
@@ -2014,9 +2023,21 @@ class ScanResult(Base):
     conflicts_json: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # JSONB as of v0.2.0
     matched_entity_type: Mapped[str | None] = mapped_column(String, nullable=True)
     matched_entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    merge_status: Mapped[str] = mapped_column(String, default="pending")
+    # Indexed as of migration 0109: `state` always was, but `merge_status` is
+    # what the review badge, the queue fetch and the enrichment backfill's
+    # selector all actually filter on.
+    merge_status: Mapped[str] = mapped_column(String, default="pending", index=True)
     reviewed_by: Mapped[str | None] = mapped_column(String, nullable=True)
     reviewed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    # What `discovery_enrich` filled in on the matched device, and when. Three
+    # distinguishable states, and the UI renders each differently:
+    #   NULL -> never enriched (or written by a build older than 0109)
+    #   []   -> enriched, but there was nothing empty to fill; only liveness moved
+    #   [{"field": ..., "value": ...}] -> these fields were backfilled
+    # `reviewed_by`/`reviewed_at` are deliberately NOT set alongside these: they
+    # mean a human reviewed the row, and an enriched row had no human.
+    enriched_fields_json: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    enriched_at: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, nullable=False, index=True)
 
     job: Mapped["ScanJob"] = relationship("ScanJob", back_populates="results")
