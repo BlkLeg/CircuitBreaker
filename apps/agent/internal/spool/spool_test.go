@@ -91,7 +91,7 @@ func TestEnqueuePeekCommit_FIFO(t *testing.T) {
 	}
 
 	wantSeqs(t, s.Peek(10, DefaultCapBytes), 0, 1, 2)
-	if err := s.Commit(3); err != nil {
+	if err := s.commit(3); err != nil {
 		t.Fatalf("Commit(3) error = %v", err)
 	}
 	if got := s.Len(); got != 0 {
@@ -100,7 +100,7 @@ func TestEnqueuePeekCommit_FIFO(t *testing.T) {
 	if got := s.Peek(10, DefaultCapBytes); len(got) != 0 {
 		t.Errorf("Peek() on an empty spool = %v, want no frames", seqs(got))
 	}
-	if err := s.Commit(1); err != nil {
+	if err := s.commit(1); err != nil {
 		t.Errorf("Commit() past the end error = %v, want nil (clamped)", err)
 	}
 }
@@ -386,7 +386,7 @@ func TestSpool_PeekDoesNotConsumeUntilCommit(t *testing.T) {
 	}
 	crashed.Close()
 
-	if err := s.Commit(2); err != nil {
+	if err := s.commit(2); err != nil {
 		t.Fatalf("Commit(2) error = %v", err)
 	}
 	after, err := Open(dir, DefaultCapBytes)
@@ -418,7 +418,7 @@ func TestSpool_CommitPreservesFIFOAfterPartialFailure(t *testing.T) {
 	}
 
 	wantSeqs(t, s.Peek(5, DefaultCapBytes), 1, 2, 3, 4, 5)
-	if err := s.Commit(2); err != nil {
+	if err := s.commit(2); err != nil {
 		t.Fatalf("Commit(2) error = %v", err)
 	}
 	wantSeqs(t, s.Peek(3, DefaultCapBytes), 3, 4, 5)
@@ -513,7 +513,7 @@ func TestSpool_SizeBytesIsIncrementalAndMatchesFile(t *testing.T) {
 		}
 	}
 
-	if err := s.Commit(50); err != nil {
+	if err := s.commit(50); err != nil {
 		t.Fatalf("Commit(50) error = %v", err)
 	}
 	size, err := s.SizeBytes()
@@ -541,7 +541,7 @@ func TestSpool_CompactsAfterHeadThreshold(t *testing.T) {
 			t.Fatalf("Enqueue(%d) error = %v", i, err)
 		}
 	}
-	if err := s.Commit(frames); err != nil {
+	if err := s.commit(frames); err != nil {
 		t.Fatalf("Commit(%d) error = %v", frames, err)
 	}
 
@@ -575,7 +575,7 @@ func TestSpool_LoadHonoursHeadMarker(t *testing.T) {
 			t.Fatalf("Enqueue(%d) error = %v", i, err)
 		}
 	}
-	if err := s.Commit(2); err != nil { // below the compaction thresholds
+	if err := s.commit(2); err != nil { // below the compaction thresholds
 		t.Fatalf("Commit(2) error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, headFilename)); err != nil {
@@ -846,5 +846,70 @@ func TestRecordDestroyed_CountsAnObservationTheSpoolCouldNotBuffer(t *testing.T)
 	}
 	if got := reopened.EvictionStats().Frames; got != 1 {
 		t.Errorf("EvictionStats().Frames after reopen = %d, want 1", got)
+	}
+}
+
+// TestRecordDestroyed_ReportsOncePerWindowButCountsEveryLoss pins the split
+// between the record and the reporting.
+//
+// The counters must be exact — they are what the fleet view reads, and an
+// under-reported loss is worse than none because it looks authoritative. The
+// log line and the fsync behind it must not be, because the condition that
+// drives them is by nature sustained: a full disk stays full, and a line plus
+// a failing write per sample is a storm layered on a storage failure. The
+// first loss in a window still reports immediately, so an isolated failure is
+// never silent.
+func TestRecordDestroyed_ReportsOncePerWindowButCountsEveryLoss(t *testing.T) {
+	var logs bytes.Buffer
+	restore := logging.UseWriter(&logs, logging.LevelWarn)
+	defer restore()
+
+	s, err := Open(t.TempDir(), DefaultCapBytes)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	const lost = 25
+	for i := uint64(1); i <= lost; i++ {
+		s.RecordDestroyed(testFrame(i), "spool write failed")
+	}
+
+	if got := s.EvictionStats().Frames; got != lost {
+		t.Errorf("EvictionStats().Frames = %d, want %d — the record may never be throttled", got, lost)
+	}
+	if got := s.EvictionStats().Bytes; got <= 0 {
+		t.Errorf("EvictionStats().Bytes = %d, want the destroyed frames' size", got)
+	}
+
+	lines := strings.Count(logs.String(), "could not be buffered")
+	if lines != 1 {
+		t.Errorf("wrote %d loss lines for %d losses inside one window, want 1\n%s",
+			lines, lost, logs.String())
+	}
+	// That one line is the *first* loss, reported the instant it happened —
+	// the 24 behind it are batched, not dropped.
+	if !strings.Contains(logs.String(), "permanently lost 1 observation(s)") {
+		t.Errorf("the first loss was not reported on its own:\n%s", logs.String())
+	}
+
+	// A new window reports again, carrying everything batched since the last
+	// line rather than only the frame that happened to reopen it — and the
+	// cumulative total is the honest one throughout.
+	s.mu.Lock()
+	s.lastDestroyedReport = time.Now().Add(-2 * destroyedReportInterval)
+	s.mu.Unlock()
+	s.RecordDestroyed(testFrame(lost+1), "spool write failed")
+
+	if got := strings.Count(logs.String(), "could not be buffered"); got != 2 {
+		t.Errorf("wrote %d loss lines after the window elapsed, want 2\n%s", got, logs.String())
+	}
+	if !strings.Contains(logs.String(), "permanently lost 25 observation(s)") {
+		t.Errorf("the second line does not carry the 25 losses batched behind it:\n%s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "cumulative loss for this agent is 26 observation(s)") {
+		t.Errorf("the cumulative total does not account for every loss:\n%s", logs.String())
+	}
+	if got := s.EvictionStats().Frames; got != lost+1 {
+		t.Errorf("EvictionStats().Frames = %d, want %d", got, lost+1)
 	}
 }

@@ -909,3 +909,130 @@ func TestDataFrameSender_EvictedInflightFramesStopHoldingTheWindowOpen(t *testin
 			wire.count(), held)
 	}
 }
+
+// TestDataFrameSender_AckStallSurvivesContinuousCapEviction is the N1
+// regression: a stall detector that cap eviction can switch off is not a stall
+// detector.
+//
+// At the cap — the state the spool exists for — every producer enqueue evicts
+// from the head, and under commit-on-ack the head *is* the in-flight window.
+// So `dropEvicted` runs on essentially every drain tick, and for one commit it
+// restarted the 45s deadline each time it pruned anything. A server that read
+// the socket and answered pings (so the 60s read deadline kept being
+// refreshed) but acknowledged nothing therefore held the agent forever, while
+// the spool destroyed observation after observation to make room for frames
+// that were never going to be delivered either. That is the exact fault
+// ackStallTimeout was introduced to diagnose separately from silence.
+//
+// The deadline is now derived from the oldest surviving entry's own send time,
+// so eviction moves it forward by exactly how much older the destroyed frames
+// were and no further.
+func TestDataFrameSender_AckStallSurvivesContinuousCapEviction(t *testing.T) {
+	original := ackStallTimeout
+	ackStallTimeout = 60 * time.Millisecond
+	t.Cleanup(func() { ackStallTimeout = original })
+
+	// A window's worth buffered, so eviction keeps landing inside it for the
+	// whole test rather than walking off the end of it.
+	const held = maxInflightFrames
+	fixture, capBytes := numberedFixture(t, held*4, held)
+	sp := newTestSpool(t, capBytes)
+	for i := 1; i <= held; i++ {
+		if err := sp.Enqueue(fixture[i]); err != nil {
+			t.Fatalf("Enqueue(%d) error = %v", i, err)
+		}
+	}
+
+	wire := &fakeWire{}
+	sender := ackingSender(t, sp, wire)
+	if err := sender.drainBurst(held, spool.DefaultCapBytes); err != nil {
+		t.Fatalf("drainBurst() error = %v", err)
+	}
+	if len(sender.inflight) != held {
+		t.Fatalf("in-flight window holds %d, want %d", len(sender.inflight), held)
+	}
+
+	// Now behave like a real agent at the cap with a server that never acks:
+	// the collector keeps producing, every enqueue evicts an in-flight frame,
+	// and the drain ticker keeps running. Nothing here acknowledges anything.
+	deadline := time.Now().Add(6 * ackStallTimeout)
+	next := held + 1
+	for time.Now().Before(deadline) {
+		if next < len(fixture) {
+			if err := sp.Enqueue(fixture[next]); err != nil {
+				t.Fatalf("Enqueue(%d) error = %v", next, err)
+			}
+			next++
+		}
+		err := sender.drainBurst(4, spool.DefaultCapBytes)
+		if errors.Is(err, errAckStall) {
+			if sp.EvictionStats().Frames == 0 {
+				t.Fatal("the fixture never evicted anything — it is not exercising the race")
+			}
+			return
+		}
+		if err != nil {
+			t.Fatalf("drainBurst() error = %v, want nil or errAckStall", err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("no stall after %s of continuous eviction with nothing acknowledged (%d evicted, "+
+		"%d in flight) — cap eviction is resetting the deadline it should leave alone",
+		6*ackStallTimeout, sp.EvictionStats().Frames, len(sender.inflight))
+}
+
+// TestDataFrameSender_AckStallDeadlineTracksTheOldestSurvivingFrame is the
+// other side of the same rule: eviction *may* move the deadline, just never to
+// now. A destroyed frame's wait no longer counts, and the frame behind it is
+// judged from when it was actually sent.
+func TestDataFrameSender_AckStallDeadlineTracksTheOldestSurvivingFrame(t *testing.T) {
+	const held = 4
+	fixture, capBytes := numberedFixture(t, held*2, held)
+	sp := newTestSpool(t, capBytes)
+	for i := 1; i <= held; i++ {
+		if err := sp.Enqueue(fixture[i]); err != nil {
+			t.Fatalf("Enqueue(%d) error = %v", i, err)
+		}
+	}
+
+	wire := &fakeWire{}
+	sender := ackingSender(t, sp, wire)
+	if err := sender.drainBurst(2, spool.DefaultCapBytes); err != nil {
+		t.Fatalf("first drainBurst() error = %v", err)
+	}
+	firstBurst := sender.ackWaitingSince()
+	if firstBurst.IsZero() {
+		t.Fatal("ackWaitingSince() is zero with frames in flight")
+	}
+
+	time.Sleep(15 * time.Millisecond)
+	if err := sender.drainBurst(2, spool.DefaultCapBytes); err != nil {
+		t.Fatalf("second drainBurst() error = %v", err)
+	}
+	if got := sender.ackWaitingSince(); !got.Equal(firstBurst) {
+		t.Errorf("ackWaitingSince() = %v after a second burst, want the first burst's %v — "+
+			"sending more must not excuse the frames already waiting", got, firstBurst)
+	}
+
+	// Evict the first burst. The deadline must move to the *second* burst's
+	// send time — later than the first, and still firmly in the past.
+	for i := held + 1; i <= held+2; i++ {
+		if err := sp.Enqueue(fixture[i]); err != nil {
+			t.Fatalf("Enqueue(%d) error = %v", i, err)
+		}
+	}
+	before := time.Now()
+	sender.dropEvicted(sp.Origin())
+	got := sender.ackWaitingSince()
+	if got.IsZero() {
+		t.Fatal("the whole window was pruned — the fixture evicted more than the first burst")
+	}
+	if !got.After(firstBurst) {
+		t.Errorf("ackWaitingSince() = %v after evicting the first burst, want later than %v",
+			got, firstBurst)
+	}
+	if !got.Before(before) {
+		t.Errorf("ackWaitingSince() = %v, want strictly before %v — eviction must never reset "+
+			"the deadline to now", got, before)
+	}
+}

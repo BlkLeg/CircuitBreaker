@@ -917,11 +917,20 @@ the life of the state directory — the agent never resets it), and `cb-agent st
 whenever it is non-zero:
 
 ```
-spool loss: 9412 observation(s) (33554432 bytes) were permanently discarded because the spool hit its size cap
+spool loss: 9412 observation(s) (33554432 bytes) were permanently discarded — the spool could not keep them
   destroyed window: 2026-09-01T00:00:00Z .. 2026-09-03T18:30:00Z (this data is gone and cannot be recovered)
   most recently discarded: 2026-09-03T18:30:05Z
-  remedy: raise spool_cap_bytes in agent.toml so a longer outage fits, then restart the agent
+  usual cause: the spool hit its size cap during an outage and dropped its oldest observations
+    remedy: raise spool_cap_bytes in agent.toml so a longer outage fits, then restart the agent
+  other cause: the spool could not write at all (full disk, read-only state directory)
+    remedy: check this agent's log for a 'could not be buffered' line, and free or remount the disk
 ```
+
+Two causes share the counter. The size cap is the usual one. The other is a spool that could not
+accept the write at all — a full disk, a read-only `/var/lib/cb-agent` — which since acknowledged
+delivery ends the observation, because every data frame is spooled before it can reach a socket
+and there is no live path around it. The count is exact either way; the agent's log line names
+which happened, and the loss is reported to the server identically.
 
 The same four numbers ride `hello` and every `heartbeat`, so the server records them on the
 agent's row, writes a permanent `spool_evicted` audit event each time the reported total rises,

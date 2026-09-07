@@ -65,6 +65,17 @@ type inflightFrame struct {
 	// positional commit then discarded that many never-sent frames on top of
 	// the ones eviction had already destroyed. See spool.Spool's `origin`.
 	pos int64
+	// sentAt is when this frame was written to the socket, and it is what the
+	// ack-stall deadline is measured from.
+	//
+	// Per entry rather than one clock for the window, because the window's
+	// head moves for two very different reasons. An acknowledgement releasing
+	// frames is progress and restarts the deadline; cap eviction destroying
+	// them is not progress at all, and a single clock reset on eviction
+	// disabled the stall detector precisely at the cap — where every producer
+	// enqueue evicts from the head, so a server that reads and pings but
+	// never acknowledges reset the deadline on every drain tick, forever.
+	sentAt time.Time
 }
 
 // dataFrameSender owns this connection's outbound flow for *data* frames
@@ -121,11 +132,14 @@ type dataFrameSender struct {
 	// leading prefix of this slice and never a hole in the middle.
 	inflight      []inflightFrame
 	inflightBytes int64
-	// ackWaitSince is when the oldest currently-unacknowledged frame started
-	// waiting: set when the window goes from empty to non-empty, and reset
-	// every time an ack actually commits something. Zero while nothing is in
-	// flight.
-	ackWaitSince time.Time
+	// lastAckProgress is when an acknowledgement last released at least one
+	// frame from the window. Zero until one has on this connection.
+	//
+	// It is only half of the stall clock — see ackWaitingSince. The other
+	// half is per-entry, because the window's oldest entry can change without
+	// any progress being made at all: cap eviction destroys frames from the
+	// head, which is exactly where the in-flight window sits.
+	lastAckProgress time.Time
 }
 
 // newDataFrameSender constructs a dataFrameSender. onSpoolStats may be nil.
@@ -229,10 +243,12 @@ func (d *dataFrameSender) hasBacklog() bool {
 // drainBurst advances this connection's catch-up by one tick.
 //
 // With `data.ack` negotiated it sends up to maxFrames frames (and at most
-// maxBytes of them) from the first unsent position in the backlog — which is
-// len(inflight) frames past the head, because everything already in flight is
-// still uncommitted and still at that head — and commits nothing. Commits
-// happen in onDataAck. The window is additionally capped at
+// maxBytes of them) starting at the first *absolute position* it has not sent
+// yet, and commits nothing. Commits happen in onDataAck.
+//
+// A position, not "len(inflight) frames past the head": the head moves when
+// the cap evicts, so a head-relative skip would step over frames that were
+// never sent at all. See spool.Spool's `origin`. The window is additionally capped at
 // maxInflightFrames/maxInflightBytes, so a server that stops acking stops the
 // flow rather than letting it run away.
 //
@@ -283,10 +299,9 @@ func (d *dataFrameSender) drainBurst(maxFrames int, maxBytes int64) error {
 		if err != nil {
 			return err
 		}
-		if len(d.inflight) == 0 {
-			d.ackWaitSince = time.Now()
-		}
-		d.inflight = append(d.inflight, inflightFrame{seq: seq, bytes: size, pos: res.Start + int64(i)})
+		d.inflight = append(d.inflight, inflightFrame{
+			seq: seq, bytes: size, pos: res.Start + int64(i), sentAt: time.Now(),
+		})
 		d.inflightBytes += size
 	}
 	// One report per burst, not per frame: the depth a caller cares about is
@@ -379,7 +394,9 @@ func (d *dataFrameSender) onDataAck(watermark uint64) error {
 	}
 	d.inflight = append(d.inflight[:0], d.inflight[released:]...)
 	d.inflightBytes -= releasedBytes
-	d.ackWaitSince = time.Now()
+	// Real progress: the deadline restarts from here for whatever is still
+	// waiting. This is the *only* thing that restarts it.
+	d.lastAckProgress = time.Now()
 
 	// By position, never by count. If the cap destroyed some of these while
 	// they were in flight, a count would discard that many *unsent* frames
@@ -431,9 +448,37 @@ func (d *dataFrameSender) dropEvicted(origin int64) {
 	}
 	d.inflight = append(d.inflight[:0], d.inflight[dropped:]...)
 	d.inflightBytes -= droppedBytes
-	// The clock was measuring frames that no longer exist; restart it against
-	// whatever is genuinely still waiting.
-	d.ackWaitSince = time.Now()
+	// Deliberately touches no clock. The deadline is derived from the oldest
+	// surviving entry's own sentAt (see ackWaitingSince), so it moves forward
+	// by exactly as much as the destroyed frames were older than the ones
+	// behind them — and no further.
+	//
+	// Restarting it here instead is a defect this code had for one commit,
+	// and it disabled the stall detector in the one state it exists for: at
+	// the cap every producer enqueue evicts from the head, this runs on every
+	// drain tick, and a server that read the socket and pinged but never
+	// acknowledged had its 45s deadline pushed out indefinitely while the
+	// spool kept destroying observations.
+}
+
+// ackWaitingSince is when the oldest frame still in the window started waiting
+// to be acknowledged: its own send time, or the moment of the last real
+// acknowledgement if that came later.
+//
+// Both halves are needed and neither is sufficient. The send time alone would
+// keep faulting a connection that *is* delivering, just slowly enough that an
+// old frame is still outstanding; the last-progress time alone would be reset
+// by an acknowledgement that released some other, newer frame. Zero when the
+// window is empty.
+func (d *dataFrameSender) ackWaitingSince() time.Time {
+	if len(d.inflight) == 0 {
+		return time.Time{}
+	}
+	since := d.inflight[0].sentAt
+	if d.lastAckProgress.After(since) {
+		since = d.lastAckProgress
+	}
+	return since
 }
 
 // ackStallError reports the connection dead when frames have been in flight
@@ -443,7 +488,7 @@ func (d *dataFrameSender) ackStallError() error {
 	if len(d.inflight) == 0 {
 		return nil
 	}
-	if time.Since(d.ackWaitSince) < ackStallTimeout {
+	if time.Since(d.ackWaitingSince()) < ackStallTimeout {
 		return nil
 	}
 	return fmt.Errorf("%w (%d frame(s) unacknowledged for %s)",

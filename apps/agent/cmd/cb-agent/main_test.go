@@ -182,6 +182,13 @@ func TestPrintStatus_ReflectsWriterState(t *testing.T) {
 		{
 			// The point of Phase 3: destroyed history is stated in plain
 			// words, names the window that is gone, and names the remedy.
+			//
+			// Both remedies, since Phase 5. The same counter now records
+			// observations the spool could not write at all — every data
+			// frame goes through the spool before it can reach a socket, so
+			// a refused write ends the observation — and telling an operator
+			// with a read-only disk to raise a size cap is advice that
+			// cannot work.
 			name: "permanently discarded observations are reported in full",
 			mutate: func(w *status.Writer) error {
 				return w.SetSpoolEvictions(spool.EvictionStats{
@@ -196,7 +203,10 @@ func TestPrintStatus_ReflectsWriterState(t *testing.T) {
 				"spool loss: 9412 observation(s) (33554432 bytes) were permanently discarded",
 				"destroyed window: 2026-09-01T00:00:00Z .. 2026-09-03T18:30:00Z",
 				"cannot be recovered",
+				"usual cause: the spool hit its size cap",
 				"spool_cap_bytes in agent.toml",
+				"other cause: the spool could not write at all",
+				"free or remount the disk",
 			},
 		},
 		{
@@ -1389,6 +1399,7 @@ func TestStartDaemonState_NoRaceBetweenCollectorReadinessAndStatusWriter(t *test
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() {
 		cancel()
 		_ = rt.Close()
@@ -1413,6 +1424,7 @@ func TestStartDaemonState_CollectorReadinessIsNotErasedByIdentityReadiness(t *te
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 
 	st := awaitReadiness(t, dir, "agent.identity", "host.core")
@@ -1530,6 +1542,7 @@ func TestApplyHostConfig_DisableEmitsDisabledForEveryHostCollector(t *testing.T)
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 	rt.linked.Store(true)
 
@@ -1569,6 +1582,7 @@ func TestApplyHostConfig_ReEnableFlipsDisabledBackToReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 	// Mirror what OnConnected does: the disable report was published while
 	// unlinked, so the link coming up is what forces it out.
@@ -1609,6 +1623,7 @@ func TestReadinessReconciliation_FiresWithoutAnyCollection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 	rt.linked.Store(true)
 
@@ -1635,6 +1650,7 @@ func TestQueueReadiness_DoesNotConsumeBudgetWhileDisconnected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 
 	// startDaemonState's applyHostConfig already published the disable report
@@ -1672,6 +1688,7 @@ func TestPublishReadiness_MergesIdentityWithHostCollectors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 	rt.linked.Store(true)
 	drainFrames(rt.controlFrames)
@@ -1811,6 +1828,29 @@ func awaitCapabilityReadinessState(t *testing.T, ch <-chan frame.Frame, collecto
 // existing capability.readiness channel. A capability that applied cleanly in
 // the same payload reports "ready", which is also what clears a corrected
 // config's degraded row.
+// stopDaemonState registers the shutdown every test that starts the daemon
+// needs and none of them used to do.
+//
+// startDaemonState launches the collector, probe, discovery and reconcile
+// goroutines, and every one of them writes into the state directory —
+// status.json most often. Cancelling the context tells them to stop but does
+// not wait, so a test that returned straight after `cancel()` raced t.TempDir's
+// own cleanup and failed on `unlinkat: directory not empty`, with a message
+// about a file that has nothing to do with what it asserted. rt.stop is
+// synchronous (collect.Runner.Stop waits on its workers), so this makes the
+// teardown deterministic.
+//
+// Registered before the spool close that follows it in most of these tests:
+// t.Cleanup runs last-in-first-out, so the goroutines are stopped before the
+// spool they may still be writing to is closed.
+func stopDaemonState(t *testing.T, rt *daemonRuntime) {
+	t.Helper()
+	if rt == nil || rt.stop == nil {
+		return
+	}
+	t.Cleanup(rt.stop)
+}
+
 func TestOnCapabilitiesSet_ReportsCapabilityFaultAsDegradedReadiness(t *testing.T) {
 	_, key := startDaemonStateTestDir(t, "", nil)
 
@@ -1820,6 +1860,7 @@ func TestOnCapabilitiesSet_ReportsCapabilityFaultAsDegradedReadiness(t *testing.
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 	rt.linked.Store(true)
 	drainFrames(rt.controlFrames)
@@ -1865,6 +1906,7 @@ func TestStartDaemonState_CachedGrantFaultIsReportedAtStartup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() {
 		cancel()
 		_ = rt.Close()
@@ -2034,6 +2076,7 @@ func TestApplyProbeConfig_DisablePublishesDisabledForEveryProbeName(t *testing.T
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 	rt.linked.Store(true)
 	rt.queueReadiness(true)
@@ -2078,6 +2121,7 @@ func TestApplyProbeConfig_DisableCancelsInFlightRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 
 	if err := rt.probeRuntime.Assign(probeAssign(t, "run-cancel", probeInScopeHost)); err != nil {
@@ -2124,6 +2168,7 @@ func TestApplyProbeConfig_ConcurrencyChangeTakesEffectWithoutRestart(t *testing.
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 	before := rt.probeRuntime
 
@@ -2174,6 +2219,7 @@ func TestStartDaemonState_ProbeRuntimeIsWiredAfterTheGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 	if rt.probeRuntime == nil {
 		t.Fatal("daemonRuntime.probeRuntime is nil, want a runtime link's probe callbacks can bind to")
@@ -2243,6 +2289,7 @@ func TestPublishReadiness_CarriesTheCurrentNetworks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 	rt.linked.Store(true)
 	drainFrames(rt.controlFrames)
@@ -2270,6 +2317,7 @@ func TestPublishReadiness_AnEmptyNetworkListIsReportedAsSuch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 	rt.linked.Store(true)
 	rt.publishReadiness([]frame.Readiness{{Collector: "host.core", State: "ready"}})
@@ -2303,6 +2351,7 @@ func TestPublishReadiness_AnUnreadableInterfaceListRepeatsTheLastReport(t *testi
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 	rt.linked.Store(true)
 	rt.publishReadiness([]frame.Readiness{{Collector: "host.core", State: "ready"}})
@@ -2348,6 +2397,7 @@ func TestQueueReadiness_ADroppedForcedFrameSurvivesTheRateLimitFloor(t *testing.
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 	rt.linked.Store(true)
 
@@ -2612,6 +2662,7 @@ func TestStartDaemonState_DiscoveryRuntimeIsWiredAfterTheGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 	if rt.discoverRuntime == nil {
 		t.Fatal("daemonRuntime.discoverRuntime is nil, want a runtime link's discovery callbacks can bind to")
@@ -2683,6 +2734,7 @@ func TestStartDaemonState_DiscoveryRuntimeScansNothingWhileUngranted(t *testing.
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 
 	version := discoveryScopeVersion(capability.DefaultLocalDiscoveryConfig())
@@ -2724,6 +2776,7 @@ func TestApplyDiscoveryConfig_DisablePublishesDisabledForEveryDiscoverName(t *te
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 	rt.linked.Store(true)
 	rt.queueReadiness(true)
@@ -2780,6 +2833,7 @@ func TestOnCapabilitiesSet_DisablingLocalDiscoveryCancelsInFlightWorkAndStopsFut
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 
 	version := discoveryScopeVersion(capability.DefaultLocalDiscoveryConfig())
@@ -2843,6 +2897,7 @@ func TestOnCapabilitiesSet_DiscoveryBoundsAreReAppliedWithoutRestart(t *testing.
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 	before := rt.discoverRuntime
 
@@ -3123,6 +3178,7 @@ func TestDiscoveryRuntime_RequestAndCancelFramesReachTheRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 
 	const reason = "scope_changed"
@@ -3195,6 +3251,7 @@ func TestDaemonLinkOptions_EveryActionableInboundFrameTypeHasAHandler(t *testing
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
+	stopDaemonState(t, rt)
 	t.Cleanup(func() { _ = rt.sp.Close() })
 
 	opts := rt.linkOptions(&config.Config{}, key, "0.1.0-test", linkHooks{})

@@ -1475,14 +1475,22 @@ func printStatus(w io.Writer, stateDir string) error {
 // healthy agent trains an operator to skip the line, which would defeat the
 // point on the one agent where it is not zero. Where it does print, it says
 // in plain words that the data is gone — not "evicted", which reads as
-// housekeeping — names the window that was destroyed, and names the single
-// setting that would have prevented it.
+// housekeeping — and names the window that was destroyed.
+//
+// It names two causes, not one, and that is deliberate. The size cap is the
+// usual one, but the same counter also records observations the spool could
+// not write at all — a full disk, a read-only state directory — because every
+// data frame now goes through the spool before it can reach a socket, so a
+// refused write ends the observation. Printing "raise spool_cap_bytes" as
+// *the* remedy would be confidently wrong advice to an operator whose disk is
+// read-only, which is the failure mode this whole reporting effort exists to
+// end.
 func printSpoolLoss(w io.Writer, stats spool.EvictionStats) {
 	if stats.Frames <= 0 {
 		return
 	}
 	fmt.Fprintf(w,
-		"spool loss: %d observation(s) (%d bytes) were permanently discarded because the spool hit its size cap\n",
+		"spool loss: %d observation(s) (%d bytes) were permanently discarded — the spool could not keep them\n",
 		stats.Frames, stats.Bytes)
 	if !stats.OldestDroppedTS.IsZero() && !stats.NewestDroppedTS.IsZero() {
 		fmt.Fprintf(w, "  destroyed window: %s .. %s (this data is gone and cannot be recovered)\n",
@@ -1492,7 +1500,10 @@ func printSpoolLoss(w io.Writer, stats spool.EvictionStats) {
 	if !stats.LastEvictedAt.IsZero() {
 		fmt.Fprintf(w, "  most recently discarded: %s\n", stats.LastEvictedAt.UTC().Format(time.RFC3339))
 	}
-	fmt.Fprintln(w, "  remedy: raise spool_cap_bytes in agent.toml so a longer outage fits, then restart the agent")
+	fmt.Fprintln(w, "  usual cause: the spool hit its size cap during an outage and dropped its oldest observations")
+	fmt.Fprintln(w, "    remedy: raise spool_cap_bytes in agent.toml so a longer outage fits, then restart the agent")
+	fmt.Fprintln(w, "  other cause: the spool could not write at all (full disk, read-only state directory)")
+	fmt.Fprintln(w, "    remedy: check this agent's log for a 'could not be buffered' line, and free or remount the disk")
 }
 
 // sortedKeys returns m's keys sorted, so printStatus's grants listing has a

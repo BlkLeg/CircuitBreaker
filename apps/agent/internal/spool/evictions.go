@@ -63,6 +63,27 @@ func (e *EvictionStats) widen(ts time.Time) {
 	}
 }
 
+// destroyedReportInterval bounds how often RecordDestroyed writes a log line
+// and re-persists the record.
+//
+// The counters themselves stay exact and are updated on every call — it is
+// only the *reporting* that batches, exactly as Enqueue's eviction path
+// batches a whole drop-oldest run into one line and one write. The condition
+// that drives this is by nature sustained (a full disk stays full), so an
+// unthrottled line and an fsync per sample would be a log storm layered on top
+// of a storage failure, and the persist fails too, adding a second line each
+// time.
+//
+// Delaying the persist costs nothing the server can see: `EvictionStats` reads
+// the in-memory record, which every hello and heartbeat reports from and which
+// is always current. The only thing that can lag is what survives a restart,
+// and lagging by at most one interval of an ongoing failure is a far better
+// trade than writing to a disk that is already refusing writes.
+//
+// The first loss in a window always reports immediately, so an isolated
+// failure is never silent.
+const destroyedReportInterval = time.Minute
+
 // RecordDestroyed folds one observation this spool could not buffer at all
 // into the same permanent loss record cap eviction writes to, and says so at
 // error level.
@@ -94,14 +115,26 @@ func (s *Spool) RecordDestroyed(f frame.Frame, reason string) {
 	s.evicted.widen(f.TS)
 	s.evicted.LastEvictedAt = time.Now().UTC()
 
+	s.destroyedPending++
+	s.destroyedPendingBytes += size
+	if !s.lastDestroyedReport.IsZero() &&
+		time.Since(s.lastDestroyedReport) < destroyedReportInterval {
+		return
+	}
+	pending, pendingBytes := s.destroyedPending, s.destroyedPendingBytes
+	s.destroyedPending, s.destroyedPendingBytes = 0, 0
+	s.lastDestroyedReport = time.Now()
+
 	// Errorf, not Warnf: cap eviction is a policy working as designed, while
 	// this is the spool failing to do its job at all — and unlike eviction it
 	// will keep happening, silently, for as long as the underlying condition
 	// lasts.
 	logging.Errorf(
-		"cb-agent: spool: WARNING permanently lost one observation from %s (%s) — it could not be "+
-			"buffered and there is no other copy; cumulative loss for this agent is %d observation(s) / %d bytes.",
-		formatEvictedTS(f.TS), reason, s.evicted.Frames, s.evicted.Bytes,
+		"cb-agent: spool: WARNING permanently lost %d observation(s) (%d bytes) covering %s.. that "+
+			"could not be buffered (%s) — there is no other copy; cumulative loss for this agent is "+
+			"%d observation(s) / %d bytes.",
+		pending, pendingBytes, formatEvictedTS(f.TS), reason,
+		s.evicted.Frames, s.evicted.Bytes,
 	)
 	if err := s.persistEvictionsLocked(); err != nil {
 		logging.Errorf("cb-agent: spool: could not persist the eviction record: %v", err)

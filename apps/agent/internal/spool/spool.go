@@ -90,6 +90,12 @@ type Spool struct {
 	// the life of the state directory and never reset by this package.
 	evictedPath string
 	evicted     EvictionStats
+	// destroyedPending / lastDestroyedReport batch RecordDestroyed's log line
+	// and its persist — see destroyedReportInterval. The `evicted` record
+	// above is updated on every call regardless and is never batched.
+	destroyedPending      int64
+	destroyedPendingBytes int64
+	lastDestroyedReport   time.Time
 }
 
 // entry is one queued frame plus the encoded length (including its trailing
@@ -481,18 +487,25 @@ func (s *Spool) peekLocked(skip, maxFrames int, maxBytes int64) []frame.Frame {
 	return out
 }
 
-// Commit discards the first n undelivered frames. n is clamped to what is
+// commit discards the first n undelivered frames. n is clamped to what is
 // available, so committing more than was peeked (or committing an empty
 // spool) is a no-op rather than an error. Nothing is discarded before this
 // call, which is what makes a crash mid-burst re-send rather than lose.
 //
-// It is the count-based primitive CommitThrough is built on, and it is only
-// safe for a caller that can be certain the head has not moved since it chose
-// n — which, with a producer enqueueing from another goroutine and a
-// drop-oldest cap policy, no caller holding frames across a send can be. Use
-// CommitThrough instead: it names frames by position and cannot be fooled by
-// an eviction.
-func (s *Spool) Commit(n int) error {
+// Unexported on purpose. Counting frames from the head is only safe for a
+// caller that can be certain the head has not moved since it chose n — and
+// with a producer enqueueing from another goroutine into a spool that evicts
+// oldest-first, no caller holding frames across a send can be. Exactly that
+// mistake made an eviction between a send and its acknowledgement discard
+// never-sent frames, silently, on top of the ones eviction had already
+// destroyed. Leaving an exported method here documented as unusable would be
+// an invitation to make it again; CommitThrough names frames by position and
+// cannot be fooled.
+//
+// It survives as the primitive CommitThrough is expressed in, and as the
+// direct handle this package's own tests reach for when the head demonstrably
+// has not moved.
+func (s *Spool) commit(n int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.commitLocked(n)

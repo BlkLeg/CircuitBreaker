@@ -236,9 +236,15 @@ const DEFINITIONS = {
     icon: 'FileX2',
     tone: CRITICAL,
     summary:
-      'This agent’s local buffer filled and it permanently discarded its oldest observations. That data is gone and cannot be recovered — it is a gap in this host’s history, not a delay.',
+      'This agent’s local buffer could not keep some observations and permanently discarded them. That data is gone and cannot be recovered — it is a gap in this host’s history, not a delay.',
+    // Two causes, one counter. The size cap filling during an outage is the
+    // usual one; a spool that cannot write at all (a full disk, a read-only
+    // state directory) records the same loss, because every data frame is
+    // spooled before it can reach a socket. Naming only the cap would hand an
+    // operator with a read-only disk a remedy that cannot work, which is the
+    // kind of confidently-wrong reporting this state exists to replace.
     action:
-      'Restore the link so the buffer can drain, then raise spool_cap_bytes in the agent’s agent.toml so a longer outage fits next time.',
+      'Restore the link so the buffer can drain. If the agent’s spool filled, raise spool_cap_bytes in its agent.toml; if its log shows writes failing, free or remount the state directory.',
   },
   spool_pressure: {
     label: 'Spool backlog',

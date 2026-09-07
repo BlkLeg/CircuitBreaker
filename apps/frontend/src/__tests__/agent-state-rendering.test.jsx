@@ -233,6 +233,19 @@ describe('permanently destroyed history in a fleet row (plan Phase 3)', () => {
     renderRow({ ...BASE, spool_evicted_frames: null });
     expect(screen.queryByText(/lost /)).toBeNull();
   });
+
+  it('names both causes rather than blaming the size cap for every loss', () => {
+    // Phase 5: the same counter now records observations the agent could not
+    // buffer at all — a full disk, a read-only state directory — because
+    // every data frame is spooled before it can reach a socket. Telling an
+    // operator whose disk is read-only to raise a size cap is a remedy that
+    // cannot work, which is precisely the confidently-wrong reporting this
+    // state exists to replace.
+    const state = agentStateDefinition('spool_evicted');
+    expect(state.summary).not.toMatch(/filled/);
+    expect(state.action).toMatch(/spool_cap_bytes/);
+    expect(state.action).toMatch(/writes failing|remount/);
+  });
 });
 
 describe('the spool_evicted chip and banner on the agent detail page', () => {
