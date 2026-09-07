@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import { describe, it, expect } from 'vitest';
-import JobStatusBadge from '../../components/discovery/JobStatusBadge';
+import JobStatusBadge from '../components/discovery/JobStatusBadge';
 
 describe('JobStatusBadge', () => {
   it('renders "Queued" for queued status', () => {

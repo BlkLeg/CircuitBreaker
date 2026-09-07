@@ -48,7 +48,8 @@ MockEventSource._instances = [];
 globalThis.EventSource = MockEventSource;
 
 // Import after setting up mock
-const { sseEmitter, connectSSE, disconnectSSE, isSSEConnected } = await import('../lib/sseClient.js');
+const { sseEmitter, connectSSE, disconnectSSE, isSSEConnected } =
+  await import('../lib/sseClient.js');
 
 describe('sseClient', () => {
   beforeEach(() => {

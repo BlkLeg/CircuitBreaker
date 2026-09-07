@@ -20,8 +20,22 @@ describe('IPConflictBanner', () => {
 
   it('renders one row per conflict', () => {
     const conflicts = [
-      { entity_type: 'hardware', entity_id: 1, entity_name: 'pve-01', conflicting_ip: '10.0.0.1', conflicting_port: null, protocol: null },
-      { entity_type: 'service', entity_id: 2, entity_name: 'Plex', conflicting_ip: '10.0.0.1', conflicting_port: 8080, protocol: 'tcp' },
+      {
+        entity_type: 'hardware',
+        entity_id: 1,
+        entity_name: 'pve-01',
+        conflicting_ip: '10.0.0.1',
+        conflicting_port: null,
+        protocol: null,
+      },
+      {
+        entity_type: 'service',
+        entity_id: 2,
+        entity_name: 'Plex',
+        conflicting_ip: '10.0.0.1',
+        conflicting_port: 8080,
+        protocol: 'tcp',
+      },
     ];
     renderBanner(conflicts);
     expect(screen.getByText(/pve-01/)).toBeInTheDocument();
@@ -30,7 +44,14 @@ describe('IPConflictBanner', () => {
 
   it('shows entity type and name in each row', () => {
     const conflicts = [
-      { entity_type: 'hardware', entity_id: 1, entity_name: 'pve-01', conflicting_ip: '10.0.0.1', conflicting_port: null, protocol: null },
+      {
+        entity_type: 'hardware',
+        entity_id: 1,
+        entity_name: 'pve-01',
+        conflicting_ip: '10.0.0.1',
+        conflicting_port: null,
+        protocol: null,
+      },
     ];
     renderBanner(conflicts);
     expect(screen.getByText(/hardware/i)).toBeInTheDocument();
@@ -39,7 +60,14 @@ describe('IPConflictBanner', () => {
 
   it('renders Open link for each conflict with entity_id', () => {
     const conflicts = [
-      { entity_type: 'hardware', entity_id: 1, entity_name: 'pve-01', conflicting_ip: '10.0.0.1', conflicting_port: null, protocol: null },
+      {
+        entity_type: 'hardware',
+        entity_id: 1,
+        entity_name: 'pve-01',
+        conflicting_ip: '10.0.0.1',
+        conflicting_port: null,
+        protocol: null,
+      },
     ];
     renderBanner(conflicts);
     expect(screen.getByText(/open/i)).toBeInTheDocument();
@@ -47,7 +75,14 @@ describe('IPConflictBanner', () => {
 
   it('does not render Open link when entity_id is null', () => {
     const conflicts = [
-      { entity_type: 'hardware', entity_id: null, entity_name: 'unknown', conflicting_ip: '10.0.0.1', conflicting_port: null, protocol: null },
+      {
+        entity_type: 'hardware',
+        entity_id: null,
+        entity_name: 'unknown',
+        conflicting_ip: '10.0.0.1',
+        conflicting_port: null,
+        protocol: null,
+      },
     ];
     renderBanner(conflicts);
     expect(screen.queryByText(/open/i)).toBeNull();
@@ -55,7 +90,14 @@ describe('IPConflictBanner', () => {
 
   it('renders ip and port correctly when both present', () => {
     const conflicts = [
-      { entity_type: 'service', entity_id: 2, entity_name: 'Plex', conflicting_ip: '10.0.0.5', conflicting_port: 8080, protocol: 'tcp' },
+      {
+        entity_type: 'service',
+        entity_id: 2,
+        entity_name: 'Plex',
+        conflicting_ip: '10.0.0.5',
+        conflicting_port: 8080,
+        protocol: 'tcp',
+      },
     ];
     renderBanner(conflicts);
     expect(screen.getByText(/10\.0\.0\.5/)).toBeInTheDocument();
@@ -64,7 +106,14 @@ describe('IPConflictBanner', () => {
 
   it('renders ip only correctly when port is null', () => {
     const conflicts = [
-      { entity_type: 'hardware', entity_id: 1, entity_name: 'pve-01', conflicting_ip: '10.0.0.1', conflicting_port: null, protocol: null },
+      {
+        entity_type: 'hardware',
+        entity_id: 1,
+        entity_name: 'pve-01',
+        conflicting_ip: '10.0.0.1',
+        conflicting_port: null,
+        protocol: null,
+      },
     ];
     renderBanner(conflicts);
     expect(screen.getByText(/10\.0\.0\.1/)).toBeInTheDocument();

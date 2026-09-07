@@ -1,11 +1,11 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
-import ConflictResolver from '../../components/discovery/ConflictResolver';
+import ConflictResolver from '../components/discovery/ConflictResolver';
 
 const CONFLICTS = [
   { field: 'mac_address', stored: 'AA:BB:CC:11:22:33', discovered: 'AA:BB:CC:44:55:66' },
-  { field: 'hostname',    stored: 'old-hostname',       discovered: 'new-hostname.lan' },
+  { field: 'hostname', stored: 'old-hostname', discovered: 'new-hostname.lan' },
 ];
 
 describe('ConflictResolver', () => {
@@ -19,9 +19,9 @@ describe('ConflictResolver', () => {
     render(<ConflictResolver conflicts={CONFLICTS} onChange={vi.fn()} />);
     const radios = screen.getAllByRole('radio');
     // 2 fields × 2 radios each = 4; existing ones (index 0, 2) should be checked
-    expect(radios[0]).toBeChecked();   // mac_address existing
+    expect(radios[0]).toBeChecked(); // mac_address existing
     expect(radios[1]).not.toBeChecked(); // mac_address discovered
-    expect(radios[2]).toBeChecked();   // hostname existing
+    expect(radios[2]).toBeChecked(); // hostname existing
     expect(radios[3]).not.toBeChecked(); // hostname discovered
   });
 

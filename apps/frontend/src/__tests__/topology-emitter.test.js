@@ -1,14 +1,13 @@
 /**
- * Tests for useTopologyStream.js — topology WebSocket hook.
+ * Tests for useTopologyStream.js — topologyEmitter event bus and hook state.
  *
- * Tests the topologyEmitter event bus and hook behavior. WebSocket integration
- * is covered by E2E or manual verification since mocking the browser WebSocket
- * in Vitest is fragile (module load order, global stubbing).
+ * WebSocket wiring itself (connect/reconnect/safe-close) is covered by
+ * stream-safe-close.test.jsx and ws-url-protocol.test.js; this file covers
+ * the topologyEmitter pub/sub surface those do not touch.
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { renderHook } from '@testing-library/react';
-
-const { useTopologyStream, topologyEmitter } = await import('../hooks/useTopologyStream.js');
+import { useTopologyStream, topologyEmitter } from '../hooks/useTopologyStream.js';
 
 describe('useTopologyStream', () => {
   afterEach(() => {

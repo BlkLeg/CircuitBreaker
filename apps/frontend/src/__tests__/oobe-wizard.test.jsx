@@ -342,4 +342,63 @@ describe('OOBEWizardPage', () => {
     expect(screen.queryByText('Español')).not.toBeInTheDocument();
     expect(screen.queryByText('日本語')).not.toBeInTheDocument();
   });
+
+  it('includes optional SMTP setup in the bootstrap payload', async () => {
+    const { authApi } = await import('../api/auth.js');
+    render(<OOBEWizardPage onCompleted={vi.fn()} />);
+
+    await advanceToRegionalStep();
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Continue →'));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Email Delivery Setup')).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText(/External App URL/), {
+        target: { value: 'https://cb.example.com' },
+      });
+      fireEvent.click(
+        screen.getByLabelText('Configure SMTP now for invite delivery and outbound notifications.')
+      );
+    });
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('SMTP Host'), {
+        target: { value: 'smtp.example.com' },
+      });
+      fireEvent.change(screen.getByLabelText('From Email'), {
+        target: { value: 'noreply@example.com' },
+      });
+      fireEvent.change(screen.getByLabelText(/SMTP Password/), {
+        target: { value: 'Mailer123!' },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Continue →'));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Confirmation')).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Create account and enter Circuit Breaker'));
+    });
+
+    await waitFor(() => {
+      expect(authApi.bootstrapInitialize).toHaveBeenCalledWith(
+        expect.objectContaining({
+          email: 'admin@example.com',
+          api_base_url: 'https://cb.example.com',
+          smtp_enabled: true,
+          smtp_host: 'smtp.example.com',
+          smtp_from_email: 'noreply@example.com',
+          smtp_password: 'Mailer123!',
+        })
+      );
+    });
+  });
 });
