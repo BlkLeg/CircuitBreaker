@@ -180,7 +180,7 @@ deps-native-down:  ## Stop native systemd deps
 # ==============================================================================
 DIST_NATIVE ?= dist/native
 
-.PHONY: build build-deps build-in-release-image build-release build-from-source release-local release-tag release-retag release-untag agent-signing-key docker-build docker-push sign sbom
+.PHONY: build build-deps build-in-release-image build-release build-from-source release-local version-sync release-tag release-retag release-untag agent-signing-key docker-build docker-push sign sbom
 
 build: ## Build native app (tarball + deb + rpm + apk + AppImage + .pkg.tar.zst)
 	cd $(FRONTEND_DIR) && npm ci && npm run build
@@ -213,6 +213,15 @@ release-local: ## build-release + tag current HEAD with VERSION
 	$(MAKE) --no-print-directory build-release
 	git tag -a "v$$(cat VERSION)" -m "Release v$$(cat VERSION)"
 	@echo "Tagged v$$(cat VERSION). Push with: git push origin v$$(cat VERSION)"
+
+# GOV-09 says VERSION is the only hand-edited version. apps/backend/pyproject.toml
+# gets that literally — hatch reads the file — but a package.json and a sentence
+# in a README cannot read anything, so for those it means "generated from
+# VERSION and gated on it". This is the generator; the gate is the same script
+# without --write, and both drive off one registry of locations so a place that
+# is written is always a place that is checked. Run it after editing VERSION.
+version-sync: ## Rewrite every manifest and doc that names the release to match VERSION
+	python3 scripts/check_version_parity.py --write
 
 release-tag: ## Tag current HEAD as vVERSION (first release of this version — fails if the tag already exists)
 	git tag -a "v$$(cat VERSION)" -m "Circuit Breaker v$$(cat VERSION)"
