@@ -214,7 +214,36 @@ async def test_telemetry_spool_is_null_for_an_agent_that_never_reported(
         "refused_frames": None,
         "refused_last_at": None,
         "refused_last_reason": None,
+        "ack_negotiated": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_telemetry_spool_reports_the_negotiated_delivery_mode(
+    client, factories, viewer_headers
+):
+    """Whether this agent's buffered observations leave its spool when the
+    server has stored them, or merely when the socket accepted them.
+
+    Three states, and all three matter. `True` is a current agent. `False` is
+    one whose build predates the acknowledgement handshake and is therefore
+    still at-most-once on the wire — a fact an operator upgrading a fleet has
+    no other way to see, since such an agent looks perfectly healthy right up
+    until a mid-catch-up restart eats an hour of history. `None` is "has not
+    connected since this server learned to report it", which the UI must
+    render as nothing rather than as a reassuring answer.
+    """
+    modern = factories.agent(status="active")
+    modern.data_ack_negotiated = True
+    legacy = factories.agent(status="active")
+    legacy.data_ack_negotiated = False
+    unknown = factories.agent(status="active")
+    factories.session.commit()
+
+    for agent, expected in ((modern, True), (legacy, False), (unknown, None)):
+        resp = await client.get(f"/api/v1/agents/{agent.id}/telemetry", headers=viewer_headers)
+        assert resp.status_code == 200
+        assert resp.json()["spool"]["ack_negotiated"] is expected
 
 
 @pytest.mark.asyncio

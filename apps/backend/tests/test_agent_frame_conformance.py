@@ -14,6 +14,7 @@ from app.schemas.agent_frame import (
     TYPE_CAPABILITIES_SET,
     TYPE_CAPABILITY_READINESS,
     TYPE_CAPABILITY_VIOLATION,
+    TYPE_DATA_ACK,
     TYPE_DISCOVERY_CANCEL,
     TYPE_DISCOVERY_FINDING,
     TYPE_DISCOVERY_REQUEST,
@@ -33,6 +34,7 @@ from app.schemas.agent_frame import (
     AgentFrame,
     CapabilityReadinessPayload,
     CapabilityViolationPayload,
+    DataAckPayload,
     DiscoveryCancelPayload,
     DiscoveryFindingPayload,
     DiscoveryRequestPayload,
@@ -71,6 +73,7 @@ _PAYLOAD_MODEL_FOR_TYPE = {
     TYPE_DISCOVERY_CANCEL: DiscoveryCancelPayload,
     TYPE_DISCOVERY_FINDING: DiscoveryFindingPayload,
     TYPE_TLS_PIN_ROTATE: TLSPinRotatePayload,
+    TYPE_DATA_ACK: DataAckPayload,
 }
 
 
@@ -332,6 +335,78 @@ def test_spool_eviction_group_is_present_absent_not_zero_valued():
     hellos = [entry["json"]["payload"] for entry in _corpus_entries_of_type(TYPE_HELLO)]
     assert any(p.get("spool_evicted_frames") for p in hellos), (
         "corpus must cover hello's at-connect eviction snapshot"
+    )
+
+
+def test_data_ack_watermark_survives_the_typed_model_by_name():
+    """The delivery watermark, asserted by name against the fixture.
+
+    ``seq`` is the entire payload, and pydantic drops unknown keys — so a
+    model that misspelled it would validate every real ack into ``seq=0``,
+    ``test_corpus_typed_payloads_decode_and_round_trip`` would still pass
+    (both sides of its comparison equally zero), and the agent would be told
+    that nothing had ever been handled. Its spool would then never commit
+    anything and would grow until its cap evicted the oldest observations —
+    the exact loss the acknowledgement exists to prevent, caused by the
+    acknowledgement itself.
+
+    The corpus covers the top of the range because ``seq`` is a ``uint64`` on
+    the Go side and a Python ``int`` here: a watermark that saturated or
+    wrapped on the way through would commit frames the server never handled.
+    """
+    entries = _corpus_entries_of_type(TYPE_DATA_ACK)
+    assert entries, "corpus must cover data.ack"
+
+    for entry in entries:
+        wire = entry["json"]["payload"]
+        assert "seq" in wire, "a data.ack fixture without a `seq` is not a watermark"
+        payload = DataAckPayload.model_validate(wire)
+        assert payload.seq == wire["seq"]
+        assert DataAckPayload.model_validate_json(payload.model_dump_json()) == payload
+
+    seqs = {entry["json"]["payload"]["seq"] for entry in entries}
+    assert 0 in seqs, "corpus must cover a watermark of 0 — nothing handled yet on this connection"
+    assert max(seqs) == 2**64 - 1, (
+        "corpus must cover the top of the uint64 range the Go side declares"
+    )
+
+
+def test_data_ack_negotiation_flags_default_to_unsupported():
+    """Absent means "does not support acknowledged delivery", on both frames.
+
+    This is the opposite convention from the ``spool_evicted_*`` group, and
+    deliberately so. Those need an explicit 0 on the wire because absent means
+    "cannot report", which is a different fact from "nothing was destroyed".
+    Here absent and False are the *same* fact — an agent that predates the
+    mechanism does not support acks, and a server that predates it does not
+    send them — so both sides carry ``omitempty``/a plain default and the safe
+    answer is the default one.
+
+    Getting this backwards in either direction is a live hazard: a server that
+    read an absent ``ack_data`` as True would send ``data.ack`` frames to an
+    agent that has no idea what they are, and an agent that read an absent
+    ``data_ack`` as True would wait forever for acknowledgements that are
+    never coming and drain nothing.
+    """
+    assert HelloPayload.model_validate({}).ack_data is False
+    assert HelloPayload.model_validate({"ack_data": True}).ack_data is True
+    assert HelloAckPayload.model_validate({}).data_ack is False
+    assert HelloAckPayload.model_validate({"accepted": True}).data_ack is False
+    assert HelloAckPayload.model_validate({"data_ack": True}).data_ack is True
+
+    hellos = [entry["json"]["payload"] for entry in _corpus_entries_of_type(TYPE_HELLO)]
+    assert any(p.get("ack_data") for p in hellos), (
+        "corpus must cover an agent asking for acknowledged delivery"
+    )
+    assert any("ack_data" not in p for p in hellos), (
+        "corpus must keep a hello from an agent that predates the negotiation"
+    )
+    acks = [entry["json"]["payload"] for entry in _corpus_entries_of_type(TYPE_HELLO_ACK)]
+    assert any(p.get("data_ack") for p in acks), (
+        "corpus must cover a server granting acknowledged delivery"
+    )
+    assert any("data_ack" not in p for p in acks), (
+        "corpus must keep a hello.ack from a server that predates the negotiation"
     )
 
 

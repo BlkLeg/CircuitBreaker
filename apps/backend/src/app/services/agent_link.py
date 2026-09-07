@@ -69,6 +69,43 @@ class LinkSessionState:
     last_seq: int | None = None
 
 
+@dataclasses.dataclass(frozen=True)
+class FrameReceipt:
+    """What `receive_frame` made of one inbound wire frame.
+
+    It exists because the delivery watermark (`data.ack`) has to distinguish
+    three outcomes that the old `AgentFrame | None` return collapsed into two:
+
+      - **accepted** — `frame` is set. The caller dispatches it and only then
+        advances the watermark, because the ack must mean "durably persisted",
+        and `dispatch_frame` is what commits.
+      - **terminally rejected, sequence known** — `frame` is None and
+        `terminal_seq` is set. An unsupported version, a duplicate or a
+        decreasing sequence: this server will never accept that frame, no
+        matter how many times the agent resends it. Acknowledging it is what
+        lets the agent's spool head move past it instead of wedging behind it
+        forever and resending it until its cap evicts everything queued
+        behind.
+      - **rejected, sequence unknowable** — both None. A body that did not
+        parse, a blank type, a negative sequence: there is no trustworthy
+        number to acknowledge, so the caller stops acknowledging anything on
+        that connection. The agent then commits nothing more and re-sends
+        everything on reconnect. Harsh, correct, and rare.
+
+    `terminal_seq` is never set alongside `frame`: an accepted frame's
+    sequence is `frame.seq`, and reading it from here would invite advancing
+    the watermark before the handler had actually stored anything.
+    """
+
+    frame: AgentFrame | None = None
+    terminal_seq: int | None = None
+
+    @property
+    def accepted(self) -> bool:
+        """Whether a frame came back to dispatch."""
+        return self.frame is not None
+
+
 # Frame types requiring no grant are transport-level (hello/heartbeat/log/
 # capability.violation/update.status) and are simply absent from this map.
 CAPABILITY_FOR_TYPE: dict[str, str] = {
@@ -498,6 +535,12 @@ def receive_frame(
 ) -> AgentFrame | None:
     """Decode and validate one inbound wire frame for a /link session.
 
+    Thin wrapper over `receive_frame_receipt` keeping the original
+    frame-or-None shape, which is all most callers (and every unit test that
+    predates the delivery watermark) need. `ws_agents.link_stream` calls the
+    receipt form directly because it also has to know *why* a frame was
+    rejected — see `FrameReceipt`.
+
     Rejects (recording a `protocol_violation` AgentEvent and returning None
     for the caller to drop the frame and keep the connection open):
       - malformed bodies — bytes that don't parse as an AgentFrame at all,
@@ -519,6 +562,38 @@ def receive_frame(
     LinkSessionState per connection so validation is real across the
     connection's lifetime.
     """
+    return receive_frame_receipt(db, agent, raw, session).frame
+
+
+def receive_frame_receipt(
+    db: Session,
+    agent: Agent,
+    raw: bytes,
+    session: LinkSessionState | None = None,
+) -> FrameReceipt:
+    """`receive_frame`, but reporting *why* a frame was rejected — see `FrameReceipt`.
+
+    Rejections (each recording a `protocol_violation` AgentEvent and leaving
+    the connection open) fall into two groups, and the split is what the
+    delivery watermark reads:
+
+      - `unsupported_version`, `duplicate_sequence`, `decreasing_sequence` —
+        the frame decoded, so its sequence number is known and trustworthy,
+        and this server's refusal is final. The receipt carries that sequence
+        so the caller can acknowledge it: an agent must be able to move past a
+        frame that will never be accepted.
+      - `malformed_frame` — a body that did not parse, a blank type, or a
+        negative sequence. Nothing here is a number worth acknowledging: an
+        unparseable body has no sequence at all, and a blank type or a
+        negative sequence means the envelope's own structure is untrustworthy,
+        which is not a basis for telling an agent to discard its only copy of
+        an observation. The receipt is empty and the caller stops
+        acknowledging on that connection.
+
+    `session` is omitted by most direct unit tests, in which case a throwaway
+    LinkSessionState is used — every call is then treated as the first frame
+    of its own session, so sequence checks pass trivially.
+    """
     if session is None:
         session = LinkSessionState()
 
@@ -528,7 +603,7 @@ def receive_frame(
         _record_protocol_violation(
             db, agent, reason="malformed_frame", detail={"error": str(exc)[:200]}
         )
-        return None
+        return FrameReceipt()
 
     if candidate.v != FRAME_VERSION:
         _record_protocol_violation(
@@ -537,7 +612,7 @@ def receive_frame(
             reason="unsupported_version",
             detail={"v": candidate.v, "frame_type": candidate.type},
         )
-        return None
+        return FrameReceipt(terminal_seq=candidate.seq if candidate.seq >= 0 else None)
 
     if not candidate.type.strip():
         _record_protocol_violation(
@@ -546,7 +621,7 @@ def receive_frame(
             reason="malformed_frame",
             detail={"seq": candidate.seq, "frame_type": candidate.type},
         )
-        return None
+        return FrameReceipt()
 
     if candidate.seq < 0:
         _record_protocol_violation(
@@ -555,7 +630,7 @@ def receive_frame(
             reason="malformed_frame",
             detail={"seq": candidate.seq, "frame_type": candidate.type},
         )
-        return None
+        return FrameReceipt()
 
     if session.last_seq is not None and candidate.seq <= session.last_seq:
         reason = (
@@ -571,10 +646,15 @@ def receive_frame(
                 "frame_type": candidate.type,
             },
         )
-        return None
+        # Terminal, and safe to acknowledge: a duplicate is one the server has
+        # already handled and a decreasing sequence is one it will never
+        # accept on this connection. Either way the agent may stop resending
+        # it. The watermark only ever moves forward, so a stale number here
+        # cannot walk it backwards.
+        return FrameReceipt(terminal_seq=candidate.seq)
 
     session.last_seq = candidate.seq
-    return candidate
+    return FrameReceipt(frame=candidate)
 
 
 async def dispatch_frame(db: Session, agent: Agent, frame: AgentFrame) -> None:

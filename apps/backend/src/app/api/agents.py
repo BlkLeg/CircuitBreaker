@@ -1558,6 +1558,20 @@ def get_agent_telemetry(
             "refused_frames": agent.refused_frames,
             "refused_last_at": agent.refused_frames_last_at,
             "refused_last_reason": agent.refused_frames_last_reason,
+            # Whether this agent's buffered observations leave its spool when
+            # this server has stored them, or merely when the socket accepted
+            # them. It rides the spool block because it is a fact *about* the
+            # spool — it decides what committing a frame means — and because
+            # an operator asking "is this host's data safe" is reading this
+            # block already.
+            #
+            # `True` is the current agent-and-server pairing. `False` is an
+            # agent whose build predates the acknowledgement handshake: still
+            # at-most-once on the wire, which the UI says out loud rather than
+            # leaving to be inferred. `None` is "has not connected since this
+            # server learned to report it", and renders as nothing — never as
+            # a reassuring answer to a question nobody has asked yet.
+            "ack_negotiated": agent.data_ack_negotiated,
         },
         "hardware_id": agent.hardware_id,
     }

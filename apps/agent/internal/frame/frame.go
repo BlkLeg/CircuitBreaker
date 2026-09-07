@@ -77,6 +77,13 @@ const (
 	TypeUpdate       = "update"
 	TypeDisconnect   = "disconnect"
 	TypePing         = "ping"
+	// TypeDataAck acknowledges *data* frames the server has terminally
+	// handled on this connection — see DataAckPayload. It is the frame that
+	// turns the outbound spool's guarantee from "at-least-once onto a
+	// socket" into "at-least-once into the database": before it existed the
+	// agent committed a spooled frame the instant conn.WriteMessage returned
+	// nil, which says nothing about whether the server ever read it.
+	TypeDataAck = "data.ack"
 )
 
 // Frame type constants — bidirectional (either side may send it about its own cipher).
@@ -113,6 +120,7 @@ var allFrameTypes = []string{
 	TypeUpdate,
 	TypeDisconnect,
 	TypePing,
+	TypeDataAck,
 	TypeTransportRekey,
 }
 
@@ -142,7 +150,12 @@ var controlFrameTypes = map[string]bool{
 	TypeUpdate:              true,
 	TypeDisconnect:          true,
 	TypePing:                true,
-	TypeTransportRekey:      true,
+	// TypeDataAck is control traffic *about* data frames, never data
+	// itself. Spooling an ack would be circular — the agent would buffer,
+	// and try to deliver back to the server, the very frame that says the
+	// server already has what it buffered.
+	TypeDataAck:        true,
+	TypeTransportRekey: true,
 }
 
 // IsDataFrame reports whether typ is a data frame eligible for the outbound
@@ -269,6 +282,20 @@ type HelloPayload struct {
 	// machine can reach is otherwise invisible.
 	ServerURL string `json:"server_url,omitempty"`
 
+	// AckData asks the server to acknowledge data frames on this connection
+	// (see TypeDataAck). A current agent always sets it; the server answers
+	// in HelloAckPayload.DataAck, and only if *both* say yes does the agent
+	// switch from commit-on-write to commit-on-ack.
+	//
+	// `omitempty` here, unlike the SpoolEvicted* group above, and the
+	// difference is not an inconsistency to be harmonised away. Those four
+	// need an explicit 0 to stay distinguishable from an absent key because
+	// absent means "this agent cannot report", which is a different fact
+	// from "nothing was destroyed". For this flag absent and false mean the
+	// same thing — "does not support acks" — which is exactly the safe
+	// default an old agent should get.
+	AckData bool `json:"ack_data,omitempty"`
+
 	// EnrollToken is a short-lived enrollment token that approves this agent
 	// without a human at the approval screen. Sent on the ENROLL hello only:
 	// internal/link builds its hello from this same struct, and a bearer
@@ -291,6 +318,41 @@ type HelloAckPayload struct {
 	ServerTime   *time.Time                 `json:"server_time,omitempty"`
 	Capabilities map[string]json.RawMessage `json:"capabilities,omitempty"`
 	AgentID      int64                      `json:"agent_id,omitempty"`
+
+	// DataAck reports that this server will send `data.ack` frames on this
+	// connection. A new server sets it only when the agent's hello asked
+	// (HelloPayload.AckData), so the mode is a genuine negotiation rather
+	// than an assumption by either side.
+	//
+	// Absent — which is every ack a server predating the mechanism sends —
+	// decodes to false, and the agent then keeps today's commit-on-write
+	// behaviour and says so in its log. Same `omitempty` reasoning as
+	// HelloPayload.AckData: absent and false are the same fact here.
+	DataAck bool `json:"data_ack,omitempty"`
+}
+
+// DataAckPayload is the server -> agent `data.ack` payload: a delivery
+// watermark, not a receipt for one frame.
+//
+// Seq is the highest sequence number such that *every* frame this connection
+// carried with seq <= Seq has been terminally handled — ingested, deduped,
+// or deliberately refused and audited. "Terminally handled" rather than
+// "accepted" is load-bearing: the server drops some data frames it will
+// never accept (a capability gate that is switched off, an agent that is not
+// active, a payload its handler rejects), and each of those is recorded
+// against the agent. If the watermark only advanced on success, the spool
+// head would wedge forever behind such a frame and the agent would resend it
+// until the cap evicted everything queued behind it — turning a durability
+// fix into a data-loss bug.
+//
+// The watermark is per connection and never persisted on either side. The
+// agent's seq counter restarts at every reconnect, and anything uncommitted
+// when a socket dies is re-sent from the spool head with fresh seqs; the
+// server's uq_agent_host_sample (agent_id, sample_id, collected_at) dedupe
+// makes that replay harmless. Mirrors
+// apps/backend/src/app/schemas/agent_frame.py's DataAckPayload.
+type DataAckPayload struct {
+	Seq uint64 `json:"seq"`
 }
 
 // CapabilityReadinessPayload is the agent -> server `capability.readiness` payload.

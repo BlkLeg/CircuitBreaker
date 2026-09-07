@@ -15,7 +15,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -234,24 +233,39 @@ type Options struct {
 	ClearPendingUpdateOutcome func()
 
 	// Spool durably buffers outbound *data* frames (never heartbeat/control
-	// traffic — frame.IsDataFrame draws that line) when a live send fails,
-	// and is drained back out by runOnce's paced catch-up burst — at most
-	// drainFramesPerTick frames per drainTickInterval, oldest first (see
-	// dataFrameSender in outbound.go). The daemon has a real data-frame
-	// producer today (the host telemetry collector), so this is a live path,
-	// not a dormant one. Nil disables spooling entirely — e.g. Uninstall's
-	// one-shot connection has no ongoing data-frame flow to buffer — and
-	// every drain path is nil-safe for exactly that case.
+	// traffic — frame.IsDataFrame draws that line). Every data frame a
+	// producer hands this link is fsync'd here *before* it can reach a
+	// socket, and is drained back out by runOnce's paced catch-up burst — at
+	// most drainFramesPerTick frames per drainTickInterval, oldest first —
+	// leaving the spool only when the server acknowledges it (see
+	// dataFrameSender in outbound.go).
+	//
+	// Nil disables spooling entirely — e.g. Uninstall's one-shot connection
+	// has no ongoing data-frame flow to buffer — and every drain path is
+	// nil-safe for exactly that case. A nil spool also means no durability
+	// guarantee at all: the daemon always configures one.
 	Spool *spool.Spool
 
 	// DataFrames is where a producer outside this package — the host
-	// telemetry collector today, probe and discovery collectors later —
-	// sends outbound data frames for this link to transmit. runOnce assigns
-	// V/Seq/TS itself before sending, same as it does for heartbeat/rekey
-	// frames (spooled frames included: a resend is re-stamped with this
-	// connection's seq). A nil channel simply never selects, which is what
-	// the one-shot Uninstall connection and this package's non-data-frame
-	// tests rely on.
+	// telemetry collector, and the probe and discovery collectors — sends
+	// outbound data frames for this link to transmit.
+	//
+	// With a Spool configured, Run consumes this channel on its own
+	// goroutine and enqueues everything it receives; runOnce never reads it,
+	// and the drain ticker is the sole outbound data path. Without one,
+	// runOnce reads it directly and sends live (sendLive), which is the
+	// degenerate case Uninstall's one-shot connection and this package's
+	// spool-less tests take.
+	//
+	// runOnce assigns V/Seq before sending, same as it does for
+	// heartbeat/rekey frames (spooled frames included: a resend is
+	// re-stamped with this connection's seq). TS is *not* assigned there —
+	// an observation's timestamp is fixed at enqueue, before the frame can
+	// touch a network, so a sample recovered from an hours-old backlog keeps
+	// the instant it was taken.
+	//
+	// A nil channel simply never selects, which is what the one-shot
+	// Uninstall connection and this package's non-data-frame tests rely on.
 	DataFrames <-chan frame.Frame
 	// ControlFrames carries ephemeral producer control reports such as
 	// capability.readiness. They are sent only while connected and never spooled.
@@ -314,43 +328,50 @@ func Run(ctx context.Context, opts Options) error {
 	if opts.OnDisconnected == nil {
 		opts.OnDisconnected = func(error) {}
 	}
+	// Every data frame is durably spooled *before* it can reach a socket, and
+	// leaves the spool only when the server acknowledges it. There is no
+	// second, "live" route past the disk any more.
+	//
+	// The old routing goroutine had one: while a connection was up it handed
+	// frames straight to runOnce, and only spooled the ones it could not hand
+	// over within 10ms. That looked like an optimisation and was a data-loss
+	// bug — `conn.WriteMessage` returning nil means the local kernel took the
+	// bytes, not that the server read them, so every sample collected during
+	// the up-to-60s window before a black-holed socket is noticed went into
+	// the void with nothing left on disk to re-send.
+	//
+	// The cost is one drain tick — at most 100ms — of added latency on a 30s
+	// telemetry cadence. During a real backlog the newest sample now queues
+	// *behind* the backlog instead of jumping it, which is more honest, not
+	// less: the old order landed a fresh sample in the middle of an
+	// hours-long hole, so the chart read current while the history was
+	// missing.
 	originalData := opts.DataFrames
-	routedData := make(chan frame.Frame, 1)
-	var live atomic.Bool
-	originalConnected := opts.OnConnected
-	opts.OnConnected = func() { live.Store(true); originalConnected() }
 	if originalData != nil && opts.Spool != nil {
-		opts.DataFrames = routedData
+		// runOnce's DataFrames arm never selects on a nil channel, which is
+		// how the drain ticker becomes the only outbound data path for every
+		// link that has a spool — i.e. every link the daemon builds.
+		opts.DataFrames = nil
 		go func() {
 			for {
 				select {
 				case <-ctx.Done():
 					return
 				case f := <-originalData:
-					routed := false
-					for live.Load() {
-						select {
-						case routedData <- f:
-							routed = true
-						case <-ctx.Done():
-							return
-						case <-time.After(10 * time.Millisecond):
-						}
-						if routed {
-							break
-						}
-					}
-					if routed {
+					if !frame.IsDataFrame(f.Type) {
+						// Same invariant sendLive panics on, but this
+						// goroutine outlives any one connection and must not
+						// take the process down with it.
+						log.Printf("link: refusing to spool non-data frame type %q", f.Type)
 						continue
 					}
-					if opts.Spool != nil && frame.IsDataFrame(f.Type) {
-						if err := opts.Spool.Enqueue(f); err != nil {
-							log.Printf("link: spool during disconnect: %v", err)
-						}
-						if opts.OnSpoolStats != nil {
-							size, _ := opts.Spool.SizeBytes()
-							opts.OnSpoolStats(opts.Spool.Len(), size)
-						}
+					if err := opts.Spool.Enqueue(stampObserved(f)); err != nil {
+						log.Printf("link: spooling outbound data frame: %v", err)
+						continue
+					}
+					if opts.OnSpoolStats != nil {
+						size, _ := opts.Spool.SizeBytes()
+						opts.OnSpoolStats(opts.Spool.Len(), size)
 					}
 				}
 			}
@@ -361,9 +382,7 @@ func Run(ctx context.Context, opts Options) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		live.Store(false)
 		outcome, err := runOnce(ctx, opts)
-		live.Store(false)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -692,6 +711,11 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 	// that before the cutover.
 	helloPayload.TLSPinSuccessorReady = SuccessorReady(opts.StateDir)
 	helloPayload.TLSPinSuccessorFingerprint = SuccessorFingerprint(opts.StateDir)
+	// Ask this server to acknowledge data frames. It answers in
+	// HelloAckPayload.DataAck, and only if it says yes does this connection
+	// switch from commit-on-write to commit-on-ack — see the hello.ack arm
+	// below, and dataFrameSender's doc comment for what each mode promises.
+	helloPayload.AckData = true
 	helloFrame := frame.Frame{V: 1, Type: frame.TypeHello, Seq: 0, TS: time.Now().UTC()}
 	helloFrame.Payload, err = json.Marshal(helloPayload)
 	if err != nil {
@@ -916,18 +940,29 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 	// one-shot connection, and this package's tests — get "spooling
 	// disabled", which newDataFrameSender and every drain path handle
 	// explicitly.
-	sendDataFrame := func(f frame.Frame) error {
+	//
+	// It returns the sequence number it assigned and the encoded size it put
+	// on the wire, which is what the in-flight window is tracked in: an ack
+	// names a seq, and the byte cap needs to know what each frame cost.
+	//
+	// TS is *not* stamped here. An observation's timestamp is fixed at
+	// enqueue (see Run's spooling goroutine and stampObserved), before the
+	// frame can touch a network, so a sample recovered from an hours-old
+	// backlog keeps the instant it was taken rather than the instant the link
+	// came back. sendLive still stamps, because the nil-spool path it serves
+	// has no enqueue to do it.
+	sendDataFrame := func(f frame.Frame) (uint64, int64, error) {
 		seq++
 		f.V = frame.FrameVersion
 		f.Seq = seq
-		if f.TS.IsZero() {
-			f.TS = time.Now().UTC()
-		}
 		data, err := frame.Encode(f)
 		if err != nil {
-			return err
+			return 0, 0, err
 		}
-		return conn.WriteMessage(websocket.BinaryMessage, session.Encrypt(data))
+		if err := conn.WriteMessage(websocket.BinaryMessage, session.Encrypt(data)); err != nil {
+			return 0, 0, err
+		}
+		return seq, int64(len(data)), nil
 	}
 	sender := newDataFrameSender(opts.Spool, sendDataFrame, opts.OnSpoolStats)
 
@@ -947,18 +982,33 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 		case err := <-readErrCh:
 			return outcome, fmt.Errorf("link: connection lost: %w", err)
 		case f := <-opts.DataFrames:
+			// Only reachable for a link with no spool. Run sets this channel
+			// to nil whenever Options.Spool is set — which is every link the
+			// daemon builds — and a receive on a nil channel never selects,
+			// so for those the drain arm below is the sole outbound data
+			// path. What is left here is Uninstall's one-shot connection and
+			// this package's spool-less tests, which sendLive serves with no
+			// durability guarantee at all.
 			if err := sender.sendLive(f); err != nil {
 				return outcome, err
 			}
 		case <-drainTicker.C:
-			// Paced catch-up for frames spooled during an outage. This is an
-			// arm of *this* select and never a side goroutine: gorilla's
-			// websocket forbids concurrent writers and seq above is owned by
-			// this loop. Gated on connectedFired because a session the
-			// server has not accepted yet must not have frames committed
-			// against it. A send error ends the connection exactly as the
-			// DataFrames case does; the uncommitted remainder stays at the
-			// head of the spool for the next connection.
+			// The outbound data path, paced. This is an arm of *this* select
+			// and never a side goroutine: gorilla's websocket forbids
+			// concurrent writers and seq above is owned by this loop. Gated
+			// on connectedFired because a session the server has not accepted
+			// yet has not settled the ack mode either, and must not have
+			// frames committed against it.
+			//
+			// hasBacklog covers the in-flight window too — an unacknowledged
+			// frame is still an undelivered one and still sits in the spool —
+			// so the ack-stall check inside drainBurst is reachable on every
+			// tick that could possibly need it.
+			//
+			// A send error, or a stalled ack, ends the connection. Under
+			// commit-on-ack nothing has been committed, so everything written
+			// on this connection is still at the head of the spool, in order,
+			// for the next one.
 			if !connectedFired || !sender.hasBacklog() {
 				continue
 			}
@@ -1025,6 +1075,22 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 					connectedFired = true
 					outcome.reachedHelloAck = true
 					acceptedAt = time.Now()
+					// Settle the delivery mode before the first drain tick
+					// can fire — the drain arm is gated on connectedFired
+					// for exactly this reason, so no frame is ever sent
+					// before the agent knows what a successful write means.
+					sender.negotiateAck(ack.DataAck)
+					if !ack.DataAck {
+						// Once per connection, and worded as what is at
+						// risk rather than as a missing feature: an
+						// operator reading this needs to know their data
+						// is less safe than the documentation says, not
+						// that a flag came back false.
+						log.Printf("link: this server does not acknowledge data frames — buffered " +
+							"observations are discarded once they are written to the socket, not once " +
+							"the server has stored them, so anything in flight when a connection drops " +
+							"is lost. Upgrade the server to make delivery at-least-once into the database.")
+					}
 					opts.OnConnected()
 					// Task 24: report an update outcome a previous process
 					// couldn't send live (the rollback case — see
@@ -1044,6 +1110,21 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 							}
 						}
 					}
+				}
+			case frame.TypeDataAck:
+				// The server has terminally handled every frame this
+				// connection sent up to this watermark, so the matching
+				// prefix of the spool can finally be discarded. A malformed
+				// payload is dropped rather than fatal: the frames stay in
+				// flight and the next ack — or, failing that, the stall
+				// timeout — decides what happens to them.
+				var dataAck frame.DataAckPayload
+				if err := json.Unmarshal(f.Payload, &dataAck); err != nil {
+					log.Printf("link: malformed data.ack payload: %v", err)
+					continue
+				}
+				if err := sender.onDataAck(dataAck.Seq); err != nil {
+					return outcome, err
 				}
 			case frame.TypePing:
 				if err := sendHeartbeat(); err != nil {

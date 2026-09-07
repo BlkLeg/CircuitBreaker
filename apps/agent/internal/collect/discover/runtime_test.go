@@ -978,11 +978,10 @@ const nonBlockingBudget = 2 * time.Second
 
 // stalledHarness is a harness whose outbound channel nobody reads.
 //
-// An unbuffered `out` with no reader is what the link looks like between connections — and,
-// because link's runOnce reads inbound frames and Options.DataFrames from the *same* select, it is
-// also what the link looks like for the entire time a discovery.request handler is running. That
-// coupling is why back-pressure is not a rare condition here: the goroutine that would have to
-// drain `out` is the goroutine calling Request.
+// An unbuffered `out` with no reader is what the link looks like whenever its own spool enqueue is
+// busy — and, before link moved that drain off runOnce's select, it was also what the link looked
+// like for the entire time a discovery.request handler was running. Either way the producer here
+// is a goroutine that must never wait on the consumer, which is what this harness pins.
 func stalledHarness(t *testing.T) *harness {
 	t.Helper()
 	h := newHarness(t)

@@ -48,6 +48,18 @@ const (
 // reached hello.ack — advances the backoff as though it had failed outright.
 var errHelloAckTimeout = errors.New("link: no accepted hello.ack within the hello deadline")
 
+// errAckStall ends a run in which data frames sat on the wire for
+// ackStallTimeout without a single `data.ack` releasing any of them.
+//
+// It is distinct from errReadTimeout on purpose. A server that has gone
+// silent trips the 60s read deadline and is a partition; a server that is
+// still reading the socket and answering pings — so the read deadline keeps
+// being refreshed — but is not acknowledging anything is a fault in the
+// server, and 45s is short enough to reach that conclusion first. Ending the
+// connection commits nothing, so everything in flight is re-sent on the next
+// one.
+var errAckStall = errors.New("link: server stopped acknowledging data frames")
+
 // The reasons a server can refuse an identity, as sentinels so the ladder can
 // tell "approve me" from "you are not welcome here". The wire values are the
 // `reason` string on a hello.ack with accepted:false.
@@ -200,6 +212,16 @@ func classifyFailure(err error, reachedHelloAck bool) failureClass {
 	// server closes the socket rather than going quiet.
 	if errors.Is(err, errReadTimeout) {
 		return classUnreachable
+	}
+
+	// An ack stall is the opposite evidence: the server answered the socket
+	// and kept answering it, and only its ingest path stopped moving. That is
+	// something that is up and having a bad minute — a saturated worker, a
+	// database that is failing over — so redial quickly, exactly as for a
+	// restart. Escalating would only lengthen the outage of a host we can
+	// demonstrably reach.
+	if errors.Is(err, errAckStall) {
+		return classComingBack
 	}
 
 	// A pin mismatch is an operator problem. Hammering helps nobody and

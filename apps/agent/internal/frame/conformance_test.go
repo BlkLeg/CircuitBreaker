@@ -111,6 +111,8 @@ func TestCorpus_TypedPayloadsDecode(t *testing.T) {
 				roundTripDiscoveryCancelPayload(t, decoded.Payload)
 			case TypeDiscoveryFinding:
 				roundTripDiscoveryFindingPayload(t, decoded.Payload)
+			case TypeDataAck:
+				roundTripDataAckPayload(t, decoded.Payload)
 			}
 		})
 	}
@@ -133,8 +135,25 @@ func roundTripHelloPayload(t *testing.T, raw json.RawMessage) {
 	if first.DevicePK != second.DevicePK || first.Hostname != second.Hostname ||
 		first.MachineIDHash != second.MachineIDHash || first.OS != second.OS ||
 		first.OSVersion != second.OSVersion || first.Arch != second.Arch ||
-		first.AgentVersion != second.AgentVersion || first.SpoolDepth != second.SpoolDepth {
+		first.AgentVersion != second.AgentVersion || first.SpoolDepth != second.SpoolDepth ||
+		first.AckData != second.AckData {
 		t.Errorf("HelloPayload round-trip mismatch: got %+v, want %+v", second, first)
+	}
+	// `ack_data` asserted against the fixture's own bytes, not only against
+	// Go's re-encode: a mistyped tag leaves the field false on both sides of a
+	// first-vs-second comparison, and the Python half drops unknown keys
+	// silently, so an agent asking for acknowledged delivery would be read as
+	// one that never asked — and would silently keep the at-most-once
+	// behaviour this whole mechanism exists to end.
+	var wireHello struct {
+		AckData *bool `json:"ack_data"`
+	}
+	if err := json.Unmarshal(raw, &wireHello); err != nil {
+		t.Fatalf("HelloPayload wire decode error = %v", err)
+	}
+	wantAck := wireHello.AckData != nil && *wireHello.AckData
+	if first.AckData != wantAck {
+		t.Errorf("HelloPayload.AckData = %v, want %v from the fixture %s", first.AckData, wantAck, raw)
 	}
 	// omitempty drops a present-but-empty JSON array on re-encode, so a corpus entry with an
 	// explicit "primary_macs": [] decodes to a non-nil empty slice while the re-decode comes
@@ -256,6 +275,65 @@ func roundTripHelloAckPayload(t *testing.T, raw json.RawMessage) {
 	}
 	if first.ServerTime != nil && !first.ServerTime.Equal(*second.ServerTime) {
 		t.Errorf("HelloAckPayload.ServerTime round-trip mismatch: got %v, want %v", second.ServerTime, first.ServerTime)
+	}
+	// `data_ack` asserted against the fixture, for the reason hello's
+	// `ack_data` is: this one flag decides whether the agent commits a spooled
+	// frame when the socket takes it or when the server has stored it, and a
+	// tag only one side agrees with silently chooses the former.
+	if first.DataAck != second.DataAck {
+		t.Errorf("HelloAckPayload.DataAck round-trip mismatch: got %v, want %v", second.DataAck, first.DataAck)
+	}
+	var wireAck struct {
+		DataAck *bool `json:"data_ack"`
+	}
+	if err := json.Unmarshal(raw, &wireAck); err != nil {
+		t.Fatalf("HelloAckPayload wire decode error = %v", err)
+	}
+	wantDataAck := wireAck.DataAck != nil && *wireAck.DataAck
+	if first.DataAck != wantDataAck {
+		t.Errorf("HelloAckPayload.DataAck = %v, want %v from the fixture %s", first.DataAck, wantDataAck, raw)
+	}
+}
+
+// roundTripDataAckPayload pins the delivery watermark's wire shape. `seq` is
+// the only field, and it is a uint64 on both sides: the corpus carries the
+// maximum value precisely because a watermark that silently wrapped or
+// saturated would commit frames the server never handled.
+func roundTripDataAckPayload(t *testing.T, raw json.RawMessage) {
+	t.Helper()
+	var first DataAckPayload
+	if err := json.Unmarshal(raw, &first); err != nil {
+		t.Fatalf("DataAckPayload decode error = %v", err)
+	}
+	var wire struct {
+		Seq *uint64 `json:"seq"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("DataAckPayload wire decode error = %v", err)
+	}
+	if wire.Seq == nil {
+		t.Fatalf("data.ack fixture %s carries no `seq` — the watermark is the whole payload", raw)
+	}
+	if first.Seq != *wire.Seq {
+		t.Errorf("DataAckPayload.Seq = %d, want %d from the fixture %s", first.Seq, *wire.Seq, raw)
+	}
+	reencoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("DataAckPayload encode error = %v", err)
+	}
+	var second DataAckPayload
+	if err := json.Unmarshal(reencoded, &second); err != nil {
+		t.Fatalf("DataAckPayload re-decode error = %v", err)
+	}
+	if second.Seq != first.Seq {
+		t.Errorf("DataAckPayload round-trip mismatch: got %d, want %d", second.Seq, first.Seq)
+	}
+	// No omitempty: a watermark of 0 ("nothing handled yet on this
+	// connection") must stay on the wire as an explicit 0 rather than
+	// vanishing into an empty payload the receiver cannot distinguish from a
+	// malformed one.
+	if !strings.Contains(string(reencoded), `"seq":`) {
+		t.Errorf("re-encoded DataAckPayload %s omits `seq`", reencoded)
 	}
 }
 
@@ -918,6 +996,13 @@ var corpusGrantExpectations = map[string]grantExpectation{
 	"capabilities.set — mixed legacy boolean and structured grants": {
 		allowed:    map[string]bool{"host_telemetry": true, "remote_probe": false, "local_discovery": true},
 		hostConfig: &capability.HostConfig{IntervalS: 120, IncludeFilesystems: true, IncludeDisks: true, IncludeNetwork: true, IncludeTemperatures: true, IncludeVirtual: false, IncludeDocker: true},
+	},
+	// The ack that negotiates acknowledged delivery still carries the
+	// authoritative grant set, and it must still apply: `data_ack` is an
+	// additive field on a frame that already had a job.
+	"hello.ack — link establishment, acknowledged delivery negotiated (data_ack)": {
+		allowed:    map[string]bool{"host_telemetry": true},
+		hostConfig: &capability.HostConfig{IntervalS: 30, IncludeFilesystems: true, IncludeDisks: true, IncludeNetwork: true, IncludeTemperatures: true},
 	},
 	// D-6 on the wire: host_telemetry.interval_s is below capability.MinHostInterval, so that
 	// one capability faults — it keeps the server's enabled flag and falls back to the package

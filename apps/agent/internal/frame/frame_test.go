@@ -160,7 +160,7 @@ func TestIsDataFrame_ControlAndHeartbeatTypesReturnFalse(t *testing.T) {
 		TypeHelloAck, TypeCapabilitiesSet, TypeProbeAssign, TypeProbeCancel,
 		TypeDiscoveryRequest, TypeDiscoveryCancel,
 		TypeKeyRotate, TypeTLSPinRotate, TypeUpdate, TypeDisconnect, TypePing,
-		TypeTransportRekey,
+		TypeDataAck, TypeTransportRekey,
 	}
 	for _, typ := range controlTypes {
 		if IsDataFrame(typ) {

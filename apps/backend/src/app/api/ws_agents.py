@@ -37,6 +37,7 @@ from app.core.time import utcnow, utcnow_iso
 from app.db.session import SessionLocal
 from app.schemas.agent_frame import (
     TYPE_CAPABILITIES_SET,
+    TYPE_DATA_ACK,
     TYPE_DISCONNECT,
     TYPE_HEARTBEAT,
     TYPE_HELLO_ACK,
@@ -100,6 +101,18 @@ _HANDSHAKE_TIMEOUT_SECONDS = 10.0
 _LINK_POLL_SECONDS = 5.0
 _LINK_DEAD_SECONDS = 60.0  # three missed 20s heartbeats
 _LINK_PING_INTERVAL_SECONDS = 20.0  # matches the agent's own heartbeatInterval
+
+# Delivery-acknowledgement coalescing. An ack is a watermark, not a receipt,
+# so batching costs nothing but a little latency: `data.ack{seq: N}` says
+# everything up to N is handled, and one such frame replaces N of them.
+#
+# The agent's in-flight window is 64 frames (internal/link's
+# maxInflightFrames), so acking every 4 leaves it sixteen acks of headroom
+# before it could ever stall — while an idle link, where a lone frame arrives
+# and nothing follows it, still gets its ack inside a second instead of
+# waiting for the next 20s ping.
+_ACK_COALESCE_FRAMES = 4
+_ACK_COALESCE_SECONDS = 1.0
 _STREAM_AUTH_TIMEOUT_SECONDS = 10.0
 
 
@@ -515,6 +528,52 @@ async def _send_ping(websocket: WebSocket, responder: NoiseIKResponder, seq: int
     await websocket.send_bytes(responder.encrypt(json.dumps(frame).encode()))
 
 
+def _next_poll_timeout(last_ack_at: datetime, *, ack_pending: bool) -> float:
+    """How long this iteration may block waiting for the agent or a control frame.
+
+    Normally the full `_LINK_POLL_SECONDS`. When an acknowledgement is owed
+    but has not met either coalescing threshold, the wait is shortened to
+    whatever is left of `_ACK_COALESCE_SECONDS` instead, so the "or ~1s has
+    passed" half of the coalescing rule is real rather than rounded up to the
+    poll interval. Without it a lone frame arriving on an otherwise quiet link
+    would wait out the whole poll before being acknowledged, and the agent
+    would hold it — and everything behind it — in its spool for that long.
+
+    Floored at 50ms so a clock that has already run past the threshold cannot
+    turn the wait into a busy loop.
+    """
+    if not ack_pending:
+        return _LINK_POLL_SECONDS
+    remaining = _ACK_COALESCE_SECONDS - (utcnow() - last_ack_at).total_seconds()
+    return min(_LINK_POLL_SECONDS, max(remaining, 0.05))
+
+
+async def _send_data_ack(
+    websocket: WebSocket, responder: NoiseIKResponder, seq: int, watermark: int
+) -> None:
+    """Tell the agent every frame up to `watermark` is terminally handled.
+
+    This is the frame that makes the agent's outbound spool honest. Without
+    it the agent discarded a buffered observation the moment
+    `conn.WriteMessage` returned nil — which only means the local kernel took
+    the bytes — so a restart mid-drain, or a black-holed socket, destroyed
+    everything written into it while the agent believed it had been
+    delivered.
+
+    `watermark` covers frames this server *refused* as well as ones it
+    stored: see `DataAckPayload`'s docstring for why acking a terminal
+    refusal is the difference between a durability fix and a data-loss bug.
+    """
+    frame = {
+        "v": 1,
+        "type": TYPE_DATA_ACK,
+        "seq": seq,
+        "ts": utcnow().isoformat(),
+        "payload": {"seq": watermark},
+    }
+    await websocket.send_bytes(responder.encrypt(json.dumps(frame).encode()))
+
+
 def _control_frame_bytes(responder: NoiseIKResponder, claimed: dict, seq: int) -> bytes | None:
     """Wire-encode one control-plane frame claimed via the Task 8 registry
     (`agent_registry.claim_agent_control_frames`) for immediate delivery down
@@ -673,6 +732,12 @@ async def link_stream(websocket: WebSocket) -> None:
         # after `db.commit()` — every other write in this block could otherwise
         # roll the closure back after the agent had already been told to stop.
         hello_cancellation = agent_discovery.DiscoveryCancellation()
+        # Whether this agent asked for acknowledged data delivery. Stays False
+        # for an agent that predates the mechanism *and* for a hello whose
+        # metadata failed to validate: acknowledging frames to an agent that
+        # never asked would be sending it a frame type it may not understand,
+        # and guessing is not a basis for a delivery guarantee.
+        ack_data_requested = False
         try:
             hello_payload = HelloPayload.model_validate(hello.get("payload", {}))
         except ValidationError as exc:
@@ -697,6 +762,13 @@ async def link_stream(websocket: WebSocket) -> None:
                 successor_fingerprint=hello_payload.tls_pin_successor_fingerprint,
             )
             hello_cancellation = agent_registry.update_hello_metadata(db, agent, hello_payload)
+            ack_data_requested = hello_payload.ack_data
+        # Recorded whether or not it changed anything, so an operator running a
+        # mixed fleet can see which agents are still committing observations
+        # when the socket takes them rather than when this server has stored
+        # them. NULL on the row means "has not connected under a server that
+        # reports this", which is a third state and not the same as False.
+        agent_registry.record_data_ack_negotiated(agent, ack_data_requested)
         grants = agent_registry.structured_grants_dict(db, agent_id)
         agent_registry.record_event(db, agent_id, "connected")
         db.execute(_REMOTE_PROBE_RECONNECT_SQL, {"agent_id": agent_id})
@@ -760,6 +832,13 @@ async def link_stream(websocket: WebSocket) -> None:
                 "agent_id": agent_id,
                 "server_time": utcnow().isoformat(),
                 "capabilities": _wire_grants(grants, capability_schema),
+                # The agent switches from commit-on-write to commit-on-ack on
+                # the strength of this one key, and only if it asked. Sent on
+                # the hello.ack rather than later because the agent's drain is
+                # already gated on an accepted session, so this is the last
+                # moment before any data frame can move — no frame is ever
+                # sent under an undecided mode.
+                "data_ack": ack_data_requested,
             },
             outbound_seq.next(),
         )
@@ -828,8 +907,76 @@ async def link_stream(websocket: WebSocket) -> None:
     # pending receive_bytes() every time a control frame wins the race below,
     # which risks dropping whatever the agent sends in that same window.
     receive_task: asyncio.Task[bytes] | None = None
+
+    # The delivery watermark for this connection (see `_send_data_ack`).
+    #
+    # `handled_seq` is the highest sequence number every frame up to which has
+    # been terminally handled. No gap tracking is needed for that claim to
+    # hold: frames arrive in order on one socket and are handled one at a
+    # time, and the two paths that would otherwise skip a sequence number are
+    # both accounted for below — a decodable rejection advances the watermark
+    # explicitly, and an undecryptable or malformed frame freezes it.
+    #
+    # `ack_frozen` is that freeze. Once this server has seen a frame whose
+    # sequence number it cannot trust, it stops acknowledging anything for the
+    # rest of the connection: the agent then commits nothing more and re-sends
+    # everything on reconnect. Harsh, correct, and rare — a decrypt failure
+    # means the ciphers are desynced and the link is doomed regardless.
+    handled_seq: int | None = None
+    acked_seq: int | None = None
+    frames_since_ack = 0
+    ack_frozen = False
+    last_ack_at = utcnow()
+
+    def _ack_pending() -> bool:
+        """Whether an acknowledgement is owed but not yet sent."""
+        if not ack_data_requested or ack_frozen or handled_seq is None:
+            return False
+        return acked_seq is None or handled_seq > acked_seq
+
+    def note_handled(seq: int) -> None:
+        """Advance the watermark past one terminally handled frame."""
+        nonlocal handled_seq, frames_since_ack
+        if handled_seq is None or seq > handled_seq:
+            handled_seq = seq
+        frames_since_ack += 1
+
+    async def flush_data_ack(force: bool = False) -> bool:
+        """Emit one coalesced `data.ack` if the watermark has moved.
+
+        Returns False when the send failed, which the caller treats as an
+        ordinary disconnect. `force` skips the coalescing thresholds and is
+        used before each ping, so a link that has gone quiet with a frame or
+        two outstanding never leaves the agent waiting on a batch that will
+        not fill.
+        """
+        nonlocal acked_seq, frames_since_ack, last_ack_at
+        if not ack_data_requested or ack_frozen or handled_seq is None:
+            return True
+        if acked_seq is not None and handled_seq <= acked_seq:
+            return True
+        if not force:
+            elapsed = (utcnow() - last_ack_at).total_seconds()
+            if frames_since_ack < _ACK_COALESCE_FRAMES and elapsed < _ACK_COALESCE_SECONDS:
+                return True
+        try:
+            await _send_data_ack(websocket, responder, outbound_seq.next(), handled_seq)
+        except (WebSocketDisconnect, RuntimeError):
+            return False
+        acked_seq = handled_seq
+        frames_since_ack = 0
+        last_ack_at = utcnow()
+        return True
+
     try:
         while True:
+            # Checked once per iteration — which is after every frame handled,
+            # after every control frame, and at worst once per
+            # _LINK_POLL_SECONDS on an idle link — so both coalescing
+            # thresholds are evaluated promptly without a timer of their own.
+            if not await flush_data_ack():
+                break
+
             # Server->agent cipher rekey, on this side's own clock and
             # independent of whatever the agent is doing with its own
             # outbound cipher. Checked once per loop iteration, so the
@@ -854,6 +1001,12 @@ async def link_stream(websocket: WebSocket) -> None:
             # apps/agent/internal/link/link.go's `case frame.TypePing`),
             # which is what actually advances last_heartbeat_at below.
             if (utcnow() - last_ping_sent_at).total_seconds() >= _LINK_PING_INTERVAL_SECONDS:
+                # Unconditionally flush first. A ping asks the agent for a
+                # heartbeat, and an agent holding unacknowledged frames should
+                # never have to answer one before it learns what this server
+                # already has.
+                if not await flush_data_ack(force=True):
+                    break
                 try:
                     await _send_ping(websocket, responder, outbound_seq.next())
                 except (WebSocketDisconnect, RuntimeError):
@@ -872,7 +1025,7 @@ async def link_stream(websocket: WebSocket) -> None:
             control_get_task = asyncio.ensure_future(control_queue.get())
             done, _pending = await asyncio.wait(
                 {receive_task, control_get_task},
-                timeout=_LINK_POLL_SECONDS,
+                timeout=_next_poll_timeout(last_ack_at, ack_pending=_ack_pending()),
                 return_when=asyncio.FIRST_COMPLETED,
             )
 
@@ -965,14 +1118,47 @@ async def link_stream(websocket: WebSocket) -> None:
                     context={"agent_id": agent_id},
                     fault=FAULT_DECODE,
                 )
+                # A frame we could not decrypt has a sequence number we cannot
+                # read, so the watermark can no longer honestly claim that
+                # *everything* below it was handled. Stop acknowledging for
+                # the rest of this connection rather than acknowledging past a
+                # hole: the agent then commits nothing more and re-sends
+                # everything on reconnect, which is exactly the outcome a
+                # desynced cipher deserves.
+                if ack_data_requested and not ack_frozen:
+                    ack_frozen = True
+                    _logger.warning(
+                        "agent %s: an undecryptable frame froze delivery acknowledgement for "
+                        "this connection — the agent will re-send everything on reconnect",
+                        agent_id,
+                    )
                 continue
 
             with SessionLocal() as db:
                 fresh = agent_registry.get_agent(db, agent_id)
                 if fresh is None or fresh.status != "active":
                     break
-                agent_frame = agent_link.receive_frame(db, fresh, pt, inbound_session)
+                receipt = agent_link.receive_frame_receipt(db, fresh, pt, inbound_session)
+                agent_frame = receipt.frame
                 if agent_frame is None:
+                    if receipt.terminal_seq is not None:
+                        # Decodable and refused for good — an unsupported
+                        # version, a duplicate, a decreasing sequence. This
+                        # server will never accept it however many times it is
+                        # re-sent, so acknowledging it is what lets the agent's
+                        # spool head move past it instead of wedging behind it
+                        # until its cap evicts everything queued behind.
+                        note_handled(receipt.terminal_seq)
+                    elif ack_data_requested and not ack_frozen:
+                        # Malformed: the envelope's own structure is
+                        # untrustworthy, so there is no sequence number worth
+                        # telling an agent to discard an observation on.
+                        ack_frozen = True
+                        _logger.warning(
+                            "agent %s: a malformed frame froze delivery acknowledgement for this "
+                            "connection — the agent will re-send everything on reconnect",
+                            agent_id,
+                        )
                     continue
                 if agent_frame.type == TYPE_HEARTBEAT:
                     # The one and only thing that refreshes the dead-connection
@@ -1043,8 +1229,21 @@ async def link_stream(websocket: WebSocket) -> None:
                         )
                         db.commit()
                         break
+                    # Handled, terminally, just not by dispatch_frame — the
+                    # watermark has to move or it would stall one behind every
+                    # rekey and the agent would wait out its stall timeout on a
+                    # perfectly healthy link.
+                    note_handled(agent_frame.seq)
                     continue
                 await agent_link.dispatch_frame(db, fresh, agent_frame)
+                # Only now. `dispatch_frame` commits immediately after its
+                # handler, so at this point the frame is durably persisted (or
+                # deliberately refused and counted) — which is what makes the
+                # acknowledgement honest rather than a receipt for having read
+                # a socket. An exception escaping dispatch_frame skips this and
+                # drops the connection, so nothing is acked and the agent
+                # re-sends.
+                note_handled(agent_frame.seq)
     finally:
         control_task.cancel()
         if receive_task is not None:

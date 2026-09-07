@@ -1394,3 +1394,61 @@ async def test_refused_discovery_finding_is_counted(db_session, factories):
     db_session.expire_all()
     assert agent.refused_frames == 1
     assert agent.refused_frames_last_reason == "invalid_discovery_finding"
+
+
+def test_receive_frame_receipt_separates_terminal_rejections_from_untrustworthy_ones(
+    db_session, factories
+):
+    """The three-way outcome the delivery watermark reads — see `FrameReceipt`.
+
+    The distinction is not cosmetic. A rejection whose sequence number is
+    trustworthy has to be acknowledged, or the agent's spool head wedges
+    behind a frame this server will never accept and the agent resends it
+    until its cap destroys everything queued behind it. A rejection whose
+    sequence number is *not* trustworthy must not be acknowledged, because an
+    ack tells an agent to delete its only copy of an observation and this
+    server would be guessing about which one.
+    """
+    agent = factories.agent(status="active")
+
+    accepted = agent_link.receive_frame_receipt(db_session, agent, _raw(seq=4))
+    assert accepted.accepted
+    assert accepted.frame is not None
+    assert accepted.frame.seq == 4
+    # Never both: an accepted frame's sequence is only terminal once its
+    # handler has actually stored it, which is the caller's business.
+    assert accepted.terminal_seq is None
+
+    # Decodable and refused for good — the sequence number is real.
+    version = agent_link.receive_frame_receipt(db_session, agent, _raw(v=2, seq=11))
+    assert not version.accepted
+    assert version.terminal_seq == 11
+
+    session = agent_link.LinkSessionState()
+    assert agent_link.receive_frame_receipt(db_session, agent, _raw(seq=5), session).accepted
+    duplicate = agent_link.receive_frame_receipt(db_session, agent, _raw(seq=5), session)
+    assert not duplicate.accepted
+    assert duplicate.terminal_seq == 5
+    decreasing = agent_link.receive_frame_receipt(db_session, agent, _raw(seq=2), session)
+    assert not decreasing.accepted
+    assert decreasing.terminal_seq == 2
+
+    # …and the three shapes with nothing worth acknowledging.
+    for raw in (
+        b"not json at all",
+        _raw(type="", seq=7),
+        _raw(seq=-1),
+    ):
+        untrustworthy = agent_link.receive_frame_receipt(db_session, agent, raw)
+        assert not untrustworthy.accepted
+        assert untrustworthy.terminal_seq is None, raw
+
+
+def test_receive_frame_still_returns_the_frame_or_none(db_session, factories):
+    """The wrapper keeps its original shape, so every caller that only needs
+    "did this frame survive validation" is untouched by the receipt."""
+    agent = factories.agent(status="active")
+
+    frame = agent_link.receive_frame(db_session, agent, _raw(seq=1))
+    assert frame is not None and frame.seq == 1
+    assert agent_link.receive_frame(db_session, agent, b"not json at all") is None

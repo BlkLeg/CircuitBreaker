@@ -716,6 +716,59 @@ function SpoolLossBanner({ spool }) {
 
 SpoolLossBanner.propTypes = { spool: PropTypes.object };
 
+/**
+ * The at-most-once delivery warning (plan Phase 5).
+ *
+ * A current agent asks the server to acknowledge data frames, and only
+ * discards a buffered observation once the server has actually stored (or
+ * deliberately refused) it. An agent whose build predates that handshake
+ * discards it the moment its socket accepts the bytes — which says nothing
+ * about whether the server ever read them, so a server restart mid-catch-up,
+ * or a black-holed connection, destroys whatever was in flight.
+ *
+ * That is not a fault an operator can see any other way: the agent looks
+ * healthy, the backlog looks like it drained, and the data is simply not
+ * there. So it is stated on the page rather than left to be inferred from a
+ * version number.
+ *
+ * Renders nothing when acknowledgement is negotiated (the healthy case, and a
+ * banner nobody needs is a banner everyone learns to skip past) and nothing
+ * when the server has never seen this agent connect since it learned to
+ * report the mode — `null` is "not known", not "not safe".
+ */
+function DeliveryModeBanner({ spool }) {
+  if (spool?.ack_negotiated !== false) return null;
+
+  return (
+    <Banner
+      tone="warn"
+      icon="⚠"
+      title="This agent cannot confirm that buffered data arrived"
+      body={
+        'Its build discards a buffered observation as soon as the connection accepts it, rather ' +
+        'than once this server has stored it. Anything in flight when a connection drops is lost.'
+      }
+      detail={
+        <>
+          <p>
+            A successful write to a socket is not the same as a delivery. If the server restarts
+            while this agent is catching up, or the connection is silently blackholed, the frames
+            already written are discarded by the agent and never arrive here. Nothing reports the
+            gap, because from the agent&rsquo;s side they were sent.
+          </p>
+          <p>
+            Newer agents ask this server to acknowledge each batch and keep every observation on
+            disk until it does. Upgrade this agent to close the window; no server-side change is
+            needed, and no configuration either.
+          </p>
+        </>
+      }
+    />
+  );
+}
+
+DeliveryModeBanner.propTypes = { spool: PropTypes.object };
+
 function ReadinessBanners({ faults }) {
   return faults.map((item) => (
     <Banner
@@ -870,6 +923,7 @@ export default function AgentTelemetryTab({
             thing to fix, and destroyed history is a thing that has already
             happened to this host. */}
         <SpoolLossBanner spool={telemetry?.spool} />
+        <DeliveryModeBanner spool={telemetry?.spool} />
         <ReadinessBanners faults={faults} />
         <Panel title="System metrics">
           <EmptyState icon="◴" message="No host samples received yet." />
@@ -893,6 +947,10 @@ export default function AgentTelemetryTab({
           come and go with a collector, and this one stays for as long as the
           agent keeps reporting the loss. */}
       <SpoolLossBanner spool={telemetry.spool} />
+      {/* After the loss banner, before the readiness faults: destroyed
+          history is what already happened, this is what may happen next, and
+          a degraded collector is neither. */}
+      <DeliveryModeBanner spool={telemetry.spool} />
 
       {faults.length > 0 && (
         <div className="agent-telemetry__faults">

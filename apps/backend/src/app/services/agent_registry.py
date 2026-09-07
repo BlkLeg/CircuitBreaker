@@ -575,6 +575,33 @@ def record_refused_frame(agent: Agent, reason: str) -> None:
     agent.refused_frames_last_reason = reason[:_MAX_REFUSAL_REASON_CHARS]
 
 
+def record_data_ack_negotiated(agent: Agent, negotiated: bool) -> bool:
+    """Record whether this connection negotiated acknowledged data delivery.
+
+    True means the agent asked for `data.ack` and this server agreed, so a
+    buffered observation leaves the agent's spool only once this server has
+    durably stored (or terminally refused) it. False means it did not ask —
+    an agent whose build predates the mechanism — and its spool still
+    discards frames the moment the socket accepts them, which is not a
+    statement about whether the server received them.
+
+    That distinction is why it is worth a column at all rather than being
+    inferred: an operator upgrading a fleet needs to see *which* agents are
+    still at-most-once, and there is nothing else on the row that says so.
+    NULL stays "never connected under a server that reports this", distinct
+    from False, so nothing has to be backfilled for an agent that has not
+    reconnected since the upgrade.
+
+    Returns whether anything changed, so the caller can skip a write on the
+    overwhelmingly common reconnect that reports what is already stored.
+    Caller owns the commit.
+    """
+    if agent.data_ack_negotiated is negotiated:
+        return False
+    agent.data_ack_negotiated = negotiated
+    return True
+
+
 def _normalized_network_facts(networks: list[NetworkFacts]) -> list[dict[str, Any]]:
     """Canonical form of a reported `hello.networks` list.
 

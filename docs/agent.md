@@ -941,6 +941,35 @@ Every spooled frame carries its original timestamp, so recovered data lands in t
 bucket rather than bunching at the reconnect moment. Delivery is at-least-once by construction;
 the server deduplicates on ingest.
 
+### Acknowledged delivery
+
+Every data frame is written to the spool — fsync'd — *before* it is sent, and is discarded only
+when the server says it has terminally handled it: stored, deduplicated, or deliberately refused
+and counted. The server sends a `data.ack` frame carrying a watermark ("everything up to sequence
+N is handled"), coalesced to one ack per four frames or per second.
+
+This closes a gap the older behaviour had. A spooled frame used to be discarded the moment
+`WriteMessage` returned — but that only means the local kernel accepted the bytes, not that the
+server read them. A server restarting mid-catch-up, or a connection blackholed by a firewall rule
+or a stale NAT entry, destroyed everything already written while the agent believed it delivered.
+The guarantee was at-least-once *onto a socket*; it is now at-least-once **into the database**.
+
+Practical consequences:
+
+- Up to 64 frames (4 MiB) may be in flight unacknowledged at once. A connection that dies with a
+  full window re-sends at most those 64, which the server deduplicates.
+- If the server keeps reading but stops acknowledging for 45 seconds, the agent ends the
+  connection and reconnects on the fast ladder. Nothing was committed, so nothing was lost.
+- During a real backlog, the newest sample now queues *behind* the backlog rather than jumping it.
+  That is more honest, not less: the old order landed a fresh sample in the middle of an
+  hours-long hole, so the chart read current while the history was missing.
+
+The mode is negotiated at connect: the agent sets `ack_data` on its `hello`, and the server
+answers `data_ack` on the `hello.ack`. **Against a server too old to answer, the agent falls back
+to the old commit-on-write behaviour** and logs, once per connection, that it is doing so — and
+the Telemetry tab shows the same warning for an agent too old to ask. Neither side needs the
+other to upgrade first, and nothing has to happen in a particular order.
+
 ### Duplicate agent after a host clone
 
 Cloning a VM or golden image copies `/var/lib/cb-agent/device.key` and `/etc/machine-id`

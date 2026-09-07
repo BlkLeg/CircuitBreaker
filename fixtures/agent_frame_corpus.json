@@ -861,5 +861,53 @@
         "expiry": "2026-09-08T10:00:00Z"
       }
     }
+  },
+  {
+    "description": "data.ack \u2014 the delivery watermark: every frame up to this seq is terminally handled",
+    "json": {
+      "v": 1, "type": "data.ack", "seq": 44, "ts": "2026-09-06T09:14:03Z",
+      "payload": {"seq": 137}
+    }
+  },
+  {
+    "description": "data.ack \u2014 nothing handled yet on this connection (watermark zero)",
+    "json": {
+      "v": 1, "type": "data.ack", "seq": 3, "ts": "2026-09-06T09:14:00Z",
+      "payload": {"seq": 0}
+    }
+  },
+  {
+    "description": "data.ack \u2014 a long-lived connection's watermark at the top of the seq range",
+    "json": {
+      "v": 1, "type": "data.ack", "seq": 90210, "ts": "2026-09-06T21:00:00Z",
+      "payload": {"seq": 18446744073709551615}
+    }
+  },
+  {
+    "description": "hello \u2014 agent asking for acknowledged delivery (ack_data)",
+    "json": {
+      "v": 1, "type": "hello", "seq": 0, "ts": "2026-09-06T09:13:59Z",
+      "payload": {
+        "hostname": "nas-01", "os": "linux", "arch": "amd64", "agent_version": "0.4.0",
+        "spool_depth": 137,
+        "spool_evicted_frames": 0, "spool_evicted_bytes": 0,
+        "spool_evicted_oldest_ts": null, "spool_evicted_newest_ts": null,
+        "capability_schema": 2,
+        "ack_data": true
+      }
+    }
+  },
+  {
+    "description": "hello.ack \u2014 link establishment, acknowledged delivery negotiated (data_ack)",
+    "json": {
+      "v": 1, "type": "hello.ack", "seq": 0, "ts": "2026-09-06T09:14:00Z",
+      "payload": {
+        "accepted": true,
+        "server_time": "2026-09-06T09:14:00Z",
+        "capabilities": {"host_telemetry": true},
+        "agent_id": 7,
+        "data_ack": true
+      }
+    }
   }
 ]

@@ -325,3 +325,73 @@ describe('a backlog reading that is no longer current (plan Phase 4)', () => {
     expect(screen.queryByText(/0 buffered/)).toBeNull();
   });
 });
+
+describe('the at-most-once delivery warning (plan Phase 5)', () => {
+  // The spool fixture shape the endpoint ships: `ack_negotiated` is True for a
+  // current agent, False for one whose build predates the acknowledgement
+  // handshake, and null for one that has not connected since this server
+  // learned to report it.
+  const spoolWith = (ackNegotiated) => ({
+    depth: 0,
+    reported_at: FRESH_REPORT(),
+    ack_negotiated: ackNegotiated,
+  });
+
+  it('says what is at risk for an agent that cannot confirm delivery', () => {
+    // The agent looks healthy and its backlog looks drained — that is exactly
+    // the problem. Nothing else on this page would explain an hour of history
+    // vanishing after a server restart.
+    renderTab({ telemetry: withLatest({ spool: spoolWith(false) }) });
+
+    const banner = screen.getByText(/cannot confirm that buffered data arrived/);
+    expect(banner).toBeTruthy();
+    expect(screen.getByText(/Anything in flight when a connection drops is lost/)).toBeTruthy();
+  });
+
+  it('renders nothing once acknowledged delivery is negotiated', () => {
+    // A banner for the healthy case is a banner an operator learns to skip
+    // past, and this one has to be read the once it appears.
+    renderTab({ telemetry: withLatest({ spool: spoolWith(true) }) });
+
+    expect(screen.queryByText(/cannot confirm that buffered data arrived/)).toBeNull();
+  });
+
+  it('renders nothing when the mode is unknown rather than guessing', () => {
+    // Null is "has not connected since this server learned to report it".
+    // Rendering the warning for it would cry wolf; rendering a reassurance
+    // would answer a question nobody has asked yet.
+    const { unmount } = renderTab({ telemetry: withLatest({ spool: spoolWith(null) }) });
+    expect(screen.queryByText(/cannot confirm that buffered data arrived/)).toBeNull();
+    unmount();
+
+    renderTab({ telemetry: withLatest({ spool: { depth: 0, reported_at: FRESH_REPORT() } }) });
+    expect(screen.queryByText(/cannot confirm that buffered data arrived/)).toBeNull();
+  });
+
+  it('still renders before any sample has arrived', () => {
+    // An agent that has buffered everything and delivered nothing is when the
+    // warning matters most, and it is also when `latest` is null.
+    renderTab({ telemetry: { latest: null, readiness: [], spool: spoolWith(false) } });
+
+    expect(screen.getByText(/cannot confirm that buffered data arrived/)).toBeTruthy();
+  });
+
+  it('sits alongside the destroyed-history banner rather than replacing it', () => {
+    // Two different facts: one is history that is already gone, the other is
+    // history that may go next. An operator needs both.
+    renderTab({
+      telemetry: withLatest({
+        spool: {
+          depth: 0,
+          reported_at: FRESH_REPORT(),
+          evicted_frames: 9412,
+          evicted_bytes: 33554432,
+          ack_negotiated: false,
+        },
+      }),
+    });
+
+    expect(screen.getByText(/permanently missing/)).toBeTruthy();
+    expect(screen.getByText(/cannot confirm that buffered data arrived/)).toBeTruthy();
+  });
+});

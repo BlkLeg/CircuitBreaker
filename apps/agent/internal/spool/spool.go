@@ -371,13 +371,35 @@ func (s *Spool) appendLine(data []byte) error {
 // The first frame is always returned regardless of maxBytes, so a frame
 // larger than one tick's byte budget cannot wedge the queue forever.
 func (s *Spool) Peek(maxFrames int, maxBytes int64) []frame.Frame {
+	return s.PeekFrom(0, maxFrames, maxBytes)
+}
+
+// PeekFrom is Peek, starting `skip` frames into the undelivered backlog
+// instead of at its head.
+//
+// It exists for commit-on-ack (internal/link's dataFrameSender): once a frame
+// is only committed when the *server* acknowledges it, the frames already in
+// flight are still undelivered and still sit at the head of the backlog. The
+// next drain tick therefore has to look past them, and `skip` is how many.
+// Peek's own head-relative view is what a caller that commits on write wants,
+// and both callers share one implementation so the byte budget and the
+// always-return-the-first-frame rule cannot drift apart.
+//
+// skip beyond the end of the backlog returns nil rather than erroring: a
+// window that is already wider than the queue simply has nothing more to
+// send this tick.
+func (s *Spool) PeekFrom(skip, maxFrames int, maxBytes int64) []frame.Frame {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if maxFrames <= 0 {
+	if maxFrames <= 0 || skip < 0 {
 		return nil
 	}
 	live := s.entries[s.head:]
+	if skip >= len(live) {
+		return nil
+	}
+	live = live[skip:]
 	if len(live) == 0 {
 		return nil
 	}

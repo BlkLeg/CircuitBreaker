@@ -52,6 +52,11 @@ TYPE_TLS_PIN_ROTATE = "tls.pin.rotate"
 TYPE_UPDATE = "update"
 TYPE_DISCONNECT = "disconnect"
 TYPE_PING = "ping"
+# The delivery watermark — see ``DataAckPayload``. Sent only to an agent whose
+# hello set ``ack_data``, so an agent predating the mechanism never sees it and
+# an old server never sends it: two independent layers of additive-only
+# compatibility, since both sides also ignore frame types they do not know.
+TYPE_DATA_ACK = "data.ack"
 
 # bidirectional — either side may send it about its own cipher
 TYPE_TRANSPORT_REKEY = "transport.rekey"
@@ -156,6 +161,17 @@ class HelloPayload(BaseModel):
     # as unconverged — a stale successor from an abandoned rotation used to
     # satisfy the gate on the *next* rotation and strand the agent.
     tls_pin_successor_fingerprint: str | None = None
+    # Whether this agent is asking the server to acknowledge data frames.
+    #
+    # ``False`` by default, and the Go side carries ``omitempty``, so absent
+    # and false are deliberately the same fact here — "this agent does not
+    # support acknowledged delivery" — which is exactly the safe default for
+    # an agent predating the mechanism. That is the opposite convention from
+    # the ``spool_evicted_*`` group above, and the difference is not an
+    # inconsistency to harmonise away: those need presence to separate
+    # "confirmed nothing was destroyed" from "cannot report", a distinction
+    # this flag simply does not have.
+    ack_data: bool = False
 
 
 class HelloAckPayload(BaseModel):
@@ -172,6 +188,41 @@ class HelloAckPayload(BaseModel):
     server_time: datetime | None = None
     capabilities: dict[str, Any] = Field(default_factory=dict)
     agent_id: int | None = None
+    # Whether this server will send ``data.ack`` frames on this connection.
+    # A current server sets it only when the agent's hello asked
+    # (``HelloPayload.ack_data``), so the mode is negotiated rather than
+    # assumed by either side. Absent — every ack a server predating the
+    # mechanism sends — is False, and the agent then keeps committing spooled
+    # frames when the socket accepts them, and logs that it is doing so.
+    data_ack: bool = False
+
+
+class DataAckPayload(BaseModel):
+    """server -> agent `data.ack` payload: a delivery watermark, not a receipt for one frame.
+
+    ``seq`` is the highest sequence number such that *every* frame this
+    connection carried with ``seq <= n`` has been terminally handled —
+    ingested, deduped, or deliberately refused and audited.
+
+    "Terminally handled" rather than "accepted" is load-bearing. This server
+    drops some data frames it will never accept: a ``telemetry.host`` sample
+    whose capability grant is switched off, an ``Invalid*`` payload its
+    handler rejects, a duplicate or out-of-order sequence. Each of those is
+    counted against the agent (``agent_registry.record_refused_frame``) and is
+    as final as an ingest. If the watermark only advanced on success the
+    agent's spool head would wedge forever behind such a frame, it would
+    resend it until the cap evicted everything queued behind it, and a
+    durability fix would have become a data-loss bug.
+
+    The watermark lives for exactly one connection and is persisted by
+    neither side: the agent's ``seq`` counter restarts at every reconnect, and
+    anything uncommitted when a socket dies is re-sent from the spool head
+    with fresh sequence numbers, which ``uq_agent_host_sample (agent_id,
+    sample_id, collected_at)`` makes harmless. Mirrors
+    apps/agent/internal/frame/frame.go's DataAckPayload.
+    """
+
+    seq: int = 0
 
 
 class CapabilityReadinessPayload(BaseModel):

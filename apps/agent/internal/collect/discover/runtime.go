@@ -866,10 +866,15 @@ func (r *Runtime) findingFrame(dispatchID string, payload frame.DiscoveryFinding
 // It equally may not be *waited* on where it is produced. refuse and cancelDispatch run on link's
 // inbound goroutine — Request and Cancel are bound under an enqueue-only contract, see
 // link.Options.OnDiscoveryRequest — and that goroutine also drives the heartbeat, the rekey and the
-// drain tickers. Worse, link's runOnce reads inbound frames and Options.DataFrames from the *same*
-// select, so for as long as a request handler runs nobody is draining the channel the summary has
-// to leave by: a blocking send there would not be slow, it would be a deadlock until the read
-// deadline fired.
+// drain tickers, so a blocking send there stalls the link the summary has to travel over.
+//
+// It used to be worse than slow: link's runOnce read inbound frames and Options.DataFrames from the
+// *same* select, so for as long as a request handler ran nobody was draining the channel the
+// summary had to leave by, and a blocking send was a deadlock until the read deadline fired. Link's
+// acknowledged-delivery rework moved that drain onto its own goroutine (frames are spooled before
+// they are sent), so the hard deadlock is gone — but the channel is still unbuffered from this
+// side's point of view whenever the agent is between connections, and the producer is still the
+// goroutine that must not wait. The rule is unchanged.
 //
 // So the producer only appends and the pump does the waiting, bounded by the runtime context. The
 // backlog is a slice rather than a second buffered channel because a fixed bound would drop in
