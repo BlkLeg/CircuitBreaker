@@ -258,7 +258,7 @@ _MAX_ERROR_CODE_CHARS = 64
 
 # `scan_jobs.dispatch_status`, the half of the lease vocabulary this module
 # writes. `running` is the agent's own progress signal and `expired` is Task 23's;
-# they are named in `db/models.py` and not restated here.
+# they are named in `db/models/discovery.py` and not restated here.
 DISPATCH_STATUS_QUEUED = "queued"
 DISPATCH_STATUS_DISPATCHED = "dispatched"
 DISPATCH_STATUS_COMPLETED = "completed"
@@ -484,7 +484,7 @@ async def dispatch_discovery_job(db: Session, job_id: int) -> bool:
     the job row rather than on a row of its own:
 
     * **The claim is a compare-and-set with a rowcount check.** There is no
-      partial unique index to fall back on — `db/models.py` and migration `0100`
+      partial unique index to fall back on — `db/models/discovery.py` and migration `0100`
       both explain why one over a lease that has only ever one row enforces
       nothing — so the conditional UPDATE *is* the mutual exclusion, and the
       claim is taken before anything awaits so no row lock is held across Redis.

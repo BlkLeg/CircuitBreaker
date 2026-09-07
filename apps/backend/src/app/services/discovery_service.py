@@ -289,7 +289,7 @@ async def _log_scan_event(
 # ── Agent execution location (Slice 4 plan §3, §7) ────────────────────────────
 
 # `scan_jobs.source_type` for a job an agent executes. It joins the existing
-# manual|prober|scheduled|listener_triggered vocabulary (`db/models.py`) rather
+# manual|prober|scheduled|listener_triggered vocabulary (`db/models/discovery.py`) rather
 # than replacing any of it: `triggered_by` still says *who* asked for the scan,
 # and this says *where* it ran.
 SOURCE_TYPE_AGENT = "agent"

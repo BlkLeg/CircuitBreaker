@@ -6,7 +6,7 @@ cannot run it, and never lets an undeliverable frame leave the row open. Three
 things differ, each because discovery differs, and each is pinned below:
 
 * **The lease lives on the job row**, not on a row of its own. There is
-  therefore no `uq_..._active_dispatch` to lean on (`db/models.py` and migration
+  therefore no `uq_..._active_dispatch` to lean on (`db/models/discovery.py` and migration
   `0100` both say why): two workers racing both read `dispatch_status IS NULL`,
   and only a conditional UPDATE stops the second. So the claim is a
   compare-and-set with a rowcount check, `uq_scan_jobs_dispatch_id` makes a
@@ -685,7 +685,7 @@ def test_two_real_sessions_cannot_double_dispatch_one_job(setup_db, monkeypatch)
     summary's finalization would reject at random.
 
     The lease lives on the job row rather than on a row of its own, so there is
-    no partial unique index to catch this (see `db/models.py`'s note on
+    no partial unique index to catch this (see `db/models/discovery.py`'s note on
     `uq_scan_jobs_dispatch_id`): the rowcount check is the whole mechanism, and
     it is what this races.
 

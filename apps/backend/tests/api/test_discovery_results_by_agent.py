@@ -6,7 +6,7 @@ be able to list the devices *this* agent discovered before it can offer to
 build a monitor from one with that agent preselected as the vantage.
 
 `ScanResult.discovery_agent_id` has existed on the model since Slice 4
-(`db/models.py`) but was neither exposed by `ScanResultOut` nor filterable, so
+(`db/models/discovery.py`) but was neither exposed by `ScanResultOut` nor filterable, so
 no caller could tell one agent's findings from another's — or from the
 server's own scans.
 """

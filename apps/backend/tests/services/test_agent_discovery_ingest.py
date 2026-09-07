@@ -1520,7 +1520,7 @@ def test_finding_count_is_never_null_so_the_ceiling_predicate_is_decidable(
       Core insert that bypasses the ORM's omission — as an `IntegrityError`
       rather than as a row the ceiling can never match.
 
-    So no fix is needed in `db/models.py`; this test is the documentation that
+    So no fix is needed in `db/models/discovery.py`; this test is the documentation that
     the CAS predicate is decidable on every row that can exist.
     """
     column = ScanJob.__table__.c.finding_count

@@ -96,7 +96,7 @@ LEASE_GRACE_S = int(agent_discovery.LATE_FINDING_GRACE.total_seconds())
 WAITING_HORIZON_S = agent_discovery.DISPATCH_DEADLINE_S
 
 # `scan_jobs.dispatch_status` for a lease the server gave up on.
-# `db/models.py` names `expired` in the column's vocabulary and
+# `db/models/discovery.py` names `expired` in the column's vocabulary and
 # `agent_discovery` declines to define it ("`expired` is Task 23's"), because
 # this is the only module that can write it: `finalize_agent_job` maps every
 # `failed` job onto `execution_error`, which is the agent's own word for a scan

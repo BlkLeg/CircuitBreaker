@@ -711,7 +711,7 @@ def _latest_samples(db: Session, agent_ids: list[int]) -> dict[int, AgentLatestS
 
     `DISTINCT ON (agent_id) ... ORDER BY agent_id, collected_at DESC` is the
     whole trick: PostgreSQL walks the existing composite index
-    `ix_agent_host_samples_agent_time` (`db/models.py:570`) and keeps the first
+    `ix_agent_host_samples_agent_time` (`db/models/agents.py`) and keeps the first
     row it meets per agent, so the cost is independent of how much history each
     agent has retained. No new index, no new collection, no schema change.
 

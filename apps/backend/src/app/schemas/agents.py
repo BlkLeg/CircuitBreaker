@@ -311,7 +311,7 @@ class ServerKeyFleetAdoption(BaseModel):
 
     Derived from `Agent.server_pk_current_pinned_at` /
     `server_pk_successor_pinned_at`, which exist for exactly this (see the
-    comment at db/models.py:432-450). Those columns record which key an
+    comment on `Agent` in db/models/agents.py). Those columns record which key an
     agent's handshakes have USED — the server has no visibility into whether
     an agent's local state directory holds the successor key. Field names and
     all UI copy must preserve that distinction.
