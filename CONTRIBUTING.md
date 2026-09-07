@@ -59,14 +59,20 @@ under `apps/backend/src/app`, run `make verify-full` (or let CI's sharded gate r
 it) before assuming your change is covered.
 
 `make install` installs the frontend deps under `apps/frontend`. Run `npm install` once at the repo
-root as well — its `prepare` script installs the husky pre-commit hook, which runs `make lint` on
-staged `.js`, `.jsx`, and `.py` files. The frontend is JavaScript/JSX — do not add `.ts`/`.tsx`
+root as well — its `prepare` script installs the husky pre-commit hook (`npx lint-staged
+--concurrent false`). There are two lint-staged configs, and lint-staged v16 groups each staged
+file to its *nearest* one: `apps/frontend/package.json`'s `*.{ts,tsx,js,jsx,mjs,cjs}` glob owns
+every staged frontend file — JS/JSX and TS alike — running `eslint --fix` and `prettier --write`
+on it. The root `package.json`'s `*.{js,jsx,py}` glob runs `make lint`, but today it is reached
+only by staged `.py` files: this repo has no root-level `.js`/`.jsx` file for its `js,jsx` half to
+match (`git ls-files '*.js' '*.jsx' | grep -v '^apps/'` is empty), and it stays as a harmless
+safety net in case one ever appears. The frontend is JavaScript/JSX — do not add `.ts`/`.tsx`
 under `apps/frontend/src/`. (`vite.config.ts`, `vitest.config.ts`, and `playwright.config.ts` at the
 `apps/frontend` package root, and the Playwright specs under `apps/frontend/e2e/`, are the
-documented exceptions: real, intentionally-maintained TypeScript, linted separately by
-`apps/frontend/package.json`'s own lint-staged config.) `.pre-commit-config.yaml` additionally pins
-`gitleaks protect --staged`, `ruff` (with `ruff-format`), and `mypy --strict` if you also use
-`pre-commit`.
+documented exceptions: real, intentionally-maintained TypeScript, linted by that same
+`apps/frontend/package.json` config alongside the rest of the frontend.) `.pre-commit-config.yaml`
+additionally pins `gitleaks protect --staged`, `ruff` (with `ruff-format`), and `mypy --strict` if
+you also use `pre-commit`.
 
 `make install` does **not** install Go. `.husky/pre-push` now runs `make verify`, which applies Tier 0 gates matching CI plus local Tier 1 (not yet in workflows; see design §4 for differences), and that gate's security scan calls `govulncheck` — it
 fails closed if the tool is missing, so every push needs it. Install both before your first push:

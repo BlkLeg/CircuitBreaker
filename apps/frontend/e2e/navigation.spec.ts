@@ -8,8 +8,9 @@ import {
 } from './fixtures/api';
 
 // docs/evidence/known_bugs-v1.0.0-rc.1.md item 1: the URL advances but the route never
-// renders until a manual reload. Open since rc.1, high severity, and explicitly
-// "not reproducible in jsdom".
+// renders until a manual reload. Open from rc.1 through 2026-09-06 (high severity,
+// and explicitly "not reproducible in jsdom"), fixed in 04ee269f; this spec is the
+// regression guard.
 //
 // The bug report narrowed it to two candidates and asked for one piece of data
 // from a running instance: is the new page's markup in the DOM but invisible

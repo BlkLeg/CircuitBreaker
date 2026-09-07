@@ -1,6 +1,8 @@
 # Verification Phase 1 — T0/T1 Extraction and the Pre-Push Gate — Implementation Plan
 
-> **Historical.** This plan's work landed; see `plans/README.md` for status and commits.
+> **Historical.** This plan's work landed: `d340dadf`..`530f0c7e` moved every CI
+> gate body out of workflow YAML into `scripts/ci/` and upgraded the pre-push
+> hook; `.husky/pre-push` runs `make verify` today.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

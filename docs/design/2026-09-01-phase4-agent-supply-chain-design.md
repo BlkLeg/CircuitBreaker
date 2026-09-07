@@ -1,6 +1,7 @@
 # Phase 4 — Agent supply chain and release-operations hardening
 
-> **Historical.** This plan's work landed; see `plans/README.md` for status and commits.
+> **Historical.** Slices 4.1-4.3 landed 2026-09-02, closed by commit
+> `490c95b0` — see the `Status:` line below for what remains out of scope.
 
 **Date:** 2026-09-01 · **Route:** `docs/evidence/2026-08-30-production-readiness-route.md` §3 Phase 4 · **Findings:** F4, F3, F17
 **Status:** Slices 4.1–4.3 landed 2026-09-02 (commit `490c95b0` closes them in

@@ -14,7 +14,7 @@ apps/backend/src/app/   FastAPI + SQLAlchemy + Pydantic, Python 3.12
 apps/frontend/src/      React + Vite + Tailwind, JavaScript/JSX (not TypeScript)
 apps/agent/             Go agent
 docker/                 mono image entrypoint, supervisord, nginx
-tests/                  integration/, unit/, build/ (repo-policy suites)
+tests/                  integration/, build/ (repo-policy suites), fixtures/
 specs/                  release control, owner map
 ```
 

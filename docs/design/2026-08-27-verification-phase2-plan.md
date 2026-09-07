@@ -1,6 +1,9 @@
 # Verification Phase 2 — T3 First Slice: Boot-and-Exercise on One Fedora VM — Implementation Plan
 
-> **Historical.** This plan's work landed; see `plans/README.md` for status and commits.
+> **Historical.** This plan's work landed: `af479a3d`..`7766e71d` built the
+> ephemeral-VM fleet harness (`scripts/ci/fleet/provision.sh`,
+> `scripts/ci/fleet/dispatch.sh`, `scripts/ci/tier3-artifact.sh`) and
+> `make verify-fleet`; all still present on disk today.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
