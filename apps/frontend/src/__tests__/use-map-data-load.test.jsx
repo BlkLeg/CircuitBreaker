@@ -1,5 +1,6 @@
 /**
- * Topology responses must not land out of order.
+ * Request behavior of useMapDataLoad: response ordering and what re-issues a
+ * topology fetch.
  *
  * Switching map, environment, included types or Cloud View re-issues the
  * topology request. Without a request-generation guard a slow earlier response
@@ -9,6 +10,12 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { useMapDataLoad } from '../hooks/useMapDataLoad';
 import { graphApi } from '../api/client';
+import { groupNodesIntoCloud } from '../utils/cloudView';
+
+vi.mock('../utils/cloudView', () => ({
+  groupNodesIntoCloud: vi.fn((nodes) => nodes),
+  restoreFromCloudView: vi.fn((nodes) => nodes),
+}));
 
 vi.mock('../api/client', () => ({
   graphApi: {
@@ -140,5 +147,48 @@ describe('useMapDataLoad request ordering', () => {
     });
 
     await waitFor(() => expect(nodeIdsOf(setNodes).flat()).toContain('only-node'));
+  });
+});
+
+describe('useMapDataLoad Cloud View', () => {
+  it('does not re-issue a topology request when Cloud View is toggled', () => {
+    graphApi.topology.mockResolvedValue(topologyOf('n1'));
+    const { args } = makeArgs({ cloudViewEnabled: false });
+
+    const { result, rerender } = renderHook((props) => useMapDataLoad(props), {
+      initialProps: args,
+    });
+    const before = result.current.fetchData;
+
+    rerender({ ...args, cloudViewEnabled: true });
+
+    // MapPage runs `useEffect(() => { fetchData(); }, [fetchData])`, so a new
+    // identity here is a second full topology fetch racing the in-place
+    // transform the toggle already performs.
+    expect(result.current.fetchData).toBe(before);
+  });
+
+  it('still groups nodes into the cloud when Cloud View is on at fetch time', async () => {
+    graphApi.topology.mockResolvedValue(topologyOf('n1'));
+    const { args } = makeArgs({ cloudViewEnabled: true });
+    const { result } = renderHook(() => useMapDataLoad(args));
+
+    await act(async () => {
+      await result.current.fetchData();
+    });
+
+    expect(groupNodesIntoCloud).toHaveBeenCalled();
+  });
+
+  it('does not group nodes when Cloud View is off', async () => {
+    graphApi.topology.mockResolvedValue(topologyOf('n1'));
+    const { args } = makeArgs({ cloudViewEnabled: false });
+    const { result } = renderHook(() => useMapDataLoad(args));
+
+    await act(async () => {
+      await result.current.fetchData();
+    });
+
+    expect(groupNodesIntoCloud).not.toHaveBeenCalled();
   });
 });

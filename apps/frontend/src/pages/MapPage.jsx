@@ -773,7 +773,10 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     fetchData();
   }, [fetchData]);
 
-  // Handle Cloud View Toggle independent of fetch
+  // Cloud View is a transformation of the already-loaded document. The toggle
+  // transforms the current nodes in place; useMapDataLoad reads the flag via a
+  // ref so fetchData's identity is stable and toggling does not also re-issue a
+  // topology request that would race this transform.
   useEffect(() => {
     if (cloudViewEnabled) {
       setNodes((nds) => groupNodesIntoCloud(nds));

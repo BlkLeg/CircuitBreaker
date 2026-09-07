@@ -81,6 +81,13 @@ export function useMapDataLoad({
   // Monotonic id for the newest in-flight topology request; see fetchData.
   const requestGenerationRef = useRef(0);
 
+  // Cloud View is a transformation of the loaded document, not an input to the
+  // query. Reading it through a latest-value ref keeps fetchData's identity
+  // stable across a toggle, so toggling no longer re-issues a topology request
+  // that races the in-place transform MapPage already applies.
+  const cloudViewEnabledRef = useRef(cloudViewEnabled);
+  cloudViewEnabledRef.current = cloudViewEnabled;
+
   const getIncludeCSV = useCallback((types) => {
     const MAP = new Map([
       ['hardware', 'hardware'],
@@ -415,7 +422,7 @@ export function useMapDataLoad({
         edgeOverridesRef.current = savedEdgeOverrides;
 
         let initialNodes = mergedNodes;
-        if (cloudViewEnabled) {
+        if (cloudViewEnabledRef.current) {
           initialNodes = groupNodesIntoCloud(initialNodes);
         }
 
@@ -432,7 +439,7 @@ export function useMapDataLoad({
           getDagreViewportOptions(viewportWidth)
         );
         let initialNodes = layout.nodes;
-        if (cloudViewEnabled) {
+        if (cloudViewEnabledRef.current) {
           initialNodes = groupNodesIntoCloud(initialNodes);
         }
         setNodes(initialNodes);
@@ -493,7 +500,6 @@ export function useMapDataLoad({
     getLayoutName,
     isMobile,
     showLabels,
-    cloudViewEnabled,
     settings?.graph_uplink_overrides,
     setEdges,
     setNodes,
