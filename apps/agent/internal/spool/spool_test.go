@@ -1022,17 +1022,40 @@ func TestRecordDestroyed_RecordsWhichCauseDestroyedTheData(t *testing.T) {
 		t.Fatalf("Open() error = %v", err)
 	}
 
-	s.RecordDestroyed(testFrame(1), "spool write failed")
-	if got := s.EvictionStats().LastDestroyedReason; got != "spool write failed" {
-		t.Errorf("LastDestroyedReason = %q, want %q", got, "spool write failed")
+	s.RecordDestroyed(testFrame(1), "spool write failed: read-only file system")
+	got := s.EvictionStats()
+	if got.LastDestroyedCause != CauseWriteFailed {
+		t.Errorf("LastDestroyedCause = %q, want %q", got.LastDestroyedCause, CauseWriteFailed)
+	}
+	if got.LastDestroyedReason != "spool write failed: read-only file system" {
+		t.Errorf("LastDestroyedReason = %q, want the underlying error", got.LastDestroyedReason)
 	}
 
 	restarted, err := Open(dir, DefaultCapBytes)
 	if err != nil {
 		t.Fatalf("reopen error = %v", err)
 	}
-	if got := restarted.EvictionStats().LastDestroyedReason; got != "spool write failed" {
-		t.Errorf("after restart LastDestroyedReason = %q, want %q", got, "spool write failed")
+	if got := restarted.EvictionStats(); got.LastDestroyedCause != CauseWriteFailed ||
+		got.LastDestroyedReason != "spool write failed: read-only file system" {
+		t.Errorf("after restart cause = %q reason = %q, want them preserved",
+			got.LastDestroyedCause, got.LastDestroyedReason)
+	}
+}
+
+// TestEvictionStats_CauseIsAMachineCodeNotTheProse guards the discriminator
+// itself. `cb-agent status` picks which remedy to print from the cause, and
+// the remedies are opposite — so the thing it branches on must not be a
+// sentence someone will reasonably copy-edit. Rewording CapEvictionReason
+// must not turn a persisted cap eviction into a write failure.
+func TestEvictionStats_CauseIsAMachineCodeNotTheProse(t *testing.T) {
+	if CauseSizeCap == CapEvictionReason {
+		t.Fatal("the cause code and the operator-facing sentence are the same string — " +
+			"a copy edit to the sentence would silently reclassify every persisted record")
+	}
+	for _, code := range []string{CauseSizeCap, CauseWriteFailed} {
+		if strings.ContainsAny(code, " .") {
+			t.Errorf("cause code %q reads as prose; it is control flow and should not be edited as copy", code)
+		}
 	}
 }
 
@@ -1062,7 +1085,74 @@ func TestEnqueue_CapEvictionRecordsItselfAsTheCause(t *testing.T) {
 	if stats.Frames == 0 {
 		t.Fatal("nothing was evicted — the fixture is not at the cap")
 	}
+	if stats.LastDestroyedCause != CauseSizeCap {
+		t.Errorf("LastDestroyedCause = %q, want %q", stats.LastDestroyedCause, CauseSizeCap)
+	}
 	if stats.LastDestroyedReason != CapEvictionReason {
 		t.Errorf("LastDestroyedReason = %q, want %q", stats.LastDestroyedReason, CapEvictionReason)
+	}
+}
+
+// TestRecordDestroyed_PersistFailureIsReportedWhenItStarts covers the one
+// thing worse than a record that cannot be written: one that cannot be
+// written silently.
+//
+// The loss line is rate-limited to one a minute, deliberately. Attaching the
+// persist error to it would hide a failure that began just after a line for
+// up to a minute and then attribute it to whichever sample happened to reopen
+// the window. It is reported on the transition into failing instead, and
+// repeated no more often than the loss line while it lasts.
+func TestRecordDestroyed_PersistFailureIsReportedWhenItStarts(t *testing.T) {
+	var logs bytes.Buffer
+	restore := logging.UseWriter(&logs, logging.LevelWarn)
+	defer restore()
+
+	dir := t.TempDir()
+	s, err := Open(dir, DefaultCapBytes)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	// A path under a directory that does not exist fails every write, on any
+	// platform and whatever the test process's privileges are.
+	s.mu.Lock()
+	s.evictedPath = filepath.Join(dir, "gone", evictedFilename)
+	s.mu.Unlock()
+
+	s.RecordDestroyed(testFrame(1), "spool write failed: no space left on device")
+	if got := strings.Count(logs.String(), "could not persist the eviction record"); got != 1 {
+		t.Fatalf("wrote %d persist-failure lines for the first failure, want 1\n%s", got, logs.String())
+	}
+
+	// Still inside the window: the loss line is suppressed, and so is a
+	// repeat of the persist failure.
+	for i := uint64(2); i <= 20; i++ {
+		s.RecordDestroyed(testFrame(i), "spool write failed: no space left on device")
+	}
+	if got := strings.Count(logs.String(), "could not persist the eviction record"); got != 1 {
+		t.Errorf("wrote %d persist-failure lines inside one window, want 1\n%s", got, logs.String())
+	}
+	if got := strings.Count(logs.String(), "could not be buffered"); got != 1 {
+		t.Errorf("wrote %d loss lines inside one window, want 1\n%s", got, logs.String())
+	}
+
+	// Recovering and failing again reports again: this is a new run, not a
+	// continuation of the one already reported.
+	s.mu.Lock()
+	s.evictedPath = filepath.Join(dir, evictedFilename)
+	s.mu.Unlock()
+	s.RecordDestroyed(testFrame(21), "spool write failed: no space left on device")
+	s.mu.Lock()
+	s.evictedPath = filepath.Join(dir, "gone", evictedFilename)
+	s.mu.Unlock()
+	s.RecordDestroyed(testFrame(22), "spool write failed: no space left on device")
+	if got := strings.Count(logs.String(), "could not persist the eviction record"); got != 2 {
+		t.Errorf("wrote %d persist-failure lines after recovering and failing again, want 2\n%s",
+			got, logs.String())
+	}
+
+	// The counters are exact throughout, including for the losses whose
+	// record could not be written.
+	if got := s.EvictionStats().Frames; got != 22 {
+		t.Errorf("EvictionStats().Frames = %d, want 22 — a persist failure must not lose a count", got)
 	}
 }

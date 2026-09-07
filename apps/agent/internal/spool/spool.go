@@ -99,6 +99,10 @@ type Spool struct {
 	// so that line can describe the whole hole rather than its newest end.
 	destroyedPending    EvictionStats
 	lastDestroyedReport time.Time
+	// persistFailing is whether the last attempt to write the eviction
+	// record failed, so a run of failures reports when it *starts* rather
+	// than only when the next log window happens to open.
+	persistFailing bool
 }
 
 // entry is one queued frame plus the encoded length (including its trailing
@@ -335,6 +339,7 @@ func (s *Spool) Enqueue(f frame.Frame) error {
 	s.evicted.widen(batch.OldestDroppedTS)
 	s.evicted.widen(batch.NewestDroppedTS)
 	s.evicted.LastEvictedAt = time.Now().UTC()
+	s.evicted.LastDestroyedCause = CauseSizeCap
 	s.evicted.LastDestroyedReason = CapEvictionReason
 
 	// logging.Warnf, not log.Printf. internal/logging.Configure points the

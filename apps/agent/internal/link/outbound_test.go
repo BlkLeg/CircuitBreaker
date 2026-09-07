@@ -4,6 +4,7 @@ package link
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -1048,6 +1049,10 @@ func TestDataFrameSender_AckStallClockIgnoresEvictionEntirely(t *testing.T) {
 // A producer fast enough to replace the in-flight window inside the deadline
 // held a never-acknowledging server forever, destroying observations the whole
 // time, because every frame the detector looked at had just been sent.
+//
+// It drains as fast as it enqueues, so the window stays populated throughout.
+// TestDataFrameSender_AckStallFiresWhenEvictionOutrunsTheDrainBudget covers
+// the case where it does not.
 func TestDataFrameSender_AckStallFiresUnderAFastProducerAtTheCap(t *testing.T) {
 	original := ackStallTimeout
 	ackStallTimeout = 60 * time.Millisecond
@@ -1101,6 +1106,11 @@ func TestDataFrameSender_AckStallFiresUnderAFastProducerAtTheCap(t *testing.T) {
 // direction: a connection that is delivering must not be faulted. An
 // acknowledgement that releases something restarts the stretch; one that
 // releases nothing does not.
+//
+// A false-positive guard, not a regression test — it passes against every
+// version of this clock, including the broken ones. It earns its place
+// because each of the four fixes here tightened the detector, and this is
+// what says the tightening did not go too far.
 func TestDataFrameSender_AckStallClockRestartsOnlyOnRealProgress(t *testing.T) {
 	const held = 4
 	fixture, capBytes := numberedFixture(t, held, held)
@@ -1161,5 +1171,73 @@ func TestDataFrameSender_AckStallClockRestartsOnlyOnRealProgress(t *testing.T) {
 	}
 	if err := sender.ackStallError(); err != nil {
 		t.Errorf("ackStallError() = %v on an idle link, want nil", err)
+	}
+}
+
+// TestDataFrameSender_AckStallFiresWhenEvictionOutrunsTheDrainBudget is the
+// fourth instance of one bug, and the one the corrected clock did not close
+// by itself.
+//
+// The drain is paced — drainFramesPerTick frames per tick, deliberately, so
+// catch-up cannot monopolise the link — and the producer is not. A producer
+// at the cap that evicts at least that many frames between ticks destroys the
+// entire in-flight window every tick, and drainBurst prunes the destroyed
+// entries *before* it checks for a stall and refills *after*. So the window
+// was empty at every check, an emptiness guard in front of the check returned
+// nil every time, and a never-acknowledging server was held indefinitely with
+// the stall clock sitting correct and unread.
+//
+// Rate is the wrong thing for the detector to depend on, which is what all
+// three previous versions of it got wrong in their own way. The unacknowledged
+// stretch is the entire condition; whether frames happen to be outstanding at
+// the instant of the check is not part of it.
+func TestDataFrameSender_AckStallFiresWhenEvictionOutrunsTheDrainBudget(t *testing.T) {
+	original := ackStallTimeout
+	ackStallTimeout = 60 * time.Millisecond
+	t.Cleanup(func() { ackStallTimeout = original })
+
+	// At or above the drain budget the window is empty at every check; below
+	// it a tail survives. Both must fault.
+	for _, evictPerTick := range []int{1, drainFramesPerTick, drainFramesPerTick * 4} {
+		t.Run(fmt.Sprintf("evict_%d_per_tick", evictPerTick), func(t *testing.T) {
+			const held = maxInflightFrames
+			ticks := int(8*ackStallTimeout/(2*time.Millisecond)) + 1
+			fixture, capBytes := numberedFixture(t, held+evictPerTick*ticks, held)
+			sp := newTestSpool(t, capBytes)
+			for i := 1; i <= held; i++ {
+				if err := sp.Enqueue(fixture[i]); err != nil {
+					t.Fatalf("Enqueue(%d) error = %v", i, err)
+				}
+			}
+
+			wire := &fakeWire{}
+			sender := ackingSender(t, sp, wire)
+			deadline := time.Now().Add(8 * ackStallTimeout)
+			next := held + 1
+			for time.Now().Before(deadline) {
+				for range evictPerTick {
+					if next >= len(fixture) {
+						break
+					}
+					if err := sp.Enqueue(fixture[next]); err != nil {
+						t.Fatalf("Enqueue(%d) error = %v", next, err)
+					}
+					next++
+				}
+				// The production budget, which is the whole point: what the
+				// detector does must not depend on the producer outrunning it.
+				err := sender.drainBurst(drainFramesPerTick, drainBytesPerTick)
+				if errors.Is(err, errAckStall) {
+					return
+				}
+				if err != nil {
+					t.Fatalf("drainBurst() error = %v, want nil or errAckStall", err)
+				}
+				time.Sleep(2 * time.Millisecond)
+			}
+			t.Fatalf("no stall after %s with nothing acknowledged (%d observations destroyed, "+
+				"%d in flight) — eviction outrunning the drain budget still suppresses the detector",
+				8*ackStallTimeout, sp.EvictionStats().Frames, len(sender.inflight))
+		})
 	}
 }

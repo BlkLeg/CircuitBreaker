@@ -222,6 +222,7 @@ func TestPrintStatus_ReflectsWriterState(t *testing.T) {
 					Frames:              9412,
 					Bytes:               33554432,
 					LastEvictedAt:       time.Date(2026, 9, 3, 18, 30, 5, 0, time.UTC),
+					LastDestroyedCause:  spool.CauseSizeCap,
 					LastDestroyedReason: spool.CapEvictionReason,
 				})
 			},
@@ -242,6 +243,7 @@ func TestPrintStatus_ReflectsWriterState(t *testing.T) {
 					Frames:              12,
 					Bytes:               2048,
 					LastEvictedAt:       time.Date(2026, 9, 3, 18, 30, 5, 0, time.UTC),
+					LastDestroyedCause:  spool.CauseWriteFailed,
 					LastDestroyedReason: "spool write failed: read-only file system",
 				})
 			},

@@ -1475,16 +1475,8 @@ func printStatus(w io.Writer, stateDir string) error {
 // healthy agent trains an operator to skip the line, which would defeat the
 // point on the one agent where it is not zero. Where it does print, it says
 // in plain words that the data is gone — not "evicted", which reads as
-// housekeeping — and names the window that was destroyed.
-//
-// It names two causes, not one, and that is deliberate. The size cap is the
-// usual one, but the same counter also records observations the spool could
-// not write at all — a full disk, a read-only state directory — because every
-// data frame now goes through the spool before it can reach a socket, so a
-// refused write ends the observation. Printing "raise spool_cap_bytes" as
-// *the* remedy would be confidently wrong advice to an operator whose disk is
-// read-only, which is the failure mode this whole reporting effort exists to
-// end.
+// housekeeping — and names the window that was destroyed. The cause and its
+// remedy come from printSpoolLossCause.
 func printSpoolLoss(w io.Writer, stats spool.EvictionStats) {
 	if stats.Frames <= 0 {
 		return
@@ -1500,32 +1492,39 @@ func printSpoolLoss(w io.Writer, stats spool.EvictionStats) {
 	if !stats.LastEvictedAt.IsZero() {
 		fmt.Fprintf(w, "  most recently discarded: %s\n", stats.LastEvictedAt.UTC().Format(time.RFC3339))
 	}
-	printSpoolLossCause(w, stats.LastDestroyedReason)
+	printSpoolLossCause(w, stats.LastDestroyedCause, stats.LastDestroyedReason)
 }
 
 // printSpoolLossCause names what destroyed data most recently and gives that
 // cause's remedy, keeping the other one in view without pretending it is
 // equally likely.
 //
-// An empty reason is a record written by an agent that predates the field —
-// upgrades happen on the operator's schedule, and a status output that
-// asserts a cause it does not know would be the same confidently-wrong
-// reporting in a new place. That case lists both, as it did before.
-func printSpoolLossCause(w io.Writer, reason string) {
-	switch {
-	case reason == "":
+// Two causes share the counter deliberately — the operator-facing fact is
+// identical — but their remedies are opposite, so getting this wrong is worse
+// than saying nothing. Telling an operator with a read-only state directory
+// to raise a size cap is the confidently-wrong reporting this whole effort
+// exists to end, and it is what this printed before the record carried a
+// cause.
+//
+// It switches on the code, never on `reason`, which is display copy. An
+// unrecognised or absent code — a record written by an agent that predates
+// the field, since upgrades happen on the operator's own schedule — lists
+// both rather than asserting a cause it does not know.
+func printSpoolLossCause(w io.Writer, cause, reason string) {
+	switch cause {
+	case spool.CauseSizeCap:
+		fmt.Fprintf(w, "  most recent cause: %s and dropped its oldest observations\n", reason)
+		fmt.Fprintln(w, "    remedy: raise spool_cap_bytes in agent.toml so a longer outage fits, then restart the agent")
+		fmt.Fprintln(w, "  this counter also records observations the spool could not write at all, if any earlier ones were")
+	case spool.CauseWriteFailed:
+		fmt.Fprintf(w, "  most recent cause: the spool could not write at all (%s)\n", reason)
+		fmt.Fprintln(w, "    remedy: free or remount this agent's state directory, then restart the agent")
+		fmt.Fprintln(w, "  raising spool_cap_bytes will not help this: the observations never reached the buffer")
+	default:
 		fmt.Fprintln(w, "  usual cause: the spool hit its size cap during an outage and dropped its oldest observations")
 		fmt.Fprintln(w, "    remedy: raise spool_cap_bytes in agent.toml so a longer outage fits, then restart the agent")
 		fmt.Fprintln(w, "  other cause: the spool could not write at all (full disk, read-only state directory)")
 		fmt.Fprintln(w, "    remedy: check this agent's log for a 'could not be buffered' line, and free or remount the disk")
-	case reason == spool.CapEvictionReason:
-		fmt.Fprintf(w, "  most recent cause: %s and dropped its oldest observations\n", reason)
-		fmt.Fprintln(w, "    remedy: raise spool_cap_bytes in agent.toml so a longer outage fits, then restart the agent")
-		fmt.Fprintln(w, "  this counter also records observations the spool could not write at all, if any earlier ones were")
-	default:
-		fmt.Fprintf(w, "  most recent cause: the spool could not write at all (%s)\n", reason)
-		fmt.Fprintln(w, "    remedy: free or remount this agent's state directory, then restart the agent")
-		fmt.Fprintln(w, "  raising spool_cap_bytes will not help this: the observations never reached the buffer")
 	}
 }
 

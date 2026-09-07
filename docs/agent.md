@@ -943,7 +943,9 @@ upgraded from a version that predates the recorded cause simply lists both possi
 its next loss. The record is written through on every loss, never batched, so a restart — which
 is what an operator does after freeing the disk — finds the same total the running agent was
 reporting. Only the log line is rate-limited, to one per minute, since the conditions that cause
-this are sustained by nature.
+this are sustained by nature, and a failure to write the record is reported when the run of
+failures begins rather than only at the next window. The record is fsynced and renamed the same
+way `queue.jsonl` is, so it survives a power cut and not only a clean stop.
 
 The same four numbers ride `hello` and every `heartbeat`, so the server records them on the
 agent's row, writes a permanent `spool_evicted` audit event each time the reported total rises,
@@ -951,8 +953,10 @@ and the fleet table and Telemetry tab both show the loss as its own critical sta
 deliberately kept apart from the catch-up indicator: a backlog drains, and this does not.
 
 A **decrease** in the reported total is recorded as `spool_eviction_counter_reset` rather than
-being ignored — the agent never resets the counter itself, so a decrease means its state
-directory was recreated, which is itself worth knowing.
+being ignored. The agent never resets the counter itself, so a decrease means the record went
+backwards: usually the state directory was recreated, and otherwise the agent could not persist
+the record at all — which happens when the disk holding it is the same one destroying the
+observations. Either way it is worth knowing, and the event's detail carries both totals.
 
 The server counts its own losses too. Frames it refuses on ingest — because the capability is
 switched off, or the agent is not approved — are counted on the agent's row and shown on the
@@ -982,11 +986,14 @@ Practical consequences:
   full window re-sends at most those 64, which the server deduplicates.
 - If the server keeps reading but stops acknowledging for 45 seconds, the agent ends the
   connection and reconnects on the fast ladder. Nothing was committed, so nothing was lost. The
-  45 seconds measure the unacknowledged *stretch* — the time since the window last had nothing
-  outstanding, or since an acknowledgement last released something. Frames the size cap destroys
-  while they are in flight do not restart it: they were not delivered either, and at the cap the
-  head of the spool is the in-flight window, so a clock that eviction could move would stop
-  existing in precisely the state this timeout exists for.
+  45 seconds measure the unacknowledged *stretch*: it starts when frames go in flight with no
+  stretch already running, restarts whenever an acknowledgement releases at least one frame, and
+  ends when one releases the last of them. Nothing else touches it. Frames the size cap destroys
+  while they are in flight neither restart it nor end it — they were not delivered either — and
+  whether any frames happen to be outstanding at the instant of the check is not part of the
+  condition. At the cap the head of the spool *is* the in-flight window, so any version of this
+  that depended on the window's contents stopped working in precisely the state the timeout
+  exists for.
 - During a real backlog, the newest sample now queues *behind* the backlog rather than jumping it.
   That is more honest, not less: the old order landed a fresh sample in the middle of an
   hours-long hole, so the chart read current while the history was missing.

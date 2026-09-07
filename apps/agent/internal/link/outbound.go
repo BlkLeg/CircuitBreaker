@@ -470,15 +470,31 @@ func (d *dataFrameSender) dropEvicted(origin int64) {
 }
 
 // ackStallError reports the connection dead when the current unacknowledged
-// stretch has run for ackStallTimeout. Nil while the window is empty — an
-// idle link is not a stalled one, and a stretch with nothing in flight is
-// dormant rather than over.
+// stretch has run for ackStallTimeout.
+//
+// It asks unackedSince and nothing else. An idle link is still never faulted,
+// because a stretch only exists while frames are outstanding and only an
+// acknowledgement ends one — but "are there frames outstanding *right now*"
+// is not the question, and asking it was the fourth version of one bug.
+// drainBurst prunes frames the cap destroyed before this runs and refills
+// after, so a producer evicting at least drainFramesPerTick frames between
+// ticks left the window empty at every single check. An emptiness guard here
+// returned nil each time while the clock behind it sat correct, unread, and
+// arbitrarily stale.
 func (d *dataFrameSender) ackStallError() error {
-	if len(d.inflight) == 0 || d.unackedSince.IsZero() {
+	if d.unackedSince.IsZero() {
 		return nil
 	}
 	if time.Since(d.unackedSince) < ackStallTimeout {
 		return nil
+	}
+	if len(d.inflight) == 0 {
+		// Reported separately because it is a different and worse fact than
+		// frames waiting: the server acknowledged nothing for the whole
+		// stretch, and the cap has already destroyed everything it was
+		// waiting on.
+		return fmt.Errorf("%w (nothing acknowledged for %s; the spool's cap destroyed every frame "+
+			"that was waiting)", errAckStall, ackStallTimeout)
 	}
 	return fmt.Errorf("%w (%d frame(s) unacknowledged for %s)",
 		errAckStall, len(d.inflight), ackStallTimeout)

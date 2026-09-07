@@ -707,7 +707,9 @@ function SpoolLossBanner({ spool }) {
               <p>
                 The cap is the usual cause but not the only one: a full disk or a read-only state
                 directory stops the spool accepting writes at all, and an observation it cannot
-                buffer has nowhere else to go. The agent&rsquo;s own log says which happened.
+                buffer has nowhere else to go. The remedies are opposite, and this counter cannot
+                tell them apart &mdash; run <code>cb-agent status</code> on the host, which names
+                the cause that actually applied and the remedy for it.
               </p>
             </>
           )}

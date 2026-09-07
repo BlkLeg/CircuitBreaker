@@ -438,9 +438,10 @@ def spool_reading_is_stale(agent: Agent) -> bool:
 # The two `agent_events` types `record_spool_evictions` writes. They are
 # separate types rather than one with a flag because they are opposite
 # claims: one says history was destroyed, the other says the record of that
-# destruction was itself thrown away when the agent's state directory was
-# recreated. An operator filtering the audit trail needs to see the second at
-# least as much as the first.
+# destruction went backwards — usually a recreated state directory, but also
+# an agent that could not persist the record because the disk holding it is
+# what is destroying the observations. An operator filtering the audit trail
+# needs to see the second at least as much as the first.
 EVENT_SPOOL_EVICTED = "spool_evicted"
 EVENT_SPOOL_EVICTION_COUNTER_RESET = "spool_eviction_counter_reset"
 
@@ -479,12 +480,16 @@ def record_spool_evictions(
       That gets a `spool_evicted` event as well as the column update — a
       permanent, timestamped row saying so, which survives the counters being
       overwritten later.
-    * A **decrease** means the agent's state directory was recreated, because
-      the agent never resets this counter itself. That is overwritten, not
-      ignored, and records a `spool_eviction_counter_reset`. Taking `max()` of
-      the two would look conservative and would in fact hide a reset — and a
-      reset is itself a fact worth knowing, since it means an eviction record
-      was thrown away.
+    * A **decrease** means the agent's record went backwards, which it cannot
+      do on its own: the agent never resets this counter. The usual cause is a
+      recreated state directory. It is not the only one — an agent whose state
+      directory is read-only or full cannot persist the record *because* that
+      is what is destroying its observations, so its in-memory total keeps
+      rising, is reported on every heartbeat, and is lost on the next restart.
+      The event therefore means "the record went backwards", and the detail
+      carries both totals so the two can be told apart. It is overwritten, not
+      ignored: taking `max()` of the two would look conservative and would in
+      fact hide the fact that an eviction record was thrown away.
 
     Callers gate this on `"spool_evicted_frames" in payload.model_fields_set`,
     never on the value: an agent predating the field omits it and must leave

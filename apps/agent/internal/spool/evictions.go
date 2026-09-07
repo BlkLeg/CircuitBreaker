@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"circuitbreaker.dev/cb-agent/internal/frame"
@@ -45,20 +46,34 @@ type EvictionStats struct {
 	OldestDroppedTS time.Time `json:"oldest_dropped_ts"`
 	NewestDroppedTS time.Time `json:"newest_dropped_ts"`
 	LastEvictedAt   time.Time `json:"last_evicted_at"`
-	// LastDestroyedReason names what destroyed data most recently. The two
-	// causes fold into one counter on purpose — "this host's history has a
-	// hole in it" is the same fact either way — but their remedies are
-	// opposite, and without this the status output can only list both and
-	// send the operator to the log. Added alongside the existing fields
-	// rather than replacing any, and omitted when empty, so a record written
-	// by an older agent still loads.
+	// LastDestroyedCause names what destroyed data most recently, as a code:
+	// CauseSizeCap or CauseWriteFailed. The two causes fold into one counter
+	// on purpose — "this host's history has a hole in it" is the same fact
+	// either way — but their remedies are opposite, so `cb-agent status`
+	// branches on this to print the right one.
+	//
+	// A code and not the sentence, because it is control flow. Branching on
+	// the operator-facing prose would mean a reword silently reclassified
+	// every already-persisted record and handed an operator the opposite
+	// remedy. Empty in a record written before this field existed, which the
+	// status output reads as "unknown" and answers by listing both.
+	LastDestroyedCause string `json:"last_destroyed_cause,omitempty"`
+	// LastDestroyedReason is the human detail behind LastDestroyedCause: the
+	// underlying write error, or the cap's own phrasing. Display copy only —
+	// nothing branches on it.
 	LastDestroyedReason string `json:"last_destroyed_reason,omitempty"`
 }
 
-// CapEvictionReason is what the drop-oldest policy records itself as in
-// EvictionStats.LastDestroyedReason. Exported because `cb-agent status` has
-// to tell it apart from a refused write to print the right remedy. Phrased
-// for an operator reading that output, not as an error code.
+// The causes recorded in EvictionStats.LastDestroyedCause. Codes, deliberately
+// unreadable as copy, so nobody edits one as though it were a message.
+const (
+	CauseSizeCap     = "size_cap"
+	CauseWriteFailed = "write_failed"
+)
+
+// CapEvictionReason is the drop-oldest policy's own phrasing, stored as
+// EvictionStats.LastDestroyedReason. Exported so `cb-agent status` and the
+// tests share one wording. Safe to reword: it is displayed, never matched.
 const CapEvictionReason = "the spool hit its size cap during an outage"
 
 // widen folds one dropped frame's own timestamp into the destroyed window.
@@ -131,20 +146,36 @@ func (s *Spool) RecordDestroyed(f frame.Frame, reason string) {
 	s.evicted.Bytes += size
 	s.evicted.widen(f.TS)
 	s.evicted.LastEvictedAt = time.Now().UTC()
+	// Every caller of this is a spool that could not accept the write, so
+	// the cause is set here rather than taken from the caller — a caller-set
+	// code is a caller that can get it wrong.
+	s.evicted.LastDestroyedCause = CauseWriteFailed
 	s.evicted.LastDestroyedReason = reason
 
 	s.destroyedPending.Frames++
 	s.destroyedPending.Bytes += size
 	s.destroyedPending.widen(f.TS)
 
-	// Written through, never batched — see destroyedReportInterval. The error
-	// is held rather than logged here so a sustained failure does not emit a
-	// line per sample; it is reported with the batched loss line below, which
-	// is the same line an operator is already being pointed at.
-	persistErr := s.persistEvictionsLocked()
+	windowOpen := s.lastDestroyedReport.IsZero() ||
+		time.Since(s.lastDestroyedReport) >= destroyedReportInterval
 
-	if !s.lastDestroyedReport.IsZero() &&
-		time.Since(s.lastDestroyedReport) < destroyedReportInterval {
+	// Written through, never batched — see destroyedReportInterval.
+	//
+	// A failure to write it is reported when the run of failures *begins*,
+	// and then at the same one-per-window rate as the loss line. Reporting it
+	// only at window boundaries would hide a failure that started just after
+	// one for up to a minute and then blame a later sample for it; reporting
+	// every sample would be the log storm the window exists to prevent.
+	if err := s.persistEvictionsLocked(); err != nil {
+		if !s.persistFailing || windowOpen {
+			logging.Errorf("cb-agent: spool: could not persist the eviction record: %v", err)
+		}
+		s.persistFailing = true
+	} else {
+		s.persistFailing = false
+	}
+
+	if !windowOpen {
 		return
 	}
 	pending := s.destroyedPending
@@ -167,11 +198,6 @@ func (s *Spool) RecordDestroyed(f frame.Frame, reason string) {
 		formatEvictedTS(pending.OldestDroppedTS), formatEvictedTS(pending.NewestDroppedTS),
 		reason, s.evicted.Frames, s.evicted.Bytes,
 	)
-	if persistErr != nil {
-		// A record that could not be written is a loss the next restart will
-		// not be able to report at all.
-		logging.Errorf("cb-agent: spool: could not persist the eviction record: %v", persistErr)
-	}
 }
 
 // EvictionStats returns a snapshot of what this spool has permanently
@@ -216,11 +242,45 @@ func (s *Spool) persistEvictionsLocked() error {
 		return fmt.Errorf("spool: encode evictions: %w", err)
 	}
 	tmp := s.evictedPath + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+	// Written, fsynced, then renamed, and the directory fsynced after —
+	// appendLine already does this for queue.jsonl, and a record of what was
+	// permanently destroyed has no business being less durable than the queue
+	// it audits. Without the syncs a power cut can leave the rename visible
+	// and the bytes not, or neither, and lose exactly the counts this file
+	// exists to carry across a restart.
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
 		return fmt.Errorf("spool: write %s: %w", tmp, err)
+	}
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		f.Close()
+		return fmt.Errorf("spool: write %s: %w", tmp, err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return fmt.Errorf("spool: sync %s: %w", tmp, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("spool: close %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, s.evictedPath); err != nil {
 		return fmt.Errorf("spool: rename %s: %w", tmp, err)
 	}
-	return nil
+	return syncDir(filepath.Dir(s.evictedPath))
+}
+
+// syncDir fsyncs a directory so a rename into it is durable. A directory that
+// cannot be opened for reading is reported rather than ignored: it means the
+// state directory has gone, which is one of the conditions this whole record
+// exists to survive.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("spool: open %s: %w", dir, err)
+	}
+	if err := d.Sync(); err != nil {
+		d.Close()
+		return fmt.Errorf("spool: sync %s: %w", dir, err)
+	}
+	return d.Close()
 }
