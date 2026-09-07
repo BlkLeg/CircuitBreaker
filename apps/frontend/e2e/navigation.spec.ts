@@ -7,7 +7,7 @@ import {
   stubApi,
 } from './fixtures/api';
 
-// known_bugs-v1.0.0-rc.1.md item 1: the URL advances but the route never
+// docs/evidence/known_bugs-v1.0.0-rc.1.md item 1: the URL advances but the route never
 // renders until a manual reload. Open since rc.1, high severity, and explicitly
 // "not reproducible in jsdom".
 //

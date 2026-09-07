@@ -1,6 +1,9 @@
 # Circuit Breaker — Production-Readiness Route
 
-**Date:** 2026-08-30 · **Baseline:** `ARCHITECTURE_ASSESSMENT.md` (branch `dev` @ `52364918`) · **Revalidated at:** HEAD `240bc3c6`
+**Historical snapshot, 2026-08-30.**
+**Not a current description of the tree.**
+
+**Date:** 2026-08-30 · **Baseline:** `docs/evidence/2026-08-30-architecture-assessment.md` (branch `dev` @ `52364918`) · **Revalidated at:** HEAD `240bc3c6`
 **Method:** every route-controlling finding re-checked against the current checkout (code authoritative over the report); two additional evidence passes (finding revalidation; navigation-responsiveness trace). No production code changed in this planning pass.
 
 **Goal acknowledged:** turn a working, actively-used self-hosted product into one users can trust with their home infrastructure — enterprise engineering quality with self-hosted operational simplicity. The route below is the smallest sequence of high-confidence changes that materially improves production trustworthiness, keeping the modular monolith + independent Go agent unless a measured trigger fires.
@@ -73,7 +76,7 @@ This route deliberately builds on the verification program the repo already has 
 New facts that shape the route (all Verified):
 - **ADR 0005 + `specs/1.0.0` ledger is real gate infrastructure** (tiers, evidence hashes, exception registers). New gates below name their tier.
 - **Phase 3's own register found that no released deb/rpm ever booted** — upgrade tests currently run against synthetic fixtures. The next release is therefore also the first real N-1.
-- **The navigation bug is already partially characterized** in `known_bugs-v1.0.0-rc.1.md` item 1: 3 wedges/~180 navigations under CPU contention; URL advances, old route stays mounted at opacity 1; `AnimatePresence mode` statistically ruled out (2/48 vs 1/48).
+- **The navigation bug is already partially characterized** in `docs/evidence/known_bugs-v1.0.0-rc.1.md` item 1: 3 wedges/~180 navigations under CPU contention; URL advances, old route stays mounted at opacity 1; `AnimatePresence mode` statistically ruled out (2/48 vs 1/48).
 
 ---
 
@@ -240,7 +243,7 @@ thing worth not repeating.
 
 ## 4. Navigation investigation plan
 
-**Prior evidence (Verified):** `known_bugs-v1.0.0-rc.1.md` item 1 — 3 wedges/~180 navigations under CPU contention; URL advances, outgoing route stays mounted at `opacity:1`, incoming route never mounts; `AnimatePresence mode` ruled out statistically; the report's remaining suspect is the React.lazy + Suspense pair.
+**Prior evidence (Verified):** `docs/evidence/known_bugs-v1.0.0-rc.1.md` item 1 — 3 wedges/~180 navigations under CPU contention; URL advances, outgoing route stays mounted at `opacity:1`, incoming route never mounts; `AnimatePresence mode` ruled out statistically; the report's remaining suspect is the React.lazy + Suspense pair.
 
 **New evidence, 2026-08-30 — the wedge reproduced in CI, with no CPU throttling.** CI run `33336899172` on `main` failed two independent Playwright journeys, in different browsers, with the same shape:
 

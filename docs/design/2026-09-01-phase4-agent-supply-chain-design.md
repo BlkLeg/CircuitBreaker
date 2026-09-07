@@ -1,6 +1,6 @@
 # Phase 4 — Agent supply chain and release-operations hardening
 
-**Date:** 2026-09-01 · **Route:** `PRODUCTION_READINESS_ROUTE.md` §3 Phase 4 · **Findings:** F4, F3, F17
+**Date:** 2026-09-01 · **Route:** `docs/evidence/2026-08-30-production-readiness-route.md` §3 Phase 4 · **Findings:** F4, F3, F17
 **Status:** design approved, not yet implemented.
 
 This covers slices **4.1** (TLS pin-successor rotation), **4.2** (agent binary

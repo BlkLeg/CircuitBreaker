@@ -340,5 +340,5 @@ authorization change, since the notifications tightening changes what an editor 
 - **INC-15** — Batch C. **INC-09** — Batch D.
 - **Backend role model changes.** `require_role` and the `ROLE_SCOPE_REQUIREMENT` ladder
   INC-04 built are used as they are; no new role is introduced.
-- **`known_bugs-v1.0.0-rc.1.md` #1** — sticky navigation. Unrelated.
+- **`docs/evidence/known_bugs-v1.0.0-rc.1.md` #1** — sticky navigation. Unrelated.
 - **Splitting `SettingsPage.jsx`**, per nav design §6.

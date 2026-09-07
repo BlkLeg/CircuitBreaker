@@ -82,6 +82,8 @@ nav:
 #     (its content moved into installation/docker-compose.md); a dead sidebar
 #     entry would be worse than none
 #   - the three audit/plan documents — working records, not product docs
+#   - evidence/ — dated measurement and audit records, linked from the pages
+#     that cite them, not sidebar content
 # Without this, "page exists but is not in the nav" is logged at INFO, which
 # --strict does not fail on, so a page can silently drop out of the sidebar.
 validation:
@@ -96,6 +98,7 @@ not_in_nav: |
   /1.0.0-release-readiness-audit.md
   /cross-browser-audit.md
   /mono-db-production-plan.md
+  /evidence/*.md
 
 # Pages that are not part of the published site at all — not in the sidebar and
 # not reachable by URL, unlike the not_in_nav entries above. `mkdocs build

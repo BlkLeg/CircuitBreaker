@@ -428,7 +428,7 @@ against `NAV_ITEMS`; both are updated to `NAV_GROUPS` and to the new group names
 - **INC-09 (i18n).** New group labels get `labelKey`s and English defaults. The empty
   `header.json` / `map.json` namespaces and the 227 untranslated call sites are not
   addressed here.
-- **`known_bugs-v1.0.0-rc.1.md` #1** — sticky navigation requiring a hard reload. A
+- **`docs/evidence/known_bugs-v1.0.0-rc.1.md` #1** — sticky navigation requiring a hard reload. A
   routing/Suspense defect, unrelated to information architecture.
 - **Dock visual design.** Position, reveal behavior, sizing, and animation are unchanged.
 - **Splitting `SettingsPage.jsx`.** See §6.

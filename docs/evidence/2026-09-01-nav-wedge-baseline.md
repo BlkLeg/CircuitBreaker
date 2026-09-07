@@ -29,7 +29,7 @@ each five-step repeat, in all six repeats.
 
 So this is not a 40% flake. It is a **100% reproducible failure of navigation
 away from `/map`**, diluted to 40% by the three navigations per repeat that
-start elsewhere and never wedge. `known_bugs-v1.0.0-rc.1.md` item 1 says the
+start elsewhere and never wedge. `docs/evidence/known_bugs-v1.0.0-rc.1.md` item 1 says the
 same thing from the other direction: leaving the React Flow canvas is what
 wedges.
 
