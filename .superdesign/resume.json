@@ -77,6 +77,91 @@
         }
       },
       "updatedAt": "2026-09-06T21:52:25.000Z"
+    },
+    "agent-operations-tabs": {
+      "targetKind": "existing-ui",
+      "projectId": "8b984ff8-fa32-4386-98b6-0de7bd58135b",
+      "activeDraftId": "4c66a788-b384-44dd-87a3-cb4b77c67018",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "apps/frontend/src/pages/AgentDetailPage.jsx:400:596",
+        "apps/frontend/src/components/agents/AgentOverviewTab.jsx",
+        "apps/frontend/src/components/agents/AgentEventsPanel.jsx",
+        "apps/frontend/src/components/agents/AssignedProbesSection.jsx",
+        "apps/frontend/src/components/agents/RemoteProbeConfigEditor.jsx",
+        "apps/frontend/src/components/agents/DiscoveryScopeSection.jsx",
+        "apps/frontend/src/components/agents/LocalDiscoveryConfigEditor.jsx",
+        "apps/frontend/src/components/agents/AgentCapabilitiesPanel.jsx",
+        "apps/frontend/src/components/agents/AgentHardwarePanel.jsx",
+        ".superdesign/init/components.md",
+        "apps/frontend/src/components/common/PanelGrid.jsx",
+        "apps/frontend/src/components/common/KeyValue.jsx",
+        "apps/frontend/src/components/common/CopyField.jsx",
+        "apps/frontend/src/components/common/Toggle.jsx",
+        "apps/frontend/src/styles/panels.css",
+        "apps/frontend/src/styles/agents.css:1040:1250",
+        "apps/frontend/src/styles/main.css:1:80",
+        "apps/frontend/src/styles/main.css:949:985",
+        "apps/frontend/src/styles/main.css:4105:4576"
+      ],
+      "referenceIds": [
+        "a14960db-a363-47bc-af5f-8f97f0d11571",
+        "d1f5565e-77f0-4b36-918f-5463fbd4d38e",
+        "a12c3dc4-cb0b-4e2f-afc3-0a1365ce4a0f",
+        "d96363f6-86f1-4850-9fb9-f56c32401b8a",
+        "bd032178-8d50-4ecd-ad7e-5f2a037760fd",
+        "apps-frontend-public-CB-AZ_Final.png"
+      ],
+      "brandAssets": {
+        "logo": {
+          "assetKey": "apps-frontend-public-CB-AZ_Final.png",
+          "url": "https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/8b984ff8-fa32-4386-98b6-0de7bd58135b/brand-assets/apps-frontend-public-CB-AZ_Final.png/CB-AZ_Final.png",
+          "sourcePath": "apps/frontend/public/CB-AZ_Final.png"
+        }
+      },
+      "fingerprints": {
+        ".superdesign/design-system.md": "2d959202a73c8a3dee5cf4ed6445dc487f72ed005b325488254da88ad78b5713",
+        "apps/frontend/src/pages/AgentDetailPage.jsx": "ee82d3cbe00c9881a09b535cb69b828171a3089ba199e14995f6b621d42465cd",
+        "apps/frontend/src/components/agents/AgentOverviewTab.jsx": "e2ee1456bf298aadb5a3529d2e110fe2d548bdd0f2be0e4e1f0a86e7f1940e7e",
+        "apps/frontend/src/components/agents/AgentEventsPanel.jsx": "7e8ced5a720e9b3901c07fbb93f2eaae472f2001b85d685d97a7d40e50ee8462",
+        "apps/frontend/src/components/agents/AssignedProbesSection.jsx": "c70ea0127be7b115cb3df283ccf6d0b3c30e071add48f89a6f12e3e160cb0eba",
+        "apps/frontend/src/components/agents/RemoteProbeConfigEditor.jsx": "2d81344c0c2f52d0fd8bff37ef25870136052c4c941a0d497b14a671e439a6d5",
+        "apps/frontend/src/components/agents/DiscoveryScopeSection.jsx": "e1e706b03a632f61d9ddba7237bbc3744b6dc84865738b1574eb942bdb2bf973",
+        "apps/frontend/src/components/agents/LocalDiscoveryConfigEditor.jsx": "78cf16afdf9fae48179d08ee28637506009f9c675c744a598b6278a8385ea6f0",
+        "apps/frontend/src/components/agents/AgentCapabilitiesPanel.jsx": "5f056ffcc3d254c7e73d65235db8572d3fad7fd6b355fc574177091b5fe6b00b",
+        "apps/frontend/src/components/agents/AgentHardwarePanel.jsx": "c8000d4fa33fba37108cc37c6682c8a20ce020aeffc6596ecdb84bedc73a4c6d",
+        ".superdesign/init/components.md": "65d7b3e837fbaa1f75187bcfe1d540cc350ec3bc07b39f2a5a63bc590bbc4e56",
+        "apps/frontend/src/components/common/PanelGrid.jsx": "c1cfc1891e23cd455700799f091e9562647213c387c3fe9aeaf0cc4e66185b49",
+        "apps/frontend/src/components/common/KeyValue.jsx": "a9d3886b7dd97aaf064c8244962d784a7276008e91c59e1624552263396a3e00",
+        "apps/frontend/src/components/common/CopyField.jsx": "8614c6337263f849733f3487047b2baf5bb8aa3577a7a30857093a64f3140911",
+        "apps/frontend/src/components/common/Toggle.jsx": "0948c1a9aefa190c6980e13fcfa0003f154a8f8c9d44b297db2bb4b74c40c709",
+        "apps/frontend/src/styles/panels.css": "76462f5d3b8e98709d4860745d848da41407b15716c7930be6ed4c131bb3a7ca",
+        "apps/frontend/src/styles/agents.css": "e0b311f15c60b9f3897f7e66d7aa344b30ef28fae13b8ac24868e83967e8350f",
+        "apps/frontend/src/styles/main.css": "b30de745b3637e084220404373f405382f9c3481122bc5a7baee00c989e759cb"
+      },
+      "components": [
+        {
+          "name": "GlobalHeader",
+          "id": "6372d3d3-35a0-4040-b7c2-db35bab762ec",
+          "sourcePath": "apps/frontend/src/components/Header.jsx",
+          "logoAssetKey": "apps-frontend-public-CB-AZ_Final.png"
+        },
+        {
+          "name": "AgentDetailHeader",
+          "id": "cb952c1e-89bf-4815-b462-42b06fd1dd0c",
+          "sourcePath": "apps/frontend/src/components/common/DetailHeader.jsx"
+        }
+      ],
+      "drafts": {
+        "4c66a788-b384-44dd-87a3-cb4b77c67018": {
+          "title": "Agent Operations — SOC Tab Family",
+          "visualDirection": "Interactive Gruvbox SOC tab family for Overview, Probes, Discovery, and Events, anchored to the approved Telemetry workbench",
+          "parentDraftId": "4ada9408-496a-4c22-a518-0bb6cdafebe7",
+          "currentVersion": 2
+        }
+      },
+      "updatedAt": "2026-09-06T22:24:00.000Z"
     }
   }
 }
