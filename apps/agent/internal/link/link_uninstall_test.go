@@ -3,6 +3,7 @@ package link
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -79,9 +80,11 @@ func TestDrainPending_ReadsMultipleQueuedMessagesNotJustTheFirst(t *testing.T) {
 
 // TestUninstall_DeliversFrameAndReturnsCleanlyWithMultiplePendingServerMessages
 // exercises the full Uninstall() call path against a fake server shaped like
-// the real /link server: it queues two messages (hello.ack, capabilities.set)
-// before ever reading again, mirroring ws_agents.py's link_stream. Uninstall
-// must still both deliver the uninstall frame and return a nil error.
+// the real /link server: it queues everything it has to say before ever
+// reading again, mirroring ws_agents.py's link_stream. Uninstall must deliver
+// the uninstall frame and return a nil error, which now means it also found
+// the acknowledgement behind the two frames queued in front of it.
+// link_uninstall_ack_test.go covers the acknowledgement contract itself.
 func TestUninstall_DeliversFrameAndReturnsCleanlyWithMultiplePendingServerMessages(t *testing.T) {
 	serverPriv, serverPub := generateTestKeypair(t)
 	uninstallReceived := make(chan struct{}, 1)
@@ -143,14 +146,34 @@ func TestUninstall_DeliversFrameAndReturnsCleanlyWithMultiplePendingServerMessag
 		}
 		uninstallReceived <- struct{}{}
 
-		// Two messages queued before ever reading again — the real
-		// /link server's actual shape (hello.ack immediately followed by
-		// capabilities.set on accept), and the specific case a single-read
-		// drain used to leave half-drained.
-		ackBytes, _ := frame.Encode(frame.Frame{V: 1, Type: "hello.ack", Seq: 0, TS: time.Now().UTC()})
+		// Three messages queued before ever reading again — the real /link
+		// server's actual shape (hello.ack immediately followed by
+		// capabilities.set on accept, then a coalesced data.ack once the
+		// frame is handled), and the specific case a single-read drain used
+		// to leave half-drained.
+		//
+		// The hello.ack carries a real payload now rather than an empty
+		// frame: since Uninstall waits for acknowledgement, an ack that
+		// decodes to `accepted: false, data_ack: false` is a refusal, and
+		// this test would be asserting the wrong thing.
+		helloAckPayload, _ := json.Marshal(frame.HelloAckPayload{
+			Accepted: true, AgentID: 1, DataAck: true,
+		})
+		ackBytes, _ := frame.Encode(frame.Frame{
+			V: 1, Type: frame.TypeHelloAck, Seq: 0,
+			TS: time.Now().UTC(), Payload: helloAckPayload,
+		})
 		_ = conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(ackBytes))
-		capsBytes, _ := frame.Encode(frame.Frame{V: 1, Type: "capabilities.set", Seq: 1, TS: time.Now().UTC()})
+		capsBytes, _ := frame.Encode(frame.Frame{
+			V: 1, Type: frame.TypeCapabilitiesSet, Seq: 1, TS: time.Now().UTC(),
+		})
 		_ = conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(capsBytes))
+		dataAckPayload, _ := json.Marshal(frame.DataAckPayload{Seq: uninstallFrameSeq})
+		dataAckBytes, _ := frame.Encode(frame.Frame{
+			V: 1, Type: frame.TypeDataAck, Seq: 2,
+			TS: time.Now().UTC(), Payload: dataAckPayload,
+		})
+		_ = conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(dataAckBytes))
 
 		// Never reads again and never closes first — Uninstall's own
 		// close-handshake (write close, drain, then the real socket close)

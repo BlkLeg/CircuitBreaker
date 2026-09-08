@@ -8,7 +8,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"strings"
@@ -21,21 +23,27 @@ import (
 
 // runUninstall is the `cb-agent uninstall` entry point (spec §4.7): it
 // requires root (disabling a systemd unit and removing root-owned files
-// under /etc and /usr/local/bin isn't possible otherwise), best-effort
-// notifies the server so the agent's row flips to revoked (see
-// notifyUninstallBestEffort), then actually disables/removes/reloads —
-// unlike this function's pre-Task-29 form, which only ever printed the
-// systemctl/rm commands for an operator to run by hand.
+// under /etc and /usr/local/bin isn't possible otherwise), tells the server
+// so the agent's row flips to revoked (see notifyUninstallBestEffort), then
+// actually disables/removes/reloads — unlike this function's pre-Task-29 form,
+// which only ever printed the systemctl/rm commands for an operator to run by
+// hand.
+//
+// Removal happens whether or not the server was reached; only the exit status
+// and the printed line distinguish the outcomes. That order — notify first,
+// remove second — is deliberate: the config and device identity the notify
+// needs are among the things removal deletes.
 func runUninstall() {
 	if err := requireRoot(os.Geteuid()); err != nil {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 		os.Exit(1)
 	}
 
-	if err := notifyUninstallBestEffort(); err != nil {
-		fmt.Fprintf(os.Stderr, "cb-agent: could not notify server (continuing anyway): %v\n", err)
+	notifyLine, notifyToStderr, notifyFailed := uninstallNotifyReport(notifyUninstallBestEffort())
+	if notifyToStderr {
+		fmt.Fprintln(os.Stderr, notifyLine)
 	} else {
-		fmt.Println("Notified the server (agent record marked revoked).")
+		fmt.Println(notifyLine)
 	}
 
 	result := performUninstall(resolveUninstallPaths(), runSystemctl)
@@ -64,35 +72,117 @@ func runUninstall() {
 		fmt.Fprintf(os.Stderr, "cb-agent: could not reload systemd: %v\n", result.ReloadErr)
 	}
 
-	if result.DisableErr != nil || len(result.RemoveErrs) > 0 || result.ReloadErr != nil {
+	// An unconfirmed notify counts towards the exit status, alongside the
+	// on-disk failures. Local removal succeeded either way and the message
+	// above says so, but a server that still lists this agent is unfinished
+	// work: automation decommissioning a fleet has to be able to see that it
+	// left records behind, and exit 0 is how it is told there is nothing left
+	// to do.
+	if result.DisableErr != nil || len(result.RemoveErrs) > 0 ||
+		result.ReloadErr != nil || notifyFailed {
 		os.Exit(1)
 	}
 }
 
-// notifyUninstallBestEffort loads whatever config/identity is still present
-// and sends the one-shot `uninstall` frame over link.Uninstall. Config or
-// identity that's already missing (e.g. a second uninstall attempt after a
-// first one partially completed) is reported as this function's error
-// rather than panicking or being treated as fatal to the caller — runUninstall
-// proceeds to remove files regardless, since notifying the server is
-// explicitly best-effort (Global Constraints / this task's brief).
+// errNoLocalAgent means there is nothing on this host for the server to be told
+// about: no config file, or no device identity beside it. It is a success, not a
+// failure — a second `cb-agent uninstall` run after a completed first one lands
+// here, as does a host that was never enrolled, and removal is idempotent by
+// design (see performUninstall). Reporting it as a failure would make the second
+// run of an idempotent command exit non-zero.
+var errNoLocalAgent = errors.New("no enrolled agent on this host")
+
+// uninstallNotifyReport turns one notify outcome into the line the operator
+// sees, where it goes, and whether it fails the command.
+//
+// Split out as a pure function because it is the part with the actual contract
+// in it: the old code had two branches, printed "Notified the server (agent
+// record marked revoked)" on a nil error that was returned unconditionally, and
+// let a failed notify exit 0. Three outcomes, and only one of them leaves the
+// operator with something to do.
+func uninstallNotifyReport(err error) (line string, toStderr bool, failed bool) {
+	switch {
+	case err == nil:
+		return "Notified the server (agent record marked revoked).", false, false
+	case errors.Is(err, errNoLocalAgent):
+		return "No enrolled agent found on this host; the server has nothing to be told.", false, false
+	default:
+		return fmt.Sprintf(
+			"cb-agent: the server did NOT confirm this uninstall: %v\n"+
+				"cb-agent: local removal continues, but this agent may still be listed as "+
+				"active — revoke it in Settings → Agents.", err), true, true
+	}
+}
+
+// notifyUninstallBestEffort tells the server this agent is going away, and
+// returns nil only when the server confirmed it (see link.Uninstall for what
+// that confirmation is and why an unconfirmed one used to be indistinguishable
+// from success).
+//
+// Best-effort still describes the *caller*: runUninstall removes files whatever
+// happens here, because an unreachable or already-decommissioned server must
+// never block an operator from removing an agent from their own host. What is no
+// longer best-effort is the reporting — see uninstallNotifyReport.
+//
+// A missing config or identity returns errNoLocalAgent rather than a failure:
+// there is nothing here to tell the server about.
 func notifyUninstallBestEffort() error {
-	cfg, err := config.Load("/etc/circuit-breaker/agent.toml")
+	cfg, err := config.Load(uninstallConfigPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return errNoLocalAgent
+	}
 	if err != nil {
 		return err
 	}
-	key, err := enroll.LoadOrCreateDeviceKey(config.StateDir())
+	// LoadDeviceKey, not LoadOrCreateDeviceKey. The load-or-create form turned
+	// a missing identity into a *newly minted* one, opened a Noise session with
+	// a static key the server has never seen, and got the connection closed at
+	// `resolve_agent_for_handshake` — after which the old unconditional `return
+	// nil` reported success. Uninstall is the one command that must never
+	// create an identity, and a missing one is not a failure either: there is
+	// simply nothing here to tell the server about.
+	key, ok, err := enroll.LoadDeviceKey(config.StateDir())
 	if err != nil {
 		return err
+	}
+	if !ok {
+		return errNoLocalAgent
 	}
 	return notifyUninstall(cfg, key)
 }
 
 func notifyUninstall(cfg *config.Config, key *enroll.DeviceKey) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), uninstallNotifyTimeout)
 	defer cancel()
-	return link.Uninstall(ctx, link.Options{Config: cfg, Key: key})
+	return link.Uninstall(ctx, link.Options{
+		Config: cfg,
+		Key:    key,
+		// StateDir was missing, and it is not cosmetic: link.ResolveTrust reads
+		// the *promoted* TLS trust policy and any pending pin rotation from
+		// there, and returns agent.toml's original pin when it is empty. On a
+		// host that has been through a certificate rotation, agent.toml names
+		// the retired certificate — so the notify could not connect at all,
+		// and the uninstall would silently leave the agent listed as active.
+		StateDir: config.StateDir(),
+		// Reported on the hello this connection sends, so the server records
+		// what actually uninstalled rather than an empty version string.
+		AgentVersion: AgentVersion,
+	})
 }
+
+// uninstallNotifyTimeout bounds the whole notify: dial, handshake, hello,
+// uninstall frame, and the wait for the server's acknowledgement. The server
+// coalesces delivery acknowledgements at 4 frames or ~1s, so a healthy server
+// answers in about a second; the rest of the budget is for a slow or loaded one.
+// An operator's terminal must not hang here — an unconfirmed uninstall is a
+// reported outcome, not a reason to wait indefinitely.
+const uninstallNotifyTimeout = 10 * time.Second
+
+// uninstallConfigPath is this agent's own config file, and the file whose
+// absence means nothing was ever enrolled here. A variable rather than a
+// constant for the same reason the paths and the systemctl runner below are
+// indirected: so the notify path can be tested without /etc.
+var uninstallConfigPath = "/etc/circuit-breaker/agent.toml"
 
 // requireRoot fails loudly unless euid is 0. `cb-agent uninstall` disables a
 // systemd unit and removes root-owned files (the unit file under
@@ -165,7 +255,7 @@ type uninstallPaths struct {
 var defaultUninstallPaths = uninstallPaths{
 	unitFile:   "/etc/systemd/system/cb-agent.service",
 	binary:     installedBinaryPath,
-	configFile: "/etc/circuit-breaker/agent.toml",
+	configFile: uninstallConfigPath,
 	configDir:  "/etc/circuit-breaker",
 	stateDir:   config.StateDir(),
 }

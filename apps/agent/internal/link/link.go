@@ -1335,8 +1335,42 @@ func applyInboundRekey(session *noiseconn.Session, f frame.Frame, gen *uint64) e
 	return nil
 }
 
-// Uninstall performs one short-lived connection: handshake, hello, then an
-// uninstall notification. It does not enter the heartbeat loop.
+// ErrUninstallUnconfirmed means the uninstall frame was written but the server
+// never acknowledged handling it, so this agent may still be `active` on the
+// server. Every "we could not confirm" outcome wraps it — a server that
+// declines to acknowledge, a watermark that never reaches this frame, silence
+// until the deadline — so `cb-agent uninstall` can tell that one class of
+// failure (the operator has a leftover record to revoke by hand) apart from
+// "we could not even reach the server".
+var ErrUninstallUnconfirmed = errors.New("link: the server did not confirm the uninstall")
+
+// uninstallFrameSeq is the sequence number the uninstall frame carries, and
+// the watermark a `data.ack` has to reach before this agent may claim it was
+// revoked. It is 1, not 0, because the hello is seq 0: an ack watermark of 0
+// says nothing about whether the uninstall was handled.
+const uninstallFrameSeq = 1
+
+// Uninstall performs one short-lived connection: handshake, hello, the
+// uninstall notification — and then waits for the server to acknowledge
+// handling it before closing.
+//
+// The wait is the point. This function used to write the frame, write a
+// WebSocket close immediately after, and return nil, which reported only that
+// the local kernel had taken the bytes. Against the real server that was
+// reliably wrong: uvicorn completes the close handshake the moment it arrives,
+// so `ws_agents.link_stream`'s next send (the hello.ack, which follows a chunk
+// of database work) failed and the handler exited before its receive loop ever
+// ran. The uninstall frame was never read, the agent was never revoked, and
+// `cb-agent uninstall` said "Notified the server (agent record marked
+// revoked)" every single time. Reproduced end to end 2026-09-08, and confirmed
+// by the inverse: hold the socket open and the same run revokes the agent.
+//
+// So the hello asks for delivery acknowledgement and this returns nil only
+// once a `data.ack` watermark has reached uninstallFrameSeq. That is a real
+// proof rather than a hopeful one: `uninstall` is not in the server's
+// `CAPABILITY_FOR_TYPE`, so it has no gate that could "terminally handle" it
+// by refusing it, and `dispatch_frame` commits `_handle_uninstall`'s revoke
+// before the watermark is allowed to move.
 func Uninstall(ctx context.Context, opts Options) error {
 	remotePub, err := hex.DecodeString(opts.Config.ServerStaticPK)
 	if err != nil || len(remotePub) != 32 {
@@ -1379,6 +1413,11 @@ func Uninstall(ctx context.Context, opts Options) error {
 	}
 
 	helloPayload := hostinfo.Collect(opts.AgentVersion, opts.Config.ServerURL)
+	// The whole basis on which this command is allowed to tell an operator the
+	// server marked the agent revoked. A server that answers `data_ack: false`
+	// is saying it will never acknowledge, and the wait below stops there
+	// rather than sitting out the deadline.
+	helloPayload.AckData = true
 	hello := frame.Frame{V: 1, Type: frame.TypeHello, Seq: 0, TS: time.Now().UTC()}
 	hello.Payload, err = json.Marshal(helloPayload)
 	if err != nil {
@@ -1392,44 +1431,122 @@ func Uninstall(ctx context.Context, opts Options) error {
 		return fmt.Errorf("link: send hello: %w", err)
 	}
 
-	uninstallFrame := frame.Frame{V: 1, Type: frame.TypeUninstall, Seq: 1, TS: time.Now().UTC(), Payload: json.RawMessage("{}")}
+	uninstallFrame := frame.Frame{
+		V: 1, Type: frame.TypeUninstall, Seq: uninstallFrameSeq,
+		TS: time.Now().UTC(), Payload: json.RawMessage("{}"),
+	}
 	uninstallBytes, _ := frame.Encode(uninstallFrame)
 	if err := conn.WriteMessage(websocket.BinaryMessage, session.Encrypt(uninstallBytes)); err != nil {
 		return fmt.Errorf("link: send uninstall: %w", err)
 	}
 
-	// A bare `defer conn.Close()` firing immediately after the WriteMessage
-	// above raced the server's read: WriteMessage returning nil only means
-	// this frame was handed to the local TCP send buffer, not that the
-	// server has read it — and if this connection's own receive buffer
-	// still holds any unread bytes at the moment Close() runs (e.g. the
-	// server's hello.ack, which this one-shot connection never reads),
-	// Linux answers close() with an RST instead of a graceful FIN. An RST
-	// can silently discard data already handed to the kernel, including the
-	// uninstall frame just "sent" above — so the server could receive
-	// nothing at all despite this function returning success. Sending a
-	// real WS close frame and giving the peer a brief window to respond (or
-	// to simply finish reading) makes an ordinary graceful close far more
-	// likely than an abrupt reset.
-	//
-	// A single ReadMessage() here only ever drained the *first* of
-	// whatever the server had queued — but the real /link server
-	// (ws_agents.py's link_stream) unconditionally sends two messages on
-	// accept, hello.ack then capabilities.set, before this one-shot
-	// connection's close-handshake even begins, and either send caller can
-	// add more before the read deadline fires. Draining just one still left
-	// the second sitting unread in the local kernel receive buffer at the
-	// moment Close() ran, i.e. exactly the RST-triggering condition this
-	// close-handshake exists to avoid. drainPending loops until nothing
-	// more is available (an error — the peer's own close, or the deadline
-	// below) rather than stopping after the first message.
+	ackErr := awaitUninstallAck(conn, session, uninstallDeadline(ctx))
+
+	// The close goes out only now, after the wait above has ended one way or
+	// the other, and this ordering is the fix. Sending it earlier is what lost
+	// the frame: the server's websocket layer completes the close handshake
+	// on its own schedule, and once it has, `link_stream`'s hello.ack send
+	// fails and the handler leaves before reading anything this connection
+	// sent. Writing a real close frame (rather than letting `defer
+	// conn.Close()` fire with unread bytes still in the receive buffer, which
+	// Linux answers with an RST that can discard data already handed to the
+	// kernel) is still worth doing — just not until there is nothing left to
+	// hear.
 	_ = conn.WriteControl(
 		websocket.CloseMessage,
 		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 		time.Now().Add(2*time.Second),
 	)
-	drainPending(conn, time.Now().Add(2*time.Second)) // best-effort; count not meaningful to the caller
-	return nil
+	// Whatever the server queued behind the acknowledgement, so the socket
+	// closes with an empty receive buffer. Best-effort; the count is not
+	// meaningful to the caller.
+	drainPending(conn, time.Now().Add(2*time.Second))
+	return ackErr
+}
+
+// uninstallDeadline is when the wait for an acknowledgement gives up: the
+// caller's context deadline if it set one, otherwise a bounded default. An
+// operator's terminal must never hang on a server that accepted the connection
+// and then went quiet.
+func uninstallDeadline(ctx context.Context) time.Time {
+	if deadline, ok := ctx.Deadline(); ok {
+		return deadline
+	}
+	return time.Now().Add(uninstallAckTimeout)
+}
+
+// uninstallAckTimeout bounds the wait when the caller supplied no deadline.
+// `cmd/cb-agent`'s own context is shorter; this exists so a library caller
+// cannot hang forever.
+const uninstallAckTimeout = 15 * time.Second
+
+// awaitUninstallAck reads until the server acknowledges handling the uninstall
+// frame, and returns nil only then.
+//
+// Everything else on the wire is read past rather than treated as an answer:
+// `hello.ack` and `capabilities.set` always arrive first, and a coalesced
+// `data.ack` may legitimately carry a watermark behind this frame. Two frames
+// do end the wait early, both because continuing would only burn the deadline
+// to reach the same conclusion: a hello.ack that refuses the session, and one
+// that says this server will not acknowledge delivery at all (`data_ack:
+// false` — what a server predating the mechanism sends).
+//
+// An inbound `transport.rekey` is applied rather than skipped. The server
+// rekeys on its own clock, that clock is configurable, and ignoring one would
+// leave every later frame undecryptable — a confirmable uninstall reported as
+// unconfirmed.
+func awaitUninstallAck(conn *websocket.Conn, session *noiseconn.Session, deadline time.Time) error {
+	var inboundRekeyGen uint64
+	for {
+		_ = conn.SetReadDeadline(deadline)
+		_, ct, err := conn.ReadMessage()
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrUninstallUnconfirmed, classifyReadError(err))
+		}
+		pt, err := session.Decrypt(ct)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrUninstallUnconfirmed, err)
+		}
+		f, err := frame.Decode(pt)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrUninstallUnconfirmed, err)
+		}
+
+		switch f.Type {
+		case frame.TypeTransportRekey:
+			if err := applyInboundRekey(session, f, &inboundRekeyGen); err != nil {
+				return fmt.Errorf("%w: %w", ErrUninstallUnconfirmed, err)
+			}
+		case frame.TypeHelloAck:
+			var ack frame.HelloAckPayload
+			if err := json.Unmarshal(f.Payload, &ack); err != nil {
+				return fmt.Errorf("%w: malformed hello.ack: %w", ErrUninstallUnconfirmed, err)
+			}
+			if !ack.Accepted {
+				reason := ack.Reason
+				if reason == "" {
+					reason = "no reason given"
+				}
+				return fmt.Errorf("link: the server refused this agent's session: %s", reason)
+			}
+			if !ack.DataAck {
+				return fmt.Errorf(
+					"%w: this server does not acknowledge frame delivery, so the uninstall "+
+						"cannot be confirmed from here", ErrUninstallUnconfirmed)
+			}
+		case frame.TypeDataAck:
+			var ack frame.DataAckPayload
+			if err := json.Unmarshal(f.Payload, &ack); err != nil {
+				// Not fatal on its own: the next ack — or the deadline —
+				// still decides, exactly as the daemon's own handling does.
+				log.Printf("link: malformed data.ack payload: %v", err)
+				continue
+			}
+			if ack.Seq >= uninstallFrameSeq {
+				return nil
+			}
+		}
+	}
 }
 
 // classifyReadError maps one error from the connection's reader onto
