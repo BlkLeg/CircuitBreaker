@@ -6,17 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 while pre-1.0 (a `0.MINOR.PATCH` bump can still carry a breaking change).
 
-**Policy:** starting with 0.4.2, entries here are generated from each release's
-notes going forward. Releases before 0.4.2 have narrative write-ups under
-[`docs/updates/`](docs/updates/) instead of an entry here.
+**Policy:** starting with 0.4.2, entries here are generated from each
+release's notes going forward, cut by cut. Releases before 0.4.2 have
+narrative write-ups under [`docs/updates/`](docs/updates/) instead of an
+entry here.
 
 ## [Unreleased]
 
-## [0.4.2] - 2026-09-07
+## [0.4.2] — unreleased
 
-`v0.4.0` (tagged 2026-08-31) is the last version actually cut and shipped on
-`main`. A large agent/production-readiness effort has been landing on `dev`
-since then, but the project's own tracking
+`v0.4.0` (tagged 2026-08-31) is still the newest tag and the last version
+actually cut on `main` — `git show origin/main:VERSION` reads `0.4.0`, and
+`main` has no commits since that tag. `VERSION` in this tree was moved to
+0.4.2 by `ef729552`, ahead of an actual release; nothing below has shipped
+yet, and this heading records what will ship in the next cut, not a past one.
+A large agent/production-readiness effort has also been landing on `dev`
+since v0.4.0, but the project's own tracking
 (`docs/evidence/2026-08-30-production-readiness-route.md`) carries much of it
 as "fixed in working tree, release evidence pending" or "gated, not fixed",
 and aims its own next milestone at 0.5.0 — so it is not listed here to avoid
