@@ -448,3 +448,60 @@ def test_link_never_acks_a_frame_whose_handler_raised(db_session, ws_client, mon
         "watermark's honesty currently rests on it: nothing else stops a frame being acknowledged "
         "between `note_handled` and a commit that never happened."
     )
+
+
+@pytest.mark.timeout(15)
+def test_link_acks_an_uninstall_before_the_revoke_ends_the_connection(db_session, ws_client):
+    """The acknowledgement must survive the frame that revokes the agent.
+
+    `uninstall` is the one frame whose own handling makes this connection
+    ineligible: `_handle_uninstall` flips the agent to `revoked`, and the poll
+    branch below the receive loop drops any connection whose agent is no longer
+    `active`. With a coalesced ack still pending, that break fired first and the
+    watermark never went out — so `cb-agent uninstall` did exactly the right
+    thing with the wrong answer, reporting "the server did NOT confirm this
+    uninstall" for an uninstall the server had already committed. Observed in
+    the docker e2e on 2026-09-08, with `status=revoked` and a 1006 on the agent
+    side in the same run.
+
+    It is also the one frame that can never be retried: the agent is being
+    removed, so an unacknowledged uninstall is not "resent on reconnect", it is
+    an operator told to go and check by hand for nothing.
+
+    A regression shows up as this test's own timeout rather than a clean
+    failure: the pre-fix server sends nothing further and closes, and the test
+    client surfaces neither, so the read below simply waits. Hence the explicit
+    marker — the assertion message still says what a *late* frame means.
+    """
+    from app.db.models import Agent
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    agent_id = agent.id
+    _, server_pub = get_server_static_keypair()
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator, hello_ack = _connect(ws, agent_priv, server_pub, ack_data=True)
+        assert hello_ack["data_ack"] is True
+        _send_frame(initiator, ws, seq=1, frame_type="uninstall")
+
+        acks = []
+        # The server closes this connection itself once the revoke lands, so
+        # read until it does rather than waiting for a ping that will never
+        # come.
+        with contextlib.suppress(WebSocketDisconnect):
+            for _ in range(20):
+                frame = json.loads(initiator.decrypt(ws.receive_bytes()))
+                if frame["type"] == "data.ack":
+                    acks.append(frame)
+                    break
+
+    db_session.expire_all()
+    refreshed = db_session.get(Agent, agent_id)
+    assert refreshed is not None and refreshed.status == "revoked", (
+        "precondition: the uninstall must actually have been handled"
+    )
+    assert acks, (
+        "the server revoked the agent and closed without acknowledging the uninstall — "
+        "the agent cannot distinguish that from a lost frame"
+    )
+    assert acks[-1]["payload"]["seq"] >= 1

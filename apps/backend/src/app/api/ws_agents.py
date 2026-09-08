@@ -1167,6 +1167,20 @@ async def link_stream(websocket: WebSocket) -> None:
                 with SessionLocal() as db:
                     fresh = agent_registry.get_agent(db, agent_id)
                     if fresh is None or fresh.status != "active":
+                        # Owed acknowledgements go out before the connection
+                        # does. This break is the one an `uninstall` frame
+                        # triggers *on itself*: `_handle_uninstall` revokes the
+                        # agent, so the very next poll finds it ineligible —
+                        # and with a coalesced ack still inside its window,
+                        # breaking here dropped the watermark for the frame
+                        # that had just been committed. `cb-agent uninstall`
+                        # then reported "the server did NOT confirm this
+                        # uninstall" for an uninstall the server had already
+                        # performed, which is the same lie as before inverted.
+                        # True of every status flip, not just this one: frames
+                        # already handled were handled, and an agent that can
+                        # no longer reconnect has no second chance to hear so.
+                        await flush_data_ack(force=True)
                         break
                 pending = await agent_update.pop_pending_update(agent_id)
                 if pending is not None:
@@ -1243,6 +1257,10 @@ async def link_stream(websocket: WebSocket) -> None:
             with SessionLocal() as db:
                 fresh = agent_registry.get_agent(db, agent_id)
                 if fresh is None or fresh.status != "active":
+                    # Same reason as the poll branch above: a status flip
+                    # discovered here still owes the agent the watermark for
+                    # frames this connection already handled.
+                    await flush_data_ack(force=True)
                     break
                 receipt = agent_link.receive_frame_receipt(db, fresh, pt, inbound_session)
                 agent_frame = receipt.frame
