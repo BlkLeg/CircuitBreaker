@@ -400,15 +400,38 @@ Two defects surfaced while closing the renderer boundary:
   as the Cloud View defect. Both are now read through latest-value refs, and a
   Chromium test counts topology requests across the toggle.
 
-**Still outstanding:** moving the map components and hooks into `features/map`
-behind compatibility re-exports. Note for whoever does it: `lazyRoute`'s
-dynamic `import('../components/map/SigmaMap')` is not a static `from` clause
-and survives a relative-path rewrite — the unit suite catches it, the linter
-does not.
+**Step 7 — the feature module.** 48 files now sit under `features/map` as
+`components/`, `hooks/`, `model/` and `renderers/`, composed by `MapWorkspace`
+with `pages/MapPage.jsx` as the route shell. No compatibility re-exports were
+needed: only three modules outside the map imported anything from it, so those
+were repointed directly rather than left behind shims. `model/` is also where
+the doc wanted `linkMutations` and the entity API registries, which it lists
+under "module responsibilities are inconsistent".
 
-Verification for every commit: `make verify` exit 0, the frontend suite (177
-files, 1,460 tests), and for each markup move the `topology` visual baseline
-pixel-identical. Two Escape specs were added against a populated graph; the
+Imports were repaired by *resolution* — resolve every relative specifier, rewrite
+only the ones that no longer point at anything — rather than by find-and-replace.
+Three things that catches, worth knowing before the next move of this shape:
+
+- `lazyRoute`'s dynamic `import()` is not a static `from` clause. It broke the
+  Sigma chunk on the previous move and was silent to the linter.
+- `vi.mock()` paths are not `from` clauses either; 21 of them in two suites
+  still pointed at old locations after the first pass.
+- An ambiguous basename (`constants` resolves to two modules) must be fixed by
+  hand, not guessed.
+
+Verification for every commit: `make verify` exit 0, the frontend suite (181
+files, 1,492 tests), and for each markup move the `topology` visual baseline
+pixel-identical. The full browser matrix in the CI container finishes at 155
+passed / 6 skipped / 1 failed, the failure being a webkit
+`agent-monitor-vantage` assertion that fails identically at the pre-session
+commit in a clean worktree.
+
+Two gates caught things the map specs alone did not, both worth recording: the
+font stub's `route.abort()` produced a console error that the smoke and
+navigation specs rightly fail on (`make verify` does not run the browser job,
+so it went unnoticed for several commits — fonts are now fulfilled empty), and
+REL-19's skip register refused the Sigma test's Chromium gate until it carried
+an owner and an expiry (SKIP-040). Two Escape specs were added against a populated graph; the
 dialog one was mutation-checked by stubbing `cancelActiveTool` to a no-op.
 
 ### Visual baseline flake (2026-09-07)
