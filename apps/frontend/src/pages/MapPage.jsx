@@ -1,4 +1,3 @@
-/* eslint-disable security/detect-object-injection -- internal/ReactFlow keys; Map used for id-keyed state */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useNodesState,
@@ -9,16 +8,9 @@ import {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useNavigate } from 'react-router-dom';
-import { graphApi, settingsApi, proxmoxApi, hardwareApi } from '../api/client';
-import { getJob, getResultsWithInference, lldpEnrich } from '../api/discovery';
-import { mapsApi } from '../api/maps';
+import { graphApi, settingsApi, hardwareApi } from '../api/client';
+import { getResultsWithInference } from '../api/discovery';
 import ScanImportModal from '../components/ScanImportModal';
-import {
-  createTargetMonitor,
-  pauseTargetMonitor,
-  resumeTargetMonitor,
-  runTargetCheck,
-} from '../api/monitor.js';
 import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTimezone } from '../context/TimezoneContext';
@@ -58,17 +50,12 @@ import { lazyRoute } from '../lib/lazyRoute';
 // ── Extracted modules ────────────────────────────────────────────────────────
 import {
   NODE_TYPE_ROUTES,
-  ENTITY_API_UPDATE_ICON,
-  ENTITY_API_UPDATE_STATUS,
-  ENTITY_API_UPDATE_ALIAS,
-  STATUS_OPTIONS_BY_TYPE,
   BOUNDARY_PRESETS,
   resolveBoundaryPreset,
   boundaryFillString,
   normalizeBoundaryName,
   DEFAULT_BOUNDARY_COLOR,
   DEFAULT_BOUNDARY_FILL_OPACITY,
-  MONITOR_TARGET_TYPES,
 } from '../components/map/mapConstants';
 import {
   applyEdgeSidesForEdge,
@@ -84,10 +71,6 @@ import {
   buildRelatedNodes,
   buildNodeSysinfoRows,
   buildNodeStatusDetails,
-  makeBulkRow,
-  validateBulkRows,
-  runBulkCreate,
-  getDefaultQuickCreateValues,
 } from '../utils/mapDataUtils';
 import { useMapDataLoad } from '../hooks/useMapDataLoad';
 import { useMapTabs } from '../hooks/useMapTabs';
@@ -95,12 +78,12 @@ import { useMapRealTimeUpdates } from '../hooks/useMapRealTimeUpdates';
 import { useMapMutations } from '../hooks/useMapMutations';
 import { useMapEditorUi } from '../hooks/useMapEditorUi';
 import { useMapFilters } from '../hooks/useMapFilters';
+import { useMapNodeCommands } from '../hooks/useMapNodeCommands';
 import MapHeader from '../components/map/MapHeader';
 import BoundaryInspector from '../components/map/BoundaryInspector';
 import MapDialogs from '../components/map/MapDialogs';
 import EdgeInspector from '../components/map/EdgeInspector';
 import MapCanvas from '../components/map/MapCanvas';
-import { MAP_ACTIONS, resolveMapAction } from '../components/map/mapActions';
 import { MapErrorBanner, ScanImportBanner } from '../components/map/MapStatusBanners';
 import { useTelemetryStream } from '../hooks/useTelemetryStream';
 import { useTopologyStream, topologyEmitter } from '../hooks/useTopologyStream';
@@ -123,7 +106,7 @@ const NODE_TYPES = { iconNode: CustomNode, custom: CustomNode };
 const EDGE_TYPES = { smart: CustomEdge, custom: CustomEdge };
 
 // ── Small module-level helpers ───────────────────────────────────────────────
-import { isLightTheme, omitKey, getQuickCreateTitle } from '../utils/mapHelpers';
+import { isLightTheme, omitKey } from '../utils/mapHelpers';
 
 // ── Main Component ──────────────────────────────────────────────────────────
 
@@ -234,29 +217,12 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     lineDrawDraft,
     setLineDrawDraft,
     setCreateNodeModal,
-    setIconPickerOpen,
-    iconPickerNode,
-    setIconPickerNode,
-    quickActionModal,
-    setQuickActionModal,
-    quickActionValue,
-    setQuickActionValue,
-    quickCreateModal,
-    setQuickCreateModal,
-    quickCreateRows,
-    setQuickCreateRows,
-    setQuickCreateRowErrors,
     deleteConflictModal,
     setDeleteConflictModal,
     cancelActiveTool,
     isFullscreen,
     pendingZonePresetRef,
-    roleModal,
-    setRoleModal,
     setConfirmState,
-    setLldpJobId,
-    setQuickActionSaving,
-    setQuickCreateSaving,
   } = editorUi;
 
   const [boundaries, setBoundaries] = useState([]);
@@ -742,551 +708,31 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     [setCreateNodeModal, canMapEdit, contextMenuOpenRef, screenToFlowPosition, setContextMenu]
   );
 
-  const handleCreateNode = useCallback(
-    async (nodeData) => {
-      try {
-        const payload = {
-          name: nodeData.label,
-          hostname: nodeData.label,
-          ip_address: nodeData.subLabel || null,
-          type: 'hardware',
-          role: nodeData.iconType,
-          vendor_icon_slug: nodeData.icon_slug || null,
-          environment_id: envFilter || undefined,
-        };
-        const res = await hardwareApi.create(payload);
-
-        if (res.data?.id) {
-          if (mapId != null) {
-            await mapsApi.assignEntity(mapId, 'hardware', res.data.id);
-          }
-          updateNodePos(res.data.id, nodeData.position);
-        }
-
-        toast.success('Node created');
-        setCreateNodeModal({ isOpen: false, position: null });
-        fetchData();
-      } catch (err) {
-        toast.error('Failed to create node: ' + err.message);
-      }
-    },
-    [setCreateNodeModal, envFilter, fetchData, mapId, updateNodePos, toast]
-  );
-
-  const handleUpdateStatusAction = useCallback(
-    (nodeId) => {
-      const targetNode = nodesRef.current.find((n) => n.id === nodeId);
-      if (!targetNode) {
-        toast.error('Could not resolve node for status update.');
-        return;
-      }
-
-      const targetType = targetNode.originalType;
-      const updater = ENTITY_API_UPDATE_STATUS.get(targetType);
-      const allowed = STATUS_OPTIONS_BY_TYPE.get(targetType) || [];
-      if (!updater || allowed.length === 0 || !targetNode._refId) {
-        toast.error('Status updates are not supported for this node type.');
-        return;
-      }
-
-      const currentRaw = targetNode.data?.status_override || targetNode.data?.status || '';
-      const currentValue = currentRaw ? String(currentRaw).toLowerCase() : 'auto';
-      setQuickActionModal({
-        mode: 'status',
-        nodeType: targetType,
-        refId: targetNode._refId,
-        label: targetNode.data?.label || 'node',
-        allowed,
-      });
-      setQuickActionValue(currentValue);
-    },
-    [setQuickActionModal, setQuickActionValue, toast]
-  );
-
-  const handleAliasAction = useCallback(
-    (nodeId) => {
-      const targetNode = nodesRef.current.find((n) => n.id === nodeId);
-      if (!targetNode) {
-        toast.error('Could not resolve node for alias update.');
-        return;
-      }
-
-      const updater = ENTITY_API_UPDATE_ALIAS.get(targetNode.originalType);
-      if (!updater || !targetNode._refId) {
-        toast.error('Alias updates are not supported for this node type.');
-        return;
-      }
-
-      setQuickActionModal({
-        mode: 'alias',
-        nodeType: targetNode.originalType,
-        refId: targetNode._refId,
-        label: targetNode.data?.label || 'node',
-      });
-      setQuickActionValue(targetNode.data?.label || '');
-    },
-    [setQuickActionModal, setQuickActionValue, toast]
-  );
-
-  const submitAliasQuickAction = useCallback(
-    async (modalData, value) => {
-      const updater = ENTITY_API_UPDATE_ALIAS.get(modalData.nodeType);
-      const nextName = value.trim();
-      if (!updater) {
-        toast.error('Alias updates are not supported for this node type.');
-        return false;
-      }
-      if (!nextName) {
-        toast.error('Alias cannot be empty.');
-        return false;
-      }
-      await updater(modalData.refId, nextName);
-      toast.success('Alias updated');
-      return true;
-    },
-    [toast]
-  );
-
-  const submitStatusQuickAction = useCallback(
-    async (modalData, value) => {
-      const updater = ENTITY_API_UPDATE_STATUS.get(modalData.nodeType);
-      const allowed = modalData.allowed || [];
-      const normalized = value.trim().toLowerCase();
-      if (!updater) {
-        toast.error('Status updates are not supported for this node type.');
-        return false;
-      }
-      if (!allowed.includes(normalized)) {
-        toast.error(`Invalid status. Allowed values: ${allowed.join(', ')}`);
-        return false;
-      }
-      await updater(modalData.refId, normalized === 'auto' ? '' : normalized);
-      toast.success(
-        normalized === 'auto' ? 'Status reset to auto' : `Status updated to ${normalized}`
-      );
-      return true;
-    },
-    [toast]
-  );
-
-  const handleSubmitQuickAction = useCallback(async () => {
-    if (!quickActionModal) return;
-    setQuickActionSaving(true);
-    try {
-      const ok =
-        quickActionModal.mode === 'alias'
-          ? await submitAliasQuickAction(quickActionModal, quickActionValue)
-          : await submitStatusQuickAction(quickActionModal, quickActionValue);
-      if (!ok) return;
-
-      setQuickActionModal(null);
-      setQuickActionValue('');
-      fetchData();
-    } catch (err) {
-      toast.error(err?.message || 'Action failed');
-    } finally {
-      setQuickActionSaving(false);
-    }
-  }, [
-    setQuickActionSaving,
-    setQuickActionModal,
-    setQuickActionValue,
+  const {
+    handleCreateNode,
+    handleSubmitQuickAction,
+    handleSubmitRoleModal,
+    updateQuickCreateRow,
+    addQuickCreateRow,
+    removeQuickCreateRow,
+    handleBulkQuickCreateSubmit,
+    handleContextAction,
+    handleIconPick,
+  } = useMapNodeCommands({
+    editorUi,
+    nodesRef,
+    dirtyRef,
+    lldpEnrichingRef,
+    envFilter,
+    mapId,
     fetchData,
-    quickActionModal,
-    quickActionValue,
-    submitAliasQuickAction,
-    submitStatusQuickAction,
+    saveLayoutSnapshot,
+    updateNodePos,
+    handleDeleteNodeAction,
+    setNodes,
+    navigate,
     toast,
-  ]);
-
-  const handleRoleAction = useCallback(
-    (nodeId) => {
-      const targetNode = nodesRef.current.find((n) => n.id === nodeId);
-      if (!targetNode) {
-        toast.error('Could not resolve node for role update.');
-        return;
-      }
-
-      if (targetNode.originalType !== 'hardware' || !targetNode._refId) {
-        toast.error('Role designation is supported for hardware nodes only.');
-        return;
-      }
-
-      const currentRole = targetNode._hwRole || '';
-      setRoleModal({
-        open: true,
-        nodeRefId: targetNode._refId,
-        nodeLabel: targetNode.data?.label || 'node',
-        currentRole,
-        isEdit: Boolean(currentRole),
-      });
-    },
-    [setRoleModal, toast]
-  );
-
-  const handleSubmitRoleModal = useCallback(
-    async (values) => {
-      if (!roleModal.nodeRefId) return;
-
-      try {
-        await hardwareApi.update(roleModal.nodeRefId, { role: values.role });
-        toast.success(roleModal.isEdit ? 'Role updated.' : 'Role designated.');
-        setRoleModal({
-          open: false,
-          nodeRefId: null,
-          nodeLabel: '',
-          currentRole: '',
-          isEdit: false,
-        });
-        fetchData();
-      } catch (err) {
-        toast.error(err?.message ?? 'Failed to update role.');
-      }
-    },
-    [setRoleModal, fetchData, roleModal.isEdit, roleModal.nodeRefId, toast]
-  );
-
-  const openQuickCreateModal = useCallback(
-    (mode, nodeId, kindHint = null) => {
-      const targetNode = nodesRef.current.find((n) => n.id === nodeId) || null;
-      const initialValues = getDefaultQuickCreateValues(mode, targetNode, kindHint);
-      setQuickCreateModal({
-        open: true,
-        mode,
-        title: getQuickCreateTitle(mode),
-        sourceLabel: targetNode?.data?.label || 'selected node',
-        initialValues,
-      });
-      setQuickCreateRows([makeBulkRow(mode, initialValues)]);
-      setQuickCreateRowErrors({});
-    },
-    [setQuickCreateModal, setQuickCreateRowErrors, setQuickCreateRows]
-  );
-
-  const updateQuickCreateRow = useCallback(
-    (rowId, key, value) => {
-      setQuickCreateRows((rows) =>
-        rows.map((row) => (row.id === rowId ? { ...row, [key]: value } : row))
-      );
-      setQuickCreateRowErrors((prev) => {
-        if (!prev[rowId]) return prev;
-        return { ...prev, [rowId]: '' };
-      });
-    },
-    [setQuickCreateRowErrors, setQuickCreateRows]
-  );
-
-  const addQuickCreateRow = useCallback(() => {
-    setQuickCreateRows((rows) => [
-      ...rows,
-      makeBulkRow(quickCreateModal.mode, quickCreateModal.initialValues),
-    ]);
-  }, [setQuickCreateRows, quickCreateModal.initialValues, quickCreateModal.mode]);
-
-  const removeQuickCreateRow = useCallback(
-    (rowId) => {
-      setQuickCreateRows((rows) => rows.filter((row) => row.id !== rowId));
-      setQuickCreateRowErrors((prev) => {
-        if (!prev[rowId]) return prev;
-        const next = { ...prev };
-        delete next[rowId];
-        return next;
-      });
-    },
-    [setQuickCreateRowErrors, setQuickCreateRows]
-  );
-
-  const handleBulkQuickCreateSubmit = useCallback(
-    async (event) => {
-      event.preventDefault();
-      const rows = quickCreateRows.filter((row) =>
-        Object.values(row).some((v) => String(v ?? '').trim() !== '')
-      );
-      if (rows.length === 0) {
-        toast.error('Add at least one entry.');
-        return;
-      }
-
-      const rowValidation = validateBulkRows(quickCreateModal.mode, rows);
-      if (Object.keys(rowValidation).length > 0) {
-        setQuickCreateRowErrors(rowValidation);
-        return;
-      }
-
-      setQuickCreateSaving(true);
-      const { successCount, failed } = await runBulkCreate(
-        quickCreateModal.mode,
-        rows,
-        quickCreateModal.initialValues
-      );
-
-      if (failed.length > 0) {
-        const failedErrors = Object.fromEntries(failed.map((f) => [f.rowId, f.message]));
-        setQuickCreateRowErrors(failedErrors);
-        if (successCount > 0) {
-          toast.info(`Created ${successCount}, failed ${failed.length}.`);
-          await fetchData();
-        } else {
-          toast.error('No entries were created.');
-        }
-        setQuickCreateSaving(false);
-        return;
-      }
-
-      await fetchData();
-      toast.success(
-        `Created ${successCount} ${quickCreateModal.mode}${successCount === 1 ? '' : 's'}.`
-      );
-      setQuickCreateModal({
-        open: false,
-        mode: null,
-        title: '',
-        sourceLabel: '',
-        initialValues: {},
-      });
-      setQuickCreateRows([]);
-      setQuickCreateRowErrors({});
-      setQuickCreateSaving(false);
-    },
-    [
-      setQuickCreateSaving,
-      setQuickCreateModal,
-      setQuickCreateRowErrors,
-      setQuickCreateRows,
-      fetchData,
-      quickCreateModal.initialValues,
-      quickCreateModal.mode,
-      quickCreateRows,
-      toast,
-    ]
-  );
-
-  const handleQuickCreateAction = useCallback(
-    (action, nodeId) => {
-      if (action === 'add_service') {
-        openQuickCreateModal('service', nodeId);
-        return true;
-      }
-      if (action === 'add_container') {
-        openQuickCreateModal('compute', nodeId, 'container');
-        return true;
-      }
-      if (action === 'add_vm') {
-        openQuickCreateModal('compute', nodeId, 'vm');
-        return true;
-      }
-      if (action === 'add_storage') {
-        openQuickCreateModal('storage', nodeId);
-        return true;
-      }
-      if (action === 'add_cluster') {
-        navigate('/hardware');
-        toast.info('Opened Hardware. Create or edit a cluster to add members.');
-        return true;
-      }
-      return false;
-    },
-    [navigate, openQuickCreateModal, toast]
-  );
-
-  // Monitor quick actions, for every node type the check engine can probe.
-  const handleMonitorAction = useCallback(
-    async (action, nodeId) => {
-      const node = nodesRef.current.find((n) => n.id === nodeId);
-      const targetType = MONITOR_TARGET_TYPES.get(node?.originalType);
-      if (!node?._refId || !targetType) {
-        toast.error('Monitoring is not available for this node type.');
-        return;
-      }
-      try {
-        if (action === 'monitor_create') {
-          await createTargetMonitor(targetType, node._refId);
-          toast.success('Monitoring enabled');
-          fetchData();
-        } else if (action === 'monitor_toggle') {
-          const next = !node.data?.monitor_enabled;
-          await (next
-            ? resumeTargetMonitor(targetType, node._refId)
-            : pauseTargetMonitor(targetType, node._refId));
-          setNodes((nds) =>
-            nds.map((n) =>
-              n.id === nodeId ? { ...n, data: { ...n.data, monitor_enabled: next } } : n
-            )
-          );
-          toast.success(next ? 'Monitoring resumed' : 'Monitoring paused');
-        } else {
-          await runTargetCheck(targetType, node._refId);
-          toast.success('Probe triggered');
-          fetchData();
-        }
-      } catch (err) {
-        toast.error(
-          err?.response?.status === 404
-            ? 'No address to probe — add an IP address or hostname first.'
-            : err?.response?.data?.detail || err.message || 'Failed to update monitoring.'
-        );
-      }
-    },
-    [fetchData, setNodes, toast]
-  );
-
-  const handleContextAction = useCallback(
-    async (action, data) => {
-      const { nodeId, targetId } = data;
-      const resolved = resolveMapAction(action);
-      if (resolved.kind === 'unknown') {
-        // Explicit failure. This used to be `toast.info(... not implemented
-        // yet)`, which reads as progress for something that did nothing.
-        console.error('[map] unhandled context action:', action);
-        toast.error(`Unsupported action: ${action}`);
-        return;
-      }
-      try {
-        if (resolved.kind === 'link') {
-          await createLinkByNodeIds(nodeId, targetId, nodesRef.current);
-          toast.success('Nodes linked successfully');
-          fetchData();
-        } else if (action === MAP_ACTIONS.EDIT_ICON) {
-          const targetNode = nodesRef.current.find((n) => n.id === nodeId);
-          if (!targetNode) {
-            toast.error('Could not resolve node for icon editing.');
-            return;
-          }
-          setIconPickerNode(targetNode);
-          setIconPickerOpen(true);
-        } else if (action === MAP_ACTIONS.ALIAS) {
-          handleAliasAction(nodeId);
-        } else if (action === MAP_ACTIONS.EDIT_ROLE) {
-          handleRoleAction(nodeId);
-        } else if (action === MAP_ACTIONS.UPDATE_STATUS) {
-          handleUpdateStatusAction(nodeId);
-        } else if (action === MAP_ACTIONS.DELETE_NODE) {
-          handleDeleteNodeAction(nodeId);
-        } else if (action === MAP_ACTIONS.PIN_NODE) {
-          setNodes((nds) =>
-            nds.map((n) =>
-              n.id === nodeId ? { ...n, draggable: false, data: { ...n.data, _pinned: true } } : n
-            )
-          );
-          dirtyRef.current = true;
-        } else if (action === MAP_ACTIONS.UNPIN_NODE) {
-          setNodes((nds) =>
-            nds.map((n) =>
-              n.id === nodeId ? { ...n, draggable: true, data: { ...n.data, _pinned: false } } : n
-            )
-          );
-          dirtyRef.current = true;
-        } else if (action === MAP_ACTIONS.SET_NODE_SHAPE) {
-          const { shape } = data;
-          const updatedNodes = nodesRef.current.map((n) =>
-            n.id === nodeId ? { ...n, data: { ...n.data, nodeShape: shape || undefined } } : n
-          );
-          nodesRef.current = updatedNodes;
-          setNodes(updatedNodes);
-          saveLayoutSnapshot().catch((err) => toast.error('Failed to save icon: ' + err.message));
-        } else if (resolved.kind === 'proxmoxVm') {
-          const nd = nodesRef.current.find((n) => n.id === nodeId);
-          if (!nd?.data?.proxmox_vmid || !nd?.data?.integration_config_id) {
-            toast.error('Missing Proxmox metadata on this node.');
-            return;
-          }
-          const pveAction = resolved.operation;
-          const parentHw = nodesRef.current.find(
-            (n) => n.originalType === 'hardware' && n._refId === nd.data.hardware_id
-          );
-          const nodeName = parentHw?.data?.proxmox_node_name || nd.data.proxmox_node_name;
-          if (!nodeName) {
-            toast.error('Could not resolve parent Proxmox node.');
-            return;
-          }
-          const res = await proxmoxApi.vmAction(
-            nd.data.integration_config_id,
-            nodeName,
-            nd.data.proxmox_type || 'qemu',
-            nd.data.proxmox_vmid,
-            pveAction
-          );
-          if (res.data?.ok) {
-            toast.success(`VM ${nd.data.label || nd.data.proxmox_vmid}: ${pveAction} sent`);
-          } else {
-            toast.error(`VM action failed: ${res.data?.error || 'Unknown error'}`);
-          }
-        } else if (handleQuickCreateAction(action, nodeId)) {
-          return;
-        } else if (resolved.kind === 'monitor') {
-          await handleMonitorAction(action, nodeId);
-        } else if (action === MAP_ACTIONS.LLDP_ENRICH) {
-          const nd = nodesRef.current.find((n) => n.id === nodeId);
-          if (!nd?._refId) {
-            toast.error('No hardware ID for this node');
-            return;
-          }
-          lldpEnrichingRef.current = true;
-          const res = await lldpEnrich({ hardware_ids: [nd._refId] });
-          const jobId = res.data.job_id;
-          const poll = setInterval(async () => {
-            try {
-              const jobRes = await getJob(jobId);
-              if (jobRes.data.status === 'completed' || jobRes.data.status === 'failed') {
-                clearInterval(poll);
-                lldpEnrichingRef.current = false;
-                if (jobRes.data.status === 'completed') setLldpJobId(jobId);
-                else toast.error('LLDP scan failed');
-              }
-            } catch {
-              clearInterval(poll);
-              lldpEnrichingRef.current = false;
-            }
-          }, 2000);
-        } else {
-          // resolveMapAction classified it, but no branch claimed it — a new
-          // action was added to the vocabulary without a handler.
-          console.error('[map] resolved action has no handler:', action);
-          toast.error(`Unsupported action: ${action}`);
-        }
-      } catch (err) {
-        toast.error(`Action failed: ${err.message}`);
-      }
-    },
-    [
-      setIconPickerNode,
-      setIconPickerOpen,
-      fetchData,
-      handleAliasAction,
-      handleDeleteNodeAction,
-      handleMonitorAction,
-      handleQuickCreateAction,
-      handleRoleAction,
-      handleUpdateStatusAction,
-      saveLayoutSnapshot,
-
-      setLldpJobId,
-      setNodes,
-      toast,
-    ]
-  );
-
-  const handleIconPick = useCallback(
-    async (slug) => {
-      if (!iconPickerNode) return;
-      const updater = ENTITY_API_UPDATE_ICON.get(iconPickerNode.originalType);
-      if (!updater || !iconPickerNode._refId) {
-        toast.error('Icon editing is not supported for this node type.');
-        return;
-      }
-
-      try {
-        await updater(iconPickerNode._refId, slug);
-        toast.success('Icon updated');
-        setIconPickerOpen(false);
-        setIconPickerNode(null);
-        fetchData();
-      } catch (err) {
-        toast.error(err?.message || 'Failed to update icon');
-      }
-    },
-    [setIconPickerNode, setIconPickerOpen, fetchData, iconPickerNode, toast]
-  );
+  });
 
   const handleNodeContextMenu = useCallback(
     (event, node) => {
