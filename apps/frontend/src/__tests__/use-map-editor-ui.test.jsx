@@ -175,3 +175,38 @@ describe('useMapEditorUi fullscreen', () => {
     expect(result.current.isFullscreen).toBe(true);
   });
 });
+
+describe('useMapEditorUi non-cancellable state', () => {
+  it('owns the role, confirm and LLDP dialogs with their prior defaults', () => {
+    const { result } = renderHook(() => useMapEditorUi());
+
+    expect(result.current.roleModal).toEqual({
+      open: false,
+      nodeRefId: null,
+      nodeLabel: '',
+      currentRole: '',
+      isEdit: false,
+    });
+    expect(result.current.confirmState).toEqual({ open: false, message: '', onConfirm: null });
+    expect(result.current.lldpJobId).toBe(null);
+    expect(result.current.quickActionSaving).toBe(false);
+    expect(result.current.quickCreateSaving).toBe(false);
+  });
+
+  it('does not let cancelActiveTool close the role or confirm dialog', () => {
+    const { result } = renderHook(() => useMapEditorUi());
+
+    act(() => {
+      result.current.setRoleModal({ open: true, nodeLabel: 'nas-01' });
+      result.current.setConfirmState({ open: true, message: 'Delete?', onConfirm: null });
+      result.current.setQuickActionSaving(true);
+    });
+
+    act(() => result.current.cancelActiveTool());
+
+    // Escape never cleared these; a save in flight especially must survive it.
+    expect(result.current.roleModal.open).toBe(true);
+    expect(result.current.confirmState.open).toBe(true);
+    expect(result.current.quickActionSaving).toBe(true);
+  });
+});

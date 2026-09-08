@@ -46,9 +46,37 @@ const INITIAL_DELETE_CONFLICT = Object.freeze({
   forcing: false,
 });
 
-const FIELDS = [...Object.keys(IDLE_STATE), 'deleteConflictModal'];
+/**
+ * Transient UI this hook owns but that Escape does **not** clear.
+ *
+ * In-flight saves must not be cancelled by a keypress, and the role and
+ * confirm dialogs were never part of the old Escape reset — preserving that
+ * is the difference between a refactor and a behavior change.
+ */
+const NON_CANCELLABLE = Object.freeze({
+  deleteConflictModal: INITIAL_DELETE_CONFLICT,
+  roleModal: Object.freeze({
+    open: false,
+    nodeRefId: null,
+    nodeLabel: '',
+    currentRole: '',
+    isEdit: false,
+  }),
+  confirmState: Object.freeze({ open: false, message: '', onConfirm: null }),
+  lldpJobId: null,
+  quickActionSaving: false,
+  quickCreateSaving: false,
+});
 
-const initialState = () => ({ ...IDLE_STATE, deleteConflictModal: { ...INITIAL_DELETE_CONFLICT } });
+const FIELDS = [...Object.keys(IDLE_STATE), ...Object.keys(NON_CANCELLABLE)];
+
+const initialState = () => {
+  const extras = {};
+  for (const [k, v] of Object.entries(NON_CANCELLABLE)) {
+    extras[k] = v && typeof v === 'object' ? { ...v } : v;
+  }
+  return { ...IDLE_STATE, ...extras };
+};
 
 function reducer(state, action) {
   switch (action.type) {

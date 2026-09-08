@@ -1,6 +1,5 @@
 /* eslint-disable security/detect-object-injection -- internal/ReactFlow keys; Map used for id-keyed state */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import ReactFlow, {
   Background,
   Controls,
@@ -16,7 +15,6 @@ import { graphApi, settingsApi, proxmoxApi, hardwareApi } from '../api/client';
 import { getJob, getResultsWithInference, lldpEnrich } from '../api/discovery';
 import { mapsApi } from '../api/maps';
 import ScanImportModal from '../components/ScanImportModal';
-import LLDPReviewModal from '../components/LLDPReviewModal';
 import {
   createTargetMonitor,
   pauseTargetMonitor,
@@ -25,21 +23,15 @@ import {
 } from '../api/monitor.js';
 import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext.jsx';
-import IconPickerModal from '../components/common/IconPickerModal';
-import ConfirmDialog from '../components/common/ConfirmDialog';
-import FormModal from '../components/common/FormModal';
 import { useTimezone } from '../context/TimezoneContext';
 import ContextMenu from '../components/map/ContextMenu';
 import TelemetrySidebar from '../components/map/TelemetrySidebar';
 import BoundaryContextMenu from '../components/map/BoundaryContextMenu';
 import VisualLineContextMenu from '../components/map/VisualLineContextMenu';
 import MapCanvasOverlays from '../components/map/MapCanvasOverlays';
-import BulkQuickCreateModal from '../components/map/BulkQuickCreateModal';
-import CreateNodeModal from '../components/map/CreateNodeModal';
 import CustomNode from '../components/map/CustomNode';
 import CustomEdge from '../components/map/CustomEdge';
 import ConnectionTypePicker from '../components/map/ConnectionTypePicker';
-import DeleteConflictModal from '../components/map/DeleteConflictModal';
 import PrivacyScoreWidget from '../components/security/PrivacyScoreWidget';
 import HostileNetworkBanner from '../components/security/HostileNetworkBanner';
 import { useIsMobile } from '../hooks/useIsMobile';
@@ -48,7 +40,6 @@ import WifiOverlay from '../components/map/WifiOverlay';
 import Sidebar from '../components/map/Sidebar';
 import LegendPanel from '../components/map/LegendPanel';
 import { useToast } from '../components/common/Toast';
-import { X } from 'lucide-react';
 import {
   CONNECTION_TYPE_OPTIONS,
   normalizeConnectionType,
@@ -80,7 +71,6 @@ import {
   ENTITY_API_UPDATE_STATUS,
   ENTITY_API_UPDATE_ALIAS,
   STATUS_OPTIONS_BY_TYPE,
-  STATUS_OPTION_LABEL,
   BOUNDARY_PRESETS,
   resolveBoundaryPreset,
   boundaryFillString,
@@ -116,6 +106,7 @@ import { useMapEditorUi } from '../hooks/useMapEditorUi';
 import { useMapFilters } from '../hooks/useMapFilters';
 import MapHeader from '../components/map/MapHeader';
 import BoundaryInspector from '../components/map/BoundaryInspector';
+import MapDialogs from '../components/map/MapDialogs';
 import { MapErrorBanner, ScanImportBanner } from '../components/map/MapStatusBanners';
 import { useTelemetryStream } from '../hooks/useTelemetryStream';
 import { useTopologyStream, topologyEmitter } from '../hooks/useTopologyStream';
@@ -249,9 +240,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     setLineDrawMode,
     lineDrawDraft,
     setLineDrawDraft,
-    createNodeModal,
     setCreateNodeModal,
-    iconPickerOpen,
     setIconPickerOpen,
     iconPickerNode,
     setIconPickerNode,
@@ -263,13 +252,18 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     setQuickCreateModal,
     quickCreateRows,
     setQuickCreateRows,
-    quickCreateRowErrors,
     setQuickCreateRowErrors,
     deleteConflictModal,
     setDeleteConflictModal,
     cancelActiveTool,
     isFullscreen,
     pendingZonePresetRef,
+    roleModal,
+    setRoleModal,
+    setConfirmState,
+    setLldpJobId,
+    setQuickActionSaving,
+    setQuickCreateSaving,
   } = editorUi;
 
   const [boundaries, setBoundaries] = useState([]);
@@ -430,18 +424,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
   const handleTelemetrySidebarBoundsChange = useCallback((rect) => {
     telemetrySidebarBoundsRef.current = rect;
   }, []);
-  const [lldpJobId, setLldpJobId] = useState(null);
   const lldpEnrichingRef = useRef(false);
-  const [quickActionSaving, setQuickActionSaving] = useState(false);
-  const [roleModal, setRoleModal] = useState({
-    open: false,
-    nodeRefId: null,
-    nodeLabel: '',
-    currentRole: '',
-    isEdit: false,
-  });
-  const [quickCreateSaving, setQuickCreateSaving] = useState(false);
-  const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
 
   // Scan import banner + modal state
   const [scanImportPending, setScanImportPending] = useState(null);
@@ -912,6 +895,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
       setQuickActionSaving(false);
     }
   }, [
+    setQuickActionSaving,
     setQuickActionModal,
     setQuickActionValue,
     fetchData,
@@ -944,7 +928,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
         isEdit: Boolean(currentRole),
       });
     },
-    [toast]
+    [setRoleModal, toast]
   );
 
   const handleSubmitRoleModal = useCallback(
@@ -966,7 +950,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
         toast.error(err?.message ?? 'Failed to update role.');
       }
     },
-    [fetchData, roleModal.isEdit, roleModal.nodeRefId, toast]
+    [setRoleModal, fetchData, roleModal.isEdit, roleModal.nodeRefId, toast]
   );
 
   const openQuickCreateModal = useCallback(
@@ -1072,6 +1056,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
       setQuickCreateSaving(false);
     },
     [
+      setQuickCreateSaving,
       setQuickCreateModal,
       setQuickCreateRowErrors,
       setQuickCreateRows,
@@ -1684,6 +1669,19 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     onEdgeEndpointDrop: handleEdgeEndpointDrop,
   };
 
+  const commands = {
+    handleCreateNode,
+    handleIconPick,
+    handleSubmitQuickAction,
+    handleSubmitRoleModal,
+    handleBulkQuickCreateSubmit,
+    forceRemoveDeleteConflicts,
+    addQuickCreateRow,
+    removeQuickCreateRow,
+    updateQuickCreateRow,
+    fetchData,
+  };
+
   // One object per owner, so presentation components take six props instead of
   // the 54 individual values this markup reads.
   const view = {
@@ -2031,248 +2029,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
                 );
               })()}
 
-            {/* Create Node Modal */}
-            <CreateNodeModal
-              isOpen={createNodeModal.isOpen}
-              position={createNodeModal.position}
-              onClose={() => setCreateNodeModal({ isOpen: false, position: null })}
-              onConfirm={handleCreateNode}
-            />
-
-            {lldpJobId && (
-              <LLDPReviewModal
-                jobId={lldpJobId}
-                onApply={() => {
-                  setLldpJobId(null);
-                  fetchData();
-                }}
-                onClose={() => setLldpJobId(null)}
-              />
-            )}
-
-            {iconPickerOpen && iconPickerNode && (
-              <IconPickerModal
-                currentSlug={iconPickerNode.data?.icon_slug ?? null}
-                onSelect={handleIconPick}
-                onClose={() => {
-                  setIconPickerOpen(false);
-                  setIconPickerNode(null);
-                }}
-              />
-            )}
-
-            {quickActionModal &&
-              globalThis.document?.body &&
-              createPortal(
-                <div
-                  className="modal-overlay"
-                  style={{
-                    position: 'fixed',
-                    inset: 0,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    zIndex: 9999,
-                  }}
-                >
-                  <dialog
-                    open
-                    className="modal"
-                    aria-labelledby="quick-action-title"
-                    style={{ width: 420, margin: 0 }}
-                  >
-                    <div
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        gap: 8,
-                      }}
-                    >
-                      <h3 id="quick-action-title">
-                        {quickActionModal.mode === 'alias' ? 'Set Alias' : 'Update Status'}
-                      </h3>
-                      <button
-                        type="button"
-                        className="btn"
-                        aria-label="Close quick action dialog"
-                        onClick={() => {
-                          setQuickActionModal(null);
-                          setQuickActionValue('');
-                        }}
-                        style={{
-                          width: 28,
-                          height: 28,
-                          padding: 0,
-                          borderRadius: 999,
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                        }}
-                      >
-                        <X size={14} />
-                      </button>
-                    </div>
-                    <form
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        handleSubmitQuickAction();
-                      }}
-                    >
-                      <div style={{ marginTop: 12 }}>
-                        <div
-                          style={{
-                            marginBottom: 8,
-                            fontSize: 12,
-                            color: 'var(--color-text-muted)',
-                          }}
-                        >
-                          {quickActionModal.label}
-                        </div>
-                        {quickActionModal.mode === 'alias' ? (
-                          <input
-                            className="input"
-                            aria-label="Alias value"
-                            style={{
-                              width: '100%',
-                              background: 'var(--color-surface)',
-                              color: 'var(--color-text)',
-                              border: '1px solid var(--color-border)',
-                              borderRadius: 'var(--radius)',
-                              padding: '6px 10px',
-                            }}
-                            autoFocus
-                            value={quickActionValue}
-                            onChange={(e) => setQuickActionValue(e.target.value)}
-                            placeholder="Enter alias"
-                          />
-                        ) : (
-                          <select
-                            className="filter-select"
-                            aria-label="Status value"
-                            autoFocus
-                            value={quickActionValue}
-                            onChange={(e) => setQuickActionValue(e.target.value)}
-                            style={{
-                              width: '100%',
-                              background: 'var(--color-surface)',
-                              color: 'var(--color-text)',
-                              border: '1px solid var(--color-border)',
-                              borderRadius: 'var(--radius)',
-                              padding: '6px 10px',
-                            }}
-                          >
-                            {(quickActionModal.allowed || []).map((value) => (
-                              <option key={value} value={value}>
-                                {STATUS_OPTION_LABEL.get(value) || value}
-                              </option>
-                            ))}
-                          </select>
-                        )}
-                      </div>
-
-                      <div
-                        style={{
-                          display: 'flex',
-                          justifyContent: 'flex-end',
-                          gap: 8,
-                          marginTop: 18,
-                        }}
-                      >
-                        <button
-                          type="button"
-                          className="btn"
-                          onClick={() => {
-                            setQuickActionModal(null);
-                            setQuickActionValue('');
-                          }}
-                          disabled={quickActionSaving}
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          type="submit"
-                          className="btn btn-primary"
-                          disabled={quickActionSaving}
-                        >
-                          {quickActionSaving ? 'Saving…' : 'Save'}
-                        </button>
-                      </div>
-                    </form>
-                  </dialog>
-                </div>,
-                globalThis.document.body
-              )}
-
-            <BulkQuickCreateModal
-              open={quickCreateModal.open}
-              modal={quickCreateModal}
-              rows={quickCreateRows}
-              rowErrors={quickCreateRowErrors}
-              saving={quickCreateSaving}
-              onSubmit={handleBulkQuickCreateSubmit}
-              onUpdateRow={updateQuickCreateRow}
-              onAddRow={addQuickCreateRow}
-              onRemoveRow={removeQuickCreateRow}
-              onClose={() => {
-                setQuickCreateModal({
-                  open: false,
-                  mode: null,
-                  title: '',
-                  sourceLabel: '',
-                  initialValues: {},
-                });
-                setQuickCreateRows([]);
-                setQuickCreateRowErrors({});
-              }}
-            />
-
-            <FormModal
-              open={roleModal.open}
-              title={roleModal.isEdit ? 'Edit Role' : 'Designate Role'}
-              fields={[
-                {
-                  name: 'role',
-                  label: `Role for ${roleModal.nodeLabel}`,
-                  type: 'select',
-                  required: true,
-                  options: HARDWARE_ROLES,
-                },
-              ]}
-              initialValues={{ role: roleModal.currentRole || '' }}
-              onSubmit={handleSubmitRoleModal}
-              onValidate={(values) => {
-                const errors = {};
-                if (!values.role) errors.role = 'Role is required.';
-                return errors;
-              }}
-              onClose={() =>
-                setRoleModal({
-                  open: false,
-                  nodeRefId: null,
-                  nodeLabel: '',
-                  currentRole: '',
-                  isEdit: false,
-                })
-              }
-              entityType="hardware"
-              entityId={roleModal.nodeRefId}
-            />
-
-            <ConfirmDialog
-              open={confirmState.open}
-              message={confirmState.message}
-              onConfirm={confirmState.onConfirm || (() => {})}
-              onCancel={() => setConfirmState((s) => ({ ...s, open: false }))}
-            />
-
-            <DeleteConflictModal
-              modal={deleteConflictModal}
-              onCancel={() =>
-                setDeleteConflictModal((m) => ({ ...m, open: false, forcing: false }))
-              }
-              onForceRemove={forceRemoveDeleteConflicts}
-            />
+            <MapDialogs editorUi={editorUi} commands={commands} hardwareRoles={HARDWARE_ROLES} />
 
             {/* Edge anchor context menu */}
             {edgeMenu &&
