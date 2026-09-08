@@ -15,7 +15,7 @@ import logging
 import socket
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
@@ -647,6 +647,73 @@ async def _run_control_frame_listener(
         )
 
 
+class _ByteSender(Protocol):
+    """The one method `_send_hello_phase_frame` needs from a WebSocket.
+
+    Narrower than `WebSocket` on purpose: it is what lets the helper's own
+    tests drive it with a socket that fails on demand, without a live server or
+    a Noise handshake to reach the four lines under test.
+    """
+
+    async def send_bytes(self, data: bytes) -> None: ...
+
+
+async def _send_hello_phase_frame(
+    websocket: _ByteSender, data: bytes, *, agent_id: int, phase: str
+) -> bool:
+    """Send one hello-phase frame. False means the peer is already gone.
+
+    The receive loop below has always treated `WebSocketDisconnect` and
+    Starlette's "send after close" `RuntimeError` as an ordinary disconnect and
+    left the loop. The hello phase — `hello.ack`, `capabilities.set` and the two
+    rotation resends, all sent before that loop starts — did not, and an agent
+    that dropped in the window between its hello and this answer surfaced as an
+    unhandled ASGI exception: a full traceback in the API log per occurrence,
+    reachable by any client that closes at the right moment.
+
+    That window is not narrow in practice. `cb-agent uninstall`'s one-shot
+    notifier wrote its frames and closed immediately, so uvicorn completed the
+    close handshake while this handler was still committing the hello, and the
+    traceback raised right here was the *only* trace the entire uninstall path
+    left behind while it was silently failing to revoke anything. A named log
+    line beats a traceback for exactly that diagnosis, and it does not bury the
+    real question — which is why the agent closed so early. See
+    `internal/link/link.go`'s `Uninstall` for the other half of that fix.
+
+    Deliberately narrow: only those two exception types are ordinary. Anything
+    else — a broken cipher state, an encoding bug — propagates, because a
+    connection that vanishes silently and without a traceback is how this class
+    of defect hides.
+    """
+    try:
+        await websocket.send_bytes(data)
+    except (WebSocketDisconnect, RuntimeError) as exc:
+        _logger.info(
+            "agent %s: peer closed during the hello phase (%s not delivered): %s",
+            agent_id,
+            phase,
+            exc,
+        )
+        return False
+    return True
+
+
+async def _release_link_connection(agent_id: int, connection_id: str) -> None:
+    """Undo everything an accepted /link connection owns, exactly once.
+
+    Called from `link_stream`'s `finally` and from its hello-phase early exit.
+    Both are ends of the same connection: it was registered as this worker's
+    and announced as `connected`, so both owe the matching deregistration and
+    `disconnected` event whatever ended it.
+    """
+    await agent_registry.deregister_agent_connection(agent_id, worker_id=connection_id)
+    await agent_registry.mark_presence_disconnected(agent_id)
+    await agent_registry.broadcast_presence(agent_id, "disconnected")
+    with SessionLocal() as db:
+        agent_registry.record_event(db, agent_id, "disconnected")
+        db.commit()
+
+
 @unauthenticated_router.websocket("/link")
 async def link_stream(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -824,7 +891,17 @@ async def link_stream(websocket: WebSocket) -> None:
     # — see link.go), never by reading HelloAckPayload.Capabilities off the
     # hello.ack itself, so it's still needed for the grants to actually take
     # effect on connect.
-    await websocket.send_bytes(
+    #
+    # Every send in this phase goes through _send_hello_phase_frame rather
+    # than websocket.send_bytes directly: an agent can drop between its hello
+    # and this answer, and before that helper existed the resulting
+    # ClientDisconnected escaped link_stream as an unhandled ASGI exception —
+    # a full traceback per occurrence, from any client that closed at the
+    # right moment. See the helper's docstring for why that is not merely
+    # noise: it is the entire trace `cb-agent uninstall` left behind while it
+    # was silently failing.
+    delivered = await _send_hello_phase_frame(
+        websocket,
         _ack_bytes(
             responder,
             {
@@ -841,39 +918,59 @@ async def link_stream(websocket: WebSocket) -> None:
                 "data_ack": ack_data_requested,
             },
             outbound_seq.next(),
-        )
-    )
-    await websocket.send_bytes(
-        _capabilities_bytes(responder, grants, outbound_seq.next(), capability_schema)
+        ),
+        agent_id=agent_id,
+        phase="hello.ack",
+    ) and await _send_hello_phase_frame(
+        websocket,
+        _capabilities_bytes(responder, grants, outbound_seq.next(), capability_schema),
+        agent_id=agent_id,
+        phase="capabilities.set",
     )
     # Task 28: resend the active rotation's key.rotate (kind="server") frame
     # on every accepted hello.ack, exactly like capabilities.set above —
     # the durability fallback for agent_registry.broadcast_server_key_rotate's
     # live push (see _key_rotate_bytes' docstring). A no-op the overwhelming
     # majority of the time (no rotation in progress).
-    if rotation_state.rotation_active:
+    if delivered and rotation_state.rotation_active:
         assert rotation_state.successor_pub is not None
         assert rotation_state.overlap_expires_at is not None
-        await websocket.send_bytes(
+        delivered = await _send_hello_phase_frame(
+            websocket,
             _key_rotate_bytes(
                 responder,
                 rotation_state.successor_pub.hex(),
                 rotation_state.overlap_expires_at,
                 outbound_seq.next(),
-            )
+            ),
+            agent_id=agent_id,
+            phase="key.rotate",
         )
     # Slice 4.1: the same durability fallback for the TLS trust rotation.
     # A no-op the overwhelming majority of the time.
-    if tls_pin_state.rotation_active and tls_pin_state.overlap_expires_at is not None:
-        await websocket.send_bytes(
+    if delivered and tls_pin_state.rotation_active and tls_pin_state.overlap_expires_at is not None:
+        delivered = await _send_hello_phase_frame(
+            websocket,
             _tls_pin_rotate_bytes(
                 responder,
                 tls_pin_state.successor_mode or "",
                 tls_pin_state.successor_pin or "",
                 tls_pin_state.overlap_expires_at,
                 outbound_seq.next(),
-            )
+            ),
+            agent_id=agent_id,
+            phase="tls_pin.rotate",
         )
+    if not delivered:
+        # The peer is already gone, so there is no loop to enter — but this
+        # connection was registered and announced as connected a few lines
+        # above, and every one of those has to be undone by whichever path
+        # ends the connection. Before this, the escaping exception skipped
+        # the teardown in `finally` below entirely, leaving a connection
+        # registry entry to age out on its 60s TTL and a `connected` event
+        # with no `disconnected` to close it.
+        await _release_link_connection(agent_id, connection_id)
+        return
 
     # Task 9: listen for control-plane frames (capabilities.set, update,
     # disconnect, key.rotate, ping — whatever a REST/service-layer caller
@@ -1269,12 +1366,7 @@ async def link_stream(websocket: WebSocket) -> None:
                 # from under it in the same instant. Neither should block or
                 # fail this connection's teardown.
                 pass
-        await agent_registry.deregister_agent_connection(agent_id, worker_id=connection_id)
-        await agent_registry.mark_presence_disconnected(agent_id)
-        await agent_registry.broadcast_presence(agent_id, "disconnected")
-        with SessionLocal() as db:
-            agent_registry.record_event(db, agent_id, "disconnected")
-            db.commit()
+        await _release_link_connection(agent_id, connection_id)
 
 
 def _extract_client_ip(websocket: WebSocket) -> str:
