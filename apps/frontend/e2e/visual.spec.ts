@@ -54,7 +54,15 @@ for (const surface of SURFACES) {
         caret-color: transparent !important;
       }`,
     });
-    await page.waitForTimeout(250);
+    // Wait on conditions, not on a stopwatch. The 250ms sleep this replaces was
+    // the last timing dependency left in the suite once the font leak was
+    // closed (see stubApi); fonts.ready plus two frames says what the sleep was
+    // guessing at.
+    await page.evaluate(() => document.fonts.ready);
+    // Two frames: one to apply the style tag above, one to lay out after it.
+    await page.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    );
 
     await expect(page).toHaveScreenshot(`${surface.name}.png`, { fullPage: true });
   });

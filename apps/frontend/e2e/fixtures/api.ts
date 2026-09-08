@@ -74,6 +74,53 @@ export async function stubApi(page: Page, overrides: Record<string, unknown> = {
     /* accept the connection and send nothing */
   });
 
+  // EventSource is not reachable through page.route either: fulfilling
+  // /api/v1/events/stream with JSON makes the browser fail the connection, so
+  // `sseClient` reports disconnected and `ConnectionStatus` renders its
+  // "Reconnecting to live data..." banner once its 5s grace timer elapses.
+  // That banner shifts the whole page, and whether it had appeared by
+  // screenshot time depended on how long the page took to settle — which is
+  // what made the agents and monitors visual baselines flap. Substituting an
+  // EventSource that opens and stays quiet is the SSE equivalent of the
+  // WebSocket stub above.
+  await page.addInitScript(() => {
+    class QuietEventSource extends EventTarget {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSED = 2;
+      readonly CONNECTING = 0;
+      readonly OPEN = 1;
+      readonly CLOSED = 2;
+      readyState = 1;
+      onopen: ((this: unknown, ev: Event) => unknown) | null = null;
+      onerror: ((this: unknown, ev: Event) => unknown) | null = null;
+      onmessage: ((this: unknown, ev: Event) => unknown) | null = null;
+      constructor(readonly url: string) {
+        super();
+        // Asynchronous so the caller can assign onopen first.
+        queueMicrotask(() => this.onopen?.call(this, new Event('open')));
+      }
+      close() {
+        this.readyState = 2;
+      }
+    }
+    Object.defineProperty(window, 'EventSource', {
+      configurable: true,
+      writable: true,
+      value: QuietEventSource,
+    });
+  });
+
+  // `useAppFont` injects a <link> to fonts.googleapis.com on every page load,
+  // so the app fetches its typeface from the public internet. Whether that
+  // round-trip completed before the screenshot decided which metrics the text
+  // was laid out with, which is why a different two or three surfaces diffed on
+  // each run with character-level horizontal offsets. This is the same class of
+  // leak the weather widget had — an external dependency the /api/v1 stub never
+  // saw. Blocking it pins every run to the fallback stack.
+  await page.route('https://fonts.googleapis.com/**', (route) => route.abort());
+  await page.route('https://fonts.gstatic.com/**', (route) => route.abort());
+
   await page.route('**/api/v1/**', async (route) => {
     const url = new URL(route.request().url());
     const tail = url.pathname.replace(/^\/api\/v1\//, '').replace(/\/$/, '');

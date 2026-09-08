@@ -16,9 +16,10 @@ makes the gate meaningful.
 
 ## What makes the fixtures deterministic
 
-REL-18 says *deterministic* fixtures, and the app has three sources of per-run variance that had to
-be neutralised before a baseline was worth committing. All three were found by generating a first
-set and looking at it:
+REL-18 says *deterministic* fixtures, and the app has five sources of per-run variance that had to
+be neutralised before a baseline was worth committing. The first three were found by generating a
+first set and looking at it; the last two by chasing a flake that failed a different subset of
+surfaces on each run:
 
 - **The header clock and date** (`HeaderWidgets.jsx:81-85`) tick once a second. `visual.spec.ts`
   freezes them with `page.clock.setFixedTime`. Without this every baseline diffs on the second
@@ -30,6 +31,20 @@ set and looking at it:
 - **The route-enter fade.** `App.jsx:135-141` fades each route in over 150 ms, and framer-motion
   drives it from JS, so a CSS `animation-duration: 0s` override cannot freeze it. Every spec waits
   on `waitForRouteSettled` before it measures anything.
+
+- **The web font.** `useAppFont` injects a `<link>` to `fonts.googleapis.com` on every page load
+  (`lib/fonts.js`), so the app fetched its typeface from the public internet. Whether that
+  round-trip finished before the screenshot decided which metrics the text was laid out with, and
+  the failure looked like character-level horizontal offsets on a different two or three surfaces
+  each run — including surfaces nobody had touched. `stubApi` now blocks `fonts.googleapis.com`
+  and `fonts.gstatic.com`, which pins every run to the fallback stack. The baselines therefore
+  render the fallback font rather than Inter; self-hosting the font is what would buy back both
+  determinism and production fidelity.
+- **The SSE stream.** `ConnectionStatus` shows a "Reconnecting to live data..." banner five seconds
+  after `sseClient` reports disconnected. `stubApi` stubbed WebSockets but not `EventSource`, so
+  `/api/v1/events/stream` was answered with JSON, the connection failed, and the banner appeared on
+  whichever surfaces took longer than the grace period to settle — shifting the whole page. A quiet
+  `EventSource` substitute now opens and stays silent, the SSE counterpart of the WebSocket stub.
 
 Beyond that the fixtures are the empty-state stubs in `e2e/fixtures/api.ts`. A screenshot seeded
 from live data is a flake generator, not a baseline.
