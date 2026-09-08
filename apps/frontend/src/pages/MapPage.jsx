@@ -100,6 +100,7 @@ import BoundaryInspector from '../components/map/BoundaryInspector';
 import MapDialogs from '../components/map/MapDialogs';
 import EdgeInspector from '../components/map/EdgeInspector';
 import MapCanvas from '../components/map/MapCanvas';
+import { MAP_ACTIONS, resolveMapAction } from '../components/map/mapActions';
 import { MapErrorBanner, ScanImportBanner } from '../components/map/MapStatusBanners';
 import { useTelemetryStream } from '../hooks/useTelemetryStream';
 import { useTopologyStream, topologyEmitter } from '../hooks/useTopologyStream';
@@ -1132,12 +1133,20 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
   const handleContextAction = useCallback(
     async (action, data) => {
       const { nodeId, targetId } = data;
+      const resolved = resolveMapAction(action);
+      if (resolved.kind === 'unknown') {
+        // Explicit failure. This used to be `toast.info(... not implemented
+        // yet)`, which reads as progress for something that did nothing.
+        console.error('[map] unhandled context action:', action);
+        toast.error(`Unsupported action: ${action}`);
+        return;
+      }
       try {
-        if (action.startsWith('link_to_')) {
+        if (resolved.kind === 'link') {
           await createLinkByNodeIds(nodeId, targetId, nodesRef.current);
           toast.success('Nodes linked successfully');
           fetchData();
-        } else if (action === 'edit_icon') {
+        } else if (action === MAP_ACTIONS.EDIT_ICON) {
           const targetNode = nodesRef.current.find((n) => n.id === nodeId);
           if (!targetNode) {
             toast.error('Could not resolve node for icon editing.');
@@ -1145,29 +1154,29 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
           }
           setIconPickerNode(targetNode);
           setIconPickerOpen(true);
-        } else if (action === 'alias') {
+        } else if (action === MAP_ACTIONS.ALIAS) {
           handleAliasAction(nodeId);
-        } else if (action === 'edit_role') {
+        } else if (action === MAP_ACTIONS.EDIT_ROLE) {
           handleRoleAction(nodeId);
-        } else if (action === 'update_status') {
+        } else if (action === MAP_ACTIONS.UPDATE_STATUS) {
           handleUpdateStatusAction(nodeId);
-        } else if (action === 'delete_node') {
+        } else if (action === MAP_ACTIONS.DELETE_NODE) {
           handleDeleteNodeAction(nodeId);
-        } else if (action === 'pin_node') {
+        } else if (action === MAP_ACTIONS.PIN_NODE) {
           setNodes((nds) =>
             nds.map((n) =>
               n.id === nodeId ? { ...n, draggable: false, data: { ...n.data, _pinned: true } } : n
             )
           );
           dirtyRef.current = true;
-        } else if (action === 'unpin_node') {
+        } else if (action === MAP_ACTIONS.UNPIN_NODE) {
           setNodes((nds) =>
             nds.map((n) =>
               n.id === nodeId ? { ...n, draggable: true, data: { ...n.data, _pinned: false } } : n
             )
           );
           dirtyRef.current = true;
-        } else if (action === 'set_node_shape') {
+        } else if (action === MAP_ACTIONS.SET_NODE_SHAPE) {
           const { shape } = data;
           const updatedNodes = nodesRef.current.map((n) =>
             n.id === nodeId ? { ...n, data: { ...n.data, nodeShape: shape || undefined } } : n
@@ -1175,17 +1184,13 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
           nodesRef.current = updatedNodes;
           setNodes(updatedNodes);
           saveLayoutSnapshot().catch((err) => toast.error('Failed to save icon: ' + err.message));
-        } else if (
-          action === 'proxmox_vm_start' ||
-          action === 'proxmox_vm_stop' ||
-          action === 'proxmox_vm_reboot'
-        ) {
+        } else if (resolved.kind === 'proxmoxVm') {
           const nd = nodesRef.current.find((n) => n.id === nodeId);
           if (!nd?.data?.proxmox_vmid || !nd?.data?.integration_config_id) {
             toast.error('Missing Proxmox metadata on this node.');
             return;
           }
-          const pveAction = action.replace('proxmox_vm_', '');
+          const pveAction = resolved.operation;
           const parentHw = nodesRef.current.find(
             (n) => n.originalType === 'hardware' && n._refId === nd.data.hardware_id
           );
@@ -1208,9 +1213,9 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
           }
         } else if (handleQuickCreateAction(action, nodeId)) {
           return;
-        } else if (action.startsWith('monitor_')) {
+        } else if (resolved.kind === 'monitor') {
           await handleMonitorAction(action, nodeId);
-        } else if (action === 'lldp_enrich') {
+        } else if (action === MAP_ACTIONS.LLDP_ENRICH) {
           const nd = nodesRef.current.find((n) => n.id === nodeId);
           if (!nd?._refId) {
             toast.error('No hardware ID for this node');
@@ -1234,7 +1239,10 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
             }
           }, 2000);
         } else {
-          toast.info(`Action ${action} triggered but specific handler not implemented yet`);
+          // resolveMapAction classified it, but no branch claimed it — a new
+          // action was added to the vocabulary without a handler.
+          console.error('[map] resolved action has no handler:', action);
+          toast.error(`Unsupported action: ${action}`);
         }
       } catch (err) {
         toast.error(`Action failed: ${err.message}`);
