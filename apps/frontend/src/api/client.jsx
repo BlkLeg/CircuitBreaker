@@ -166,6 +166,13 @@ client.interceptors.response.use(
     return response;
   },
   async (error) => {
+    // A cancelled request is this app superseding itself, not a failure.
+    // Everything below reads it as one: `!error.response` holds for an abort,
+    // so the retry branch re-issues it twice with backoff — on every keystroke
+    // of a debounced search — and the network branch then swaps the
+    // CanceledError for "Cannot reach the server." Rethrow it untouched.
+    if (axios.isCancel(error)) throw error;
+
     // A 4xx/5xx is still a response from the server and still carries `Date`;
     // an offset measured from one is exactly as valid as one measured from a
     // 200, and refusing it would leave a deployment whose reads are failing
@@ -395,7 +402,15 @@ export const graphApi = {
 };
 
 export const searchApi = {
+  // Kept for any caller still on the flat list. The navigator uses searchPage,
+  // which states whether the backend truncated rather than leaving the UI to
+  // guess from a full-looking page.
   search: (q) => client.get('/search', { params: { q } }),
+  searchPage: (q, { limit, signal } = {}) =>
+    client.get('/search/page', {
+      params: limit ? { q, limit } : { q },
+      signal,
+    }),
 };
 
 export const settingsApi = {

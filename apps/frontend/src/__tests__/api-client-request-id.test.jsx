@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import axios from 'axios';
 import client from '../api/client';
 import { getEntries, clearEntries } from '../lib/diagnosticsBuffer';
 
@@ -248,6 +249,27 @@ describe('429 handling (H5 / _noRateLimitRetry)', () => {
     await promise;
 
     expect(attempts).toBe(2);
+  });
+});
+
+describe('cancellation guard', () => {
+  it('rethrows a cancelled request untouched, with no retry', async () => {
+    let attempts = 0;
+    client.defaults.adapter = () => {
+      attempts += 1;
+      return Promise.reject(new axios.CanceledError());
+    };
+
+    let caught;
+    try {
+      await client.get('/hardware');
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(attempts).toBe(1);
+    expect(axios.isCancel(caught)).toBe(true);
+    expect(caught.isNetworkError).toBeUndefined();
   });
 });
 
