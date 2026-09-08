@@ -16,6 +16,8 @@
 ## Verification
 
 - [ ] Tests added or updated for the behaviour changed
-- [ ] `cd apps/backend && python -m pytest` passes
-- [ ] `cd apps/frontend && npm test` passes
+- [ ] `make lint` passes (ruff + mypy on the backend, eslint on the frontend)
+- [ ] `make verify` passes — **if this PR touches `apps/backend/src/app`, run
+      `make verify-full` instead**: `make verify` runs with
+      `CB_VERIFY_BACKEND=off`, so it skips the backend unit suite entirely
 - [ ] Docs updated if user-facing behaviour changed

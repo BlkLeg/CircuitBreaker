@@ -1,0 +1,79 @@
+name: Feature request
+description: Suggest an addition or change to Circuit Breaker
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Circuit Breaker is in the **1.0.0 release-candidate** stage, prioritizing
+        stability, security, and performance over new feature bloat — see
+        CONTRIBUTING.md. A well-scoped request that fits the existing product
+        principles (freeform first, simple first, air-gap first-class) is far
+        more likely to land than a large one.
+  - type: checkboxes
+    id: existing-issue-check
+    attributes:
+      label: Existing issues
+      options:
+        - label: I searched open and closed issues and did not find this already requested
+          required: true
+        - label: I understand this project is prioritizing stability over new features right now, and my request may be deferred for that reason
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: >-
+        Describe the situation you're in, not the widget you want. What are you
+        trying to do with your homelab that Circuit Breaker doesn't currently
+        let you do?
+      placeholder: "When I ..., I can't ..., so I have to ..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed solution
+      description: How would you like this to work? Sketch the UI, API, or config if that helps.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: >-
+        Other ways to solve the same problem — a different feature, a manual
+        workaround, an existing tool outside Circuit Breaker — and why they
+        fall short.
+    validations:
+      required: false
+  - type: dropdown
+    id: outbound-internet
+    attributes:
+      label: Does this need outbound internet access?
+      description: >-
+        `CB_AIRGAP=true` blocks all application-initiated outbound calls. Any
+        feature that reaches the internet must degrade gracefully with it set.
+      options:
+        - "No — works entirely on local/LAN data"
+        - "Optional — useful with internet, but must still work air-gapped"
+        - "Required — cannot function without outbound internet access"
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      description: Check any that apply to what you're asking for.
+      options:
+        - label: This is a change to the core topology view (devices, connections, maps)
+        - label: This is a new opt-in capability (telemetry, scanning, an integration) layered on top of the core view
+        - label: This affects the freeform add/edit path (name, model, vendor fields) — a catalog or autocomplete should speed this up, not gate it
+        - label: This would introduce a new required field, catalog entry, or external dependency
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Screenshots, links, or anything else that helps explain the request.
+    validations:
+      required: false
