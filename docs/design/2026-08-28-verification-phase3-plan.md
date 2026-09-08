@@ -1,5 +1,12 @@
 # Verification Phase 3 — T3 Breadth — Implementation Plan
 
+> **Active.** Slices 1 and 2 landed 2026-08-28: `838bd413` (upgrade and
+> rollback on the Fedora row, plus `packaging/preinstall.sh` and
+> `packaging/rollback.sh`) and `3090e308` (the Debian/deb row); both are why
+> `make verify-fleet-upgrade` and today's `scripts/ci/tier3-artifact.sh` exist.
+> Slices 3 (apk, AppImage, tarball, `pkg.tar.zst`) and 4 (arm64) have not
+> started.
+
 **ADR:** [0005 — Verification Tiers and Platform Support](../adr/0005-verification-tiers-and-platform-support.md)
 **Design:** [2026-08-27-verification-strategy-design.md](./2026-08-27-verification-strategy-design.md)
 **Date:** 2026-08-28

@@ -1,5 +1,12 @@
 # Feature gap assessment en route to 1.0
 
+> **Reference.** A code-level feature-gap assessment of `dev` @ `e48db3ae`,
+> never a work item. Its own §1 is the point: nine of the fifteen
+> recommendations in the draft it replaces already ship. Read it as a dated
+> survey of gaps, not as a backlog —
+> `specs/1.0.0/release-control/requirement-ledger.csv` is the status source of
+> truth.
+
 **Date:** 2026-09-05 · **Head:** `dev` @ `e48db3ae` · **Audience:** homelab first, SMB next
 **Method:** code-level audit of the monitoring/alerting, tenancy/RBAC, discovery/intelligence, and
 frontend/API/ops subsystems. Every claim below cites source or names the grep that established

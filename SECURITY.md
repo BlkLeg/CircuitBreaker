@@ -4,10 +4,12 @@
 
 | Version         | Supported                                  |
 | --------------- | ------------------------------------------ |
-| 1.0.x (incl. release candidates) | ✅ Security fixes         |
-| < 1.0           | ❌ Pre-release; upgrade to the 1.0 line     |
+| 0.4.x (the current release-candidate line) | ✅ Security fixes |
+| 1.0.x (incl. release candidates) | ✅ Security fixes, once 1.0 ships |
+| < 0.4           | ❌ Superseded; upgrade to the current line  |
 
-Security fixes land on the current 1.0 line only. The full support boundary —
+Security fixes land on the newest released line only — today that is 0.4.x, and
+it becomes 1.0.x when 1.0 ships. The full support boundary —
 platforms, architectures, deployment modes and browsers — is in the
 [1.0.0 support contract](docs/release/1.0.0-support-contract.md); a deployment
 mode listed there as unsupported is also out of scope for a security fix.
