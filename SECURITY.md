@@ -4,7 +4,7 @@
 
 | Version         | Supported                                  |
 | --------------- | ------------------------------------------ |
-| 0.4.x (the current release-candidate line) | ✅ Security fixes |
+| 0.4.x (the current released line) | ✅ Security fixes |
 | 1.0.x (incl. release candidates) | ✅ Security fixes, once 1.0 ships |
 | < 0.4           | ❌ Superseded; upgrade to the current line  |
 

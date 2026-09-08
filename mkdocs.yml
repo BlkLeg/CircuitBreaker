@@ -79,6 +79,11 @@ nav:
 # WARNING for anything NOT listed here, so --strict fails on a page that fell
 # out of the nav by accident rather than by decision.
 #   - adr/, design/          — records, linked from the pages that cite them
+#   - design/approved-ui/, design/backend-functions/ — per-feature UI and backend
+#     design specs from in-flight design work, same reasoning as design/ above.
+#     MkDocs' not_in_nav globbing follows gitignore semantics, where a bare `*`
+#     does not cross a `/`: `/design/*.md` only reaches files directly under
+#     design/, not these two subdirectories, so they need their own glob line.
 #   - assets/screenshots/MANIFEST.md — provenance record for the image assets
 #   - installation/docker-compose-prod.md — redirect stub kept for old bookmarks
 #     (its content moved into installation/docker-compose.md); a dead sidebar
@@ -95,6 +100,8 @@ validation:
 not_in_nav: |
   /adr/*.md
   /design/*.md
+  /design/approved-ui/*.md
+  /design/backend-functions/*.md
   /assets/screenshots/MANIFEST.md
   /installation/docker-compose-prod.md
   /1.0.0-release-readiness-audit.md

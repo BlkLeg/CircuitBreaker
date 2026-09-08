@@ -2,7 +2,7 @@
 
 First off, thank you for being part of the surge of interest in CircuitBreaker! Whether you’re reporting a bug, suggesting a feature, or submitting code, your help is what makes this project viable for the home lab community.
 
-As we are currently in the **1.0.0 release-candidate** stage, we are prioritizing **stability, security, and performance** over new feature bloat.
+**0.4.0** is our current released line, with **0.4.2** staged as the next release on the way to **1.0**, so we are prioritizing **stability, security, and performance** over new feature bloat.
 
 ---
 
