@@ -257,16 +257,9 @@ export default function ThemeSettings() {
       FONT_SIZE_OPTIONS.find((s) => s.id === fontSizeId) ??
       FONT_SIZE_OPTIONS.find((s) => s.id === 'medium') ??
       FONT_SIZE_OPTIONS[0];
-    const existingLink = document.getElementById('cb-font-link');
-    if (font.googleUrl) {
-      const link = existingLink ?? document.createElement('link');
-      link.id = 'cb-font-link';
-      link.rel = 'stylesheet';
-      link.href = font.googleUrl;
-      if (!existingLink) document.head.appendChild(link);
-    } else {
-      existingLink?.remove();
-    }
+    // Faces are self-hosted (styles/fonts.css); previewing a font is a pure
+    // style change. Clears the <link> an earlier version of the app injected.
+    document.getElementById('cb-font-link')?.remove();
     document.documentElement.style.setProperty('--font', font.stack);
     document.documentElement.style.setProperty('--font-size-base', `${size.rootPx}px`);
     document.documentElement.style.fontSize = `${size.rootPx}px`;

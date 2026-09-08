@@ -111,18 +111,17 @@ export async function stubApi(page: Page, overrides: Record<string, unknown> = {
     });
   });
 
-  // `useAppFont` injects a <link> to fonts.googleapis.com on every page load,
-  // so the app fetches its typeface from the public internet. Whether that
-  // round-trip completed before the screenshot decided which metrics the text
-  // was laid out with, which is why a different two or three surfaces diffed on
-  // each run with character-level horizontal offsets. This is the same class of
-  // leak the weather widget had — an external dependency the /api/v1 stub never
-  // saw. Blocking it pins every run to the fallback stack.
-  // Fulfilled empty rather than aborted: an aborted request surfaces as
-  // "Failed to load resource: net::ERR_FAILED" in the console, which the smoke
-  // and navigation specs correctly treat as a failure. An empty stylesheet is
-  // just as deterministic — no @font-face, so the fallback stack is used — and
-  // makes no noise.
+  // The UI's fonts are self-hosted (`public/fonts`, declared in
+  // `styles/fonts.css`), so nothing here should reach a font CDN at all. These
+  // routes are a backstop, not a workaround: if a regression reintroduces a
+  // fonts.googleapis.com <link>, they stop the suite going non-hermetic and
+  // flaking on whether the round-trip beat the screenshot — which is exactly
+  // what it used to do. `no-third-party-fonts.spec.ts` is the loud half; this
+  // is the quiet one.
+  //
+  // Fulfilled rather than aborted: an aborted request logs
+  // "Failed to load resource: net::ERR_FAILED", which the smoke and navigation
+  // specs correctly treat as a console error.
   await page.route('https://fonts.googleapis.com/**', (route) =>
     route.fulfill({ status: 200, contentType: 'text/css', body: '' })
   );

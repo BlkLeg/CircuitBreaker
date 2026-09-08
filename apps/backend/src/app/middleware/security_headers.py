@@ -19,8 +19,8 @@ _CSP = (
     # the backend fronts the frontend itself. Matches the four nginx configs
     # verbatim — see test_the_backend_csp_matches_the_nginx_configs.
     "script-src 'self' 'unsafe-inline'; "
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-    "font-src 'self' https://fonts.gstatic.com; "
+    "style-src 'self' 'unsafe-inline'; "
+    "font-src 'self'; "
     "img-src 'self' data: blob: https://www.gravatar.com "
     "https://secure.gravatar.com https://avatars.githubusercontent.com; "
     "connect-src 'self' ws: wss: https://geocoding-api.open-meteo.com https://api.open-meteo.com; "

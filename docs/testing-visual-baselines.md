@@ -32,14 +32,17 @@ surfaces on each run:
   drives it from JS, so a CSS `animation-duration: 0s` override cannot freeze it. Every spec waits
   on `waitForRouteSettled` before it measures anything.
 
-- **The web font.** `useAppFont` injects a `<link>` to `fonts.googleapis.com` on every page load
-  (`lib/fonts.js`), so the app fetched its typeface from the public internet. Whether that
-  round-trip finished before the screenshot decided which metrics the text was laid out with, and
-  the failure looked like character-level horizontal offsets on a different two or three surfaces
-  each run — including surfaces nobody had touched. `stubApi` now blocks `fonts.googleapis.com`
-  and `fonts.gstatic.com`, which pins every run to the fallback stack. The baselines therefore
-  render the fallback font rather than Inter; self-hosting the font is what would buy back both
-  determinism and production fidelity.
+- **The web font.** `useAppFont` used to inject a `<link>` to
+  `fonts.googleapis.com` on every page load (`lib/fonts.js`), so the app fetched
+  its typeface from the public internet and text metrics depended on that
+  round-trip finishing before the screenshot. The failure looked like
+  character-level horizontal offsets on a different two or three surfaces each
+  run, including surfaces nobody had touched. **Fixed at the source rather than
+  in the fixture:** the faces are vendored under `apps/frontend/public/fonts`
+  and declared in `styles/fonts.css`, so the baselines render the real
+  typography and nothing reaches a font CDN. `stubApi` still routes the CDN
+  hosts as a backstop, and `e2e/no-third-party-fonts.spec.ts` fails loudly if a
+  `<link>` is ever reintroduced.
 - **The SSE stream.** `ConnectionStatus` shows a "Reconnecting to live data..." banner five seconds
   after `sseClient` reports disconnected. `stubApi` stubbed WebSockets but not `EventSource`, so
   `/api/v1/events/stream` was answered with JSON, the connection failed, and the banner appeared on

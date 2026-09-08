@@ -3,8 +3,13 @@ import { FONT_OPTIONS, FONT_SIZE_OPTIONS } from '../lib/fonts';
 
 /**
  * Applies the user's chosen font family and base font size to the document
- * via CSS custom properties.  Injects a Google Fonts <link> when needed and
- * removes it when the user switches to a font that doesn't require one.
+ * via CSS custom properties.
+ *
+ * The faces themselves are self-hosted and declared in `styles/fonts.css`, so
+ * selecting a font is a pure style change — no <link> injection, no request to
+ * a third party. It used to inject a fonts.googleapis.com stylesheet, which
+ * meant an air-gapped install silently fell back to system fonts and every
+ * page load disclosed the viewer to Google.
  *
  * Wired in SettingsContext so it re-runs whenever settings.ui_font or
  * settings.ui_font_size changes.
@@ -20,18 +25,9 @@ export function useAppFont(fontId, fontSizeId) {
       FONT_SIZE_OPTIONS.find((s) => s.id === 'medium') ??
       FONT_SIZE_OPTIONS[0];
 
-    // Inject or update Google Fonts <link> for hosted fonts; remove it for system fonts
-    const existingLink = document.getElementById('cb-font-link');
-    if (font.googleUrl) {
-      const link = existingLink ?? document.createElement('link');
-      link.id = 'cb-font-link';
-      link.rel = 'stylesheet';
-      link.href = font.googleUrl;
-      if (!existingLink) document.head.appendChild(link);
-      else link.href = font.googleUrl;
-    } else {
-      existingLink?.remove();
-    }
+    // A stylesheet an earlier version of this app injected. Removing it keeps an
+    // upgraded tab from holding a live Google Fonts <link> until it reloads.
+    document.getElementById('cb-font-link')?.remove();
 
     // Apply CSS custom properties — body uses var(--font), html uses var(--font-size-base)
     document.documentElement.style.setProperty('--font', font.stack);
