@@ -49,6 +49,13 @@ from app.schemas.discovery import (
     ScanLogOut,
     ScanResultOut,
 )
+from app.schemas.docker import (
+    DockerManagedContainerOut,
+    DockerParentAssignment,
+    DockerSourceOut,
+    DockerSyncAccepted,
+    DockerSyncRunOut,
+)
 from app.schemas.proxmox import ProxmoxDiscoverRunOut
 from app.services import (
     agent_discovery,
@@ -1374,29 +1381,95 @@ def vendor_catalog():
 
 @router.get("/docker/status")
 def docker_status(db: Session = Depends(get_db)):
-    """Return Docker socket connectivity status and last sync summary."""
-    from app.services.docker_discovery import get_docker_status, get_last_sync_result
+    """Return durable configured-source status without contacting the daemon."""
+    from app.services.docker_sources import configured_status
 
-    settings = get_or_create_settings(db)
-    socket_path = getattr(settings, "docker_socket_path", _DEFAULT_DOCKER_SOCKET)
-    status = get_docker_status(socket_path)
-    last_sync = get_last_sync_result()
-    return {**status, "last_sync": last_sync}
+    return configured_status(db)
 
 
-@router.post("/docker/sync")
+@router.get("/docker/sources", response_model=list[DockerSourceOut])
+def docker_sources(db: Session = Depends(get_db)) -> list[DockerSourceOut]:
+    """List configured source records; ensure the installed source is represented."""
+    from app.services.docker_sources import list_configured_sources
+
+    return [DockerSourceOut.model_validate(row) for row in list_configured_sources(db)]
+
+
+@router.get(
+    "/docker/sources/{source_id}/containers",
+    response_model=list[DockerManagedContainerOut],
+)
+def docker_source_containers(
+    source_id: int, db: Session = Depends(get_db)
+) -> list[DockerManagedContainerOut]:
+    from app.services.docker_sources import (
+        DockerSourceConfigurationError,
+        list_source_containers,
+    )
+
+    try:
+        return list_source_containers(db, source_id)
+    except DockerSourceConfigurationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/docker/sync", response_model=DockerSyncAccepted, status_code=202)
 def docker_sync(
     background_tasks: BackgroundTasks,
     user: User = require_role("admin"),
     db: Session = Depends(get_db),
 ):
-    """Trigger an immediate Docker topology sync (runs in background)."""
-    from app.services.docker_discovery import sync_docker_topology
+    """Durably admit a source sync before returning its stable run ID."""
+    from app.services.docker_discovery import queue_configured_sync, run_source_sync
+    from app.services.docker_sources import (
+        DockerSourceConfigurationError,
+        DockerSourceConflict,
+    )
 
-    settings = get_or_create_settings(db)
-    socket_path = getattr(settings, "docker_socket_path", _DEFAULT_DOCKER_SOCKET)
-    background_tasks.add_task(sync_docker_topology, socket_path=socket_path)
-    return {"status": "sync_started", "socket_path": socket_path}
+    try:
+        run = queue_configured_sync(db, _get_actor(db, user.id))
+    except DockerSourceConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DockerSourceConfigurationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    background_tasks.add_task(run_source_sync, run.source_id, run.id)
+    return DockerSyncAccepted(source_id=run.source_id, run_id=run.id)
+
+
+@router.get("/docker/runs/{run_id}", response_model=DockerSyncRunOut)
+def docker_run(run_id: str, db: Session = Depends(get_db)) -> DockerSyncRunOut:
+    from app.services.docker_sources import (
+        DockerSourceConfigurationError,
+        get_sync_run,
+    )
+
+    try:
+        return DockerSyncRunOut.model_validate(get_sync_run(db, run_id))
+    except DockerSourceConfigurationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.patch("/docker/sources/{source_id}/parent", response_model=DockerSourceOut)
+def docker_source_parent(
+    source_id: int,
+    assignment: DockerParentAssignment,
+    user: User = require_role("admin"),
+    db: Session = Depends(get_db),
+) -> DockerSourceOut:
+    from app.services.docker_sources import (
+        DockerSourceConfigurationError,
+        DockerSourceConflict,
+        assign_source_parent_committed,
+    )
+
+    try:
+        source = assign_source_parent_committed(db, source_id, assignment, _get_actor(db, user.id))
+        return DockerSourceOut.model_validate(source)
+    except DockerSourceConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DockerSourceConfigurationError as exc:
+        status_code = 404 if "unavailable" in str(exc) else 422
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 @router.get("/docker/networks")
@@ -1415,6 +1488,7 @@ def docker_networks(db: Session = Depends(get_db)):
             "name": n.name,
             "docker_network_id": n.docker_network_id,
             "docker_driver": n.docker_driver,
+            "docker_source_id": n.docker_source_id,
             "cidr": n.cidr,
             "gateway": n.gateway,
             "created_at": n.created_at,

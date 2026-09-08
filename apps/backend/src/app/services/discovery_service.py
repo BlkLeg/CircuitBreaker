@@ -170,6 +170,7 @@ async def _emit_ws_event(event_type: str, payload: dict) -> None:
             "result_added": subjects.DISCOVERY_DEVICE_FOUND,
             "result_enriched": subjects.DISCOVERY_DEVICE_FOUND,
             "result_processed": subjects.DISCOVERY_DEVICE_FOUND,
+            "docker_sync_completed": subjects.DISCOVERY_DOCKER_SYNC_COMPLETED,
         }
         subject = _SUBJECT_MAP.get(event_type, subjects.NOTIFICATION_EVENT)
         try:

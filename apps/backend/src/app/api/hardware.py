@@ -1,5 +1,5 @@
 import logging
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -11,6 +11,7 @@ from app.core.rbac import require_scope
 from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.hardware import Hardware, HardwareCreate, HardwareUpdate
+from app.schemas.inventory import MAX_QUERY_LENGTH, PageRequest, PageResult
 from app.services import clusters_service, hardware_service
 
 _logger = logging.getLogger(__name__)
@@ -28,6 +29,24 @@ def list_hardware(
     q: Annotated[str | None, Query()] = None,
 ) -> list[Any]:
     return hardware_service.list_hardware(db, tag=tag, role=role, q=q)
+
+
+@router.get("/page", response_model=PageResult[Hardware])
+def list_hardware_page(
+    db: Annotated[Session, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    sort: Annotated[
+        Literal["id", "name", "role", "status", "created_at", "updated_at"], Query()
+    ] = "name",
+    direction: Annotated[Literal["asc", "desc"], Query()] = "asc",
+    tag: Annotated[str | None, Query(max_length=100)] = None,
+    role: Annotated[str | None, Query(max_length=100)] = None,
+    q: Annotated[str | None, Query(max_length=MAX_QUERY_LENGTH)] = None,
+) -> PageResult[dict[str, Any]]:
+    """Return a bounded hardware page for the inventory workspace."""
+    page = PageRequest(limit=limit, offset=offset, sort=sort, direction=direction)
+    return hardware_service.list_hardware_page(db, page, tag=tag, role=role, q=q)
 
 
 @router.post(

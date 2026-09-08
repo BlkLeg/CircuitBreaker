@@ -4,34 +4,28 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 
 from app.db.models import CapacityForecast, ResourceEfficiencyRecommendation
 from app.db.session import get_db
-from app.services.intelligence.dependency_graph import AssetRef, calculate_blast_radius
+from app.schemas.intelligence import (
+    AssetRefOut,
+    BlastRadiusOut,
+    ImpactEdgeOut,
+    ImpactLimitsOut,
+    ImpactPathOut,
+)
+from app.services.intelligence.dependency_edges import DependencyEdge
+from app.services.intelligence.dependency_graph import (
+    AssetRef,
+    calculate_blast_radius,
+)
 
 router = APIRouter()
 
 _VALID_TYPES = frozenset({"hardware", "compute_unit", "service", "storage"})
-
-
-class AssetRefOut(BaseModel):
-    asset_type: str
-    asset_id: int
-    name: str
-    status: str | None
-
-
-class BlastRadiusOut(BaseModel):
-    root_asset: AssetRefOut
-    impacted_hardware: list[AssetRefOut]
-    impacted_compute_units: list[AssetRefOut]
-    impacted_services: list[AssetRefOut]
-    impacted_storage: list[AssetRefOut]
-    total_impact_count: int
-    summary: str
 
 
 class CapacityForecastOut(BaseModel):
@@ -72,16 +66,41 @@ def _ref_out(r: AssetRef) -> AssetRefOut:
     )
 
 
+def _edge_out(edge: DependencyEdge) -> ImpactEdgeOut:
+    return ImpactEdgeOut(
+        identity=edge.identity,
+        provider_type=edge.provider[0],
+        provider_id=edge.provider[1],
+        dependent_type=edge.dependent[0],
+        dependent_id=edge.dependent[1],
+        edge_type=edge.edge_type,
+        provenance=edge.provenance,
+        source_kind=edge.source_kind,
+        source_id=edge.source_id,
+        label=edge.label,
+    )
+
+
 @router.get("/blast-radius/{asset_type}/{asset_id}", response_model=BlastRadiusOut)
 def get_blast_radius(
     asset_type: str,
     asset_id: int,
+    include_inferred: bool = False,
+    max_nodes: int = Query(500, ge=1, le=1000),
+    max_depth: int = Query(12, ge=1, le=24),
     db: Session = Depends(get_db),
 ) -> BlastRadiusOut:
     """Compute downstream impact of an asset going offline."""
     if asset_type not in _VALID_TYPES:
         raise HTTPException(status_code=400, detail=f"Invalid asset_type: {asset_type!r}")
-    result = calculate_blast_radius(db, asset_type, asset_id)
+    result = calculate_blast_radius(
+        db,
+        asset_type,
+        asset_id,
+        include_inferred=include_inferred,
+        max_nodes=max_nodes,
+        max_depth=max_depth,
+    )
     return BlastRadiusOut(
         root_asset=_ref_out(result.root_asset),
         impacted_hardware=[_ref_out(r) for r in result.impacted_hardware],
@@ -90,6 +109,25 @@ def get_blast_radius(
         impacted_storage=[_ref_out(r) for r in result.impacted_storage],
         total_impact_count=result.total_impact_count,
         summary=result.summary,
+        paths=[
+            ImpactPathOut(
+                asset=_ref_out(path.asset),
+                edges=[_edge_out(edge) for edge in path.edges],
+                provenance=path.provenance,  # type: ignore[arg-type]
+            )
+            for path in result.paths
+        ],
+        edges=[_edge_out(edge) for edge in result.edges],
+        connectivity=[_edge_out(edge) for edge in result.connectivity],
+        evaluated_at=result.evaluated_at,
+        completeness=result.completeness,  # type: ignore[arg-type]
+        truncation_reason=result.truncation_reason,  # type: ignore[arg-type]
+        limits=ImpactLimitsOut(
+            max_nodes=result.limits.max_nodes,
+            max_depth=result.limits.max_depth,
+            max_edges=result.limits.max_edges,
+        ),
+        inferred_available=result.inferred_available,
     )
 
 

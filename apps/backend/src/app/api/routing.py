@@ -25,6 +25,7 @@ from app.api import (
     external_nodes,
     graph,
     hardware,
+    inventory,
     logs,
     misc,
     networks,
@@ -57,9 +58,11 @@ from app.api.discovery import router as discovery_router
 from app.api.events import router as events_router
 from app.api.health import router as health_router
 from app.api.integration_provider import router as integration_provider_router
+from app.api.inventory_transfer import router as inventory_transfer_router
 from app.api.ip_check import router as ip_check_router
 from app.api.ipam import ipam_router, site_router, vlan_router
 from app.api.kb import router as kb_router
+from app.api.metric_alerts import router as metric_alerts_router
 from app.api.metrics import router as metrics_router
 from app.api.monitor import router as monitor_router
 from app.api.notifications import router as notifications_router
@@ -148,6 +151,12 @@ def include_all_routers(app: FastAPI) -> None:
         search.router,
         prefix=f"{_V1}/search",
         tags=["search"],
+        dependencies=[Depends(require_auth)],
+    )
+    app.include_router(
+        inventory.router,
+        prefix=f"{_V1}/inventory",
+        tags=["inventory"],
         dependencies=[Depends(require_auth)],
     )
     app.include_router(
@@ -327,6 +336,12 @@ def include_all_routers(app: FastAPI) -> None:
         dependencies=[Depends(require_auth)],
     )
     app.include_router(
+        inventory_transfer_router,
+        prefix=f"{_V1}/inventory-transfer",
+        tags=["inventory-transfer"],
+        dependencies=[Depends(require_auth)],
+    )
+    app.include_router(
         admin_audit_router,
         prefix=f"{_V1}/admin",
         tags=["admin-audit"],
@@ -392,6 +407,12 @@ def include_all_routers(app: FastAPI) -> None:
         cve_router,
         prefix=f"{_V1}/cve",
         tags=["cve"],
+        dependencies=[Depends(require_auth)],
+    )
+    app.include_router(
+        metric_alerts_router,
+        prefix=f"{_V1}/monitors/alert-rules",
+        tags=["metric-alerts"],
         dependencies=[Depends(require_auth)],
     )
     app.include_router(

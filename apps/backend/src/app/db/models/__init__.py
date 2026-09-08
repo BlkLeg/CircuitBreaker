@@ -52,6 +52,8 @@ from app.db.models.credentials import (
 )
 from app.db.models.discovery import (
     DiscoveryProfile,
+    DockerSource,
+    DockerSyncRun,
     ListenerEvent,
     ProxmoxDiscoverRun,
     ScanJob,
@@ -77,6 +79,7 @@ from app.db.models.integrations import (
 from app.db.models.intel import (
     CapacityForecast,
     CVEEntry,
+    EntityAssessmentIdentity,
     FlapIncident,
     ResourceEfficiencyRecommendation,
 )
@@ -86,6 +89,9 @@ from app.db.models.kb import (
 )
 from app.db.models.monitors import (
     HardwareMonitor,
+    MetricAlertEvent,
+    MetricAlertRule,
+    MetricAlertState,
     MonitorDailyStats,
     MonitorEvent,
     MonitorItem,
@@ -102,6 +108,7 @@ from app.db.models.networks import (
     Site,
 )
 from app.db.models.notifications import (
+    NotificationDelivery,
     NotificationRoute,
     NotificationSink,
 )
@@ -140,6 +147,7 @@ from app.db.models.topology import (
     TopologyEdge,
     TopologyNode,
 )
+from app.db.models.transfers import InventoryTransferOperation, InventoryTransferPlan
 
 # `FailedMessage` lives outside this package (`models_failed_message`) because
 # the JetStream work it belongs to is parked. It is imported here for the same
@@ -170,10 +178,13 @@ __all__ = [
     "Credential",
     "DeviceRole",
     "DiscoveryProfile",
+    "DockerSource",
+    "DockerSyncRun",
     "Doc",
     "EntityDoc",
     "EntityTag",
     "Environment",
+    "EntityAssessmentIdentity",
     "ExternalNode",
     "ExternalNodeNetwork",
     "FailedMessage",
@@ -191,12 +202,17 @@ __all__ = [
     "IntegrationConfig",
     "IntegrationMonitor",
     "IntegrationMonitorEvent",
+    "InventoryTransferOperation",
+    "InventoryTransferPlan",
     "KbHostname",
     "KbOui",
     "ListenerEvent",
     "LiveMetric",
     "Log",
     "MapPinnedEntity",
+    "MetricAlertEvent",
+    "MetricAlertRule",
+    "MetricAlertState",
     "MiscItem",
     "MonitorDailyStats",
     "MonitorEvent",
@@ -207,6 +223,7 @@ __all__ = [
     "NetworkPrivacySnapshot",
     "NodeRelation",
     "NotificationRoute",
+    "NotificationDelivery",
     "NotificationSink",
     "OAuthState",
     "Onboarding",

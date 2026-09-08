@@ -48,6 +48,7 @@ ALERT_EVENT = "notifications.alert"
 
 MONITOR_ALERT_DOWN = "alert.monitor.down.{item_id}"  # formatted at publish time
 MONITOR_ALERT_RECOVERED = "alert.monitor.recovered.{item_id}"
+METRIC_ALERT_EVENT = "alert.metric.transition.{rule_id}"
 
 # ── Agents ────────────────────────────────────────────────────────────────────
 
@@ -59,6 +60,7 @@ TOPOLOGY_NODE_MOVED = "topology.node.moved"
 TOPOLOGY_CABLE_ADDED = "topology.cable.added"
 TOPOLOGY_CABLE_REMOVED = "topology.cable.removed"
 TOPOLOGY_NODE_STATUS_CHANGED = "topology.node.status_changed"
+DISCOVERY_DOCKER_SYNC_COMPLETED = "discovery.docker.sync.completed"
 
 # ── Monitoring poll queue (dedicated work-queue stream; NOT under monitor.>) ──
 # The "mon." root avoids colliding with the shared CB_EVENTS stream's monitor.> subjects.

@@ -60,6 +60,7 @@ async def handle_failed_delivery(
     error: str,
     max_deliver: int,
     session_factory: SessionFactory,
+    nak_delay: float | None = None,
 ) -> bool:
     """Nak a failed message, or park and terminate it once its budget is spent.
 
@@ -77,7 +78,8 @@ async def handle_failed_delivery(
     """
     delivered = _num_delivered(msg)
     if delivered < max_deliver:
-        await _safe(msg.nak(), "nak")
+        nak = msg.nak(delay=nak_delay) if nak_delay is not None else msg.nak()
+        await _safe(nak, "nak")
         return False
 
     try:

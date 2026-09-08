@@ -1,10 +1,11 @@
 import logging
 import re
+from typing import Any
 
-from fastapi import HTTPException
-from sqlalchemy import and_, func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy.orm import Session, joinedload, selectinload
 
+from app.core.errors import ConflictError
 from app.core.time import utcnow
 from app.db.models import (  # Service used for reactive cascade
     ComputeUnit,
@@ -21,17 +22,26 @@ from app.db.models import (  # Service used for reactive cascade
     UptimeEvent,
 )
 from app.schemas.hardware import HardwareCreate, HardwareUpdate
+from app.schemas.inventory import PageRequest, PageResult
 from app.services.entity_tags import (
-    get_documents_for as _get_documents_for,
+    DocumentSummary,
+    get_documents_for_many,
+    get_tags_for,
+    get_tags_for_many,
 )
 from app.services.entity_tags import (
-    get_tags_for,
+    get_documents_for as _get_documents_for,
 )
 from app.services.entity_tags import (
     sync_tags as _sync_tags,
 )
 from app.services.environments_service import resolve_environment_id
-from app.services.ip_reservation import bulk_conflict_map, check_ip_conflict, resolve_ip_conflict
+from app.services.ip_reservation import (
+    bulk_conflict_map,
+    check_ip_conflict,
+    hardware_conflict_map,
+    resolve_ip_conflict,
+)
 from app.services.log_service import write_log
 
 _logger = logging.getLogger(__name__)
@@ -48,9 +58,11 @@ def _norm_mac(mac: str | None) -> str | None:
     return ":".join(cleaned[i : i + 2] for i in range(0, 12, 2)).upper()
 
 
-def _to_dict(db: Session, hw: Hardware) -> dict:
+def _serialize_hardware(
+    hw: Hardware, tags: list[str], documents: list[DocumentSummary]
+) -> dict[str, Any]:
     d = {c.name: getattr(hw, c.name) for c in hw.__table__.columns}
-    d["tags"] = get_tags_for(db, "hardware", hw.id)
+    d["tags"] = tags
 
     # Expose port_map_json as port_map in the API
     d["port_map"] = d.pop("port_map_json", []) or []
@@ -69,8 +81,16 @@ def _to_dict(db: Session, hw: Hardware) -> dict:
     else:
         d["storage_summary"] = None
     d["environment_name"] = hw.environment_rel.name if hw.environment_rel else None
-    d["documents"] = _get_documents_for(db, "hardware", hw.id)
+    d["documents"] = documents
     return d
+
+
+def _to_dict(db: Session, hw: Hardware) -> dict:
+    return _serialize_hardware(
+        hw,
+        get_tags_for(db, "hardware", hw.id),
+        _get_documents_for(db, "hardware", hw.id),
+    )
 
 
 def list_hardware(
@@ -102,6 +122,92 @@ def list_hardware(
         d["ip_conflict"] = conflict_map.get(("hardware", r.id), False)
         result.append(d)
     return result
+
+
+_HARDWARE_SORT_COLUMNS = {
+    "id": Hardware.id,
+    "name": Hardware.name,
+    "role": Hardware.role,
+    "status": Hardware.status,
+    "created_at": Hardware.created_at,
+    "updated_at": Hardware.updated_at,
+}
+
+
+def _hardware_filtered_statement(
+    *, tag: str | None, role: str | None, q: str | None
+) -> Select[tuple[Hardware]]:
+    statement = select(Hardware)
+    if role:
+        statement = statement.where(Hardware.role == role)
+    if q:
+        escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        term = f"%{escaped}%"
+        statement = statement.where(
+            or_(
+                Hardware.name.ilike(term, escape="\\"),
+                Hardware.notes.ilike(term, escape="\\"),
+            )
+        )
+    if tag:
+        statement = (
+            statement.join(
+                EntityTag,
+                (EntityTag.entity_type == "hardware") & (EntityTag.entity_id == Hardware.id),
+            )
+            .join(Tag, Tag.id == EntityTag.tag_id)
+            .where(Tag.name == tag)
+        )
+    return statement
+
+
+def list_hardware_page(
+    db: Session,
+    page: PageRequest,
+    *,
+    tag: str | None = None,
+    role: str | None = None,
+    q: str | None = None,
+) -> PageResult[dict[str, Any]]:
+    """Return a stable, bounded hardware page enriched without per-row queries."""
+    sort_column = _HARDWARE_SORT_COLUMNS.get(page.sort)
+    if sort_column is None:
+        raise ValueError(f"Unsupported hardware sort field: {page.sort}")
+
+    filtered = _hardware_filtered_statement(tag=tag, role=role, q=q)
+    total = db.scalar(select(func.count()).select_from(filtered.order_by(None).subquery())) or 0
+    primary_order = sort_column.asc() if page.direction == "asc" else sort_column.desc()
+    order_by: list[Any] = [primary_order.nullslast()]
+    if page.sort != "id":
+        order_by.append(Hardware.id.asc() if page.direction == "asc" else Hardware.id.desc())
+
+    statement = (
+        filtered.options(
+            selectinload(Hardware.storage_items),
+            joinedload(Hardware.environment_rel),
+        )
+        .order_by(*order_by)
+        .offset(page.offset)
+        .limit(page.limit)
+    )
+    rows = db.execute(statement).unique().scalars().all()
+    ids = [row.id for row in rows]
+    tags = get_tags_for_many(db, "hardware", ids)
+    documents = get_documents_for_many(db, "hardware", ids)
+    conflicts = hardware_conflict_map(db, rows)
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        item = _serialize_hardware(row, tags[row.id], documents[row.id])
+        item["ip_conflict"] = conflicts.get(("hardware", row.id), False)
+        items.append(item)
+    return PageResult(
+        items=items,
+        total=total,
+        limit=page.limit,
+        offset=page.offset,
+        sort=page.sort,
+        direction=page.direction,
+    )
 
 
 def get_hardware(db: Session, hardware_id: int) -> dict:
@@ -168,12 +274,11 @@ def create_hardware(db: Session, payload: HardwareCreate) -> dict:
                 ),
                 category="crud",
             )
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "detail": "IP conflict detected",
-                    "conflicts": [c.to_dict() for c in conflicts],
-                },
+            raise ConflictError(
+                "This IP address conflicts with an existing asset.",
+                error_code="ip_conflict",
+                fields={"ip_address": "Choose an available address."},
+                context={"conflicts": [c.to_dict() for c in conflicts]},
             )
 
     # CB-LEARN-002: auto-fill role from catalog when null but catalog keys present
@@ -266,12 +371,11 @@ def update_hardware(db: Session, hardware_id: int, payload: HardwareUpdate) -> d
                 effective_ip,
                 ", ".join(c.entity_name for c in conflicts),
             )
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "detail": "IP conflict detected",
-                    "conflicts": [c.to_dict() for c in conflicts],
-                },
+            raise ConflictError(
+                "This IP address conflicts with an existing asset.",
+                error_code="ip_conflict",
+                fields={"ip_address": "Choose an available address."},
+                context={"conflicts": [c.to_dict() for c in conflicts]},
             )
     update_data = payload.model_dump(exclude_unset=True, exclude={"tags", "port_map"})
     # CB-FIX: Assign dicts directly to JSONB columns (SQLAlchemy handles serialization)

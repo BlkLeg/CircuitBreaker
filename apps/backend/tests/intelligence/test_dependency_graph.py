@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from app.db.models import ServiceDependency
+from app.db.models import (
+    HardwareNetwork,
+    ServiceDependency,
+    ServiceStorage,
+    Storage,
+)
 from app.services.intelligence.dependency_graph import (
     calculate_blast_radius,
 )
@@ -59,6 +64,76 @@ def test_blast_radius_summary_text(db_session, factories):
 
     assert "core-switch" in result.summary
     assert "1" in result.summary
+    assert "Potential impact" in result.summary
+
+
+def test_shared_network_is_connectivity_not_operational_dependency(db_session, factories):
+    first = factories.hardware(name="first")
+    second = factories.hardware(name="second")
+    network = factories.network(name="shared")
+    db_session.add_all(
+        [
+            HardwareNetwork(hardware_id=first.id, network_id=network.id),
+            HardwareNetwork(hardware_id=second.id, network_id=network.id),
+        ]
+    )
+    db_session.flush()
+
+    result = calculate_blast_radius(db_session, "hardware", first.id)
+
+    assert result.impacted_hardware == []
+    assert result.total_impact_count == 0
+    assert len(result.connectivity) == 1
+
+
+def test_storage_failure_includes_explicit_consumers_with_path(db_session, factories):
+    hardware = factories.hardware(name="nas")
+    storage = Storage(name="pool", kind="pool", hardware_id=hardware.id)
+    service = factories.service(name="database")
+    db_session.add(storage)
+    db_session.flush()
+    db_session.add(ServiceStorage(service_id=service.id, storage_id=storage.id, purpose="data"))
+    db_session.flush()
+
+    result = calculate_blast_radius(db_session, "storage", storage.id)
+
+    assert [item.asset_id for item in result.impacted_services] == [service.id]
+    assert result.paths[0].edges[0].source_kind == "service_storage"
+    assert result.paths[0].provenance == "confirmed"
+
+
+def test_dependency_cycle_terminates_and_deduplicates_assets(db_session, factories):
+    first = factories.service(name="first")
+    second = factories.service(name="second")
+    db_session.add_all(
+        [
+            ServiceDependency(service_id=second.id, depends_on_id=first.id),
+            ServiceDependency(service_id=first.id, depends_on_id=second.id),
+        ]
+    )
+    db_session.flush()
+
+    result = calculate_blast_radius(db_session, "service", first.id)
+
+    assert [item.asset_id for item in result.impacted_services] == [second.id]
+    assert len(result.paths) == 1
+    assert result.completeness == "complete"
+
+
+def test_traversal_limit_is_disclosed(db_session, factories):
+    root = factories.service(name="root")
+    previous = root
+    for index in range(3):
+        current = factories.service(name=f"dependent-{index}")
+        db_session.add(ServiceDependency(service_id=current.id, depends_on_id=previous.id))
+        previous = current
+    db_session.flush()
+
+    result = calculate_blast_radius(db_session, "service", root.id, max_depth=1)
+
+    assert result.completeness == "truncated"
+    assert result.truncation_reason == "depth_limit"
+    assert result.total_impact_count == 1
 
 
 # ── API tests ─────────────────────────────────────────────────────────────────

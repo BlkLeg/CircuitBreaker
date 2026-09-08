@@ -6,6 +6,7 @@ import logging
 import os
 import socket
 import subprocess
+import time
 from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from itertools import islice
@@ -199,7 +200,19 @@ def _probe_docker_endpoint(base_url: str, timeout: float) -> None:
         path = parsed.path or parsed.netloc
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(timeout)
-            sock.connect(path)
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    sock.connect(path)
+                    break
+                except BlockingIOError:
+                    # A listening Unix socket can briefly report EAGAIN while
+                    # its accept queue drains. Keep this inside the same
+                    # bounded preflight budget instead of misclassifying a
+                    # healthy local daemon as unavailable.
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.01)
         return
     if parsed.scheme in ("tcp", "http", "https"):
         port = parsed.port or (2376 if parsed.scheme == "https" else 2375)

@@ -1,21 +1,30 @@
 import json
-from typing import Any, Literal
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.core.rbac import require_role
-from app.core.url_validation import outbound_async_client, safe_async_request
+from app.core.url_validation import safe_async_request
 from app.db.models import NotificationRoute, NotificationSink
 from app.db.session import get_db
+from app.schemas.notifications import (
+    AlertEnvelope,
+    RouteCreate,
+    RouteOut,
+    SinkCreate,
+    SinkOut,
+    SinkUpdate,
+    TestResult,
+)
+from app.services.notification_delivery import test_sink_delivery
 from app.services.notification_secrets import decrypt_config, encrypt_config, redact_config
 
 router = APIRouter(tags=["notifications"])
 
 _SINK_NOT_FOUND = "Notification sink not found"
 _ROUTE_NOT_FOUND = "Notification route not found"
-_WEBHOOK_URL_NOT_CONFIGURED = "webhook_url not configured"
 _TEST_MESSAGE = "Circuit Breaker test notification"
 _TEST_BODY = "If you received this, this sink can deliver alerts. Real alerts take this exact path."
 _EMAIL_NEEDS_RECIPIENT = (
@@ -43,50 +52,6 @@ def _validate_provider_config(provider_type: str, config: dict[str, Any]) -> Non
     """
     if provider_type == "email" and not _email_recipient(config):
         raise HTTPException(status_code=422, detail=_EMAIL_NEEDS_RECIPIENT)
-
-
-class SinkCreate(BaseModel):
-    name: str
-    provider_type: str  # slack|discord|teams|email
-    provider_config: dict
-    enabled: bool = True
-
-
-class SinkUpdate(BaseModel):
-    name: str | None = None
-    provider_type: str | None = None
-    provider_config: dict | None = None
-    enabled: bool | None = None
-
-
-class SinkOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    name: str
-    provider_type: str
-    provider_config: dict
-    enabled: bool
-
-
-class RouteCreate(BaseModel):
-    sink_id: int
-    # A floor, not an exact match (INC-03) — and a closed set, so a typo is a 422
-    # rather than a route that looks configured and delivers nothing. Spelled as
-    # a Literal so the four values reach the OpenAPI schema; kept in step with
-    # ROUTE_SEVERITIES by test_notification_routes_api.py. RouteOut stays a bare
-    # ``str``: legacy rows still have to serialise.
-    alert_severity: Literal["*", "info", "warning", "critical"]
-    enabled: bool = True
-
-
-class RouteOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    sink_id: int
-    alert_severity: str
-    enabled: bool
 
 
 def _provider_config(sink: NotificationSink) -> dict:
@@ -194,6 +159,9 @@ def delete_sink(
     sink = db.query(NotificationSink).filter(NotificationSink.id == sink_id).first()
     if not sink:
         raise HTTPException(status_code=404, detail=_SINK_NOT_FOUND)
+    db.query(NotificationRoute).filter(NotificationRoute.sink_id == sink_id).delete(
+        synchronize_session=False
+    )
     db.delete(sink)
     db.commit()
     return {"status": "ok"}
@@ -212,86 +180,50 @@ def toggle_sink(
     return _sink_to_out(sink)
 
 
-def _ok_from_resp(resp: Any) -> dict[str, Any]:
-    """Report the status of a webhook Test, never the body it returned.
-
-    This used to hand back ``resp.text`` verbatim for any status >= 400. That
-    echo is what would turn any residual SSRF on this surface into a read
-    primitive: an admin who can point a sink at an internal URL gets whatever
-    that endpoint said rendered in the Test result. The status code is what an
-    operator needs in order to debug a webhook; the body is what an attacker
-    needs. Do not put it back.
-    """
-
-    if resp.status_code < 400:
-        return {"ok": True, "error": None}
-    return {"ok": False, "error": f"Webhook endpoint returned HTTP {resp.status_code}"}
-
-
-async def _test_webhook_sink(webhook_url: str | None, body: dict[str, Any]) -> dict[str, Any]:
-    if not webhook_url:
-        return {"ok": False, "error": _WEBHOOK_URL_NOT_CONFIGURED}
-    async with outbound_async_client() as client:
-        resp = await safe_async_request(client, "POST", webhook_url, json=body, timeout=10.0)
-    return _ok_from_resp(resp)
-
-
-async def _test_email_sink(config: dict[str, Any], db: Session) -> dict[str, Any]:
-    """Send a test alert down the *delivery* path, not a parallel one.
-
-    This used to call ``send_test_email``, which shares nothing with dispatch
-    beyond the SMTP connection — so a green Test proved only that SMTP worked,
-    while ``notify_email`` read connection details from ``provider_config`` and
-    dropped every real alert (INC-02). Both now go through ``send_alert``.
-    """
-    from app.services.settings_service import get_or_create_settings
-    from app.services.smtp_service import SMTP_NOT_CONFIGURED, SmtpService, smtp_is_configured
-
-    to_addr = _email_recipient(config)
-    if not to_addr:
-        return {"ok": False, "error": _EMAIL_NEEDS_RECIPIENT}
-
-    cfg = get_or_create_settings(db)
-    if not smtp_is_configured(cfg):
-        return {"ok": False, "error": SMTP_NOT_CONFIGURED}
-
-    try:
-        await SmtpService(cfg).send_alert(to_addr, _TEST_MESSAGE, _TEST_BODY, "info")
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    return {"ok": True, "error": None}
-
-
-@router.post("/sinks/{sink_id}/test")
+@router.post("/sinks/{sink_id}/test", response_model=TestResult)
 async def test_sink(
     sink_id: int, db: Session = Depends(get_db), current_user: Any = require_role("admin")
-) -> dict[str, Any]:
+) -> TestResult:
     sink = db.query(NotificationSink).filter(NotificationSink.id == sink_id).first()
     if not sink:
         raise HTTPException(status_code=404, detail=_SINK_NOT_FOUND)
 
-    # Delivery needs the real credential, not the masked view SinkOut serves.
-    config = decrypt_config(_provider_config(sink))
-    provider_type = sink.provider_type
-    webhook_url = config.get("webhook_url")
-
     try:
-        if provider_type == "slack":
-            return await _test_webhook_sink(webhook_url, {"text": _TEST_MESSAGE})
-        if provider_type == "discord":
-            return await _test_webhook_sink(webhook_url, {"content": _TEST_MESSAGE})
-        if provider_type == "teams":
-            body = {
-                "@type": "MessageCard",
-                "@context": "http://schema.org/extensions",
-                "text": _TEST_MESSAGE,
-            }
-            return await _test_webhook_sink(webhook_url, body)
-        if provider_type == "email":
-            return await _test_email_sink(config, db)
-        return {"ok": False, "error": f"Unknown provider type: {provider_type}"}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+        config = decrypt_config(_provider_config(sink))
+    except Exception:
+        return TestResult(
+            ok=False,
+            state="terminal",
+            reason_code="credential_unavailable",
+            message="Destination credentials are unavailable.",
+            error="Destination credentials are unavailable.",
+            provider=sink.provider_type,
+            sink_id=sink.id,
+            attempt_count=0,
+        )
+
+    email_sender: Callable[[str, str, str, str], Awaitable[None]] | None = None
+    if sink.provider_type == "email":
+        from app.services.settings_service import get_or_create_settings
+        from app.services.smtp_service import SmtpService, smtp_is_configured
+
+        cfg = get_or_create_settings(db)
+        if smtp_is_configured(cfg):
+
+            async def _send_email(recipient: str, title: str, message: str, severity: str) -> None:
+                await SmtpService(cfg).send_alert(recipient, title, message, severity)
+
+            email_sender = _send_email
+
+    event = AlertEnvelope(severity="info", title=_TEST_MESSAGE, message=_TEST_BODY)
+    return await test_sink_delivery(
+        sink.provider_type,
+        config,
+        event,
+        sink_id=sink.id,
+        request_fn=safe_async_request,
+        email_sender=email_sender,
+    )
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────

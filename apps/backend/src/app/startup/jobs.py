@@ -74,6 +74,21 @@ def register_scheduled_jobs(scheduler: "SingleOwnerScheduler") -> None:
         replace_existing=True,
     )
 
+    # Receipt retention exceeds the configurable CB_EVENTS replay window, so a
+    # stream redelivery can never lose the accepted-destination dedup record.
+    from app.services.notification_retention import (
+        run_notification_delivery_receipt_purge,
+    )
+
+    scheduler.add_job(
+        run_notification_delivery_receipt_purge,
+        trigger=CronTrigger(hour=3, minute=40),
+        id="notification_delivery_receipt_purge",
+        replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=3600,
+    )
+
     # listener_events is the only discovery table fed directly by unauthenticated
     # LAN traffic: every mDNS advertisement and every SSDP datagram that clears
     # the rate gate appends a row, and nothing removed them. The listener's own
@@ -553,4 +568,15 @@ def register_scheduled_jobs(scheduler: "SingleOwnerScheduler") -> None:
         trigger=CronTrigger(hour=3, minute=30),
         id="retention_job",
         replace_existing=True,
+    )
+
+    from app.workers.metric_alert_worker import run_metric_alert_job
+
+    scheduler.add_job(
+        run_metric_alert_job,
+        trigger=_IT(seconds=60),
+        id="metric_alert_evaluation",
+        replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=30,
     )

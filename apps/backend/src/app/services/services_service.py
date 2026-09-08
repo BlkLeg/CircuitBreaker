@@ -303,6 +303,10 @@ def update_service(db: Session, service_id: int, payload: ServiceUpdate) -> dict
 
     for field, value in data.items():
         setattr(svc, field, value)
+    if svc.is_docker_container and ({"compute_id", "hardware_id"} & data.keys()):
+        # A direct service edit is an explicit user decision. Docker source
+        # reconciliation may refresh observations but must not move it later.
+        svc.docker_parent_provenance = "manual"
     svc.ip_mode = conflict_result["ip_mode"]
     svc.ip_conflict = conflict_result["is_conflict"]
     svc.ip_conflict_json = conflict_result["conflict_with"]

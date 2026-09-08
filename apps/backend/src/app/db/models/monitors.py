@@ -25,6 +25,76 @@ from app.db.session import Base
 if TYPE_CHECKING:  # relationship targets, resolved by SQLAlchemy's registry at runtime
     from app.db.models.hardware import Hardware
 
+
+class MetricAlertRule(Base):
+    __tablename__ = "metric_alert_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False, default="hardware")
+    target_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    metric_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    source: Mapped[str | None] = mapped_column(String(32))
+    comparator: Mapped[str] = mapped_column(String(4), nullable=False)
+    threshold: Mapped[float] = mapped_column(Float, nullable=False)
+    unit: Mapped[str] = mapped_column(String(16), nullable=False)
+    breach_duration_s: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
+    recovery_threshold: Mapped[float] = mapped_column(Float, nullable=False)
+    recovery_duration_s: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
+    max_gap_s: Mapped[int] = mapped_column(Integer, nullable=False, default=180)
+    freshness_s: Mapped[int] = mapped_column(Integer, nullable=False, default=180)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False, default="warning")
+    sink_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("notification_sinks.id", ondelete="SET NULL")
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+
+class MetricAlertState(Base):
+    __tablename__ = "metric_alert_states"
+
+    rule_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("metric_alert_rules.id", ondelete="CASCADE"), primary_key=True
+    )
+    rule_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    assessment: Mapped[str] = mapped_column(String(16), nullable=False, default="unknown")
+    pending_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    recovery_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    open_incident_id: Mapped[str | None] = mapped_column(String(32))
+    last_sample_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MetricAlertEvent(Base):
+    __tablename__ = "metric_alert_events"
+    __table_args__ = (
+        UniqueConstraint("transition_key", name="uq_metric_alert_events_transition_key"),
+        Index("ix_metric_alert_events_publish", "publish_state", "occurred_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    transition_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    rule_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("metric_alert_rules.id", ondelete="CASCADE"), nullable=False
+    )
+    rule_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    incident_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    publish_state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    publish_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 # ── Uptime Monitoring ────────────────────────────────────────────────────────
 
 

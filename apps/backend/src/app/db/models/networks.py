@@ -9,10 +9,12 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import INET, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -30,6 +32,20 @@ if TYPE_CHECKING:  # relationship targets, resolved by SQLAlchemy's registry at 
 
 class Network(Base):
     __tablename__ = "networks"
+    __table_args__ = (
+        Index(
+            "uq_networks_docker_source_native",
+            "docker_source_id",
+            "docker_network_id",
+            unique=True,
+        ),
+        Index(
+            "uq_networks_legacy_docker_native",
+            "docker_network_id",
+            unique=True,
+            postgresql_where=text("docker_source_id IS NULL AND docker_network_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
@@ -42,9 +58,12 @@ class Network(Base):
         Integer, ForeignKey(_FK_HARDWARE_ID), nullable=True
     )
     # Docker network metadata
-    docker_network_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
+    docker_network_id: Mapped[str | None] = mapped_column(String, nullable=True)
     docker_driver: Mapped[str | None] = mapped_column(String, nullable=True)
     is_docker_network: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    docker_source_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("docker_sources.id", ondelete="SET NULL"), nullable=True
+    )
     # v0.2.0: multi-tenancy (renamed from team_id in v0.3.0)
     tenant_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True, index=True

@@ -1,26 +1,33 @@
 """Docker topology discovery service.
 
-Calls docker_discover() from discovery_safe.py and persists the results
-to the DB by upserting Network rows (docker networks) and Service rows
-(containers).  The service is intentionally synchronous so it can be called
-from APScheduler without an async wrapper.
+Owns the compatibility status/detail entry points and durable sync
+orchestration. Enumeration and reconciliation live in focused services.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app.core.time import utcnow
-from app.db.models import Network, Service
+from app.db.models import DockerSource, DockerSyncRun
 from app.db.session import SessionLocal
+from app.schemas.docker import DockerSyncRunOut
 from app.services.discovery_safe import (
     docker_client,
-    docker_discover,
     is_docker_socket_available,
+)
+from app.services.docker_enumeration import enumerate_docker
+from app.services.docker_reconcile import StaleDockerRun, apply_reconciliation
+from app.services.docker_sources import (
+    DockerSourceConfigurationError,
+    get_or_create_configured_source,
+    latest_run,
+    resolve_source_config,
+    start_sync,
 )
 
 _logger = logging.getLogger(__name__)
@@ -43,219 +50,192 @@ def _resolve_docker_base_url(socket_path: str = _DEFAULT_SOCKET_PATH) -> str:
     return f"unix://{socket_path}"
 
 
-def _slugify(text: str) -> str:
-    """Convert text to a URL-safe slug without external dependencies."""
-    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-
-
-_last_sync_result: dict = {}
-
-
 def _utcnow_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
 def get_last_sync_result() -> dict:
-    return _last_sync_result
+    """Compatibility projection backed by durable state, not process memory."""
+    with SessionLocal() as db:
+        source = db.query(DockerSource).order_by(DockerSource.updated_at.desc()).first()
+        if source is None:
+            return {}
+        run = latest_run(db, source.id)
+        if run is None:
+            return {}
+        db.commit()
+        db.refresh(run)
+        return DockerSyncRunOut.model_validate(run).model_dump(mode="json")
+
+
+def queue_configured_sync(db: Session, actor: str) -> DockerSyncRun:
+    """Resolve the installed source and durably admit one run."""
+    from app.services.settings_service import get_or_create_settings
+
+    try:
+        config = resolve_source_config(get_or_create_settings(db))
+        source = get_or_create_configured_source(db, config)
+        run = start_sync(db, source.id, actor)
+        db.commit()
+        db.refresh(run)
+        return run
+    except Exception:
+        db.rollback()
+        raise
+
+
+def _fail_run(run_id: str, reason_code: str, safe_message: str) -> None:
+    with SessionLocal() as db:
+        run = db.get(DockerSyncRun, run_id)
+        if run is None or run.status not in {"queued", "running"}:
+            return
+        now = datetime.now(UTC)
+        source = db.get(DockerSource, run.source_id)
+        if source is not None:
+            source.last_attempt_at = now
+        run.status = "failed"
+        run.reason_code = reason_code
+        run.safe_message = safe_message
+        run.completed_at = now
+        run.lease_token = None
+        run.lease_expires_at = None
+        db.commit()
+
+
+def _emit_run_result(run_id: str) -> None:
+    """Publish committed state for live discovery consumers, best-effort."""
+    from app.services.discovery_service import _emit_ws_event
+
+    with SessionLocal() as db:
+        run = db.get(DockerSyncRun, run_id)
+        if run is None:
+            return
+        payload = {
+            "run_id": run.id,
+            "source_id": run.source_id,
+            "status": run.status,
+            "containers_observed": run.containers_observed,
+            "networks_observed": run.networks_observed,
+        }
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(_emit_ws_event("docker_sync_completed", payload))
+    else:
+        loop.create_task(_emit_ws_event("docker_sync_completed", payload))
+
+
+def run_source_sync(source_id: int, run_id: str) -> None:
+    """Claim a durable run, enumerate without a transaction, then reconcile."""
+    from app.services.settings_service import get_or_create_settings
+
+    lease_token = uuid4().hex
+    try:
+        with SessionLocal() as db:
+            run = (
+                db.query(DockerSyncRun)
+                .filter(
+                    DockerSyncRun.id == run_id,
+                    DockerSyncRun.source_id == source_id,
+                )
+                .with_for_update()
+                .first()
+            )
+            source = db.get(DockerSource, source_id)
+            if run is None or source is None or run.status != "queued":
+                return
+            now = datetime.now(UTC)
+            if run.lease_expires_at is not None and run.lease_expires_at <= now:
+                run.status = "interrupted"
+                run.completed_at = now
+                run.reason_code = "lease_expired"
+                run.safe_message = "The Docker sync worker stopped before completing the run."
+                run.lease_expires_at = None
+                db.commit()
+                _emit_run_result(run_id)
+                return
+            config = resolve_source_config(get_or_create_settings(db))
+            if config.identity != source.identity or run.source_revision != source.revision:
+                raise DockerSourceConfigurationError(
+                    "Docker source configuration changed before this run started."
+                )
+            run.status = "running"
+            run.started_at = now
+            run.lease_token = lease_token
+            run.lease_expires_at = now + timedelta(minutes=2)
+            source.last_attempt_at = now
+            db.commit()
+    except DockerSourceConfigurationError:
+        _fail_run(
+            run_id,
+            "source_changed",
+            "Docker source configuration changed before this run started.",
+        )
+        _emit_run_result(run_id)
+        return
+    except Exception:
+        _fail_run(run_id, "run_start_failed", "The Docker sync could not be started.")
+        _emit_run_result(run_id)
+        return
+
+    enumeration = enumerate_docker(config)
+    try:
+        with SessionLocal() as db:
+            apply_reconciliation(db, source_id, run_id, lease_token, enumeration)
+            db.commit()
+        _emit_run_result(run_id)
+    except StaleDockerRun:
+        _fail_run(
+            run_id,
+            "stale_run",
+            "A newer source change or sync superseded this Docker run.",
+        )
+        _emit_run_result(run_id)
+    except Exception:
+        _logger.exception("Docker reconciliation failed for run %s", run_id)
+        _fail_run(
+            run_id,
+            "reconciliation_failed",
+            "Docker observations could not be reconciled safely.",
+        )
+        _emit_run_result(run_id)
 
 
 def sync_docker_topology(
     socket_path: str = _DEFAULT_SOCKET_PATH,
     network_types: list[str] | None = None,
 ) -> dict:
-    """Enumerate Docker networks and containers; upsert into DB.
-
-    Returns a summary dict: {networks_synced, containers_synced, error}.
-    """
-    global _last_sync_result
-
-    if not is_docker_socket_available(socket_path):
-        result: dict = {
-            "enabled": False,
-            "error": f"Docker socket not found at {socket_path}",
-            "networks_synced": 0,
-            "containers_synced": 0,
-            "synced_at": _utcnow_iso(),
-        }
-        _last_sync_result = result
-        return result
-
-    effective_network_types = network_types or ["bridge"]
-
-    raw = docker_discover(
-        socket_path=socket_path,
-        network_types=effective_network_types,
-        enable_port_scan=False,
-    )
-
-    # Separate the network_topology sentinel from container dicts
-    network_topology_entry: dict | None = None
-    containers: list[dict] = []
-    for item in raw:
-        if item.get("type") == "network_topology":
-            network_topology_entry = item
-        else:
-            containers.append(item)
-
-    db: Session = SessionLocal()
-    networks_synced = 0
-    containers_synced = 0
-
+    """Compatibility synchronous facade backed by a durable source/run."""
+    del socket_path, network_types
     try:
-        # ── Upsert Networks ──────────────────────────────────────────────────
-        if network_topology_entry:
-            for net_info in network_topology_entry.get("networks", []):
-                net_name = net_info.get("name", "").strip()
-                # Build a stable docker_network_id from the source data.
-                # docker_discover() stores nets keyed by net.id but the
-                # topology list loses the key — use name+driver as identity.
-                docker_id = f"docker-{net_info.get('name', '')}"
-
-                existing = db.query(Network).filter(Network.docker_network_id == docker_id).first()
-                if existing is None:
-                    new_net = Network(
-                        name=net_name or f"docker-net-{docker_id[-8:]}",
-                        docker_network_id=docker_id,
-                        docker_driver=net_info.get("driver"),
-                        is_docker_network=True,
-                        cidr=net_info.get("subnet") or None,
-                        gateway=net_info.get("gateway") or None,
-                        description=f"Docker {net_info.get('driver', '')} network",
-                    )
-                    db.add(new_net)
-                else:
-                    existing.docker_driver = net_info.get("driver")
-                    existing.is_docker_network = True
-                    if net_info.get("subnet"):
-                        existing.cidr = net_info["subnet"]
-                    if net_info.get("gateway"):
-                        existing.gateway = net_info["gateway"]
-                    existing.updated_at = utcnow()
-                networks_synced += 1
-
-        # ── Upsert Services (containers) ─────────────────────────────────────
-        seen_container_ids: set[str] = set()
-
-        for cdata in containers:
-            container_id = cdata.get("full_id") or cdata.get("container_id")
-            if not container_id:
-                continue
-
-            seen_container_ids.add(container_id)
-            name = cdata.get("name", "").lstrip("/")
-            image = cdata.get("image") or ""
-            status = cdata.get("status", "unknown")
-
-            # Primary lookup: match by stable container ID
-            existing_svc = (
-                db.query(Service).filter(Service.docker_container_id == container_id).first()
-            )
-
-            # Secondary lookup: container was recreated and has a new ID.
-            # Find by name among existing docker-tracked services and adopt the
-            # new ID onto the existing row rather than creating a duplicate.
-            if existing_svc is None and name:
-                existing_svc = (
-                    db.query(Service)
-                    .filter(
-                        Service.name == name,
-                        Service.is_docker_container == True,  # noqa: E712
-                    )
-                    .first()
-                )
-                if existing_svc is not None:
-                    _logger.info(
-                        "Container '%s' appears to have been recreated "
-                        "(old id=%s, new id=%s) — updating ID in place.",
-                        name,
-                        existing_svc.docker_container_id,
-                        container_id,
-                    )
-                    existing_svc.docker_container_id = container_id
-
-            if existing_svc is None:
-                base_slug = _slugify(name or f"container-{container_id[:8]}")
-                # Ensure unique slug
-                slug = base_slug
-                counter = 1
-                while db.query(Service).filter(Service.slug == slug).first():
-                    slug = f"{base_slug}-{counter}"
-                    counter += 1
-
-                labels_data = cdata.get("labels") if isinstance(cdata.get("labels"), dict) else {}
-                new_svc = Service(
-                    name=name or f"container-{container_id[:8]}",
-                    slug=slug,
-                    docker_container_id=container_id,
-                    docker_image=image,
-                    docker_labels=labels_data,
-                    is_docker_container=True,
-                    status=_normalise_status(status),
-                    ip_address=cdata.get("ip"),
-                    description=f"Docker container — image: {image}",
-                )
-                db.add(new_svc)
-            else:
-                existing_svc.status = _normalise_status(status)
-                existing_svc.docker_image = image
-                existing_svc.docker_labels = (
-                    cdata.get("labels") if isinstance(cdata.get("labels"), dict) else {}
-                )
-                existing_svc.is_docker_container = True
-                if cdata.get("ip"):
-                    existing_svc.ip_address = cdata["ip"]
-                existing_svc.updated_at = utcnow()
-            containers_synced += 1
-
-        # ── Mark stale containers as stopped ────────────────────────────────
-        # Any docker-tracked service whose container ID was NOT seen in this
-        # sync pass is no longer running. Mark it stopped so the map reflects
-        # reality without deleting user data.
-        if seen_container_ids:
-            stale_svcs = (
-                db.query(Service)
-                .filter(
-                    Service.is_docker_container == True,  # noqa: E712
-                    Service.docker_container_id.notin_(seen_container_ids),
-                    Service.status != "stopped",
-                )
-                .all()
-            )
-            for stale in stale_svcs:
-                stale.status = "stopped"
-                stale.updated_at = utcnow()
-                _logger.debug("Marked stale container '%s' as stopped.", stale.name)
-
-        db.commit()
-    except Exception as exc:
-        db.rollback()
-        _logger.exception("Docker topology sync failed: %s", exc)
-        result = {
-            "enabled": True,
-            "error": str(exc),
+        with SessionLocal() as db:
+            run = queue_configured_sync(db, "compatibility")
+            source_id = run.source_id
+            run_id = run.id
+        run_source_sync(source_id, run_id)
+        with SessionLocal() as db:
+            completed = db.get(DockerSyncRun, run_id)
+            if completed is None:
+                return {"enabled": True, "error": "run_not_found"}
+            return {
+                "enabled": True,
+                "error": None if completed.status == "succeeded" else completed.safe_message,
+                "networks_synced": completed.networks_observed,
+                "containers_synced": completed.containers_observed,
+                "synced_at": completed.completed_at.isoformat()
+                if completed.completed_at
+                else _utcnow_iso(),
+                "run_id": completed.id,
+                "status": completed.status,
+            }
+    except Exception:
+        return {
+            "enabled": False,
+            "error": "Docker sync could not be admitted.",
             "networks_synced": 0,
             "containers_synced": 0,
             "synced_at": _utcnow_iso(),
         }
-        _last_sync_result = result
-        return result
-    finally:
-        db.close()
-
-    result = {
-        "enabled": True,
-        "error": None,
-        "networks_synced": networks_synced,
-        "containers_synced": containers_synced,
-        "synced_at": _utcnow_iso(),
-    }
-    _last_sync_result = result
-    _logger.info(
-        "Docker sync complete — %d networks, %d containers",
-        networks_synced,
-        containers_synced,
-    )
-    return result
 
 
 def get_docker_status(socket_path: str = _DEFAULT_SOCKET_PATH) -> dict:
@@ -403,7 +383,5 @@ def _run_docker_sync_job_impl() -> None:
 
 
 def run_docker_sync_job() -> None:
-    """APScheduler entry point. Single-run via advisory lock."""
-    from app.core.job_lock import run_with_advisory_lock
-
-    run_with_advisory_lock("docker_topology_sync", job_fn=_run_docker_sync_job_impl)
+    """APScheduler entry point; the scheduler already owns the single-owner lock."""
+    _run_docker_sync_job_impl()

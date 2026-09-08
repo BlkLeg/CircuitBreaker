@@ -320,7 +320,9 @@ class NATSClient:
             else:
                 _logger.warning("NATS MONITOR_PROBE stream ensure failed: %s", exc)
 
-    async def js_publish(self, subject: str, payload: dict | str | bytes) -> bool:
+    async def js_publish(
+        self, subject: str, payload: dict | str | bytes, *, msg_id: str | None = None
+    ) -> bool:
         """Publish to JetStream. Returns True on success, False if unavailable or on error."""
         if not self._connected or not self._js:
             _logger.debug("NATS js_publish skipped (no JetStream): %s", subject)
@@ -332,7 +334,10 @@ class NATSClient:
         else:
             data = payload
         try:
-            await self._js.publish(subject, data)
+            if msg_id:
+                await self._js.publish(subject, data, headers={"Nats-Msg-Id": msg_id})
+            else:
+                await self._js.publish(subject, data)
             return True
         except Exception as exc:
             _logger.warning("NATS js_publish to %s failed: %s", subject, exc)

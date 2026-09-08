@@ -7,10 +7,12 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -27,6 +29,20 @@ if TYPE_CHECKING:  # relationship targets, resolved by SQLAlchemy's registry at 
 
 class Service(Base):
     __tablename__ = "services"
+    __table_args__ = (
+        Index(
+            "uq_services_docker_source_container",
+            "docker_source_id",
+            "docker_container_id",
+            unique=True,
+        ),
+        Index(
+            "uq_services_legacy_docker_container",
+            "docker_container_id",
+            unique=True,
+            postgresql_where=text("docker_source_id IS NULL AND docker_container_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
@@ -68,10 +84,23 @@ class Service(Base):
     ip_conflict: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     ip_conflict_json: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
     # Docker container metadata — labels JSONB as of v0.2.0
-    docker_container_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
+    docker_container_id: Mapped[str | None] = mapped_column(String, nullable=True)
     docker_image: Mapped[str | None] = mapped_column(String, nullable=True)
     docker_labels: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     is_docker_container: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    docker_source_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("docker_sources.id", ondelete="SET NULL"), nullable=True
+    )
+    docker_workload_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    docker_network_ids: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+    docker_parent_provenance: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="unresolved", server_default="unresolved"
+    )
+    docker_last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # v0.2.0: multi-tenancy (renamed from team_id in v0.3.0)
     tenant_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True, index=True

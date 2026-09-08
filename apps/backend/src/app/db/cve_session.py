@@ -17,6 +17,8 @@ from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.core.time import utcnow
+from app.db.cve_models import CVECacheBase, CVECacheSchema
 from app.db.models import CVEEntry
 
 _logger = logging.getLogger(__name__)
@@ -55,16 +57,37 @@ def _set_sqlite_pragmas(dbapi_connection: Any, _connection_record: Any) -> None:
 
 
 CVESessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=cve_engine)
+CVE_CACHE_SCHEMA_VERSION = 1
 
 
 def init_cve_db() -> None:
-    """Create the ``cve_entries`` table in the CVE database if it doesn't exist."""
+    """Initialize legacy and normalized tables in the disposable CVE cache."""
     try:
-        CVEEntry.__table__.create(bind=cve_engine, checkfirst=True)  # type: ignore[attr-defined]
+        with CVESessionLocal() as db:
+            bind = db.get_bind()
+            CVEEntry.__table__.create(bind=bind, checkfirst=True)  # type: ignore[attr-defined]
+            CVECacheBase.metadata.create_all(bind=bind, checkfirst=True)
     except OperationalError as exc:
         if not _is_existing_table_race(exc):
             raise
         _logger.info("CVE database table already exists; continuing after startup race")
+    with CVESessionLocal() as db:
+        schema = db.get(CVECacheSchema, 1)
+        if schema is None:
+            db.add(
+                CVECacheSchema(
+                    id=1,
+                    version=CVE_CACHE_SCHEMA_VERSION,
+                    updated_at=utcnow(),
+                )
+            )
+            db.commit()
+        elif schema.version > CVE_CACHE_SCHEMA_VERSION:
+            raise RuntimeError(
+                "CVE cache schema is newer than this application supports; rebuild the cache"
+            )
+        elif schema.version < CVE_CACHE_SCHEMA_VERSION:
+            raise RuntimeError("CVE cache schema requires an explicit upgrade or rebuild")
     _logger.info("CVE database initialised at %s", _CVE_DB_PATH)
 
 

@@ -8,16 +8,29 @@ vendor/product/version tuples to known CVEs.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func
+from sqlalchemy.exc import OperationalError
 
 from app.core.egress import PUBLIC_HTTP, httpx_client
 from app.core.time import utcnow_iso
 from app.db.cve_session import CVESessionLocal
 from app.db.models import AppSettings, CVEEntry
 from app.db.session import SessionLocal
+from app.schemas.cve import AssessmentIdentity, AssessmentResult, IdentityPatch
+from app.services.intelligence.cve_assessment import (
+    assess_entity,
+    get_feed_state,
+    update_assessment_identity,
+)
+from app.services.intelligence.cve_feed import (
+    complete_feed_generation,
+    fail_feed_generation,
+    ingest_feed_page,
+    start_feed_generation,
+)
 from app.services.log_service import write_log
 
 _logger = logging.getLogger(__name__)
@@ -104,6 +117,29 @@ def cves_for_entity(entity_type: str, entity_id: int) -> list[dict]:
     return lookup_cves(vendor=vendor, product=product, version=version)
 
 
+def assessment_for_entity(entity_type: str, entity_id: int) -> AssessmentResult:
+    """Return a truthful assessment that keeps readiness separate from count."""
+    with SessionLocal() as app_db, CVESessionLocal() as cache_db:
+        return assess_entity(app_db, cache_db, entity_type, entity_id)
+
+
+def set_entity_identity(
+    entity_type: str,
+    entity_id: int,
+    patch: IdentityPatch,
+    *,
+    actor: str | None,
+) -> AssessmentIdentity:
+    with SessionLocal() as db:
+        try:
+            identity = update_assessment_identity(db, entity_type, entity_id, patch, actor=actor)
+            db.commit()
+            return identity
+        except Exception:
+            db.rollback()
+            raise
+
+
 def get_status() -> dict:
     """Return sync status: last sync time, total entries, enabled flag."""
     with SessionLocal() as db:
@@ -114,12 +150,25 @@ def get_status() -> dict:
 
     with CVESessionLocal() as db:
         total = db.query(func.count(CVEEntry.id)).scalar() or 0
+        try:
+            feed = get_feed_state(db, settings, datetime.now(UTC))
+            feed_payload = feed.model_dump(mode="json")
+        except OperationalError:
+            # Compatibility for an old cache before startup initializes the
+            # normalized schema. Legacy rows are not proof of complete coverage.
+            feed_payload = {
+                "state": "incomplete" if total else "unavailable",
+                "reason_code": "feed_incomplete" if total else "feed_missing",
+                "generation": None,
+                "coverage_complete": False,
+            }
 
     return {
         "enabled": enabled,
         "last_sync_at": last_sync,
         "sync_interval_hours": interval,
         "total_entries": total,
+        "feed": feed_payload,
     }
 
 
@@ -137,7 +186,13 @@ def sync_nvd_feed() -> int:
     upserted = 0
     start_index = 0
 
+    with CVESessionLocal() as db:
+        generation = start_feed_generation(db)
+        generation_id = generation.id
+        db.commit()
+
     try:
+        declared_total = 0
         while True:
             params = {
                 "startIndex": start_index,
@@ -149,8 +204,18 @@ def sync_nvd_feed() -> int:
                 data = resp.json()
 
             vulnerabilities = data.get("vulnerabilities", [])
+            declared_total = int(data.get("totalResults", 0) or 0)
             if not vulnerabilities:
                 break
+
+            with CVESessionLocal() as db:
+                from app.db.cve_models import CVEFeedGeneration
+
+                page_generation = db.get(CVEFeedGeneration, generation_id)
+                if page_generation is None:
+                    raise RuntimeError("CVE feed generation disappeared during sync")
+                ingest_feed_page(db, page_generation, vulnerabilities)
+                db.commit()
 
             entries = []
             for item in vulnerabilities:
@@ -162,11 +227,21 @@ def sync_nvd_feed() -> int:
             if entries:
                 upserted += _upsert_entries(entries)
 
-            total_results = data.get("totalResults", 0)
+            total_results = declared_total
             start_index += _PAGE_SIZE
             if start_index >= total_results:
                 break
 
+        with CVESessionLocal() as db:
+            from app.db.cve_models import CVEFeedGeneration
+
+            final_generation = db.get(CVEFeedGeneration, generation_id)
+            if final_generation is None:
+                raise RuntimeError("CVE feed generation disappeared before completion")
+            complete_feed_generation(db, final_generation, total_records=declared_total)
+            if final_generation.status != "complete":
+                raise RuntimeError("CVE feed enumeration was incomplete")
+            db.commit()
         _record_sync_timestamp()
         _logger.info("NVD sync complete: %d entries upserted", upserted)
 
@@ -178,6 +253,20 @@ def sync_nvd_feed() -> int:
             details=f"NVD CVE sync completed: {upserted} entries upserted",
         )
     except Exception as exc:
+        try:
+            with CVESessionLocal() as db:
+                from app.db.cve_models import CVEFeedGeneration
+
+                failed_generation = db.get(CVEFeedGeneration, generation_id)
+                if failed_generation is not None and failed_generation.status == "running":
+                    fail_feed_generation(
+                        db,
+                        failed_generation,
+                        safe_error="The vulnerability feed could not be refreshed.",
+                    )
+                    db.commit()
+        except Exception:
+            _logger.exception("Failed to persist CVE feed failure state")
         _logger.error("NVD CVE sync failed: %s", exc, exc_info=True)
         write_log(
             db=None,

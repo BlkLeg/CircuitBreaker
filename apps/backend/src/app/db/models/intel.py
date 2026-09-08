@@ -49,6 +49,32 @@ class CVEEntry(Base):
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class EntityAssessmentIdentity(Base):
+    """Operator-corrected product identity kept outside polymorphic entities."""
+
+    __tablename__ = "entity_assessment_identities"
+    __table_args__ = (
+        UniqueConstraint("entity_type", "entity_id", name="uq_entity_assessment_identity_ref"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entity_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    entity_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    vendor: Mapped[str | None] = mapped_column(String(255))
+    product: Mapped[str | None] = mapped_column(String(255))
+    version: Mapped[str | None] = mapped_column(String(255))
+    version_scheme: Mapped[str | None] = mapped_column(String(32))
+    provenance: Mapped[str] = mapped_column(String(16), nullable=False, default="operator")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_by: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
 # ── Intelligence / Analytics ──────────────────────────────────────────────────
 
 

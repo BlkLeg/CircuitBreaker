@@ -309,18 +309,28 @@ app.add_middleware(ProxyHeadersMiddleware)
 
 @app.exception_handler(AppError)
 async def app_error_handler(request: Request, exc: AppError):
+    content = {"detail": exc.message, "error_code": exc.error_code}
+    if exc.fields is not None:
+        content["fields"] = exc.fields
+    if exc.context is not None:
+        content["context"] = exc.context
     return JSONResponse(
-        status_code=exc.status_code, content={"detail": exc.message, "error_code": exc.error_code}
+        status_code=exc.status_code,
+        content=content,
     )
 
 
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError):
+    errors = [
+        {key: value for key, value in error.items() if key in {"loc", "msg", "type"}}
+        for error in exc.errors()
+    ]
     return JSONResponse(
         status_code=422,
         content={
-            "detail": jsonable_encoder(exc.errors()),
-            "body": str(exc.body)[:500] if exc.body else None,
+            "detail": jsonable_encoder(errors),
+            "error_code": "validation_error",
         },
     )
 

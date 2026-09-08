@@ -4,6 +4,8 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -21,6 +23,81 @@ from app.db.session import Base
 
 if TYPE_CHECKING:  # relationship targets, resolved by SQLAlchemy's registry at runtime
     from app.db.models.credentials import IntegrationConfig
+
+
+class DockerSource(Base):
+    """One configured Docker daemon, without persisting its credential-bearing URL."""
+
+    __tablename__ = "docker_sources"
+    __table_args__ = (
+        CheckConstraint(
+            "(parent_type IS NULL AND parent_id IS NULL) OR "
+            "(parent_type IN ('hardware', 'compute') AND parent_id IS NOT NULL)",
+            name="ck_docker_sources_parent_pair",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    identity: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    connection_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    endpoint_hint: Mapped[str] = mapped_column(String(255), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    parent_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    parent_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    parent_provenance: Mapped[str] = mapped_column(String(16), nullable=False, default="unresolved")
+    parent_assigned_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+
+class DockerSyncRun(Base):
+    """Durable attempt/lease and sanitized reconciliation summary."""
+
+    __tablename__ = "docker_sync_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'partial', 'failed', 'interrupted')",
+            name="ck_docker_sync_runs_status",
+        ),
+        Index("ix_docker_sync_runs_source_created", "source_id", "created_at"),
+        Index("ix_docker_sync_runs_status_lease", "status", "lease_expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    source_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("docker_sources.id", ondelete="CASCADE"), nullable=False
+    )
+    source_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
+    triggered_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    containers_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    networks_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    containers_observed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    networks_observed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    containers_created: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    containers_updated: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    containers_stopped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    networks_created: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    networks_updated: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    conflict_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    safe_message: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
 
 
 class ProxmoxDiscoverRun(Base):
