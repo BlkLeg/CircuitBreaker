@@ -70,13 +70,12 @@ const NON_CANCELLABLE = Object.freeze({
 
 const FIELDS = [...Object.keys(IDLE_STATE), ...Object.keys(NON_CANCELLABLE)];
 
-const initialState = () => {
-  const extras = {};
-  for (const [k, v] of Object.entries(NON_CANCELLABLE)) {
-    extras[k] = v && typeof v === 'object' ? { ...v } : v;
-  }
-  return { ...IDLE_STATE, ...extras };
-};
+const initialState = () => ({
+  ...IDLE_STATE,
+  ...Object.fromEntries(
+    Object.entries(NON_CANCELLABLE).map(([k, v]) => [k, v && typeof v === 'object' ? { ...v } : v])
+  ),
+});
 
 function reducer(state, action) {
   switch (action.type) {

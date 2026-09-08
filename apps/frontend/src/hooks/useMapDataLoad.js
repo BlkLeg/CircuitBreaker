@@ -56,6 +56,19 @@ export function useMapDataLoad({
   // Monotonic id for the newest in-flight topology request; see fetchData.
   const requestGenerationRef = useRef(0);
 
+  // `fitView` and `setViewport` come from `useReactFlow()`, whose callbacks
+  // change identity when the ReactFlow instance unmounts — which is exactly
+  // what switching to the Sigma renderer does. As dependencies they made
+  // fetchData's identity change on that toggle, and MapPage's
+  // `useEffect(() => fetchData(), [fetchData])` then issued a second topology
+  // request just for a renderer switch. Reading them through latest-value refs
+  // keeps the current functions without the reactivity: they are how this hook
+  // moves the viewport, never a reason to reload the graph.
+  const fitViewRef = useRef(fitView);
+  fitViewRef.current = fitView;
+  const setViewportRef = useRef(setViewport);
+  setViewportRef.current = setViewport;
+
   // Cloud View is a transformation of the loaded document, not an input to the
   // query. Reading it through a latest-value ref keeps fetchData's identity
   // stable across a toggle, so toggling no longer re-issues a topology request
@@ -216,17 +229,17 @@ export function useMapDataLoad({
         const saved = localStorage.getItem('cb_map_viewport');
         if (saved && !hasRestoredViewport.current) {
           try {
-            setViewport(JSON.parse(saved));
+            setViewportRef.current(JSON.parse(saved));
             hasRestoredViewport.current = true;
           } catch (err) {
             console.error('Failed to parse saved viewport:', err);
-            fitView({
+            fitViewRef.current({
               ...VIEWPORT_FIT_DEFAULTS,
               padding: isMobile ? 0.35 : VIEWPORT_FIT_DEFAULTS.padding,
             });
           }
         } else {
-          fitView({
+          fitViewRef.current({
             ...VIEWPORT_FIT_DEFAULTS,
             padding: isMobile ? 0.35 : VIEWPORT_FIT_DEFAULTS.padding,
           });
@@ -235,7 +248,7 @@ export function useMapDataLoad({
             if (hypervisorNodes.length > 0) {
               setTimeout(() => {
                 if (unmountedRef?.current) return;
-                fitView({
+                fitViewRef.current({
                   nodes: hypervisorNodes,
                   padding: 0.15,
                   duration: 1200,
@@ -258,14 +271,12 @@ export function useMapDataLoad({
     unmountedRef,
     envFilter,
     includeTypes,
-    fitView,
     getLayoutName,
     isMobile,
     showLabels,
     settings?.graph_uplink_overrides,
     setEdges,
     setNodes,
-    setViewport,
     settings?.graph_default_layout,
     setLoading,
     setError,

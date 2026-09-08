@@ -13,6 +13,9 @@ import { CONNECTION_LINE_STYLE, DEFAULT_EDGE_OPTIONS } from '../../lib/constants
  * `nodeTypes` / `edgeTypes` are passed in rather than imported so this module
  * does not depend on the node and edge components directly; React Flow needs
  * those objects to be referentially stable, which is the page's job.
+ *
+ * It takes no `route`: now that neither renderer fetches, nothing here needs to
+ * know which map is active.
  */
 export default function MapCanvas({
   SigmaMap,
@@ -24,7 +27,6 @@ export default function MapCanvas({
   editorUi,
   view,
   filters,
-  route,
   persistence,
   legendOpen,
   onLegendToggle,
@@ -49,8 +51,7 @@ export default function MapCanvas({
   } = flow;
   const { boundaryDrawMode, lineDrawMode, setEdgeMenu, setPendingConnection } = editorUi;
   const { useSigma, bgGridColor } = view;
-  const { envFilter, includeTypes } = filters;
-  const { mapId } = route;
+  const { includeTypes } = filters;
   const { loading } = persistence;
   const NODE_TYPES = nodeTypes;
   const EDGE_TYPES = edgeTypes;
@@ -58,7 +59,7 @@ export default function MapCanvas({
 
   return useSigma ? (
     <React.Suspense fallback={null}>
-      <SigmaMap envFilter={envFilter} includeTypes={includeTypes} mapId={mapId} />
+      <SigmaMap nodes={nodes} edges={edges} />
     </React.Suspense>
   ) : (
     <ReactFlow
@@ -171,7 +172,6 @@ MapCanvas.propTypes = {
   editorUi: PropTypes.object.isRequired,
   view: PropTypes.object.isRequired,
   filters: PropTypes.object.isRequired,
-  route: PropTypes.object.isRequired,
   persistence: PropTypes.object.isRequired,
   legendOpen: PropTypes.bool,
   onLegendToggle: PropTypes.func.isRequired,

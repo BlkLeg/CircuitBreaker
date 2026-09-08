@@ -100,4 +100,28 @@ test.describe('topology map', () => {
     await expect(picker).toBeHidden();
     await expectNoErrorBoundary(page, 'map after cancelling the icon picker');
   });
+
+  test('the Sigma renderer draws the same document', async ({ page }) => {
+    const topologyCalls: string[] = [];
+    page.on('request', (r) => {
+      if (r.url().includes('/graph/topology')) topologyCalls.push(r.url());
+    });
+
+    await stubApi(page, POPULATED);
+    await page.goto('/map');
+    await waitForRouteSettled(page);
+    await expect(page.locator('.map-page')).toBeVisible();
+    const beforeToggle = topologyCalls.length;
+
+    await page.getByRole('button', { name: /WebGL/ }).click();
+
+    // Sigma draws onto its own canvas. Before this renderer took the document
+    // as props it fetched `format: 'sigma'` — a format the backend never
+    // implemented — so Graph.import threw and the canvas stayed empty.
+    await expect(page.locator('canvas').first()).toBeVisible();
+    await expectNoErrorBoundary(page, 'sigma renderer');
+
+    // A renderer draws; it does not fetch.
+    expect(topologyCalls.length).toBe(beforeToggle);
+  });
 });

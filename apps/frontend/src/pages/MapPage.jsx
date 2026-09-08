@@ -1320,7 +1320,6 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
               editorUi={editorUi}
               view={view}
               filters={filters}
-              route={route}
               persistence={persistence}
               legendOpen={legendOpen}
               onLegendToggle={setLegendOpen}

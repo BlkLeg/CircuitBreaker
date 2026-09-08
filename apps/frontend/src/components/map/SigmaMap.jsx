@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import PropTypes from 'prop-types';
 import Graph from 'graphology';
 import Sigma from 'sigma';
 import forceAtlas2 from 'graphology-layout-forceatlas2';
-import { graphApi } from '../../api/client';
-import { buildIncludeCSV } from '../../utils/mapHelpers';
+import { toSigmaGraph } from '../../utils/graphAdapter';
 
 const SIGMA_LAYOUTS = [
   { id: 'forceatlas2', label: 'Force Atlas 2' },
@@ -47,11 +47,20 @@ function applyLayout(graph, layoutId) {
   }
 }
 
-export default function SigmaMap({ envFilter, includeTypes, mapId }) {
+/**
+ * Sigma renderer for the map.
+ *
+ * Draws the document it is given — it does not fetch. It used to request
+ * `format: 'sigma'`, a format the backend never implemented, and hand the
+ * ordinary topology payload to `Graph.import`, which rejects it outright; the
+ * error was caught and logged, so the canvas simply came up empty. Taking the
+ * canonical nodes and edges fixes that and makes both renderers show the same
+ * active map, filters and saved positions.
+ */
+export default function SigmaMap({ nodes, edges }) {
   const containerRef = useRef(null);
   const sigmaRef = useRef(null);
   const graphRef = useRef(null);
-  const [loading, setLoading] = useState(true);
   const [sigmaLayout, setSigmaLayout] = useState('forceatlas2');
 
   const renderWithLayout = useCallback((layoutId) => {
@@ -67,55 +76,30 @@ export default function SigmaMap({ envFilter, includeTypes, mapId }) {
   }, []);
 
   useEffect(() => {
-    let active = true;
-    const loadGraph = async () => {
-      try {
-        setLoading(true);
-        const includeCSV = buildIncludeCSV(includeTypes);
+    if (!containerRef.current) return undefined;
 
-        const res = await graphApi.topology({
-          environment_id: envFilter || undefined,
-          include: includeCSV,
-          format: 'sigma',
-          ...(mapId != null && { map_id: mapId }),
-        });
+    // A multi graph: nothing in the document prevents two edges between the
+    // same pair, and a simple graph throws on the second one.
+    const graph = new Graph({ multi: true });
+    graph.import(toSigmaGraph(nodes, edges));
+    graphRef.current = graph;
 
-        if (!active) return;
+    applyLayout(graph, sigmaLayout);
 
-        const graph = new Graph();
-        graph.import(res.data);
-        graphRef.current = graph;
-
-        applyLayout(graph, sigmaLayout);
-
-        if (sigmaRef.current) {
-          sigmaRef.current.kill();
-        }
-
-        sigmaRef.current = new Sigma(graph, containerRef.current, {
-          renderEdgeLabels: true,
-        });
-
-        setLoading(false);
-      } catch (err) {
-        console.error('Sigma map load failed:', err);
-        if (active) setLoading(false);
-      }
-    };
-
-    loadGraph();
+    if (sigmaRef.current) sigmaRef.current.kill();
+    sigmaRef.current = new Sigma(graph, containerRef.current, { renderEdgeLabels: true });
 
     return () => {
-      active = false;
       if (sigmaRef.current) {
         sigmaRef.current.kill();
         sigmaRef.current = null;
       }
       graphRef.current = null;
     };
-    // sigmaLayout intentionally excluded — layout changes are handled by the effect below
+    // sigmaLayout intentionally excluded — the effect below re-applies it
+    // without rebuilding the graph.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [envFilter, includeTypes, mapId]);
+  }, [nodes, edges]);
 
   // Re-apply layout when user changes the layout selector (without reloading data)
   useEffect(() => {
@@ -125,12 +109,6 @@ export default function SigmaMap({ envFilter, includeTypes, mapId }) {
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-      {loading && (
-        <div style={{ position: 'absolute', top: 20, left: 20, color: 'white', zIndex: 10 }}>
-          Loading massive graph...
-        </div>
-      )}
-
       {/* Layout selector */}
       <div
         style={{
@@ -168,3 +146,8 @@ export default function SigmaMap({ envFilter, includeTypes, mapId }) {
     </div>
   );
 }
+
+SigmaMap.propTypes = {
+  nodes: PropTypes.array.isRequired,
+  edges: PropTypes.array.isRequired,
+};

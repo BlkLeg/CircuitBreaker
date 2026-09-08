@@ -166,3 +166,52 @@ export function adaptTopology(data, { showLabels, includeTypes, uplinkOverrides 
 
   return { nodes: rawNodesWithOverrides, edges: rawE };
 }
+
+/** Fallback colour for a node whose type has no glow colour. */
+const SIGMA_DEFAULT_COLOR = '#8aa2c8';
+/** Sigma draws in its own units; nodes need a non-zero size to be visible. */
+const SIGMA_NODE_SIZE = 8;
+
+/**
+ * Serializes the canonical map graph into graphology's import format for the
+ * Sigma renderer.
+ *
+ * Sigma previously fetched its own topology with `format: 'sigma'` — a format
+ * the backend never implemented — and handed the ordinary payload to
+ * `Graph.import`, which rejects it ("serialized node is missing its key").
+ * Drawing the same document React Flow draws is both the fix and the renderer
+ * boundary the rework doc asks for: a renderer draws, it does not fetch.
+ *
+ * Hidden nodes are omitted so the active filters apply to both renderers, and
+ * edges are dropped unless both endpoints survived — a dangling edge makes
+ * `import` throw and takes the whole canvas down with it.
+ *
+ * @param {Array} nodes - canonical map nodes
+ * @param {Array} edges - canonical map edges
+ * @returns {{nodes: Array, edges: Array}} graphology serialized graph
+ */
+export function toSigmaGraph(nodes = [], edges = []) {
+  const visible = nodes.filter((n) => !n.hidden);
+  const present = new Set(visible.map((n) => n.id));
+
+  return {
+    nodes: visible.map((n) => ({
+      key: n.id,
+      attributes: {
+        label: n.data?.label || n.id,
+        x: Number(n.position?.x) || 0,
+        y: Number(n.position?.y) || 0,
+        size: SIGMA_NODE_SIZE,
+        color: n.data?.glowColor || SIGMA_DEFAULT_COLOR,
+      },
+    })),
+    edges: edges
+      .filter((e) => present.has(e.source) && present.has(e.target))
+      .map((e) => ({
+        key: e.id,
+        source: e.source,
+        target: e.target,
+        attributes: { label: e.data?.relation || e._relation || '' },
+      })),
+  };
+}
