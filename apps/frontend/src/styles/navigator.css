@@ -1,0 +1,253 @@
+/*
+ * Global navigator.
+ *
+ * Tokens only. --color-surface-raised and --color-primary-fg are resolved per
+ * theme by theme/applyTheme.js (see theme/tokens.js); before Stage A they were
+ * a fixed Gruvbox value and did not exist respectively, which is why an overlay
+ * like this one had to be built after that work rather than before it.
+ */
+
+.navigator-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: calc(var(--header-height, 52px) + 12px);
+  background: color-mix(in srgb, var(--color-bg) 55%, transparent);
+}
+
+.navigator-panel {
+  width: min(640px, calc(100vw - 32px));
+  max-height: min(72vh, 640px);
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--color-bg) 70%, transparent);
+  overflow: hidden;
+}
+
+.navigator-panel--mobile {
+  width: 100vw;
+  max-width: 100vw;
+  height: 100dvh;
+  max-height: 100dvh;
+  border-radius: 0;
+  border: none;
+}
+
+.navigator-search-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.navigator-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--color-text);
+  font-size: 14px;
+}
+
+.navigator-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.navigator-input:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.navigator-hint {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.navigator-status {
+  padding: 6px 14px;
+  font-size: 11px;
+  color: var(--color-text-muted);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.navigator-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.navigator-banner--error {
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-danger) 35%, transparent);
+}
+
+.navigator-retry {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  color: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.navigator-results {
+  overflow-y: auto;
+  padding: 6px;
+  flex: 1;
+}
+
+.navigator-group {
+  margin-bottom: 8px;
+}
+
+.navigator-group-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+}
+
+.navigator-group-count {
+  margin-left: auto;
+  font-weight: 600;
+  letter-spacing: normal;
+}
+
+.navigator-row {
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+  border: 1px solid transparent;
+}
+
+/* Selection is a border plus a background, never colour alone: plan 01
+   requires "no color-only selection". */
+.navigator-row--active {
+  background: var(--color-primary);
+  border-color: var(--color-primary-hover);
+}
+
+.navigator-row--active .navigator-row-label,
+.navigator-row--active .navigator-row-desc,
+.navigator-row--active .navigator-row-icon,
+.navigator-row--active .navigator-row-pin {
+  color: var(--color-primary-fg);
+}
+
+.navigator-row-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  color: var(--color-text);
+  font-size: 13px;
+  text-align: left;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.navigator-row-icon {
+  display: flex;
+  align-items: center;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.navigator-type-badge {
+  font-size: 10px;
+  font-weight: 700;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+.navigator-row-label {
+  flex-shrink: 0;
+}
+
+.navigator-row-desc {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.navigator-row-pin {
+  background: transparent;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 8px;
+  display: flex;
+  align-items: center;
+}
+
+.navigator-row-main:focus-visible,
+.navigator-row-pin:focus-visible,
+.navigator-retry:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
+.navigator-empty,
+.navigator-footnote {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+
+.navigator-footnote {
+  padding: 8px 16px;
+  font-size: 11px;
+  border-top: 1px solid var(--color-border);
+}
+
+.navigator-spin {
+  animation: navigator-spin 1s linear infinite;
+}
+
+@keyframes navigator-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .navigator-spin {
+    animation: none;
+  }
+}
