@@ -9,9 +9,10 @@ while pre-1.0 (a `0.MINOR.PATCH` bump can still carry a breaking change).
 **Policy:** starting with 0.4.2, entries here are generated from each
 release's notes going forward, cut by cut. Releases before 0.4.2 have
 narrative write-ups under [`docs/updates/`](docs/updates/) instead of an
-entry here.
-
-## [Unreleased]
+entry here. The most recent heading holds whatever has landed since the last
+cut and is *not yet* released — when it actually ships, that heading takes
+the release date and a fresh `[Unreleased]` section opens above it for the
+next round.
 
 ## [0.4.2] — unreleased
 
@@ -28,6 +29,17 @@ and aims its own next milestone at 0.5.0 — so it is not listed here to avoid
 claiming a shipped state that isn't backed by release evidence yet. This entry
 covers only the commits below, which are complete, self-contained, and
 directly verifiable in this tree.
+
+### Changed
+
+- Saved map layouts are now versioned behind a `layoutCodec`
+  (`schemaVersion: 2`). It reads both older on-disk shapes and writes view
+  options nested and flat, so a self-hoster running a rebuilt frontend against
+  an unrestarted server, or rolling back a release, keeps reading a layout it
+  understands (`454f70c6`).
+- `scripts/check_version_parity.py` gained `--write`, and `make version-sync`
+  now propagates a `VERSION` bump to every registered file mechanically
+  instead of by hand (`ef729552`).
 
 ### Fixed
 
@@ -48,17 +60,6 @@ directly verifiable in this tree.
 - The Sigma map renderer is now scoped to the active map and its include
   tokens; it previously fetched an unscoped graph and built its type filter
   from the wrong keys, so it could show entities from other maps (`ab575787`).
-- The UI no longer loads its web fonts from Google Fonts — they are
-  self-hosted, so a `CB_AIRGAP=true` install no longer makes an outbound font
-  request (`e0223e8b`, `9d7651c2`).
-
-### Changed
-
-- Saved map layouts are now versioned behind a `layoutCodec`
-  (`schemaVersion: 2`). It reads both older on-disk shapes and writes view
-  options nested and flat, so a self-hoster running a rebuilt frontend against
-  an unrestarted server, or rolling back a release, keeps reading a layout it
-  understands (`454f70c6`).
-- `scripts/check_version_parity.py` gained `--write`, and `make version-sync`
-  now propagates a `VERSION` bump to every registered file mechanically
-  instead of by hand (`ef729552`).
+- The UI no longer loads its web fonts from Google Fonts — all seven families
+  are now self-hosted, so a `CB_AIRGAP=true` install no longer makes an
+  outbound font request (`e0223e8b`).
