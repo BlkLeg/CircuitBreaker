@@ -56,6 +56,7 @@ nav:
       - Vulnerability Disclosure: security/vulnerability-disclosure.md
   - Reference:
       - Product Overview: overview.md
+      - Architecture (for contributors): architecture.md
       - Architecture Walkthrough: architecture.html
       - API Reference: reference/api.md
       - Configuration Precedence: reference/configuration-precedence.md
