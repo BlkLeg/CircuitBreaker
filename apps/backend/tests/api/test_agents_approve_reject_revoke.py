@@ -303,3 +303,69 @@ async def test_capabilities_put_succeeds_even_when_control_frame_publish_fails(
     )
     assert resp.status_code == 200
     assert resp.json()["capabilities"]["remote_probe"]["enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_detail_says_who_revoked_the_agent(client, factories, auth_headers):
+    """An operator revoke and a `cb-agent uninstall` both land on
+    `status=revoked`, and until now the API said nothing that could tell them
+    apart — so the UI told an operator to go and clean up a host that had
+    already cleaned itself up.
+
+    `revoked_by_user_id` is the authoritative discriminator (the agent-initiated
+    path passes `actor_user_id=None` precisely so the audit trail can tell), but
+    it is a user id, and the answer the UI needs is which *kind* of actor.
+    """
+    agent = factories.agent(status="active")
+
+    resp = await client.post(
+        f"/api/v1/agents/{agent.id}/revoke",
+        json={"reason": "lost device"},
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["revoked_by"] == "operator"
+    assert body["revoke_reason"] == "lost device"
+    assert body["revoked_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_detail_reports_an_agent_initiated_revoke_as_the_agents_own(
+    client, factories, auth_headers
+):
+    """The `cb-agent uninstall` half of the same field, through the real
+    handler rather than a hand-written row: an uninstall frame revokes with no
+    actor, and the detail response has to carry that distinction."""
+    from app.schemas.agent_frame import AgentFrame
+    from app.services import agent_link
+
+    agent = factories.agent(status="active")
+    await agent_link.dispatch_frame(
+        factories.session,
+        agent,
+        AgentFrame(type="uninstall", ts="2026-09-08T12:00:00Z", payload={}),
+    )
+
+    resp = await client.get(f"/api/v1/agents/{agent.id}", headers=auth_headers)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "revoked"
+    assert body["revoked_by"] == "agent"
+    assert body["revoke_reason"] == "uninstalled by agent"
+
+
+@pytest.mark.asyncio
+async def test_detail_leaves_the_revoke_fields_empty_for_a_live_agent(
+    client, factories, auth_headers
+):
+    agent = factories.agent(status="active")
+
+    resp = await client.get(f"/api/v1/agents/{agent.id}", headers=auth_headers)
+
+    body = resp.json()
+    assert body["revoked_by"] is None
+    assert body["revoked_at"] is None
+    assert body["revoke_reason"] is None

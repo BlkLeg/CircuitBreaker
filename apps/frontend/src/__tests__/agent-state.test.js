@@ -624,3 +624,54 @@ describe('fleetRowStateInput', () => {
     expect(codes(deriveAgentStates(input))).toContain('never_reported');
   });
 });
+
+describe('a self-uninstalled agent', () => {
+  // `cb-agent uninstall` revokes the agent from the agent's own side, so the
+  // row and the detail page both land on status=revoked with nothing to say
+  // which of two very different things happened. The operator instruction for
+  // the two is opposite: an operator revoke leaves a live agent on a host that
+  // still has to be cleaned up, and an uninstall has already done that.
+  const uninstalled = { status: 'revoked', revokedBy: 'agent', online: false, now: NOW };
+
+  it('reads as uninstalled rather than revoked', () => {
+    const states = deriveAgentStates(uninstalled);
+
+    expect(states[0].code).toBe('uninstalled');
+    expect(codes(states)).not.toContain('revoked');
+  });
+
+  it('does not send the operator to clean up a host that cleaned itself up', () => {
+    const [state] = deriveAgentStates(uninstalled);
+
+    expect(state.action).not.toMatch(/once the host has been cleaned up/i);
+  });
+
+  it('still outranks liveness, exactly as revoked does', () => {
+    const states = deriveAgentStates({ ...uninstalled, lastSeenAt: iso(86400) });
+
+    expect(codes(states)).not.toContain('offline');
+  });
+
+  it('leaves an operator revoke alone', () => {
+    // Anything other than the agent itself — including an unknown initiator on
+    // a record from before the field existed — keeps the wording that assumes
+    // the host is still to be dealt with.
+    expect(deriveAgentStates({ status: 'revoked', revokedBy: 'operator', now: NOW })[0].code).toBe(
+      'revoked'
+    );
+    expect(deriveAgentStates({ status: 'revoked', now: NOW })[0].code).toBe('revoked');
+  });
+});
+
+describe('fleetRowStateInput', () => {
+  it('carries the revoke attribution so a row and the detail page agree', () => {
+    // The state exists only if something feeds it. A fleet table saying
+    // "Revoked" beside a detail page saying "Uninstalled" is two answers to
+    // one question, and the row is where an operator looks first.
+    const states = deriveAgentStates(
+      fleetRowStateInput({ status: 'revoked', revoked_by: 'agent' }, { now: NOW })
+    );
+
+    expect(states[0].code).toBe('uninstalled');
+  });
+});

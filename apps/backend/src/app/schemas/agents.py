@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 # The one capability registry (Task 14 / D-14). Imported at module scope: it is
 # dependency-free (typing/stdlib only), so the schema layer does not pull in a
@@ -57,8 +57,36 @@ class AgentSummary(BaseModel):
     fingerprint: str
     hardware_id: int | None
     last_seen_at: datetime | None
+    # Why this agent is no longer authorized. NULL on one that still is.
+    #
+    # On the *summary* rather than only on `AgentRead` because the fleet table
+    # and the detail page have to agree: a row that reads "Revoked" beside a
+    # page that reads "Uninstalled" is two answers to one question.
+    revoked_at: datetime | None = None
+    #: The operator's own words, or the server's own `uninstalled by agent`.
+    revoke_reason: str | None = None
+    #: Excluded from the response — it feeds `revoked_by` below and nothing
+    #: else. A user id is more than any UI needs to phrase the outcome, and
+    #: `revoked_by` is exactly what it does need.
+    revoked_by_user_id: int | None = Field(default=None, exclude=True)
 
     model_config = {"from_attributes": True}
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def revoked_by(self) -> str | None:
+        """Which *kind* of actor revoked this agent: "operator" or "agent".
+
+        An operator revoke and a `cb-agent uninstall` both end at
+        `status=revoked`, and the instruction each leaves behind is opposite:
+        one leaves a live agent on a host still to be dealt with, the other has
+        already removed itself. `agent_link._handle_uninstall` passes
+        `actor_user_id=None` for precisely this reason, so the absence of an
+        actor is the discriminator — not a guess.
+        """
+        if self.status != "revoked":
+            return None
+        return "operator" if self.revoked_by_user_id is not None else "agent"
 
 
 class AgentRead(AgentSummary):

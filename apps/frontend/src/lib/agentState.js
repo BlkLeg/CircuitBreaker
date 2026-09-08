@@ -96,6 +96,10 @@ const INFO = 'info';
  * states because someone is waiting on its outcome.
  */
 export const STATE_ORDER = [
+  // Above `revoked` because it is the more specific fact and it changes the
+  // instruction: the two are mutually exclusive, and only one of them leaves
+  // the operator with a host to deal with.
+  'uninstalled',
   'revoked',
   'rejected',
   'pending_approval',
@@ -135,6 +139,22 @@ const ORDER_INDEX = new Map(STATE_ORDER.map((code, index) => [code, index]));
  * testable without a DOM.
  */
 const DEFINITIONS = {
+  uninstalled: {
+    label: 'Uninstalled',
+    // Reuses `revoked`'s glyph on purpose: the credential state is the same
+    // fact, and two near-identical terminal chips with different icons read as
+    // two unrelated problems.
+    icon: 'Ban',
+    // INFO, not CRITICAL, and this is the whole point of the state: an agent
+    // that uninstalled itself did exactly what someone asked it to. Painting
+    // that red sends an operator looking for a fault that does not exist.
+    tone: INFO,
+    summary:
+      'This agent removed itself from its host, and its credential was revoked at that point.',
+    action:
+      'Nothing to clean up on the host — the agent did that. Delete this record when you no ' +
+      'longer need its history.',
+  },
   revoked: {
     label: 'Revoked',
     icon: 'Ban',
@@ -414,6 +434,10 @@ export function updateStateFromEvents(events) {
  *
  * @param {object} input
  * @param {string} [input.status] agents.status — pending|active|revoked|rejected.
+ * @param {string|null} [input.revokedBy] Who revoked it: "agent" (a `cb-agent
+ *   uninstall`) or "operator". Absent on a record predating the field, which
+ *   reads as an operator revoke — the wording that assumes there is still a
+ *   host to deal with is the safe one to be wrong with.
  * @param {boolean|null} [input.online] Presence; null/undefined = not known.
  * @param {string} [input.lastSeenAt] ISO, server-produced.
  * @param {object} [input.capabilities] `{name: {enabled, config}}` as the API returns.
@@ -436,6 +460,7 @@ export function updateStateFromEvents(events) {
 export function deriveAgentStates(input = {}) {
   const {
     status,
+    revokedBy,
     online,
     lastSeenAt,
     capabilities,
@@ -462,7 +487,7 @@ export function deriveAgentStates(input = {}) {
   };
 
   // ── Identity ────────────────────────────────────────────────────────────
-  if (status === 'revoked') push('revoked');
+  if (status === 'revoked') push(revokedBy === 'agent' ? 'uninstalled' : 'revoked');
   if (status === 'rejected') push('rejected');
   if (status === 'pending_approval' || status === 'pending') push('pending_approval');
 
@@ -608,6 +633,9 @@ export function primaryAgentState(input = {}) {
 export function fleetRowStateInput(agent, { clockSkewSeconds = null, now = Date.now() } = {}) {
   return {
     status: agent?.status,
+    // Straight off the fleet row: the summary payload carries it so the table
+    // and the detail page cannot disagree about what a revoked agent means.
+    revokedBy: agent?.revoked_by,
     online: agent?.online,
     lastSeenAt: agent?.last_seen_at,
     capabilities: agent?.capabilities,

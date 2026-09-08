@@ -314,6 +314,7 @@ export function useAgentDetail(id, { activeTab = 'overview' } = {}) {
     const offsetMs = serverClockOffsetMs();
     return deriveAgentStates({
       status: agent.status,
+      revokedBy: agent.revoked_by,
       online,
       lastSeenAt: agent.last_seen_at,
       capabilities: agent.capabilities,
