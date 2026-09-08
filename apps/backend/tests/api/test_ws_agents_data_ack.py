@@ -16,7 +16,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from app.core.agent_crypto import get_server_static_keypair
 from app.services import agent_link
-from tests.api.test_ws_agents_link import _active_agent_with_key, _send_hello
+from tests.api.ws_agents_link_fakes import _active_agent_with_key, _send_hello
 from tests.helpers.agent_noise_client import TestNoiseInitiator
 
 pytestmark = pytest.mark.usefixtures("agent_redis_default")
