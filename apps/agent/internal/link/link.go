@@ -1527,7 +1527,12 @@ func awaitUninstallAck(conn *websocket.Conn, session *noiseconn.Session, deadlin
 				if reason == "" {
 					reason = "no reason given"
 				}
-				return fmt.Errorf("link: the server refused this agent's session: %s", reason)
+				// Wrapped like every other unconfirmed outcome: from the
+				// operator's side this is the same fact — the uninstall was
+				// not recorded — and the reason is what distinguishes it.
+				return fmt.Errorf(
+					"%w: the server refused this agent's session: %s",
+					ErrUninstallUnconfirmed, reason)
 			}
 			if !ack.DataAck {
 				return fmt.Errorf(

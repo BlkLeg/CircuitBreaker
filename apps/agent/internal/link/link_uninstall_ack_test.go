@@ -361,6 +361,9 @@ func TestUninstall_ReportsARejectedHello(t *testing.T) {
 	if err == nil {
 		t.Fatal("Uninstall() returned nil against a server that refused the session")
 	}
+	if !errors.Is(err, ErrUninstallUnconfirmed) {
+		t.Errorf("error = %v, want it to wrap ErrUninstallUnconfirmed", err)
+	}
 	if !strings.Contains(err.Error(), "revoked") {
 		t.Errorf("error = %v, want it to carry the server's stated reason", err)
 	}
