@@ -1,0 +1,680 @@
+/* eslint-disable security/detect-object-injection -- internal node/status keys */
+import React, { memo, useMemo, useState } from 'react';
+import PropTypes from 'prop-types';
+import { useStore } from 'reactflow';
+import { STATUS_COLORS } from '../../../config/mapTheme';
+import { getConnectedHandleIds } from '../../../utils/mapHandleHelpers';
+import NodeHandles from './nodes/NodeHandles';
+import { useConnectionStateContext } from '../../../providers/ConnectionStateProvider';
+import { resolveDeviceIcon } from '../model/mapConstants';
+
+/**
+ * CustomNode — enhanced topology node supporting:
+ *  - Entity-type glow colors (backward-compatible with existing data.glowColor)
+ *  - v2 STATUS_COLORS overlay when data.status is set (active/inactive/warning/error/maintenance)
+ *  - Maintenance mode caution-tape banner
+ *  - Cloud view container mode (data.isCloud === true → 400×400 dashed container)
+ *  - Telemetry status rings (healthy/degraded/critical)
+ *  - IP conflict badge
+ *  - Storage capacity bar
+ *  - Telemetry CPU temp / power badges
+ *  - 8-point dynamic handles with connect-aware visibility
+ *  - Smart node rendering: hardware nodes use Lucide icon as shape (neon cyan glow)
+ *
+ * Extracted from MapPage.jsx IconNode and extended with Phase 2 v2 features.
+ */
+
+const TELEMETRY_RING = {
+  healthy: {
+    shadow: '0 0 0 2.5px #22c55e, 0 0 8px 2px #22c55e66',
+    animation: 'tm-pulse 2s ease-in-out infinite',
+  },
+  degraded: { shadow: '0 0 0 2.5px #eab308', animation: 'none' },
+  critical: { shadow: '0 0 0 3px #ef4444, 0 0 12px 4px #ef444466', animation: 'none' },
+};
+
+const USER_ICON_SIZED_ICON_SOURCES = [
+  '/icons/vendors/CB_AZ_SUN.png',
+  '/icons/vendors/CB_CITY_DAY.png',
+  '/icons/vendors/CB_NIGHT_FULL.png',
+  '/icons/vendors/CB_NIGHT_HALF.png',
+];
+
+function getStorageBarColor(pct) {
+  if (pct >= 85) return 'var(--color-danger)';
+  if (pct >= 60) return '#f7c948';
+  return 'var(--color-online)';
+}
+
+const CONNECT_SOURCE_SHADOW =
+  '0 0 0 3px var(--color-primary), 0 0 24px 6px var(--color-primary), 0 0 6px 1px var(--color-primary)';
+
+function computeRingStyle(isConnectSource, tRing, baseShadow) {
+  if (isConnectSource) {
+    return {
+      boxShadow: CONNECT_SOURCE_SHADOW,
+      animation: 'node-connect-pulse 1s ease-in-out infinite',
+    };
+  }
+  if (tRing) {
+    return { boxShadow: `${baseShadow}, ${tRing.shadow}`, animation: tRing.animation };
+  }
+  return { boxShadow: baseShadow };
+}
+
+function CustomNode({ id, data, selected }) {
+  const zoom = useStore((s) => s.transform[2]);
+  const edges = useStore((s) => (Array.isArray(s.edges) ? s.edges : []));
+  const { isConnecting } = useConnectionStateContext();
+  const [isHovered, setIsHovered] = useState(false);
+  const connectedHandleIds = useMemo(() => getConnectedHandleIds(id, edges), [id, edges]);
+
+  // status_override takes precedence over auto-derived status
+  const status = data.status_override || data.status || null;
+  const statusColors = status ? STATUS_COLORS[status] : null;
+
+  const glow = statusColors?.border || data.glowColor || '#4a7fa5';
+  const fillBg = statusColors?.fill || null;
+
+  if (zoom < 0.4 && !data.isCloud) {
+    return (
+      <div
+        style={{
+          width: 16,
+          height: 16,
+          borderRadius: '50%',
+          background: fillBg || glow,
+          boxShadow: selected ? `0 0 0 2px var(--bg-color), 0 0 0 4px ${glow}` : 'none',
+        }}
+      >
+        <NodeHandles
+          connectedHandleIds={connectedHandleIds}
+          isConnecting={isConnecting || isHovered}
+        />
+      </div>
+    );
+  }
+
+  // ── Cloud View Container ────────────────────────────────────────────────
+  if (data.isCloud) {
+    const cloudBorder = statusColors?.border || data.glowColor || '#32b89e';
+    return (
+      <div
+        style={{
+          width: 400,
+          height: 400,
+          border: `2px dashed ${cloudBorder}`,
+          borderRadius: 16,
+          background: 'rgba(38, 40, 40, 0.3)',
+          backdropFilter: 'blur(8px)',
+          padding: 20,
+          position: 'relative',
+        }}
+      >
+        <div
+          style={{
+            position: 'absolute',
+            top: 12,
+            left: 12,
+            color: cloudBorder,
+            fontSize: 12,
+            fontWeight: 600,
+          }}
+        >
+          {data.label}
+        </div>
+        {data.memberCount != null && (
+          <div
+            style={{
+              position: 'absolute',
+              top: 12,
+              right: 12,
+              color: cloudBorder,
+              fontSize: 10,
+              fontWeight: 600,
+              background: 'rgba(38, 40, 40, 0.7)',
+              padding: '2px 8px',
+              borderRadius: 8,
+              border: `1px solid ${cloudBorder}44`,
+            }}
+          >
+            {data.memberCount} nodes
+          </div>
+        )}
+        <NodeHandles
+          connectedHandleIds={connectedHandleIds}
+          isConnecting={isConnecting || isHovered}
+        />
+      </div>
+    );
+  }
+
+  // ── Standard Node ───────────────────────────────────────────────────────
+
+  // When a v2 status is set, use STATUS_COLORS; otherwise fall back to
+  // the entity-type glowColor for full backward compatibility.
+  const glowAlpha = statusColors?.glow || null;
+
+  const isMaintenance = status === 'maintenance';
+
+  const tStatus = data.telemetry_status;
+  const tRing = tStatus && tStatus !== 'unknown' ? TELEMETRY_RING[tStatus] : null;
+  const tData = data.telemetry_data || {};
+  const hasIpConflict = !!data.ip_conflict;
+  const isUploadedIcon =
+    typeof data.iconSrc === 'string' &&
+    (data.iconSrc.includes('/user-icons/') ||
+      USER_ICON_SIZED_ICON_SOURCES.some((iconPath) => data.iconSrc.includes(iconPath)));
+
+  const isConnectSource = !!data.isConnectSource;
+
+  const baseShadow = glowAlpha
+    ? `0 0 20px ${glowAlpha}`
+    : `0 0 20px 5px ${glow}44, 0 0 6px 1px ${glow}88, inset 0 0 10px ${glow}15`;
+
+  const ringStyle = computeRingStyle(isConnectSource, tRing, baseShadow);
+
+  // Selected state: brighter glow only (no geometric transform).
+  const selectedStyle = selected ? { boxShadow: `${ringStyle.boxShadow}, 0 0 10px #fff` } : {};
+
+  const pingColor = statusColors?.border || glow;
+
+  // ── Shared icon content ─────────────────────────────────────────────────
+  const iconContent = data.iconSrc ? (
+    <img
+      src={data.iconSrc}
+      alt=""
+      width={38}
+      height={38}
+      style={{
+        objectFit: 'contain',
+        transform: isUploadedIcon ? 'scale(2.5)' : 'none',
+        transformOrigin: 'center',
+        filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.7)) drop-shadow(0 0 8px rgba(255,255,255,0.1))',
+      }}
+      onError={(e) => {
+        if (!e.target.dataset.fallbackApplied) {
+          e.target.dataset.fallbackApplied = '1';
+          e.target.src = '/icons/vendors/generic.svg';
+          return;
+        }
+        e.target.style.display = 'none';
+      }}
+    />
+  ) : (
+    <span style={{ fontSize: 24, fontWeight: 700, color: 'var(--color-text)' }}>
+      {data.label?.[0]?.toUpperCase() || '?'}
+    </span>
+  );
+
+  // ── Smart node body — Lucide icon as shape (hardware), circle fallback ──
+  const isHardwareNode = data.type === 'hardware';
+  const DeviceIcon = isHardwareNode ? resolveDeviceIcon(data) : null;
+  // Smart node icon is always neon cyan — status is expressed via ring/ping only
+  const iconColor = '#00f0ff';
+  const circleStrokeWidth = statusColors ? 2.5 : selected ? 2 : 1.5;
+
+  const nodeBody = DeviceIcon ? (
+    // Smart node: Lucide icon IS the shape — neon cyan glow, no SVG frame
+    <div
+      style={{
+        width: 64,
+        height: 64,
+        position: 'relative',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      {/* Telemetry / connect-source ring */}
+      {(tRing || isConnectSource) && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: -3,
+            borderRadius: '50%',
+            boxShadow: isConnectSource ? CONNECT_SOURCE_SHADOW : tRing.shadow,
+            animation: isConnectSource
+              ? 'node-connect-pulse 1s ease-in-out infinite'
+              : tRing.animation,
+            pointerEvents: 'none',
+            zIndex: 2,
+          }}
+        />
+      )}
+      <DeviceIcon
+        size={48}
+        strokeWidth={1.2}
+        style={{
+          position: 'relative',
+          zIndex: 1,
+          color: isConnectSource ? 'var(--color-primary)' : iconColor,
+          filter: selected
+            ? `drop-shadow(0 0 12px ${iconColor})`
+            : `drop-shadow(0 0 5px ${iconColor}88)`,
+          transition: 'filter 0.3s ease, transform 0.3s ease',
+          transform: selected ? 'scale(1.1)' : 'scale(1)',
+        }}
+      />
+
+      {/* Bottom-left branded icon badge — shown only when a real branded icon exists (not generic fallback) */}
+      {data.iconSrc && !data.iconSrc.includes('generic') && (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: -4,
+            left: -4,
+            width: 22,
+            height: 22,
+            borderRadius: 5,
+            background: 'rgba(5,11,20,0.85)',
+            border: '1px solid rgba(0,240,255,0.3)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10,
+            pointerEvents: 'none',
+          }}
+        >
+          <img
+            src={data.iconSrc}
+            alt=""
+            width={14}
+            height={14}
+            style={{ objectFit: 'contain', display: 'block' }}
+            onError={(e) => {
+              e.target.parentElement.style.display = 'none';
+            }}
+          />
+        </div>
+      )}
+    </div>
+  ) : (
+    // Classic circle node with vendor icon
+    <div
+      style={{
+        width: 64,
+        height: 64,
+        borderRadius: '50%',
+        position: 'relative',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        transition: 'box-shadow 0.2s ease, transform 0.2s ease',
+        ...ringStyle,
+        ...selectedStyle,
+      }}
+    >
+      <svg
+        viewBox="0 0 40 40"
+        width="100%"
+        height="100%"
+        style={{ position: 'absolute', inset: 0 }}
+        aria-hidden="true"
+      >
+        <circle
+          cx="20"
+          cy="20"
+          r="16"
+          fill={fillBg || `${glow}18`}
+          stroke={glow}
+          strokeWidth={circleStrokeWidth}
+        />
+      </svg>
+      <div
+        style={{
+          position: 'relative',
+          zIndex: 1,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        {iconContent}
+      </div>
+    </div>
+  );
+
+  return (
+    <div
+      className="map-node-shell"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: 0,
+        userSelect: 'none',
+        cursor: 'pointer',
+        position: 'relative',
+      }}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
+      {/* Glow ring + icon */}
+      <div style={{ position: 'relative', marginBottom: 8, flexShrink: 0 }}>
+        <NodeHandles
+          connectedHandleIds={connectedHandleIds}
+          isConnecting={isConnecting || isHovered}
+        />
+
+        {data.isClusterMember && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: -10,
+              borderRadius: '50%',
+              border: `1px solid ${glow}55`,
+              boxShadow: `0 0 18px ${glow}44`,
+              pointerEvents: 'none',
+            }}
+          />
+        )}
+
+        <span
+          className="map-node-ping map-node-ping-bottom-right"
+          style={{ '--ping-color': pingColor, animationDelay: '0.6s' }}
+        />
+
+        {/* Maintenance Mode Banner — caution tape above node */}
+        {isMaintenance && (
+          <div
+            style={{
+              position: 'absolute',
+              top: -12,
+              left: -8,
+              right: -8,
+              height: 16,
+              background:
+                'repeating-linear-gradient(45deg, #c09550, #c09550 10px, #1f2121 10px, #1f2121 20px)',
+              borderRadius: 8,
+              fontSize: 7,
+              color: '#fff',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontWeight: 700,
+              letterSpacing: '0.05em',
+              zIndex: 20,
+              textShadow: '0 1px 2px rgba(0,0,0,0.6)',
+            }}
+          >
+            MAINTENANCE
+          </div>
+        )}
+
+        {nodeBody}
+
+        {/* IP conflict badge — amber ! in top-right corner */}
+        {hasIpConflict && (
+          <div
+            style={{
+              position: 'absolute',
+              top: -2,
+              right: -2,
+              width: 18,
+              height: 18,
+              borderRadius: '50%',
+              background: '#f59e0b',
+              border: '2px solid var(--color-bg, #0d0d1a)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: 10,
+              fontWeight: 800,
+              color: '#1a1a1a',
+              zIndex: 10,
+              lineHeight: 1,
+            }}
+          >
+            !
+          </div>
+        )}
+
+        {/* Latency badge — shown when status is derived (no override) and monitor has data */}
+        {!data.status_override && data.monitor_latency_ms != null && (
+          <div
+            style={{
+              position: 'absolute',
+              bottom: -16,
+              left: '50%',
+              transform: 'translateX(-50%)',
+              fontSize: 9,
+              fontFamily: 'ui-monospace, monospace',
+              color: data.monitor_status === 'up' ? '#22c55e' : '#ef4444',
+              background: 'rgba(0,0,0,0.55)',
+              borderRadius: 3,
+              padding: '1px 4px',
+              pointerEvents: 'none',
+              whiteSpace: 'nowrap',
+              zIndex: 12,
+            }}
+          >
+            {Math.round(data.monitor_latency_ms)}ms
+          </div>
+        )}
+      </div>
+
+      {/* Label */}
+      <div
+        style={{
+          fontSize: 12,
+          fontWeight: 600,
+          color: 'var(--color-text)',
+          textAlign: 'center',
+          maxWidth: 130,
+          lineHeight: 1.3,
+          letterSpacing: '0.01em',
+          whiteSpace: 'normal',
+          wordBreak: 'break-word',
+        }}
+      >
+        {data.label}
+      </div>
+
+      {/* IP address (compute) or CIDR (network) */}
+      {(data.ip_address || data.cidr) && (
+        <div
+          style={{
+            fontSize: 10,
+            color: 'var(--color-primary)',
+            marginTop: 3,
+            fontFamily: 'monospace',
+            letterSpacing: '0.02em',
+          }}
+        >
+          {data.ip_address || data.cidr}
+        </div>
+      )}
+
+      {/* Storage capacity badge — hardware nodes or standalone storage nodes */}
+      {(() => {
+        const usedGb = data.storage_summary?.used_gb ?? data.used_gb;
+        const totalGb = data.storage_summary?.total_gb ?? data.capacity_gb;
+        if (usedGb == null || !totalGb || totalGb <= 0) return null;
+        const pct = Math.min(100, Math.round((usedGb / totalGb) * 100));
+        const barColor = getStorageBarColor(pct);
+        const totalLabel = totalGb >= 1024 ? `${(totalGb / 1024).toFixed(1)}TB` : `${totalGb}GB`;
+        return (
+          <div
+            style={{
+              marginTop: 4,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: 2,
+            }}
+          >
+            <div
+              style={{
+                width: 56,
+                height: 4,
+                borderRadius: 3,
+                background: 'var(--color-border)',
+                overflow: 'hidden',
+              }}
+            >
+              <div
+                style={{
+                  width: `${pct}%`,
+                  height: '100%',
+                  background: barColor,
+                  borderRadius: 3,
+                }}
+              />
+            </div>
+            <div style={{ fontSize: 9, color: barColor, fontFamily: 'monospace' }}>
+              {totalLabel}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Telemetry badge — cpu_temp / power when available */}
+      {tRing && (tData.cpu_temp != null || tData.system_power_w != null) && (
+        <div style={{ marginTop: 3, display: 'flex', gap: 5 }}>
+          {tData.cpu_temp != null && (
+            <span
+              style={{
+                fontSize: 9,
+                fontFamily: 'monospace',
+                color: tData.cpu_temp >= 80 ? '#ef4444' : 'var(--color-text-muted)',
+              }}
+            >
+              {tData.cpu_temp}°C
+            </span>
+          )}
+          {tData.system_power_w != null && (
+            <span
+              style={{ fontSize: 9, fontFamily: 'monospace', color: 'var(--color-text-muted)' }}
+            >
+              {tData.system_power_w}W
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Proxmox telemetry badge — CPU% / RAM for hypervisor nodes */}
+      {tData.cpu_pct != null && tData.mem_used_gb != null && (
+        <div style={{ marginTop: 3, display: 'flex', gap: 5, alignItems: 'center' }}>
+          <span
+            style={{
+              fontSize: 9,
+              fontFamily: 'monospace',
+              color: tData.cpu_pct >= 90 ? '#ef4444' : tData.cpu_pct >= 70 ? '#f59e0b' : '#22c55e',
+            }}
+          >
+            CPU {tData.cpu_pct}%
+          </span>
+          <span style={{ fontSize: 9, fontFamily: 'monospace', color: 'var(--color-text-muted)' }}>
+            {tData.mem_used_gb}/{tData.mem_total_gb}GB
+          </span>
+        </div>
+      )}
+
+      {/* Docker driver badge (docker_network nodes) */}
+      {data.docker_driver && (
+        <div
+          className="badge-driver"
+          style={{
+            marginTop: 3,
+            fontSize: 9,
+            padding: '1px 6px',
+            borderRadius: 8,
+            background: '#0b6e8e33',
+            border: '1px solid #1cb8d855',
+            color: '#1cb8d8',
+            fontFamily: 'monospace',
+            letterSpacing: '0.04em',
+          }}
+        >
+          {data.docker_driver}
+        </div>
+      )}
+
+      {/* Docker image badge (docker_container nodes) */}
+      {data.docker_image && (
+        <div
+          style={{
+            marginTop: 2,
+            fontSize: 9,
+            padding: '1px 5px',
+            borderRadius: 8,
+            background: '#1e6ba822',
+            border: '1px solid #2d8ae044',
+            color: '#2d8ae0',
+            fontFamily: 'monospace',
+            maxWidth: 120,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {data.docker_image.split('/').pop()}
+        </div>
+      )}
+    </div>
+  );
+}
+
+CustomNode.propTypes = {
+  id: PropTypes.string,
+  selected: PropTypes.bool,
+  data: PropTypes.shape({
+    status: PropTypes.string,
+    status_override: PropTypes.string,
+    isCloud: PropTypes.bool,
+    glowColor: PropTypes.string,
+    label: PropTypes.string,
+    memberCount: PropTypes.number,
+    role: PropTypes.string,
+    nodeShape: PropTypes.string,
+    telemetry_status: PropTypes.string,
+    telemetry_data: PropTypes.shape({
+      cpu_temp: PropTypes.number,
+      system_power_w: PropTypes.number,
+      cpu_pct: PropTypes.number,
+      mem_used_gb: PropTypes.number,
+      mem_total_gb: PropTypes.number,
+    }),
+    ip_conflict: PropTypes.bool,
+    isClusterMember: PropTypes.bool,
+    iconSrc: PropTypes.string,
+    ip_address: PropTypes.string,
+    cidr: PropTypes.string,
+    storage_summary: PropTypes.shape({
+      used_gb: PropTypes.number,
+      total_gb: PropTypes.number,
+    }),
+    used_gb: PropTypes.number,
+    capacity_gb: PropTypes.number,
+    monitor_latency_ms: PropTypes.number,
+    monitor_status: PropTypes.string,
+    docker_driver: PropTypes.string,
+    docker_image: PropTypes.string,
+    isConnectSource: PropTypes.bool,
+  }).isRequired,
+};
+
+export default memo(CustomNode, (prev, next) => {
+  return (
+    prev.data.status === next.data.status &&
+    prev.data.status_override === next.data.status_override &&
+    prev.data.label === next.data.label &&
+    prev.data.iconSrc === next.data.iconSrc &&
+    prev.data.glowColor === next.data.glowColor &&
+    prev.data.role === next.data.role &&
+    prev.data.nodeShape === next.data.nodeShape &&
+    prev.data.telemetry_status === next.data.telemetry_status &&
+    prev.data.ip_conflict === next.data.ip_conflict &&
+    prev.data.isClusterMember === next.data.isClusterMember &&
+    prev.data.isCloud === next.data.isCloud &&
+    prev.data.ip_address === next.data.ip_address &&
+    prev.data.cidr === next.data.cidr &&
+    prev.data.storage_summary === next.data.storage_summary &&
+    prev.data.telemetry_data === next.data.telemetry_data &&
+    prev.data.docker_driver === next.data.docker_driver &&
+    prev.data.docker_image === next.data.docker_image &&
+    prev.id === next.id &&
+    prev.selected === next.selected
+  );
+});

@@ -1,5 +1,5 @@
 import { ReactFlowProvider } from 'reactflow';
-import { useMapTabs } from '../hooks/useMapTabs';
+import { useMapTabs } from '../features/map/hooks/useMapTabs';
 import { ConnectionStateProvider } from '../providers/ConnectionStateProvider';
 import MapWorkspace from '../features/map/MapWorkspace';
 

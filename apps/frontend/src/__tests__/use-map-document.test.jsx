@@ -10,7 +10,7 @@
  */
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { useMapDocument } from '../hooks/useMapDocument';
+import { useMapDocument } from '../features/map/hooks/useMapDocument';
 
 describe('useMapDocument', () => {
   it('starts as an empty, clean document', () => {

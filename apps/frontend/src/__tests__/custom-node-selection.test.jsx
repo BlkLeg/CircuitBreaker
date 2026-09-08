@@ -1,7 +1,7 @@
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/react';
-import CustomNode from '../components/map/CustomNode';
+import CustomNode from '../features/map/components/CustomNode';
 
 vi.mock('reactflow', () => ({
   Handle: (props) => <div data-testid="rf-handle" {...props} />,

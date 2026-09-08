@@ -12,7 +12,7 @@ vi.mock('../api/maps', () => ({
 }));
 
 import { mapsApi } from '../api/maps';
-import { useMapTabs } from '../hooks/useMapTabs';
+import { useMapTabs } from '../features/map/hooks/useMapTabs';
 
 function Probe() {
   const { maps, activeMapId, loading, error, retry } = useMapTabs();

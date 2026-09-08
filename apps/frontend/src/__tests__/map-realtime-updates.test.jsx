@@ -24,7 +24,7 @@ vi.mock('../hooks/useTelemetryStream', () => ({
 
 import { telemetryApi } from '../api/client';
 import { getTargetSummary } from '../api/monitor';
-import { useMapRealTimeUpdates } from '../hooks/useMapRealTimeUpdates';
+import { useMapRealTimeUpdates } from '../features/map/hooks/useMapRealTimeUpdates';
 
 function makeNodesRef() {
   return {

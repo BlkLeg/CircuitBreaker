@@ -1,7 +1,7 @@
 /* eslint-disable security/detect-object-injection -- test helper mutates keyed fixture object */
 import { act, renderHook } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { useMapEdgeInteractions } from '../hooks/useMapEdgeInteractions';
+import { useMapEdgeInteractions } from '../features/map/hooks/useMapEdgeInteractions';
 
 function makeArgs(overrides = {}) {
   return {

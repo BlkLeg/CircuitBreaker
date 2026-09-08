@@ -9,7 +9,7 @@
 /* eslint-disable security/detect-object-injection -- indexes the IDLE fixture's own keys */
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { useMapEditorUi } from '../hooks/useMapEditorUi';
+import { useMapEditorUi } from '../features/map/hooks/useMapEditorUi';
 
 const IDLE = {
   mapLabelMenuOpenId: null,

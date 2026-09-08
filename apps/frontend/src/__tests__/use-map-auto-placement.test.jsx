@@ -9,7 +9,7 @@
  */
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { useMapAutoPlacement } from '../hooks/useMapAutoPlacement';
+import { useMapAutoPlacement } from '../features/map/hooks/useMapAutoPlacement';
 import { graphApi } from '../api/client';
 
 vi.mock('../api/client', () => ({ graphApi: { placeNode: vi.fn() } }));

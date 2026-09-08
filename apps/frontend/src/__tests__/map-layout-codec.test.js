@@ -6,7 +6,11 @@
  * version marker, and the versioned document this codec writes.
  */
 import { describe, expect, it } from 'vitest';
-import { decodeLayout, encodeLayout, LAYOUT_SCHEMA_VERSION } from '../utils/layoutCodec';
+import {
+  decodeLayout,
+  encodeLayout,
+  LAYOUT_SCHEMA_VERSION,
+} from '../features/map/model/layoutCodec';
 
 const DOC = {
   nodes: { 'hw-1': { x: 1, y: 2 } },

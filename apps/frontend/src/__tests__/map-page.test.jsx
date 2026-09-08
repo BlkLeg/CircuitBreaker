@@ -164,43 +164,43 @@ vi.mock('../components/common/ConfirmDialog', () => ({
 vi.mock('../components/common/FormModal', () => ({
   default: () => null,
 }));
-vi.mock('../components/map/ContextMenu', () => ({
+vi.mock('../features/map/components/ContextMenu', () => ({
   default: () => null,
 }));
-vi.mock('../components/map/TelemetrySidebar', () => ({
+vi.mock('../features/map/components/TelemetrySidebar', () => ({
   default: () => null,
 }));
-vi.mock('../components/map/BoundaryContextMenu', () => ({
+vi.mock('../features/map/components/BoundaryContextMenu', () => ({
   default: () => null,
 }));
-vi.mock('../components/map/VisualLineContextMenu', () => ({
+vi.mock('../features/map/components/VisualLineContextMenu', () => ({
   default: () => null,
 }));
-vi.mock('../components/map/DrawToolsDropdown', () => ({
+vi.mock('../features/map/components/DrawToolsDropdown', () => ({
   default: () => null,
 }));
-vi.mock('../components/map/BulkQuickCreateModal', () => ({
+vi.mock('../features/map/components/BulkQuickCreateModal', () => ({
   default: () => null,
 }));
-vi.mock('../components/map/CreateNodeModal', () => ({
+vi.mock('../features/map/components/CreateNodeModal', () => ({
   default: () => null,
 }));
-vi.mock('../components/map/CustomNode', () => ({
+vi.mock('../features/map/components/CustomNode', () => ({
   default: () => React.createElement('div', null, 'CustomNode'),
 }));
-vi.mock('../components/map/CustomEdge', () => ({
+vi.mock('../features/map/components/CustomEdge', () => ({
   default: () => React.createElement('div', null, 'CustomEdge'),
 }));
-vi.mock('../components/map/ConnectionTypePicker', () => ({
+vi.mock('../features/map/components/ConnectionTypePicker', () => ({
   default: () => null,
 }));
-vi.mock('../components/map/DeleteConflictModal', () => ({
+vi.mock('../features/map/components/DeleteConflictModal', () => ({
   default: () => null,
 }));
-vi.mock('../components/map/WifiOverlay', () => ({
+vi.mock('../features/map/components/WifiOverlay', () => ({
   default: () => null,
 }));
-vi.mock('../components/map/Sidebar', () => ({
+vi.mock('../features/map/components/Sidebar', () => ({
   default: () => null,
 }));
 
@@ -208,7 +208,7 @@ vi.mock('../components/MapToolbar', () => ({
   default: () => React.createElement('div', { 'data-testid': 'map-toolbar' }, 'MapToolbar'),
 }));
 
-vi.mock('../components/map/connectionTypes', () => ({
+vi.mock('../features/map/model/connectionTypes', () => ({
   CONNECTION_TYPE_OPTIONS: [],
   normalizeConnectionType: vi.fn((t) => t),
 }));
@@ -226,14 +226,14 @@ vi.mock('../utils/bandwidthCalculator', () => ({
   recalculateAllEdges: vi.fn((edges) => edges),
 }));
 
-vi.mock('../components/map/linkMutations', () => ({
+vi.mock('../features/map/model/linkMutations', () => ({
   createLinkByNodeIds: vi.fn(),
   inferEdgeNodeIdsFromMeta: vi.fn(),
   unlinkByEdge: vi.fn(),
   isUpdatableEdgeId: vi.fn(),
 }));
 
-vi.mock('../components/map/mapContexts', () => ({
+vi.mock('../features/map/model/mapContexts', () => ({
   MapEdgeCallbacksContext: React.createContext({}),
   MapViewOptionsContext: React.createContext({}),
 }));
@@ -280,7 +280,7 @@ vi.mock('lucide-react', async (importOriginal) => {
 });
 
 // Need to mock the hooks that MapPage uses
-vi.mock('../hooks/useMapDataLoad', () => ({
+vi.mock('../features/map/hooks/useMapDataLoad', () => ({
   useMapDataLoad: () => ({
     fetchData: vi.fn(),
     autoPlaceNew: vi.fn(),
@@ -288,7 +288,7 @@ vi.mock('../hooks/useMapDataLoad', () => ({
   }),
 }));
 
-vi.mock('../hooks/useMapMutations', () => ({
+vi.mock('../features/map/hooks/useMapMutations', () => ({
   useMapMutations: () => ({
     saveLayoutSnapshot: vi.fn(),
     saveLayout: vi.fn(),
@@ -297,7 +297,7 @@ vi.mock('../hooks/useMapMutations', () => ({
   }),
 }));
 
-vi.mock('../hooks/useMapRealTimeUpdates', () => ({
+vi.mock('../features/map/hooks/useMapRealTimeUpdates', () => ({
   useMapRealTimeUpdates: () => ({
     pendingDiscoveries: 0,
   }),
@@ -310,7 +310,7 @@ vi.mock('../hooks/useTelemetryStream', () => ({
   }),
 }));
 
-vi.mock('../hooks/useMapTabs', () => ({
+vi.mock('../features/map/hooks/useMapTabs', () => ({
   useMapTabs: () => ({
     maps: [{ id: 1, name: 'Main' }],
     activeMapId: 1,

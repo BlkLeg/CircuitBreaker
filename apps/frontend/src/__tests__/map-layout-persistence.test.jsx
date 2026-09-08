@@ -9,7 +9,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { parseLayoutData } from '../utils/mapGeometryUtils';
-import { useMapMutations } from '../hooks/useMapMutations';
+import { useMapMutations } from '../features/map/hooks/useMapMutations';
 import { graphApi } from '../api/client';
 
 vi.mock('../api/client', () => ({

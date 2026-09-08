@@ -1,7 +1,7 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import TopologyManagerPanel from '../components/map/TopologyManagerPanel.jsx';
+import TopologyManagerPanel from '../features/map/components/TopologyManagerPanel';
 import ToastProvider from '../components/common/Toast.jsx';
 
 const mockUser = vi.fn();

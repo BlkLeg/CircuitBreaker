@@ -1,4 +1,4 @@
-import { decodeLayout } from './layoutCodec';
+import { decodeLayout } from '../features/map/model/layoutCodec';
 /**
  * Pure geometry helpers for the topology map.
  * No React dependencies — safe to import from any module.

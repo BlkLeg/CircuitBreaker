@@ -1,7 +1,7 @@
 import React from 'react';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import TelemetrySidebar from '../components/map/TelemetrySidebar';
+import TelemetrySidebar from '../features/map/components/TelemetrySidebar';
 import { telemetryApi, proxmoxApi } from '../api/client';
 
 vi.mock('../api/client', () => ({

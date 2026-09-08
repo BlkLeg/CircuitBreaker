@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import Graph from 'graphology';
-import { toSigmaGraph } from '../utils/graphAdapter';
+import { toSigmaGraph } from '../features/map/model/graphAdapter';
 
 // A multi graph, matching SigmaMap: nothing in the map document prevents two
 // edges between the same pair (an auto-discovered relation and an ad-hoc link,

@@ -118,8 +118,17 @@ export async function stubApi(page: Page, overrides: Record<string, unknown> = {
   // each run with character-level horizontal offsets. This is the same class of
   // leak the weather widget had — an external dependency the /api/v1 stub never
   // saw. Blocking it pins every run to the fallback stack.
-  await page.route('https://fonts.googleapis.com/**', (route) => route.abort());
-  await page.route('https://fonts.gstatic.com/**', (route) => route.abort());
+  // Fulfilled empty rather than aborted: an aborted request surfaces as
+  // "Failed to load resource: net::ERR_FAILED" in the console, which the smoke
+  // and navigation specs correctly treat as a failure. An empty stylesheet is
+  // just as deterministic — no @font-face, so the fallback stack is used — and
+  // makes no noise.
+  await page.route('https://fonts.googleapis.com/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'text/css', body: '' })
+  );
+  await page.route('https://fonts.gstatic.com/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'font/woff2', body: '' })
+  );
 
   await page.route('**/api/v1/**', async (route) => {
     const url = new URL(route.request().url());

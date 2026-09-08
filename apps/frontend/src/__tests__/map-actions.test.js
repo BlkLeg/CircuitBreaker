@@ -7,7 +7,7 @@
  * actions are a distinct, reportable outcome.
  */
 import { describe, expect, it } from 'vitest';
-import { MAP_ACTIONS, ACTION_PREFIXES, resolveMapAction } from '../components/map/mapActions';
+import { MAP_ACTIONS, ACTION_PREFIXES, resolveMapAction } from '../features/map/model/mapActions';
 
 describe('resolveMapAction', () => {
   it('resolves each direct action', () => {

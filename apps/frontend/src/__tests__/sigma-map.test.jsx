@@ -9,7 +9,7 @@
  */
 import { render } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import SigmaMap from '../components/map/SigmaMap';
+import SigmaMap from '../features/map/renderers/SigmaMap';
 import { graphApi } from '../api/client';
 
 vi.mock('../api/client', () => ({ graphApi: { topology: vi.fn() } }));

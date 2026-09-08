@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { MapErrorBanner, ScanImportBanner } from '../components/map/MapStatusBanners';
+import { MapErrorBanner, ScanImportBanner } from '../features/map/components/MapStatusBanners';
 
 describe('ScanImportBanner', () => {
   const pending = { scanId: 3, newCount: 2, results: [] };

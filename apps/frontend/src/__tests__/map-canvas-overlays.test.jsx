@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import MapCanvasOverlays from '../components/map/MapCanvasOverlays';
+import MapCanvasOverlays from '../features/map/components/MapCanvasOverlays';
 
 describe('MapCanvasOverlays', () => {
   it('renders boundary label and draw hint overlays', () => {

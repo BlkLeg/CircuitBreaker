@@ -1,0 +1,244 @@
+import { useCallback, useEffect, useState } from 'react';
+import { telemetryApi } from '../../../api/client';
+import { getResultsWithInference } from '../../../api/discovery';
+import { getTargetSummary } from '../../../api/monitor';
+import { MONITOR_TARGET_TYPES } from '../model/mapConstants';
+import { discoveryEmitter } from '../../../hooks/useDiscoveryStream';
+import { telemetryEmitter } from '../../../hooks/useTelemetryStream';
+import { getPendingResults } from '../../../api/discovery';
+import { applyTelemetryUpdate, applyMonitorUpdates } from '../../../utils/mapDataUtils';
+
+/**
+ * Manages real-time updates for the topology map.
+ *
+ * When Redis-backed telemetry streaming is available (via `useTelemetryStream`),
+ * live telemetry pushes arrive through the `telemetryEmitter` and are applied
+ * immediately to nodes — eliminating the 60 s polling interval.
+ *
+ * Falls back to interval polling when the telemetry WebSocket is not connected.
+ *
+ * @param {{ setNodes: Function, nodesRef: object, unmountedRef?: { current: boolean }, telemetryConnected?: boolean }} params
+ * @returns {{ pendingDiscoveries: number, setPendingDiscoveries: Function }}
+ */
+export function useMapRealTimeUpdates({
+  setNodes,
+  nodesRef,
+  unmountedRef,
+  telemetryConnected = false,
+}) {
+  const [pendingDiscoveries, setPendingDiscoveries] = useState(0);
+
+  // Pending discoveries badge
+  useEffect(() => {
+    getPendingResults({ limit: 1 })
+      .then((r) => {
+        if (!unmountedRef?.current) setPendingDiscoveries(r.data?.total ?? 0);
+      })
+      .catch((err) => {
+        console.warn('Pending discoveries fetch failed:', err);
+      });
+    const onAdded = () => {
+      if (!unmountedRef?.current) setPendingDiscoveries((c) => c + 1);
+    };
+    discoveryEmitter.on('result:added', onAdded);
+    return () => discoveryEmitter.off('result:added', onAdded);
+  }, [unmountedRef]);
+
+  // Scan completion → dispatch scan:import-ready when a job finishes with new hosts
+  const checkScanForImport = useCallback(async (jobId) => {
+    try {
+      const { data: results } = await getResultsWithInference(jobId);
+      const newCount = results.filter((r) => r.is_new).length;
+      if (newCount > 0) {
+        globalThis.dispatchEvent(
+          new CustomEvent('scan:import-ready', { detail: { scanId: jobId, newCount } })
+        );
+      }
+    } catch {
+      // Non-fatal — banner is optional UX enhancement
+    }
+  }, []);
+
+  useEffect(() => {
+    const onJobUpdate = (job) => {
+      if (job?.status === 'done') {
+        checkScanForImport(job.id);
+      }
+    };
+    discoveryEmitter.on('job:update', onJobUpdate);
+    return () => discoveryEmitter.off('job:update', onJobUpdate);
+  }, [checkScanForImport]);
+
+  // Real-time telemetry via Redis push (replaces 60 s polling when connected)
+  useEffect(() => {
+    if (!telemetryConnected) return;
+
+    const onTelemetry = (msg) => {
+      if (unmountedRef?.current || !msg?.entity_id) return;
+      const nodeId = nodesRef.current.find(
+        (n) => n.originalType === 'hardware' && n._refId === msg.entity_id
+      )?.id;
+      if (nodeId) {
+        setNodes(
+          applyTelemetryUpdate(nodesRef.current, nodeId, {
+            status: msg.status,
+            data: msg.data ?? msg,
+            last_polled: msg.last_polled ?? null,
+          })
+        );
+      }
+    };
+    telemetryEmitter.on('telemetry:any', onTelemetry);
+    return () => telemetryEmitter.off('telemetry:any', onTelemetry);
+  }, [setNodes, nodesRef, unmountedRef, telemetryConnected]);
+
+  // Fallback: telemetry polling with exponential backoff (only when WS telemetry is NOT connected)
+  //
+  // H5: this used to fan one HTTP request out per due node (Promise.allSettled
+  // over telemetryApi.get(n._refId)). At >=8 nodes that alone wanted more
+  // requests/minute than the "telemetry" rate-limit budget allows, and every
+  // node is due on mount, so the first tick fired one burst per node. Batched
+  // via telemetryApi.getBatch() instead: one request per chunk of due nodes,
+  // chunked at the batch endpoint's own id cap.
+  useEffect(() => {
+    if (telemetryConnected) return;
+
+    const BASE_DELAY = 30_000;
+    const MAX_DELAY = 300_000;
+    const LOOP_DELAY = 5_000;
+    const PAUSE_AFTER_ERRORS = 3;
+    const PAUSE_WINDOW = 5 * 60 * 1000;
+    // Mirrors _TELEMETRY_BATCH_MAX_IDS in apps/backend/src/app/api/telemetry.py —
+    // GET /hardware/telemetry/batch rejects a request over this many ids with
+    // a 400, so a due set larger than this is split across multiple batched
+    // calls rather than sent as one oversized one.
+    const TELEMETRY_BATCH_MAX_IDS = 50;
+
+    // Node-level state
+    const nextPollAt = {};
+    const backoffByNode = {};
+    const errorCounts = {};
+    const pausedUntil = {};
+    const unconfiguredNodes = new Set();
+
+    let timer = null;
+
+    const applyNodeError = (n, status) => {
+      const currentBackoff = backoffByNode[n.id] ?? BASE_DELAY;
+      const nextBackoff = Math.min(Math.round(currentBackoff * 1.5), MAX_DELAY);
+      backoffByNode[n.id] = nextBackoff;
+      nextPollAt[n.id] = Date.now() + nextBackoff;
+      errorCounts[n.id] = (errorCounts[n.id] ?? 0) + 1;
+
+      if (errorCounts[n.id] >= PAUSE_AFTER_ERRORS) {
+        pausedUntil[n.id] = Date.now() + PAUSE_WINDOW;
+      }
+
+      if (status >= 500 && !unmountedRef?.current) {
+        setNodes((prev) =>
+          prev.map((node) =>
+            node.id === n.id
+              ? { ...node, data: { ...node.data, telemetry_status: 'offline' } }
+              : node
+          )
+        );
+      }
+    };
+
+    const applyNodeSuccess = (n, res) => {
+      if (res?.status === 'unconfigured') {
+        unconfiguredNodes.add(n.id);
+        return;
+      }
+      errorCounts[n.id] = 0;
+      backoffByNode[n.id] = BASE_DELAY;
+      nextPollAt[n.id] = Date.now() + BASE_DELAY;
+      setNodes(applyTelemetryUpdate(nodesRef.current, n.id, res));
+    };
+
+    // A node absent from the batch response is a miss (deleted between the
+    // poll and the request, or not visible to this caller) — not an error.
+    // Reschedule it at the normal cadence without touching its error count.
+    const applyNodeMiss = (n) => {
+      backoffByNode[n.id] = BASE_DELAY;
+      nextPollAt[n.id] = Date.now() + BASE_DELAY;
+    };
+
+    const pollChunk = async (chunk) => {
+      let batch;
+      try {
+        batch = await telemetryApi.getBatch(chunk.map((n) => n._refId));
+      } catch (err) {
+        // A batch failure backs off every node in the chunk, same as a
+        // per-node failure did before batching.
+        const status = err?.statusCode || err?.response?.status;
+        chunk.forEach((n) => applyNodeError(n, status));
+        console.warn('Telemetry batch polling failed for', chunk.length, 'node(s)', err);
+        return;
+      }
+      if (unmountedRef?.current) return;
+      chunk.forEach((n) => {
+        const res = batch?.[n._refId];
+        if (res === undefined) {
+          applyNodeMiss(n);
+        } else {
+          applyNodeSuccess(n, res);
+        }
+      });
+    };
+
+    const doPoll = async () => {
+      if (unmountedRef?.current) return;
+      const now = Date.now();
+      const liveHwNodes = nodesRef.current.filter(
+        (n) =>
+          n.originalType === 'hardware' &&
+          Number.isInteger(n._refId) &&
+          !unconfiguredNodes.has(n.id)
+      );
+
+      const dueNodes = liveHwNodes.filter((node) => {
+        if ((pausedUntil[node.id] ?? 0) > now) return false;
+        if ((nextPollAt[node.id] ?? 0) > now) return false;
+        return true;
+      });
+
+      const chunks = [];
+      for (let i = 0; i < dueNodes.length; i += TELEMETRY_BATCH_MAX_IDS) {
+        chunks.push(dueNodes.slice(i, i + TELEMETRY_BATCH_MAX_IDS));
+      }
+
+      await Promise.allSettled(chunks.map(pollChunk));
+
+      timer = setTimeout(doPoll, LOOP_DELAY);
+    };
+
+    timer = setTimeout(doPoll, LOOP_DELAY);
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [setNodes, nodesRef, unmountedRef, telemetryConnected]);
+
+  // Monitor polling — refresh every 60 s so node latency badges and sidebar stay
+  // live for every monitorable entity type (hardware, compute, service, external).
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        if (unmountedRef?.current) return;
+        const responses = await Promise.all(
+          [...MONITOR_TARGET_TYPES.values()].map((targetType) => getTargetSummary(targetType))
+        );
+        if (unmountedRef?.current) return;
+        const summaries = responses.flatMap((res) => (Array.isArray(res?.data) ? res.data : []));
+        setNodes((prev) =>
+          applyMonitorUpdates(nodesRef.current.length ? nodesRef.current : prev, summaries)
+        );
+      } catch (err) {
+        console.warn('Monitor polling failed:', err);
+      }
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, [setNodes, nodesRef, unmountedRef]);
+
+  return { pendingDiscoveries, setPendingDiscoveries };
+}

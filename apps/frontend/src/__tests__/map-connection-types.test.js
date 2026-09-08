@@ -4,7 +4,7 @@ import {
   formatBandwidth,
   isConnectionTyped,
   normalizeConnectionType,
-} from '../components/map/connectionTypes';
+} from '../features/map/model/connectionTypes';
 
 describe('connectionTypes helpers', () => {
   it('normalizes legacy wireguard type to wg', () => {

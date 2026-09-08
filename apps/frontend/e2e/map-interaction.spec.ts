@@ -101,7 +101,13 @@ test.describe('topology map', () => {
     await expectNoErrorBoundary(page, 'map after cancelling the icon picker');
   });
 
-  test('the Sigma renderer draws the same document', async ({ page }) => {
+  test('the Sigma renderer draws the same document', async ({ page }, testInfo) => {
+    // Sigma is WebGL. Headless firefox and webkit in the CI image provide no
+    // GL context, so the canvas never mounts there. The behaviour under test —
+    // that the renderer draws the document it is handed and issues no request
+    // of its own — is not browser-specific.
+    test.skip(testInfo.project.name !== 'chromium', 'Sigma needs a WebGL context');
+
     const topologyCalls: string[] = [];
     page.on('request', (r) => {
       if (r.url().includes('/graph/topology')) topologyCalls.push(r.url());

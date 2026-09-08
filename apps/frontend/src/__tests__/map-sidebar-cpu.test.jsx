@@ -1,10 +1,10 @@
 import React from 'react';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import Sidebar from '../components/map/Sidebar';
+import Sidebar from '../features/map/components/Sidebar';
 import { telemetryApi } from '../api/client';
 
-vi.mock('../../api/client', () => ({}));
+vi.mock('../api/client', () => ({}));
 vi.mock('../api/client', () => ({
   telemetryApi: {
     getEntity: vi.fn(),

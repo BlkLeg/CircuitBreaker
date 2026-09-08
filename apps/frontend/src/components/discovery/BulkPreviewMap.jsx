@@ -9,7 +9,7 @@ import React, { useMemo } from 'react';
 import ReactFlow, { Background, ReactFlowProvider } from 'reactflow';
 import 'reactflow/dist/style.css';
 import PropTypes from 'prop-types';
-import { NODE_STYLES, resolveNodeIcon } from '../map/mapConstants';
+import { NODE_STYLES, resolveNodeIcon } from '../../features/map/model/mapConstants';
 
 // ── Tiny custom node for the preview ────────────────────────────────────────
 function GhostNode({ data }) {

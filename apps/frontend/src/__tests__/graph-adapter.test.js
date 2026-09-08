@@ -6,7 +6,7 @@
  * hook. It is pure: response in, nodes and edges out.
  */
 import { describe, expect, it } from 'vitest';
-import { adaptTopology } from '../utils/graphAdapter';
+import { adaptTopology } from '../features/map/model/graphAdapter';
 
 const INCLUDE_ALL = new Map([
   ['cluster', true],

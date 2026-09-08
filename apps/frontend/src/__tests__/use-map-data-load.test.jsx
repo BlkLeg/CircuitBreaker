@@ -8,7 +8,7 @@
  */
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { useMapDataLoad } from '../hooks/useMapDataLoad';
+import { useMapDataLoad } from '../features/map/hooks/useMapDataLoad';
 import { graphApi } from '../api/client';
 import { groupNodesIntoCloud } from '../utils/cloudView';
 

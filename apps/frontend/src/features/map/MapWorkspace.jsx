@@ -9,35 +9,31 @@ import ScanImportModal from '../../components/ScanImportModal';
 import { useSettings } from '../../context/SettingsContext';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useTimezone } from '../../context/TimezoneContext';
-import ContextMenu from '../../components/map/ContextMenu';
-import TelemetrySidebar from '../../components/map/TelemetrySidebar';
-import BoundaryContextMenu from '../../components/map/BoundaryContextMenu';
-import VisualLineContextMenu from '../../components/map/VisualLineContextMenu';
-import MapCanvasOverlays from '../../components/map/MapCanvasOverlays';
-import CustomNode from '../../components/map/CustomNode';
-import CustomEdge from '../../components/map/CustomEdge';
-import ConnectionTypePicker from '../../components/map/ConnectionTypePicker';
+import ContextMenu from './components/ContextMenu';
+import TelemetrySidebar from './components/TelemetrySidebar';
+import BoundaryContextMenu from './components/BoundaryContextMenu';
+import VisualLineContextMenu from './components/VisualLineContextMenu';
+import MapCanvasOverlays from './components/MapCanvasOverlays';
+import CustomNode from './components/CustomNode';
+import CustomEdge from './components/CustomEdge';
+import ConnectionTypePicker from './components/ConnectionTypePicker';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { useCapabilities } from '../../hooks/useCapabilities.js';
-import WifiOverlay from '../../components/map/WifiOverlay';
-import Sidebar from '../../components/map/Sidebar';
+import WifiOverlay from './components/WifiOverlay';
+import Sidebar from './components/Sidebar';
 import { useToast } from '../../components/common/Toast';
-import { normalizeConnectionType } from '../../components/map/connectionTypes';
+import { normalizeConnectionType } from './model/connectionTypes';
 import { useHardwareRoles } from '../../hooks/useHardwareRoles';
 import { recalculateAllEdges } from '../../utils/bandwidthCalculator';
-import {
-  createLinkByNodeIds,
-  unlinkByEdge,
-  isUpdatableEdgeId,
-} from '../../components/map/linkMutations';
+import { createLinkByNodeIds, unlinkByEdge, isUpdatableEdgeId } from './model/linkMutations';
 
-import { MapEdgeCallbacksContext, MapViewOptionsContext } from '../../components/map/mapContexts';
+import { MapEdgeCallbacksContext, MapViewOptionsContext } from './model/mapContexts';
 export { MapEdgeCallbacksContext, MapViewOptionsContext };
 
 // Layout functions consumed by useMapLayout hook (../hooks/useMapLayout)
 // Sigma (WebGL renderer) is only used when useSigma=true; lazy-load to defer
 // ~100 KB of sigma/graphology parsing until the user explicitly enables WebGL mode.
-const SigmaMap = lazyRoute('SigmaMap', () => import('../../components/map/SigmaMap'));
+const SigmaMap = lazyRoute('SigmaMap', () => import('./renderers/SigmaMap'));
 import { groupNodesIntoCloud, restoreFromCloudView } from '../../utils/cloudView';
 import { viewportFit } from '../../utils/viewportFit';
 import { lazyRoute } from '../../lib/lazyRoute';
@@ -51,7 +47,7 @@ import {
   normalizeBoundaryName,
   DEFAULT_BOUNDARY_COLOR,
   DEFAULT_BOUNDARY_FILL_OPACITY,
-} from '../../components/map/mapConstants';
+} from './model/mapConstants';
 import {
   applyEdgeSidesForEdge,
   computeBoundaryPolygon,
@@ -67,30 +63,30 @@ import {
   buildNodeSysinfoRows,
   buildNodeStatusDetails,
 } from '../../utils/mapDataUtils';
-import { useMapDataLoad } from '../../hooks/useMapDataLoad';
-import { useMapAutoPlacement } from '../../hooks/useMapAutoPlacement';
-import { useMapDocument } from '../../hooks/useMapDocument';
-import { useMapRealTimeUpdates } from '../../hooks/useMapRealTimeUpdates';
-import { useMapMutations } from '../../hooks/useMapMutations';
-import { useMapEditorUi } from '../../hooks/useMapEditorUi';
-import { useMapFilters } from '../../hooks/useMapFilters';
-import { useMapNodeCommands } from '../../hooks/useMapNodeCommands';
-import MapHeader from '../../components/map/MapHeader';
-import BoundaryInspector from '../../components/map/BoundaryInspector';
-import MapDialogs from '../../components/map/MapDialogs';
-import EdgeInspector from '../../components/map/EdgeInspector';
-import MapCanvas from '../../components/map/MapCanvas';
-import { MapErrorBanner, ScanImportBanner } from '../../components/map/MapStatusBanners';
+import { useMapDataLoad } from './hooks/useMapDataLoad';
+import { useMapAutoPlacement } from './hooks/useMapAutoPlacement';
+import { useMapDocument } from './hooks/useMapDocument';
+import { useMapRealTimeUpdates } from './hooks/useMapRealTimeUpdates';
+import { useMapMutations } from './hooks/useMapMutations';
+import { useMapEditorUi } from './hooks/useMapEditorUi';
+import { useMapFilters } from './hooks/useMapFilters';
+import { useMapNodeCommands } from './hooks/useMapNodeCommands';
+import MapHeader from './components/MapHeader';
+import BoundaryInspector from './components/BoundaryInspector';
+import MapDialogs from './components/MapDialogs';
+import EdgeInspector from './components/EdgeInspector';
+import MapCanvas from './components/MapCanvas';
+import { MapErrorBanner, ScanImportBanner } from './components/MapStatusBanners';
 import { useTelemetryStream } from '../../hooks/useTelemetryStream';
 import { useTopologyStream, topologyEmitter } from '../../hooks/useTopologyStream';
 import { canEdit } from '../../utils/rbac';
-import { useMapLayout } from '../../hooks/useMapLayout';
+import { useMapLayout } from './hooks/useMapLayout';
 import { useContextMenuState } from '../../hooks/useContextMenuState';
-import { useMapPolling } from '../../hooks/useMapPolling';
-import { useMapBoundaryInteractions } from '../../hooks/useMapBoundaryInteractions';
-import { useMapVisualLines } from '../../hooks/useMapVisualLines';
-import { useMapEdgeInteractions } from '../../hooks/useMapEdgeInteractions';
-import { useMapNodeDragSnap } from '../../hooks/useMapNodeDragSnap';
+import { useMapPolling } from './hooks/useMapPolling';
+import { useMapBoundaryInteractions } from './hooks/useMapBoundaryInteractions';
+import { useMapVisualLines } from './hooks/useMapVisualLines';
+import { useMapEdgeInteractions } from './hooks/useMapEdgeInteractions';
+import { useMapNodeDragSnap } from './hooks/useMapNodeDragSnap';
 import { useConnectionStateContext } from '../../providers/ConnectionStateProvider';
 
 // ── ReactFlow node/edge type registrations ───────────────────────────────────
