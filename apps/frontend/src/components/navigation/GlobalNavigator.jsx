@@ -45,6 +45,11 @@ function GlobalNavigator({ isOpen, onClose, onNavigate }) {
   // to document.body, which is what happens if nothing is captured, strands
   // keyboard users at the top of the page.
   const openerRef = useRef(null);
+  // Set just before onClose() fires from either close() or handleActivate(),
+  // so the focus-trap effect below does not fight the deliberate focus move
+  // that follows (back to the opener, or into a modal an action opens). Reset
+  // on the next open so a fresh session starts trapping again.
+  const suppressFocusTrapRef = useRef(false);
 
   const namespace = useMemo(() => namespaceFor({ user, isMasquerade }), [user, isMasquerade]);
 
@@ -57,6 +62,7 @@ function GlobalNavigator({ isOpen, onClose, onNavigate }) {
   useEffect(() => {
     if (!isOpen) return undefined;
     openerRef.current = document.activeElement;
+    suppressFocusTrapRef.current = false;
     setQuery('');
     setActiveIndex(0);
     setPins(readPins(namespace));
@@ -69,7 +75,28 @@ function GlobalNavigator({ isOpen, onClose, onNavigate }) {
     activeRowRef.current?.scrollIntoView({ block: 'nearest' });
   }, [activeIndex]);
 
+  // Focus trap: a mouse click can move focus to a row's Pin button or the
+  // Retry button, off the search input where the Tab handler in
+  // handleKeyDown lives -- from there a plain Tab would walk out of
+  // .navigator-panel and under aria-modal="true" into the page behind it.
+  // Catching every focusin and redirecting anything that lands outside the
+  // panel back to the search field keeps focus inside regardless of which
+  // element it started from. Suppressed during the synchronous close/activate
+  // handoff so it does not fight the deliberate focus move that follows.
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const onFocusIn = (event) => {
+      if (suppressFocusTrapRef.current) return;
+      if (panelRef.current && !panelRef.current.contains(event.target)) {
+        inputRef.current?.focus();
+      }
+    };
+    document.addEventListener('focusin', onFocusIn);
+    return () => document.removeEventListener('focusin', onFocusIn);
+  }, [isOpen]);
+
   const close = useCallback(() => {
+    suppressFocusTrapRef.current = true;
     onClose();
     // Focus goes back before the caller can move it somewhere better; an
     // action that opens a modal overrides this deliberately in handleActivate.
@@ -138,6 +165,7 @@ function GlobalNavigator({ isOpen, onClose, onNavigate }) {
       if (!entry) return;
       // Close first, then hand over: an action opens a modal that wants focus,
       // and restoring focus to the opener afterwards would steal it back.
+      suppressFocusTrapRef.current = true;
       onClose();
       onNavigate(entry);
     },
@@ -234,8 +262,13 @@ function GlobalNavigator({ isOpen, onClose, onNavigate }) {
           className="navigator-results"
         >
           {groups.map((group) => (
-            <div key={group.id} className="navigator-group">
-              <div className="navigator-group-label">
+            <div
+              key={group.id}
+              role="group"
+              aria-labelledby={`navigator-group-label-${group.id}`}
+              className="navigator-group"
+            >
+              <div id={`navigator-group-label-${group.id}`} className="navigator-group-label">
                 {group.id === 'pinned' ? <Pin size={12} aria-hidden="true" /> : null}
                 {group.id === 'recent' ? <Clock size={12} aria-hidden="true" /> : null}
                 <span>{group.label}</span>

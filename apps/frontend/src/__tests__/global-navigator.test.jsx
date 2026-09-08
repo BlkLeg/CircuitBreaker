@@ -151,6 +151,65 @@ describe('GlobalNavigator', () => {
     expect(screen.queryByText('Pinned')).toBeNull();
   });
 
+  it('traps focus inside the panel when it lands outside after Tab', async () => {
+    // A mouse click can move focus to a row's Pin button, off the search
+    // input where the Tab handler lives -- from there a plain Tab should not
+    // be able to walk out of the panel and under aria-modal="true".
+    open();
+    const pinButton = screen.getByRole('button', { name: 'Pin Map' });
+    pinButton.focus();
+    expect(document.activeElement).toBe(pinButton);
+
+    const outside = document.createElement('button');
+    outside.textContent = 'outside';
+    document.body.appendChild(outside);
+    outside.focus();
+
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('searchbox')));
+    document.body.removeChild(outside);
+  });
+
+  it('exposes each result group as a labelled ARIA group', () => {
+    open();
+    const label = document.getElementById('navigator-group-label-acquire');
+    expect(label).toBeTruthy();
+    expect(label.textContent).toMatch(/Acquire/);
+    const group = label.closest('[role="group"]');
+    expect(group).toBeTruthy();
+    expect(group.getAttribute('aria-labelledby')).toBe('navigator-group-label-acquire');
+  });
+
+  it('does not yank focus back after an action hands off to a modal', async () => {
+    const { onNavigate, onClose } = open();
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'login' } });
+    await waitFor(() => expect(screen.getByText('Login')).toBeTruthy());
+    fireEvent.keyDown(screen.getByRole('searchbox'), { key: 'Enter' });
+    expect(onClose).toHaveBeenCalled();
+    expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({ actionFn: 'openAuthModal' }));
+
+    // Simulate the modal the action opened grabbing focus. The trap must not
+    // fight this and drag focus back into the (still-mounted, in this test)
+    // navigator panel.
+    const modalField = document.createElement('input');
+    document.body.appendChild(modalField);
+    modalField.focus();
+    expect(document.activeElement).toBe(modalField);
+    document.body.removeChild(modalField);
+  });
+
+  it('restores focus to the real opener on Escape', () => {
+    const trigger = document.createElement('button');
+    trigger.textContent = 'Open navigator';
+    document.body.appendChild(trigger);
+    trigger.focus();
+
+    const { onClose } = open();
+    fireEvent.keyDown(screen.getByRole('searchbox'), { key: 'Escape' });
+    expect(onClose).toHaveBeenCalled();
+    expect(document.activeElement).toBe(trigger);
+    document.body.removeChild(trigger);
+  });
+
   it('uses no literal colours', async () => {
     // Plan 00: a component using var(...) with a permanently dark value is not
     // theme-aware, and a literal hex is worse.
