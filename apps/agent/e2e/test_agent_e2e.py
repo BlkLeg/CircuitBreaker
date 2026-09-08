@@ -1363,7 +1363,7 @@ def _wait_until_and_return(getter, *, timeout=30, interval=1.0):
 @pytest.mark.e2e
 # AGT-04 / RC-08 forbid an unexplained xfail at sign-off, and this is the only
 # one in the repo. Its original reason named three production bugs — all three
-# have since been fixed, and the marker outlived them:
+# have since been fixed:
 #
 #   1. link.go Uninstall() read only one of the two frames the server queues.
 #      Fixed in 4aab49d5: drainPending() now loops until the read errors, after
@@ -1374,21 +1374,28 @@ def _wait_until_and_return(getter, *, timeout=30, interval=1.0):
 #      connection. Fixed in ad197961: atomic compare-and-delete Lua scoped to
 #      worker_id (agent_registry.py:1274, deregister_agent_connection).
 #
-# The fixes landed at 16:53 on 2026-08-05; this marker was written at 14:42 the
-# same day in 6903d6db. With strict=False a now-passing test reported as xpass,
-# which is why nobody noticed for two weeks.
-#
-# strict=True is deliberate and self-resolving: if the test now passes, pytest
-# fails the run with XPASS(strict), which is the signal to delete this marker
-# entirely. If it still fails, it fails for a NEW reason that needs recording
-# here — not for the three above. Verifying that needs a Docker host, which the
-# 2026-08-18 remediation pass did not have.
+# 2026-09-07 verification (a Docker host is available now): the test still
+# fails, but not for any of the three reasons above and not by hanging/erroring
+# — the agent side completes cleanly (`cb-agent uninstall` prints "Notified the
+# server", i.e. its POST to the server's uninstall-notify endpoint got a
+# success response), but the server-side agent record never transitions out of
+# "active". Polling GET /api/v1/agents/{id} for 15s after that POST shows
+# status stuck at "active" the whole time (verified with an inline debug print
+# of the full record each poll — no exception, just the wrong steady-state
+# value), so the revoke never happens and the reconnect/audit-event assertions
+# below never get reached. This is a fourth, previously unrecorded bug: the
+# server accepts the uninstall notification but does not act on it. strict=True
+# stays in place — an XPASS is still the signal to delete this marker — but the
+# reason now names the real defect instead of the three closed ones.
 @pytest.mark.xfail(
     reason=(
-        "Stale marker pending verification: the three bugs it originally named "
+        "Verified 2026-09-07 on a Docker host: the three originally-named bugs "
         "(link.go Uninstall drain, ws_agents decrypt-swallow, agent_registry "
-        "cross-connection deregister) were all fixed in 4aab49d5 and ad197961. "
-        "Run this test on a Docker host; XPASS(strict) means delete the marker."
+        "cross-connection deregister) are fixed, but the test still fails for a "
+        "NEW reason — the agent's uninstall POST gets 'Notified the server', yet "
+        "GET /api/v1/agents/{id} never transitions off status=active within the "
+        "15s wait, so the server is not acting on the uninstall notification. "
+        "XPASS(strict) still means delete the marker once that is fixed."
     ),
     strict=True,
 )

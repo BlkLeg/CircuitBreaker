@@ -19,12 +19,20 @@ from starlette.websockets import WebSocketDisconnect
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="Connects to unreachable port; slow (3s+ timeout)")
-async def test_nats_client_noop_when_unavailable():
-    """NATSClient must degrade gracefully when NATS is not running."""
-    from app.core.nats_client import NATSClient
+async def test_nats_client_noop_when_unavailable(monkeypatch):
+    """NATSClient must degrade gracefully when NATS is not running.
 
-    client = NATSClient(url="nats://127.0.0.1:19999")  # port that is never open
+    A real connect attempt against an unreachable port takes
+    ``NATS_INITIAL_CONNECT_TIMEOUT`` (10s by default) to give up — confirmed by
+    timing an unpatched connect() against this same port. The timeout constant
+    exists precisely so callers can shrink the bound (see nats_client.py), so
+    the test does that here rather than eating a real 10s wait per run.
+    """
+    import app.core.nats_client as nats_mod
+
+    monkeypatch.setattr(nats_mod, "NATS_INITIAL_CONNECT_TIMEOUT", 0.5)
+
+    client = nats_mod.NATSClient(url="nats://127.0.0.1:19999")  # port that is never open
     await client.connect()
 
     assert not client.is_connected
