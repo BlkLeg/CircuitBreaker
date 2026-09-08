@@ -8,7 +8,7 @@
  */
 /* eslint-disable security/detect-object-injection -- indexes the IDLE fixture's own keys */
 import { act, renderHook } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useMapEditorUi } from '../hooks/useMapEditorUi';
 
 const IDLE = {
@@ -125,5 +125,53 @@ describe('useMapEditorUi', () => {
       reason: 'in use',
       forcing: false,
     });
+  });
+});
+
+describe('useMapEditorUi fullscreen', () => {
+  afterEach(() => {
+    Object.defineProperty(document, 'fullscreenElement', { value: null, configurable: true });
+  });
+
+  it('starts not fullscreen and exposes a stable zone-preset ref', () => {
+    const { result, rerender } = renderHook(() => useMapEditorUi());
+    const ref = result.current.pendingZonePresetRef;
+
+    rerender();
+
+    expect(result.current.isFullscreen).toBe(false);
+    expect(result.current.pendingZonePresetRef).toBe(ref);
+  });
+
+  it('requests fullscreen on the target when not already fullscreen', () => {
+    const requestFullscreen = vi.fn();
+    const target = { current: { requestFullscreen } };
+    const { result } = renderHook(() => useMapEditorUi({ fullscreenTargetRef: target }));
+
+    act(() => result.current.handleToggleFullscreen());
+
+    expect(requestFullscreen).toHaveBeenCalledTimes(1);
+  });
+
+  it('exits fullscreen when already fullscreen', () => {
+    Object.defineProperty(document, 'fullscreenElement', { value: {}, configurable: true });
+    const exitFullscreen = vi.fn();
+    document.exitFullscreen = exitFullscreen;
+    const { result } = renderHook(() => useMapEditorUi({ fullscreenTargetRef: { current: {} } }));
+
+    act(() => result.current.handleToggleFullscreen());
+
+    expect(exitFullscreen).toHaveBeenCalledTimes(1);
+  });
+
+  it('tracks fullscreenchange events', () => {
+    const { result } = renderHook(() => useMapEditorUi());
+
+    act(() => {
+      Object.defineProperty(document, 'fullscreenElement', { value: {}, configurable: true });
+      document.dispatchEvent(new Event('fullscreenchange'));
+    });
+
+    expect(result.current.isFullscreen).toBe(true);
   });
 });

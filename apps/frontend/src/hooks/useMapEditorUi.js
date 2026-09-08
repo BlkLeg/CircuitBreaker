@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useReducer } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 
 /**
  * Transient editor UI state for the map page — draw modes, in-progress drafts,
@@ -76,11 +76,33 @@ function reducer(state, action) {
 const setterName = (field) => `set${field[0].toUpperCase()}${field.slice(1)}`;
 
 /**
+ * @param {object}  [args]
+ * @param {object}  [args.fullscreenTargetRef] - element ref to make fullscreen
  * @returns {object} every owned field, a `useState`-compatible setter for each,
- *   and `cancelActiveTool()` which returns all of them to idle.
+ *   `cancelActiveTool()` which returns all of them to idle, and the fullscreen
+ *   and zone-draw state that belongs to the active tool rather than the page.
  */
-export function useMapEditorUi() {
+export function useMapEditorUi({ fullscreenTargetRef } = {}) {
   const [state, dispatch] = useReducer(reducer, undefined, initialState);
+
+  // Holds the ZONE_PRESETS entry while a zone draw is being started.
+  const pendingZonePresetRef = useRef(null);
+
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
+
+  const handleToggleFullscreen = useCallback(() => {
+    if (!document.fullscreenElement) {
+      fullscreenTargetRef?.current?.requestFullscreen?.();
+    } else {
+      document.exitFullscreen?.();
+    }
+  }, [fullscreenTargetRef]);
 
   const cancelActiveTool = useCallback(() => dispatch({ type: 'CANCEL_ACTIVE_TOOL' }), []);
 
@@ -93,5 +115,12 @@ export function useMapEditorUi() {
     return built;
   }, []);
 
-  return { ...state, ...setters, cancelActiveTool };
+  return {
+    ...state,
+    ...setters,
+    cancelActiveTool,
+    isFullscreen,
+    handleToggleFullscreen,
+    pendingZonePresetRef,
+  };
 }

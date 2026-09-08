@@ -34,7 +34,6 @@ import TelemetrySidebar from '../components/map/TelemetrySidebar';
 import BoundaryContextMenu from '../components/map/BoundaryContextMenu';
 import VisualLineContextMenu from '../components/map/VisualLineContextMenu';
 import MapCanvasOverlays from '../components/map/MapCanvasOverlays';
-import DrawToolsDropdown from '../components/map/DrawToolsDropdown';
 import BulkQuickCreateModal from '../components/map/BulkQuickCreateModal';
 import CreateNodeModal from '../components/map/CreateNodeModal';
 import CustomNode from '../components/map/CustomNode';
@@ -48,7 +47,6 @@ import { useCapabilities } from '../hooks/useCapabilities.js';
 import WifiOverlay from '../components/map/WifiOverlay';
 import Sidebar from '../components/map/Sidebar';
 import LegendPanel from '../components/map/LegendPanel';
-import NodeTypeFilterBar from '../components/map/NodeTypeFilterBar';
 import { useToast } from '../components/common/Toast';
 import { X } from 'lucide-react';
 import {
@@ -68,7 +66,6 @@ import { MapEdgeCallbacksContext, MapViewOptionsContext } from '../components/ma
 export { MapEdgeCallbacksContext, MapViewOptionsContext };
 
 // Layout functions consumed by useMapLayout hook (../hooks/useMapLayout)
-import MapToolbar from '../components/MapToolbar';
 // Sigma (WebGL renderer) is only used when useSigma=true; lazy-load to defer
 // ~100 KB of sigma/graphology parsing until the user explicitly enables WebGL mode.
 const SigmaMap = lazyRoute('SigmaMap', () => import('../components/map/SigmaMap'));
@@ -118,10 +115,11 @@ import { useMapRealTimeUpdates } from '../hooks/useMapRealTimeUpdates';
 import { useMapMutations } from '../hooks/useMapMutations';
 import { useMapEditorUi } from '../hooks/useMapEditorUi';
 import { useMapFilters } from '../hooks/useMapFilters';
+import MapHeader from '../components/map/MapHeader';
 import { MapErrorBanner, ScanImportBanner } from '../components/map/MapStatusBanners';
 import { useTelemetryStream } from '../hooks/useTelemetryStream';
 import { useTopologyStream, topologyEmitter } from '../hooks/useTopologyStream';
-import { canEdit, isAdmin } from '../utils/rbac';
+import { canEdit } from '../utils/rbac';
 import { useMapLayout } from '../hooks/useMapLayout';
 import { useContextMenuState } from '../hooks/useContextMenuState';
 import { useMapPolling } from '../hooks/useMapPolling';
@@ -170,21 +168,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
   // and client-side visibility (tag, hardware role). Held as one object so
   // presentation components take `filters` as a single prop.
   const filters = useMapFilters({ settings, setNodes, setEdges });
-  const {
-    envFilter,
-    setEnvFilter,
-    environmentsList,
-    tagFilter,
-    setTagFilter,
-    setDebouncedTag,
-    includeTypes,
-    setIncludeTypes,
-    hwRoleFilter,
-    setHwRoleFilter,
-    filterSaving,
-    filterSaved,
-    handleSaveFilters,
-  } = filters;
+  const { envFilter, tagFilter, setDebouncedTag, includeTypes } = filters;
   // Only allow edge selection state changes from React Flow.
   // Structural edge mutations must come from explicit user delete actions or
   // server-driven relationship updates (entity pages / topology events).
@@ -208,7 +192,6 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
   );
 
   const outerMapRef = useRef(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -250,7 +233,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
   //
   // Held as one object so presentation components can take `editorUi` as a
   // single prop; the destructure below is only for this body's convenience.
-  const editorUi = useMapEditorUi();
+  const editorUi = useMapEditorUi({ fullscreenTargetRef: outerMapRef });
   const {
     mapLabelMenuOpenId,
     setMapLabelMenuOpenId,
@@ -285,11 +268,12 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     deleteConflictModal,
     setDeleteConflictModal,
     cancelActiveTool,
+    isFullscreen,
+    pendingZonePresetRef,
   } = editorUi;
 
   const [boundaries, setBoundaries] = useState([]);
   const [mapLabels, setMapLabels] = useState([]);
-  const pendingZonePresetRef = useRef(null); // holds ZONE_PRESETS entry when zone draw is started
   const [selectedBoundaryId, setSelectedBoundaryId] = useState(null);
   const resizingBoundaryRef = useRef(null);
   const [visualLines, setVisualLines] = useState([]);
@@ -1700,19 +1684,54 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     onEdgeEndpointDrop: handleEdgeEndpointDrop,
   };
 
-  const handleToggleFullscreen = useCallback(() => {
-    if (!document.fullscreenElement) {
-      outerMapRef.current?.requestFullscreen?.();
-    } else {
-      document.exitFullscreen?.();
-    }
-  }, []);
-
-  useEffect(() => {
-    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
-    document.addEventListener('fullscreenchange', onFsChange);
-    return () => document.removeEventListener('fullscreenchange', onFsChange);
-  }, []);
+  // One object per owner, so presentation components take six props instead of
+  // the 54 individual values this markup reads.
+  const view = {
+    viewOptions,
+    layoutEngine,
+    applyLayout,
+    applyPreset,
+    edgeMode,
+    setEdgeMode,
+    edgeLabelVisible,
+    setEdgeLabelVisible,
+    nodeSpacing,
+    setNodeSpacing,
+    groupBy,
+    setGroupBy,
+    cloudViewEnabled,
+    setCloudViewEnabled,
+    useSigma,
+    setUseSigma,
+    bgGridColor,
+  };
+  const route = {
+    mapId,
+    maps,
+    onMapSwitch,
+    onMapCreate,
+    onMapRename,
+    onMapDelete,
+    navigate,
+    settings,
+    user,
+    caps,
+    timezone,
+    canMapEdit,
+  };
+  const persistence = {
+    fetchData,
+    saveLayout,
+    lastSaved,
+    loading,
+    error,
+    pendingDiscoveries,
+  };
+  const annotations = {
+    addMapLabel,
+    removeMapLabel,
+    updateMapLabel,
+  };
 
   return (
     <MapViewOptionsContext.Provider value={viewOptions}>
@@ -1750,256 +1769,14 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
             />
           )}
           {/* Header + Toolbar */}
-          <div
-            className="page-header"
-            style={{
-              marginBottom: 0,
-              paddingBottom: 10,
-              borderBottom: '1px solid var(--color-border)',
-              flexWrap: 'wrap',
-              gap: 8,
-              position: 'sticky',
-              top: 0,
-              zIndex: 40,
-              background: 'color-mix(in srgb, var(--color-bg) 88%, transparent)',
-              backdropFilter: 'blur(6px)',
-            }}
-          >
-            <h2 style={{ marginRight: 16 }}>{settings.map_title || 'Topology'}</h2>
-
-            <div
-              style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', flex: 1 }}
-            >
-              {/* Environment */}
-              <select
-                // ACC-10: the visible text is inside <option>, which is not an
-                // accessible name. Nothing labels this control otherwise.
-                aria-label="Filter topology by environment"
-                value={envFilter}
-                onChange={(e) => setEnvFilter(e.target.value ? Number(e.target.value) : '')}
-                style={{
-                  padding: '5px 10px',
-                  borderRadius: 6,
-                  border: '1px solid var(--color-border)',
-                  background: 'var(--color-bg)',
-                  color: 'var(--color-text)',
-                  fontSize: 12,
-                }}
-              >
-                <option value="">All Environments</option>
-                {environmentsList.map((e) => (
-                  <option key={e.id} value={e.id} style={e.color ? { color: e.color } : {}}>
-                    {e.name}
-                  </option>
-                ))}
-              </select>
-
-              {/* Group By */}
-              <select
-                // ACC-10: `title` alone does not satisfy axe's select-name.
-                aria-label="Group topology nodes by dimension"
-                value={groupBy}
-                onChange={(e) => setGroupBy(e.target.value)}
-                style={{
-                  padding: '5px 10px',
-                  borderRadius: 6,
-                  border: '1px solid var(--color-border)',
-                  background: groupBy !== 'none' ? 'var(--color-glow)' : 'var(--color-bg)',
-                  color: groupBy !== 'none' ? 'var(--color-primary)' : 'var(--color-text)',
-                  fontSize: 12,
-                }}
-                title="Group nodes by dimension"
-              >
-                <option value="none">Group by…</option>
-                <option value="type">By Type</option>
-                <option value="environment">By Environment</option>
-              </select>
-
-              {/* Tag filter */}
-              <input
-                type="text"
-                placeholder="Filter by tag…"
-                value={tagFilter}
-                onChange={(e) => setTagFilter(e.target.value)}
-                style={{
-                  padding: '5px 10px',
-                  borderRadius: 6,
-                  border: '1px solid var(--color-border)',
-                  background: 'var(--color-bg)',
-                  color: 'var(--color-text)',
-                  fontSize: 12,
-                  width: 130,
-                }}
-              />
-
-              <NodeTypeFilterBar
-                includeTypes={includeTypes}
-                setIncludeTypes={setIncludeTypes}
-                hwRoleFilter={hwRoleFilter}
-                setHwRoleFilter={setHwRoleFilter}
-              />
-
-              {isAdmin(user) && (
-                <button
-                  className="btn btn-secondary btn-sm"
-                  onClick={handleSaveFilters}
-                  disabled={filterSaving}
-                  title="Save current filter visibility as default"
-                  style={{ fontSize: 12, padding: '4px 10px', whiteSpace: 'nowrap' }}
-                >
-                  {filterSaved ? '✓ Saved' : filterSaving ? 'Saving…' : 'Save Filters'}
-                </button>
-              )}
-
-              <MapToolbar
-                layout={layoutEngine}
-                onChange={applyLayout}
-                onPreset={applyPreset}
-                viewOptions={viewOptions}
-                onViewOptionsChange={(opts) => {
-                  if (opts.edgeMode !== edgeMode) setEdgeMode(opts.edgeMode);
-                  if (opts.edgeLabelVisible !== edgeLabelVisible)
-                    setEdgeLabelVisible(opts.edgeLabelVisible);
-                  if (opts.nodeSpacing !== nodeSpacing) setNodeSpacing(opts.nodeSpacing);
-                }}
-                onFullscreen={handleToggleFullscreen}
-                isFullscreen={isFullscreen}
-                maps={maps}
-                activeMapId={mapId}
-                onMapSwitch={onMapSwitch}
-                onMapCreate={onMapCreate}
-                onMapRename={onMapRename}
-                onMapDelete={onMapDelete}
-              />
-
-              <button
-                onClick={() => setUseSigma(!useSigma)}
-                style={{
-                  padding: '5px 10px',
-                  borderRadius: 6,
-                  border: `1px solid ${useSigma ? '#00d4aa' : 'var(--color-border)'}`,
-                  background: useSigma ? 'rgba(0, 212, 170, 0.1)' : 'var(--color-bg)',
-                  color: useSigma ? '#00d4aa' : 'var(--color-text)',
-                  fontSize: 12,
-                  cursor: 'pointer',
-                  transition: 'all 0.2s',
-                  marginRight: '8px',
-                }}
-              >
-                {useSigma ? 'WebGL (Active)' : 'WebGL (>1k)'}
-              </button>
-              <button
-                onClick={() => setCloudViewEnabled(!cloudViewEnabled)}
-                style={{
-                  padding: '5px 10px',
-                  borderRadius: 6,
-                  border: `1px solid ${cloudViewEnabled ? 'var(--color-primary)' : 'var(--color-border)'}`,
-                  background: cloudViewEnabled ? 'rgba(254, 128, 25, 0.1)' : 'var(--color-bg)',
-                  color: cloudViewEnabled ? 'var(--color-primary)' : 'var(--color-text)',
-                  fontSize: 12,
-                  cursor: 'pointer',
-                  transition: 'all 0.2s',
-                }}
-              >
-                {cloudViewEnabled ? '☁ Disable Cloud View' : '☁ Enable Cloud View'}
-              </button>
-
-              {caps && !caps.realtime?.available && (
-                <span
-                  style={{
-                    fontSize: 11,
-                    color: '#f59e0b',
-                    background: 'rgba(245,158,11,0.08)',
-                    border: '1px solid rgba(245,158,11,0.25)',
-                    borderRadius: 6,
-                    padding: '3px 8px',
-                    whiteSpace: 'nowrap',
-                  }}
-                  title="Enable realtime in Settings → Integrations to receive live topology updates"
-                >
-                  ⚡ Realtime unavailable
-                </span>
-              )}
-
-              <button
-                className="btn btn-primary"
-                onClick={saveLayout}
-                disabled={loading}
-                style={{ fontSize: 12, padding: '5px 12px' }}
-              >
-                {loading ? 'Loading…' : 'Save Positions'}
-              </button>
-              <button
-                className="btn"
-                onClick={fetchData}
-                disabled={loading}
-                style={{ fontSize: 12, padding: '5px 12px' }}
-              >
-                Refresh
-              </button>
-              <DrawToolsDropdown
-                activeMode={(() => {
-                  if (boundaryDrawMode) return 'Boundary';
-                  if (lineDrawMode) return `${lineDrawMode} line`;
-                  return null;
-                })()}
-                boundaryPresets={BOUNDARY_PRESETS}
-                onStartBoundaryDraw={() => {
-                  pendingZonePresetRef.current = null;
-                  setLineDrawMode(null);
-                  setLineDrawDraft(null);
-                  setBoundaryDrawMode(true);
-                  setBoundaryDraft(null);
-                }}
-                onStartZoneDraw={(zonePreset) => {
-                  pendingZonePresetRef.current = zonePreset;
-                  setLineDrawMode(null);
-                  setLineDrawDraft(null);
-                  setBoundaryDrawMode(true);
-                  setBoundaryDraft(null);
-                }}
-                onStartLineDraw={(type) => {
-                  setBoundaryDrawMode(false);
-                  setBoundaryDraft(null);
-                  setLineDrawMode(type);
-                  setLineDrawDraft(null);
-                }}
-                onAddLabel={(colorKey) => addMapLabel(colorKey)}
-                onCancel={() => {
-                  setBoundaryDrawMode(false);
-                  setBoundaryDraft(null);
-                  setLineDrawMode(null);
-                  setLineDrawDraft(null);
-                }}
-              />
-              {pendingDiscoveries > 0 && (
-                <button
-                  type="button"
-                  onClick={() => navigate('/discovery?tab=review')}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 5,
-                    padding: '4px 10px',
-                    borderRadius: 5,
-                    border: 'none',
-                    background: 'rgba(245,158,11,0.18)',
-                    color: '#f59e0b',
-                    cursor: 'pointer',
-                    fontSize: 11,
-                    fontWeight: 600,
-                  }}
-                >
-                  🔍 {pendingDiscoveries} pending
-                </button>
-              )}
-              {lastSaved && (
-                <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
-                  Saved: {new Date(lastSaved).toLocaleTimeString(undefined, { timeZone: timezone })}
-                </span>
-              )}
-            </div>
-          </div>
+          <MapHeader
+            view={view}
+            filters={filters}
+            editorUi={editorUi}
+            route={route}
+            persistence={persistence}
+            annotations={annotations}
+          />
 
           {/* Error banner */}
           <MapErrorBanner
