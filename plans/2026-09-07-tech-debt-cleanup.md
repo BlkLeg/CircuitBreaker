@@ -324,6 +324,54 @@ split (`discovery_admission`, `discovery_dispatch`), §2.4's `discoveryApi` and
 Browser verification for §2.5 is three new Playwright specs — `settings-tabs`,
 `oobe-first-run`, `map-interaction` — taking the Chromium suite from 20 tests to 33.
 
+### Map rework (2026-09-07, follow-on)
+
+`map-reowrk.md` proposed a `features/map` module with a canonical map document,
+domain hooks, and a renderer boundary. Its analysis was verified line by line
+against the tree and was accurate: 3,025 lines, 50 `useState`, 26 effects, 39
+callbacks, 70 imports all matched, as did every risk it named.
+
+**Correctness came first**, because a behavior change buried inside a 3,000-line
+structural move cannot be reviewed. Six defects shipped as separate commits:
+
+| Defect | Effect before the fix |
+|---|---|
+| `ENTITY_API_DELETE` bracket-indexed on a `Map` | Deleting a node from the map failed for **every** type since 2026-03-17 (`5aae0a10`) |
+| Tag and hardware-role filters in two effects | Whichever ran last won; either filter could unhide what the other excluded |
+| No request-generation guard in `fetchData` | A slow earlier topology response could overwrite a newer one |
+| Cloud View in `fetchData`'s deps | Toggling both transformed nodes in place *and* re-issued the fetch |
+| `SigmaMap` never sent `map_id` | Sigma rendered an unscoped graph, inconsistent with React Flow |
+| `SigmaMap` sent singular include tokens | `service`/`network` never matched `api/graph.py`, so Sigma silently dropped every service and network |
+
+The last one is not in `map-reowrk.md` — it surfaced while fixing the `map_id`
+scoping. `buildIncludeCSV` is now the single definition both renderers use.
+
+**Structurally, only the precondition was taken.** `useMapEditorUi` owns the
+sixteen transient editor fields that were sixteen `useState` calls, so cancelling
+is one action instead of the hand-maintained sixteen-setter list the Escape
+handler had become. `MapStatusBanners` then demonstrated the extraction pattern
+on the two blocks that are genuinely separable (four and three values).
+
+**What was deliberately not done, and why.** The header/toolbar and modal cluster
+still need 29 and 34 values from the page — the same measurement that left
+`MapPage` whole in §2.5. Consolidating transient UI does not by itself reduce
+those; the document, filter, and persistence hooks in `map-reowrk.md` §"Safe
+Extraction Order" steps 3–5 are what would. Also outstanding: the versioned
+layout codec (`schemaVersion` still appears nowhere), the command router, the
+renderer boundary, and the `features/map` relocation.
+
+`MapPage.jsx` is **3,015** lines, against 3,025 before. That is not the point of
+this pass and is not presented as progress: state ownership moved, and the
+26 dependency-array entries eslint required once the setters were no longer
+provably-stable `useState` returns cost most of what the extraction saved. The
+line count falls when steps 3–5 land, not before.
+
+Verification is `make verify` green (security gate zero HIGH/CRIT, coverage
+ratchet untouched at 56 / 38-31-30-40), the frontend suite at 174 files and
+1,426 tests, and the Chromium map spec at 4 tests — two of them new Escape
+tests against a populated graph. The dialog one was mutation-checked: stubbing
+`cancelActiveTool` to a no-op turns it red and leaves the other three green.
+
 ---
 
 ## Phase 3: Test and documentation alignment
