@@ -676,9 +676,21 @@ sudo cb-agent uninstall
 
 Root is required. In order, it:
 
-1. Best-effort notifies the server, which revokes the row with reason *"uninstalled by agent"*
-   and performs the same run cancellation the admin-initiated revoke does. A server that cannot
-   be reached is reported and the uninstall continues.
+1. Notifies the server and **waits for it to confirm**, which revokes the row with reason
+   *"uninstalled by agent"* and performs the same probe-run and discovery-dispatch cancellation
+   the admin-initiated revoke does. The confirmation is the server's own delivery
+   acknowledgement for that frame, so "Notified the server (agent record marked revoked)" means
+   the revoke is committed — not merely that a packet left the host. Three outcomes:
+
+   | Printed | Meaning | Exit |
+   |---|---|---|
+   | `Notified the server (agent record marked revoked).` | Confirmed. Nothing left to do. | unaffected |
+   | `No enrolled agent found on this host; the server has nothing to be told.` | No config or no `device.key` — a second run, or a host that was never enrolled. | unaffected |
+   | `cb-agent: the server did NOT confirm this uninstall: …` | Unreachable, refused, or unacknowledged. The agent may still be listed as active; revoke it in **Settings → Agents**. | non-zero |
+
+   Removal continues in every case: an unreachable or already-decommissioned server must never
+   stop you removing an agent from your own host. The exit status is what makes the third case
+   visible to a script decommissioning a fleet.
 2. Runs `systemctl disable --now cb-agent`.
 3. Removes:
    - `/etc/systemd/system/cb-agent.service`
@@ -705,8 +717,11 @@ non-zero if anything failed.
   that other software may now depend on.
 - **`/etc/circuit-breaker/`** when it still holds the server's own files (see above).
 - **The agent's row in the database.** It is left `revoked` so its history, events and audit
-  trail survive. Delete it explicitly (`DELETE /api/v1/agents/{id}`) if you want it gone —
-  which is refused with a 409 while monitors or discovery profiles are still assigned to it.
+  trail survive. The fleet table and the agent page show it as **Uninstalled** rather than
+  *Revoked* — the same credential state, but it tells you the host has already been cleaned up,
+  which an operator-initiated revoke does not. Delete it explicitly
+  (`DELETE /api/v1/agents/{id}`) if you want it gone — which is refused with a 409 while
+  monitors or discovery profiles are still assigned to it.
 
 Because uninstall removes `device.key`, reinstalling on the same host generates a **new**
 identity and appears as a **new** pending agent. That is intentional: it is the clean path back

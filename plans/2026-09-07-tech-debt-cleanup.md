@@ -481,6 +481,53 @@ genuinely stale; monitors and discovery matched once the suite was hermetic.
 
 **Do not** lower `--cov-fail-under=56` or Vitest thresholds (stmts 38 / branches 31 / funcs 30 / lines 40) to make a split look green. If a split drops measured coverage, the missing tests moved with the code — add them back.
 
+#### The `apps/agent/e2e` xfail — closed 2026-09-08
+
+The row above says "delete the marker after an XPASS". It took a real product
+fix to earn that, and the marker's own stated reason was wrong twice.
+
+Its first reason named three bugs (link.go's single-message drain, ws_agents
+swallowing decrypt failures, a second `/link` teardown evicting the first
+connection's registry entry). All three were real and all three were fixed; the
+test still failed. Its second reason, written the day before, said the server
+"accepts the uninstall notification but does not act on it" and described a POST
+to an uninstall-notify endpoint. There is no such endpoint and no POST.
+
+**What was actually wrong:** `cb-agent uninstall` wrote its `uninstall` frame
+over `/link` and then wrote a WebSocket close immediately, returning success on
+the strength of `WriteMessage`. uvicorn completes that close handshake as soon as
+it arrives, so `link_stream`'s next send — the `hello.ack`, which follows a chunk
+of database work — raised, and the handler exited **before its receive loop ever
+ran**. The frame was never read. Every `cb-agent uninstall` since the feature
+shipped printed "Notified the server (agent record marked revoked)" while
+leaving the agent `active` forever, and the only trace was an unhandled ASGI
+traceback that read as ordinary client-disconnect noise.
+
+Reproduced against the docker harness, then proved by inverting one line: hold
+the socket open instead of closing it, and the same run revokes the agent.
+
+**Fixed in five commits, `2fa11b71..80488fbd`:**
+
+| Commit | Change |
+|---|---|
+| `2fa11b71` | The agent-initiated revoke now does the operator path's cleanup: discovery dispatches cancelled, status pushed to open fleet views. Its docstring promised parity it did not have. |
+| `4f25e7cf` | A peer that closes during the hello phase is an ordinary disconnect, not an unhandled ASGI exception. The early exit also releases the connection registry entry and emits the `disconnected` event the escaping exception skipped. |
+| `cae1df31` | The agent waits for a delivery acknowledgement before closing, and the CLI stops claiming what it cannot know — three outcomes, with a non-zero exit for the unconfirmed one. Two more defects in the same call path went with it: no `StateDir` (so a rotated TLS pin made the notify undialable) and `LoadOrCreateDeviceKey` **minting a new identity** to say goodbye with. |
+| `0290dc87` | The server flushes a pending acknowledgement before a status flip ends the link. Found by the end-to-end proof: the revoke landed and the CLI still said unconfirmed, because the revoke killed the connection that owed the ack. |
+| `9f855ad6` | An uninstalled agent reads as **Uninstalled**, not *Revoked*, so the UI stops telling an operator to clean up a host that cleaned itself up. |
+
+The e2e harness also had to change to make its own assertion answerable: it
+bind-mounted `agent.toml` read-only, and a bind-mount target cannot be unlinked
+from inside the container at any privilege level, so `CONFIG_REMOVED` was
+unreachable however correct the agent was. It now mounts the directory.
+
+Regression coverage sits at three levels because no single one can see the bug:
+Go tests for the acknowledgement contract and close ordering, a real-socket
+backend test for the ack-versus-revoke race, a unit test for the hello-phase
+disconnect, and this e2e for the whole path. A pure-pytest client that does not
+slam the socket shut is served correctly, which is why the earlier
+statically-traced investigation found every hop individually correct.
+
 **Document the three layers** in CONTRIBUTING (also Phase 4):
 
 | Command | What actually runs |

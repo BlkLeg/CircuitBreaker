@@ -33,6 +33,11 @@ directly verifiable in this tree.
 
 ### Changed
 
+- An agent that removed itself with `cb-agent uninstall` now reads as
+  **Uninstalled** rather than *Revoked* across the fleet table and the agent
+  page, and no longer tells you to go and clean up a host that has already
+  cleaned itself up. `AgentSummary` carries `revoked_at`, `revoke_reason` and a
+  derived `revoked_by` to distinguish the two (`9f855ad6`).
 - Saved map layouts are now versioned behind a `layoutCodec`
   (`schemaVersion: 2`). It reads both older on-disk shapes and writes view
   options nested and flat, so a self-hoster running a rebuilt frontend against
@@ -64,3 +69,22 @@ directly verifiable in this tree.
 - The UI no longer loads its web fonts from Google Fonts — all seven families
   are now self-hosted, so a `CB_AIRGAP=true` install no longer makes an
   outbound font request (`e0223e8b`).
+- `cb-agent uninstall` reported "Notified the server (agent record marked
+  revoked)" on every run while the server never revoked anything. The agent
+  closed the WebSocket immediately after writing its uninstall frame, and the
+  server's close handshake completed before it had read that frame, so the
+  notification was discarded — an uninstalled agent stayed `active` forever.
+  The command now waits for the server's delivery acknowledgement, says so
+  truthfully when it does not arrive (naming the agent you have to revoke by
+  hand), and exits non-zero in that case (`cae1df31`).
+- The `/link` stream now flushes a pending delivery acknowledgement before a
+  status change ends the connection. The uninstall frame's own handling revokes
+  the agent, so the connection was dropped before the acknowledgement for the
+  frame it had just committed went out — reporting a completed uninstall as
+  unconfirmed (`0290dc87`).
+- An agent-initiated revoke now cancels the agent's in-flight discovery
+  dispatches and pushes the status change to open fleet views, both of which the
+  operator-initiated revoke already did (`2fa11b71`).
+- A `/link` peer that disconnects during the hello exchange is now an ordinary
+  disconnect rather than an unhandled ASGI exception with a full traceback per
+  occurrence (`4f25e7cf`).
