@@ -226,7 +226,15 @@ services:
     restart: on-failure
     volumes:
       - cb-agent-state:/var/lib/cb-agent
-      - ./agent.toml:/etc/circuit-breaker/agent.toml:ro
+      # The directory, not the file, and read-write. A `:ro` mount of
+      # agent.toml itself made `cb-agent uninstall`'s own removal of that file
+      # impossible to test: unlinking a bind-mount target fails with EBUSY
+      # inside the container however privileged the caller is, so
+      # test_agent_uninstall_marks_server_revoked_and_removes_local_files
+      # could never see CONFIG_REMOVED no matter how correct the agent was.
+      # Mounted this way, agent.toml is an ordinary file in an ordinary
+      # directory, exactly as the installer leaves it on a real host.
+      - ./agent-etc:/etc/circuit-breaker
     environment:
       - CB_AGENT_TEST_REKEY_INTERVAL_SECONDS=${CB_AGENT_TEST_REKEY_INTERVAL_SECONDS:-}
       # Slice 4.2 (F3): refuse an update whose signature does not verify,
@@ -377,7 +385,15 @@ services:
       # tls_pin are installation-wide facts, not per-agent ones — a second
       # agent requiring a hand-edited config would contradict the slice's
       # zero-configuration claim before discovery even started.
-      - ./agent.toml:/etc/circuit-breaker/agent.toml:ro
+      # The directory, not the file, and read-write. A `:ro` mount of
+      # agent.toml itself made `cb-agent uninstall`'s own removal of that file
+      # impossible to test: unlinking a bind-mount target fails with EBUSY
+      # inside the container however privileged the caller is, so
+      # test_agent_uninstall_marks_server_revoked_and_removes_local_files
+      # could never see CONFIG_REMOVED no matter how correct the agent was.
+      # Mounted this way, agent.toml is an ordinary file in an ordinary
+      # directory, exactly as the installer leaves it on a real host.
+      - ./agent-etc:/etc/circuit-breaker
     environment:
       - CB_AGENT_TEST_REKEY_INTERVAL_SECONDS=${CB_AGENT_TEST_REKEY_INTERVAL_SECONDS:-}
       - CB_AGENT_TEST_PRE_REEXEC_DELAY_MS=${CB_AGENT_TEST_PRE_REEXEC_DELAY_MS:-}

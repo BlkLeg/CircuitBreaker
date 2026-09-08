@@ -430,17 +430,53 @@ def _down(env: dict | None = None) -> None:
     shutil.rmtree(_E2E_DATA_DIR, ignore_errors=True)
 
 
+# The host side of the agents' /etc/circuit-breaker. A *directory* mount, not
+# the file mount this used to be, and the reason is
+# test_agent_uninstall_marks_server_revoked_and_removes_local_files: a
+# `:ro` bind mount of agent.toml itself makes that test's own subject —
+# `cb-agent uninstall` removing the files the installer wrote — impossible to
+# satisfy. Unlinking a bind-mount target from inside the container fails with
+# EBUSY however privileged the caller is, so the assertion could only ever have
+# been weakened to accommodate an artefact of the harness. Mounting the
+# directory leaves agent.toml an ordinary file inside it, exactly as it is on a
+# real host, and removal is then a real question with a real answer.
+#
+# /etc/circuit-breaker itself remains un-removable (it is now the mount point),
+# which is faithful in its own way: on a host that also runs the CircuitBreaker
+# server, `performUninstall` deliberately leaves that directory alone. It
+# reports the failed rmdir, and this suite already tolerates a reported
+# systemctl failure for the same class of reason — see the uninstall test.
+AGENT_ETC_DIR = E2E_DIR / "agent-etc"
+AGENT_TOML = AGENT_ETC_DIR / "agent.toml"
+
+
+def _clear_agent_toml() -> None:
+    """Remove the config this run wrote, tolerating an already-removed one.
+
+    Every test ends with this. `cb-agent uninstall` removes the same file from
+    inside the container, through the same mount, so by the time the uninstall
+    test's `finally` runs there is often nothing left to unlink.
+    """
+    AGENT_TOML.unlink(missing_ok=True)
+
+
 def _write_agent_toml(server_pk: str, tls_pin: str, path: Path | None = None) -> Path:
-    target = path or (E2E_DIR / "agent.toml")
-    # Docker creates a *directory* at a bind-mount source that does not exist,
-    # and docker-compose.yml mounts this exact path into both agents. Each
-    # test's `finally` unlinks the file, so any container started between that
-    # unlink and the next `_write_agent_toml` — an interrupted run, a stray
-    # `compose up` — leaves a root-owned `agent.toml/` here. The agent then
-    # exits with "load /etc/circuit-breaker/agent.toml: is a directory" and,
-    # because that output goes to `_enroll_agent`'s pipe, the test reports only
-    # a pairing-code timeout. Clear it before writing rather than letting the
-    # next `write_text` fail with an equally opaque IsADirectoryError.
+    target = path or AGENT_TOML
+    # Docker creates whatever is missing at a bind-mount source, owned by root.
+    # For the directory that is now what we want — but only if *we* create it
+    # first, from the host, as the user running the suite: a root-owned
+    # agent-etc/ (left by a container started before the first
+    # `_write_agent_toml`, e.g. an interrupted run or a stray `compose up`)
+    # makes the write below fail with a bare PermissionError, and that output
+    # goes to `_enroll_agent`'s pipe where it surfaces only as a pairing-code
+    # timeout.
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # The same trap one level down, and still worth guarding: a container that
+    # started when agent.toml did not exist leaves a root-owned `agent.toml/`
+    # directory. The agent then exits with "load
+    # /etc/circuit-breaker/agent.toml: is a directory", reported the same
+    # opaque way. Clear it rather than letting write_text raise
+    # IsADirectoryError.
     if target.is_dir() and not target.is_symlink():
         target.rmdir()
     target.write_text(
@@ -1334,7 +1370,7 @@ def test_agent_full_lifecycle_enroll_through_revoke_and_reconnect():
             stream.close()
     finally:
         _down()
-        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+        _clear_agent_toml()
 
 
 def _wait_until_and_return(getter, *, timeout=30, interval=1.0):
@@ -1425,7 +1461,15 @@ def test_agent_uninstall_marks_server_revoked_and_removes_local_files():
             # What matters is verified below: the server-side audit state
             # and the actual on-disk removal, both independent of the
             # systemd step.
+            #
+            # The other thing that can make this exit non-zero is an
+            # unconfirmed notify, and that one *would* be a real failure — so
+            # it is asserted directly rather than left to the exit code, which
+            # cannot distinguish the two.
             assert "Notified the server" in result.stdout, result.stdout + result.stderr
+            assert "did NOT confirm" not in result.stderr, (
+                "the agent could not confirm the revoke with the server: " + result.stderr
+            )
 
             _wait_until(
                 lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "revoked",
@@ -1460,8 +1504,15 @@ def test_agent_uninstall_marks_server_revoked_and_removes_local_files():
         finally:
             stream.close()
     finally:
+        # Closed explicitly, same reason as the activation scenarios below: a
+        # socket finalized by the collector mid-run trips pytest's
+        # unraisable-exception hook and fails the test on teardown noise rather
+        # than on anything it asserted. This test only started reaching its own
+        # end once the uninstall actually worked, which is when that noise
+        # became the visible failure.
+        client.close()
         _down()
-        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+        _clear_agent_toml()
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -1549,7 +1600,7 @@ def test_agent_noise_rekey_interval_with_accelerated_clock():
             stream.close()
     finally:
         _down(env=rekey_env)
-        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+        _clear_agent_toml()
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -1784,7 +1835,7 @@ def test_agent_update_success_and_forced_rollback():
             stream.close()
     finally:
         _down()
-        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+        _clear_agent_toml()
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -1870,7 +1921,7 @@ def test_agent_independent_restarts_recover_without_new_setup():
             stream.close()
     finally:
         _down()
-        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+        _clear_agent_toml()
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -2351,7 +2402,7 @@ def test_agent_host_telemetry_first_sample_catchup_and_disable():
             stream.close()
     finally:
         _down()
-        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+        _clear_agent_toml()
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -2520,7 +2571,7 @@ def test_agent_black_hole_partition_is_detected_and_spools():
             stream.close()
     finally:
         _down()
-        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+        _clear_agent_toml()
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -3157,7 +3208,7 @@ def test_remote_probe_assignment_execution_and_unavailability():
             stream.close()
     finally:
         _down()
-        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+        _clear_agent_toml()
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -3489,7 +3540,7 @@ def test_e2e_harness_topology_is_pinned_and_two_agents_stay_isolated():
             stream.close()
     finally:
         _down()
-        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+        _clear_agent_toml()
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -4448,7 +4499,7 @@ def test_agent_zero_configuration_discovery_import_and_replay():
             events_stream.close()
     finally:
         _down()
-        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+        _clear_agent_toml()
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -5061,7 +5112,7 @@ def test_agent_discovery_capability_disable_cancels_and_late_findings_die():
             stream.close()
     finally:
         _down()
-        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+        _clear_agent_toml()
 
 
 def _agents(client: httpx.Client) -> list[dict]:
@@ -5668,7 +5719,7 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
             stream.close()
     finally:
         _down()
-        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+        _clear_agent_toml()
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -5814,7 +5865,7 @@ def test_certificate_rotation_does_not_strand_the_fleet():
         # teardown noise rather than on anything it asserted.
         client.close()
         _down()
-        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+        _clear_agent_toml()
 
 
 def test_activation_is_refused_while_an_agent_cannot_confirm():
@@ -5863,7 +5914,7 @@ def test_activation_is_refused_while_an_agent_cannot_confirm():
     finally:
         client.close()
         _down()
-        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+        _clear_agent_toml()
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -6003,7 +6054,7 @@ def test_tampered_agent_binary_is_refused():
     finally:
         client.close()
         _down(env=enforce_env)
-        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+        _clear_agent_toml()
 
 
 def test_agent_enrolls_unattended_from_a_token_and_the_token_is_spent():
@@ -6140,5 +6191,5 @@ def test_agent_enrolls_unattended_from_a_token_and_the_token_is_spent():
         assert len(client.get("/api/v1/agents", headers=headers).json()) == before
     finally:
         token_file.unlink(missing_ok=True)
-        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+        _clear_agent_toml()
         _down()

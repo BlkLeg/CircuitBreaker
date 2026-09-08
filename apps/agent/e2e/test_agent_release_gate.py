@@ -120,6 +120,7 @@ import httpx
 import pytest
 
 from test_agent_e2e import (
+    _clear_agent_toml,
     _AGENT_NET,
     _AGENT_NET_CIDR,
     _AGENT_NET_MOVED_IP,
@@ -3224,4 +3225,4 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
             discovery_stream.close()
     finally:
         _down()
-        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+        _clear_agent_toml()

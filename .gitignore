@@ -55,6 +55,7 @@ frontend/.env.*.local
 # run's server_static_pk and tls_pin, which are generated fresh by the mono
 # container) and unlinked again in each test's `finally`. Never a source file.
 apps/agent/e2e/agent.toml
+apps/agent/e2e/agent-etc/
 .envrc
 .github/workflows/.env
 .github/workflows/.env.*
