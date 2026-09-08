@@ -129,7 +129,9 @@ are still bigger than the rule below says they should be), read
   need its own folder of components/hooks/model — `features/map/` is the one
   example today, and `pages/MapPage.jsx` is now just a 46-line shell that
   mounts it. Every API call goes through the single axios client at
-  `apps/frontend/src/api/client.jsx` — never an inline `fetch`.
+  `apps/frontend/src/api/client.jsx` — new code should never add an inline
+  `fetch` (a handful of existing ones are deliberate exceptions; see
+  Coding Standards below).
 * **Agent:** `apps/agent/cmd/cb-agent/` is the Go agent's entry point.
 
 ---
@@ -186,11 +188,18 @@ scope, and response targets live there, not here.
   `except Exception`, and log through `logger` (never `print()`) with a
   `[module_name]` prefix, e.g. `logger.warning("[telemetry_cache] Redis
   unavailable for hw:%s: %s", hardware_id, exc)`.
-* **Frontend:** All HTTP goes through the axios client in
-  `apps/frontend/src/api/client.jsx` — no inline `fetch`. It owns request IDs,
-  auth, CSRF, and retries; a bare `fetch` silently opts out of all of that.
-  Always render a loading state and an error state — never assume the happy
-  path is the only path.
+* **Frontend:** All HTTP to *this application's own API* goes through the
+  axios client in `apps/frontend/src/api/client.jsx` — no inline `fetch`. It
+  owns request IDs, auth, CSRF, and retries; a bare `fetch` to our own API
+  silently opts out of all of that. A handful of bare `fetch` calls already
+  exist in `apps/frontend/src` and are deliberate, not bugs: calls to a
+  third-party or other-origin URL (geocoding/weather, downloading a
+  reverse-proxy TLS cert), one static-asset load, and one pre-auth liveness
+  probe that has to keep working while the server itself is down. Don't
+  "fix" one of these on sight — if you're unsure whether a bare `fetch` you
+  find is one of them, `docs/architecture.md` names every call site. Always
+  render a loading state and an error state — never assume the happy path
+  is the only path.
 * **Secrets:** Never hardcode credentials, tokens, signing material, JWT
   secrets, or vault keys — and that includes CI workflows, tests, examples,
   and fixtures, not just application code. Generate ephemeral values at
