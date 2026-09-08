@@ -359,7 +359,8 @@ An earlier attempt built `useMapEditorUi` and then spread it straight back into
 33 destructured names, so the hook existed but the object never did and nothing
 downstream could take it as a prop. That is why the first pass moved no lines.
 
-**Result: `MapPage.jsx` 3,025 → 1,484 (51%).**
+**Result: `MapPage.jsx` 3,025 → 46**, a route shell, with the workspace at
+1,474 and thirteen extracted modules beside it.
 
 | Extracted | Lines | Props | Replaced |
 |---|---|---|---|
@@ -376,9 +377,34 @@ flat, so an older frontend reading the same row does not lose the user's view
 options), and explicit failure for unknown context actions, which previously
 reported as `toast.info(... not implemented yet)`.
 
-**Still outstanding:** splitting `useMapDataLoad` (30 params) into a topology
-adapter and a persistence hook, `MapWorkspace`, the `features/map` relocation,
-and the second half of the renderer boundary — Sigma still owns its own fetch.
+**Second pass — steps 5 to 7.** `useMapDataLoad` gave up its topology
+transform (`graphAdapter`, pure and directly tested) and its placement
+bookkeeping (`useMapAutoPlacement`), dropping 508 lines to 299 and 34
+parameters to 29. `useMapDocument` took the durable state — nodes, edges,
+overrides, boundaries, labels, lines — with the four refs that mirror it.
+`MapPage.jsx` is now a **46-line route shell** and the composition lives in
+`features/map/MapWorkspace.jsx`.
+
+Two defects surfaced while closing the renderer boundary:
+
+- **Sigma had never rendered anything.** It fetched `format: 'sigma'`, a
+  parameter the backend has never implemented (`git log -S sigma` on
+  `api/graph.py` is empty), then handed the ordinary payload to
+  `Graph.import`, which rejects it — "serialized node is missing its key",
+  verified directly against the real payload. The catch logged it and the WebGL
+  view came up empty. It now draws the canonical document via `toSigmaGraph`.
+- **Switching renderers issued a second topology request.** `fitView` and
+  `setViewport` come from `useReactFlow()` and change identity when the
+  ReactFlow instance unmounts — which is what toggling to Sigma does — so
+  `fetchData`'s identity changed and the fetch effect re-fired. The same shape
+  as the Cloud View defect. Both are now read through latest-value refs, and a
+  Chromium test counts topology requests across the toggle.
+
+**Still outstanding:** moving the map components and hooks into `features/map`
+behind compatibility re-exports. Note for whoever does it: `lazyRoute`'s
+dynamic `import('../components/map/SigmaMap')` is not a static `from` clause
+and survives a relative-path rewrite — the unit suite catches it, the linter
+does not.
 
 Verification for every commit: `make verify` exit 0, the frontend suite (177
 files, 1,460 tests), and for each markup move the `topology` visual baseline
