@@ -326,51 +326,81 @@ Browser verification for §2.5 is three new Playwright specs — `settings-tabs`
 
 ### Map rework (2026-09-07, follow-on)
 
-`map-reowrk.md` proposed a `features/map` module with a canonical map document,
-domain hooks, and a renderer boundary. Its analysis was verified line by line
-against the tree and was accurate: 3,025 lines, 50 `useState`, 26 effects, 39
-callbacks, 70 imports all matched, as did every risk it named.
+`map-rework.md` proposed a feature-oriented map module: a thin route page, a
+canonical map document, domain hooks with cohesive contracts, and
+renderer-independent presentation. Its analysis was verified line by line and
+was accurate — 3,025 lines, 50 `useState`, 26 effects, 39 callbacks, 70 imports
+all matched, as did every risk it named.
 
-**Correctness came first**, because a behavior change buried inside a 3,000-line
-structural move cannot be reviewed. Six defects shipped as separate commits:
+**Six defects fixed first**, because a behavior change buried inside a
+3,000-line structural move cannot be reviewed:
 
 | Defect | Effect before the fix |
 |---|---|
-| `ENTITY_API_DELETE` bracket-indexed on a `Map` | Deleting a node from the map failed for **every** type since 2026-03-17 (`5aae0a10`) |
-| Tag and hardware-role filters in two effects | Whichever ran last won; either filter could unhide what the other excluded |
+| `ENTITY_API_DELETE` bracket-indexed on a `Map` | Deleting a node failed for **every** type since 2026-03-17 (`5aae0a10`) |
+| Tag and hardware-role filters in two effects | Whichever ran last won; either could unhide what the other excluded |
 | No request-generation guard in `fetchData` | A slow earlier topology response could overwrite a newer one |
-| Cloud View in `fetchData`'s deps | Toggling both transformed nodes in place *and* re-issued the fetch |
-| `SigmaMap` never sent `map_id` | Sigma rendered an unscoped graph, inconsistent with React Flow |
-| `SigmaMap` sent singular include tokens | `service`/`network` never matched `api/graph.py`, so Sigma silently dropped every service and network |
+| Cloud View in `fetchData`'s deps | Toggling both transformed nodes *and* re-issued the fetch |
+| `SigmaMap` never sent `map_id` | Sigma rendered an unscoped graph |
+| `SigmaMap` sent singular include tokens | `service`/`network` never matched `api/graph.py`; Sigma silently dropped every service and network |
 
-The last one is not in `map-reowrk.md` — it surfaced while fixing the `map_id`
-scoping. `buildIncludeCSV` is now the single definition both renderers use.
+The last is not in `map-rework.md` — it surfaced while fixing the scoping.
 
-**Structurally, only the precondition was taken.** `useMapEditorUi` owns the
-sixteen transient editor fields that were sixteen `useState` calls, so cancelling
-is one action instead of the hand-maintained sixteen-setter list the Escape
-handler had become. `MapStatusBanners` then demonstrated the extraction pattern
-on the two blocks that are genuinely separable (four and three values).
+**The sequencing was corrected once measured.** The doc puts presentation
+extraction first and calls it low-risk. Measured, the header needed 51 page
+values and the canvas 138, so extracting first yields 51- and 138-prop
+components. But every one of those values maps to an owner in the doc's own
+ownership table — nothing was unclassifiable — so applying ownership first
+collapses them to 6 and 10. That is the doc's *Expected Outcome* ("hooks expose
+cohesive objects instead of dozens of unrelated setter arguments") acting as the
+binding constraint on its own step order.
 
-**What was deliberately not done, and why.** The header/toolbar and modal cluster
-still need 29 and 34 values from the page — the same measurement that left
-`MapPage` whole in §2.5. Consolidating transient UI does not by itself reduce
-those; the document, filter, and persistence hooks in `map-reowrk.md` §"Safe
-Extraction Order" steps 3–5 are what would. Also outstanding: the versioned
-layout codec (`schemaVersion` still appears nowhere), the command router, the
-renderer boundary, and the `features/map` relocation.
+An earlier attempt built `useMapEditorUi` and then spread it straight back into
+33 destructured names, so the hook existed but the object never did and nothing
+downstream could take it as a prop. That is why the first pass moved no lines.
 
-`MapPage.jsx` is **3,015** lines, against 3,025 before. That is not the point of
-this pass and is not presented as progress: state ownership moved, and the
-26 dependency-array entries eslint required once the setters were no longer
-provably-stable `useState` returns cost most of what the extraction saved. The
-line count falls when steps 3–5 land, not before.
+**Result: `MapPage.jsx` 3,025 → 1,484 (51%).**
 
-Verification is `make verify` green (security gate zero HIGH/CRIT, coverage
-ratchet untouched at 56 / 38-31-30-40), the frontend suite at 174 files and
-1,426 tests, and the Chromium map spec at 4 tests — two of them new Escape
-tests against a populated graph. The dialog one was mutation-checked: stubbing
-`cancelActiveTool` to a no-op turns it red and leaves the other three green.
+| Extracted | Lines | Props | Replaced |
+|---|---|---|---|
+| `useMapNodeCommands` | 634 | 13 args | 17 entity handlers |
+| `MapHeader` | 337 | 6 | 54 values |
+| `MapDialogs` | 311 | 3 | ~37 values |
+| `EdgeInspector` | 279 | 6 | 262-line IIFE |
+| `MapCanvas` | 178 | 8 | renderer + wiring |
+| `useMapEditorUi` / `useMapFilters` | 304 | — | 21 `useState` calls |
+| `layoutCodec` / `mapActions` | 173 | — | versioned persistence, action vocabulary |
+
+Also shipped: `schemaVersion` on the layout document (written both nested and
+flat, so an older frontend reading the same row does not lose the user's view
+options), and explicit failure for unknown context actions, which previously
+reported as `toast.info(... not implemented yet)`.
+
+**Still outstanding:** splitting `useMapDataLoad` (30 params) into a topology
+adapter and a persistence hook, `MapWorkspace`, the `features/map` relocation,
+and the second half of the renderer boundary — Sigma still owns its own fetch.
+
+Verification for every commit: `make verify` exit 0, the frontend suite (177
+files, 1,460 tests), and for each markup move the `topology` visual baseline
+pixel-identical. Two Escape specs were added against a populated graph; the
+dialog one was mutation-checked by stubbing `cancelActiveTool` to a no-op.
+
+### Visual baseline flake (2026-09-07)
+
+§3.1 lists the visual baselines as possibly stale and due a re-snap. Two were
+failing; re-snapping would have been wrong. The suite was **not hermetic**:
+`useAppFont` fetches the typeface from `fonts.googleapis.com` on every page
+load, so text metrics depended on a public-internet round-trip completing
+before the screenshot, and a different two or three surfaces diffed each run.
+`ConnectionStatus` compounded it — `stubApi` stubbed WebSockets but not
+`EventSource`, so its "Reconnecting to live data..." banner appeared on
+whichever surface took longer than its 5s grace timer and shifted the page.
+
+Both are now stubbed, the fixed 250ms pre-screenshot sleep is gone, and
+baselines were regenerated in the CI container (never on a dev host) and
+verified over eight consecutive runs. `docs/testing-visual-baselines.md` now
+lists five determinism sources instead of three. Only the agents baseline was
+genuinely stale; monitors and discovery matched once the suite was hermetic.
 
 ---
 
