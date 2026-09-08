@@ -6,6 +6,32 @@ As we are currently in the **1.0.0 release-candidate** stage, we are prioritizin
 
 ---
 
+## 🚀 Your First PR
+
+New here? Follow these six steps in order — they're the difference between a
+smooth first PR and losing an hour to something this file could have told you
+up front.
+
+1. Read [`README.md`](README.md) (what the product is) and
+   [`docs/overview.md`](docs/overview.md) (what users do with it).
+2. Read [`CLAUDE.md`](CLAUDE.md) (how this repo works — conventions, product
+   principles) and [`docs/architecture.md`](docs/architecture.md) (the request
+   path, process topology, and which files are still fatter than the
+   "routes thin, services hold logic" rule wants).
+3. Run `make install && make dev`. Open the UI and complete the first-run setup
+   (OOBE) against your local Postgres.
+4. Run `make lint`, then `make verify`, before your first push. See
+   [Local Setup](#local-setup) below for the Go + `govulncheck` install
+   commands `make verify`'s security scan needs — `make install` does not
+   bootstrap them.
+5. Don't start in `specs/1.0.0/slices/` unless your change is a release
+   requirement. For an ordinary bugfix, the code plus a regression test is
+   enough.
+6. Never lower a coverage gate to make a build green. Never commit `.env`,
+   `artifacts/`, or scan reports.
+
+---
+
 ## 🛑 Before You Start
 
 1. **Check the Issues:** Someone might already be working on your idea or bug.
@@ -84,6 +110,57 @@ go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
 
 ---
 
+## 🧭 Where to Look
+
+A short tour, in the order a request actually flows — not a reference. For the
+full picture (process topology, the request path end to end, and which files
+are still bigger than the rule below says they should be), read
+[`docs/architecture.md`](docs/architecture.md).
+
+* **Backend:** `apps/backend/src/app/api/` — thin route modules (parse,
+  authorize, delegate, shape) — call into `apps/backend/src/app/services/`,
+  where the actual logic lives. Both talk to
+  `apps/backend/src/app/db/models/`, a package of 21 modules split by bounded
+  context (`hardware.py`, `discovery.py`, `networks.py`, and so on) — it used
+  to be one 3,000-line file, so don't be surprised it isn't a single module
+  anymore.
+* **Frontend:** `apps/frontend/src/pages/` holds the route-level page
+  components. `apps/frontend/src/features/` is for anything large enough to
+  need its own folder of components/hooks/model — `features/map/` is the one
+  example today, and `pages/MapPage.jsx` is now just a 46-line shell that
+  mounts it. Every API call goes through the single axios client at
+  `apps/frontend/src/api/client.jsx` — never an inline `fetch`.
+* **Agent:** `apps/agent/cmd/cb-agent/` is the Go agent's entry point.
+
+---
+
+## 🔏 Code-Owner Review (the honest version)
+
+A handful of paths require code-owner review before they can merge — see
+[`.github/CODEOWNERS`](.github/CODEOWNERS). Today every one of them maps to a
+single maintainer, `@blkleg`, not a team:
+
+* The endpoint policy/inventory pair (`apps/backend/src/app/security/endpoint_policy.json`,
+  `endpoint_inventory.json`, and the generator/test that keep them in sync) — the
+  SEC-07 review for any change to the public-endpoint allowlist.
+* Alembic migrations (`apps/backend/migrations/`) — a bad revision is
+  unrecoverable on a customer database.
+* Packaging (`packaging/`, `nfpm.yaml`, `PKGBUILD`) — what lands on an end
+  user's machine.
+* The agent wire protocol (`apps/agent/internal/frame/` and
+  `apps/backend/src/app/schemas/agent_frame.py`) — the Go framing and the
+  Python schema are one contract and must change together.
+* The release workflow (`.github/workflows/release.yml`).
+
+That isn't a team standing by — it's one person, so a PR that touches any of
+the above will wait on that reviewer's availability rather than on whoever
+else happens to be online. `.github/CODEOWNERS` says as much: the mapping
+holds "until RC-3 assigns a narrower team/person." If your change can avoid
+these paths, it will move faster; if it can't, budget for the wait rather than
+being surprised by it.
+
+---
+
 ## 🔒 Security Policy
 
 As a project built for home servers, security is our top priority.
@@ -100,8 +177,32 @@ scope, and response targets live there, not here.
 ## 📜 Coding Standards
 
 * **Keep it Lean:** We target home labbers who might be running this on a Raspberry Pi or an old Optiplex. Efficiency matters.
+* **Python:** Full type annotations everywhere — `mypy` runs with
+  `disallow_untyped_defs`, so an untyped `def` fails CI, not just review.
+  Docstrings on classes and public functions. Routes stay thin — parse,
+  authorize, delegate, shape — and services hold the logic (see "Where to
+  Look" above). Get a DB session via `Depends(get_db)`,
+  never by constructing one yourself. Catch specific exceptions, not bare
+  `except Exception`, and log through `logger` (never `print()`) with a
+  `[module_name]` prefix, e.g. `logger.warning("[telemetry_cache] Redis
+  unavailable for hw:%s: %s", hardware_id, exc)`.
+* **Frontend:** All HTTP goes through the axios client in
+  `apps/frontend/src/api/client.jsx` — no inline `fetch`. It owns request IDs,
+  auth, CSRF, and retries; a bare `fetch` silently opts out of all of that.
+  Always render a loading state and an error state — never assume the happy
+  path is the only path.
+* **Secrets:** Never hardcode credentials, tokens, signing material, JWT
+  secrets, or vault keys — and that includes CI workflows, tests, examples,
+  and fixtures, not just application code. Generate ephemeral values at
+  runtime or inject them through the platform's secret store.
+* **Backward-compatible migrations:** Self-hosters upgrade on their own
+  schedule, and a half-updated deployment must keep working. Migrations use
+  `ADD COLUMN IF NOT EXISTS`; add fields alongside old ones instead of
+  renaming or dropping them.
 * **Documentation:** If you add a feature, update the `README.md` or internal docs.
-* **Commits:** Use descriptive commit messages (e.g., `fix: resolve auth-loop in Firefox` instead of `fixed stuff`).
+* **Commits:** Prefix with `feat:` / `fix:` / `chore:` / `docs:` and write a
+  descriptive summary (e.g., `fix: resolve auth-loop in Firefox` instead of
+  `fixed stuff`).
 * **Generated output:** Never commit `make verify`/`make test` output or the artifacts they write —
   `artifacts/`, `apps/frontend/coverage/`, and `.coverage` are gitignored and must stay that way.
 
