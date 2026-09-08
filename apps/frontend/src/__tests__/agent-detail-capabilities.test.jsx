@@ -351,4 +351,20 @@ describe('AgentDetailPage', () => {
       expect(screen.getByText(/lab-nas/)).toBeInTheDocument();
     });
   });
+
+  // Placed last on purpose: it fails if any test above in this file leaked a
+  // mockResolvedValue past beforeEach. vi.clearAllMocks() alone does not
+  // restore implementations, which is why beforeEach re-applies each one.
+  // This file's own tests reassign setAgentCapabilities (including rejected
+  // variants), getAgent, getAgentTelemetry and getAgentsPresence, so those
+  // are exactly the fixtures this canary checks.
+  it('starts every test from the default api fixtures', async () => {
+    const api = await import('../api/agents');
+    await expect(api.setAgentCapabilities()).resolves.toEqual(
+      await apiDefaults.setAgentCapabilities()
+    );
+    await expect(api.getAgent()).resolves.toEqual(await apiDefaults.getAgent());
+    await expect(api.getAgentTelemetry()).resolves.toEqual(await apiDefaults.getAgentTelemetry());
+    await expect(api.getAgentsPresence()).resolves.toEqual(await apiDefaults.getAgentsPresence());
+  });
 });

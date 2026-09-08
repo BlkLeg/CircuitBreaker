@@ -450,4 +450,18 @@ describe('AgentDetailPage', () => {
       expect(screen.queryByLabelText('Disk history')).not.toBeInTheDocument();
     });
   });
+
+  // Placed last on purpose: it fails if any test above in this file leaked a
+  // mockResolvedValue past beforeEach. vi.clearAllMocks() alone does not
+  // restore implementations, which is why beforeEach re-applies each one.
+  // This file's own tests reassign getAgentTelemetry and
+  // getAgentTelemetryHistory (both resolved and rejected variants), so those
+  // are exactly the fixtures this canary checks.
+  it('starts every test from the default api fixtures', async () => {
+    const api = await import('../api/agents');
+    await expect(api.getAgentTelemetry()).resolves.toEqual(await apiDefaults.getAgentTelemetry());
+    await expect(api.getAgentTelemetryHistory()).resolves.toEqual(
+      await apiDefaults.getAgentTelemetryHistory()
+    );
+  });
 });

@@ -390,4 +390,20 @@ describe('AgentDetailPage', () => {
     expect(screen.queryByText('Docker')).not.toBeInTheDocument();
     expect(screen.queryByText('Containers')).not.toBeInTheDocument();
   });
+
+  // Placed last on purpose: it fails if any test above in this file leaked a
+  // mockResolvedValue past beforeEach. vi.clearAllMocks() alone does not
+  // restore implementations, which is why beforeEach re-applies each one.
+  // This file's own tests reassign getAgentTelemetry repeatedly and, once,
+  // getCapabilityDefaults to a promise that never resolves (the "omits the
+  // cadence segment" test) — exactly the never-resolving leak the top-level
+  // apiDefaults comment warns about — so those are the fixtures this canary
+  // checks.
+  it('starts every test from the default api fixtures', async () => {
+    const api = await import('../api/agents');
+    await expect(api.getAgentTelemetry()).resolves.toEqual(await apiDefaults.getAgentTelemetry());
+    await expect(api.getCapabilityDefaults()).resolves.toEqual(
+      await apiDefaults.getCapabilityDefaults()
+    );
+  });
 });

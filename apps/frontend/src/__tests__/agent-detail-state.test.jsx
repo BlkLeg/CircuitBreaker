@@ -311,20 +311,16 @@ describe('AgentDetailPage', () => {
     });
   });
 
-  // Placed last on purpose: it fails if any test above leaked a
+  // Placed last on purpose: it fails if any test above in this file leaked a
   // mockResolvedValue past beforeEach. vi.clearAllMocks() alone does not
   // restore implementations, which is why beforeEach re-applies each one.
+  // This file's own tests reassign getAgentTelemetry, getAgentEvents and
+  // mockClockOffsetMs (the "keeps the last-seen label" test pins it to
+  // 1200), so those are exactly the fixtures this canary checks.
   it('starts every test from the default api fixtures', async () => {
     const api = await import('../api/agents');
-    await expect(api.getAgentTelemetry('3')).resolves.toEqual({
-      data: { latest: null, readiness: [] },
-    });
-    await expect(api.getAgentTelemetryHistory('3', '1h')).resolves.toEqual({
-      data: { points: [] },
-    });
-    const presence = await api.getAgentsPresence({ ids: ['3'] });
-    expect(presence.data[0].hardware).not.toBeNull();
-    const defaults = await api.getCapabilityDefaults();
-    expect(defaults.data.host_telemetry.config.interval_s).toBe(45);
+    await expect(api.getAgentTelemetry()).resolves.toEqual(await apiDefaults.getAgentTelemetry());
+    await expect(api.getAgentEvents()).resolves.toEqual(await apiDefaults.getAgentEvents());
+    expect(mockClockOffsetMs()).toBeNull();
   });
 });
