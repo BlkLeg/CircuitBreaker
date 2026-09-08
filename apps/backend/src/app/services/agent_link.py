@@ -201,16 +201,52 @@ async def _handle_uninstall(db: Session, agent: Agent, frame: AgentFrame) -> Non
     either path holds `uq_monitor_probe_runs_active` for its monitor until the
     reconciliation pass expires it.
 
+    The same argument carries D-14's discovery cleanup, which this handler used
+    to skip: from the moment the status flips, `dispatch_frame`'s grant gate
+    drops this agent's own terminal summary, so a dispatch left open here stays
+    open until the reconciliation pass expires it — and unlike a revoked agent,
+    an uninstalled one is not coming back to finish it.
+
+    No audit row is written here on top of `revoke_agent`'s. `revoked` is in
+    `agent_registry.CHAINED_EVENT_TYPES`, so `record_event` already lands a
+    hash-chained `agent_revoked` entry carrying this reason for *both* paths.
+    `post_revoke`'s extra `agent_revoke_authorized` row is specifically the
+    record of an operator authorizing a revoke; writing one from here would
+    make a search for operator authorizations return self-service uninstalls.
+
     Commits before publishing, for the same reason `_handle_key_rotate` does:
     the frame claims something about durable state, so that state has to be
     durable first. `dispatch_frame`'s trailing commit is then a no-op.
+
+    One thing `post_revoke` does that this path deliberately does NOT: publish a
+    `disconnect` control frame. That frame is routed by the connection registry
+    (`agent_registry.publish_agent_control_frame` → `claim_agent_control_frames`),
+    and the registry entry for this agent is owned by *this* connection — the
+    one-shot notifier `cb-agent uninstall` opened, which registered itself over
+    the daemon's entry when it connected (see `link_stream`'s `connection_id`).
+    Publishing here would therefore land on the notifier's own socket and tear
+    it down before the delivery acknowledgement the CLI now waits on could be
+    sent, turning a successful uninstall back into an unconfirmed one. The
+    daemon's still-live connection needs no such push: `link_stream` re-reads
+    the agent row on every frame and leaves the loop the moment the status is no
+    longer `active`.
     """
     agent_registry.revoke_agent(db, agent.id, actor_user_id=None, reason="uninstalled by agent")
     cancellation = monitor_service.cancel_agent_probe_runs(
         db, agent.id, reason=monitor_service.CANCEL_AGENT_REVOKED
     )
+    # D-4 has no `agent_revoked`; `agent_unavailable` is what a job whose
+    # executor no longer exists failed for — the same reason and the same
+    # constant `post_revoke` passes.
+    discovery_cancellation = agent_discovery.cancel_agent_dispatches(
+        db, agent.id, reason=agent_discovery.ERROR_AGENT_UNAVAILABLE
+    )
     db.commit()
     await monitor_service.publish_probe_cancels(cancellation)
+    await agent_discovery.publish_discovery_cancels(discovery_cancellation)
+    # The Agents page folds this straight into the row's status, which is how an
+    # operator watching the list sees an uninstall land without reloading.
+    await agent_registry.broadcast_presence(agent.id, "revoked")
 
 
 async def _handle_host_telemetry(db: Session, agent: Agent, frame: AgentFrame) -> None:

@@ -1452,3 +1452,105 @@ def test_receive_frame_still_returns_the_frame_or_none(db_session, factories):
     frame = agent_link.receive_frame(db_session, agent, _raw(seq=1))
     assert frame is not None and frame.seq == 1
     assert agent_link.receive_frame(db_session, agent, b"not json at all") is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_uninstall_cancels_the_agents_discovery_dispatches(db_session, factories):
+    """The agent-initiated revoke owes the same D-14 cleanup the operator one does.
+
+    `api/agents.py::post_revoke` closes every discovery dispatch the revoked
+    agent still holds, for the reason recorded there: from the moment the
+    status flips, `dispatch_frame`'s grant gate drops the agent's own terminal
+    summary and nothing else would ever close them. `_handle_uninstall` ends
+    with the *same* agent revoked, so a job left open here is open for exactly
+    as long — until the reconciliation pass expires it — with no agent left in
+    existence to finish it. `cancel_agent_dispatches`' own docstring already
+    names `agent_link` as one of its callers; this is the test that makes that
+    true.
+    """
+    from app.core.time import utcnow_iso
+    from app.db.models import ScanJob
+    from app.services import agent_discovery
+
+    agent = factories.agent(status="active")
+    job = ScanJob(
+        scan_agent_id=agent.id,
+        target_cidr="10.88.0.0/24",
+        status="running",
+        dispatch_status=agent_discovery.DISPATCH_STATUS_DISPATCHED,
+        scan_types_json='["agent_connect"]',
+        source_type="agent",
+        created_at=utcnow_iso(),
+    )
+    db_session.add(job)
+    db_session.flush()
+    job_id = job.id
+
+    frame = AgentFrame(type="uninstall", ts="2026-07-27T12:00:00Z", payload={})
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    db_session.expire_all()
+    closed = db_session.get(ScanJob, job_id)
+    assert closed is not None
+    assert closed.status not in {"queued", "running"}, (
+        "an uninstalled agent's in-flight discovery job must not be left open — "
+        f"status is still {closed.status!r}"
+    )
+    assert closed.error_reason == agent_discovery.ERROR_AGENT_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_dispatch_uninstall_lands_in_the_chained_audit_log(db_session, factories):
+    """A self-service revoke must be findable in the audit log, not only the
+    agent timeline — and it must stay distinguishable from an operator's.
+
+    This pins behaviour rather than adding it, and it is here because the
+    opposite was very nearly built: `post_revoke` writes an explicit
+    `agent_revoke_authorized` row and `_handle_uninstall` writes none, which
+    reads like a gap until you follow `revoke_agent` → `record_event` →
+    `CHAINED_EVENT_TYPES`. `revoked` is in that set, so the hash-chained
+    `agent_revoked` row below is written for *both* paths and carries the
+    reason. Adding `agent_revoke_authorized` here would have made a search for
+    operator authorizations return self-service uninstalls instead.
+    """
+    from app.db.models import Log
+
+    agent = factories.agent(status="active")
+    agent_id = agent.id
+
+    frame = AgentFrame(type="uninstall", ts="2026-07-27T12:00:00Z", payload={})
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    db_session.expire_all()
+    rows = db_session.query(Log).filter(Log.entity_type == "agent", Log.entity_id == agent_id).all()
+    assert [r.action for r in rows] == ["agent_revoked"], (
+        f"expected the chained agent_revoked row and nothing else, got {[r.action for r in rows]}"
+    )
+    assert json.loads(rows[0].diff or "{}") == {"reason": "uninstalled by agent"}
+    # No operator authorized this one, and the audit trail has to say so.
+    assert rows[0].actor == "system"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_uninstall_pushes_the_revoked_status_to_watching_operators(
+    db_session, factories, monkeypatch
+):
+    """The Agents page already renders this push; nothing was sending it.
+
+    `AgentsPage.jsx` folds an `event_type: "revoked"` presence push straight
+    into the row's status, which is how an operator watching the list sees
+    `post_revoke` land without reloading. The agent-initiated path never
+    called `broadcast_presence`, so an agent that uninstalled itself sat on
+    screen as `active` until something else refreshed the page.
+    """
+    from unittest.mock import AsyncMock
+
+    agent = factories.agent(status="active")
+    agent_id = agent.id
+    broadcast = AsyncMock()
+    monkeypatch.setattr("app.services.agent_registry.broadcast_presence", broadcast)
+
+    frame = AgentFrame(type="uninstall", ts="2026-07-27T12:00:00Z", payload={})
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    broadcast.assert_awaited_once_with(agent_id, "revoked")
