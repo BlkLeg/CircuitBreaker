@@ -40,11 +40,7 @@ import WifiOverlay from '../components/map/WifiOverlay';
 import Sidebar from '../components/map/Sidebar';
 import LegendPanel from '../components/map/LegendPanel';
 import { useToast } from '../components/common/Toast';
-import {
-  CONNECTION_TYPE_OPTIONS,
-  normalizeConnectionType,
-} from '../components/map/connectionTypes';
-import { CONNECTION_STYLES } from '../config/mapTheme';
+import { normalizeConnectionType } from '../components/map/connectionTypes';
 import { useHardwareRoles } from '../hooks/useHardwareRoles';
 import { recalculateAllEdges } from '../utils/bandwidthCalculator';
 import {
@@ -107,6 +103,7 @@ import { useMapFilters } from '../hooks/useMapFilters';
 import MapHeader from '../components/map/MapHeader';
 import BoundaryInspector from '../components/map/BoundaryInspector';
 import MapDialogs from '../components/map/MapDialogs';
+import EdgeInspector from '../components/map/EdgeInspector';
 import { MapErrorBanner, ScanImportBanner } from '../components/map/MapStatusBanners';
 import { useTelemetryStream } from '../hooks/useTelemetryStream';
 import { useTopologyStream, topologyEmitter } from '../hooks/useTopologyStream';
@@ -2031,267 +2028,14 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
 
             <MapDialogs editorUi={editorUi} commands={commands} hardwareRoles={HARDWARE_ROLES} />
 
-            {/* Edge anchor context menu */}
-            {edgeMenu &&
-              (() => {
-                const menuW = 220;
-                const menuH = edgeMenu.isUpdatable ? 420 : 220;
-                const ex = Math.min(edgeMenu.x, window.innerWidth - menuW - 8);
-                const ey = Math.min(edgeMenu.y, window.innerHeight - menuH - 8);
-                const currentOverride = edgeOverrides[edgeMenu.edgeId] || {};
-                const SIDES = ['auto', 'top', 'right', 'bottom', 'left'];
-                const stopAll = (e) => {
-                  e.stopPropagation();
-                  // Do not preventDefault so button clicks still work; we stop propagation so the pane never receives the event.
-                };
-                return (
-                  <div
-                    role="menu"
-                    tabIndex={-1}
-                    style={{
-                      position: 'fixed',
-                      left: ex,
-                      top: ey,
-                      zIndex: 1001,
-                      background: 'var(--color-surface)',
-                      border: '1px solid var(--color-border)',
-                      borderRadius: 8,
-                      minWidth: menuW,
-                      boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
-                      overflow: 'hidden',
-                      userSelect: 'none',
-                    }}
-                    onMouseDown={stopAll}
-                    onMouseUp={stopAll}
-                    onClick={stopAll}
-                    onPointerDown={stopAll}
-                    onPointerUp={stopAll}
-                  >
-                    {/* ── Connection Type ────────────────────────────── */}
-                    {edgeMenu.isUpdatable && (
-                      <>
-                        <div
-                          style={{
-                            padding: '7px 12px 5px',
-                            borderBottom: '1px solid var(--color-border)',
-                            fontSize: 10,
-                            color: 'var(--color-text-muted)',
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.08em',
-                          }}
-                        >
-                          Connection Type
-                        </div>
-                        <div
-                          style={{
-                            display: 'grid',
-                            gridTemplateColumns: 'repeat(3, 1fr)',
-                            gap: 4,
-                            padding: '6px 10px 8px',
-                          }}
-                        >
-                          {CONNECTION_TYPE_OPTIONS.map((t) => {
-                            const style = CONNECTION_STYLES[t] || {};
-                            const isActive =
-                              (normalizeConnectionType(edgeMenu.connectionType) || 'ethernet') ===
-                              t;
-                            return (
-                              <button
-                                key={t}
-                                type="button"
-                                onPointerDown={(e) => e.stopPropagation()}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  e.preventDefault();
-                                  handleEdgeConnectionTypeChange(edgeMenu.edgeId, t);
-                                }}
-                                title={t}
-                                style={{
-                                  padding: '3px 4px',
-                                  borderRadius: 4,
-                                  border: isActive
-                                    ? `2px solid ${style.stroke || '#888'}`
-                                    : '1px solid var(--color-border)',
-                                  background: isActive ? `${style.stroke}22` : 'transparent',
-                                  color: style.stroke || 'var(--color-text)',
-                                  fontSize: 10,
-                                  cursor: 'pointer',
-                                  textAlign: 'center',
-                                  fontWeight: isActive ? 700 : 400,
-                                  whiteSpace: 'nowrap',
-                                  overflow: 'hidden',
-                                  textOverflow: 'ellipsis',
-                                  transition: 'all 0.12s',
-                                }}
-                              >
-                                {t}
-                              </button>
-                            );
-                          })}
-                        </div>
-                        <div
-                          style={{
-                            height: 1,
-                            background: 'var(--color-border)',
-                            margin: '0 0 2px',
-                          }}
-                        />
-                      </>
-                    )}
-                    <div
-                      style={{
-                        padding: '7px 12px 5px',
-                        borderBottom: '1px solid var(--color-border)',
-                        fontSize: 10,
-                        color: 'var(--color-text-muted)',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.08em',
-                      }}
-                    >
-                      Edge Anchors
-                    </div>
-                    <div
-                      style={{
-                        padding: '4px 12px 2px',
-                        fontSize: 11,
-                        color: 'var(--color-text-muted)',
-                      }}
-                    >
-                      Source side
-                    </div>
-                    <div
-                      style={{ display: 'flex', gap: 4, padding: '2px 12px 6px', flexWrap: 'wrap' }}
-                    >
-                      {SIDES.map((s) => (
-                        <button
-                          key={s}
-                          type="button"
-                          onPointerDown={(e) => e.stopPropagation()}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            e.preventDefault();
-                            handleEdgeAnchorChange(edgeMenu.edgeId, 'source', s);
-                          }}
-                          style={{
-                            padding: '2px 8px',
-                            borderRadius: 4,
-                            border: '1px solid var(--color-border)',
-                            fontSize: 11,
-                            cursor: 'pointer',
-                            background:
-                              currentOverride.source_side === s ||
-                              (s === 'auto' && !currentOverride.source_side)
-                                ? 'var(--color-primary)'
-                                : 'transparent',
-                            color:
-                              currentOverride.source_side === s ||
-                              (s === 'auto' && !currentOverride.source_side)
-                                ? '#000'
-                                : 'var(--color-text)',
-                          }}
-                        >
-                          {s}
-                        </button>
-                      ))}
-                    </div>
-                    <div
-                      style={{
-                        padding: '4px 12px 2px',
-                        fontSize: 11,
-                        color: 'var(--color-text-muted)',
-                      }}
-                    >
-                      Target side
-                    </div>
-                    <div
-                      style={{ display: 'flex', gap: 4, padding: '2px 12px 6px', flexWrap: 'wrap' }}
-                    >
-                      {SIDES.map((s) => (
-                        <button
-                          key={s}
-                          type="button"
-                          onPointerDown={(e) => e.stopPropagation()}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            e.preventDefault();
-                            handleEdgeAnchorChange(edgeMenu.edgeId, 'target', s);
-                          }}
-                          style={{
-                            padding: '2px 8px',
-                            borderRadius: 4,
-                            border: '1px solid var(--color-border)',
-                            fontSize: 11,
-                            cursor: 'pointer',
-                            background:
-                              currentOverride.target_side === s ||
-                              (s === 'auto' && !currentOverride.target_side)
-                                ? 'var(--color-primary)'
-                                : 'transparent',
-                            color:
-                              currentOverride.target_side === s ||
-                              (s === 'auto' && !currentOverride.target_side)
-                                ? '#000'
-                                : 'var(--color-text)',
-                          }}
-                        >
-                          {s}
-                        </button>
-                      ))}
-                    </div>
-                    <div
-                      style={{ height: 1, background: 'var(--color-border)', margin: '2px 0' }}
-                    />
-                    <button
-                      type="button"
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        handleClearBend(edgeMenu.edgeId);
-                      }}
-                      style={{
-                        width: '100%',
-                        background: 'transparent',
-                        border: 'none',
-                        color: 'var(--color-text-muted)',
-                        padding: '7px 12px',
-                        fontSize: 11,
-                        textAlign: 'left',
-                        cursor: 'pointer',
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.background = 'var(--color-glow)';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.background = 'transparent';
-                      }}
-                    >
-                      Clear bend point
-                    </button>
-                    <button
-                      onClick={() => setEdgeMenu(null)}
-                      style={{
-                        width: '100%',
-                        background: 'transparent',
-                        border: 'none',
-                        color: 'var(--color-text-muted)',
-                        padding: '7px 12px',
-                        fontSize: 11,
-                        textAlign: 'left',
-                        cursor: 'pointer',
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.background = 'var(--color-glow)';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.background = 'transparent';
-                      }}
-                    >
-                      Close
-                    </button>
-                  </div>
-                );
-              })()}
+            <EdgeInspector
+              edgeMenu={edgeMenu}
+              edgeOverrides={edgeOverrides}
+              onClose={() => setEdgeMenu(null)}
+              onAnchorChange={handleEdgeAnchorChange}
+              onConnectionTypeChange={handleEdgeConnectionTypeChange}
+              onClearBend={handleClearBend}
+            />
 
             <Sidebar
               node={selectedNode}
