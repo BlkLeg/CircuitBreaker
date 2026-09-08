@@ -5,11 +5,11 @@ body:
   - type: markdown
     attributes:
       value: >-
-        Circuit Breaker is in the **1.0.0 release-candidate** stage, prioritizing
-        stability, security, and performance over new feature bloat — see
-        CONTRIBUTING.md. A well-scoped request that fits the existing product
-        principles (freeform first, simple first, air-gap first-class) is far
-        more likely to land than a large one.
+        Circuit Breaker is currently prioritizing stability, security, and
+        performance over new feature bloat — see CONTRIBUTING.md. A well-scoped
+        request that fits the existing product principles (freeform first,
+        simple first, air-gap first-class) is far more likely to land than a
+        large one, and it may still be deferred while that priority holds.
   - type: checkboxes
     id: existing-issue-check
     attributes:

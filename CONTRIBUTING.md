@@ -75,7 +75,7 @@ make lint      # ruff + mypy on the backend, eslint on the frontend
 | Command | What actually runs |
 |---|---|
 | `make test` | `make test-backend` + `make test-frontend` |
-| `make test-backend` | **only** `tests/integration/` (`pytest ../../tests/integration`), against a live PostgreSQL — **not** the ~310-file `apps/backend/tests` suite |
+| `make test-backend` | **only** `tests/integration/` (`pytest ../../tests/integration`), against a live PostgreSQL — **not** the `apps/backend/tests` suite (341 `test_*.py` files as of this writing — `find apps/backend/tests -name 'test_*.py' \| wc -l`; it grows, so treat this as an order of magnitude, not a number to keep in sync) |
 | `make test-frontend` | frontend Vitest (`npm test` in `apps/frontend`) |
 | `make verify` | Tier 0 + Tier 1 with `CB_VERIFY_BACKEND=off` — the pre-push gate (measured 3m17s) |
 | `make verify-full` | Tier 0 + Tier 1 with `CB_VERIFY_BACKEND=shards` — includes the backend suite (measured 6m43s) |
@@ -100,7 +100,7 @@ documented exceptions: real, intentionally-maintained TypeScript, linted by that
 additionally pins `gitleaks protect --staged`, `ruff` (with `ruff-format`), and `mypy --strict` if
 you also use `pre-commit`.
 
-`make install` does **not** install Go. `.husky/pre-push` now runs `make verify`, which applies Tier 0 gates matching CI plus local Tier 1 (not yet in workflows; see design §4 for differences), and that gate's security scan calls `govulncheck` — it
+`make install` does **not** install Go. `.husky/pre-push` now runs `make verify`, which applies Tier 0 gates matching CI plus local Tier 1 (not yet in workflows; see `docs/design/2026-08-27-verification-strategy-design.md` §4 for the differences between the two), and that gate's security scan calls `govulncheck` — it
 fails closed if the tool is missing, so every push needs it. Install both before your first push:
 
 ```bash

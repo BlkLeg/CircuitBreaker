@@ -56,8 +56,11 @@ may assume internet access.
 
 ```bash
 make lint      # ruff + mypy + eslint
-make verify    # the pre-push gate (~3m20s)
+make verify    # the pre-push gate (~3m20s); runs with CB_VERIFY_BACKEND=off
 ```
+
+If the change touches `apps/backend/src/app`, run `make verify-full` instead —
+`make verify` skips the backend unit suite entirely.
 
 Never lower the coverage gate to make a build green.
 

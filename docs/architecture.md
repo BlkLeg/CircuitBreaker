@@ -143,8 +143,9 @@ apps/frontend/src/
 ```
 
 **Calls to this application's API go through the axios client in
-`src/api/client.jsx`** — 135 modules import it, 110 of them outside the test
-suite — and never through an inline `fetch`. That client owns request IDs, auth,
+`src/api/client.jsx`** — 121 files import it, 97 of them outside `__tests__/`
+(`grep -rlE "from [\"'][./]*api/client(\.jsx)?[\"']" src | wc -l`, then the
+same filtered with `grep -v __tests__`) — and never through an inline `fetch`. That client owns request IDs, auth,
 CSRF, retries, the diagnostics ring buffer and the server-clock record; a bare
 `fetch` silently opts out of all of it. The other twelve files in `src/api/` are
 per-domain wrappers around that one client; they do not create their own.

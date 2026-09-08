@@ -21,8 +21,8 @@ carries a status column.
 
 | Plan | Date | Status |
 |---|---|---|
-| [Technical debt cleanup](./2026-09-07-tech-debt-cleanup.md) | 2026-09-07 | **Active** — phased prune, split, test/doc alignment, and contributor-readiness work. No product features. Phase 1 is the work in flight; Phases 2–4 are not shipped. |
-| [Architectural feasibility](./2026-09-07-architectural-feasibility.md) | 2026-09-07 | **Reference** — post-cleanup assessment of layer lint, plugins, repositories, TypeScript, OpenAPI codegen, and OpenTelemetry. Not a work item. Assumes cleanup Phases 1–4 have landed; they have not. |
+| [Technical debt cleanup](./2026-09-07-tech-debt-cleanup.md) | 2026-09-07 | **Active** — phased prune, split, test/doc alignment, and contributor-readiness work. No product features. Phases 1–2 landed in earlier sessions (the plan's own "Phase 2 exit criteria — all met, 2026-09-07", plus the Map rework sections). Phases 3–4 landed in the `tech-cleanup` branch's 14 commits (`e23488fc..7d15a8b4`): the test-suite pruning and splits close §3's exit criteria, and `ce93c8ca` (the `docs/architecture.md` contributor page), `27af1f68` (CHANGELOG + feature-request form + PR template), and `f5133abe`/`7d15a8b4` (the CONTRIBUTING rewrite) close §4's, except one — `good first issue` labelling is a GitHub account action, ruled out of scope for an in-tree change, and stays open for the maintainer. |
+| [Architectural feasibility](./2026-09-07-architectural-feasibility.md) | 2026-09-07 | **Reference** — post-cleanup assessment of layer lint, plugins, repositories, TypeScript, OpenAPI codegen, and OpenTelemetry. Not a work item. Assumes cleanup Phases 1–4 have landed; as of `7d15a8b4` they have, aside from the maintainer-only `good first issue` labelling task noted in the row above. |
 
 ## v1.0.0 remediation (2026-08-18)
 

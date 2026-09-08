@@ -7,9 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 while pre-1.0 (a `0.MINOR.PATCH` bump can still carry a breaking change).
 
 **Policy:** starting with 0.4.2, entries here are generated from each
-release's notes going forward, cut by cut. Releases before 0.4.2 have
-narrative write-ups under [`docs/updates/`](docs/updates/) instead of an
-entry here. The most recent heading holds whatever has landed since the last
+release's notes going forward, cut by cut. Some earlier releases have
+narrative write-ups under [`docs/updates/`](docs/updates/) — the newest one
+there is v0.3.3. Releases after that (v0.3.4, v1.0.0-rc.1 through rc.4, and
+v0.4.0) have neither a write-up there nor an entry here. The most recent heading holds whatever has landed since the last
 cut and is *not yet* released — when it actually ships, that heading takes
 the release date and a fresh `[Unreleased]` section opens above it for the
 next round.
