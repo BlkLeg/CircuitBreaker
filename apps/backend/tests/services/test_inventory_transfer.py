@@ -2,10 +2,10 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.core.errors import ConflictError
-from app.db.models import Hardware, HardwareConnection
+from app.core.errors import ConflictError, NotFoundError
+from app.db.models import Hardware, HardwareConnection, InventoryTransferOperation
 from app.schemas.inventory_transfer import PortableInventory, PortableManifest
-from app.services.inventory_transfer.apply import apply_import
+from app.services.inventory_transfer.apply import apply_import, completed_operation_result
 from app.services.inventory_transfer.export import export_inventory
 from app.services.inventory_transfer.format import parse_inventory_document
 from app.services.inventory_transfer.plan import build_import_plan, save_preview
@@ -157,3 +157,68 @@ def test_parser_rejects_unknown_fields_before_any_orm_work():
                 "relationships": {},
             }
         )
+
+
+def _completed_operation(db_session, factories, actor):
+    """One applied transfer, so its result can be fetched back afterwards."""
+    document = _document(hardware=[{"id": 100, "name": "one"}])
+    built = build_import_plan(db_session, document, [])
+    preview = save_preview(db_session, document, built, actor_id=actor.id)
+    applied = apply_import(
+        db_session,
+        preview.plan_id,
+        preview.plan_digest,
+        "fetch-result-key",
+        actor_id=actor.id,
+    )
+    db_session.flush()
+    return applied
+
+
+def test_completed_operation_result_is_readable_by_its_own_actor(db_session, factories):
+    """The result route asks a service for this rather than querying in the route.
+
+    It is the same lookup `apply_import` already performs for replay
+    detection — actor-scoped, `state == "completed"`, result JSON present —
+    and it belongs beside it: routes stay thin (CLAUDE.md), and
+    `tests/build`'s api-boundary ratchet is the gate that says so.
+    """
+    actor = factories.user(role="admin")
+    applied = _completed_operation(db_session, factories, actor)
+
+    fetched = completed_operation_result(db_session, applied.operation_id, actor_id=actor.id)
+
+    assert fetched.operation_id == applied.operation_id
+    assert fetched == applied
+
+
+def test_completed_operation_result_is_not_readable_by_another_actor(db_session, factories):
+    """Actor scoping is authorization, not a filter for convenience: a transfer
+    result names what an admin imported and what it collided with."""
+    actor = factories.user(role="admin")
+    other = factories.user(role="admin")
+    applied = _completed_operation(db_session, factories, actor)
+
+    with pytest.raises(NotFoundError):
+        completed_operation_result(db_session, applied.operation_id, actor_id=other.id)
+
+
+def test_completed_operation_result_rejects_an_unknown_operation(db_session, factories):
+    actor = factories.user(role="admin")
+
+    with pytest.raises(NotFoundError):
+        completed_operation_result(db_session, "does-not-exist", actor_id=actor.id)
+
+
+def test_completed_operation_result_refuses_an_operation_still_running(db_session, factories):
+    """A row exists from the moment the apply starts. Returning its empty result
+    would report a transfer that has not happened as one that has."""
+    actor = factories.user(role="admin")
+    applied = _completed_operation(db_session, factories, actor)
+    row = db_session.get(InventoryTransferOperation, applied.operation_id)
+    row.state = "running"
+    row.result_json = None
+    db_session.flush()
+
+    with pytest.raises(NotFoundError):
+        completed_operation_result(db_session, applied.operation_id, actor_id=actor.id)

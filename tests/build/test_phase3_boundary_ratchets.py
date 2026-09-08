@@ -126,7 +126,21 @@ def test_deferred_core_to_services_imports_do_not_grow() -> None:
 #: beside the new branch. The one genuine query the slice needed *is* in a
 #: service: `agent_enrollment_tokens.agent_counts`, moved there when this gate
 #: caught it, which is the gate doing its job.
-_MAX_DIRECT_DB_CALLS_IN_API = 582
+#:
+#: 2026-09-08, 582 -> 589. The seven approved workflows add two route modules,
+#: and the gate caught one genuine violation among their eight new calls:
+#: `get_inventory_transfer_result` ran an actor-scoped ORM query in the route.
+#: That query is now `inventory_transfer.apply.completed_operation_result`,
+#: beside the identical lookup `apply_import` already performs for replay
+#: detection — so the number rose by seven, not eight, and this line is the
+#: one-line edit `_assert_exact` asks for in the commit that removes it.
+#:
+#: The seven that remain are `db.commit()` and `db.rollback()` at transaction
+#: boundaries, not queries: four in `inventory_transfer.py` (commit/rollback
+#: around preview and apply) and three in `metric_alerts.py`, each one
+#: immediately after a `metric_rules` service call. Same shape, and the same
+#: reasoning, as the three slice B added above.
+_MAX_DIRECT_DB_CALLS_IN_API = 589
 
 
 def test_direct_db_access_in_api_does_not_grow() -> None:

@@ -73,6 +73,35 @@ def _remap(value: Any, entity_type: str, mapping: dict[str, dict[int, int]]) -> 
     return target
 
 
+def completed_operation_result(
+    db: Session, operation_id: str, *, actor_id: int
+) -> TransferApplyResult:
+    """The stored result of one completed transfer, for the actor who ran it.
+
+    Lives here rather than in the route for the reason `tests/build`'s
+    api-boundary ratchet exists to enforce: routes stay thin (CLAUDE.md). It is
+    also the same lookup `apply_import` performs below for replay detection —
+    actor-scoped, `state == "completed"`, `result_json` present — so keeping the
+    two together is what stops them drifting.
+
+    The actor filter is authorization, not convenience: a transfer result names
+    every entity an admin imported and everything it collided with. A missing
+    row, another admin's row, and a row whose apply has not finished are all one
+    answer on purpose — `NotFoundError` tells a caller nothing about which.
+    """
+    row = (
+        db.query(models.InventoryTransferOperation)
+        .filter(
+            models.InventoryTransferOperation.id == operation_id,
+            models.InventoryTransferOperation.actor_id == actor_id,
+        )
+        .one_or_none()
+    )
+    if row is None or row.state != "completed" or not row.result_json:
+        raise NotFoundError("Transfer result not found.")
+    return TransferApplyResult.model_validate(row.result_json)
+
+
 def apply_import(
     db: Session,
     plan_id: str,
