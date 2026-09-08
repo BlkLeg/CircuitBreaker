@@ -1,11 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  useNodesState,
-  useEdgesState,
-  ReactFlowProvider,
-  useReactFlow,
-  useViewport,
-} from 'reactflow';
+import { ReactFlowProvider, useReactFlow, useViewport } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useNavigate } from 'react-router-dom';
 import { graphApi, settingsApi, hardwareApi } from '../api/client';
@@ -74,6 +68,7 @@ import {
 } from '../utils/mapDataUtils';
 import { useMapDataLoad } from '../hooks/useMapDataLoad';
 import { useMapAutoPlacement } from '../hooks/useMapAutoPlacement';
+import { useMapDocument } from '../hooks/useMapDocument';
 import { useMapTabs } from '../hooks/useMapTabs';
 import { useMapRealTimeUpdates } from '../hooks/useMapRealTimeUpdates';
 import { useMapMutations } from '../hooks/useMapMutations';
@@ -112,6 +107,31 @@ import { isLightTheme, omitKey } from '../utils/mapHelpers';
 // ── Main Component ──────────────────────────────────────────────────────────
 
 function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMapDelete }) {
+  // The canonical map document — nodes, edges, annotations and the refs that
+  // mirror them. Held as one object so it can be handed to renderers whole.
+  const document_ = useMapDocument();
+  const {
+    nodes,
+    setNodes,
+    onNodesChange,
+    edges,
+    setEdges,
+    onEdgesChangeBase,
+    edgeOverrides,
+    setEdgeOverrides,
+    boundaries,
+    setBoundaries,
+    mapLabels,
+    setMapLabels,
+    visualLines,
+    setVisualLines,
+    nodesRef,
+    edgeOverridesRef,
+    mapLabelsRef,
+    visualLinesRef,
+    dirtyRef,
+  } = document_;
+
   const { options: HARDWARE_ROLES } = useHardwareRoles();
   const { onConnectStart, onConnectEnd } = useConnectionStateContext();
   const isMobile = useIsMobile();
@@ -128,9 +148,6 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
 
   const isLight = isLightTheme(settings);
   const bgGridColor = isLight ? '#c8d4e0' : '#1a2035';
-
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChangeBase] = useEdgesState([]);
 
   // Every map filter in one unit — query inputs (environment, entity types)
   // and client-side visibility (tag, hardware role). Held as one object so
@@ -149,14 +166,12 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     [onEdgesChangeBase]
   );
 
-  const dirtyRef = useRef(false);
-
   const handleNodesChange = useCallback(
     (changes) => {
       onNodesChange(changes);
       if (changes.some((c) => c.type === 'position' && c.dragging)) dirtyRef.current = true;
     },
-    [onNodesChange]
+    [dirtyRef, onNodesChange]
   );
 
   const outerMapRef = useRef(null);
@@ -194,8 +209,6 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     localStorage.setItem('cb-legend-open', legendOpen);
   }, [legendOpen]);
 
-  // Edge override state — { edgeId: { source_side, target_side, control_point? } }
-  const [edgeOverrides, setEdgeOverrides] = useState({});
   // Transient editor UI — draw modes, drafts, menus and dialogs. Owned together
   // so cancelling is one action rather than a hand-maintained list of setters.
   //
@@ -226,26 +239,19 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     setConfirmState,
   } = editorUi;
 
-  const [boundaries, setBoundaries] = useState([]);
-  const [mapLabels, setMapLabels] = useState([]);
   const [selectedBoundaryId, setSelectedBoundaryId] = useState(null);
   const resizingBoundaryRef = useRef(null);
-  const [visualLines, setVisualLines] = useState([]);
   const [selectedVisualLineId, setSelectedVisualLineId] = useState(null);
   // Pending connection action (new connect or reconnect), resolved by type picker
   const [pendingConnection, setPendingConnection] = useState(null);
 
   // Stable refs so callbacks can always access the latest values
-  const nodesRef = useRef([]);
-  const edgeOverridesRef = useRef({});
   const flowContainerRef = useRef(null);
   const lastPointerRef = useRef({ x: 220, y: 120 });
   const boundaryDraftRef = useRef(null);
   const boundaryPointerMoveRef = useRef(null);
   const boundaryPointerUpRef = useRef(null);
   const finishBoundaryDrawRef = useRef(() => {});
-  const mapLabelsRef = useRef([]);
-  const visualLinesRef = useRef([]);
   const lineDrawDraftRef = useRef(null);
   const linePointerMoveRef = useRef(null);
   const linePointerUpRef = useRef(null);
@@ -255,20 +261,8 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
 
   // Keep refs in sync with state
   useEffect(() => {
-    nodesRef.current = nodes;
-  }, [nodes]);
-  useEffect(() => {
-    edgeOverridesRef.current = edgeOverrides;
-  }, [edgeOverrides]);
-  useEffect(() => {
     boundaryDraftRef.current = boundaryDraft;
   }, [boundaryDraft]);
-  useEffect(() => {
-    mapLabelsRef.current = mapLabels;
-  }, [mapLabels]);
-  useEffect(() => {
-    visualLinesRef.current = visualLines;
-  }, [visualLines]);
   useEffect(() => {
     lineDrawDraftRef.current = lineDrawDraft;
   }, [lineDrawDraft]);
@@ -368,7 +362,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
       topologyEmitter.off('topology:cable_removed', onCableRemoved);
       topologyEmitter.off('topology:node_status_changed', onStatusChanged);
     };
-  }, [setNodes, setEdges]);
+  }, [edgeOverridesRef, nodesRef, setNodes, setEdges]);
 
   // Telemetry sidebar state (hover card)
   const [telemetrySidebarNode, setTelemetrySidebarNode] = useState(null);
@@ -819,7 +813,14 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
           });
       }
     },
-    [selectedNode?.id, setEdges, setNodes, settings?.graph_uplink_overrides, reloadSettings]
+    [
+      nodesRef,
+      selectedNode?.id,
+      setEdges,
+      setNodes,
+      settings?.graph_uplink_overrides,
+      reloadSettings,
+    ]
   );
 
   const selectedNodeAnchor = useMemo(() => {
@@ -992,15 +993,18 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
       ]);
       dirtyRef.current = true;
     },
-    [mapLabelDefaultColor]
+    [dirtyRef, setMapLabels, mapLabelDefaultColor]
   );
 
-  const updateMapLabel = useCallback((labelId, patch) => {
-    setMapLabels((prev) =>
-      prev.map((label) => (label.id === labelId ? { ...label, ...patch } : label))
-    );
-    dirtyRef.current = true;
-  }, []);
+  const updateMapLabel = useCallback(
+    (labelId, patch) => {
+      setMapLabels((prev) =>
+        prev.map((label) => (label.id === labelId ? { ...label, ...patch } : label))
+      );
+      dirtyRef.current = true;
+    },
+    [dirtyRef, setMapLabels]
+  );
 
   const removeMapLabel = useCallback(
     (labelId) => {
@@ -1013,7 +1017,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
         setError('Failed to persist label deletion: ' + err.message);
       });
     },
-    [setMapLabelMenuOpenId, saveLayoutSnapshot]
+    [dirtyRef, mapLabelsRef, setMapLabels, setMapLabelMenuOpenId, saveLayoutSnapshot]
   );
 
   const startMapLabelDrag = useCallback(
@@ -1052,7 +1056,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
       globalThis.addEventListener('pointermove', onPointerMove);
       globalThis.addEventListener('pointerup', onPointerUp);
     },
-    [clearLabelPointerListeners, updateMapLabel]
+    [mapLabelsRef, clearLabelPointerListeners, updateMapLabel]
   );
 
   // ── Drag-to-connect / drag-to-reconnect handlers ──────────────────────────
