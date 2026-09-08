@@ -22,6 +22,9 @@
   --color-primary: #fe8019;
   --color-primary-rgb: 254, 128, 25;
   --color-primary-hover: #d86d15;
+  /* Cold-load baseline only. theme/applyTheme.js overwrites this from the
+     active palette on every theme change; it was a fixed Gruvbox value here,
+     which is why raised panels stayed dark under every light preset. */
   --color-danger: #fb4934;
   --color-danger-hover: #cc241d;
   --color-text: #ebdbb2;
@@ -42,6 +45,20 @@
   --font-size-base: 16px;
   --radius: 6px;
   --color-grid-line: rgba(var(--color-primary-rgb), 0.1);
+
+  /* Cold-load baselines for the tokens theme/applyTheme.js resolves but no
+     stylesheet previously defined. applyTheme clears its whole token set
+     before each apply, so that a sparse custom palette stops inheriting the
+     previous theme's colours; these are what it falls back to in that case.
+     Values are gruvbox-dark's (presets.js DEFAULT_PRESET), which is what the
+     rest of this :root block already is. */
+  --color-surface-alt: #504945;
+  --accent-1: #fabd2f;
+  --accent-2: #b8bb26;
+  --accent-3: #b8bb26;
+  /* Black because the default --color-primary (#fe8019) has luminance 0.366,
+     above the 0.1791 crossover. See theme/tokens.js contrastingForeground. */
+  --color-primary-fg: #000000;
 }
 
 html {

@@ -30,6 +30,9 @@
 
   /* Panels sit *above* the page. --color-surface (#3c3836) is the same value
      the page chrome uses, so a panel painted with it reads as flat. */
+  /* Cold-load baseline only. theme/applyTheme.js overwrites this from the
+     active palette on every theme change; it was a fixed Gruvbox value here,
+     which is why raised panels stayed dark under every light preset. */
   --color-surface-raised: #32302f;
 
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
