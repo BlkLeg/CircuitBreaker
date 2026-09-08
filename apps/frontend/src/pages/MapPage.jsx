@@ -117,6 +117,7 @@ import { useMapTabs } from '../hooks/useMapTabs';
 import { useMapRealTimeUpdates } from '../hooks/useMapRealTimeUpdates';
 import { useMapMutations } from '../hooks/useMapMutations';
 import { useMapEditorUi } from '../hooks/useMapEditorUi';
+import { MapErrorBanner, ScanImportBanner } from '../components/map/MapStatusBanners';
 import { useTelemetryStream } from '../hooks/useTelemetryStream';
 import { useTopologyStream, topologyEmitter } from '../hooks/useTopologyStream';
 import { canEdit, isAdmin } from '../utils/rbac';
@@ -1817,24 +1818,11 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
         >
           <style>{`@keyframes tm-pulse { 0%,100% { opacity:1; } 50% { opacity:0.55; } }`}</style>
           {/* Scan import banner */}
-          {scanImportPending && !scanImportModalOpen && (
-            <div className="scan-import-banner">
-              <span>
-                🔍 {scanImportPending.newCount} new device
-                {scanImportPending.newCount !== 1 ? 's' : ''} discovered
-              </span>
-              <button className="btn-link" onClick={() => setScanImportModalOpen(true)}>
-                Review &amp; Import →
-              </button>
-              <button
-                className="btn-icon"
-                onClick={() => setScanImportPending(null)}
-                aria-label="Dismiss"
-              >
-                ×
-              </button>
-            </div>
-          )}
+          <ScanImportBanner
+            pending={scanImportModalOpen ? null : scanImportPending}
+            onReview={() => setScanImportModalOpen(true)}
+            onDismiss={() => setScanImportPending(null)}
+          />
           {/* Scan import modal */}
           {scanImportModalOpen && scanImportPending && (
             <ScanImportModal
@@ -2102,31 +2090,13 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
           </div>
 
           {/* Error banner */}
-          {error && (
-            <div
-              style={{
-                background: 'rgba(243,139,168,0.15)',
-                border: '1px solid #f38ba8',
-                color: '#f38ba8',
-                padding: '6px 12px',
-                fontSize: 12,
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-              }}
-            >
-              <span>{error}</span>
-              <button
-                onClick={() => {
-                  setError(null);
-                  fetchData();
-                }}
-                style={{ background: 'none', border: 'none', color: '#f38ba8', cursor: 'pointer' }}
-              >
-                <X size={14} />
-              </button>
-            </div>
-          )}
+          <MapErrorBanner
+            error={error}
+            onRetry={() => {
+              setError(null);
+              fetchData();
+            }}
+          />
 
           {/* Graph canvas */}
           <div
