@@ -445,9 +445,16 @@ before the screenshot, and a different two or three surfaces diffed each run.
 `EventSource`, so its "Reconnecting to live data..." banner appeared on
 whichever surface took longer than its 5s grace timer and shifted the page.
 
-Both are now stubbed, the fixed 250ms pre-screenshot sleep is gone, and
-baselines were regenerated in the CI container (never on a dev host) and
-verified over eight consecutive runs. `docs/testing-visual-baselines.md` now
+The SSE stub and the removal of the fixed 250ms pre-screenshot sleep stand. The
+font leak was then fixed **at the source** rather than in the fixture: all seven
+families are vendored under `apps/frontend/public/fonts`, the nine shipped CSPs
+no longer permit a font CDN, and two guards keep it that way
+(`tests/build/test_no_third_party_font_csp.py`,
+`e2e/no-third-party-fonts.spec.ts`). That closed a real product defect on the
+way — an air-gapped install was falling back to system fonts while the weather
+widget beside it correctly stood down — so the baselines now show the real
+typography rather than a fallback stack. Regenerated in the CI container (never
+on a dev host) and verified stable across repeated runs. `docs/testing-visual-baselines.md` now
 lists five determinism sources instead of three. Only the agents baseline was
 genuinely stale; monitors and discovery matched once the suite was hermetic.
 
