@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock
 
 from sqlalchemy import event
 
+# The registry default (`CAPABILITY_DEFINITIONS["remote_probe"]`), spelled out
+# so a silent change to the server-side default fails these tests loudly.
 REMOTE_PROBE_DEFAULT_CONFIG = {
     "max_concurrent": 20,
     "scope_mode": "direct_private",

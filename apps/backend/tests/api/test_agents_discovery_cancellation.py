@@ -32,6 +32,7 @@ from tests.api.agent_fakes import (
 
 @pytest.fixture
 def discovery_frames(monkeypatch):
+    """Every control frame these routes put on the wire."""
     return _build_discovery_frames(monkeypatch)
 
 
