@@ -1,7 +1,7 @@
 """Unit tests for the scan-type vocabulary (Slice 4, D-6).
 
-The API-level contract lives in `tests/test_discovery.py`; these pin the
-helper's own semantics, which the schemas and `create_scan_job` share.
+The API-level contract lives in `tests/discovery/test_scan_jobs.py`; these pin
+the helper's own semantics, which the schemas and `create_scan_job` share.
 """
 
 import pytest

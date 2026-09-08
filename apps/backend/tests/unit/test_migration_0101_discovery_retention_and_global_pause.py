@@ -8,10 +8,10 @@ Two defects that both survived behind green gates, and both are schema-shaped:
 `ForeignKeyViolation` on the first expiring result that had been merged into
 inventory, its own `except` swallowed it, and results, logs *and* jobs all
 survived. Retention had never happened for any installation that ever approved a
-discovered device. `tests/test_discovery.py` proves the behaviour against real
-rows; this module pins the constraint that makes it possible, in both the
-migrated and the fresh-install schema, and audits the whole inbound FK graph so
-the next edge added to these tables cannot re-break it unnoticed.
+discovered device. `tests/discovery/test_retention.py` proves the behaviour
+against real rows; this module pins the constraint that makes it possible, in
+both the migrated and the fresh-install schema, and audits the whole inbound FK
+graph so the next edge added to these tables cannot re-break it unnoticed.
 
 **A2.** `app_settings.agent_discovery_paused` did not exist. The fleet-wide hold
 read `False` forever and only a test writing an *unmapped* attribute could see

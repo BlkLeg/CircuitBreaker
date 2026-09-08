@@ -280,9 +280,9 @@ def _agent_with_a_live_dispatch(db_session, factories):
     """An agent holding one dispatched discovery job, in the state
     `agent_discovery._claim` leaves it in.
 
-    Mirrors `tests/test_discovery.py`'s `_dispatched_job` rather than importing
-    it — that helper belongs to the API suite, and a cross-suite import would
-    make this file fail for edits made over there.
+    Mirrors `tests/discovery/helpers.py`'s `_dispatched_job` rather than
+    importing it — that helper belongs to the API suite, and a cross-suite
+    import would make this file fail for edits made over there.
     """
     import secrets
     from datetime import timedelta
