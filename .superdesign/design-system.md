@@ -8,12 +8,14 @@ Target: `/agents/:id?tab=telemetry`. Preserve the existing page shell, header, a
 
 ## Visual foundation
 
-- Keep the existing Gruvbox-derived dark identity. Use only design tokens already present in the app.
+The seven workflow designs and global navigator are approved; see [the implementation plans](../docs/design/approved-ui/README.md). The telemetry-specific guidance elsewhere in this file remains reference context, while theme awareness applies to all surfaces.
+
+- Preserve the approved SOC composition and identity while following the user's active theme. Gruvbox is the canvas reference, not a production-only palette. Use existing semantic tokens and centrally extend their resolution only where needed.
 - Background: `#282828`; surfaces: `#3c3836`; raised heads: `#32302f`; borders: `#504945`.
 - Primary/action/accent: amber `#fe8019`; hover `#d86d15`.
 - State colors: danger `#fb4934`, warning `#d79921`, success `#b8bb26`, informational telemetry `#83a598`.
 - Text: `#ebdbb2`; muted `#c8bfb0`.
-- Do not introduce purple, blue-neon, pink, cyan-neon, gradients outside the existing subtle background, glassmorphism, heavy glow, or a replacement brand palette.
+- Do not introduce a feature-specific palette, decorative gradients, heavy glow, or a replacement brand identity. Existing preset/custom themes may legitimately use other hues; components must follow them. The hexadecimal values above describe the Gruvbox example only and must not be copied into feature styles.
 - Use the system sans stack for navigation and explanations. Use `ui-monospace, SFMono-Regular, Menlo, Consolas, monospace` for metrics, timestamps, axes, identifiers and table values.
 - Radius remains 6px. Panels are bounded and compact, with low-elevation surfaces and thin borders. No oversized floating cards.
 
@@ -25,7 +27,7 @@ Target: `/agents/:id?tab=telemetry`. Preserve the existing page shell, header, a
 - Current value, status/threshold, compact trend, and comparison context should form one visual unit. Use subtle grid lines, axes/tick labels, last/min/max or directional delta only when they improve interpretation.
 - History becomes the analytic focal point. Prefer a wide synchronized time-series workbench with a shared time axis and readable scale over several empty miniature boxes. Small-multiple lanes are acceptable when aligned to one time cursor and one time range.
 - Network RX/TX should be paired in one comparison panel. CPU and load may be related but must retain separate labels and scales. Missing temperature remains explicitly “Unavailable”; never fabricate a trace.
-- Use threshold bands/markers sparingly and only with the existing danger/warning colors. Normal telemetry uses `--color-info`; the primary amber is for focus, range selection, and operator action.
+- Use threshold bands/markers sparingly and with theme-aware semantic danger/warning tokens. Normal telemetry uses `--color-info`; the active primary token is for focus, range selection, and operator action.
 - Show freshness, cadence, sample count, agent-only/projected scope, and selected range in one compact context row near the analysis surface.
 - Readiness and capability warnings remain prominent but should not dominate all subsequent data.
 - Filesystems, disks, interfaces, temperatures, and Docker remain dense operational tables. They may receive compact status cells, progress bars, or inline micro-visuals but must remain scannable and exact.
@@ -47,6 +49,6 @@ Target: `/agents/:id?tab=telemetry`. Preserve the existing page shell, header, a
 
 ## Brand and shell invariants
 
-- The global header has the real Circuit Breaker logo at left, brand text, central weather/time/date widgets, route and utility controls at right, plus the bottom route dock. Preserve those positions.
+- The global header has the real Circuit Breaker logo at left, brand text, central weather/time/date widgets, navigation and utility controls at right, plus the bottom route dock. Preserve those positions. The approved unified navigator replaces both Routes and CommandPalette; keep one Ctrl/Cmd+K experience and leave dock customization intact.
 - Do not substitute initials, emoji, a generic logo, an invented SVG mark, or text alone for the supplied logo.
-- Preserve the existing top-level dark shell, faint technical grid, amber focus language, and compact density so the telemetry upgrade feels native beside the map.
+- Preserve the shared shell, theme-derived technical grid/focus language, and compact density so every approved surface feels native beside the map in dark, light, preset, custom, and supported auto modes. All panels, overlays, semantic states, charts, and graph colors must update when the theme changes.

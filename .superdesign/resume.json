@@ -162,6 +162,378 @@
         }
       },
       "updatedAt": "2026-09-06T22:24:00.000Z"
+    },
+    "workflow:inventory-transfer": {
+      "targetKind": "new-ui",
+      "projectId": "8b984ff8-fa32-4386-98b6-0de7bd58135b",
+      "activeDraftId": "c588cc25-16f9-4273-bbaf-6cb0585fc1ad",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        ".superdesign/functional-workflows-brief.md",
+        "docs/design/2026-09-07-functional-gaps-and-ui-plan.md",
+        ".superdesign/init/theme.md",
+        ".superdesign/init/components.md",
+        ".superdesign/init/layouts.md",
+        "apps/frontend/src/styles/main.css:1:80"
+      ],
+      "referenceIds": [
+        "apps-frontend-public-CB-AZ_Final.png"
+      ],
+      "brandAssets": {
+        "logo": {
+          "assetKey": "apps-frontend-public-CB-AZ_Final.png",
+          "url": "https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/8b984ff8-fa32-4386-98b6-0de7bd58135b/brand-assets/apps-frontend-public-CB-AZ_Final.png/CB-AZ_Final.png",
+          "sourcePath": "apps/frontend/public/CB-AZ_Final.png"
+        }
+      },
+      "fingerprints": {
+        ".superdesign/design-system.md": "2d959202a73c8a3dee5cf4ed6445dc487f72ed005b325488254da88ad78b5713",
+        ".superdesign/functional-workflows-brief.md": "82134c4d150733bd4c1c3613d733e23e7bf876087302ec6bd9a3b43761ffe869",
+        "docs/design/2026-09-07-functional-gaps-and-ui-plan.md": "b3948e43fa7a22f33a4eadbabbd23415f6a0b262d84dbbea420863eb419215b1",
+        ".superdesign/init/theme.md": "9b85958c05be9a62ed4a68cbdb4033f5c3a38b35fff8362b5990902d6f5e6cd6",
+        ".superdesign/init/components.md": "65d7b3e837fbaa1f75187bcfe1d540cc350ec3bc07b39f2a5a63bc590bbc4e56",
+        ".superdesign/init/layouts.md": "0b729296da1a4f63e8822fe133449d7e209def4547c6349fdf234c9470b0507d",
+        "apps/frontend/src/styles/main.css": "efaae65af91476417f2d4079b69abcf2759057d4768061bb1e37fabdc8588c1c"
+      },
+      "components": [],
+      "sourceTarget": "agent-operations-tabs",
+      "sourceDraftId": "4c66a788-b384-44dd-87a3-cb4b77c67018",
+      "drafts": {
+        "c588cc25-16f9-4273-bbaf-6cb0585fc1ad": {
+          "title": "01 · Inventory Transfer — Validate, Preview, Import",
+          "visualDirection": "Interactive Gruvbox SOC workflow concept; explicit sample data and error states; official logo and persistent dock.",
+          "parentDraftId": "4c66a788-b384-44dd-87a3-cb4b77c67018",
+          "currentVersion": 1
+        }
+      },
+      "updatedAt": "2026-09-08T01:39:40.084Z"
+    },
+    "workflow:docker-discovery": {
+      "targetKind": "new-ui",
+      "projectId": "8b984ff8-fa32-4386-98b6-0de7bd58135b",
+      "activeDraftId": "aa80802b-d119-41c0-9c89-90794d8ee3a6",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        ".superdesign/functional-workflows-brief.md",
+        "docs/design/2026-09-07-functional-gaps-and-ui-plan.md",
+        ".superdesign/init/theme.md",
+        ".superdesign/init/components.md",
+        ".superdesign/init/layouts.md",
+        "apps/frontend/src/styles/main.css:1:80"
+      ],
+      "referenceIds": [
+        "apps-frontend-public-CB-AZ_Final.png"
+      ],
+      "brandAssets": {
+        "logo": {
+          "assetKey": "apps-frontend-public-CB-AZ_Final.png",
+          "url": "https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/8b984ff8-fa32-4386-98b6-0de7bd58135b/brand-assets/apps-frontend-public-CB-AZ_Final.png/CB-AZ_Final.png",
+          "sourcePath": "apps/frontend/public/CB-AZ_Final.png"
+        }
+      },
+      "fingerprints": {
+        ".superdesign/design-system.md": "2d959202a73c8a3dee5cf4ed6445dc487f72ed005b325488254da88ad78b5713",
+        ".superdesign/functional-workflows-brief.md": "82134c4d150733bd4c1c3613d733e23e7bf876087302ec6bd9a3b43761ffe869",
+        "docs/design/2026-09-07-functional-gaps-and-ui-plan.md": "b3948e43fa7a22f33a4eadbabbd23415f6a0b262d84dbbea420863eb419215b1",
+        ".superdesign/init/theme.md": "9b85958c05be9a62ed4a68cbdb4033f5c3a38b35fff8362b5990902d6f5e6cd6",
+        ".superdesign/init/components.md": "65d7b3e837fbaa1f75187bcfe1d540cc350ec3bc07b39f2a5a63bc590bbc4e56",
+        ".superdesign/init/layouts.md": "0b729296da1a4f63e8822fe133449d7e209def4547c6349fdf234c9470b0507d",
+        "apps/frontend/src/styles/main.css": "efaae65af91476417f2d4079b69abcf2759057d4768061bb1e37fabdc8588c1c"
+      },
+      "components": [],
+      "sourceTarget": "agent-operations-tabs",
+      "sourceDraftId": "4c66a788-b384-44dd-87a3-cb4b77c67018",
+      "drafts": {
+        "aa80802b-d119-41c0-9c89-90794d8ee3a6": {
+          "title": "02 · Docker Discovery — Sources and Reconciliation",
+          "visualDirection": "Interactive Gruvbox SOC workflow concept; explicit sample data and error states; official logo and persistent dock.",
+          "parentDraftId": "4c66a788-b384-44dd-87a3-cb4b77c67018",
+          "currentVersion": 1
+        }
+      },
+      "updatedAt": "2026-09-08T01:39:40.084Z"
+    },
+    "workflow:vulnerability-assessment": {
+      "targetKind": "new-ui",
+      "projectId": "8b984ff8-fa32-4386-98b6-0de7bd58135b",
+      "activeDraftId": "ceded7b7-7c26-4648-abb6-795f4357dba7",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        ".superdesign/functional-workflows-brief.md",
+        "docs/design/2026-09-07-functional-gaps-and-ui-plan.md",
+        ".superdesign/init/theme.md",
+        ".superdesign/init/components.md",
+        ".superdesign/init/layouts.md",
+        "apps/frontend/src/styles/main.css:1:80"
+      ],
+      "referenceIds": [
+        "apps-frontend-public-CB-AZ_Final.png"
+      ],
+      "brandAssets": {
+        "logo": {
+          "assetKey": "apps-frontend-public-CB-AZ_Final.png",
+          "url": "https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/8b984ff8-fa32-4386-98b6-0de7bd58135b/brand-assets/apps-frontend-public-CB-AZ_Final.png/CB-AZ_Final.png",
+          "sourcePath": "apps/frontend/public/CB-AZ_Final.png"
+        }
+      },
+      "fingerprints": {
+        ".superdesign/design-system.md": "2d959202a73c8a3dee5cf4ed6445dc487f72ed005b325488254da88ad78b5713",
+        ".superdesign/functional-workflows-brief.md": "82134c4d150733bd4c1c3613d733e23e7bf876087302ec6bd9a3b43761ffe869",
+        "docs/design/2026-09-07-functional-gaps-and-ui-plan.md": "b3948e43fa7a22f33a4eadbabbd23415f6a0b262d84dbbea420863eb419215b1",
+        ".superdesign/init/theme.md": "9b85958c05be9a62ed4a68cbdb4033f5c3a38b35fff8362b5990902d6f5e6cd6",
+        ".superdesign/init/components.md": "65d7b3e837fbaa1f75187bcfe1d540cc350ec3bc07b39f2a5a63bc590bbc4e56",
+        ".superdesign/init/layouts.md": "0b729296da1a4f63e8822fe133449d7e209def4547c6349fdf234c9470b0507d",
+        "apps/frontend/src/styles/main.css": "efaae65af91476417f2d4079b69abcf2759057d4768061bb1e37fabdc8588c1c"
+      },
+      "components": [],
+      "sourceTarget": "agent-operations-tabs",
+      "sourceDraftId": "4c66a788-b384-44dd-87a3-cb4b77c67018",
+      "drafts": {
+        "ceded7b7-7c26-4648-abb6-795f4357dba7": {
+          "title": "03 · Vulnerability Assessment — Evidence and Freshness",
+          "visualDirection": "Interactive Gruvbox SOC workflow concept; explicit sample data and error states; official logo and persistent dock.",
+          "parentDraftId": "4c66a788-b384-44dd-87a3-cb4b77c67018",
+          "currentVersion": 1
+        }
+      },
+      "updatedAt": "2026-09-08T01:39:40.084Z"
+    },
+    "workflow:notification-delivery": {
+      "targetKind": "new-ui",
+      "projectId": "8b984ff8-fa32-4386-98b6-0de7bd58135b",
+      "activeDraftId": "7273cc9b-04ae-4e3d-96bf-f7de8a6be6b7",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        ".superdesign/functional-workflows-brief.md",
+        "docs/design/2026-09-07-functional-gaps-and-ui-plan.md",
+        ".superdesign/init/theme.md",
+        ".superdesign/init/components.md",
+        ".superdesign/init/layouts.md",
+        "apps/frontend/src/styles/main.css:1:80"
+      ],
+      "referenceIds": [
+        "apps-frontend-public-CB-AZ_Final.png"
+      ],
+      "brandAssets": {
+        "logo": {
+          "assetKey": "apps-frontend-public-CB-AZ_Final.png",
+          "url": "https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/8b984ff8-fa32-4386-98b6-0de7bd58135b/brand-assets/apps-frontend-public-CB-AZ_Final.png/CB-AZ_Final.png",
+          "sourcePath": "apps/frontend/public/CB-AZ_Final.png"
+        }
+      },
+      "fingerprints": {
+        ".superdesign/design-system.md": "2d959202a73c8a3dee5cf4ed6445dc487f72ed005b325488254da88ad78b5713",
+        ".superdesign/functional-workflows-brief.md": "82134c4d150733bd4c1c3613d733e23e7bf876087302ec6bd9a3b43761ffe869",
+        "docs/design/2026-09-07-functional-gaps-and-ui-plan.md": "b3948e43fa7a22f33a4eadbabbd23415f6a0b262d84dbbea420863eb419215b1",
+        ".superdesign/init/theme.md": "9b85958c05be9a62ed4a68cbdb4033f5c3a38b35fff8362b5990902d6f5e6cd6",
+        ".superdesign/init/components.md": "65d7b3e837fbaa1f75187bcfe1d540cc350ec3bc07b39f2a5a63bc590bbc4e56",
+        ".superdesign/init/layouts.md": "0b729296da1a4f63e8822fe133449d7e209def4547c6349fdf234c9470b0507d",
+        "apps/frontend/src/styles/main.css": "efaae65af91476417f2d4079b69abcf2759057d4768061bb1e37fabdc8588c1c"
+      },
+      "components": [],
+      "sourceTarget": "agent-operations-tabs",
+      "sourceDraftId": "4c66a788-b384-44dd-87a3-cb4b77c67018",
+      "drafts": {
+        "7273cc9b-04ae-4e3d-96bf-f7de8a6be6b7": {
+          "title": "04 · Notifications — Destinations, Routes, Delivery Feedback",
+          "visualDirection": "Interactive Gruvbox SOC workflow concept; explicit sample data and error states; official logo and persistent dock.",
+          "parentDraftId": "4c66a788-b384-44dd-87a3-cb4b77c67018",
+          "currentVersion": 1
+        }
+      },
+      "updatedAt": "2026-09-08T01:39:40.084Z"
+    },
+    "workflow:dependency-impact": {
+      "targetKind": "new-ui",
+      "projectId": "8b984ff8-fa32-4386-98b6-0de7bd58135b",
+      "activeDraftId": "a2fae8fa-8586-4299-b24b-849c6b70501b",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        ".superdesign/functional-workflows-brief.md",
+        "docs/design/2026-09-07-functional-gaps-and-ui-plan.md",
+        ".superdesign/init/theme.md",
+        ".superdesign/init/components.md",
+        ".superdesign/init/layouts.md",
+        "apps/frontend/src/styles/main.css:1:80"
+      ],
+      "referenceIds": [
+        "apps-frontend-public-CB-AZ_Final.png"
+      ],
+      "brandAssets": {
+        "logo": {
+          "assetKey": "apps-frontend-public-CB-AZ_Final.png",
+          "url": "https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/8b984ff8-fa32-4386-98b6-0de7bd58135b/brand-assets/apps-frontend-public-CB-AZ_Final.png/CB-AZ_Final.png",
+          "sourcePath": "apps/frontend/public/CB-AZ_Final.png"
+        }
+      },
+      "fingerprints": {
+        ".superdesign/design-system.md": "2d959202a73c8a3dee5cf4ed6445dc487f72ed005b325488254da88ad78b5713",
+        ".superdesign/functional-workflows-brief.md": "82134c4d150733bd4c1c3613d733e23e7bf876087302ec6bd9a3b43761ffe869",
+        "docs/design/2026-09-07-functional-gaps-and-ui-plan.md": "b3948e43fa7a22f33a4eadbabbd23415f6a0b262d84dbbea420863eb419215b1",
+        ".superdesign/init/theme.md": "9b85958c05be9a62ed4a68cbdb4033f5c3a38b35fff8362b5990902d6f5e6cd6",
+        ".superdesign/init/components.md": "65d7b3e837fbaa1f75187bcfe1d540cc350ec3bc07b39f2a5a63bc590bbc4e56",
+        ".superdesign/init/layouts.md": "0b729296da1a4f63e8822fe133449d7e209def4547c6349fdf234c9470b0507d",
+        "apps/frontend/src/styles/main.css": "efaae65af91476417f2d4079b69abcf2759057d4768061bb1e37fabdc8588c1c"
+      },
+      "components": [],
+      "sourceTarget": "agent-operations-tabs",
+      "sourceDraftId": "4c66a788-b384-44dd-87a3-cb4b77c67018",
+      "drafts": {
+        "a2fae8fa-8586-4299-b24b-849c6b70501b": {
+          "title": "05 · Dependency Impact — Explain the Affected Path",
+          "visualDirection": "Interactive Gruvbox SOC workflow concept; explicit sample data and error states; official logo and persistent dock.",
+          "parentDraftId": "4c66a788-b384-44dd-87a3-cb4b77c67018",
+          "currentVersion": 1
+        }
+      },
+      "updatedAt": "2026-09-08T01:39:40.084Z"
+    },
+    "workflow:inventory-workspace": {
+      "targetKind": "new-ui",
+      "projectId": "8b984ff8-fa32-4386-98b6-0de7bd58135b",
+      "activeDraftId": "71281813-1ede-42bd-bc7d-d2da53c66d34",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        ".superdesign/functional-workflows-brief.md",
+        "docs/design/2026-09-07-functional-gaps-and-ui-plan.md",
+        ".superdesign/init/theme.md",
+        ".superdesign/init/components.md",
+        ".superdesign/init/layouts.md",
+        "apps/frontend/src/styles/main.css:1:80"
+      ],
+      "referenceIds": [
+        "apps-frontend-public-CB-AZ_Final.png"
+      ],
+      "brandAssets": {
+        "logo": {
+          "assetKey": "apps-frontend-public-CB-AZ_Final.png",
+          "url": "https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/8b984ff8-fa32-4386-98b6-0de7bd58135b/brand-assets/apps-frontend-public-CB-AZ_Final.png/CB-AZ_Final.png",
+          "sourcePath": "apps/frontend/public/CB-AZ_Final.png"
+        }
+      },
+      "fingerprints": {
+        ".superdesign/design-system.md": "2d959202a73c8a3dee5cf4ed6445dc487f72ed005b325488254da88ad78b5713",
+        ".superdesign/functional-workflows-brief.md": "82134c4d150733bd4c1c3613d733e23e7bf876087302ec6bd9a3b43761ffe869",
+        "docs/design/2026-09-07-functional-gaps-and-ui-plan.md": "b3948e43fa7a22f33a4eadbabbd23415f6a0b262d84dbbea420863eb419215b1",
+        ".superdesign/init/theme.md": "9b85958c05be9a62ed4a68cbdb4033f5c3a38b35fff8362b5990902d6f5e6cd6",
+        ".superdesign/init/components.md": "65d7b3e837fbaa1f75187bcfe1d540cc350ec3bc07b39f2a5a63bc590bbc4e56",
+        ".superdesign/init/layouts.md": "0b729296da1a4f63e8822fe133449d7e209def4547c6349fdf234c9470b0507d",
+        "apps/frontend/src/styles/main.css": "efaae65af91476417f2d4079b69abcf2759057d4768061bb1e37fabdc8588c1c"
+      },
+      "components": [],
+      "sourceTarget": "agent-operations-tabs",
+      "sourceDraftId": "4c66a788-b384-44dd-87a3-cb4b77c67018",
+      "drafts": {
+        "71281813-1ede-42bd-bc7d-d2da53c66d34": {
+          "title": "06 · Inventory Workspace — Browse, Select, Resolve",
+          "visualDirection": "Interactive Gruvbox SOC workflow concept; explicit sample data and error states; official logo and persistent dock.",
+          "parentDraftId": "4c66a788-b384-44dd-87a3-cb4b77c67018",
+          "currentVersion": 1
+        }
+      },
+      "updatedAt": "2026-09-08T01:39:40.084Z"
+    },
+    "workflow:metric-alert-rules": {
+      "targetKind": "new-ui",
+      "projectId": "8b984ff8-fa32-4386-98b6-0de7bd58135b",
+      "activeDraftId": "0d6b88b6-c407-45fa-a542-09fff90e0a7e",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        ".superdesign/functional-workflows-brief.md",
+        "docs/design/2026-09-07-functional-gaps-and-ui-plan.md",
+        ".superdesign/init/theme.md",
+        ".superdesign/init/components.md",
+        ".superdesign/init/layouts.md",
+        "apps/frontend/src/styles/main.css:1:80"
+      ],
+      "referenceIds": [
+        "apps-frontend-public-CB-AZ_Final.png"
+      ],
+      "brandAssets": {
+        "logo": {
+          "assetKey": "apps-frontend-public-CB-AZ_Final.png",
+          "url": "https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/8b984ff8-fa32-4386-98b6-0de7bd58135b/brand-assets/apps-frontend-public-CB-AZ_Final.png/CB-AZ_Final.png",
+          "sourcePath": "apps/frontend/public/CB-AZ_Final.png"
+        }
+      },
+      "fingerprints": {
+        ".superdesign/design-system.md": "2d959202a73c8a3dee5cf4ed6445dc487f72ed005b325488254da88ad78b5713",
+        ".superdesign/functional-workflows-brief.md": "82134c4d150733bd4c1c3613d733e23e7bf876087302ec6bd9a3b43761ffe869",
+        "docs/design/2026-09-07-functional-gaps-and-ui-plan.md": "b3948e43fa7a22f33a4eadbabbd23415f6a0b262d84dbbea420863eb419215b1",
+        ".superdesign/init/theme.md": "9b85958c05be9a62ed4a68cbdb4033f5c3a38b35fff8362b5990902d6f5e6cd6",
+        ".superdesign/init/components.md": "65d7b3e837fbaa1f75187bcfe1d540cc350ec3bc07b39f2a5a63bc590bbc4e56",
+        ".superdesign/init/layouts.md": "0b729296da1a4f63e8822fe133449d7e209def4547c6349fdf234c9470b0507d",
+        "apps/frontend/src/styles/main.css": "efaae65af91476417f2d4079b69abcf2759057d4768061bb1e37fabdc8588c1c"
+      },
+      "components": [],
+      "sourceTarget": "agent-operations-tabs",
+      "sourceDraftId": "4c66a788-b384-44dd-87a3-cb4b77c67018",
+      "drafts": {
+        "0d6b88b6-c407-45fa-a542-09fff90e0a7e": {
+          "title": "07 · Metric Alert Rules — Threshold and Recovery",
+          "visualDirection": "Interactive Gruvbox SOC workflow concept; explicit sample data and error states; official logo and persistent dock.",
+          "parentDraftId": "4c66a788-b384-44dd-87a3-cb4b77c67018",
+          "currentVersion": 1
+        }
+      },
+      "updatedAt": "2026-09-08T01:39:40.084Z"
+    },
+    "global-page-navigator": {
+      "targetKind": "existing-ui",
+      "projectId": "8b984ff8-fa32-4386-98b6-0de7bd58135b",
+      "activeDraftId": "535d202a-525f-4ec3-8382-796bb049c50c",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        ".superdesign/navigation-brief.md",
+        ".superdesign/init/theme.md",
+        ".superdesign/init/layouts.md",
+        "apps/frontend/src/components/Header.jsx",
+        "apps/frontend/src/components/CommandPalette.jsx",
+        "apps/frontend/src/data/navigation.js",
+        "apps/frontend/src/data/routeGuards.js",
+        "apps/frontend/src/styles/main.css:1:80"
+      ],
+      "referenceIds": [
+        "apps-frontend-public-CB-AZ_Final.png"
+      ],
+      "brandAssets": {
+        "logo": {
+          "assetKey": "apps-frontend-public-CB-AZ_Final.png",
+          "url": "https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/8b984ff8-fa32-4386-98b6-0de7bd58135b/brand-assets/apps-frontend-public-CB-AZ_Final.png/CB-AZ_Final.png",
+          "sourcePath": "apps/frontend/public/CB-AZ_Final.png"
+        }
+      },
+      "fingerprints": {
+        ".superdesign/design-system.md": "2d959202a73c8a3dee5cf4ed6445dc487f72ed005b325488254da88ad78b5713",
+        ".superdesign/navigation-brief.md": "1eff99b86204d574c44bd375fd6105a5cda92b4f665113fd802cab73a96257f6",
+        ".superdesign/init/theme.md": "9b85958c05be9a62ed4a68cbdb4033f5c3a38b35fff8362b5990902d6f5e6cd6",
+        ".superdesign/init/layouts.md": "0b729296da1a4f63e8822fe133449d7e209def4547c6349fdf234c9470b0507d",
+        "apps/frontend/src/components/Header.jsx": "32f70b09ac4ff5aea7f7ba9cf6d605db1f2f28909ef73e833ccd9026c1c4e37f",
+        "apps/frontend/src/components/CommandPalette.jsx": "c41c8504684db0944ffe51e2d3d5a3fd9641615967ba2d675efbecd8a05e8453",
+        "apps/frontend/src/data/navigation.js": "cfc0e0f8b1f3b8fa09bbc3417eb99aaac0fb0180a081e60946a1e7cba90304cd",
+        "apps/frontend/src/data/routeGuards.js": "f0df728a86e1d9d8673effabd3a1378916732733678754b44cdf036c4cffc17d",
+        "apps/frontend/src/styles/main.css": "efaae65af91476417f2d4079b69abcf2759057d4768061bb1e37fabdc8588c1c"
+      },
+      "components": [],
+      "sourceTarget": "workflow:inventory-workspace",
+      "sourceDraftId": "71281813-1ede-42bd-bc7d-d2da53c66d34",
+      "drafts": {
+        "535d202a-525f-4ec3-8382-796bb049c50c": {
+          "title": "08 · Global Navigation — Search, Pin, Jump",
+          "visualDirection": "Top-right modal page browser: 21 existing routes in five groups, local search and nested settings, independent pins and recents, full-height mobile dialog; unchanged dock. Separate planned-workflow preview links.",
+          "parentDraftId": "71281813-1ede-42bd-bc7d-d2da53c66d34",
+          "currentVersion": 2
+        }
+      },
+      "updatedAt": "2026-09-08T01:39:40.084Z"
     }
   }
 }
