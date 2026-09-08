@@ -177,10 +177,29 @@ def _reaped_models() -> tuple[type, ...]:
     Ordered so a child is deleted before whatever it points at: monitor rows
     name a hardware target, agents name the enrollment token they came through,
     and hardware and users can carry a tenant.
-    """
-    from app.db.models import Agent, AgentEnrollmentToken, Hardware, MonitorItem, Tenant, User
 
-    return (MonitorItem, Agent, AgentEnrollmentToken, Hardware, User, Tenant)
+    `Log` is here for a different reason than the rest, and it is the one row
+    type no test creates on purpose. `record_event` writes a hash-chained audit
+    entry for the security-relevant agent events, through whatever session is
+    handling the request — so a test that drives a real socket and causes, say,
+    a revoke leaves a committed `logs` row behind. Nothing rolled it back, and
+    the audit assertions elsewhere count rows by action across the whole table
+    (`test_cli_admin.py::_audit_entries` is the one that caught this): a single
+    leaked `agent_revoked` row makes "one chained entry per revocation" read 2,
+    in whichever shard happens to run both files. It has no dependents, so it
+    reaps first.
+    """
+    from app.db.models import (
+        Agent,
+        AgentEnrollmentToken,
+        Hardware,
+        Log,
+        MonitorItem,
+        Tenant,
+        User,
+    )
+
+    return (Log, MonitorItem, Agent, AgentEnrollmentToken, Hardware, User, Tenant)
 
 
 def _committed_ids() -> dict[str, set[int]]:
