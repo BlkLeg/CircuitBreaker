@@ -73,6 +73,7 @@ import {
   buildNodeStatusDetails,
 } from '../utils/mapDataUtils';
 import { useMapDataLoad } from '../hooks/useMapDataLoad';
+import { useMapAutoPlacement } from '../hooks/useMapAutoPlacement';
 import { useMapTabs } from '../hooks/useMapTabs';
 import { useMapRealTimeUpdates } from '../hooks/useMapRealTimeUpdates';
 import { useMapMutations } from '../hooks/useMapMutations';
@@ -564,7 +565,19 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     return { x: clampedX, y: clampedY };
   }, []);
 
-  const { fetchData, autoPlaceNew, updateNodePos } = useMapDataLoad({
+  const { updateNodePos, autoPlaceNew } = useMapAutoPlacement({
+    envFilter,
+    setNodes,
+    autoPlacedIdsRef,
+    placingNodesRef,
+    pendingPlacementCountRef,
+    batchPlacedCountRef,
+    saveLayoutRef,
+    fitView,
+    toast,
+  });
+
+  const { fetchData } = useMapDataLoad({
     mapId,
     setLoading,
     setError,
@@ -582,10 +595,6 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     setLayoutEngine,
     edgeOverridesRef,
     autoPlacedIdsRef,
-    placingNodesRef,
-    pendingPlacementCountRef,
-    batchPlacedCountRef,
-    saveLayoutRef,
     hasRestoredViewport,
     unmountedRef,
     containerRef: flowContainerRef,
@@ -598,7 +607,6 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     envFilter,
     includeTypes,
     getLayoutName,
-    toast,
   });
 
   useEffect(() => {
