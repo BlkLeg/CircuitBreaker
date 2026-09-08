@@ -1,3 +1,4 @@
+import { decodeLayout } from './layoutCodec';
 /**
  * Pure geometry helpers for the topology map.
  * No React dependencies — safe to import from any module.
@@ -87,35 +88,12 @@ export function applyEdgeSidesForEdge(nodesArr, edge, overrides = {}) {
  * and the legacy format
  *   { "hw-1": {x,y}, ... }  (flat node position map).
  */
+/**
+ * @deprecated Use `decodeLayout` from `utils/layoutCodec`. Kept so existing
+ * importers keep working; the codec is the one place that knows stored shapes.
+ */
 export function parseLayoutData(raw) {
-  const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-  if (parsed && typeof parsed.nodes === 'object' && !Array.isArray(parsed.nodes)) {
-    return {
-      nodes: parsed.nodes || {},
-      edges: parsed.edges || {},
-      boundaries: parsed.boundaries || [],
-      labels: parsed.labels || [],
-      visualLines: Array.isArray(parsed.visualLines) ? parsed.visualLines : [],
-      nodeShapes:
-        parsed.nodeShapes && typeof parsed.nodeShapes === 'object' ? parsed.nodeShapes : {},
-      edgeMode: parsed.edgeMode || 'smoothstep',
-      edgeLabelVisible: parsed.edgeLabelVisible ?? true,
-      nodeSpacing: parsed.nodeSpacing || 1,
-      groupBy: parsed.groupBy || 'none',
-    };
-  }
-  return {
-    nodes: parsed || {},
-    edges: {},
-    boundaries: [],
-    labels: [],
-    visualLines: [],
-    nodeShapes: {},
-    edgeMode: 'smoothstep',
-    edgeLabelVisible: true,
-    nodeSpacing: 1,
-    groupBy: 'none',
-  };
+  return decodeLayout(raw);
 }
 
 export function boundaryFlowRect(startFlow, endFlow) {

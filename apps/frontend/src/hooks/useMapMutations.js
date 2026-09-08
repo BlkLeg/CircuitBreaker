@@ -8,6 +8,7 @@ import {
   DEFAULT_BOUNDARY_FILL_OPACITY,
 } from '../components/map/mapConstants';
 import { unlinkByEdge } from '../components/map/linkMutations';
+import { encodeLayout } from '../utils/layoutCodec';
 
 /**
  * Encapsulates layout-save and node-delete mutation logic extracted from
@@ -53,7 +54,7 @@ export function useMapMutations({
         nodePositions[n.id] = n.position;
         if (n.data?.nodeShape) nodeShapes[n.id] = n.data.nodeShape;
       });
-      const payload = {
+      const payload = encodeLayout({
         nodes: nodePositions,
         nodeShapes,
         edges: edgeOverridesRef.current,
@@ -82,7 +83,7 @@ export function useMapMutations({
         edgeLabelVisible,
         nodeSpacing,
         groupBy,
-      };
+      });
       await graphApi.saveLayout(getLayoutName(), JSON.stringify(payload), mapId);
       setLastSaved(new Date().toISOString());
       dirtyRef.current = false;
