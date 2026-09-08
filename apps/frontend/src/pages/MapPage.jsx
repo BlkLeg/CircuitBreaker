@@ -12,7 +12,7 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useNavigate } from 'react-router-dom';
-import { graphApi, environmentsApi, settingsApi, proxmoxApi, hardwareApi } from '../api/client';
+import { graphApi, settingsApi, proxmoxApi, hardwareApi } from '../api/client';
 import { getJob, getResultsWithInference, lldpEnrich } from '../api/discovery';
 import { mapsApi } from '../api/maps';
 import ScanImportModal from '../components/ScanImportModal';
@@ -117,6 +117,7 @@ import { useMapTabs } from '../hooks/useMapTabs';
 import { useMapRealTimeUpdates } from '../hooks/useMapRealTimeUpdates';
 import { useMapMutations } from '../hooks/useMapMutations';
 import { useMapEditorUi } from '../hooks/useMapEditorUi';
+import { useMapFilters } from '../hooks/useMapFilters';
 import { MapErrorBanner, ScanImportBanner } from '../components/map/MapStatusBanners';
 import { useTelemetryStream } from '../hooks/useTelemetryStream';
 import { useTopologyStream, topologyEmitter } from '../hooks/useTopologyStream';
@@ -133,7 +134,6 @@ import {
   useConnectionStateContext,
 } from '../providers/ConnectionStateProvider';
 import { CONNECTION_LINE_STYLE, DEFAULT_EDGE_OPTIONS } from '../lib/constants';
-import { resolveEnvironmentFilter } from '../lib/environmentFilter';
 
 // ── ReactFlow node/edge type registrations ───────────────────────────────────
 // Both 'iconNode'/'custom' keys registered for backward compat with saved layouts.
@@ -141,7 +141,7 @@ const NODE_TYPES = { iconNode: CustomNode, custom: CustomNode };
 const EDGE_TYPES = { smart: CustomEdge, custom: CustomEdge };
 
 // ── Small module-level helpers ───────────────────────────────────────────────
-import { isLightTheme, omitKey, isNodeHidden, getQuickCreateTitle } from '../utils/mapHelpers';
+import { isLightTheme, omitKey, getQuickCreateTitle } from '../utils/mapHelpers';
 
 // ── Main Component ──────────────────────────────────────────────────────────
 
@@ -165,6 +165,26 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChangeBase] = useEdgesState([]);
+
+  // Every map filter in one unit — query inputs (environment, entity types)
+  // and client-side visibility (tag, hardware role). Held as one object so
+  // presentation components take `filters` as a single prop.
+  const filters = useMapFilters({ settings, setNodes, setEdges });
+  const {
+    envFilter,
+    setEnvFilter,
+    environmentsList,
+    tagFilter,
+    setTagFilter,
+    setDebouncedTag,
+    includeTypes,
+    setIncludeTypes,
+    hwRoleFilter,
+    setHwRoleFilter,
+    filterSaving,
+    filterSaved,
+    handleSaveFilters,
+  } = filters;
   // Only allow edge selection state changes from React Flow.
   // Structural edge mutations must come from explicit user delete actions or
   // server-driven relationship updates (entity pages / topology events).
@@ -195,8 +215,6 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
   const [cloudViewEnabled, setCloudViewEnabled] = useState(false);
   const [useSigma, setUseSigma] = useState(false);
   const [lastSaved, setLastSaved] = useState(null);
-  const [filterSaving, setFilterSaving] = useState(false);
-  const [filterSaved, setFilterSaved] = useState(false);
   // Track node IDs that have been auto-placed this session so fetchData re-runs
   // don't re-tag the same nodes as _needsAutoPlace before the layout is saved.
   const autoPlacedIdsRef = useRef(new Set());
@@ -229,6 +247,10 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
   const [edgeOverrides, setEdgeOverrides] = useState({});
   // Transient editor UI — draw modes, drafts, menus and dialogs. Owned together
   // so cancelling is one action rather than a hand-maintained list of setters.
+  //
+  // Held as one object so presentation components can take `editorUi` as a
+  // single prop; the destructure below is only for this body's convenience.
+  const editorUi = useMapEditorUi();
   const {
     mapLabelMenuOpenId,
     setMapLabelMenuOpenId,
@@ -263,7 +285,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     deleteConflictModal,
     setDeleteConflictModal,
     cancelActiveTool,
-  } = useMapEditorUi();
+  } = editorUi;
 
   const [boundaries, setBoundaries] = useState([]);
   const [mapLabels, setMapLabels] = useState([]);
@@ -410,26 +432,6 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     };
   }, [setNodes, setEdges]);
 
-  // Filters
-  const [envFilter, setEnvFilter] = useState('');
-  const [environmentsList, setEnvironmentsList] = useState([]);
-  const [tagFilter, setTagFilter] = useState('');
-  const [includeTypes, setIncludeTypes] = useState(
-    new Map([
-      ['cluster', true],
-      ['hardware', true],
-      ['compute', true],
-      ['service', true],
-      ['storage', true],
-      ['network', true],
-      ['misc', true],
-      ['external', true],
-      ['docker', false],
-    ])
-  );
-  // Sub-role filter for hardware nodes (null = show all)
-  const [hwRoleFilter, setHwRoleFilter] = useState(null);
-
   // Telemetry sidebar state (hover card)
   const [telemetrySidebarNode, setTelemetrySidebarNode] = useState(null);
   const [telemetrySidebarPos, setTelemetrySidebarPos] = useState({ x: 0, y: 0 });
@@ -560,9 +562,6 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     selectedNodeRef.current = selectedNode;
   }, [selectedNode]);
 
-  // Debounce tag filter
-  const [debouncedTag, setDebouncedTag] = useState('');
-
   const {
     layoutEngine,
     setLayoutEngine,
@@ -621,96 +620,9 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     },
   });
 
-  // Fetch environments list for filter dropdown
-  useEffect(() => {
-    environmentsApi
-      .list()
-      .then((r) => setEnvironmentsList(r.data))
-      .catch((err) => {
-        console.error('Environments list load failed:', err);
-      });
-  }, []);
-
-  // Settings initialization (run once after settings load)
-  const settingsApplied = useRef(false);
-  useEffect(() => {
-    if (settings && !settingsApplied.current) {
-      settingsApplied.current = true;
-      if (settings.map_default_filters && typeof settings.map_default_filters === 'object') {
-        const f = settings.map_default_filters;
-        if (f.include && typeof f.include === 'object') {
-          setIncludeTypes((prev) => {
-            const next = new Map(prev);
-            for (const [k, v] of Object.entries(f.include)) next.set(k, v);
-            return next;
-          });
-        }
-      }
-    }
-  }, [settings]);
-
-  // AGT-12: default_environment is a NAME, but environment_id is an integer
-  // field server-side, so it cannot be applied until the environments list has
-  // loaded and can map it to an id. This used to assign the raw name inside the
-  // effect above, behind a comment promising a reconciliation that was never
-  // written — so any deployment with a configured default 422'd its map on
-  // load. A name that no longer matches resolves to '' (unfiltered) rather than
-  // failing every graph request.
-  //
-  // Guarded so it only ever seeds the initial value: without the ref it would
-  // fight the user's own selection whenever settings or the list re-resolve.
-  const defaultEnvApplied = useRef(false);
-  useEffect(() => {
-    if (defaultEnvApplied.current) return;
-    if (!settings?.default_environment) return;
-    if (!environmentsList.length) return;
-    defaultEnvApplied.current = true;
-    setEnvFilter(resolveEnvironmentFilter(settings.default_environment, environmentsList));
-  }, [settings, environmentsList]);
-
   useEffect(() => {
     scheduleTagDebounce(tagFilter);
   }, [tagFilter, scheduleTagDebounce]);
-
-  // Client-side node visibility (preserves positions via the hidden property).
-  // Tag and hardware-role are evaluated by one predicate over both filters:
-  // as two effects each rewriting `hidden` for every node, whichever ran last
-  // won, so changing one filter could unhide what the other had excluded.
-  useEffect(() => {
-    const trimmedTag = debouncedTag.trim().toLowerCase();
-    setNodes((prev) =>
-      prev.map((n) => ({
-        ...n,
-        hidden: isNodeHidden(n, { tag: trimmedTag, hwRole: hwRoleFilter }),
-      }))
-    );
-  }, [debouncedTag, hwRoleFilter, setNodes]);
-
-  useEffect(() => {
-    const trimmedTag = debouncedTag.trim().toLowerCase();
-    setEdges((prev) =>
-      prev.map((e) => {
-        if (!trimmedTag) return { ...e, hidden: false };
-        return e; // edge visibility handled by ReactFlow when both nodes are hidden
-      })
-    );
-  }, [debouncedTag, setEdges]);
-
-  const handleSaveFilters = useCallback(async () => {
-    setFilterSaving(true);
-    setFilterSaved(false);
-    try {
-      await settingsApi.update({
-        map_default_filters: { include: Object.fromEntries(includeTypes) },
-      });
-      setFilterSaved(true);
-      setTimeout(() => setFilterSaved(false), 2000);
-    } catch {
-      // non-critical — silently ignore
-    } finally {
-      setFilterSaving(false);
-    }
-  }, [includeTypes]);
 
   const getLayoutName = useCallback(() => {
     return envFilter ? `default::envid:${envFilter}` : 'default';

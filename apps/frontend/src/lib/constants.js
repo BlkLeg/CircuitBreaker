@@ -105,3 +105,7 @@ export const SPOOL_BACKLOG_WARN_DEPTH = 1;
 // a rebuilt frontend against a server they have not restarted yet, and the
 // fallback has to fail towards "unknown" rather than towards a confident zero.
 export const SPOOL_READING_FRESH_SECONDS = 120;
+
+// How long the map's "Save Filters" button shows its confirmation before
+// reverting to the idle label.
+export const FILTER_SAVED_NOTICE_MS = 2000;
