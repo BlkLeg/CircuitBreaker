@@ -1,8 +1,6 @@
 /* eslint-disable security/detect-object-injection -- internal/ReactFlow keys; Map used for id-keyed state */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import ReactFlow, {
-  Background,
-  Controls,
+import {
   useNodesState,
   useEdgesState,
   ReactFlowProvider,
@@ -32,13 +30,10 @@ import MapCanvasOverlays from '../components/map/MapCanvasOverlays';
 import CustomNode from '../components/map/CustomNode';
 import CustomEdge from '../components/map/CustomEdge';
 import ConnectionTypePicker from '../components/map/ConnectionTypePicker';
-import PrivacyScoreWidget from '../components/security/PrivacyScoreWidget';
-import HostileNetworkBanner from '../components/security/HostileNetworkBanner';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useCapabilities } from '../hooks/useCapabilities.js';
 import WifiOverlay from '../components/map/WifiOverlay';
 import Sidebar from '../components/map/Sidebar';
-import LegendPanel from '../components/map/LegendPanel';
 import { useToast } from '../components/common/Toast';
 import { normalizeConnectionType } from '../components/map/connectionTypes';
 import { useHardwareRoles } from '../hooks/useHardwareRoles';
@@ -104,6 +99,7 @@ import MapHeader from '../components/map/MapHeader';
 import BoundaryInspector from '../components/map/BoundaryInspector';
 import MapDialogs from '../components/map/MapDialogs';
 import EdgeInspector from '../components/map/EdgeInspector';
+import MapCanvas from '../components/map/MapCanvas';
 import { MapErrorBanner, ScanImportBanner } from '../components/map/MapStatusBanners';
 import { useTelemetryStream } from '../hooks/useTelemetryStream';
 import { useTopologyStream, topologyEmitter } from '../hooks/useTopologyStream';
@@ -119,7 +115,6 @@ import {
   ConnectionStateProvider,
   useConnectionStateContext,
 } from '../providers/ConnectionStateProvider';
-import { CONNECTION_LINE_STYLE, DEFAULT_EDGE_OPTIONS } from '../lib/constants';
 
 // ── ReactFlow node/edge type registrations ───────────────────────────────────
 // Both 'iconNode'/'custom' keys registered for backward compat with saved layouts.
@@ -1666,6 +1661,26 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     onEdgeEndpointDrop: handleEdgeEndpointDrop,
   };
 
+  const flow = {
+    handleNodesChange,
+    onEdgesChange,
+    handleConnect,
+    onConnectStart,
+    onConnectEnd,
+    handleNodeClick,
+    handleNodeContextMenu,
+    handleNodeDragStart,
+    handleNodeDragStop,
+    handleNodeMouseEnter,
+    handleNodeMouseLeave,
+    handlePaneClick,
+    handlePaneContextMenu,
+    handlePanePointerMove,
+    handleEdgeContextMenu,
+    handleEdgeUpdate,
+    fitView,
+  };
+
   const commands = {
     handleCreateNode,
     handleIconPick,
@@ -1829,109 +1844,21 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
               onShapeChange={updateBoundaryShape}
               onColorChange={updateBoundaryColor}
             />
-            {useSigma ? (
-              <React.Suspense fallback={null}>
-                <SigmaMap envFilter={envFilter} includeTypes={includeTypes} mapId={mapId} />
-              </React.Suspense>
-            ) : (
-              <ReactFlow
-                onlyRenderVisibleElements={true}
-                className={boundaryDrawMode || lineDrawMode ? 'map-draw-mode' : ''}
-                style={{
-                  zIndex: 5,
-                  cursor: boundaryDrawMode || lineDrawMode ? 'crosshair' : 'default',
-                }}
-                nodeTypes={NODE_TYPES}
-                edgeTypes={EDGE_TYPES}
-                nodes={nodes}
-                edges={edges}
-                onNodesChange={handleNodesChange}
-                onEdgesChange={onEdgesChange}
-                nodeExtent={[
-                  [-4000, -4000],
-                  [4000, 4000],
-                ]}
-                translateExtent={[
-                  [-4000, -4000],
-                  [4000, 4000],
-                ]}
-                onNodeDragStart={handleNodeDragStart}
-                onNodeDragStop={handleNodeDragStop}
-                onNodeMouseEnter={handleNodeMouseEnter}
-                onNodeMouseLeave={handleNodeMouseLeave}
-                onNodeClick={handleNodeClick}
-                onNodeContextMenu={handleNodeContextMenu}
-                onPaneContextMenu={handlePaneContextMenu}
-                onEdgeContextMenu={handleEdgeContextMenu}
-                onConnect={handleConnect}
-                onConnectStart={onConnectStart}
-                onConnectEnd={onConnectEnd}
-                onEdgeUpdate={handleEdgeUpdate}
-                onMoveEnd={(_, vp) => localStorage.setItem('cb_map_viewport', JSON.stringify(vp))}
-                onPaneMouseMove={handlePanePointerMove}
-                connectionLineType="smoothstep"
-                connectionMode="loose"
-                connectionRadius={14}
-                connectionLineStyle={CONNECTION_LINE_STYLE}
-                defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}
-                onPaneClick={() => {
-                  setEdgeMenu(null);
-                  setPendingConnection(null);
-                  handlePaneClick();
-                }}
-                fitView
-                minZoom={0.1}
-                maxZoom={2.5}
-                panOnDrag={!boundaryDrawMode && !lineDrawMode}
-                panOnScroll={!boundaryDrawMode && !lineDrawMode}
-                zoomOnScroll={!boundaryDrawMode && !lineDrawMode}
-                zoomOnPinch={!boundaryDrawMode && !lineDrawMode}
-                zoomOnDoubleClick={!boundaryDrawMode && !lineDrawMode}
-                preventScrolling /* keep page from scrolling when pointer is over map */
-                deleteKeyCode={null}
-              >
-                {/* Loading overlay */}
-                {loading && nodes.length === 0 && (
-                  <div
-                    style={{
-                      position: 'absolute',
-                      inset: 0,
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      background: 'var(--color-bg)',
-                      zIndex: 100,
-                    }}
-                  >
-                    <div
-                      className="login-spin"
-                      style={{
-                        width: 48,
-                        height: 48,
-                        border: '4px solid var(--color-border)',
-                        borderTopColor: 'var(--color-primary)',
-                        borderRadius: '50%',
-                      }}
-                    />
-                    <p style={{ marginTop: 16, color: 'var(--color-text-muted)', fontSize: 14 }}>
-                      Loading topology…
-                    </p>
-                  </div>
-                )}
-
-                {/* Legend */}
-                <LegendPanel
-                  legendOpen={legendOpen}
-                  setLegendOpen={setLegendOpen}
-                  includeTypes={includeTypes}
-                />
-                <PrivacyScoreWidget />
-                <HostileNetworkBanner />
-                <Controls style={{ zIndex: 35 }} />
-                <Background color={bgGridColor} gap={24} size={1} />
-              </ReactFlow>
-            )}
+            <MapCanvas
+              SigmaMap={SigmaMap}
+              nodes={nodes}
+              edges={edges}
+              nodeTypes={NODE_TYPES}
+              edgeTypes={EDGE_TYPES}
+              flow={flow}
+              editorUi={editorUi}
+              view={view}
+              filters={filters}
+              route={route}
+              persistence={persistence}
+              legendOpen={legendOpen}
+              onLegendToggle={setLegendOpen}
+            />
 
             <WifiOverlay nodes={nodes} />
 
