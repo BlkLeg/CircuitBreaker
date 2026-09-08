@@ -11,7 +11,8 @@ import { getEndpointUsage } from '../api/agents';
 import logger from '../utils/logger';
 
 // Components
-import SettingsNav, { SETTINGS_TABS } from '../components/settings/SettingsNav';
+import SettingsNav from '../components/settings/SettingsNav';
+import { allowedSettingsTabs } from '../data/settingsDestinations';
 import SettingsActionBar from '../components/settings/SettingsActionBar';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import ClearLabDialog from '../components/common/ClearLabDialog';
@@ -50,10 +51,9 @@ export default function SettingsPage() {
   const { settings: ctxSettings, reloadSettings } = useSettings();
   const { user } = useAuth();
   const isAdmin = !!(user?.role === 'admin' || user?.is_admin || user?.is_superuser);
-  const allowedTabs = useMemo(
-    () => (isAdmin ? SETTINGS_TABS : SETTINGS_TABS.filter((t) => ['integrations'].includes(t.id))),
-    [isAdmin]
-  );
+  // The policy lives in data/settingsDestinations.js so the navigator cannot
+  // advertise a tab this page would refuse to render.
+  const allowedTabs = useMemo(() => allowedSettingsTabs(user), [user]);
   const { timezone: ctxTimezone, setTimezone } = useTimezone();
   const [searchParams, setSearchParams] = useSearchParams();
   const toast = useToast();

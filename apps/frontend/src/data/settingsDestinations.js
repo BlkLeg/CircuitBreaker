@@ -1,0 +1,103 @@
+import { SETTINGS_TABS } from '../components/settings/SettingsNav';
+import { canEdit, isAdmin } from '../utils/rbac';
+
+/**
+ * The settings half of the navigation registry.
+ *
+ * SettingsPage used to own the non-admin policy privately (`['integrations']`,
+ * inline at SettingsPage.jsx:54) while CommandPalette guessed at it with a
+ * canEdit check and its own hardcoded `?section=` list. The two disagreed:
+ * the palette offered an editor eight settings deep-links, seven of which the
+ * page would refuse to render. One exported policy, two consumers.
+ *
+ * This file may read SETTINGS_TABS but SettingsNav must never read this file —
+ * the same one-way dependency data/navigation.js has on data/routeGuards.js.
+ */
+
+/**
+ * Search keywords per tab, so "timezone" finds Appearance.
+ *
+ * Each entry was checked against its real owner rather than copied from the
+ * palette's labels: `icons` and `timezone` live in AppearanceSection, not in a
+ * tab of their own, and `defaults` is General.
+ */
+const TAB_KEYWORDS = {
+  general: ['defaults', 'default environment', 'hints', 'api'],
+  appearance: ['theme', 'timezone', 'icons', 'vendors', 'branding', 'logo', 'fonts', 'widgets'],
+  resources: ['categories', 'environments', 'locations'],
+  'device-roles': ['roles', 'classification', 'topology'],
+  connectivity: ['discovery', 'listener', 'mdns', 'ssdp', 'arp'],
+  integrations: ['docker', 'nats', 'opnsense', 'proxmox', 'smtp'],
+  kb: ['knowledge base', 'hints', 'hostname', 'vendor'],
+  security: ['authentication', 'auth', 'sessions', 'registration', 'rate limit', 'password'],
+  system: ['backup', 'restore', 'import', 'export', 'transfer', 'maintenance', 'updates'],
+};
+
+/**
+ * The single settings-tab visibility policy.
+ *
+ * Two gates, in order: /settings itself is editor-guarded (routeGuards.js), and
+ * within it only an admin sees more than Integrations (SettingsPage.jsx:54).
+ * A viewer therefore gets an empty list, not "everything the route allows".
+ */
+export function allowedSettingsTabs(user) {
+  if (!canEdit(user)) return [];
+  if (isAdmin(user)) return SETTINGS_TABS.slice();
+  return SETTINGS_TABS.filter((tab) => tab.id === 'integrations');
+}
+
+/** The allowed tabs as navigator destinations. `id` is stable enough to pin. */
+export function settingsDestinations(user) {
+  return allowedSettingsTabs(user).map((tab) => ({
+    id: `settings:${tab.id}`,
+    label: tab.label,
+    description: tab.description,
+    path: `/settings?tab=${tab.id}`,
+    icon: tab.icon,
+
+    keywords: TAB_KEYWORDS[tab.id] ?? [],
+  }));
+}
+
+/**
+ * Historical `?section=` values → real tab ids.
+ *
+ * Only links that were genuinely reachable at some point are listed. The
+ * palette's `experimental` is absent on purpose: SETTINGS_TABS has never had
+ * such a tab, so there is no valid historical link to preserve, and inventing
+ * one would be the "Experimental section from a stale command label" plan 01
+ * explicitly forbids.
+ */
+export const LEGACY_SECTION_TO_TAB = {
+  appearance: 'appearance',
+  defaults: 'general',
+  general: 'general',
+  icons: 'appearance',
+  timezone: 'appearance',
+  categories: 'resources',
+  environments: 'resources',
+  locations: 'resources',
+  auth: 'security',
+  security: 'security',
+  system: 'system',
+  integrations: 'integrations',
+};
+
+/**
+ * Rewrite a legacy settings link. Bookmarks that predate the `?tab=` rename
+ * keep working; an unmappable section lands on Settings rather than on a tab
+ * that does not exist.
+ */
+export function normalizeSettingsPath(path) {
+  if (typeof path !== 'string' || !path.startsWith('/settings')) return path;
+  const queryStart = path.indexOf('?');
+  if (queryStart === -1) return path;
+  const params = new URLSearchParams(path.slice(queryStart + 1));
+  const section = params.get('section');
+  if (!section) return path;
+  const tab = Object.hasOwn(LEGACY_SECTION_TO_TAB, section)
+    ? // eslint-disable-next-line security/detect-object-injection -- own-property checked above
+      LEGACY_SECTION_TO_TAB[section]
+    : null;
+  return tab ? `/settings?tab=${tab}` : '/settings';
+}
