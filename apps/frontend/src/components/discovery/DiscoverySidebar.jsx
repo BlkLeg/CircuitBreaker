@@ -91,6 +91,16 @@ export default function DiscoverySidebar({
           </button>
           <button
             type="button"
+            className={`sidebar-nav-item ${filter === 'docker' ? 'active' : ''}`}
+            onClick={() => onFilterChange('docker')}
+          >
+            <span className="sidebar-nav-icon">
+              <img src="/icons/vendors/docker.svg" width={16} height={16} alt="" />
+            </span>
+            <span className="sidebar-nav-label">Docker</span>
+          </button>
+          <button
+            type="button"
             className={`sidebar-nav-item ${filter === 'profiles' ? 'active' : ''}`}
             onClick={() => onFilterChange('profiles')}
           >

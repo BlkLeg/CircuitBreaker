@@ -26,6 +26,7 @@ import ScanProfilesPanel from '../components/discovery/ScanProfilesPanel.jsx';
 import NewScanPage from '../components/discovery/NewScanPage.jsx';
 import ReviewQueuePanel from '../components/discovery/ReviewQueuePanel.jsx';
 import ProxmoxIntegrationSection from '../components/proxmox/ProxmoxIntegrationSection.jsx';
+import DockerSourcesPanel from '../components/discovery/DockerSourcesPanel.jsx';
 import OpnsenseIntegrationSection from '../components/opnsense/OpnsenseIntegrationSection.jsx';
 import ScanSettingsPanel from '../components/discovery/ScanSettingsPanel.jsx';
 
@@ -55,6 +56,9 @@ export default function DiscoveryPage() {
   });
   const [hostStats, setHostStats] = useState(null);
   const [dockerScanning, setDockerScanning] = useState(false);
+  // Bumped when the discovery stream reports a committed Docker run, so the
+  // sources panel refetches without owning a poll loop of its own.
+  const [dockerReloadToken, setDockerReloadToken] = useState(0);
   const [dockerScanError, setDockerScanError] = useState(null);
   const [scanWarnings, setScanWarnings] = useState({});
 
@@ -241,6 +245,10 @@ export default function DiscoveryPage() {
 
     const onWsReconnected = () => loadJobs();
 
+    // The run reached a committed state; refetch rather than trusting the
+    // event payload as the whole picture.
+    const onDockerSyncCompleted = () => setDockerReloadToken((prev) => prev + 1);
+
     const onScanWarning = (data) => {
       setScanWarnings((prev) => ({ ...prev, [data.job_id]: data.message }));
     };
@@ -251,6 +259,7 @@ export default function DiscoveryPage() {
     discoveryEmitter.on('badge:update', onBadgeUpdate);
     discoveryEmitter.on('ws:reconnected', onWsReconnected);
     discoveryEmitter.on('scan:warning', onScanWarning);
+    discoveryEmitter.on('docker:sync-completed', onDockerSyncCompleted);
 
     return () => {
       discoveryEmitter.off('job:update', onJobUpdate);
@@ -259,6 +268,7 @@ export default function DiscoveryPage() {
       discoveryEmitter.off('badge:update', onBadgeUpdate);
       discoveryEmitter.off('ws:reconnected', onWsReconnected);
       discoveryEmitter.off('scan:warning', onScanWarning);
+      discoveryEmitter.off('docker:sync-completed', onDockerSyncCompleted);
     };
   }, [loadJobs]);
 
@@ -387,7 +397,13 @@ export default function DiscoveryPage() {
   };
 
   let mainContent;
-  if (filter === 'proxmox') {
+  if (filter === 'docker') {
+    mainContent = (
+      <div className="discovery-proxmox-section" style={{ padding: 24, maxWidth: 720 }}>
+        <DockerSourcesPanel reloadToken={dockerReloadToken} />
+      </div>
+    );
+  } else if (filter === 'proxmox') {
     mainContent = (
       <div className="discovery-proxmox-section" style={{ padding: 24, maxWidth: 720 }}>
         <ProxmoxIntegrationSection />

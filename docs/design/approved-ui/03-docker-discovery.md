@@ -26,14 +26,26 @@ Containers retain source/provenance identity. Preserve explicit user parent assi
 
 ## Work packages
 
-- [ ] **D1:** Inventory existing single/multiple daemon and agent discovery capabilities. Scope the source UI to supported sources; do not enable arbitrary remote Docker endpoints merely because the design shows a source selector.
-- [ ] **D2:** Define result and parent-association schemas; write tests for complete, empty, partial, failed, recreated, and cross-source cases.
-- [ ] **D3:** Build source summary, last-success/current-attempt indicators, container list, and host picker with unresolved-parent correction. Explain when a manual assignment is retained.
-- [ ] **D4:** Return structured enumeration outcomes; keep timeouts, socket lifecycle cleanup, egress/daemon access protections, and secret handling intact.
-- [ ] **D5:** Fix reconciliation to be source-scoped and completeness-aware, including disappearance of the final container. Prevent an older/concurrent scan from overwriting a newer authoritative result.
-- [ ] **D6:** Resolve explicit hardware/compute parentage and provenance; preview consequential association/reconciliation changes when user input is required.
-- [ ] **D7:** Connect real run progress/results through existing job/event mechanisms. Disable duplicate sync for an active source; expose retry without discarding prior successful data.
-- [ ] **D8:** Document source identity, manual-override policy, and stale/stopped container semantics.
+- [x] **D1:** Inventory existing single/multiple daemon and agent discovery capabilities. Scope the source UI to supported sources; do not enable arbitrary remote Docker endpoints merely because the design shows a source selector.
+- [x] **D2:** Define result and parent-association schemas; write tests for complete, empty, partial, failed, recreated, and cross-source cases.
+- [x] **D3:** Build source summary, last-success/current-attempt indicators, container list, and host picker with unresolved-parent correction. Explain when a manual assignment is retained.
+- [x] **D4:** Return structured enumeration outcomes; keep timeouts, socket lifecycle cleanup, egress/daemon access protections, and secret handling intact.
+- [x] **D5:** Fix reconciliation to be source-scoped and completeness-aware, including disappearance of the final container. Prevent an older/concurrent scan from overwriting a newer authoritative result.
+- [x] **D6:** Resolve explicit hardware/compute parentage and provenance; preview consequential association/reconciliation changes when user input is required.
+- [x] **D7:** Connect real run progress/results through existing job/event mechanisms. Disable duplicate sync for an active source; expose retry without discarding prior successful data.
+- [x] **D8:** Document source identity, manual-override policy, and stale/stopped container semantics.
+
+> Status 2026-09-15: D1/D2/D4/D5 landed with the backend in `4729e8bd`
+> (`docker_enumeration.py`, `docker_sources.py`, `docker_reconcile.py`, migration
+> `0112`). D3/D6/D7/D8 are this slice: `DockerSourcesPanel` + `DockerSourceCard`
+> under Discovery → Docker, host correction through the shared `EntityPicker`
+> (`action="docker_parent"`, which plan 07 built for this), and run results
+> arriving over the existing `docker_sync_completed` discovery-stream event
+> rather than a new poll loop.
+>
+> Still open: the real-browser regression pass in *Acceptance and tests* below —
+> theme switching, keyboard correction, and responsive tables have unit coverage
+> but have not been exercised in a browser.
 
 ## Acceptance and tests
 

@@ -117,6 +117,51 @@ Use an agent when the target subnet is reachable from the agent but not from the
 
 ---
 
+## Docker sources
+
+Docker discovery is organised around **sources** rather than one anonymous scan. A source is a
+configured daemon endpoint with a stable identity, its own history, and its own host association.
+**Discovery → Docker** shows one card per source.
+
+### What a sync establishes, and what it does not
+
+Each sync records an outcome and a completeness flag, and the card reports them separately. This
+matters because an empty result and a failed one used to look identical — a bare empty list — and
+reconciliation could not tell "this host runs nothing" from "the daemon did not answer".
+
+| Outcome | What it means | What reconciliation does |
+|---|---|---|
+| **Synced** | The daemon was reachable and its container list is complete | Containers that disappeared are marked stopped |
+| **Partial sync** | Some containers were read; coverage is incomplete | Nothing is marked stopped — an unseen container is not a confirmed absent one |
+| **Sync failed** / **interrupted** | Enumeration did not complete | Prior inventory and the last success timestamp are preserved untouched |
+| **Never synced** | No attempt has completed | Nothing is inferred |
+
+**Last attempt** and **last success** are shown as two separate values on purpose. A source whose
+daemon has been down for a week still shows last week's success, and the card says plainly that
+what you are looking at is the last good picture rather than the current one.
+
+### Host association and manual overrides
+
+A source's containers hang off its parent host. That parent is recorded with its provenance:
+
+- **You set it** — the assignment is kept as-is, and rediscovery will not overwrite it.
+- **Resolved automatically** — a later sync may replace it. Set it yourself to pin it.
+- **Unresolved** — the containers have no parent until you assign one. The card says so.
+
+Assigning a host sends the source revision you were looking at. If the source changed in the
+meantime, the correction is refused rather than silently landing on top of someone else's — the
+panel reloads and asks you to look again.
+
+### Stopped and stale containers
+
+A container marked **stopped** was observed absent by a *complete* enumeration. A container that
+simply was not seen during a partial or failed sync is left exactly as it was: Circuit Breaker does
+not infer that something is gone from a reading it knows to be incomplete.
+
+Recreated containers are matched on their durable identity, not their display name, so restarting a
+container does not produce a duplicate and a similarly named container on another host does not
+absorb it.
+
 ## Safety and Good Practice
 
 - Start with a small range first.

@@ -165,7 +165,7 @@ export default function IntegrationsSection({
 
         <SettingField
           label="Discover"
-          hint="Run an immediate Docker topology sync. Containers and networks will appear on the map."
+          hint="Queue a Docker sync. Its outcome — including whether the daemon was reachable at all — is reported under Discovery → Docker."
         >
           <button
             type="button"
@@ -175,15 +175,20 @@ export default function IntegrationsSection({
               setDockerScanning(true);
               try {
                 await syncDocker();
-                toast.success('Docker scan started.');
+                // Queued is all this call establishes. It used to claim the scan
+                // had "started" and then discard the run ID, which left the
+                // operator with no way to learn what happened (plan 03).
+                toast.info('Sync queued. See Discovery → Docker for the result.');
               } catch (err) {
-                toast.error(err?.message || 'Docker scan failed.');
+                toast.error(
+                  err?.response?.data?.detail || err?.message || 'The sync could not be queued.'
+                );
               } finally {
                 setDockerScanning(false);
               }
             }}
           >
-            {dockerScanning ? 'Discovering…' : 'Discover'}
+            {dockerScanning ? 'Queueing…' : 'Discover'}
           </button>
         </SettingField>
 

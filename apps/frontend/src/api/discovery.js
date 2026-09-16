@@ -57,8 +57,23 @@ export const getAgentDiscoveredDevices = (agentId, params) =>
 
 // Docker discovery
 export const getDockerStatus = () => client.get('/discovery/docker/status');
-export const syncDocker = () => client.post('/discovery/docker/sync');
 export const getDockerNetworks = () => client.get('/discovery/docker/networks');
+
+// Source-oriented Docker discovery (plan 03). `syncDocker` is kept alongside
+// these rather than renamed: it is still the call IntegrationsSection makes,
+// and self-hosters upgrade on their own schedule. It answers 202 with
+// `{status, source_id, run_id}` — the run ID is what makes the outcome
+// knowable, which the older caller simply discarded.
+export const syncDocker = () => client.post('/discovery/docker/sync');
+export const listDockerSources = () => client.get('/discovery/docker/sources');
+export const getDockerSourceContainers = (sourceId) =>
+  client.get(`/discovery/docker/sources/${sourceId}/containers`);
+export const getDockerRun = (runId) => client.get(`/discovery/docker/runs/${runId}`);
+// `expected_revision` is the source revision the caller last saw; the server
+// answers 409 if it moved, so a correction cannot silently land on top of
+// someone else's.
+export const assignDockerSourceParent = (sourceId, assignment) =>
+  client.patch(`/discovery/docker/sources/${sourceId}/parent`, assignment);
 export const getListenerStatus = () => client.get('/discovery/listener/status');
 export const getListenerEvents = (params) => client.get('/discovery/listener/events', { params });
 export const enrichOpnsenseJob = (jobId) => client.post(`/discovery/jobs/${jobId}/enrich`);
