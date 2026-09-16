@@ -5,7 +5,7 @@ Status: canvas-backed implementation plan for the approved design. Visual baseli
 (v1). Upgraded 2026-09-10 from the approved 2026-09-08 minimal contract; every decision in that
 contract remains binding and is folded in below. Depends on plan 00 (theme and shared
 primitives) and plan 07's entity picker and structured-error contracts. Backend boundaries are
-specified in [backend-functions plan 06](../../backend-functions/06-inventory-transfer.md);
+specified in [backend-functions plan 06](../backend-functions/06-inventory-transfer.md);
 this plan is its UI consumer. Paths under frontend/backend refer to their respective `src/` and
 `src/app/` roots.
 

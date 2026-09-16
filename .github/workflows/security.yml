@@ -270,8 +270,11 @@ jobs:
         with:
           go-version-file: apps/agent/go.mod
           cache-dependency-path: apps/agent/go.sum
+      # Pin matches scripts/security_scan.sh / CONTRIBUTING.md. @latest can
+      # outpace the Go version pinned by apps/agent/go.mod; keep the tool
+      # identity immutable (GOV-18) rather than floating.
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
       - name: Run govulncheck
         working-directory: apps/agent
         run: govulncheck ./...

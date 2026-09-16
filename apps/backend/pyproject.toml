@@ -58,6 +58,12 @@ dependencies = [
     "apscheduler>=3.10",
     "dnspython>=2.6",
     "httpx>=0.27",
+    # anyio 4.15.0+ deprecates anyio.abc.BlockingPortal; starlette 1.6.0's
+    # TestClient still references that alias at import time. With
+    # filterwarnings=error that becomes a collection failure across the
+    # backend/integration suites (CI installs via pip, not poetry.lock).
+    # Remove the upper bound when starlette stops using anyio.abc.BlockingPortal.
+    "anyio>=4.0,<4.15",
     "fastapi-users[sqlalchemy]>=13.0.0",
     "nats-py>=2.9.0",
     "zeroconf>=0.149.16",
@@ -127,7 +133,7 @@ security = [
 ]
 docs = [
     "zensical>=0.0.24",
-    "mkdocs-material>=9.7.3",
+    "mkdocs-material>=9.7.7",
 ]
 
 [tool.hatch.version]

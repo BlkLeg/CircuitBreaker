@@ -97,12 +97,21 @@ nav:
 validation:
   nav:
     omitted_files: warn
+  links:
+    # Docs intentionally cite repo paths outside docs/ (apps/, specs/, packaging/).
+    # MkDocs can only resolve pages under docs/, so those look like not_found here.
+    # Existence of those paths is gated by the Docs workflow's lychee --offline pass.
+    not_found: ignore
+    unrecognized_links: ignore
+    anchors: ignore
 
 not_in_nav: |
   /adr/*.md
   /design/*.md
   /design/approved-ui/*.md
   /design/backend-functions/*.md
+  /plans/*.md
+  /superpowers/plans/*.md
   /assets/screenshots/MANIFEST.md
   /installation/docker-compose-prod.md
   /1.0.0-release-readiness-audit.md
