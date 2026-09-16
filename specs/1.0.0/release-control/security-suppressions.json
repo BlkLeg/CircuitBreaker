@@ -195,8 +195,8 @@
       "selector": "runtime-data",
       "owner": "security-owner",
       "reviewer": "release-owner",
-      "reason": "Local runtime data directories hold generated databases and instance secrets; they are gitignored and are not source or release artifacts.",
-      "compensating_control": "Tracked source, manifests, built artifacts, and release archives remain scanned; runtime secrets are validated by startup fail-closed checks.",
+      "reason": "Local runtime data directories hold generated databases and instance secrets, and tool-generated working-tree output (agent scratch state, Tier 0-3 evidence, MkDocs site/ build output) is derived from tracked files; all are gitignored and are not source or release artifacts.",
+      "compensating_control": "Tracked source, manifests, built artifacts, and release archives remain scanned; runtime secrets are validated by startup fail-closed checks; the canonical docs/ sources behind site/ are scanned by every rule including the enrollment-token rule.",
       "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
     },

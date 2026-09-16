@@ -57,6 +57,16 @@ paths = [
   # identifier. Without this, running `make verify-fleet` made the next
   # `make verify` fail on the evidence the first one produced.
   'artifacts/.*',
+  # MkDocs build output (.gitignore:17-18, GOV-08: "docs/ is canonical; site/
+  # is generated"). Same shape as the two entries above: every byte of it is
+  # derived from tracked files under docs/, it is gitignored and never
+  # committed, and CI's history scan cannot reach it -- but the local gate
+  # scans the working tree with --no-git, where mkdocs renders heading
+  # anchors like <h2 id="apicompatibility-plan"> into HTML that
+  # generic-api-key scores as a credential ("API/compatibility" beside an
+  # `=`). Any real secret in it would have to arrive via a scanned docs/
+  # source file or a docs build plugin.
+  'site/.*',
 ]
 
 [[allowlists]]
