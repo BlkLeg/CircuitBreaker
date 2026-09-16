@@ -1554,3 +1554,151 @@ async def test_dispatch_uninstall_pushes_the_revoked_status_to_watching_operator
     await agent_link.dispatch_frame(db_session, agent, frame)
 
     broadcast.assert_awaited_once_with(agent_id, "revoked")
+
+
+@pytest.mark.asyncio
+async def test_dispatch_update_status_repeated_succeeded_is_idempotent(db_session, factories):
+    """§8.4 (docs/design/2026-09-16-agent-deployment-connection-plan.md): a
+    succeeded update can legitimately be reported twice — once live by the
+    process that swapped the binary, once replayed by the re-exec'd process
+    from its durable pending-outcome record, because a local WebSocket write
+    is not an acknowledgement. The repeated report must not duplicate the
+    timeline event or regress the update state machine, and — the half the
+    dedupe rule exists to preserve — a genuinely *new* attempt at the same
+    version must still be recorded.
+    """
+    from app.db.models import AgentEvent
+    from app.services import agent_registry
+
+    agent = factories.agent(status="active", pending_update_version="0.9.0")
+    # A live update's normal prefix: queued by post_update (detail key
+    # `target_version`), started by the agent.
+    agent_registry.record_event(
+        db_session, agent.id, "update_queued", detail={"target_version": "0.9.0"}
+    )
+    agent_registry.record_event(db_session, agent.id, "update_started", detail={"version": "0.9.0"})
+
+    frame = AgentFrame(
+        type="update.status",
+        ts="2026-09-16T12:00:00Z",
+        payload={"version": "0.9.0", "phase": "succeeded"},
+    )
+
+    async def dispatched_events():
+        return [
+            e.event_type
+            for e in db_session.query(AgentEvent)
+            .filter_by(agent_id=agent.id)
+            .order_by(AgentEvent.id)
+        ]
+
+    await agent_link.dispatch_frame(db_session, agent, frame)  # the live send
+    await agent_link.dispatch_frame(db_session, agent, frame)  # the replay after reconnect
+
+    assert await dispatched_events() == [
+        "update_queued",
+        "update_started",
+        "update_succeeded",
+    ], "the replayed succeeded must not add a second timeline event"
+
+    # pending_update_version is the pre-hello state machine's only column, and
+    # a succeeded replay must not touch it: version_changed owns the success
+    # transition (update_hello_metadata), and a duplicate report regressing or
+    # duplicating that bookkeeping would be worse than the duplicate event.
+    db_session.expire_all()
+    from app.db.models import Agent as AgentModel
+
+    assert db_session.get(AgentModel, agent.id).pending_update_version == "0.9.0"
+
+    # The dedupe must not outlive its attempt: a re-issued update to the same
+    # version queues a new attempt, and its outcome is recorded again even
+    # though it is byte-identical to the first one.
+    agent_registry.record_event(
+        db_session, agent.id, "update_queued", detail={"target_version": "0.9.0"}
+    )
+    agent_registry.record_event(db_session, agent.id, "update_started", detail={"version": "0.9.0"})
+    await agent_link.dispatch_frame(db_session, agent, frame)
+    assert await dispatched_events() == [
+        "update_queued",
+        "update_started",
+        "update_succeeded",
+        "update_queued",
+        "update_started",
+        "update_succeeded",
+    ], "a new attempt's identical outcome must still be recorded"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_update_status_repeated_failed_is_idempotent_and_keeps_state_cleared(
+    db_session, factories
+):
+    """The replay rule is per terminal phase, not succeeded-specific: a
+    failed outcome can also be delivered twice, and the second arrival must
+    neither duplicate the event nor resurrect the pending_update_version the
+    first one cleared."""
+    from app.db.models import AgentEvent
+    from app.services import agent_registry
+
+    agent = factories.agent(status="active", pending_update_version="0.9.0")
+    agent_registry.record_event(
+        db_session, agent.id, "update_queued", detail={"target_version": "0.9.0"}
+    )
+    agent_registry.record_event(db_session, agent.id, "update_started", detail={"version": "0.9.0"})
+
+    frame = AgentFrame(
+        type="update.status",
+        ts="2026-09-16T12:00:00Z",
+        payload={"version": "0.9.0", "phase": "failed", "error": "update: download timeout"},
+    )
+
+    await agent_link.dispatch_frame(db_session, agent, frame)
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    events = [
+        e.event_type
+        for e in db_session.query(AgentEvent).filter_by(agent_id=agent.id).order_by(AgentEvent.id)
+    ]
+    assert events.count("update_failed") == 1, "the replayed failure must not duplicate the event"
+    db_session.expire_all()
+    from app.db.models import Agent as AgentModel
+
+    assert db_session.get(AgentModel, agent.id).pending_update_version is None, (
+        "the replay must not resurrect the pending target the first report cleared"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_update_status_outcomes_for_other_versions_are_never_deduped(
+    db_session, factories
+):
+    """The dedupe scan is per version: an update to 0.9.0 that already
+    succeeded must not suppress a first-ever report about 0.10.0."""
+    from app.db.models import AgentEvent
+    from app.services import agent_registry
+
+    agent = factories.agent(status="active")
+    agent_registry.record_event(
+        db_session, agent.id, "update_queued", detail={"target_version": "0.9.0"}
+    )
+    agent_registry.record_event(db_session, agent.id, "update_started", detail={"version": "0.9.0"})
+    succeeded = AgentFrame(
+        type="update.status",
+        ts="2026-09-16T12:00:00Z",
+        payload={"version": "0.9.0", "phase": "succeeded"},
+    )
+    await agent_link.dispatch_frame(db_session, agent, succeeded)
+
+    other = AgentFrame(
+        type="update.status",
+        ts="2026-09-16T12:00:01Z",
+        payload={"version": "0.10.0", "phase": "succeeded"},
+    )
+    await agent_link.dispatch_frame(db_session, agent, other)
+
+    events = [
+        e.event_type
+        for e in db_session.query(AgentEvent).filter_by(agent_id=agent.id).order_by(AgentEvent.id)
+    ]
+    assert events.count("update_succeeded") == 2, (
+        "a different version's first outcome must be recorded"
+    )

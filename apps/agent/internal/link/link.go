@@ -152,15 +152,22 @@ var rekeyInterval = resolveRekeyInterval()
 // rather than guessed at.
 const rekeyDirectionOutbound = "outbound"
 
-// SendUpdateStatus reports one self-update transition (`update.status`,
-// Task 24) over the live connection it's called from: version is the update
-// target, phase is "started"/"succeeded"/"failed"/"rolled_back", and errMsg
-// is only meaningful alongside "failed" (pass "" otherwise). Best-effort — a
-// non-nil error means the frame didn't go out (e.g. the connection just
-// dropped); callers other than runOnce's own rollback-report check treat that
-// as informational, not fatal, since the underlying update outcome already
-// happened regardless of whether the server heard about it promptly.
-type SendUpdateStatus func(version, phase, errMsg string) error
+// UpdateStatusEvent is one self-update transition (`update.status`, Task 24)
+// queued by the daemon's update worker for the event loop to transmit:
+// Version is the update target, Phase is one of "started"/"succeeded"/
+// "failed"/"rolled_back", and ErrMsg is only meaningful alongside "failed"
+// ("" otherwise).
+//
+// It is a channel value rather than a callback so the producer stays
+// decoupled from the connection that sends it: the worker cannot know
+// which runOnce iteration — or even which connection — will drain it, and a
+// callback would hand it a websocket writer it is forbidden to touch (see
+// Options.UpdateStatusFrames for the single-writer rule).
+type UpdateStatusEvent struct {
+	Version string
+	Phase   string
+	ErrMsg  string
+}
 
 type Options struct {
 	Config            *config.Config
@@ -196,17 +203,44 @@ type Options struct {
 	// and that summary is what closes the scan job.
 	OnDiscoveryRequest func(json.RawMessage) error
 	OnDiscoveryCancel  func(json.RawMessage) error
-	// OnUpdate applies one `update` instruction (download, verify, swap,
-	// re-exec). send lets it report its own progress — "started" right after
-	// unmarshalling the instruction, "failed" with a message on any
-	// download/verify/swap error, or "succeeded" right before re-exec'ing
-	// into the new binary (re-exec replaces the process image and never
-	// returns to the caller on success, which is why "succeeded" can't
-	// instead be sent by runOnce after OnUpdate returns — cmd/cb-agent/
-	// main.go's onUpdate is the one place that actually knows the swap
-	// landed).
-	OnUpdate    func(payload json.RawMessage, send SendUpdateStatus) error
-	OnConnected func()
+	// OnUpdate accepts one `update` instruction: it validates the payload and
+	// enqueues it for the daemon's serialized update worker, then returns —
+	// immediately. It is called from runOnce's inbound switch, on the one
+	// goroutine this connection shares with the websocket writer and the
+	// heartbeat, rekey and spool-drain tickers, so it must not perform the
+	// update inline (docs/design/2026-09-16-agent-deployment-connection-plan.md
+	// §1/§3.1): a download takes up to downloadTimeout — two minutes — and
+	// would starve heartbeats past the server's 60s dead-link deadline and
+	// stop the reader from consuming the socket, tearing down the very link
+	// the update's own status has to travel over.
+	//
+	// A non-nil return means the instruction was not accepted — malformed
+	// payload, queue full because an update is already queued or running
+	// ("update already in progress"), or the worker shutting down — and
+	// runOnce reports that to the server as an explicit failed `update.status`
+	// so a refused instruction is never silently dropped (§8.6).
+	OnUpdate func(payload json.RawMessage) error
+	// UpdateStatusFrames carries the update worker's `update.status`
+	// reports to whatever runOnce is currently serving. The worker — a
+	// process-lifetime goroutine in cmd/cb-agent — sends; the connection's
+	// event loop is the sole receiver and the sole websocket writer, which
+	// is what keeps gorilla's one-writer invariant and sequence-number
+	// ownership intact (§3.1): the worker cannot write frames, and cannot
+	// know which connection will.
+	//
+	// Delivery is best-effort by design. Events are drained only while a
+	// runOnce is serving a connection, and nothing waits for the server to
+	// have handled them; terminal outcomes do not depend on this channel for
+	// durability — the worker persists a pending-outcome record for the next
+	// process to replay (§3.3, see internal/update's WritePendingOutcome), so
+	// a lost event costs promptness, never correctness. The daemon buffers it
+	// (cmd/cb-agent's updateStatusQueueDepth) so one update's
+	// started+terminal pair always fits without the worker ever blocking on a
+	// connection that stopped draining. A nil channel never selects, which is
+	// what the spool-less one-shot Uninstall connection and this package's
+	// tests rely on.
+	UpdateStatusFrames <-chan UpdateStatusEvent
+	OnConnected        func()
 	// OnRejected fires whenever an explicit hello.ack rejection arrives
 	// (accepted: false), with the server's stated reason. Unlike
 	// OnConnected/OnDisconnected this does not end the connection — the
@@ -220,11 +254,14 @@ type Options struct {
 	OnDisconnected func(cause error)
 	// ReportPendingUpdateOutcome, if set, is checked once per connection
 	// right after its first accepted hello.ack (same moment OnConnected
-	// fires) for an update outcome a *previous* process couldn't report live
-	// — today, only the rollback case (see internal/update's
-	// WriteRollbackReport doc comment for why). ok is false when there is
-	// nothing pending, the overwhelmingly common case.
-	ReportPendingUpdateOutcome func() (version string, ok bool)
+	// fires) for an update outcome a *previous* process couldn't report live:
+	// a rollback (internal/update's WriteRollbackReport), or a succeeded
+	// update whose live send was lost to a connection drop immediately before
+	// re-exec (internal/update's WritePendingOutcome — see §3.3). phase is
+	// whichever terminal phase that record carries, "rolled_back" or
+	// "succeeded". ok is false when there is nothing pending, the
+	// overwhelmingly common case.
+	ReportPendingUpdateOutcome func() (version, phase string, ok bool)
 	// ClearPendingUpdateOutcome is called after ReportPendingUpdateOutcome's
 	// report has actually been sent (sendUpdateStatus returned no error), so
 	// it isn't repeated on the next reconnect. Never called otherwise — a
@@ -311,7 +348,7 @@ func Run(ctx context.Context, opts Options) error {
 		opts.OnDiscoveryCancel = func(json.RawMessage) error { return nil }
 	}
 	if opts.OnUpdate == nil {
-		opts.OnUpdate = func(json.RawMessage, SendUpdateStatus) error { return nil }
+		opts.OnUpdate = func(json.RawMessage) error { return nil }
 	}
 	if opts.OnConnected == nil {
 		opts.OnConnected = func() {}
@@ -320,7 +357,7 @@ func Run(ctx context.Context, opts Options) error {
 		opts.OnRejected = func(string) {}
 	}
 	if opts.ReportPendingUpdateOutcome == nil {
-		opts.ReportPendingUpdateOutcome = func() (string, bool) { return "", false }
+		opts.ReportPendingUpdateOutcome = func() (string, string, bool) { return "", "", false }
 	}
 	if opts.ClearPendingUpdateOutcome == nil {
 		opts.ClearPendingUpdateOutcome = func() {}
@@ -935,10 +972,12 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 	}
 
 	// sendUpdateStatus encodes and sends one `update.status` frame (Task 24)
-	// over this connection — see the SendUpdateStatus type doc comment.
-	// Passed to opts.OnUpdate (for started/failed/succeeded, all sent while
-	// this same connection is still live) and used directly below for the
-	// rolled_back report on connect.
+	// over this connection. Called from this goroutine only — the TypeUpdate
+	// refusal arm, the UpdateStatusFrames drain arm, and the pending-outcome
+	// report on the first accepted hello.ack — which is the entire one-writer
+	// story: the update worker never touches the socket, it queues
+	// UpdateStatusEvent values and this loop writes them (§3.1). The
+	// sequence number is assigned here for the same reason.
 	sendUpdateStatus := func(version, phase, errMsg string) error {
 		payload, err := json.Marshal(frame.UpdateStatusPayload{
 			Version: version, Phase: phase, Error: errMsg,
@@ -1046,6 +1085,21 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 			if err := sender.drainBurst(drainFramesPerTick, drainBytesPerTick); err != nil {
 				return outcome, err
 			}
+		case evt := <-opts.UpdateStatusFrames:
+			// The update worker's status reports cross onto the wire here, on
+			// the event-loop goroutine, so the one-writer rule and sequence
+			// ownership hold (§3.1). Not gated on connectedFired, deliberately:
+			// hello is always the first frame on every connection, so a status
+			// frame drained in the pre-ack window still reaches the server
+			// *after* its hello and is dispatched against a bound session —
+			// and the alternative, consuming it only to drop it until
+			// acceptance, would lose terminal reports far more often than the
+			// microseconds of head start it costs. A send error is deferred, not
+			// fatal: terminal outcomes are already durable (§3.3), so the
+			// connection itself — not this event — decides when runOnce ends.
+			if err := sendUpdateStatus(evt.Version, evt.Phase, evt.ErrMsg); err != nil {
+				log.Printf("link: send update.status(%s, %s): %v — deferred", evt.Version, evt.Phase, err)
+			}
 		case f := <-opts.ControlFrames:
 			if !connectedFired {
 				continue
@@ -1123,9 +1177,9 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 							"is lost. Upgrade the server to make delivery at-least-once into the database.")
 					}
 					opts.OnConnected()
-					// Task 24: report an update outcome a previous process
-					// couldn't send live (the rollback case — see
-					// ReportPendingUpdateOutcome's doc comment) now that this
+					// Task 24/§3.3: report an update outcome a previous
+					// process couldn't send live — a rollback, or a succeeded
+					// update whose pre-re-exec send was lost — now that this
 					// connection actually has an accepted hello.ack. Only
 					// cleared on a successful send; a failed send (e.g. this
 					// connection drops immediately after) leaves it for the
@@ -1133,9 +1187,11 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 					// relying solely on Run's defaulting) since some tests
 					// call runOnce directly without going through Run.
 					if opts.ReportPendingUpdateOutcome != nil {
-						if version, ok := opts.ReportPendingUpdateOutcome(); ok {
-							if err := sendUpdateStatus(version, "rolled_back", ""); err != nil {
-								log.Printf("link: send rolled_back update.status: %v", err)
+						if version, phase, ok := opts.ReportPendingUpdateOutcome(); ok {
+							if err := sendUpdateStatus(version, phase, ""); err != nil {
+								// Deferred, not lost: the record stays on disk
+								// for the next accepted connection to retry.
+								log.Printf("link: send %s update.status: %v — deferred to next reconnect", phase, err)
 							} else if opts.ClearPendingUpdateOutcome != nil {
 								opts.ClearPendingUpdateOutcome()
 							}
@@ -1200,8 +1256,21 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 					}
 				}
 			case frame.TypeUpdate:
-				if err := opts.OnUpdate(f.Payload, sendUpdateStatus); err != nil {
-					log.Printf("link: update failed: %v", err)
+				// Enqueue-only (§3.1/§8.3): opts.OnUpdate validates the payload
+				// and queues it for the daemon's serialized update worker, and
+				// this arm returns to the select loop immediately so heartbeats,
+				// the reader and the drain tickers keep running through the
+				// whole two-minute download window. A refusal — malformed
+				// payload, queue full because an update is already queued or
+				// running, worker shutting down — is reported as an explicit
+				// failed status so the server is never left waiting on an
+				// instruction that was dropped (§8.6). The instruction's own
+				// version is echoed back when the payload carries one; "" when
+				// it is too malformed to name one, which the server logs and
+				// drops exactly like any other malformed update.status.
+				if err := opts.OnUpdate(f.Payload); err != nil {
+					log.Printf("link: update instruction refused: %v", err)
+					_ = sendUpdateStatus(instructionVersion(f.Payload), "failed", err.Error())
 				}
 			case frame.TypeKeyRotate:
 				handleKeyRotate(opts, f.Payload)
@@ -1218,6 +1287,24 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 			}
 		}
 	}
+}
+
+// instructionVersion extracts the `version` field from a raw `update`
+// instruction payload, "" when the payload is too malformed to carry one.
+// Used only to echo a refused instruction's target version back in the
+// failed status runOnce reports when opts.OnUpdate rejects it (§8.6), so
+// the server's timeline names the update that was refused rather than an
+// empty string whenever the payload is well-formed enough to have one. It
+// is deliberately not the validation — opts.OnUpdate owns that, and a
+// payload whose version this cannot read is one OnUpdate refuses anyway.
+func instructionVersion(payload json.RawMessage) string {
+	var instr struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(payload, &instr); err != nil {
+		return ""
+	}
+	return instr.Version
 }
 
 // handleKeyRotate processes one inbound `key.rotate` frame (Task 28's

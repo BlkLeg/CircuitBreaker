@@ -160,6 +160,16 @@ func watchForRollback(stateDir, currentLink, pendingVersion string, window time.
 	if err := update.WriteRollbackReport(stateDir, pendingVersion); err != nil {
 		log.Printf("cb-agent: %v", err)
 	}
+	// The rollback is the terminal word on this attempt, so a succeeded
+	// outcome an earlier phase of it recorded must not survive alongside
+	// this report — the daemon's pending-outcome reader prefers the outcome
+	// file, so the two together would report "succeeded" and never the
+	// rollback. Mirrors update.RollbackIfExpired's own clear. Logged, not
+	// fatal, on the same grounds the marker clear below is: the rollback
+	// itself has already happened.
+	if err := update.ClearPendingOutcome(stateDir); err != nil {
+		log.Printf("cb-agent: %v — the next connection may report the earlier succeeded status instead of this rollback", err)
+	}
 	if err := update.ClearMarker(stateDir); err != nil {
 		log.Printf("cb-agent: %v", err)
 	}

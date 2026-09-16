@@ -2,6 +2,7 @@
 package update
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
@@ -33,7 +34,7 @@ func TestDownload_RejectsCertPinMismatch(t *testing.T) {
 	instr := Instruction{Version: "0.2.0", SHA256: "deadbeef", Arch: "amd64", OS: "linux"}
 
 	trust := tlsdial.Trust{Mode: tlsdial.ModeSelfSigned, Pins: []string{wrongPin}}
-	tmpPath, err := Download(cfg, trust, instr)
+	tmpPath, err := Download(context.Background(), cfg, trust, instr)
 	if err == nil {
 		os.Remove(tmpPath)
 		t.Fatal("Download() with mismatched pin = nil error, want an error")
@@ -71,7 +72,7 @@ func TestDownload_RejectsOnTimeout(t *testing.T) {
 	instr := Instruction{Version: "0.2.0", SHA256: "deadbeef", Arch: "amd64", OS: "linux"}
 
 	start := time.Now()
-	tmpPath, err := Download(cfg, tlsdial.Trust{Mode: tlsdial.ModePublic}, instr)
+	tmpPath, err := Download(context.Background(), cfg, tlsdial.Trust{Mode: tlsdial.ModePublic}, instr)
 	elapsed := time.Since(start)
 	if err == nil {
 		os.Remove(tmpPath)
@@ -103,7 +104,7 @@ func TestDownload_RejectsOversizeContentLength(t *testing.T) {
 	cfg := &config.Config{ServerURL: srv.URL}
 	instr := Instruction{Version: "0.2.0", SHA256: "deadbeef", Arch: "amd64", OS: "linux"}
 
-	tmpPath, err := Download(cfg, tlsdial.Trust{Mode: tlsdial.ModePublic}, instr)
+	tmpPath, err := Download(context.Background(), cfg, tlsdial.Trust{Mode: tlsdial.ModePublic}, instr)
 	if err == nil {
 		os.Remove(tmpPath)
 		t.Fatal("Download() with oversize Content-Length = nil error, want an error")
@@ -136,7 +137,7 @@ func TestDownload_RejectsOversizeStreamedBody(t *testing.T) {
 	cfg := &config.Config{ServerURL: srv.URL}
 	instr := Instruction{Version: "0.2.0", SHA256: "deadbeef", Arch: "amd64", OS: "linux"}
 
-	tmpPath, err := Download(cfg, tlsdial.Trust{Mode: tlsdial.ModePublic}, instr)
+	tmpPath, err := Download(context.Background(), cfg, tlsdial.Trust{Mode: tlsdial.ModePublic}, instr)
 	if err == nil {
 		os.Remove(tmpPath)
 		t.Fatal("Download() with oversize streamed body = nil error, want an error")

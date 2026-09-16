@@ -2,6 +2,7 @@
 package update
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
@@ -162,7 +163,7 @@ func TestDownloadStagesInTheAgentsOwnDirectory(t *testing.T) {
 		Version: "0.2.0", SHA256: hex.EncodeToString(sum[:]), Arch: "amd64", OS: "linux",
 	}
 
-	path, err := Download(cfg, tlsdial.Trust{Mode: tlsdial.ModePublic}, instr)
+	path, err := Download(context.Background(), cfg, tlsdial.Trust{Mode: tlsdial.ModePublic}, instr)
 	if err != nil {
 		t.Fatalf("Download() error = %v", err)
 	}

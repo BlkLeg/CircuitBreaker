@@ -21,7 +21,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.core.log_sanitize import safe_log_fragment
-from app.db.models import Agent
+from app.db.models import Agent, AgentEvent
 from app.schemas.agent_frame import (
     FRAME_VERSION,
     MAX_VIOLATION_ADDRESS_CHARS,
@@ -427,6 +427,64 @@ _UPDATE_STATUS_EVENT: dict[str, str] = {
     "rolled_back": "update_rolled_back",
 }
 
+# The full per-version update lifecycle, as event types: an attempt opens
+# with update_queued (post_update, detail key `target_version`) or
+# update_started, and closes with exactly one terminal type.
+_UPDATE_ATTEMPT_EVENT_TYPES = frozenset({"update_queued", "update_started"})
+_UPDATE_LIFECYCLE_EVENT_TYPES = _UPDATE_ATTEMPT_EVENT_TYPES | frozenset(
+    _UPDATE_STATUS_EVENT.values()
+)
+
+# How many recent lifecycle events _is_replayed_update_status scans, newest
+# first, before deciding. A version's lifecycle interleaves with every other
+# version's, so the scan bound has to cover a busy agent's recent history
+# rather than one attempt's event count; 64 is far more lifecycle rows than
+# any single update produces, and the query stays a single indexed page.
+_UPDATE_REPLAY_SCAN_LIMIT = 64
+
+
+def _is_replayed_update_status(db: Session, agent: Agent, event_type: str, version: str) -> bool:
+    """Whether one terminal `update.status` for *version* is a replay of an
+    outcome this agent already recorded — the case the agent's durable
+    pending-outcome record produces (§8.4 of
+    docs/design/2026-09-16-agent-deployment-connection-plan.md): the old
+    process wrote the outcome, sent it live, and re-exec'd; the new process
+    replays it after its first accepted hello.ack, and the live send may
+    already have landed, so the second arrival must not duplicate the
+    timeline.
+
+    The rule is deterministic rather than heuristic: scanning this agent's
+    lifecycle events for this version newest-first, the most recent one
+    decides. The same terminal event again means replay; an attempt marker
+    (update_queued/update_started) recorded after it means a genuinely new
+    attempt is reporting — so a re-issued update to the same version that
+    fails identically twice still gets both failures on the timeline. Events
+    for other versions are skipped, and a version with no prior terminal
+    event is never a replay.
+    """
+    recent = (
+        db.query(AgentEvent)
+        .filter(
+            AgentEvent.agent_id == agent.id,
+            AgentEvent.event_type.in_(_UPDATE_LIFECYCLE_EVENT_TYPES),
+        )
+        .order_by(AgentEvent.id.desc())
+        .limit(_UPDATE_REPLAY_SCAN_LIMIT)
+        .all()
+    )
+    for event in recent:
+        detail = event.detail or {}
+        # update_queued records the target under `target_version` (see
+        # api/agents.py:post_update); the status frames' events under `version`.
+        event_version = detail.get("version", detail.get("target_version"))
+        if event_version != version:
+            continue
+        if event.event_type in _UPDATE_ATTEMPT_EVENT_TYPES:
+            return False
+        if event.event_type == event_type:
+            return True
+    return False
+
 
 async def _handle_update_status(db: Session, agent: Agent, frame: AgentFrame) -> None:
     try:
@@ -443,11 +501,11 @@ async def _handle_update_status(db: Session, agent: Agent, frame: AgentFrame) ->
         _logger.warning("agent %s: unknown update.status phase %r", agent.id, payload.phase)
         return
 
-    detail: dict[str, str] = {"version": payload.version}
-    if payload.error:
-        detail["error"] = payload.error[:200]
-    agent_registry.record_event(db, agent.id, event_type, detail=detail)
-
+    # The state transition runs before the dedupe check, deliberately: a
+    # replayed terminal failure must still clear pending_update_version if
+    # the original report somehow did not — the clear is idempotent (None
+    # stays None), so ordering it first can never regress, while ordering it
+    # second would leave the recovery path hostage to the dedupe scan.
     is_terminal_failure = payload.phase in ("failed", "rolled_back")
     if is_terminal_failure and agent.pending_update_version == payload.version:
         # This attempt is never going to reconnect at the target version — a
@@ -457,6 +515,29 @@ async def _handle_update_status(db: Session, agent: Agent, frame: AgentFrame) ->
         # mismatch) also lets a *subsequent*, unrelated update be queued
         # immediately without this stale target lingering.
         agent.pending_update_version = None
+
+    # §8.4: a terminal outcome can legitimately arrive twice — sent live by
+    # the old process and replayed by the re-exec'd one. The second arrival
+    # is ignored rather than recorded, so the timeline shows one outcome per
+    # attempt and no duplicate alerts; "started" is never replayed (the
+    # agent treats it as best-effort) and needs no dedupe. The ignored
+    # replay is still logged — it is the one externally-visible signal that
+    # the durable-outcome path fired at all.
+    if payload.phase in ("succeeded", "failed", "rolled_back") and _is_replayed_update_status(
+        db, agent, event_type, payload.version
+    ):
+        _logger.info(
+            "agent %s: replayed update.status(%s, %s) — already recorded, ignoring duplicate",
+            agent.id,
+            payload.phase,
+            payload.version,
+        )
+        return
+
+    detail: dict[str, str] = {"version": payload.version}
+    if payload.error:
+        detail["error"] = payload.error[:200]
+    agent_registry.record_event(db, agent.id, event_type, detail=detail)
 
 
 async def _handle_key_rotate(db: Session, agent: Agent, frame: AgentFrame) -> None:

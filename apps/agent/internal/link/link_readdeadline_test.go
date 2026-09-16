@@ -144,7 +144,7 @@ func (s *blackHoleServer) options(t *testing.T) Options {
 		OnConnected:       func() {},
 		OnRejected:        func(string) {},
 		OnCapabilitiesSet: func(json.RawMessage) error { return nil },
-		OnUpdate:          func(json.RawMessage, SendUpdateStatus) error { return nil },
+		OnUpdate:          func(json.RawMessage) error { return nil },
 	}
 }
 

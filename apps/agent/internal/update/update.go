@@ -2,6 +2,7 @@
 package update
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -56,6 +57,28 @@ const (
 	phasePendingConfirm markerPhase = "pending-confirm"
 )
 
+// pendingOutcomeFilename persists a terminal update outcome — today
+// "succeeded" — that a process is about to report live but could lose to a
+// connection drop at exactly the wrong moment (§3.3 of
+// docs/design/2026-09-16-agent-deployment-connection-plan.md). The succeeded
+// report is written to the socket immediately before syscall.Exec replaces
+// this process image, and a successful local WebSocket write is not an
+// acknowledgement from the server: the bytes can die in a socket buffer or
+// a partition while the process that could retry them is gone. So the
+// outcome is durably recorded *before* the live send, and the process the
+// re-exec lands in reports it after its first accepted hello.ack and clears
+// it only once that send actually succeeded — the same lifecycle the
+// rollback report below has always had, which is why this deliberately
+// mirrors it rather than inventing a second acknowledgement protocol.
+//
+// A distinct file from rollbackReportFilename, never merged into it: the
+// rollback report is written by the *new* process after it decides to roll
+// back, and read by the *old* process the rollback re-execs into — a build
+// that predates this file. Changing that file's format would hand that old
+// reader a phase-suffixed string it would report as a version. The new
+// outcome file is only ever written and read by builds that know it.
+const pendingOutcomeFilename = "update_outcome"
+
 // rollbackReportFilename persists the version a rollback restored *away*
 // from, across the re-exec that follows a rollback decision. The process
 // that decides to roll back (main.go's 2-minute confirm-window goroutine)
@@ -85,16 +108,10 @@ var downloadTimeout = 2 * time.Minute
 // data.
 var maxDownloadBytes int64 = 256 * 1024 * 1024
 
-// Download fetches the update binary named by instr from cfg.ServerURL and
-// writes it to a new temp file, returning its path. The request routes
-// through tlsdial.NewTransport(trust) — the same pinned-TLS/proxy policy
-// used for the agent's enroll and link websocket connections — rather than
-// a bare http.Get, so a self-signed/TOFU install's tls_pin is actually
-// enforced for the download and not just the control connection. trust is
-// resolved by the caller via link.ResolveTrust: cfg is kept here only
-// because the URL above is built from cfg.ServerURL.
 // binaryURL is where instr's binary lives on cfg.ServerURL. Shared with
-// DownloadSignature, which appends ".sig" to exactly this.
+// Download and DownloadSignature — the latter appends ".sig" to exactly
+// this — so the binary and the signature that authenticates it can never
+// come from different URLs.
 func binaryURL(cfg *config.Config, instr Instruction) string {
 	return fmt.Sprintf(
 		"%s/api/v1/agents/binary/%s/%s/%s",
@@ -107,14 +124,24 @@ func binaryURL(cfg *config.Config, instr Instruction) string {
 // returns the temp file's path. Shared by Download and DownloadSignature so
 // the status, Content-Length and size-limit handling cannot drift between
 // the binary and the signature that authenticates it.
+//
+// ctx reaches the HTTP request itself via http.NewRequestWithContext, so a
+// cancelled context — daemon shutdown, update-worker stop — interrupts a
+// stalled connect or a slow body mid-read instead of waiting out
+// downloadTimeout. The client timeout remains as the outer bound for the
+// cases no context covers (a caller that passes context.Background).
 func downloadTo(
-	trust tlsdial.Trust, url, prefix string, limit int64, mode os.FileMode,
+	ctx context.Context, trust tlsdial.Trust, url, prefix string, limit int64, mode os.FileMode,
 ) (string, error) {
 	client := &http.Client{
 		Transport: tlsdial.NewTransport(trust),
 		Timeout:   downloadTimeout,
 	}
-	resp, err := client.Get(url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("update: download %s: %w", url, err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("update: download %s: %w", url, err)
 	}
@@ -172,9 +199,19 @@ func downloadTo(
 	return tmp.Name(), nil
 }
 
-func Download(cfg *config.Config, trust tlsdial.Trust, instr Instruction) (string, error) {
+// Download fetches the update binary named by instr from cfg.ServerURL and
+// writes it to a new temp file, returning its path. The request routes
+// through tlsdial.NewTransport(trust) — the same pinned-TLS/proxy policy
+// used for the agent's enroll and link websocket connections — rather than
+// a bare http.Get, so a self-signed/TOFU install's tls_pin is actually
+// enforced for the download and not just the control connection. trust is
+// resolved by the caller via link.ResolveTrust: cfg is kept here only
+// because the URL above is built from cfg.ServerURL. ctx cancels the HTTP
+// request itself (see downloadTo) so a shutdown landing mid-download does
+// not wait out downloadTimeout for a stalled response.
+func Download(ctx context.Context, cfg *config.Config, trust tlsdial.Trust, instr Instruction) (string, error) {
 	return downloadTo(
-		trust, binaryURL(cfg, instr), "cb-agent-update-*", maxDownloadBytes, 0o755,
+		ctx, trust, binaryURL(cfg, instr), "cb-agent-update-*", maxDownloadBytes, 0o755,
 	)
 }
 
@@ -187,11 +224,14 @@ const maxSignatureBytes = 4096
 
 // DownloadSignature fetches the detached signature published beside the
 // binary Download fetches — the same URL with a .sig suffix — through the
-// same pinned transport.
+// same pinned transport. ctx cancels the HTTP request itself (see
+// downloadTo) so a shutdown landing mid-fetch does not wait out
+// downloadTimeout.
 func DownloadSignature(
-	cfg *config.Config, trust tlsdial.Trust, instr Instruction,
+	ctx context.Context, cfg *config.Config, trust tlsdial.Trust, instr Instruction,
 ) (string, error) {
 	return downloadTo(
+		ctx,
 		trust,
 		binaryURL(cfg, instr)+".sig",
 		"cb-agent-update-sig-*",
@@ -707,6 +747,16 @@ func RollbackIfExpired(stateDir, currentLink string, now time.Time) (rolledBackF
 	if err := WriteRollbackReport(stateDir, m.version); err != nil {
 		return "", err
 	}
+	// The rollback is the terminal word on this attempt, so any pending
+	// outcome an earlier phase recorded must not survive it — a succeeded
+	// record sitting beside a rollback report would win the next
+	// connection's single report slot (cmd/cb-agent reads the outcome file
+	// first), and "succeeded, then rolled back" is this report's story to
+	// tell. Best-effort by the same rule ClearMarker follows in
+	// watchForRollback: failing the rollback over a clear that cannot run
+	// would re-arm this same doomed attempt on every restart, and the
+	// degraded case is a misleading report, never a lost rollback.
+	_ = ClearPendingOutcome(stateDir)
 	if err := ClearMarker(stateDir); err != nil {
 		return "", err
 	}
@@ -749,6 +799,59 @@ func ClearRollbackReport(stateDir string) error {
 	err := os.Remove(filepath.Join(stateDir, rollbackReportFilename))
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("update: clear rollback report: %w", err)
+	}
+	return nil
+}
+
+// WritePendingOutcome durably records one terminal update outcome — phase
+// "succeeded" is the case this exists for (see pendingOutcomeFilename's doc
+// comment) — as "<version>\n<phase>", written via atomicWriteFile because a
+// torn write here would be worse than nothing: the next process has to be
+// able to trust that the outcome it reads is the one the re-exec'd process
+// actually reached. Callers must write this *before* attempting the live
+// status send it describes, so the record exists even if the connection
+// drops at exactly the wrong moment.
+func WritePendingOutcome(stateDir, version, phase string) error {
+	data := []byte(version + "\n" + phase)
+	if err := atomicWriteFile(filepath.Join(stateDir, pendingOutcomeFilename), data, 0o600); err != nil {
+		return fmt.Errorf("update: write pending outcome: %w", err)
+	}
+	return nil
+}
+
+// ReadPendingOutcome mirrors ReadMarker's contract: ok is false with a nil
+// error when no outcome is pending (the overwhelmingly common case — a
+// process that just re-exec'd after a successful update, and is the one
+// that reads this, only sees one when its predecessor's live send was
+// lost). A file that exists but does not parse is an error rather than a
+// silent miss: the difference between "nothing to report" and "an
+// unreportable record" is exactly what an operator needs to see, and
+// returning ok=false would swallow it into the former.
+func ReadPendingOutcome(stateDir string) (version, phase string, ok bool, err error) {
+	data, err := os.ReadFile(filepath.Join(stateDir, pendingOutcomeFilename))
+	if os.IsNotExist(err) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, fmt.Errorf("update: read pending outcome: %w", err)
+	}
+	version, phase, ok = strings.Cut(string(data), "\n")
+	if !ok || version == "" || phase == "" {
+		return "", "", false, fmt.Errorf("update: malformed pending outcome")
+	}
+	return version, phase, true, nil
+}
+
+// ClearPendingOutcome mirrors ClearRollbackReport: removing an
+// already-absent outcome is not an error, so a caller can call this
+// unconditionally once the report has actually been sent — and, per the
+// rollback-report clearing rule both share, never before: a send that
+// failed (the connection dropped immediately after hello.ack) leaves the
+// outcome in place for the next reconnect to retry.
+func ClearPendingOutcome(stateDir string) error {
+	err := os.Remove(filepath.Join(stateDir, pendingOutcomeFilename))
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("update: clear pending outcome: %w", err)
 	}
 	return nil
 }

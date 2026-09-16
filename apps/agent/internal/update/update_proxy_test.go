@@ -3,6 +3,7 @@ package update
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -153,7 +154,7 @@ func TestDownload_RespectsHTTPSProxyEnv(t *testing.T) {
 	instr := Instruction{Version: "0.2.0", SHA256: wantHash, Arch: "amd64", OS: "linux"}
 
 	trust := tlsdial.Trust{Mode: tlsdial.ModeSelfSigned, Pins: []string{pin}}
-	tmpPath, err := Download(cfg, trust, instr)
+	tmpPath, err := Download(context.Background(), cfg, trust, instr)
 	if err != nil {
 		t.Fatalf("Download() error = %v", err)
 	}

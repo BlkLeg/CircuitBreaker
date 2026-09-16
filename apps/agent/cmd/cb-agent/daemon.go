@@ -166,127 +166,43 @@ func runDaemon() {
 		}
 	}
 
-	onUpdate := func(payload json.RawMessage, send link.SendUpdateStatus) error {
-		var instr update.Instruction
-		if err := json.Unmarshal(payload, &instr); err != nil {
-			return err
-		}
-		if err := send(instr.Version, "started", ""); err != nil {
-			log.Printf("cb-agent: send started update.status: %v", err)
-		}
-		// Resolved once and reused for the signature fetch below: two calls
-		// could straddle an inbound tls.pin.rotate and fetch the binary and
-		// its signature under different trust policies.
-		trust := link.ResolveTrust(cfg, config.StateDir())
-		tmpPath, err := update.Download(cfg, trust, instr)
-		if err != nil {
-			if sendErr := send(instr.Version, "failed", err.Error()); sendErr != nil {
-				log.Printf("cb-agent: send failed update.status: %v", sendErr)
-			}
-			return err
-		}
-		if err := update.VerifySHA256(tmpPath, instr.SHA256); err != nil {
-			os.Remove(tmpPath)
-			if sendErr := send(instr.Version, "failed", err.Error()); sendErr != nil {
-				log.Printf("cb-agent: send failed update.status: %v", sendErr)
-			}
-			return err
-		}
-		// Slice 4.2 (F3): the SHA-256 above proves the download matches what
-		// the *server* said. That is worth nothing against a compromised
-		// server, which can serve any binary along with a matching digest.
-		// The detached signature is checked against a key embedded at build
-		// time, which the server cannot influence.
-		//
-		// Placed before WriteMarker deliberately: a refused update must
-		// leave no rollback marker behind, because nothing was installed.
-		sigPath, sigErr := update.DownloadSignature(cfg, trust, instr)
-		if sigPath != "" {
-			defer os.Remove(sigPath)
-		}
-		verifyErr := sigErr
-		if verifyErr == nil {
-			verifyErr = update.VerifySignature(tmpPath, sigPath)
-		}
-		switch update.UpdateDecision(verifyErr, update.SignatureEnforced()) {
-		case update.DecisionRefuse:
-			os.Remove(tmpPath)
-			if sendErr := send(instr.Version, "failed", verifyErr.Error()); sendErr != nil {
-				log.Printf("cb-agent: send failed update.status: %v", sendErr)
-			}
-			return verifyErr
-		case update.DecisionWarn:
-			log.Printf("cb-agent: WARNING: update to %s was installed without a "+
-				"verified signature (%v). Set CB_AGENT_UPDATE_ENFORCE_SIGNATURE=1 to "+
-				"refuse instead; see `make agent-signing-key` if this build has no "+
-				"embedded key.", instr.Version, verifyErr)
-		}
-		// Task 25: the rollback marker must be durably written *before* the
-		// binary is actually replaced, not after. If a crash lands between
-		// these two steps, the marker still correctly names the version
-		// that was about to be installed — a recoverable state, since the
-		// swap never ran and there's nothing to roll back. Writing the
-		// marker only after a successful Swap would instead let a crash in
-		// that window leave a replaced (and possibly broken) binary running
-		// with no marker at all — no rollback safety net.
-		if err := update.WriteMarker(config.StateDir(), instr.Version); err != nil {
-			os.Remove(tmpPath)
-			if sendErr := send(instr.Version, "failed", err.Error()); sendErr != nil {
-				log.Printf("cb-agent: send failed update.status: %v", sendErr)
-			}
-			return err
-		}
-		prevVersionDir, err := update.Swap(tmpPath, instr.Version, config.StateDir())
-		if err != nil {
-			// The swap never happened — clear the marker rather than
-			// leaving a stale one that would (harmlessly, but pointlessly)
-			// send a future restart into a rollback attempt against a
-			// version that was never installed.
-			if clearErr := update.ClearMarker(config.StateDir()); clearErr != nil {
-				log.Printf("cb-agent: %v", clearErr)
-			}
-			if sendErr := send(instr.Version, "failed", err.Error()); sendErr != nil {
-				log.Printf("cb-agent: send failed update.status: %v", sendErr)
-			}
-			return err
-		}
-		// Swap succeeded — durably transition the marker from
-		// phasePendingSwap to phasePendingConfirm and record prevVersionDir
-		// (see update.MarkSwapped's doc comment) so a restart's
-		// watchForRollback can trust which version directory is genuinely
-		// this update's own backup, not a stale one from some earlier,
-		// already-confirmed update. The swap itself has already happened
-		// and can't be undone from here, so a failure here is logged, not
-		// treated as a failed update: it only costs this particular update
-		// its rollback safety net (see MarkSwapped's doc comment), not
-		// correctness.
-		// The deadline is stamped here, not at process start, so it measures
-		// from the swap itself and survives the crash-loop an update that
-		// breaks connectivity produces — see update.RollbackIfExpired.
-		if err := update.MarkSwapped(config.StateDir(), instr.Version, prevVersionDir, time.Now().Add(rollbackWindow)); err != nil {
-			log.Printf("cb-agent: %v — update to %s already installed but will not be protected by the rollback window", err, instr.Version)
-		}
-		// Reported now, immediately before re-exec: a successful re-exec
-		// replaces this process's image and never returns here, so
-		// "succeeded" can't instead be sent by link.go after OnUpdate
-		// returns (see SendUpdateStatus's doc comment).
-		if err := send(instr.Version, "succeeded", ""); err != nil {
-			log.Printf("cb-agent: send succeeded update.status: %v", err)
-		}
-		log.Printf("cb-agent: updated to %s — re-executing", instr.Version)
-		if d := resolveReExecDelay(); d > 0 {
-			time.Sleep(d)
-		}
-		return syscall.Exec(installedBinaryPath, os.Args, os.Environ())
+	// §3.1/§8.2: the serialized update worker, started before link.Run so
+	// no instruction can arrive before its queue exists. statusC is the
+	// same channel linkOptions hands to the link as UpdateStatusFrames — the
+	// worker is its only producer and each connection's event loop its only
+	// consumer, which keeps every update.status write on the one goroutine
+	// that owns the websocket and the sequence counter.
+	statusC := make(chan link.UpdateStatusEvent, updateStatusQueueDepth)
+	updateWorkerRef := newUpdateWorker(ctx, cfg, config.StateDir(), statusC)
+	updateWorkerRef.start()
+	// Bounded: the worker shares link.Run's ctx, so a job mid-download
+	// aborts through its context-aware HTTP request rather than holding
+	// shutdown for downloadTimeout (§8.5/§8.7).
+	defer updateWorkerRef.stop()
+
+	onUpdate := func(payload json.RawMessage) error {
+		// The enqueue boundary only (§3.1/§8.2): validate the raw instruction
+		// and queue it for the serialized update worker, then return to the
+		// link's event loop immediately — the two-minute download window
+		// below is the worker's to occupy, not the loop's, which is what
+		// keeps heartbeats and inbound frame processing alive through it. A
+		// refusal here (malformed payload, queue full, shutdown) is reported
+		// by the link itself as an explicit failed `update.status`, so the
+		// server is never left waiting on a dropped instruction.
+		return updateWorkerRef.enqueue(payload)
 	}
 
 	if err := link.Run(ctx, rt.linkOptions(cfg, key, AgentVersion, linkHooks{
-		onUpdate:       onUpdate,
-		onConnected:    onConnected,
-		onRejected:     onRejected,
-		onDisconnected: onDisconnected,
+		onUpdate:           onUpdate,
+		updateStatusFrames: statusC,
+		onConnected:        onConnected,
+		onRejected:         onRejected,
+		onDisconnected:     onDisconnected,
 	})); err != nil && ctx.Err() == nil {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
+		// os.Exit skips the deferred stop, and stop() is idempotent — a
+		// second Wait returns immediately — so call it explicitly here.
+		updateWorkerRef.stop()
 		os.Exit(1)
 	}
 }
@@ -297,14 +213,20 @@ func runDaemon() {
 // own process-lifetime state (the confirm-once guard, the current-version
 // symlink, os.Args) rather than on anything daemonRuntime holds.
 //
+// updateStatusFrames is not a handler but the same category of runDaemon
+// wiring: the channel the update worker reports through, handed to the link
+// as Options.UpdateStatusFrames so its event loop is the one goroutine that
+// writes update.status frames to a socket.
+//
 // The zero value is legal, because link.Run nil-defaults every one of these
 // four — which is what lets a test drive the *inbound* bindings without an
 // update marker, a status file or a re-exec target.
 type linkHooks struct {
-	onUpdate       func(payload json.RawMessage, send link.SendUpdateStatus) error
-	onConnected    func()
-	onRejected     func(reason string)
-	onDisconnected func(cause error)
+	onUpdate           func(payload json.RawMessage) error
+	updateStatusFrames <-chan link.UpdateStatusEvent
+	onConnected        func()
+	onRejected         func(reason string)
+	onDisconnected     func(cause error)
 }
 
 // linkOptions assembles the one link.Options the daemon runs with.
@@ -335,14 +257,39 @@ func (rt *daemonRuntime) linkOptions(
 		OnDiscoveryRequest: rt.discoverRuntime.Request,
 		OnDiscoveryCancel:  rt.discoverRuntime.Cancel,
 		OnUpdate:           hooks.onUpdate,
+		// The update worker's status reports drain onto the wire here — see
+		// linkHooks.updateStatusFrames and link.Options.UpdateStatusFrames for
+		// the single-writer contract this preserves.
+		UpdateStatusFrames: hooks.updateStatusFrames,
 		OnConnected:        hooks.onConnected,
 		OnRejected:         hooks.onRejected,
 		OnDisconnected:     hooks.onDisconnected,
-		ReportPendingUpdateOutcome: func() (string, bool) {
+		ReportPendingUpdateOutcome: func() (string, string, bool) {
+			// Two records, deliberately kept distinct (see internal/update:
+			// pendingOutcomeFilename's doc comment). The pending-outcome file
+			// is what this build writes for a succeeded update whose live send
+			// was lost to the pre-re-exec connection drop (§3.3); the rollback
+			// report is the format a rollback leaves for whatever process it
+			// re-execs into, including one running a build that predates the
+			// outcome file. Read the new one first, fall back to the legacy
+			// one — at most one exists at a time, because every rollback path
+			// clears the outcome file when it writes its own report (the
+			// rollback is the later, terminal word on the same attempt).
+			if version, phase, ok, err := update.ReadPendingOutcome(config.StateDir()); err != nil {
+				log.Printf("cb-agent: %v", err)
+			} else if ok {
+				return version, phase, true
+			}
 			version, ok, _ := update.ReadRollbackReport(config.StateDir())
-			return version, ok
+			return version, "rolled_back", ok
 		},
 		ClearPendingUpdateOutcome: func() {
+			// Both files, for the at-most-one-exists invariant above: whichever
+			// record Report read, a successful send clears it and the other
+			// is absent by construction.
+			if err := update.ClearPendingOutcome(config.StateDir()); err != nil {
+				log.Printf("cb-agent: %v", err)
+			}
 			if err := update.ClearRollbackReport(config.StateDir()); err != nil {
 				log.Printf("cb-agent: %v", err)
 			}

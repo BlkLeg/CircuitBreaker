@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -211,7 +212,7 @@ func TestRun_SendsHeartbeatsAndAppliesCapabilitiesSet(t *testing.T) {
 		OnConnected: func() {
 			atomic.AddInt32(&connectedCount, 1)
 		},
-		OnUpdate: func(payload json.RawMessage, send SendUpdateStatus) error {
+		OnUpdate: func(payload json.RawMessage) error {
 			var instr struct {
 				Version string `json:"version"`
 			}
@@ -220,9 +221,6 @@ func TestRun_SendsHeartbeatsAndAppliesCapabilitiesSet(t *testing.T) {
 			}
 			if instr.Version != "0.2.0" {
 				t.Errorf("OnUpdate payload version = %q, want %q", instr.Version, "0.2.0")
-			}
-			if err := send(instr.Version, "started", ""); err != nil {
-				t.Errorf("send(started) error = %v", err)
 			}
 			atomic.AddInt32(&updateApplied, 1)
 			return nil
@@ -249,11 +247,11 @@ func TestRun_SendsHeartbeatsAndAppliesCapabilitiesSet(t *testing.T) {
 }
 
 // TestRun_OnUpdateSendsStartedThenFailedStatusFrames drives an `update` frame
-// whose OnUpdate callback reports "started" then simulates a download
-// failure by reporting "failed" with a message — the two update.status calls
-// Task 24 expects for a failing update, both sent over the same live
-// connection the `update` frame arrived on, in order, before any retry or
-// reconnect.
+// whose OnUpdate accepts the instruction, then queues the "started" and
+// "failed" pair onto UpdateStatusFrames exactly the daemon's update worker
+// does when a download fails — the two update.status frames Task 24 expects,
+// both sent over the same live connection the `update` frame arrived on, in
+// order, drained by the event-loop goroutine (§8.3).
 func TestRun_OnUpdateSendsStartedThenFailedStatusFrames(t *testing.T) {
 	serverPriv, serverPub := generateTestKeypair(t)
 
@@ -345,24 +343,30 @@ func TestRun_OnUpdateSendsStartedThenFailedStatusFrames(t *testing.T) {
 		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
 	}
 
+	// The worker's side of the contract, exercised as the daemon drives it:
+	// OnUpdate is enqueue-only (here: accept), and every status report is a
+	// channel send the event loop drains. Buffered like the daemon's own
+	// updateStatusQueueDepth so the "worker" never blocks on the loop.
+	statusC := make(chan UpdateStatusEvent, 4)
+
 	opts := Options{
 		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
 		Key:    key, AgentVersion: "0.1.0-test",
-		OnUpdate: func(payload json.RawMessage, send SendUpdateStatus) error {
+		OnUpdate: func(payload json.RawMessage) error {
 			var instr struct {
 				Version string `json:"version"`
 			}
 			if err := json.Unmarshal(payload, &instr); err != nil {
 				return err
 			}
-			if err := send(instr.Version, "started", ""); err != nil {
-				t.Errorf("send(started) error = %v", err)
-			}
-			if err := send(instr.Version, "failed", "simulated download failure"); err != nil {
-				t.Errorf("send(failed) error = %v", err)
-			}
-			return fmt.Errorf("simulated download failure")
+			// The worker reports started as soon as it picks the job up,
+			// then failed when the download breaks. Both are plain channel
+			// sends from here — a goroutine the link knows nothing about.
+			statusC <- UpdateStatusEvent{Version: instr.Version, Phase: "started"}
+			statusC <- UpdateStatusEvent{Version: instr.Version, Phase: "failed", ErrMsg: "simulated download failure"}
+			return nil
 		},
+		UpdateStatusFrames: statusC,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -469,11 +473,11 @@ func TestRun_ReportsRolledBackOnceConnectedThenClears(t *testing.T) {
 	opts := Options{
 		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
 		Key:    key, AgentVersion: "0.1.0-test",
-		ReportPendingUpdateOutcome: func() (string, bool) {
+		ReportPendingUpdateOutcome: func() (string, string, bool) {
 			if !pending {
-				return "", false
+				return "", "", false
 			}
-			return "0.3.0", true
+			return "0.3.0", "rolled_back", true
 		},
 		ClearPendingUpdateOutcome: func() {
 			pending = false
@@ -494,6 +498,208 @@ func TestRun_ReportsRolledBackOnceConnectedThenClears(t *testing.T) {
 	}
 	if atomic.LoadInt32(&cleared) != 1 {
 		t.Errorf("ClearPendingUpdateOutcome called %d time(s), want 1", cleared)
+	}
+}
+
+// TestRun_ReportsSucceededPendingOutcomeOnceConnectedThenClears is the
+// §3.3/§5 succeeded twin of TestRun_ReportsRolledBackOnceConnectedThenClears:
+// a prior process persisted phase=succeeded before re-exec, the live send was
+// lost, and this process must replay update.status(succeeded) on the first
+// accepted hello.ack and clear the durable record only after that send works.
+func TestRun_ReportsSucceededPendingOutcomeOnceConnectedThenClears(t *testing.T) {
+	serverPriv, serverPub := generateTestKeypair(t)
+	var mu atomicStatusList
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade: %v", err)
+		}
+		defer conn.Close()
+
+		responder := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			t.Errorf("responder handshake: %v", err)
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+
+		_, helloCt, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("expected a hello frame after handshake: %v", err)
+			return
+		}
+		if _, err := responder.Decrypt(helloCt); err != nil {
+			t.Errorf("decrypt hello: %v", err)
+			return
+		}
+
+		ack := map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"accepted": true, "agent_id": 1},
+		}
+		ackBytes, _ := json.Marshal(ack)
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(ackBytes))
+
+		for {
+			_, ct, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			pt, err := responder.Decrypt(ct)
+			if err != nil {
+				return
+			}
+			var f struct {
+				Type    string          `json:"type"`
+				Payload json.RawMessage `json:"payload"`
+			}
+			json.Unmarshal(pt, &f)
+			if f.Type == "update.status" {
+				var st struct {
+					Version string `json:"version"`
+					Phase   string `json:"phase"`
+					Error   string `json:"error"`
+				}
+				json.Unmarshal(f.Payload, &st)
+				mu.add(st.Version, st.Phase, st.Error)
+			}
+		}
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	pending := true
+	var cleared int32
+	opts := Options{
+		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
+		Key:    key, AgentVersion: "0.1.0-test",
+		ReportPendingUpdateOutcome: func() (string, string, bool) {
+			if !pending {
+				return "", "", false
+			}
+			return "0.9.0", "succeeded", true
+		},
+		ClearPendingUpdateOutcome: func() {
+			pending = false
+			atomic.AddInt32(&cleared, 1)
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = Run(ctx, opts)
+
+	got := mu.snapshot()
+	if len(got) != 1 {
+		t.Fatalf("observed %d update.status frames, want 1: %+v", len(got), got)
+	}
+	if got[0] != (statusEntry{"0.9.0", "succeeded", ""}) {
+		t.Errorf("update.status = %+v, want {0.9.0 succeeded }", got[0])
+	}
+	if atomic.LoadInt32(&cleared) != 1 {
+		t.Errorf("ClearPendingUpdateOutcome called %d time(s), want 1", cleared)
+	}
+}
+
+// TestRun_FailedPendingOutcomeSendDoesNotClear is the §5 negative of the
+// clear-after-send rule: when the first accepted connection dies before the
+// pending-outcome write can land, the durable record must stay so the next
+// reconnect can retry. Clearing on a failed WriteMessage would erase the only
+// evidence that the prior process finished the update.
+func TestRun_FailedPendingOutcomeSendDoesNotClear(t *testing.T) {
+	serverPriv, serverPub := generateTestKeypair(t)
+	var connections atomic.Int32
+	var cleared int32
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		n := connections.Add(1)
+		if n > 1 {
+			// Refuse reconnects so a later successful send cannot clear the
+			// record and hide a first-connection Clear that should not fire.
+			conn.Close()
+			return
+		}
+
+		responder := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			conn.Close()
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			conn.Close()
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+
+		_, helloCt, err := conn.ReadMessage()
+		if err != nil {
+			conn.Close()
+			return
+		}
+		if _, err := responder.Decrypt(helloCt); err != nil {
+			conn.Close()
+			return
+		}
+
+		ack, _ := json.Marshal(map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"accepted": true, "agent_id": 1},
+		})
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(ack))
+
+		// Hard-RST the TCP socket so the agent's follow-up update.status
+		// WriteMessage fails rather than buffering into a half-closed peer.
+		if tcp, ok := conn.NetConn().(*net.TCPConn); ok {
+			_ = tcp.SetLinger(0)
+		}
+		conn.Close()
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	opts := Options{
+		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
+		Key:    key, AgentVersion: "0.1.0-test",
+		ReportPendingUpdateOutcome: func() (string, string, bool) {
+			return "0.9.0", "succeeded", true
+		},
+		ClearPendingUpdateOutcome: func() {
+			atomic.AddInt32(&cleared, 1)
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = Run(ctx, opts)
+
+	if atomic.LoadInt32(&cleared) != 0 {
+		t.Errorf("ClearPendingUpdateOutcome called %d time(s), want 0 — a failed send must leave the pending outcome for the next reconnect", cleared)
 	}
 }
 
@@ -2207,7 +2413,7 @@ func TestRunOnce_DiscoveryFramesSurviveAMissingOrRefusingHandler(t *testing.T) {
 				OnConnected:       func() {},
 				OnRejected:        func(string) {},
 				OnCapabilitiesSet: func(json.RawMessage) error { return nil },
-				OnUpdate:          func(json.RawMessage, SendUpdateStatus) error { return nil },
+				OnUpdate:          func(json.RawMessage) error { return nil },
 			}
 			if tt.install {
 				refuse := func(json.RawMessage) error {

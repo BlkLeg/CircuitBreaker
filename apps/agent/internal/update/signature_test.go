@@ -1,6 +1,7 @@
 package update
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -132,6 +133,7 @@ func TestDownloadSignature_FetchesTheSigBesideTheBinary(t *testing.T) {
 	defer srv.Close()
 
 	path, err := DownloadSignature(
+		context.Background(),
 		&config.Config{ServerURL: srv.URL},
 		tlsdial.Trust{Mode: tlsdial.ModePublic},
 		Instruction{Version: "1.2.3", Arch: "amd64", OS: "linux"},
@@ -162,6 +164,7 @@ func TestDownloadSignature_RefusesAnOversizedResponse(t *testing.T) {
 	defer srv.Close()
 
 	if _, err := DownloadSignature(
+		context.Background(),
 		&config.Config{ServerURL: srv.URL},
 		tlsdial.Trust{Mode: tlsdial.ModePublic},
 		Instruction{Version: "1.2.3", Arch: "amd64", OS: "linux"},
@@ -177,6 +180,7 @@ func TestDownloadSignature_MissingSignatureIsAnError(t *testing.T) {
 	defer srv.Close()
 
 	if _, err := DownloadSignature(
+		context.Background(),
 		&config.Config{ServerURL: srv.URL},
 		tlsdial.Trust{Mode: tlsdial.ModePublic},
 		Instruction{Version: "1.2.3", Arch: "amd64", OS: "linux"},

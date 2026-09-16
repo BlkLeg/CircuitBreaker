@@ -1,6 +1,21 @@
 # Agent deployment connection resilience plan
 
-**Status:** proposed.  
+**Status:** Implemented 2026-09-16 — all five phases landed: the serialized
+`updateWorker` (`cmd/cb-agent/updateworker.go`) behind an enqueue-only
+`link.Options.OnUpdate`, status delivery through
+`link.Options.UpdateStatusFrames`, context-aware downloads, the durable
+pending-outcome record (`internal/update` `WritePendingOutcome`/`ReadPendingOutcome`/
+`ClearPendingOutcome`) with replay-after-reconnect, and backend replay
+idempotency in `agent_link._handle_update_status`. The required unit tests
+exist (`cmd/cb-agent/updateworker_test.go`, `internal/link/link_update_test.go`,
+`internal/update/update_outcome_test.go`, succeeded/failed pending-outcome
+clear rules in `link_test.go`, read-deadline-after-enqueue and
+reconnect-does-not-replay in `link_update_test.go`, and
+`test_dispatch_update_status_repeated_succeeded_is_idempotent`). The Docker
+E2E tier (`apps/agent/e2e`) was reviewed for compatibility — the
+"updated to <version> — re-executing" log line and the
+`CB_AGENT_TEST_PRE_REEXEC_DELAY_MS` hook it depends on are preserved — but
+not run locally; run it before cutting a release that ships this.  
 **Scope:** `apps/agent` self-update deployment over the outbound WebSocket link and
 the associated HTTPS binary download.  
 **Related code:** `apps/agent/internal/link/link.go`,
@@ -236,8 +251,11 @@ The change is ready when all of the following are true:
    re-exec, using acknowledged delivery or durable replay.
 4. Existing signed-update, TLS pinning, Noise, spool, rollback, and shutdown
    tests remain green.
-5. Logs and UI state distinguish queued, active, failed, deferred, replayed,
-   and confirmed update outcomes without exposing secret material.
+5. Logs distinguish queued, active, failed, deferred, replayed, and confirmed
+   update outcomes without exposing secret material. The existing UI timeline
+   continues to surface the wire phases (`started` / `succeeded` / `failed` /
+   `rolled_back`); deferred/replayed are observability concerns on the agent
+   and backend logs, not separate UI states.
 
 ## 7. Risks and mitigations
 
@@ -250,3 +268,227 @@ The change is ready when all of the following are true:
 | A failed persistence write hides the real update result | Log the persistence error explicitly and keep the existing rollback safety behavior; never emit a false success. |
 | A second server instruction races the first update | Serialize updates and return an explicit duplicate/in-progress result. |
 | Refactor changes frame ordering or sequence ownership | Keep sequence assignment and encryption in the link event-loop goroutine and add ordering assertions. |
+
+## 8. Detailed implementation notes
+
+### 8.1 Current code path (problem)
+
+```
+link.runOnce (event-loop goroutine)
+  select {
+  case f := <-incoming:              // reader goroutine delivers here
+    switch f.Type {
+    case frame.TypeUpdate:
+      opts.OnUpdate(f.Payload, sendUpdateStatus)  // ← BLOCKS HERE (up to 2 min)
+      // heartbeat ticker starved, reader backed up, read deadline trips
+    }
+  case <-ticker.C:
+    sendHeartbeat()  // ← never reached during download
+  }
+```
+
+`onUpdate` in `daemon.go` (lines 169–281) does in sequence on the event-loop goroutine:
+1. Unmarshal instruction
+2. `send(started)` over live socket
+3. `update.Download` — 2-min HTTP client timeout
+4. `update.VerifySHA256`
+5. `update.DownloadSignature` + `update.VerifySignature`
+6. `update.WriteMarker`
+7. `update.Swap`
+8. `update.MarkSwapped`
+9. `send(succeeded)` over live socket
+10. `syscall.Exec` — process replacement, never returns
+
+Steps 3–10 all block the event loop for their entire duration. The backend's
+60-second read-deadline fires mid-download and tears down a healthy connection.
+
+### 8.2 New update worker design
+
+Introduce `updateWorker` in `daemon.go` (or a new `apps/agent/internal/updateworker` package if the type grows large):
+
+```go
+type updateStatusEvent struct {
+    version, phase, errMsg string
+}
+
+type updateJob struct {
+    payload json.RawMessage
+    // statusC carries status sends back to the event loop rather than
+    // writing the WebSocket directly. Buffered (e.g. 4) so the worker
+    // never blocks waiting for the event loop to drain it.
+    statusC chan updateStatusEvent
+}
+
+type updateWorker struct {
+    jobC   chan updateJob  // capacity 1; full = duplicate in progress
+    ctx    context.Context
+    cancel context.CancelFunc
+    wg     sync.WaitGroup
+}
+```
+
+The worker loop:
+```go
+func (w *updateWorker) run(cfg *config.Config, stateDir string) {
+    defer w.wg.Done()
+    for {
+        select {
+        case <-w.ctx.Done():
+            return
+        case job := <-w.jobC:
+            w.execute(job, cfg, stateDir)
+        }
+    }
+}
+```
+
+`execute` contains the current `onUpdate` body with one key change: all
+`send(...)` calls write to `job.statusC` instead of calling the link's
+`sendUpdateStatus` directly. The event-loop drains `statusC` in its own
+`select` arm and calls `sendUpdateStatus` there, preserving the single-writer
+invariant and keeping sequence numbers assigned by the event-loop goroutine.
+
+### 8.3 Changes to link.go TypeUpdate arm
+
+```go
+// Before (synchronous, blocks event loop):
+case frame.TypeUpdate:
+    if err := opts.OnUpdate(f.Payload, sendUpdateStatus); err != nil {
+        log.Printf("link: update failed: %v", err)
+    }
+
+// After (enqueue only, returns immediately to select loop):
+case frame.TypeUpdate:
+    if err := opts.OnUpdate(f.Payload); err != nil {
+        // queue full or validation error — report as failed update status
+        log.Printf("link: update enqueue failed: %v", err)
+        _ = sendUpdateStatus("", "failed", err.Error())
+    }
+```
+
+`OnUpdate`'s signature changes from
+`func(payload json.RawMessage, send SendUpdateStatus) error` to
+`func(payload json.RawMessage) error`.
+
+Status delivery routes back through a new `opts.UpdateStatusFrames <-chan updateStatusEvent`
+(or equivalent) that `runOnce` drains in the same `select` alongside the
+heartbeat and rekey tickers:
+
+```go
+case evt := <-opts.UpdateStatusFrames:
+    if err := sendUpdateStatus(evt.version, evt.phase, evt.errMsg); err != nil {
+        log.Printf("link: send update.status: %v", err)
+        // connection is already broken; runOnce will return on the next read error
+    }
+```
+
+### 8.4 Durable succeeded delivery
+
+The existing `ReportPendingUpdateOutcome` / `ClearPendingUpdateOutcome` hooks
+already cover the rollback case (`WriteRollbackReport` /
+`ReadRollbackReport` / `ClearRollbackReport` in `internal/update`). Extend
+the same pattern to cover `succeeded`:
+
+```
+Before re-exec:
+  1. Write pending-outcome file: {version, phase="succeeded"}
+  2. Attempt send(succeeded) on current connection (best-effort; log error)
+  3. syscall.Exec
+
+After reconnect (new process, first accepted hello.ack):
+  ReportPendingUpdateOutcome returns (version, true) for both rolled_back
+  and succeeded cases.
+  ClearPendingUpdateOutcome removes the file only after the send succeeds.
+```
+
+New functions in `apps/agent/internal/update/update.go`:
+- `WritePendingOutcome(stateDir, version, phase string) error`
+- `ReadPendingOutcome(stateDir string) (version, phase string, ok bool, err error)`
+- `ClearPendingOutcome(stateDir string) error`
+
+The backend `_handle_update_status` already records an `agent_events` row
+per phase call. A second `succeeded` report for the same version is safe
+because `record_event` appends rows and `pending_update_version` is only
+cleared on `failed`/`rolled_back` — not on `succeeded`. Verify this is still
+true with an explicit test `test_dispatch_update_status_repeated_succeeded_is_idempotent`.
+
+### 8.5 Cancellation propagation to HTTP downloads
+
+`update.Download` must accept a `context.Context`:
+
+```go
+// Current signature:
+func Download(cfg *config.Config, trust tlsdial.TrustPolicy, instr Instruction) (string, error)
+
+// New signature:
+func Download(ctx context.Context, cfg *config.Config, trust tlsdial.TrustPolicy, instr Instruction) (string, error)
+```
+
+The HTTP request inside `Download` must use `http.NewRequestWithContext(ctx, ...)` so
+that context cancellation (daemon shutdown or worker stop) terminates the
+download immediately rather than waiting up to `downloadTimeout` (2 minutes).
+Same change for `DownloadSignature`.
+
+The worker passes `w.ctx` to both calls, so a `SIGTERM` during a download
+causes a prompt exit rather than a 2-minute hang.
+
+### 8.6 Duplicate update behavior
+
+When `jobC` is full (capacity 1), `OnUpdate` returns immediately with an error.
+The `TypeUpdate` arm converts this into an explicit `update.status` frame:
+
+```json
+{"version": "<requested>", "phase": "failed", "error": "update already in progress"}
+```
+
+This is deterministic and testable. Silent-drop is rejected because it would
+leave the server waiting for a status that never arrives.
+
+### 8.7 Worker lifetime and goroutine leak prevention
+
+The worker is started once in `runDaemon`, before `link.Run`. It shares the
+same `ctx` as `link.Run`. On `ctx` cancellation:
+
+1. The worker's `select` arm on `ctx.Done()` fires and returns.
+2. If a download is in progress, the context-aware HTTP request is cancelled.
+3. `runDaemon` calls `worker.wg.Wait()` after `link.Run` returns to ensure
+   the goroutine exits before process teardown.
+
+The status channel (`job.statusC`) must be closed or drained by the worker on
+exit so the event loop's drain arm does not block. Because the event loop also
+exits when `ctx` is cancelled (or the connection drops), both sides converge
+without a deadlock.
+
+### 8.8 Files changed
+
+| File | Change type | Summary |
+|---|---|---|
+| `apps/agent/internal/link/link.go` | Modify | Change `OnUpdate` signature; add `UpdateStatusFrames` option; change `TypeUpdate` arm to enqueue-only; add drain arm in `runOnce` select |
+| `apps/agent/cmd/cb-agent/daemon.go` | Modify | Add `updateWorker`; move `onUpdate` body into worker; wire `statusC` back to link; start/stop worker in `runDaemon` |
+| `apps/agent/internal/update/update.go` | Modify | Add `ctx` param to `Download` and `DownloadSignature`; add `WritePendingOutcome`, `ReadPendingOutcome`, `ClearPendingOutcome` |
+| `apps/agent/cmd/cb-agent/daemon.go` | Modify | Wire `ReportPendingUpdateOutcome` / `ClearPendingUpdateOutcome` to cover `succeeded` via new pending-outcome file |
+| `apps/backend/src/app/services/agent_link.py` | Verify / modify | Add idempotency test for repeated `succeeded`; adjust if any state transition regresses |
+| `apps/agent/internal/link/link_test.go` | New tests | Heartbeat-during-blocked-update; reconnect-during-update; queue-full produces failed status; serialized write ordering |
+| `apps/agent/internal/update/update_durability_test.go` | New tests | Pending-outcome round-trip; outcome cleared only after successful send |
+| `apps/agent/cmd/cb-agent/main_test.go` | New tests | Duplicate-update handling; cancellation-during-download; worker shutdown on SIGTERM |
+| `apps/backend/tests/services/test_agent_link.py` | New test | `test_dispatch_update_status_repeated_succeeded_is_idempotent` |
+
+### 8.9 Test helpers
+
+The key regression test — heartbeats continue while an update is blocked — requires a
+test-controlled hook that blocks the worker goroutine (not the event loop):
+
+```go
+updateStarted := make(chan struct{})
+updateUnblock := make(chan struct{})
+opts.OnUpdate = func(payload json.RawMessage) error {
+    close(updateStarted)
+    <-updateUnblock  // blocks the worker goroutine only, not the event loop
+    return nil
+}
+// Test verifies heartbeats arrive at the server while updateUnblock is not closed.
+// Pre-refactor this test fails (heartbeats stop). Post-refactor it passes.
+```
+
+This is the regression guard the design doc calls for: a test that reproduces
+the timing failure rather than only exercising the happy path.

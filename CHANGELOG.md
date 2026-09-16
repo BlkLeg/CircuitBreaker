@@ -69,6 +69,26 @@ directly verifiable in this tree.
 
 ### Fixed
 
+- An agent no longer tears down its own link while applying a self-update.
+  The update used to run inline on the `/link` event-loop goroutine, so a
+  download occupied the connection's only worker for up to two minutes:
+  heartbeats stopped, inbound frames stopped being read, and the backend's
+  60-second dead-link deadline routinely closed an otherwise usable
+  connection mid-update. Updates now execute on a dedicated serialized worker
+  — one at a time, a second instruction refused with an explicit
+  `update already in progress` failure — and every `update.status` report
+  crosses back to the event loop through a channel, so the one-writer rule
+  and sequence ownership stay where they were. The `succeeded` report is
+  also durable now: it used to be written to the socket immediately before
+  `syscall.Exec`, where a connection drop discarded it with no process left
+  to retry it, so the server could miss the outcome of an update that
+  actually landed. The outcome is persisted before the live send and
+  replayed by the re-exec'd process after its first accepted `hello.ack`;
+  the backend accepts the replay idempotently, without a duplicate timeline
+  event, and a genuinely new attempt at the same version still records
+  normally. A `SIGTERM` mid-download now cancels the HTTP request instead of
+  waiting out the two-minute timeout (see
+  `docs/design/2026-09-16-agent-deployment-connection-plan.md`).
 - The Sigma map renderer requested a `format: 'sigma'` payload the backend has
   never supported, so it silently rendered nothing (`45a49a66`).
 - Map node deletion was restored: the delete-target lookup indexed a `Map`

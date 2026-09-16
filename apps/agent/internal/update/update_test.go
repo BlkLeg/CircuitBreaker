@@ -1,6 +1,7 @@
 package update
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
@@ -27,7 +28,7 @@ func TestDownloadAndVerify_RoundTrips(t *testing.T) {
 	cfg := &config.Config{ServerURL: srv.URL}
 	instr := Instruction{Version: "0.2.0", SHA256: wantHash, Arch: "amd64", OS: "linux"}
 
-	tmpPath, err := Download(cfg, tlsdial.Trust{Mode: tlsdial.ModePublic}, instr)
+	tmpPath, err := Download(context.Background(), cfg, tlsdial.Trust{Mode: tlsdial.ModePublic}, instr)
 	if err != nil {
 		t.Fatalf("Download() error = %v", err)
 	}
