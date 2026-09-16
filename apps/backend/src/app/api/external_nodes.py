@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.exc import IntegrityError
@@ -34,6 +34,44 @@ def list_external_nodes(
 ) -> Any:
     return svc.list_external_nodes(
         db,
+        environment=environment,
+        provider=provider,
+        kind=kind,
+        q=q,
+        tag=tag,
+    )
+
+
+@router.get("/page")
+def list_external_nodes_page(
+    db: Session = Depends(get_db),
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    sort: str = Query("name"),
+    direction: Annotated[Literal["asc", "desc"], Query()] = "asc",
+    environment: str | None = Query(None, max_length=100),
+    provider: str | None = Query(None, max_length=100),
+    kind: str | None = Query(None, max_length=100),
+    tag: str | None = Query(None, max_length=100),
+    q: str | None = Query(None, max_length=100),
+) -> Any:
+    """Return a bounded external-node page for the inventory workspace."""
+    from app.schemas.inventory import PageRequest
+
+    if sort not in {
+        "id",
+        "name",
+        "provider",
+        "kind",
+        "environment",
+        "created_at",
+        "updated_at",
+    }:
+        raise HTTPException(status_code=422, detail="Unsupported sort field")
+    page = PageRequest(limit=limit, offset=offset, sort=sort, direction=direction)
+    return svc.list_external_nodes_page(
+        db,
+        page,
         environment=environment,
         provider=provider,
         kind=kind,

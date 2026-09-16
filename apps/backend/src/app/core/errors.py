@@ -11,8 +11,16 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 _SAFE_FIELD_NAME = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
+_MAX_CONFLICT_ENTITY_NAME = 200
 _CONFLICT_ITEM_KEYS = frozenset(
-    {"entity_type", "entity_id", "conflicting_ip", "conflicting_port", "protocol"}
+    {
+        "entity_type",
+        "entity_id",
+        "entity_name",
+        "conflicting_ip",
+        "conflicting_port",
+        "protocol",
+    }
 )
 
 
@@ -26,6 +34,22 @@ def _safe_fields(fields: Mapping[str, str] | None) -> dict[str, str] | None:
     } or None
 
 
+def _project_conflict_item(raw_item: Mapping[str, Any]) -> dict[str, Any]:
+    """Copy allowlisted IP-conflict fields, truncating string labels."""
+    projected: dict[str, Any] = {}
+    for key in _CONFLICT_ITEM_KEYS:
+        if key not in raw_item:
+            continue
+        value = raw_item[key]
+        if key == "entity_name":
+            if not isinstance(value, str):
+                continue
+            projected[key] = value[:_MAX_CONFLICT_ENTITY_NAME]
+        else:
+            projected[key] = value
+    return projected
+
+
 def _safe_context(error_code: str, context: Mapping[str, Any] | None) -> dict[str, Any] | None:
     """Project only context fields explicitly approved for a public error code."""
     if error_code != "ip_conflict" or not context:
@@ -37,7 +61,9 @@ def _safe_context(error_code: str, context: Mapping[str, Any] | None) -> dict[st
     for raw_item in raw_conflicts[:100]:
         if not isinstance(raw_item, Mapping):
             continue
-        conflicts.append({key: raw_item[key] for key in _CONFLICT_ITEM_KEYS if key in raw_item})
+        projected = _project_conflict_item(raw_item)
+        if projected:
+            conflicts.append(projected)
     return {"conflicts": conflicts}
 
 

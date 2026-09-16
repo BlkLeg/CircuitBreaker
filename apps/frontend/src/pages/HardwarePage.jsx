@@ -1,5 +1,5 @@
 /* eslint-disable security/detect-object-injection -- internal role/column keys */
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { SkeletonTable } from '../components/common/SkeletonTable';
 import { createApiCache } from '../utils/apiCache';
 import EntityTable from '../components/EntityTable';
@@ -19,11 +19,27 @@ import { getVendorIcon } from '../icons/vendorIcons';
 import FormModal from '../components/common/FormModal';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import IconPickerModal, { IconImg } from '../components/common/IconPickerModal';
+import IpConflictAlert from '../components/common/IpConflictAlert';
+import EntityPicker from '../components/common/EntityPicker';
 import { useSettings } from '../context/SettingsContext';
 import { useToast } from '../components/common/Toast';
 import { validateIpAddress, validateDuplicateName } from '../utils/validation';
 import { useTargetMonitors } from '../hooks/useTargetMonitors';
 import MonitorCell, { MonitorStatusCell } from '../components/monitors/MonitorCell';
+import { useEntityDeepLink } from '../hooks/useEntityDeepLink';
+import {
+  DEFAULT_PAGE_LIMIT,
+  SELECTION_MODE_ALL_MATCHING,
+  SELECTION_MODE_IDS,
+  buildPageParams,
+  clearSelection,
+  emptySelection,
+  isRowSelected,
+  selectAllMatching,
+  selectionAfterFilterChange,
+  selectionCount,
+  selectionScopeLabel,
+} from '../lib/inventoryList';
 
 const TAIL_COLUMNS = [
   {
@@ -142,9 +158,11 @@ function HardwarePage() {
   // Confirm dialog state
   const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
 
-  const [selectedIds, setSelectedIds] = useState([]);
+  const [selection, setSelection] = useState(() => emptySelection());
   const [clusterSelectedIds, setClusterSelectedIds] = useState([]);
   const [allTags, setAllTags] = useState([]);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [formConflict, setFormConflict] = useState(null);
 
   const buildFields = (currentIconSlug) => [
     {
@@ -240,7 +258,13 @@ function HardwarePage() {
 
   // ── Hardware state ──────────────────────────────────────────────────────
   const [items, setItems] = useState([]);
+  const [listTotal, setListTotal] = useState(0);
+  const [listOffset, setListOffset] = useState(0);
+  const [listLimit, setListLimit] = useState(DEFAULT_PAGE_LIMIT);
+  const [listSort, setListSort] = useState('name');
+  const [listDirection] = useState('asc');
   const [loading, setLoading] = useState(true);
+  const [listError, setListError] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState(null);
   const [detailTarget, setDetailTarget] = useState(null);
@@ -248,6 +272,31 @@ function HardwarePage() {
   const [tagFilter, setTagFilter] = useState('');
   const [roleFilter, setRoleFilter] = useState('');
   const [formApiErrors, setFormApiErrors] = useState({});
+  const fetchSeq = useRef(0);
+
+  const listFilter = useMemo(
+    () => ({
+      q,
+      role: roleFilter,
+      tag: tagFilter,
+      sort: listSort,
+      direction: listDirection,
+    }),
+    [q, roleFilter, tagFilter, listSort, listDirection]
+  );
+
+  const loadDeepLinkedEntity = useCallback(async (id) => (await hardwareApi.get(id)).data, []);
+  const selectHardwareDetail = useCallback((entity) => {
+    if (entity) setActiveTab('hardware');
+    setDetailTarget(entity);
+  }, []);
+  const reportDeepLinkError = useCallback((message) => toast.error(message), [toast]);
+  const { openEntity, closeEntity } = useEntityDeepLink({
+    loadEntity: loadDeepLinkedEntity,
+    selectedId: detailTarget?.id,
+    onSelect: selectHardwareDetail,
+    onError: reportDeepLinkError,
+  });
 
   // ── Cluster state ───────────────────────────────────────────────────────
   const [clusters, setClusters] = useState([]);
@@ -258,20 +307,32 @@ function HardwarePage() {
   const [clusterFormErrors, setClusterFormErrors] = useState({});
 
   const fetchData = useCallback(async () => {
+    const seq = ++fetchSeq.current;
     setLoading(true);
+    setListError(null);
     try {
-      const params = {};
-      if (q) params.q = q;
-      if (tagFilter) params.tag = tagFilter;
-      if (roleFilter) params.role = roleFilter;
-      const res = await hardwareApi.list(params);
-      setItems(res.data);
+      const params = buildPageParams({
+        limit: listLimit,
+        offset: listOffset,
+        sort: listSort,
+        direction: listDirection,
+        q,
+        role: roleFilter,
+        tag: tagFilter,
+      });
+      const res = await hardwareApi.page(params);
+      if (seq !== fetchSeq.current) return;
+      const page = res.data || {};
+      setItems(page.items || []);
+      setListTotal(page.total || 0);
     } catch (err) {
+      if (seq !== fetchSeq.current) return;
+      setListError(err.message || 'Could not load hardware.');
       toast.error(err.message);
     } finally {
-      setLoading(false);
+      if (seq === fetchSeq.current) setLoading(false);
     }
-  }, [q, tagFilter, roleFilter, toast]);
+  }, [listLimit, listOffset, listSort, listDirection, q, tagFilter, roleFilter, toast]);
 
   const fetchClusters = useCallback(async () => {
     setClustersLoading(true);
@@ -306,8 +367,40 @@ function HardwarePage() {
     if (activeTab === 'clusters') fetchClusters();
   }, [activeTab, fetchClusters]);
 
+  useEffect(() => {
+    if (selection.mode === SELECTION_MODE_ALL_MATCHING) {
+      setSelection((prev) =>
+        prev.mode === SELECTION_MODE_ALL_MATCHING && prev.totalMatching !== listTotal
+          ? { ...prev, totalMatching: listTotal }
+          : prev
+      );
+    }
+  }, [listTotal, selection.mode]);
+
+  const hardwarePickerTypes = useMemo(() => ['hardware'], []);
+
+  const applyListFilter = useCallback((patch) => {
+    setListOffset(0);
+    setQ((q0) => ('q' in patch ? patch.q : q0));
+    setTagFilter((t0) => ('tag' in patch ? patch.tag : t0));
+    setRoleFilter((r0) => ('role' in patch ? patch.role : r0));
+    setListSort((s0) => ('sort' in patch ? patch.sort : s0));
+    setSelection((prev) =>
+      selectionAfterFilterChange({
+        q: 'q' in patch ? patch.q : prev.filter?.q || '',
+        role: 'role' in patch ? patch.role : prev.filter?.role || '',
+        tag: 'tag' in patch ? patch.tag : prev.filter?.tag || '',
+        sort: 'sort' in patch ? patch.sort : prev.filter?.sort || 'name',
+        direction: prev.filter?.direction || 'asc',
+      })
+    );
+  }, []);
+
   const monitorTargetIds = useMemo(() => items.map((i) => i.id), [items]);
   const monitors = useTargetMonitors('hardware', monitorTargetIds);
+
+  const selectedIds = selection.mode === SELECTION_MODE_ALL_MATCHING ? [] : selection.ids;
+  const selectedCount = selectionCount(selection);
 
   const COLUMNS = useMemo(
     () => [
@@ -380,6 +473,12 @@ function HardwarePage() {
         label: 'Delete selected',
         danger: true,
         onClick: (ids) => {
+          if (selection.mode === SELECTION_MODE_ALL_MATCHING) {
+            toast.warn(
+              'All-matching delete is not available yet. Select specific rows on this page, or narrow the filter.'
+            );
+            return;
+          }
           setConfirmState({
             open: true,
             message: `Delete ${ids.length} hardware node(s)?`,
@@ -387,14 +486,14 @@ function HardwarePage() {
               setConfirmState((s) => ({ ...s, open: false }));
               for (const id of ids) await hardwareApi.delete(id);
               toast.success('Deleted.');
-              setSelectedIds([]);
+              setSelection(clearSelection(selection));
               fetchData();
             },
           });
         },
       },
     ],
-    [toast, fetchData]
+    [toast, fetchData, selection]
   );
   const CLUSTER_BULK_ACTIONS = useMemo(
     () => [
@@ -451,7 +550,7 @@ function HardwarePage() {
       setShowForm(false);
       setEditTarget(null);
       setFormApiErrors({});
-      // Keep the detail panel in sync with the just-saved record
+      setFormConflict(null);
       if (saved && detailTarget?.id === saved.id) {
         setDetailTarget(saved);
       }
@@ -461,6 +560,9 @@ function HardwarePage() {
         setFormApiErrors(err.fieldErrors);
       } else {
         toast.error(err.message);
+      }
+      if (err.errorCode === 'ip_conflict') {
+        setFormConflict(err.conflictContext || null);
       }
     }
   };
@@ -576,7 +678,10 @@ function HardwarePage() {
         </button>
         <button
           className={`tab-btn${activeTab === 'clusters' ? ' active' : ''}`}
-          onClick={() => setActiveTab('clusters')}
+          onClick={() => {
+            if (detailTarget) closeEntity();
+            setActiveTab('clusters');
+          }}
         >
           Clusters {clusters.length > 0 && <span className="tab-badge">{clusters.length}</span>}
         </button>
@@ -585,13 +690,13 @@ function HardwarePage() {
       {activeTab === 'hardware' && (
         <>
           <div className="filter-bar">
-            <SearchBox value={q} onChange={setQ} />
-            <TagFilter value={tagFilter} onChange={setTagFilter} />
+            <SearchBox value={q} onChange={(value) => applyListFilter({ q: value })} />
+            <TagFilter value={tagFilter} onChange={(value) => applyListFilter({ tag: value })} />
             <select
               className="filter-select"
               aria-label="Filter by roles"
               value={roleFilter}
-              onChange={(e) => setRoleFilter(e.target.value)}
+              onChange={(e) => applyListFilter({ role: e.target.value })}
               title="Filter by role"
             >
               <option value="">All roles</option>
@@ -601,12 +706,35 @@ function HardwarePage() {
                 </option>
               ))}
             </select>
+            <select
+              className="filter-select"
+              aria-label="Sort hardware"
+              value={listSort}
+              onChange={(e) => applyListFilter({ sort: e.target.value })}
+            >
+              <option value="name">Name A–Z</option>
+              <option value="role">Role</option>
+              <option value="status">Status</option>
+              <option value="updated_at">Updated</option>
+            </select>
+            <button type="button" className="btn btn-sm" onClick={() => setPickerOpen(true)}>
+              Find asset
+            </button>
           </div>
 
-          {!loading && items.length === 0 && settings?.show_page_hints && (
+          {!loading && items.length === 0 && !listError && settings?.show_page_hints && (
             <div className="info-tip" style={{ marginBottom: 12 }}>
               💡 <strong>Tip:</strong> Start by adding hardware nodes — these represent physical
               machines and are required before creating compute units or services.
+            </div>
+          )}
+
+          {listError && !loading && (
+            <div className="info-tip" style={{ marginBottom: 12 }} role="alert">
+              {listError}{' '}
+              <button type="button" className="text-btn" onClick={fetchData}>
+                Retry
+              </button>
             </div>
           )}
 
@@ -618,6 +746,7 @@ function HardwarePage() {
               data={items}
               onEdit={(row) => {
                 setEditTarget(row);
+                setFormConflict(null);
                 setShowForm(true);
               }}
               onDelete={handleDelete}
@@ -636,13 +765,62 @@ function HardwarePage() {
                   }
                 />
               )}
-              onRowClick={(row) => setDetailTarget(row)}
+              onRowClick={openEntity}
               editableColumns={HARDWARE_EDITABLE}
               onCellSave={handleCellSave}
               selectable
               selectedIds={selectedIds}
-              onSelectionChange={setSelectedIds}
+              rowIsSelected={(id) => isRowSelected(selection, id)}
+              onSelectionChange={(ids) => {
+                setSelection({
+                  ...emptySelection(listFilter),
+                  mode: SELECTION_MODE_IDS,
+                  ids,
+                });
+              }}
               bulkActions={HARDWARE_BULK_ACTIONS}
+              serverPaging={{
+                total: listTotal,
+                limit: listLimit,
+                offset: listOffset,
+                onPageChange: setListOffset,
+                onLimitChange: (next) => {
+                  setListLimit(next);
+                  setListOffset(0);
+                },
+              }}
+              selectionToolbar={
+                selectedCount > 0 ? (
+                  <div className="tw-flex tw-items-center tw-justify-between tw-gap-3 tw-mb-2 tw-px-3 tw-py-2 tw-rounded tw-border tw-border-cb-border tw-bg-cb-surface-raised/40">
+                    <span className="tw-text-sm tw-text-cb-text">
+                      <strong>{selectedCount}</strong> {selectionScopeLabel(selection)}
+                    </span>
+                    <div className="tw-flex tw-items-center tw-gap-3">
+                      {selection.mode !== SELECTION_MODE_ALL_MATCHING &&
+                        listTotal > items.length && (
+                          <button
+                            type="button"
+                            className="text-btn"
+                            onClick={() =>
+                              setSelection(
+                                selectAllMatching({ ...selection, filter: listFilter }, listTotal)
+                              )
+                            }
+                          >
+                            Select all {listTotal} matching
+                          </button>
+                        )}
+                      <button
+                        type="button"
+                        className="text-btn tw-text-cb-text-muted"
+                        onClick={() => setSelection(clearSelection(selection))}
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                ) : null
+              }
             />
           )}
         </>
@@ -686,11 +864,7 @@ function HardwarePage() {
         </>
       )}
 
-      <HardwareDetail
-        hardware={detailTarget}
-        isOpen={!!detailTarget}
-        onClose={() => setDetailTarget(null)}
-      />
+      <HardwareDetail hardware={detailTarget} isOpen={!!detailTarget} onClose={closeEntity} />
 
       <ClusterDetail
         cluster={clusterDetail}
@@ -717,10 +891,55 @@ function HardwarePage() {
           setShowForm(false);
           setEditTarget(null);
           setFormApiErrors({});
+          setFormConflict(null);
         }}
         apiErrors={formApiErrors}
         entityType="hardware"
         entityId={editTarget?.id}
+      />
+
+      {showForm && formConflict && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: 24,
+            right: 24,
+            zIndex: 120,
+            maxWidth: 420,
+          }}
+        >
+          <IpConflictAlert
+            conflictContext={formConflict}
+            onInspect={async (conflict) => {
+              if (!conflict?.entity_id) return;
+              try {
+                if (conflict.entity_type === 'hardware') {
+                  const res = await hardwareApi.get(conflict.entity_id);
+                  openEntity(res.data);
+                } else {
+                  toast.info('Open the conflicting asset from Inventory to inspect it.');
+                }
+              } catch (err) {
+                toast.error(err.message || 'Could not open the conflicting asset.');
+              }
+            }}
+          />
+        </div>
+      )}
+
+      <EntityPicker
+        isOpen={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        types={hardwarePickerTypes}
+        action="view"
+        onSelect={(opt) => {
+          const id = opt?.ref?.entity_id;
+          if (!id) return;
+          hardwareApi
+            .get(id)
+            .then((res) => openEntity(res.data))
+            .catch((err) => toast.error(err.message));
+        }}
       />
 
       <FormModal

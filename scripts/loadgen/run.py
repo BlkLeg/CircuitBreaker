@@ -51,6 +51,12 @@ ROUTES = (
     "/api/v1/agents/presence",
     "/api/v1/graph/topology",
     "/api/v1/monitors/overview",
+    "/api/v1/hardware/page?limit=25&offset=0&sort=name&direction=asc",
+    "/api/v1/storage/page?limit=25&offset=0&sort=name&direction=asc",
+    "/api/v1/compute-units/page?limit=25&offset=0&sort=name&direction=asc",
+    "/api/v1/services/page?limit=25&offset=0&sort=name&direction=asc",
+    "/api/v1/misc/page?limit=25&offset=0&sort=name&direction=asc",
+    "/api/v1/external-nodes/page?limit=25&offset=0&sort=name&direction=asc",
 )
 TOPOLOGY_ROUTE = "/api/v1/graph/topology"
 

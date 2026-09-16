@@ -1,25 +1,37 @@
 import logging
 
 from fastapi import HTTPException
+from sqlalchemy import Select, or_, select
 from sqlalchemy import inspect as sa_inspect
-from sqlalchemy import or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.core.time import utcnow
-from app.db.models import ComputeNetwork, ComputeUnit, EntityTag, Service, Tag
+from app.db.models import ComputeNetwork, ComputeUnit, EntityTag, Service, ServiceStorage, Tag
 from app.schemas.compute_units import ComputeUnitCreate, ComputeUnitUpdate
-from app.services.entity_tags import get_tags_for
+from app.schemas.inventory import PageRequest, PageResult
+from app.services.entity_tags import get_tags_for, get_tags_for_many
 from app.services.entity_tags import sync_tags as _sync_tags
 from app.services.environments_service import resolve_environment_id
+from app.services.inventory_paging import escape_ilike, page_result, paginate_rows
 from app.services.ip_reservation import bulk_conflict_map, check_ip_conflict, resolve_ip_conflict
 
 _logger = logging.getLogger(__name__)
 
+_COMPUTE_SORT_COLUMNS = {
+    "id": ComputeUnit.id,
+    "name": ComputeUnit.name,
+    "kind": ComputeUnit.kind,
+    "status": ComputeUnit.status,
+    "created_at": ComputeUnit.created_at,
+    "updated_at": ComputeUnit.updated_at,
+    "hardware_id": ComputeUnit.hardware_id,
+}
 
-def _to_dict(db: Session, cu: ComputeUnit) -> dict:
+
+def _to_dict(db: Session, cu: ComputeUnit, tags: list[str] | None = None) -> dict:
     mapper = sa_inspect(type(cu))
     d = {attr.key: getattr(cu, attr.key) for attr in mapper.column_attrs}
-    d["tags"] = get_tags_for(db, "compute", cu.id)
+    d["tags"] = tags if tags is not None else get_tags_for(db, "compute", cu.id)
     # Aggregate storage pools from services hosted on this compute unit
     pools: list[str] = []
     for svc in cu.services or []:
@@ -34,6 +46,44 @@ def _to_dict(db: Session, cu: ComputeUnit) -> dict:
     return d
 
 
+def _compute_filtered_statement(
+    *,
+    kind: str | None,
+    hardware_id: int | None,
+    environment: str | None,
+    environment_id: int | None,
+    tag: str | None,
+    q: str | None,
+) -> Select[tuple[ComputeUnit]]:
+    statement = select(ComputeUnit)
+    if kind:
+        statement = statement.where(ComputeUnit.kind == kind)
+    if hardware_id:
+        statement = statement.where(ComputeUnit.hardware_id == hardware_id)
+    if environment_id is not None:
+        statement = statement.where(ComputeUnit.environment_id == environment_id)
+    elif environment:
+        statement = statement.where(ComputeUnit.environment == environment)
+    if q:
+        term = f"%{escape_ilike(q)}%"
+        statement = statement.where(
+            or_(
+                ComputeUnit.name.ilike(term, escape="\\"),
+                ComputeUnit.notes.ilike(term, escape="\\"),
+            )
+        )
+    if tag:
+        statement = (
+            statement.join(
+                EntityTag,
+                (EntityTag.entity_type == "compute") & (EntityTag.entity_id == ComputeUnit.id),
+            )
+            .join(Tag, Tag.id == EntityTag.tag_id)
+            .where(Tag.name == tag)
+        )
+    return statement
+
+
 def list_compute_units(
     db: Session,
     *,
@@ -44,26 +94,14 @@ def list_compute_units(
     tag: str | None = None,
     q: str | None = None,
 ) -> list[dict]:
-    stmt = select(ComputeUnit)
-    if kind:
-        stmt = stmt.where(ComputeUnit.kind == kind)
-    if hardware_id:
-        stmt = stmt.where(ComputeUnit.hardware_id == hardware_id)
-    if environment_id is not None:
-        stmt = stmt.where(ComputeUnit.environment_id == environment_id)
-    elif environment:
-        stmt = stmt.where(ComputeUnit.environment == environment)
-    if q:
-        stmt = stmt.where(or_(ComputeUnit.name.ilike(f"%{q}%"), ComputeUnit.notes.ilike(f"%{q}%")))
-    if tag:
-        stmt = (
-            stmt.join(
-                EntityTag,
-                (EntityTag.entity_type == "compute") & (EntityTag.entity_id == ComputeUnit.id),
-            )
-            .join(Tag, Tag.id == EntityTag.tag_id)
-            .where(Tag.name == tag)
-        )
+    stmt = _compute_filtered_statement(
+        kind=kind,
+        hardware_id=hardware_id,
+        environment=environment,
+        environment_id=environment_id,
+        tag=tag,
+        q=q,
+    )
     rows = db.execute(stmt).scalars().all()
     conflict_map = bulk_conflict_map(db)
     result = []
@@ -72,6 +110,48 @@ def list_compute_units(
         d["ip_conflict"] = conflict_map.get(("compute_unit", r.id), False)
         result.append(d)
     return result
+
+
+def list_compute_units_page(
+    db: Session,
+    page: PageRequest,
+    *,
+    kind: str | None = None,
+    hardware_id: int | None = None,
+    environment: str | None = None,
+    environment_id: int | None = None,
+    tag: str | None = None,
+    q: str | None = None,
+) -> PageResult[dict]:
+    """Return a bounded compute page enriched without per-row tag queries."""
+    filtered = _compute_filtered_statement(
+        kind=kind,
+        hardware_id=hardware_id,
+        environment=environment,
+        environment_id=environment_id,
+        tag=tag,
+        q=q,
+    ).options(
+        joinedload(ComputeUnit.environment_rel),
+        selectinload(ComputeUnit.services)
+        .selectinload(Service.storage_links)
+        .joinedload(ServiceStorage.storage),
+    )
+    rows, total = paginate_rows(
+        db,
+        filtered=filtered,
+        page=page,
+        sort_columns=_COMPUTE_SORT_COLUMNS,
+        id_column=ComputeUnit.id,
+    )
+    tags = get_tags_for_many(db, "compute", [row.id for row in rows])
+    conflict_map = bulk_conflict_map(db)
+    items: list[dict] = []
+    for row in rows:
+        item = _to_dict(db, row, tags[row.id])
+        item["ip_conflict"] = conflict_map.get(("compute_unit", row.id), False)
+        items.append(item)
+    return page_result(items, total=total, page=page)
 
 
 def get_compute_unit(db: Session, cu_id: int) -> dict:

@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -59,6 +59,40 @@ def list_services(
 ) -> Any:
     return services_service.list_services(
         db,
+        compute_id=compute_id,
+        hardware_id=hardware_id,
+        category=category,
+        environment=environment,
+        environment_id=environment_id,
+        tag=tag,
+        q=q,
+    )
+
+
+@router.get("/page")
+def list_services_page(
+    db: Session = Depends(get_db),
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    sort: str = Query("name"),
+    direction: Annotated[Literal["asc", "desc"], Query()] = "asc",
+    compute_id: int | None = Query(None),
+    hardware_id: int | None = Query(None),
+    category: str | None = Query(None, max_length=100),
+    environment: str | None = Query(None, max_length=100),
+    environment_id: int | None = Query(None),
+    tag: str | None = Query(None, max_length=100),
+    q: str | None = Query(None, max_length=100),
+) -> Any:
+    """Return a bounded services page for the inventory workspace."""
+    from app.schemas.inventory import PageRequest
+
+    if sort not in {"id", "name", "status", "created_at", "updated_at"}:
+        raise HTTPException(status_code=422, detail="Unsupported sort field")
+    page = PageRequest(limit=limit, offset=offset, sort=sort, direction=direction)
+    return services_service.list_services_page(
+        db,
+        page,
         compute_id=compute_id,
         hardware_id=hardware_id,
         category=category,

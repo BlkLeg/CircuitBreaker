@@ -1,6 +1,7 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import HardwarePage from '../pages/HardwarePage.jsx';
 
 // Partial mock: spread real exports so any extra named exports used deep in
@@ -19,10 +20,14 @@ vi.mock('../api/client', async (importOriginal) => {
     default: mockClient,
     hardwareApi: {
       list: vi.fn(),
+      page: vi.fn(),
       get: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
+    },
+    inventoryApi: {
+      options: vi.fn().mockResolvedValue({ data: { items: [], selected: [], has_more: false } }),
     },
     clustersApi: {
       list: vi.fn().mockResolvedValue({ data: [] }),
@@ -200,35 +205,42 @@ describe('HardwarePage', () => {
   });
 
   it('renders hardware table with items', async () => {
-    hardwareApi.list.mockResolvedValue({
-      data: [
-        {
-          id: 1,
-          name: 'Server-01',
-          role: 'compute',
-          ip_address: '10.0.0.1',
-          vendor: 'dell',
-          model: 'R740',
-          cpu: 'Xeon',
-          memory_gb: 128,
-          location: 'Rack A',
-        },
-        {
-          id: 2,
-          name: 'Switch-01',
-          role: 'switch',
-          ip_address: '10.0.0.2',
-          vendor: 'hp',
-          model: '2930F',
-          cpu: null,
-          memory_gb: null,
-          location: 'Rack B',
-        },
-      ],
+    hardwareApi.page.mockResolvedValue({
+      data: {
+        items: [
+          {
+            id: 1,
+            name: 'Server-01',
+            role: 'compute',
+            ip_address: '10.0.0.1',
+            vendor: 'dell',
+            model: 'R740',
+            cpu: 'Xeon',
+            memory_gb: 128,
+            location: 'Rack A',
+          },
+          {
+            id: 2,
+            name: 'Switch-01',
+            role: 'switch',
+            ip_address: '10.0.0.2',
+            vendor: 'hp',
+            model: '2930F',
+            cpu: null,
+            memory_gb: null,
+            location: 'Rack B',
+          },
+        ],
+        total: 2,
+        limit: 25,
+        offset: 0,
+        sort: 'name',
+        direction: 'asc',
+      },
     });
     tagsApi.list.mockResolvedValue({ data: [] });
 
-    render(<HardwarePage />);
+    render(<HardwarePage />, { wrapper: MemoryRouter });
 
     await waitFor(() => {
       expect(screen.getByTestId('entity-table')).toBeInTheDocument();
@@ -236,13 +248,16 @@ describe('HardwarePage', () => {
 
     expect(screen.getByText('Server-01')).toBeInTheDocument();
     expect(screen.getByText('Switch-01')).toBeInTheDocument();
+    expect(hardwareApi.page).toHaveBeenCalled();
   });
 
   it('renders empty state when no hardware', async () => {
-    hardwareApi.list.mockResolvedValue({ data: [] });
+    hardwareApi.page.mockResolvedValue({
+      data: { items: [], total: 0, limit: 25, offset: 0, sort: 'name', direction: 'asc' },
+    });
     tagsApi.list.mockResolvedValue({ data: [] });
 
-    render(<HardwarePage />);
+    render(<HardwarePage />, { wrapper: MemoryRouter });
 
     await waitFor(() => {
       expect(screen.queryByTestId('skeleton-table')).not.toBeInTheDocument();
@@ -254,19 +269,21 @@ describe('HardwarePage', () => {
 
   it('shows loading skeleton initially', async () => {
     // Make the API call hang so loading state is visible
-    hardwareApi.list.mockReturnValue(new Promise(() => {}));
+    hardwareApi.page.mockReturnValue(new Promise(() => {}));
     tagsApi.list.mockResolvedValue({ data: [] });
 
-    render(<HardwarePage />);
+    render(<HardwarePage />, { wrapper: MemoryRouter });
 
     expect(screen.getByTestId('skeleton-table')).toBeInTheDocument();
   });
 
   it('renders the Add Hardware button', async () => {
-    hardwareApi.list.mockResolvedValue({ data: [] });
+    hardwareApi.page.mockResolvedValue({
+      data: { items: [], total: 0, limit: 25, offset: 0, sort: 'name', direction: 'asc' },
+    });
     tagsApi.list.mockResolvedValue({ data: [] });
 
-    render(<HardwarePage />);
+    render(<HardwarePage />, { wrapper: MemoryRouter });
 
     expect(screen.getByText('+ Add Hardware')).toBeInTheDocument();
   });

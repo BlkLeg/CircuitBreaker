@@ -1,17 +1,57 @@
-from sqlalchemy import or_, select
+from sqlalchemy import Select, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
 from app.db.models import EntityTag, Storage, Tag
+from app.schemas.inventory import PageRequest, PageResult
 from app.schemas.storage import StorageCreate, StorageUpdate
-from app.services.entity_tags import get_tags_for
+from app.services.entity_tags import get_tags_for, get_tags_for_many
 from app.services.entity_tags import sync_tags as _sync_tags
+from app.services.inventory_paging import escape_ilike, page_result, paginate_rows
+
+_STORAGE_SORT_COLUMNS = {
+    "id": Storage.id,
+    "name": Storage.name,
+    "kind": Storage.kind,
+    "created_at": Storage.created_at,
+    "updated_at": Storage.updated_at,
+    "hardware_id": Storage.hardware_id,
+}
 
 
-def _to_dict(db: Session, st: Storage) -> dict:
+def _to_dict(db: Session, st: Storage, tags: list[str] | None = None) -> dict:
     d = {c.name: getattr(st, c.name) for c in st.__table__.columns}
-    d["tags"] = get_tags_for(db, "storage", st.id)
+    d["tags"] = tags if tags is not None else get_tags_for(db, "storage", st.id)
     return d
+
+
+def _storage_filtered_statement(
+    *,
+    kind: str | None,
+    hardware_id: int | None,
+    tag: str | None,
+    q: str | None,
+) -> Select[tuple[Storage]]:
+    statement = select(Storage)
+    if kind:
+        statement = statement.where(Storage.kind == kind)
+    if hardware_id:
+        statement = statement.where(Storage.hardware_id == hardware_id)
+    if q:
+        term = f"%{escape_ilike(q)}%"
+        statement = statement.where(
+            or_(Storage.name.ilike(term, escape="\\"), Storage.notes.ilike(term, escape="\\"))
+        )
+    if tag:
+        statement = (
+            statement.join(
+                EntityTag,
+                (EntityTag.entity_type == "storage") & (EntityTag.entity_id == Storage.id),
+            )
+            .join(Tag, Tag.id == EntityTag.tag_id)
+            .where(Tag.name == tag)
+        )
+    return statement
 
 
 def list_storage(
@@ -22,24 +62,32 @@ def list_storage(
     tag: str | None = None,
     q: str | None = None,
 ) -> list[dict]:
-    stmt = select(Storage)
-    if kind:
-        stmt = stmt.where(Storage.kind == kind)
-    if hardware_id:
-        stmt = stmt.where(Storage.hardware_id == hardware_id)
-    if q:
-        stmt = stmt.where(or_(Storage.name.ilike(f"%{q}%"), Storage.notes.ilike(f"%{q}%")))
-    if tag:
-        stmt = (
-            stmt.join(
-                EntityTag,
-                (EntityTag.entity_type == "storage") & (EntityTag.entity_id == Storage.id),
-            )
-            .join(Tag, Tag.id == EntityTag.tag_id)
-            .where(Tag.name == tag)
-        )
+    stmt = _storage_filtered_statement(kind=kind, hardware_id=hardware_id, tag=tag, q=q)
     rows = db.execute(stmt).scalars().all()
     return [_to_dict(db, r) for r in rows]
+
+
+def list_storage_page(
+    db: Session,
+    page: PageRequest,
+    *,
+    kind: str | None = None,
+    hardware_id: int | None = None,
+    tag: str | None = None,
+    q: str | None = None,
+) -> PageResult[dict]:
+    """Return a bounded storage page enriched without per-row tag queries."""
+    filtered = _storage_filtered_statement(kind=kind, hardware_id=hardware_id, tag=tag, q=q)
+    rows, total = paginate_rows(
+        db,
+        filtered=filtered,
+        page=page,
+        sort_columns=_STORAGE_SORT_COLUMNS,
+        id_column=Storage.id,
+    )
+    tags = get_tags_for_many(db, "storage", [row.id for row in rows])
+    items = [_to_dict(db, row, tags[row.id]) for row in rows]
+    return page_result(items, total=total, page=page)
 
 
 def get_storage(db: Session, storage_id: int) -> dict:

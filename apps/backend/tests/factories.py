@@ -106,6 +106,30 @@ class Factories:
         self.session.flush()
         return node
 
+    # ── Storage ───────────────────────────────────────────────────────────────
+
+    def storage(self, **kwargs):
+        from app.db.models import Storage
+
+        defaults = {"name": fake.unique.slug(), "kind": "disk"}
+        defaults.update(kwargs)
+        row = Storage(**defaults)
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    # ── Misc items ────────────────────────────────────────────────────────────
+
+    def misc_item(self, **kwargs):
+        from app.db.models import MiscItem
+
+        defaults = {"name": fake.unique.slug(), "kind": "other"}
+        defaults.update(kwargs)
+        row = MiscItem(**defaults)
+        self.session.add(row)
+        self.session.flush()
+        return row
+
     # ── Integrations ──────────────────────────────────────────────────────────
 
     def integration(self, **kwargs):

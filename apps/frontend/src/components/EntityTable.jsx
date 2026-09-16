@@ -94,6 +94,9 @@ function EntityTable({
   bulkActions = undefined,
   defaultPageSize = DEFAULT_PAGE_SIZE,
   pageSizeOptions = PAGE_SIZE_OPTIONS,
+  serverPaging = null,
+  rowIsSelected = undefined,
+  selectionToolbar = null,
 }) {
   const editableSet = React.useMemo(() => {
     if (!editableColumns) return new Set();
@@ -106,43 +109,75 @@ function EntityTable({
   );
   const [currentPage, setCurrentPage] = useState(1);
 
-  const total = data.length;
-  const effectiveSize = pageSize === -1 || pageSize >= total ? total : pageSize;
+  const serverMode = Boolean(serverPaging && typeof serverPaging.total === 'number');
+  const serverTotal = serverMode ? serverPaging.total : data.length;
+  const serverLimit = serverMode ? serverPaging.limit || DEFAULT_PAGE_SIZE : pageSize;
+  const serverOffset = serverMode ? serverPaging.offset || 0 : 0;
+
+  const total = serverMode ? serverTotal : data.length;
+  const effectiveSize = serverMode
+    ? serverLimit
+    : pageSize === -1 || pageSize >= total
+      ? total
+      : pageSize;
   const totalPages = effectiveSize > 0 ? Math.ceil(total / effectiveSize) : 1;
-  const page = Math.max(1, Math.min(currentPage, totalPages));
-  const start = (page - 1) * effectiveSize;
-  const end = effectiveSize === total ? total : Math.min(start + effectiveSize, total);
-  const displayData = effectiveSize === total ? data : data.slice(start, end);
+  const page = serverMode
+    ? Math.floor(serverOffset / Math.max(effectiveSize, 1)) + 1
+    : Math.max(1, Math.min(currentPage, totalPages));
+  const start = serverMode ? serverOffset : (page - 1) * effectiveSize;
+  const end = serverMode
+    ? Math.min(serverOffset + effectiveSize, total)
+    : effectiveSize === total
+      ? total
+      : Math.min(start + effectiveSize, total);
+  const displayData = serverMode ? data : effectiveSize === total ? data : data.slice(start, end);
   const from = total === 0 ? 0 : start + 1;
   const to = total === 0 ? 0 : end;
-  const showLimitBar = total > Math.min(...pageSizeOptions.filter((n) => n > 0));
+  const showLimitBar = serverMode
+    ? total > 0
+    : total > Math.min(...pageSizeOptions.filter((n) => n > 0));
   const showPagination = total > 0 && effectiveSize < total && totalPages > 1;
 
   React.useEffect(() => {
-    setCurrentPage((p) => Math.min(p, totalPages || 1));
-  }, [totalPages, pageSize]);
+    if (!serverMode) setCurrentPage((p) => Math.min(p, totalPages || 1));
+  }, [totalPages, pageSize, serverMode]);
 
   const handleCellSave = (row, columnKey, value) => {
     setEditingCell(null);
     if (value !== null && onCellSave) onCellSave(row, columnKey, value);
   };
 
+  const checkSelected = (rowId) => {
+    if (typeof rowIsSelected === 'function') return rowIsSelected(rowId);
+    return (selectedIds || []).includes(rowId);
+  };
+
   const toggleSelect = (e, rowId) => {
     e.stopPropagation();
     if (!onSelectionChange) return;
     const set = new Set(selectedIds || []);
-    if (set.has(rowId)) set.delete(rowId);
-    else set.add(rowId);
+    if (e.target.checked) set.add(rowId);
+    else set.delete(rowId);
     onSelectionChange(Array.from(set));
   };
 
   const toggleSelectAll = (e) => {
     e.stopPropagation();
     if (!onSelectionChange) return;
-    if ((selectedIds || []).length === displayData.length) {
-      onSelectionChange([]);
+    const pageIds = displayData.map((r) => r.id);
+    const allSelected = pageIds.length > 0 && pageIds.every((id) => checkSelected(id));
+    if (allSelected) {
+      if (serverMode) {
+        onSelectionChange((selectedIds || []).filter((id) => !pageIds.includes(id)));
+      } else {
+        onSelectionChange([]);
+      }
+    } else if (serverMode) {
+      const set = new Set(selectedIds || []);
+      pageIds.forEach((id) => set.add(id));
+      onSelectionChange(Array.from(set));
     } else {
-      onSelectionChange(displayData.map((r) => r.id));
+      onSelectionChange(pageIds);
     }
   };
 
@@ -161,12 +196,117 @@ function EntityTable({
 
   const handlePageSizeChange = (e) => {
     const next = Number(e.target.value);
+    if (serverMode) {
+      serverPaging.onLimitChange?.(next === -1 ? Math.max(total, DEFAULT_PAGE_SIZE) : next);
+      return;
+    }
     setPageSize(next);
     if (next !== -1) setCurrentPage(1);
   };
 
+  const goPrev = () => {
+    if (serverMode) {
+      serverPaging.onPageChange?.(Math.max(0, serverOffset - effectiveSize));
+    } else {
+      setCurrentPage((p) => Math.max(1, p - 1));
+    }
+  };
+
+  const goNext = () => {
+    if (serverMode) {
+      serverPaging.onPageChange?.(serverOffset + effectiveSize);
+    } else {
+      setCurrentPage((p) => Math.min(totalPages, p + 1));
+    }
+  };
+
+  const pageSelected = displayData.length > 0 && displayData.every((row) => checkSelected(row.id));
+
+  const renderPager = (limitId) => (
+    <div className="tw-flex tw-flex-wrap tw-items-center tw-gap-3 tw-py-1.5 tw-px-0 tw-text-sm tw-text-cb-text-muted">
+      {!serverMode && (
+        <div className="tw-flex tw-items-center tw-gap-2">
+          <label htmlFor={limitId} className="tw-sr-only">
+            Rows per page
+          </label>
+          <span>Show</span>
+          <select
+            id={limitId}
+            value={pageSize}
+            onChange={handlePageSizeChange}
+            className={limitSelectClass}
+            aria-label="Rows per page"
+          >
+            {pageSizeOptions
+              .filter((n) => n > 0)
+              .map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            <option value={-1}>All</option>
+          </select>
+          <span>per page</span>
+        </div>
+      )}
+      {serverMode && serverPaging.onLimitChange && (
+        <div className="tw-flex tw-items-center tw-gap-2">
+          <label htmlFor={limitId} className="tw-sr-only">
+            Rows per page
+          </label>
+          <span>Show</span>
+          <select
+            id={limitId}
+            value={serverLimit}
+            onChange={handlePageSizeChange}
+            className={limitSelectClass}
+            aria-label="Rows per page"
+          >
+            {pageSizeOptions
+              .filter((n) => n > 0)
+              .map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+          </select>
+          <span>per page</span>
+        </div>
+      )}
+      <span className="tw-ml-auto tw-text-cb-text">
+        Showing {from}–{to} of {total}
+      </span>
+      {showPagination && (
+        <div className="tw-flex tw-items-center tw-gap-2 tw-ml-2">
+          <button
+            type="button"
+            className={paginationBtnClass}
+            onClick={goPrev}
+            disabled={page <= 1}
+            aria-label="Previous page"
+          >
+            Previous
+          </button>
+          <span className="tw-text-cb-text-muted">
+            Page {page} of {totalPages}
+          </span>
+          <button
+            type="button"
+            className={paginationBtnClass}
+            onClick={goNext}
+            disabled={page >= totalPages}
+            aria-label="Next page"
+          >
+            Next
+          </button>
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div className="table-wrapper">
+      {selectionToolbar}
       {showBulkBar && (
         <div className="tw-flex tw-items-center tw-gap-3 tw-mb-2 tw-p-2 tw-rounded tw-bg-cb-secondary tw-border tw-border-cb-border">
           <span className="tw-text-sm tw-text-cb-text">{selectedCount} selected</span>
@@ -182,61 +322,7 @@ function EntityTable({
           ))}
         </div>
       )}
-      {showLimitBar && (
-        <div className="tw-flex tw-flex-wrap tw-items-center tw-gap-3 tw-mb-2 tw-py-1.5 tw-px-0 tw-text-sm tw-text-cb-text-muted">
-          <div className="tw-flex tw-items-center tw-gap-2">
-            <label htmlFor="entity-table-limit-top" className="tw-sr-only">
-              Rows per page
-            </label>
-            <span>Show</span>
-            <select
-              id="entity-table-limit-top"
-              value={pageSize}
-              onChange={handlePageSizeChange}
-              className={limitSelectClass}
-              aria-label="Rows per page"
-            >
-              {pageSizeOptions
-                .filter((n) => n > 0)
-                .map((n) => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
-                ))}
-              <option value={-1}>All</option>
-            </select>
-            <span>per page</span>
-          </div>
-          <span className="tw-ml-auto tw-text-cb-text">
-            Showing {from}–{to} of {total}
-          </span>
-          {showPagination && (
-            <div className="tw-flex tw-items-center tw-gap-2 tw-ml-2">
-              <button
-                type="button"
-                className={paginationBtnClass}
-                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                disabled={page <= 1}
-                aria-label="Previous page"
-              >
-                Previous
-              </button>
-              <span className="tw-text-cb-text-muted">
-                Page {page} of {totalPages}
-              </span>
-              <button
-                type="button"
-                className={paginationBtnClass}
-                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                disabled={page >= totalPages}
-                aria-label="Next page"
-              >
-                Next
-              </button>
-            </div>
-          )}
-        </div>
-      )}
+      {showLimitBar && <div className="tw-mb-2">{renderPager('entity-table-limit-top')}</div>}
       <table className="entity-table">
         <thead>
           <tr>
@@ -245,12 +331,10 @@ function EntityTable({
                 <input
                   type="checkbox"
                   className="tw-rounded tw-border-cb-border tw-bg-cb-bg tw-text-cb-primary focus:tw-ring-cb-primary"
-                  checked={
-                    displayData.length > 0 && (selectedIds || []).length === displayData.length
-                  }
+                  checked={pageSelected}
                   onChange={toggleSelectAll}
                   onClick={(e) => e.stopPropagation()}
-                  aria-label="Select all"
+                  aria-label="Select current page"
                 />
               </th>
             )}
@@ -262,7 +346,7 @@ function EntityTable({
         </thead>
         <tbody>
           {displayData.map((row) => {
-            const isRowSelected = selectable && (selectedIds || []).includes(row.id);
+            const selected = selectable && checkSelected(row.id);
             return (
               <tr
                 key={row.id}
@@ -279,7 +363,7 @@ function EntityTable({
                     <input
                       type="checkbox"
                       className="tw-rounded tw-border-cb-border tw-bg-cb-bg tw-text-cb-primary focus:tw-ring-cb-primary"
-                      checked={isRowSelected}
+                      checked={selected}
                       onChange={(e) => toggleSelect(e, row.id)}
                       onClick={(e) => e.stopPropagation()}
                       aria-label={`Select row ${row.id}`}
@@ -337,58 +421,8 @@ function EntityTable({
         </tbody>
       </table>
       {showLimitBar && total > 0 && (
-        <div className="tw-flex tw-flex-wrap tw-items-center tw-gap-3 tw-mt-2 tw-py-1.5 tw-px-0 tw-text-sm tw-text-cb-text-muted tw-border-t tw-border-cb-border/50">
-          <div className="tw-flex tw-items-center tw-gap-2">
-            <label htmlFor="entity-table-limit-bottom" className="tw-sr-only">
-              Rows per page
-            </label>
-            <span>Show</span>
-            <select
-              id="entity-table-limit-bottom"
-              value={pageSize}
-              onChange={handlePageSizeChange}
-              className={limitSelectClass}
-              aria-label="Rows per page"
-            >
-              {pageSizeOptions
-                .filter((n) => n > 0)
-                .map((n) => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
-                ))}
-              <option value={-1}>All</option>
-            </select>
-            <span>per page</span>
-          </div>
-          <span className="tw-ml-auto tw-text-cb-text">
-            Showing {from}–{to} of {total}
-          </span>
-          {showPagination && (
-            <div className="tw-flex tw-items-center tw-gap-2 tw-ml-2">
-              <button
-                type="button"
-                className={paginationBtnClass}
-                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                disabled={page <= 1}
-                aria-label="Previous page"
-              >
-                Previous
-              </button>
-              <span className="tw-text-cb-text-muted">
-                Page {page} of {totalPages}
-              </span>
-              <button
-                type="button"
-                className={paginationBtnClass}
-                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                disabled={page >= totalPages}
-                aria-label="Next page"
-              >
-                Next
-              </button>
-            </div>
-          )}
+        <div className="tw-mt-2 tw-border-t tw-border-cb-border/50">
+          {renderPager('entity-table-limit-bottom')}
         </div>
       )}
     </div>
@@ -425,6 +459,15 @@ EntityTable.propTypes = {
   ),
   defaultPageSize: PropTypes.number,
   pageSizeOptions: PropTypes.arrayOf(PropTypes.number),
+  serverPaging: PropTypes.shape({
+    total: PropTypes.number.isRequired,
+    limit: PropTypes.number.isRequired,
+    offset: PropTypes.number.isRequired,
+    onPageChange: PropTypes.func.isRequired,
+    onLimitChange: PropTypes.func,
+  }),
+  rowIsSelected: PropTypes.func,
+  selectionToolbar: PropTypes.node,
 };
 
 export default EntityTable;

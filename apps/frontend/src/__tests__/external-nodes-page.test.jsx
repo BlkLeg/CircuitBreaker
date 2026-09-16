@@ -1,6 +1,7 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import ExternalNodesPage from '../pages/ExternalNodesPage.jsx';
 
 vi.mock('../api/client', () => ({
@@ -104,7 +105,7 @@ describe('ExternalNodesPage', () => {
   });
 
   it('opens icon picker from external node form', async () => {
-    render(<ExternalNodesPage />);
+    render(<ExternalNodesPage />, { wrapper: MemoryRouter });
     await waitFor(() => expect(screen.queryByTestId('skeleton-table')).not.toBeInTheDocument());
 
     fireEvent.click(screen.getByText('+ Add External Node'));

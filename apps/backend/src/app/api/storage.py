@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.exc import IntegrityError
@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.audit import log_audit
 from app.core.security import require_write_auth
 from app.db.session import get_db
+from app.schemas.inventory import MAX_QUERY_LENGTH, PageRequest, PageResult
 from app.schemas.storage import Storage, StorageCreate, StorageUpdate
 from app.services import storage_service
 
@@ -22,6 +23,27 @@ def list_storage(
     db: Session = Depends(get_db),
 ) -> Any:
     return storage_service.list_storage(db, kind=kind, hardware_id=hardware_id, tag=tag, q=q)
+
+
+@router.get("/page", response_model=PageResult[Storage])
+def list_storage_page(
+    db: Annotated[Session, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    sort: Annotated[
+        Literal["id", "name", "kind", "created_at", "updated_at", "hardware_id"], Query()
+    ] = "name",
+    direction: Annotated[Literal["asc", "desc"], Query()] = "asc",
+    kind: Annotated[str | None, Query(max_length=100)] = None,
+    hardware_id: Annotated[int | None, Query()] = None,
+    tag: Annotated[str | None, Query(max_length=100)] = None,
+    q: Annotated[str | None, Query(max_length=MAX_QUERY_LENGTH)] = None,
+) -> PageResult[dict[str, Any]]:
+    """Return a bounded storage page for the inventory workspace."""
+    page = PageRequest(limit=limit, offset=offset, sort=sort, direction=direction)
+    return storage_service.list_storage_page(
+        db, page, kind=kind, hardware_id=hardware_id, tag=tag, q=q
+    )
 
 
 @router.post("", response_model=Storage, status_code=201)

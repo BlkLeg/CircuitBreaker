@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { SkeletonTable } from '../components/common/SkeletonTable';
 import EntityTable from '../components/EntityTable';
 import SearchBox from '../components/SearchBox';
 import TagFilter from '../components/TagFilter';
@@ -21,6 +22,10 @@ import { validateIpAddress, validateDuplicateName } from '../utils/validation';
 import logger from '../utils/logger';
 import { useTargetMonitors } from '../hooks/useTargetMonitors';
 import MonitorCell, { MonitorStatusCell } from '../components/monitors/MonitorCell';
+import { useEntityDeepLink } from '../hooks/useEntityDeepLink';
+import InventorySelectionToolbar from '../components/common/InventorySelectionToolbar';
+import { useInventoryPage } from '../hooks/useInventoryPage';
+import { clearSelection, SELECTION_MODE_ALL_MATCHING } from '../lib/inventoryList';
 
 // Encode the selection so a single dropdown can carry both hardware and compute options.
 // Prefix: "hw_<id>" for hardware, "cu_<id>" for compute units.
@@ -130,72 +135,74 @@ function ServicesPage() {
   const toast = useToast();
   const [categoriesList, setCategoriesList] = useState([]);
   const [environmentsList, setEnvironmentsList] = useState([]);
-  const [items, setItems] = useState([]);
   const [computeUnits, setComputeUnits] = useState([]);
   const [hardware, setHardware] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState(null);
   const [detailTarget, setDetailTarget] = useState(null);
-  const [q, setQ] = useState('');
-  const [tagFilter, setTagFilter] = useState('');
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [pendingIconSlug, setPendingIconSlug] = useState(null);
   const [iconPickerCallback, setIconPickerCallback] = useState(null);
-  const [categoryFilter, setCategoryFilter] = useState('');
-  const [envFilter, setEnvFilter] = useState('');
   const [filterConflicts, setFilterConflicts] = useState(false);
   const [formApiErrors, setFormApiErrors] = useState({});
-  const [selectedIds, setSelectedIds] = useState([]);
   const [allTags, setAllTags] = useState([]);
+  const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const params = {};
-      if (q) params.q = q;
-      if (tagFilter) params.tag = tagFilter;
-      if (categoryFilter) params.category = categoryFilter;
-      if (envFilter) params.environment_id = envFilter;
-      const [svcRes, cuRes, hwRes] = await Promise.all([
-        servicesApi.list(params),
-        computeUnitsApi.list(),
-        hardwareApi.list(),
-      ]);
-      const cuList = cuRes.data;
-      const hwList = hwRes.data;
-      setComputeUnits(cuList);
-      setHardware(hwList);
+  const fetchPage = useCallback(async (params) => {
+    const [svcRes, cuRes, hwRes] = await Promise.all([
+      servicesApi.page(params),
+      computeUnitsApi.list(),
+      hardwareApi.list(),
+    ]);
+    const cuList = cuRes.data || [];
+    const hwList = hwRes.data || [];
+    setComputeUnits(cuList);
+    setHardware(hwList);
 
-      const cuMap = Object.fromEntries(cuList.map((c) => [c.id, c]));
-      const hwMap = Object.fromEntries(hwList.map((h) => [h.id, h]));
+    const cuMap = Object.fromEntries(cuList.map((c) => [c.id, c]));
+    const hwMap = Object.fromEntries(hwList.map((h) => [h.id, h]));
 
-      const enhancedItems = svcRes.data.map((item) => {
-        const cu = cuMap[item.compute_id];
-        const hw = hwMap[item.hardware_id] || hwMap[cuMap[item.compute_id]?.hardware_id];
-        const runsOnLabel = item.hardware_id
-          ? `${hwMap[item.hardware_id]?.name ?? item.hardware_id} (hardware)`
-          : cu
-            ? `${cu.name} on ${hwMap[cu.hardware_id]?.name ?? cu.hardware_id}`
-            : '—';
-        // effective_ip is for table display only; ip_address stays as the service's own value for editing
-        return {
-          ...item,
-          runs_on_label: runsOnLabel,
-          effective_ip: item.ip_address || cu?.ip_address || hw?.ip_address || null,
-        };
-      });
-      setItems(enhancedItems);
-    } catch (err) {
-      toast.error(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }, [q, tagFilter, categoryFilter, envFilter, toast]);
+    return {
+      ...svcRes,
+      data: {
+        ...svcRes.data,
+        items: (svcRes.data?.items || []).map((item) => {
+          const cu = cuMap[item.compute_id];
+          const hw = hwMap[item.hardware_id] || hwMap[cuMap[item.compute_id]?.hardware_id];
+          const runsOnLabel = item.hardware_id
+            ? `${hwMap[item.hardware_id]?.name ?? item.hardware_id} (hardware)`
+            : cu
+              ? `${cu.name} on ${hwMap[cu.hardware_id]?.name ?? cu.hardware_id}`
+              : '—';
+          // effective_ip is for table display only; ip_address stays as the service's own value for editing
+          return {
+            ...item,
+            runs_on_label: runsOnLabel,
+            effective_ip: item.ip_address || cu?.ip_address || hw?.ip_address || null,
+          };
+        }),
+      },
+    };
+  }, []);
+
+  const page = useInventoryPage({
+    fetchPage,
+    extraFilters: { category: '', environment_id: '' },
+  });
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    if (page.listError) toast.error(page.listError);
+  }, [page.listError, toast]);
+
+  const loadDeepLinkedEntity = useCallback(async (id) => (await servicesApi.get(id)).data, []);
+  const selectDetail = useCallback((entity) => setDetailTarget(entity), []);
+  const reportDeepLinkError = useCallback((message) => toast.error(message), [toast]);
+  const { openEntity, closeEntity } = useEntityDeepLink({
+    loadEntity: loadDeepLinkedEntity,
+    selectedId: detailTarget?.id,
+    onSelect: selectDetail,
+    onError: reportDeepLinkError,
+  });
 
   useEffect(() => {
     categoriesApi
@@ -221,7 +228,7 @@ function ServicesPage() {
     fetchTags();
   }, [fetchTags]);
 
-  const monitorTargetIds = useMemo(() => items.map((i) => i.id), [items]);
+  const monitorTargetIds = useMemo(() => page.items.map((i) => i.id), [page.items]);
   const monitors = useTargetMonitors('service', monitorTargetIds);
 
   const monitorAction = useCallback(
@@ -258,7 +265,7 @@ function ServicesPage() {
             allTags={allTags}
             onTagsChange={async (names) => {
               await servicesApi.update(row.id, { tags: names });
-              fetchData();
+              page.fetchData();
             }}
             onTagColorChange={async (id, color) => {
               await tagsApi.update(id, { color });
@@ -268,7 +275,7 @@ function ServicesPage() {
         ),
       },
     ],
-    [allTags, fetchData, fetchTags, monitors.byId]
+    [allTags, page, fetchTags, monitors.byId]
   );
 
   const handleCellSave = useCallback(
@@ -276,9 +283,9 @@ function ServicesPage() {
       if (value == null) return;
       await servicesApi.update(row.id, { [columnKey]: value });
       toast.success('Saved.');
-      fetchData();
+      page.fetchData();
     },
-    [toast, fetchData]
+    [toast, page]
   );
 
   const bulkActions = useMemo(
@@ -287,6 +294,12 @@ function ServicesPage() {
         label: 'Delete selected',
         danger: true,
         onClick: (ids) => {
+          if (page.selection.mode === SELECTION_MODE_ALL_MATCHING) {
+            toast.warn(
+              'All-matching delete is not available yet. Select specific rows on this page.'
+            );
+            return;
+          }
           setConfirmState({
             open: true,
             message: `Delete ${ids.length} service(s)?`,
@@ -294,14 +307,14 @@ function ServicesPage() {
               setConfirmState((s) => ({ ...s, open: false }));
               for (const id of ids) await servicesApi.delete(id);
               toast.success('Deleted.');
-              setSelectedIds([]);
-              fetchData();
+              page.setSelection(clearSelection(page.selection));
+              page.fetchData();
             },
           });
         },
       },
     ],
-    [toast, fetchData]
+    [toast, page]
   );
 
   // Build combined "Runs On" options: hardware first (direct), then compute units (grouped label).
@@ -388,7 +401,7 @@ function ServicesPage() {
       setShowForm(false);
       setEditTarget(null);
       setFormApiErrors({});
-      fetchData();
+      page.fetchData();
     } catch (err) {
       if (err.fieldErrors) {
         setFormApiErrors(err.fieldErrors);
@@ -397,8 +410,6 @@ function ServicesPage() {
       }
     }
   };
-
-  const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
 
   const handleDelete = (id) => {
     setConfirmState({
@@ -409,7 +420,7 @@ function ServicesPage() {
         try {
           await servicesApi.delete(id);
           toast.success('Service deleted.');
-          fetchData();
+          page.fetchData();
         } catch (err) {
           toast.error(err.message);
         }
@@ -422,6 +433,8 @@ function ServicesPage() {
     if (!target) return {};
     return { ...target, runs_on: encodeRunsOn(target) };
   };
+
+  const tableItems = filterConflicts ? page.items.filter((s) => s.ip_conflict) : page.items;
 
   return (
     <div className="page">
@@ -439,13 +452,16 @@ function ServicesPage() {
       </div>
 
       <div className="filter-bar">
-        <SearchBox value={q} onChange={setQ} />
-        <TagFilter value={tagFilter} onChange={setTagFilter} />
+        <SearchBox value={page.q} onChange={(value) => page.applyListFilter({ q: value })} />
+        <TagFilter
+          value={page.tagFilter}
+          onChange={(value) => page.applyListFilter({ tag: value })}
+        />
         <select
           className="filter-select"
           aria-label="Filter by categories"
-          value={categoryFilter}
-          onChange={(e) => setCategoryFilter(e.target.value)}
+          value={page.domainFilters.category || ''}
+          onChange={(e) => page.applyListFilter({ category: e.target.value })}
         >
           <option value="">All categories</option>
           {categoriesList.map((c) => (
@@ -457,8 +473,12 @@ function ServicesPage() {
         <select
           className="filter-select"
           aria-label="Filter by environments"
-          value={envFilter}
-          onChange={(e) => setEnvFilter(e.target.value ? Number(e.target.value) : '')}
+          value={page.domainFilters.environment_id || ''}
+          onChange={(e) =>
+            page.applyListFilter({
+              environment_id: e.target.value ? Number(e.target.value) : '',
+            })
+          }
         >
           <option value="">All environments</option>
           {environmentsList.map((e) => (
@@ -467,54 +487,57 @@ function ServicesPage() {
             </option>
           ))}
         </select>
-        {items.some((s) => s.ip_conflict) && (
+        {page.items.some((s) => s.ip_conflict) && (
           <button
             className={`filter-pill${filterConflicts ? ' active' : ''}`}
             onClick={() => setFilterConflicts((f) => !f)}
           >
-            ⚠ IP Conflicts ({items.filter((s) => s.ip_conflict).length})
+            ⚠ IP Conflicts ({page.items.filter((s) => s.ip_conflict).length})
           </button>
         )}
       </div>
 
-      {!loading && items.length === 0 && settings?.show_page_hints && (
+      {!page.loading && page.items.length === 0 && settings?.show_page_hints && (
         <div className="info-tip" style={{ marginBottom: 12 }}>
           💡 <strong>Tip:</strong> Add services last, after creating hardware and compute units.
           When cleaning up, delete services before removing compute units.
         </div>
       )}
 
-      <EntityTable
-        columns={COLUMNS_WITH_TAGS}
-        data={filterConflicts ? items.filter((s) => s.ip_conflict) : items}
-        onEdit={(row) => {
-          setEditTarget(row);
-          setShowForm(true);
-        }}
-        onDelete={handleDelete}
-        renderMonitorAction={(row) => (
-          <MonitorCell
-            state={monitors.byId[row.id]}
-            onEnable={() => monitorAction(() => monitors.enable(row.id), 'Monitoring enabled.')}
-            onPause={() => monitorAction(() => monitors.pause(row.id), 'Monitoring paused.')}
-            onResume={() => monitorAction(() => monitors.resume(row.id), 'Monitoring resumed.')}
-            onCheckNow={() => monitorAction(() => monitors.checkNow(row.id), 'Probe triggered.')}
-          />
-        )}
-        onRowClick={(row) => setDetailTarget(row)}
-        editableColumns={['name', 'slug', 'url']}
-        onCellSave={handleCellSave}
-        selectable
-        selectedIds={selectedIds}
-        onSelectionChange={setSelectedIds}
-        bulkActions={bulkActions}
-      />
+      {page.loading ? (
+        <SkeletonTable cols={6} />
+      ) : (
+        <EntityTable
+          columns={COLUMNS_WITH_TAGS}
+          data={tableItems}
+          onEdit={(row) => {
+            setEditTarget(row);
+            setShowForm(true);
+          }}
+          onDelete={handleDelete}
+          renderMonitorAction={(row) => (
+            <MonitorCell
+              state={monitors.byId[row.id]}
+              onEnable={() => monitorAction(() => monitors.enable(row.id), 'Monitoring enabled.')}
+              onPause={() => monitorAction(() => monitors.pause(row.id), 'Monitoring paused.')}
+              onResume={() => monitorAction(() => monitors.resume(row.id), 'Monitoring resumed.')}
+              onCheckNow={() => monitorAction(() => monitors.checkNow(row.id), 'Probe triggered.')}
+            />
+          )}
+          onRowClick={openEntity}
+          editableColumns={['name', 'slug', 'url']}
+          onCellSave={handleCellSave}
+          selectable
+          selectedIds={page.selectedIds}
+          rowIsSelected={page.rowIsSelected}
+          onSelectionChange={page.onSelectionChange}
+          bulkActions={bulkActions}
+          serverPaging={page.serverPaging}
+          selectionToolbar={<InventorySelectionToolbar {...page.selectionToolbarProps} />}
+        />
+      )}
 
-      <ServiceDetail
-        service={detailTarget}
-        isOpen={!!detailTarget}
-        onClose={() => setDetailTarget(null)}
-      />
+      <ServiceDetail service={detailTarget} isOpen={!!detailTarget} onClose={closeEntity} />
 
       <FormModal
         open={showForm}
@@ -524,7 +547,7 @@ function ServicesPage() {
         onSubmit={handleSubmit}
         onValidate={(values) => {
           const errors = {};
-          const nameErr = validateDuplicateName(values.name, items, editTarget?.id);
+          const nameErr = validateDuplicateName(values.name, page.items, editTarget?.id);
           if (nameErr) errors.name = nameErr;
           const ipErr = validateIpAddress(values.ip_address);
           if (ipErr) errors.ip_address = ipErr;

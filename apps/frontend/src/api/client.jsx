@@ -1,9 +1,9 @@
 import axios from 'axios';
 import logger from '../utils/logger';
-import { safeSet } from '../utils/safeAccess';
 import { hashPasswordForAuth } from '../utils/passwordHash';
 import { recordServerDate } from '../utils/serverClock';
 import { recordRequest } from '../lib/diagnosticsBuffer';
+import { buildUserMessage as shapeUserMessage, decorateApiError } from '../lib/apiErrors';
 
 // Task 1 (server) mints a UUID4 for any inbound `X-Request-ID` that doesn't
 // pass its filter (<=64 chars of [A-Za-z0-9_.-]); a crypto.randomUUID() value
@@ -67,32 +67,16 @@ function isSessionExpiryCandidate(error) {
 }
 
 function buildUserMessage(status, data, error) {
+  const message = shapeUserMessage(status, data, error);
   if (status >= 500) {
     logger.error(`API ${status}:`, data);
-    const detail = typeof data?.detail === 'string' ? data.detail : null;
-    return detail || 'A server error occurred. Please try again or contact support.';
+    return message;
   }
-  const detail = data?.detail;
-  const message = Array.isArray(detail)
-    ? detail.map((e) => e.msg || JSON.stringify(e)).join('; ')
-    : detail || error.message;
-
   if (status === 401 && !isSessionExpiryCandidate(error)) {
     return message;
   }
-
   logger.error(`API ${status}:`, message);
   return message;
-}
-
-function extractFieldErrors(status, data) {
-  if (status !== 422 || !Array.isArray(data?.detail)) return null;
-  const fieldErrors = {};
-  data.detail.forEach((e) => {
-    const fieldName = e.field ?? (Array.isArray(e.loc) ? e.loc[e.loc.length - 1] : null);
-    if (fieldName && e.msg) safeSet(fieldErrors, String(fieldName), e.msg);
-  });
-  return Object.keys(fieldErrors).length > 0 ? fieldErrors : null;
 }
 
 const client = axios.create({
@@ -244,13 +228,7 @@ client.interceptors.response.use(
     }
 
     const message = buildUserMessage(status, data, error);
-    const err = new Error(message);
-    err.statusCode = status;
-    err.errorCode = data?.error_code ?? null;
-    err.response = error.response;
-
-    const fieldErrors = extractFieldErrors(status, data);
-    if (fieldErrors) err.fieldErrors = fieldErrors;
+    const err = decorateApiError(new Error(message), status, data, error);
 
     recordCompletedRequest(config, status);
     throw err;
@@ -259,6 +237,7 @@ client.interceptors.response.use(
 
 export const hardwareApi = {
   list: (params) => client.get('/hardware', { params }),
+  page: (params) => client.get('/hardware/page', { params }),
   get: (id) => client.get(`/hardware/${id}`),
   create: (data) => client.post('/hardware', data),
   update: (id, data) => client.patch(`/hardware/${id}`, data),
@@ -271,8 +250,14 @@ export const hardwareApi = {
     client.delete(`/hardware-connections/${connId}`).then((r) => r.data),
 };
 
+/** Bounded inventory selectors shared across pickers and association UIs. */
+export const inventoryApi = {
+  options: (params) => client.get('/inventory/options', { params }),
+};
+
 export const computeUnitsApi = {
   list: (params) => client.get('/compute-units', { params }),
+  page: (params) => client.get('/compute-units/page', { params }),
   get: (id) => client.get(`/compute-units/${id}`),
   getNetworks: (id) => client.get(`/compute-units/${id}/networks`),
   create: (data) => client.post('/compute-units', data),
@@ -302,6 +287,7 @@ export const computeUnitsApi = {
 
 export const servicesApi = {
   list: (params) => client.get('/services', { params }),
+  page: (params) => client.get('/services/page', { params }),
   get: (id) => client.get(`/services/${id}`),
   create: (data) => client.post('/services', data),
   update: (id, data) => client.patch(`/services/${id}`, data),
@@ -324,6 +310,7 @@ export const servicesApi = {
 
 export const storageApi = {
   list: (params) => client.get('/storage', { params }),
+  page: (params) => client.get('/storage/page', { params }),
   get: (id) => client.get(`/storage/${id}`),
   create: (data) => client.post('/storage', data),
   update: (id, data) => client.patch(`/storage/${id}`, data),
@@ -354,6 +341,7 @@ export const networksApi = {
 
 export const miscApi = {
   list: (params) => client.get('/misc', { params }),
+  page: (params) => client.get('/misc/page', { params }),
   get: (id) => client.get(`/misc/${id}`),
   create: (data) => client.post('/misc', data),
   update: (id, data) => client.patch(`/misc/${id}`, data),
@@ -446,8 +434,6 @@ export const timezonesApi = {
 
 export const adminApi = {
   export: () => client.get('/admin/export'),
-  import: (data, wipeBeforeImport = false) =>
-    client.post('/admin/import', { wipe_before_import: wipeBeforeImport, data }),
   recentChanges: (limit = 10) => client.get('/admin/recent-changes', { params: { limit } }),
   clearLab: () => client.post('/admin/clear-lab'),
   dbHealth: () => client.get('/admin/db/health'),
@@ -517,6 +503,7 @@ export const logsApi = {
 
 export const externalNodesApi = {
   list: (params) => client.get('/external-nodes', { params }),
+  page: (params) => client.get('/external-nodes/page', { params }),
   get: (id) => client.get(`/external-nodes/${id}`),
   create: (data) => client.post('/external-nodes', data),
   update: (id, d) => client.patch(`/external-nodes/${id}`, d),

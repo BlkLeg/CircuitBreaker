@@ -63,3 +63,36 @@ async def test_inventory_options_reject_ineligible_type(client, auth_headers):
     )
 
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_sibling_pages_preserve_legacy_list_and_return_envelope(
+    client, auth_headers, factories
+):
+    factories.storage(name="Zulu disk")
+    factories.storage(name="Alpha disk")
+    factories.misc_item(name="Zulu misc")
+    factories.misc_item(name="Alpha misc")
+
+    for path in ("/api/v1/storage", "/api/v1/misc"):
+        legacy = await client.get(path, headers=auth_headers)
+        assert legacy.status_code == 200
+        assert isinstance(legacy.json(), list)
+
+    storage_page = await client.get(
+        "/api/v1/storage/page",
+        params={"limit": 1, "sort": "name", "direction": "asc", "q": "disk"},
+        headers=auth_headers,
+    )
+    assert storage_page.status_code == 200, storage_page.text
+    assert storage_page.json()["total"] == 2
+    assert storage_page.json()["items"][0]["name"] == "Alpha disk"
+
+    misc_page = await client.get(
+        "/api/v1/misc/page",
+        params={"limit": 1, "sort": "name", "direction": "asc", "q": "misc"},
+        headers=auth_headers,
+    )
+    assert misc_page.status_code == 200, misc_page.text
+    assert misc_page.json()["total"] == 2
+    assert misc_page.json()["items"][0]["name"] == "Alpha misc"

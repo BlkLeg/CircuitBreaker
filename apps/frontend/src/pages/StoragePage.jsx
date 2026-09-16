@@ -12,6 +12,10 @@ import StorageDetail from '../components/details/StorageDetail';
 import { useToast } from '../components/common/Toast';
 import { validateDuplicateName } from '../utils/validation';
 import { useSettings } from '../context/SettingsContext';
+import { useEntityDeepLink } from '../hooks/useEntityDeepLink';
+import InventorySelectionToolbar from '../components/common/InventorySelectionToolbar';
+import { useInventoryPage } from '../hooks/useInventoryPage';
+import { clearSelection, SELECTION_MODE_ALL_MATCHING } from '../lib/inventoryList';
 
 const COLUMNS = [
   { key: 'id', label: 'ID' },
@@ -27,42 +31,48 @@ const COLUMNS = [
 function StoragePage() {
   const toast = useToast();
   const { settings } = useSettings();
-  const [items, setItems] = useState([]);
   const [hardware, setHardware] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState(null);
   const [detailTarget, setDetailTarget] = useState(null);
-  const [q, setQ] = useState('');
-  const [tagFilter, setTagFilter] = useState('');
-  const [kindFilter, setKindFilter] = useState('');
   const [formApiErrors, setFormApiErrors] = useState({});
-  const [selectedIds, setSelectedIds] = useState([]);
   const [allTags, setAllTags] = useState([]);
+  const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const params = {};
-      if (q) params.q = q;
-      if (tagFilter) params.tag = tagFilter;
-      if (kindFilter) params.kind = kindFilter;
-      const [stRes, hwRes] = await Promise.all([storageApi.list(params), hardwareApi.list()]);
-      const hwMap = Object.fromEntries(hwRes.data.map((h) => [h.id, h.name]));
-      setHardware(hwRes.data);
-      setItems(
-        stRes.data.map((s) => ({ ...s, hardware_name: hwMap[s.hardware_id] ?? s.hardware_id }))
-      );
-    } catch (err) {
-      toast.error(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }, [q, tagFilter, kindFilter, toast]);
+  const fetchPage = useCallback(async (params) => {
+    const [stRes, hwRes] = await Promise.all([storageApi.page(params), hardwareApi.list()]);
+    setHardware(hwRes.data || []);
+    const hwMap = Object.fromEntries((hwRes.data || []).map((h) => [h.id, h.name]));
+    return {
+      ...stRes,
+      data: {
+        ...stRes.data,
+        items: (stRes.data?.items || []).map((s) => ({
+          ...s,
+          hardware_name: hwMap[s.hardware_id] ?? s.hardware_id,
+        })),
+      },
+    };
+  }, []);
+
+  const page = useInventoryPage({
+    fetchPage,
+    extraFilters: { kind: '' },
+  });
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    if (page.listError) toast.error(page.listError);
+  }, [page.listError, toast]);
+
+  const loadDeepLinkedEntity = useCallback(async (id) => (await storageApi.get(id)).data, []);
+  const selectDetail = useCallback((entity) => setDetailTarget(entity), []);
+  const reportDeepLinkError = useCallback((message) => toast.error(message), [toast]);
+  const { openEntity, closeEntity } = useEntityDeepLink({
+    loadEntity: loadDeepLinkedEntity,
+    selectedId: detailTarget?.id,
+    onSelect: selectDetail,
+    onError: reportDeepLinkError,
+  });
 
   const fetchTags = useCallback(async () => {
     try {
@@ -89,7 +99,7 @@ function StoragePage() {
             allTags={allTags}
             onTagsChange={async (names) => {
               await storageApi.update(row.id, { tags: names });
-              fetchData();
+              page.fetchData();
             }}
             onTagColorChange={async (id, color) => {
               await tagsApi.update(id, { color });
@@ -99,7 +109,7 @@ function StoragePage() {
         ),
       },
     ],
-    [allTags, fetchData, fetchTags]
+    [allTags, page, fetchTags]
   );
 
   const handleCellSave = useCallback(
@@ -111,9 +121,9 @@ function StoragePage() {
       }
       await storageApi.update(row.id, payload);
       toast.success('Saved.');
-      fetchData();
+      page.fetchData();
     },
-    [toast, fetchData]
+    [toast, page]
   );
 
   const bulkActions = useMemo(
@@ -122,6 +132,12 @@ function StoragePage() {
         label: 'Delete selected',
         danger: true,
         onClick: (ids) => {
+          if (page.selection.mode === SELECTION_MODE_ALL_MATCHING) {
+            toast.warn(
+              'All-matching delete is not available yet. Select specific rows on this page.'
+            );
+            return;
+          }
           setConfirmState({
             open: true,
             message: `Delete ${ids.length} storage entry(ies)?`,
@@ -129,14 +145,14 @@ function StoragePage() {
               setConfirmState((s) => ({ ...s, open: false }));
               for (const id of ids) await storageApi.delete(id);
               toast.success('Deleted.');
-              setSelectedIds([]);
-              fetchData();
+              page.setSelection(clearSelection(page.selection));
+              page.fetchData();
             },
           });
         },
       },
     ],
-    [toast, fetchData]
+    [toast, page]
   );
 
   const fields = [
@@ -181,7 +197,7 @@ function StoragePage() {
       setShowForm(false);
       setEditTarget(null);
       setFormApiErrors({});
-      fetchData();
+      page.fetchData();
     } catch (err) {
       if (err.fieldErrors) {
         setFormApiErrors(err.fieldErrors);
@@ -190,8 +206,6 @@ function StoragePage() {
       }
     }
   };
-
-  const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
 
   const handleDelete = (id) => {
     setConfirmState({
@@ -202,7 +216,7 @@ function StoragePage() {
         try {
           await storageApi.delete(id);
           toast.success('Storage entry deleted.');
-          fetchData();
+          page.fetchData();
         } catch (err) {
           toast.error(err.message);
         }
@@ -226,13 +240,16 @@ function StoragePage() {
       </div>
 
       <div className="filter-bar">
-        <SearchBox value={q} onChange={setQ} />
-        <TagFilter value={tagFilter} onChange={setTagFilter} />
+        <SearchBox value={page.q} onChange={(value) => page.applyListFilter({ q: value })} />
+        <TagFilter
+          value={page.tagFilter}
+          onChange={(value) => page.applyListFilter({ tag: value })}
+        />
         <select
           className="filter-select"
           aria-label="Filter by kinds"
-          value={kindFilter}
-          onChange={(e) => setKindFilter(e.target.value)}
+          value={page.domainFilters.kind || ''}
+          onChange={(e) => page.applyListFilter({ kind: e.target.value })}
         >
           <option value="">All kinds</option>
           <option value="disk">Disk</option>
@@ -242,31 +259,34 @@ function StoragePage() {
         </select>
       </div>
 
-      {!loading && items.length === 0 && settings?.show_page_hints && (
+      {!page.loading && page.items.length === 0 && settings?.show_page_hints && (
         <div className="info-tip" style={{ marginBottom: 12 }}>
           💡 <strong>Tip:</strong> Storage represents disks, pools, datasets, or network shares.
           Once added, attach volumes to services via the service’s <em>Storage</em> tab.
         </div>
       )}
 
-      {loading ? (
+      {page.loading ? (
         <SkeletonTable cols={6} />
       ) : (
         <EntityTable
           columns={COLUMNS_WITH_TAGS}
-          data={items}
+          data={page.items}
           onEdit={(row) => {
             setEditTarget(row);
             setShowForm(true);
           }}
           onDelete={handleDelete}
-          onRowClick={(row) => setDetailTarget(row)}
+          onRowClick={openEntity}
           editableColumns={['name', 'path', 'protocol', 'capacity_gb', 'used_gb']}
           onCellSave={handleCellSave}
           selectable
-          selectedIds={selectedIds}
-          onSelectionChange={setSelectedIds}
+          selectedIds={page.selectedIds}
+          rowIsSelected={page.rowIsSelected}
+          onSelectionChange={page.onSelectionChange}
           bulkActions={bulkActions}
+          serverPaging={page.serverPaging}
+          selectionToolbar={<InventorySelectionToolbar {...page.selectionToolbarProps} />}
         />
       )}
 
@@ -278,7 +298,7 @@ function StoragePage() {
         onSubmit={handleSubmit}
         onValidate={(values) => {
           const errors = {};
-          const nameErr = validateDuplicateName(values.name, items, editTarget?.id);
+          const nameErr = validateDuplicateName(values.name, page.items, editTarget?.id);
           if (nameErr) errors.name = nameErr;
           return errors;
         }}
@@ -295,11 +315,7 @@ function StoragePage() {
         onConfirm={confirmState.onConfirm}
         onCancel={() => setConfirmState((s) => ({ ...s, open: false }))}
       />
-      <StorageDetail
-        storage={detailTarget}
-        isOpen={!!detailTarget}
-        onClose={() => setDetailTarget(null)}
-      />
+      <StorageDetail storage={detailTarget} isOpen={!!detailTarget} onClose={closeEntity} />
     </div>
   );
 }
