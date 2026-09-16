@@ -165,6 +165,11 @@ Pull/recreate for mono; native/package point at the installer or package manager
 
 Full-state snapshot and restore. See [Backup & Restore](backup-restore.md).
 
+`cb restore` takes a snapshot tarball (`cb-snapshot-*.tar.gz[.age]`) only. A bare
+`pre-upgrade-*.sql` (or `.sql.gz`) from `install.sh --upgrade` is a different
+shape — database only, the upgrade rollback artifact — and is restored with
+`deploy/scripts/restore.sh` directly, not through `cb restore`.
+
 ### `cb uninstall`
 
 Remove the installation for the detected mode.
