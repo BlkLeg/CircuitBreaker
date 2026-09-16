@@ -12,7 +12,11 @@ import logger from '../utils/logger';
 
 // Components
 import SettingsNav from '../components/settings/SettingsNav';
-import { allowedSettingsTabs } from '../data/settingsDestinations';
+import {
+  allowedSettingsTabs,
+  resolveSettingsTab,
+  settingsTabMatches,
+} from '../data/settingsDestinations';
 import SettingsActionBar from '../components/settings/SettingsActionBar';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import ClearLabDialog from '../components/common/ClearLabDialog';
@@ -68,7 +72,8 @@ export default function SettingsPage() {
 
   const { caps } = useCapabilities();
 
-  const [activeTab, setActiveTab] = useState(searchParams.get('tab') || 'general');
+  const initialTab = resolveSettingsTab(searchParams, user).tabId;
+  const [activeTab, setActiveTab] = useState(initialTab);
   const [searchQuery, setSearchQuery] = useState('');
   const [saving, setSaving] = useState(false);
   const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
@@ -167,7 +172,10 @@ export default function SettingsPage() {
 
   const handleTabChange = (tabId) => {
     setActiveTab(tabId);
-    setSearchParams({ tab: tabId });
+    const next = new URLSearchParams(searchParams);
+    next.delete('section');
+    next.set('tab', tabId);
+    setSearchParams(next);
   };
 
   const set = (key, val) => setForm((f) => ({ ...f, [key]: val }));
@@ -348,36 +356,7 @@ export default function SettingsPage() {
   };
 
   const filteredTabs = useMemo(() => {
-    if (!searchQuery) return allowedTabs;
-    const q = searchQuery.toLowerCase();
-    return allowedTabs.filter((tab) => {
-      if (tab.label.toLowerCase().includes(q)) return true;
-      if (tab.description.toLowerCase().includes(q)) return true;
-      // Also match common keywords for specific tabs
-      const keywords = {
-        general: ['timezone', 'defaults', 'hints', 'external'],
-        appearance: ['theme', 'branding', 'logo', 'favicon', 'colors', 'dock', 'font'],
-        resources: ['environments', 'categories', 'locations', 'icons'],
-        'device-roles': ['roles', 'device', 'hardware', 'topology', 'rank', 'icon'],
-        connectivity: ['discovery', 'nmap', 'snmp', 'api', 'layout', 'map'],
-        integrations: [
-          'nats',
-          'docker',
-          'container',
-          'cve',
-          'vulnerability',
-          'realtime',
-          'proxmox',
-          'hypervisor',
-          'vm',
-        ],
-
-        security: ['auth', 'login', 'password', 'timeout', 'audit'],
-        users: ['users', 'invite', 'role', 'admin', 'masquerade', 'sessions', 'accounts', 'local'],
-        system: ['backup', 'restore', 'reset', 'experimental', 'clear'],
-      };
-      return keywords[tab.id]?.some((k) => k.includes(q));
-    });
+    return allowedTabs.filter((tab) => settingsTabMatches(tab, searchQuery));
   }, [allowedTabs, searchQuery]);
 
   useEffect(() => {
@@ -388,11 +367,10 @@ export default function SettingsPage() {
   }, [filteredTabs, searchQuery, activeTab]);
 
   useEffect(() => {
-    if (!allowedTabs.some((t) => t.id === activeTab) && allowedTabs.length > 0) {
-      setActiveTab(allowedTabs[0].id);
-      setSearchParams({ tab: allowedTabs[0].id });
-    }
-  }, [activeTab, allowedTabs, setSearchParams]);
+    const resolved = resolveSettingsTab(searchParams, user);
+    setActiveTab(resolved.tabId);
+    if (resolved.shouldReplace) setSearchParams(resolved.canonicalParams, { replace: true });
+  }, [searchParams, setSearchParams, user]);
 
   if (!form)
     return (
@@ -510,7 +488,6 @@ export default function SettingsPage() {
             {activeTab === 'system' && (
               <SystemSection
                 isAdmin={isAdmin}
-                handleExport={handleExport}
                 handleReset={handleReset}
                 setClearLabOpen={setClearLabOpen}
               />

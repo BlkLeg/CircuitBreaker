@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { NAV_MAP } from '../data/navigation';
 
@@ -21,6 +21,7 @@ vi.mock('../context/AuthContext.jsx', () => ({
     openProfileModal: vi.fn(),
     isAuthenticated: true,
     user: mockUser.current,
+    isMasquerade: false,
   }),
 }));
 vi.mock('../context/SettingsContext', () => ({
@@ -35,7 +36,7 @@ vi.mock('../components/ThemePalette', () => ({ default: () => null }));
 vi.mock('../components/HeaderWidgets.jsx', () => ({ default: () => null }));
 vi.mock('../components/auth/UserAvatar.jsx', () => ({ default: () => null }));
 
-import Header from '../components/Header.jsx';
+import GlobalNavigator from '../components/navigation/GlobalNavigator.jsx';
 import MacOSDOCK from '../components/MacOSDOCK.jsx';
 
 const ALL_LABELS = new Set(Object.values(NAV_MAP).map((item) => item.label));
@@ -54,26 +55,23 @@ function dockLabels(user) {
   return labels;
 }
 
-/** Labels the route menu actually paints, found by what appears when it opens. */
-function menuLabels(user) {
+/** Labels the global navigator actually paints in its All pages browse view. */
+function navigatorLabels(user) {
   mockUser.current = user;
   mockSettings.current = { theme: 'dark' };
-  render(
+  const { container } = render(
     <MemoryRouter>
-      <Header onOpenPalette={() => {}} />
+      <GlobalNavigator isOpen onClose={() => {}} onNavigate={() => {}} />
     </MemoryRouter>
   );
-  const before = new Set(screen.getAllByRole('button').map((b) => b.textContent));
-  fireEvent.click(screen.getByLabelText('Open route menu'));
-  const labels = screen
-    .getAllByRole('button')
-    .map((b) => b.textContent)
-    .filter((text) => !before.has(text) && ALL_LABELS.has(text));
+  const labels = [...container.querySelectorAll('.navigator-row-label')]
+    .map((element) => element.firstChild?.textContent)
+    .filter((text) => ALL_LABELS.has(text));
   cleanup();
   return labels;
 }
 
-describe('the dock and the menu agree, as rendered', () => {
+describe('the dock and the navigator agree, as rendered', () => {
   const roles = [
     ['viewer', { role: 'viewer' }],
     ['editor', { role: 'editor' }],
@@ -82,9 +80,9 @@ describe('the dock and the menu agree, as rendered', () => {
 
   it.each(roles)('paints a %s the same destinations on both surfaces', (name, user) => {
     const dock = dockLabels(user);
-    const menu = menuLabels(user);
+    const menu = navigatorLabels(user);
 
-    expect(menu.length, `the ${name} route menu rendered nothing`).toBeGreaterThan(0);
+    expect(menu.length, `the ${name} navigator rendered nothing`).toBeGreaterThan(0);
     for (const label of dock) {
       expect(menu, `the dock offers ${label} to a ${name} but the menu does not`).toContain(label);
     }
@@ -93,11 +91,11 @@ describe('the dock and the menu agree, as rendered', () => {
 
   it('paints Certificates on neither surface for a viewer', () => {
     expect(dockLabels({ role: 'viewer' })).not.toContain('Certificates');
-    expect(menuLabels({ role: 'viewer' })).not.toContain('Certificates');
+    expect(navigatorLabels({ role: 'viewer' })).not.toContain('Certificates');
   });
 
   it('paints Certificates on both surfaces for an admin', () => {
     expect(dockLabels({ role: 'admin' })).toContain('Certificates');
-    expect(menuLabels({ role: 'admin' })).toContain('Certificates');
+    expect(navigatorLabels({ role: 'admin' })).toContain('Certificates');
   });
 });

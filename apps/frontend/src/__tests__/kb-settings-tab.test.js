@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SETTINGS_TABS } from '../components/settings/SettingsNav.jsx';
+import { SETTINGS_TABS } from '../data/settingsDestinations.js';
 
 describe('Knowledge Base settings tab', () => {
   it('is registered', () => {

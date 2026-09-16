@@ -1,17 +1,84 @@
-import { SETTINGS_TABS } from '../components/settings/SettingsNav';
+import {
+  BookOpen,
+  Database,
+  Globe,
+  Layers,
+  Palette,
+  Plug,
+  Server,
+  Settings,
+  ShieldCheck,
+} from 'lucide-react';
 import { canEdit, isAdmin } from '../utils/rbac';
+
+export const SETTINGS_TABS = [
+  {
+    id: 'general',
+    label: 'General',
+    icon: Settings,
+    description: 'Basic app configuration and defaults.',
+  },
+  {
+    id: 'appearance',
+    label: 'Appearance',
+    icon: Palette,
+    description: 'Themes, branding, and visual preferences.',
+  },
+  {
+    id: 'resources',
+    label: 'Resources',
+    icon: Layers,
+    description: 'Manage environments, categories, and locations.',
+  },
+  {
+    id: 'device-roles',
+    label: 'Device Roles',
+    icon: Server,
+    description: 'Hardware classification and topology ranking.',
+  },
+  {
+    id: 'connectivity',
+    label: 'Connectivity',
+    icon: Globe,
+    description: 'Auto-discovery and API settings.',
+  },
+  {
+    id: 'integrations',
+    label: 'Integrations',
+    icon: Plug,
+    description: 'NATS, Docker, and external service controls.',
+  },
+  {
+    id: 'kb',
+    label: 'Knowledge Base',
+    icon: BookOpen,
+    description: 'Vendor and hostname hints that discovery uses for naming.',
+    adminOnly: true,
+  },
+  {
+    id: 'security',
+    label: 'Security',
+    icon: ShieldCheck,
+    description: 'Authentication and session management.',
+  },
+  {
+    id: 'system',
+    label: 'System',
+    icon: Database,
+    description: 'Backups, maintenance, and advanced tools.',
+  },
+];
 
 /**
  * The settings half of the navigation registry.
  *
  * SettingsPage used to own the non-admin policy privately (`['integrations']`,
- * inline at SettingsPage.jsx:54) while CommandPalette guessed at it with a
+ * inline at SettingsPage.jsx:54) while the former palette guessed at it with a
  * canEdit check and its own hardcoded `?section=` list. The two disagreed:
  * the palette offered an editor eight settings deep-links, seven of which the
  * page would refuse to render. One exported policy, two consumers.
  *
- * This file may read SETTINGS_TABS but SettingsNav must never read this file —
- * the same one-way dependency data/navigation.js has on data/routeGuards.js.
+ * SettingsNav reads this file. Data never imports a rendered component.
  */
 
 /**
@@ -21,17 +88,68 @@ import { canEdit, isAdmin } from '../utils/rbac';
  * palette's labels: `icons` and `timezone` live in AppearanceSection, not in a
  * tab of their own, and `defaults` is General.
  */
-const TAB_KEYWORDS = {
-  general: ['defaults', 'default environment', 'hints', 'api'],
-  appearance: ['theme', 'timezone', 'icons', 'vendors', 'branding', 'logo', 'fonts', 'widgets'],
+export const SETTINGS_TAB_KEYWORDS = {
+  general: ['defaults', 'default environment', 'hints', 'api', 'external'],
+  appearance: [
+    'theme',
+    'timezone',
+    'icons',
+    'vendors',
+    'branding',
+    'logo',
+    'fonts',
+    'widgets',
+    'dock',
+  ],
   resources: ['categories', 'environments', 'locations'],
-  'device-roles': ['roles', 'classification', 'topology'],
-  connectivity: ['discovery', 'listener', 'mdns', 'ssdp', 'arp'],
-  integrations: ['docker', 'nats', 'opnsense', 'proxmox', 'smtp'],
+  'device-roles': ['roles', 'device', 'hardware', 'classification', 'topology', 'rank'],
+  connectivity: ['discovery', 'listener', 'mdns', 'ssdp', 'arp', 'nmap', 'snmp', 'map'],
+  integrations: [
+    'docker',
+    'container',
+    'nats',
+    'opnsense',
+    'proxmox',
+    'smtp',
+    'cve',
+    'vulnerability',
+    'realtime',
+    'hypervisor',
+    'vm',
+  ],
   kb: ['knowledge base', 'hints', 'hostname', 'vendor'],
-  security: ['authentication', 'auth', 'sessions', 'registration', 'rate limit', 'password'],
-  system: ['backup', 'restore', 'import', 'export', 'transfer', 'maintenance', 'updates'],
+  security: [
+    'authentication',
+    'auth',
+    'login',
+    'sessions',
+    'registration',
+    'rate limit',
+    'password',
+    'audit',
+  ],
+  system: [
+    'backup',
+    'restore',
+    'import',
+    'export',
+    'transfer',
+    'maintenance',
+    'updates',
+    'reset',
+    'clear',
+  ],
 };
+
+export function settingsTabMatches(tab, query) {
+  const needle = String(query ?? '')
+    .trim()
+    .toLowerCase();
+  if (!needle) return true;
+  if (tab.label.toLowerCase().includes(needle)) return true;
+  if (tab.description.toLowerCase().includes(needle)) return true;
+  return (SETTINGS_TAB_KEYWORDS[tab.id] ?? []).some((keyword) => keyword.includes(needle));
+}
 
 /**
  * The single settings-tab visibility policy.
@@ -55,7 +173,7 @@ export function settingsDestinations(user) {
     path: `/settings?tab=${tab.id}`,
     icon: tab.icon,
 
-    keywords: TAB_KEYWORDS[tab.id] ?? [],
+    keywords: SETTINGS_TAB_KEYWORDS[tab.id] ?? [],
   }));
 }
 
@@ -82,6 +200,33 @@ export const LEGACY_SECTION_TO_TAB = {
   system: 'system',
   integrations: 'integrations',
 };
+
+/** Resolve the rendered tab and its canonical, permission-safe query string. */
+export function resolveSettingsTab(searchParams, user) {
+  const params = new URLSearchParams(searchParams);
+  const allowed = allowedSettingsTabs(user);
+  const fallback = allowed[0]?.id ?? null;
+  const requested = params.get('tab');
+  const section = params.get('section');
+  const legacy =
+    section && Object.hasOwn(LEGACY_SECTION_TO_TAB, section)
+      ? // eslint-disable-next-line security/detect-object-injection -- own-property checked above
+        LEGACY_SECTION_TO_TAB[section]
+      : null;
+  const candidate = requested || legacy;
+  const tabId = allowed.some((tab) => tab.id === candidate) ? candidate : fallback;
+
+  const canonicalParams = new URLSearchParams(params);
+  canonicalParams.delete('section');
+  if (tabId) canonicalParams.set('tab', tabId);
+  else canonicalParams.delete('tab');
+
+  return {
+    tabId,
+    canonicalParams,
+    shouldReplace: canonicalParams.toString() !== params.toString(),
+  };
+}
 
 /**
  * Rewrite a legacy settings link. Bookmarks that predate the `?tab=` rename

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { SETTINGS_TABS } from '../components/settings/SettingsNav';
 import {
   LEGACY_SECTION_TO_TAB,
+  SETTINGS_TABS,
   allowedSettingsTabs,
   normalizeSettingsPath,
+  resolveSettingsTab,
+  settingsTabMatches,
   settingsDestinations,
 } from '../data/settingsDestinations';
 
@@ -39,7 +41,7 @@ describe('settingsDestinations', () => {
   });
 
   it('has no Experimental destination', () => {
-    // CommandPalette.jsx:70 offered "Settings: Experimental" pointing at
+    // The former palette offered "Settings: Experimental" pointing at
     // ?section=experimental. No such tab exists in SETTINGS_TABS.
     const ids = settingsDestinations(ADMIN).map((d) => d.id);
     expect(ids).not.toContain('settings:experimental');
@@ -94,5 +96,41 @@ describe('normalizeSettingsPath', () => {
     for (const tab of Object.values(LEGACY_SECTION_TO_TAB)) {
       expect(real.has(tab)).toBe(true);
     }
+  });
+});
+
+describe('resolveSettingsTab', () => {
+  it('normalizes a direct legacy bookmark for an allowed tab', () => {
+    const resolved = resolveSettingsTab(new URLSearchParams('section=timezone'), ADMIN);
+    expect(resolved.tabId).toBe('appearance');
+    expect(resolved.canonicalParams.toString()).toBe('tab=appearance');
+    expect(resolved.shouldReplace).toBe(true);
+  });
+
+  it('keeps an explicit canonical tab and unrelated query state', () => {
+    const resolved = resolveSettingsTab(new URLSearchParams('tab=system&focus=backup'), ADMIN);
+    expect(resolved.tabId).toBe('system');
+    expect(resolved.canonicalParams.toString()).toBe('tab=system&focus=backup');
+    expect(resolved.shouldReplace).toBe(false);
+  });
+
+  it('falls back without rendering an invalid or forbidden tab', () => {
+    expect(resolveSettingsTab(new URLSearchParams('tab=experimental'), ADMIN).tabId).toBe(
+      'general'
+    );
+    expect(resolveSettingsTab(new URLSearchParams('tab=security'), EDITOR).tabId).toBe(
+      'integrations'
+    );
+    expect(resolveSettingsTab(new URLSearchParams('tab=general'), VIEWER).tabId).toBeNull();
+  });
+});
+
+describe('settingsTabMatches', () => {
+  const byId = Object.fromEntries(SETTINGS_TABS.map((tab) => [tab.id, tab]));
+
+  it('uses the shared labels, descriptions, and keyword registry', () => {
+    expect(settingsTabMatches(byId.appearance, 'timezone')).toBe(true);
+    expect(settingsTabMatches(byId['device-roles'], 'topology')).toBe(true);
+    expect(settingsTabMatches(byId.security, 'ssl')).toBe(false);
   });
 });

@@ -142,26 +142,32 @@ export function useNavigationTiming() {
  * route that had not rendered and never would. That is the exact reading the
  * wedge diagnostic branches on, and it sent it to the wrong branch.
  */
-export function useNavigationMountSignal() {
+export function useNavigationMountSignal(onMounted) {
   const location = useLocation();
   // The path this instance mounted with, not whatever the router holds when
   // the effect runs. See the note above: reading the live location here is
   // what let an outgoing instance close an incoming navigation.
   const mountedPathRef = useRef(location.pathname);
+  const mountedLocationRef = useRef({ pathname: location.pathname, search: location.search });
+  const onMountedRef = useRef(onMounted);
 
   useEffect(() => {
     const path = mountedPathRef.current;
     const nav = openNav;
-    if (!nav || nav.path !== path) return;
-    safeMark(`nav:end:${path}`);
-    const durationMs = nowMs() - nav.startTime;
-    // Copy, then total the copy. The stored entry must not keep a reference to
-    // an array anything else can still append to, or the two fields drift apart
-    // the moment a long task is reported late (see the observer above).
-    const longTasks = nav.longTasks.slice();
-    const longTaskTotalMs = longTasks.reduce((sum, task) => sum + (task.duration || 0), 0);
-    nav.closed = true;
-    closeNav(nav.id, { durationMs, longTasks, longTaskTotalMs });
+    if (nav && nav.path === path) {
+      safeMark(`nav:end:${path}`);
+      const durationMs = nowMs() - nav.startTime;
+      // Copy, then total the copy. The stored entry must not keep a reference to
+      // an array anything else can still append to, or the two fields drift apart
+      // the moment a long task is reported late (see the observer above).
+      const longTasks = nav.longTasks.slice();
+      const longTaskTotalMs = longTasks.reduce((sum, task) => sum + (task.duration || 0), 0);
+      nav.closed = true;
+      closeNav(nav.id, { durationMs, longTasks, longTaskTotalMs });
+    }
+    // Consumers such as navigator recents care about the successful mount even
+    // when diagnostics did not open an entry (notably the initial page load).
+    onMountedRef.current?.(mountedLocationRef.current);
     // Empty deps, and intentionally no cleanup: this effect fires exactly once
     // per fresh mount (a new component instance every navigation, via the
     // ancestor's `key`), and `closeNav` is itself idempotent/safe to call once.

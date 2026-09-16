@@ -47,6 +47,9 @@ The Circuit Breaker interface is divided into two main areas:
 
 - **The Map View**: A live, interactive topology map showing how all your documented components connect. Once your lab is set up, this is your primary dashboard.
 - **The Dock**: The icon bar for jumping between Map, Discovery, Agents, Hardware, Compute, Services, Monitors, Storage, External, IPAM, and Settings. Choose which pages appear from **Settings → Navigation Dock**, and drag items in the dock itself to reorder them.
+- **Navigate**: Select **Navigate** in the header, or press **Ctrl+K** (**Cmd+K** on macOS), to open every page available to your role. You can browse by lifecycle group or search pages, Settings sections, and supported assets. Pin frequently used page destinations or revisit one of your six most recent rendered pages without changing the dock.
+
+Selecting a supported asset search result opens that asset's detail panel and keeps its ID in the URL. You can reload, bookmark, or use Back and Forward without losing the selected asset. Press **Escape** or use **Close** to leave the navigator.
 
 ## Example: Documenting Nextcloud
 

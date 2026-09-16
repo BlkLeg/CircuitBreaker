@@ -35,7 +35,7 @@ export const ENTITY_DESTINATIONS = {
   compute_unit: { path: '/compute-units', deepLink: true },
   service: { path: '/services', deepLink: true },
   storage: { path: '/storage', deepLink: true },
-  network: { path: '/ipam', deepLink: true },
+  network: { path: '/ipam?tab=networks', deepLink: true },
   misc_item: { path: '/misc', deepLink: false },
   external_node: { path: '/external-nodes', deepLink: true },
 };
@@ -81,7 +81,8 @@ export function entityDestination(result) {
   const destination = ENTITY_DESTINATIONS[result.entity_type];
   if (!positiveInt(result.entity_id)) return null;
   if (!destination.deepLink) return destination.path;
-  return `${destination.path}?entity=${result.entity_id}`;
+  const separator = destination.path.includes('?') ? '&' : '?';
+  return `${destination.path}${separator}entity=${result.entity_id}`;
 }
 
 /**
@@ -93,7 +94,8 @@ export function entityDestination(result) {
 export function canReachEntity(result, user) {
   if (!result || !Object.hasOwn(ENTITY_DESTINATIONS, result.entity_type)) return false;
 
-  const gate = guardFor(ENTITY_DESTINATIONS[result.entity_type].path);
+  const path = ENTITY_DESTINATIONS[result.entity_type].path.split('?')[0];
+  const gate = guardFor(path);
   if (gate === 'admin') return isAdmin(user);
   if (gate === 'editor') return canEdit(user);
   return true;
@@ -111,11 +113,11 @@ export function buildLocalIndex(user) {
         id: `page:${item.path}`,
         kind: 'page',
         label: item.label,
-        description: null,
+        description: item.description,
         path: item.path,
         icon: item.icon,
         groupLabel: group.label,
-        keywords: [],
+        keywords: item.aliases,
       }))
   );
 

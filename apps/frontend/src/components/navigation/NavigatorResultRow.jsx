@@ -9,6 +9,7 @@ import { Pin, PinOff } from 'lucide-react';
 function NavigatorResultRow({
   entry,
   active,
+  current = false,
   index,
   onActivate,
   onTogglePin = null,
@@ -19,9 +20,9 @@ function NavigatorResultRow({
     <div className={`navigator-row${active ? ' navigator-row--active' : ''}`}>
       <button
         type="button"
-        role="option"
         id={`navigator-option-${index}`}
-        aria-selected={active}
+        data-active={active ? 'true' : undefined}
+        aria-current={current ? 'page' : undefined}
         className="navigator-row-main"
         onClick={() => onActivate(entry)}
       >
@@ -31,10 +32,13 @@ function NavigatorResultRow({
             <span className="navigator-type-badge">{entry.typeLabel}</span>
           ) : null}
         </span>
-        <span className="navigator-row-label">{entry.label}</span>
+        <span className="navigator-row-label">
+          {entry.label}
+          {current ? <span className="navigator-current">Current</span> : null}
+        </span>
         {entry.description ? <span className="navigator-row-desc">{entry.description}</span> : null}
       </button>
-      {onTogglePin && entry.kind !== 'action' ? (
+      {onTogglePin && ['page', 'settings'].includes(entry.kind) ? (
         <button
           type="button"
           className="navigator-row-pin"
@@ -59,6 +63,7 @@ NavigatorResultRow.propTypes = {
     typeLabel: PropTypes.string,
   }).isRequired,
   active: PropTypes.bool.isRequired,
+  current: PropTypes.bool,
   index: PropTypes.number.isRequired,
   onActivate: PropTypes.func.isRequired,
   onTogglePin: PropTypes.func,

@@ -7,6 +7,7 @@ import {
   normalizeRemoteResult,
   scoreEntry,
 } from '../lib/navigationSearch';
+import { NAV_ITEMS_FLAT } from '../data/navigation';
 
 const ADMIN = { role: 'admin' };
 const EDITOR = { role: 'editor' };
@@ -59,7 +60,9 @@ describe('entityDestination', () => {
     // App.jsx:186 is <Navigate to="/ipam" replace />, which discards the query
     // string -- so following the backend /networks action_url would silently
     // drop the entity id.
-    expect(entityDestination(hit({ entity_type: 'network', entity_id: 3 }))).toBe('/ipam?entity=3');
+    expect(entityDestination(hit({ entity_type: 'network', entity_id: 3 }))).toBe(
+      '/ipam?tab=networks&entity=3'
+    );
   });
 
   it('refuses a result it cannot place rather than guessing', () => {
@@ -86,6 +89,15 @@ describe('canReachEntity', () => {
 });
 
 describe('buildLocalIndex', () => {
+  it('has complete, unique page metadata owned by the registry', () => {
+    expect(new Set(NAV_ITEMS_FLAT.map((item) => item.id)).size).toBe(NAV_ITEMS_FLAT.length);
+    for (const item of NAV_ITEMS_FLAT) {
+      expect(item.id).toBeTruthy();
+      expect(item.description).toBeTruthy();
+      expect(item.aliases.length).toBeGreaterThan(0);
+    }
+  });
+
   it('covers pages, settings and actions for an admin', () => {
     const kinds = new Set(buildLocalIndex(ADMIN).map((e) => e.kind));
     expect(kinds).toEqual(new Set(['page', 'settings', 'action']));
@@ -112,6 +124,13 @@ describe('buildLocalIndex', () => {
   it('gives every entry a unique stable id', () => {
     const ids = buildLocalIndex(ADMIN).map((e) => e.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('carries registry descriptions and aliases into page search', () => {
+    const index = buildLocalIndex(ADMIN);
+    expect(matchLocal(index, 'server')[0].path).toBe('/hardware');
+    expect(matchLocal(index, 'topology').some((entry) => entry.path === '/map')).toBe(true);
+    expect(matchLocal(index, 'ssl')[0].path).toBe('/certificates');
   });
 });
 

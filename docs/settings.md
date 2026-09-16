@@ -19,7 +19,7 @@ Circuit Breaker 1.0.0 ships in English and offers no language selection. See
 
 - Theme and branding
 - Icon behavior
-- Dock and quick-navigation options
+- Dock and navigator options
 - Map display defaults and visibility options
 
 ### The dock
@@ -35,6 +35,12 @@ Map, Monitors, Logs, and Settings. An installation upgraded from a release befor
 setting existed keeps the dock it already had, including anything it had hidden.
 
 Preferences are stored per-installation in the `dock_order` setting.
+
+### The navigator
+
+Select **Navigate** in the header, or press **Ctrl+K** (**Cmd+K** on macOS), to search all destinations available to your role. Settings results link directly to their real tab, such as `?tab=security` or `?tab=integrations`; older valid `?section=` bookmarks are normalized automatically. Invalid or unauthorized tab links safely fall back to an allowed Settings tab.
+
+Navigator pins and recent pages are personal browser-local shortcuts. They are separate from the dock, so pinning a destination does not add it to the dock or change the dock's order. Shortcuts are isolated by deployment and user and are rechecked against current permissions before display or activation.
 
 ### Inventory helpers (Resources tab)
 
@@ -103,13 +109,14 @@ Categories are not managed here — they are created inline while editing hardwa
 
 ### System actions
 
-- Full backup (Download Backup)
+- Inventory transfer — portable export, previewed import (merge), and snapshot entry point
 - Clear lab data
 - Database and host diagnostics (admins only)
 - Backup & Recovery — S3 target configuration and test upload (admins only)
 - Factory reset (Reset to Defaults)
 
-Restoring a backup is an API operation, not a Settings control. See [Backup & Restore](backup-restore.md).
+Importing an inventory file is a previewed Settings operation; whole-instance restore is
+still offline. See [Backup & Restore](backup-restore.md).
 
 ---
 

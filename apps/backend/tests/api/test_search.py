@@ -112,5 +112,8 @@ async def test_ip_conflict_returns_safe_structured_metadata(client, auth_headers
     data = response.json()
     assert data["error_code"] == "ip_conflict"
     assert data["fields"] == {"ip_address": "Choose an available address."}
-    assert data["context"]["conflicts"][0]["entity_id"] == first.json()["id"]
-    assert "entity_name" not in data["context"]["conflicts"][0]
+    conflict = data["context"]["conflicts"][0]
+    assert conflict["entity_id"] == first.json()["id"]
+    assert conflict["entity_type"] == "hardware"
+    assert conflict["entity_name"] == "first"
+    assert conflict["conflicting_ip"] == "192.0.2.44"

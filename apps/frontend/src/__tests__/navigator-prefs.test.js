@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   PINS_LIMIT,
   RECENTS_LIMIT,
-  clearNavigatorPrefs,
   namespaceFor,
   readPins,
   readRecents,
@@ -121,15 +120,5 @@ describe('recents', () => {
   it('never records an action', () => {
     recordRecent(NS, 'action:login');
     expect(readRecents(NS)).toEqual([]);
-  });
-});
-
-describe('clearNavigatorPrefs', () => {
-  it('removes this namespace and leaves others intact', () => {
-    writePins(NS, ['page:/map']);
-    writePins('u:9', ['page:/hardware']);
-    clearNavigatorPrefs(NS);
-    expect(readPins(NS)).toEqual([]);
-    expect(readPins('u:9')).toEqual(['page:/hardware']);
   });
 });

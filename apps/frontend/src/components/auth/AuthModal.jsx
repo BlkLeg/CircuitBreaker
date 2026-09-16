@@ -6,7 +6,6 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import { sanitizeImageSrc } from '../../utils/validation.js';
 
 const PHOTO_MAX_BYTES = 10 * 1024 * 1024;
-
 const RULES = [
   { label: 'At least 8 characters', test: (p) => p.length >= 8 },
   { label: 'One uppercase letter (A–Z)', test: (p) => /[A-Z]/.test(p) },

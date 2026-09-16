@@ -127,14 +127,3 @@ export function recordRecent(namespace, id) {
   const current = readRecents(namespace).filter((item) => item !== id);
   return writeList(namespace, 'recents', [id, ...current], RECENTS_LIMIT);
 }
-
-/** Drop this namespace's stored state. Called on logout. */
-export function clearNavigatorPrefs(namespace) {
-  if (!namespace) return;
-  try {
-    localStorage.removeItem(keyFor(namespace, 'pins'));
-    localStorage.removeItem(keyFor(namespace, 'recents'));
-  } catch {
-    // Nothing to clear if storage was never reachable.
-  }
-}

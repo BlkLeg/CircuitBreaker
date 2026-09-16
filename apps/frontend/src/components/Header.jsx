@@ -1,7 +1,7 @@
-import React, { useMemo, useRef, useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import PropTypes from 'prop-types';
-import { Link, useNavigate } from 'react-router-dom';
-import { Search, Moon, Sun, Menu } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Moon, PanelsTopLeft, Sun } from 'lucide-react';
 import UserAvatar from './auth/UserAvatar.jsx';
 import RecentChanges from './common/RecentChanges.jsx';
 import ThemePalette from './ThemePalette';
@@ -9,31 +9,15 @@ import HeaderWidgets from './HeaderWidgets.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext';
 import { settingsApi } from '../api/client';
-import { visibleNavGroups } from '../data/navigation';
 
-function Header({ onOpenPalette }) {
-  const navigate = useNavigate();
+function Header({ onOpenNavigator }) {
   const { openAuthModal, openProfileModal, isAuthenticated, user } = useAuth();
   const { settings, reloadSettings } = useSettings();
   const branding = settings?.branding;
   const appName = branding?.app_name || 'Circuit Breaker';
   const greetingName = user?.display_name || user?.email?.split('@')[0] || 'there';
   const [themeSaving, setThemeSaving] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef(null);
   const isLightTheme = settings?.theme === 'light';
-
-  useEffect(() => {
-    const onOutsideClick = (event) => {
-      if (menuRef.current && !menuRef.current.contains(event.target)) {
-        setMenuOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', onOutsideClick);
-    return () => document.removeEventListener('mousedown', onOutsideClick);
-  }, []);
-
-  const groupedNavItems = useMemo(() => visibleNavGroups(user), [user]);
 
   const handleToggleTheme = async () => {
     if (themeSaving) return;
@@ -94,106 +78,18 @@ function Header({ onOpenPalette }) {
         <HeaderWidgets settings={settings} />
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, pointerEvents: 'auto' }}>
-        <div ref={menuRef} style={{ position: 'relative' }}>
-          <button
-            title="Open route menu"
-            aria-label="Open route menu"
-            onClick={() => setMenuOpen((open) => !open)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              height: 36,
-              border: '1px solid var(--color-border)',
-              borderRadius: 10,
-              background: 'var(--color-surface)',
-              color: 'var(--color-text-muted)',
-              padding: '0 12px',
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: 'pointer',
-            }}
-          >
-            <Menu size={16} />
-            Routes
-          </button>
-
-          {menuOpen && (
-            <div
-              style={{
-                position: 'absolute',
-                top: 'calc(var(--header-height, 52px) - 6px)',
-                right: 0,
-                width: 320,
-                maxHeight: 'min(72vh, 640px)',
-                overflowY: 'auto',
-                background: 'color-mix(in srgb, var(--color-surface) 94%, transparent)',
-                border: '1px solid var(--color-border)',
-                borderRadius: 12,
-                boxShadow: '0 16px 40px rgba(0,0,0,0.35)',
-                backdropFilter: 'blur(20px)',
-                padding: '10px',
-                zIndex: 240,
-              }}
-            >
-              {groupedNavItems.map((group) => (
-                <div key={group.id} style={{ marginBottom: 10 }}>
-                  <div
-                    style={{
-                      color: 'var(--color-text-muted)',
-                      fontSize: 11,
-                      fontWeight: 700,
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.06em',
-                      padding: '4px 8px',
-                    }}
-                  >
-                    {group.label}
-                  </div>
-                  <div style={{ display: 'grid', gap: 4 }}>
-                    {group.items.map((item) => {
-                      const Icon = item.icon;
-                      return (
-                        <button
-                          key={item.path}
-                          onClick={() => {
-                            setMenuOpen(false);
-                            navigate(item.path);
-                          }}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 10,
-                            width: '100%',
-                            textAlign: 'left',
-                            border: '1px solid transparent',
-                            borderRadius: 10,
-                            background: 'transparent',
-                            color: 'var(--color-text)',
-                            padding: '8px 10px',
-                            fontSize: 13,
-                            cursor: 'pointer',
-                          }}
-                          onMouseEnter={(e) => {
-                            e.currentTarget.style.background = 'var(--color-border)';
-                            e.currentTarget.style.borderColor = 'var(--color-border)';
-                          }}
-                          onMouseLeave={(e) => {
-                            e.currentTarget.style.background = 'transparent';
-                            e.currentTarget.style.borderColor = 'transparent';
-                          }}
-                        >
-                          <Icon size={16} />
-                          {item.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        <button
+          type="button"
+          className="navigator-trigger"
+          title="Navigate (Ctrl K)"
+          aria-label="Open navigator"
+          aria-keyshortcuts="Control+K Meta+K"
+          onClick={onOpenNavigator}
+        >
+          <PanelsTopLeft size={16} aria-hidden="true" />
+          <span>Navigate</span>
+          <kbd>Ctrl K</kbd>
+        </button>
         <RecentChanges />
         <ThemePalette placement="header" />
         <button
@@ -226,59 +122,13 @@ function Header({ onOpenPalette }) {
           {isLightTheme ? <Moon size={16} /> : <Sun size={16} />}
         </button>
         <UserAvatar onOpenAuth={openAuthModal} onOpenProfile={openProfileModal} />
-        <button
-          className="search-trigger"
-          onClick={onOpenPalette}
-          aria-label="Open command palette"
-          aria-keyshortcuts="Control+K"
-          style={{
-            pointerEvents: 'auto',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            background: 'var(--color-surface)',
-            border: '1px solid var(--color-border)',
-            borderRadius: '8px',
-            padding: '7px 14px',
-            color: 'var(--color-text-muted)',
-            fontSize: '13px',
-            cursor: 'pointer',
-            transition: 'all 0.2s ease',
-            width: '260px',
-            maxWidth: 'calc(100vw - 32px)',
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = 'var(--color-surface)';
-            e.currentTarget.style.borderColor = 'var(--color-primary)';
-            e.currentTarget.style.color = 'var(--color-text)';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = 'var(--color-surface)';
-            e.currentTarget.style.borderColor = 'var(--color-border)';
-            e.currentTarget.style.color = 'var(--color-text-muted)';
-          }}
-        >
-          <Search size={14} />
-          <span>Type a command or search...</span>
-          <span
-            style={{
-              marginLeft: 'auto',
-              fontSize: '11px',
-              background: 'var(--color-border)',
-              padding: '2px 6px',
-              borderRadius: '4px',
-            }}
-          >
-            Ctrl K
-          </span>
-        </button>
       </div>
     </header>
   );
 }
 
 Header.propTypes = {
-  onOpenPalette: PropTypes.func.isRequired,
+  onOpenNavigator: PropTypes.func.isRequired,
 };
 
 export default Header;

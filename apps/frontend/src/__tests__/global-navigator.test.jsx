@@ -48,8 +48,27 @@ describe('GlobalNavigator', () => {
   it('shows the approved browse groups by default', () => {
     open();
     for (const group of ['Acquire', 'Inventory', 'Observe', 'Govern', 'System']) {
-      expect(screen.getByText(group)).toBeTruthy();
+      expect(screen.getByTestId(`navigator-group-count-${group.toLowerCase()}`)).toBeTruthy();
     }
+  });
+
+  it('shows only approved modes and all lifecycle category filters', () => {
+    open();
+    expect(screen.getByRole('button', { name: /All pages/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Recent/i })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Planned/i })).toBeNull();
+    for (const label of ['Everything', 'Acquire', 'Inventory', 'Observe', 'Govern', 'System']) {
+      expect(screen.getByRole('button', { name: label })).toBeTruthy();
+    }
+  });
+
+  it('filters browse rows by category without limiting search', async () => {
+    open();
+    fireEvent.click(screen.getByRole('button', { name: 'Observe' }));
+    expect(screen.getByText('Monitors')).toBeTruthy();
+    expect(screen.queryByText('Hardware')).toBeNull();
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'hardware' } });
+    await waitFor(() => expect(screen.getByText('Hardware')).toBeTruthy());
   });
 
   it('focuses the search field on open', async () => {
@@ -90,13 +109,16 @@ describe('GlobalNavigator', () => {
   it('moves the highlight with the arrow keys', async () => {
     open();
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'a' } });
-    await waitFor(() => expect(screen.getAllByRole('option').length).toBeGreaterThan(1));
-    const first = screen.getAllByRole('option')[0];
-    expect(first.getAttribute('aria-selected')).toBe('true');
+    await waitFor(() =>
+      expect(document.querySelectorAll('.navigator-row-main').length).toBeGreaterThan(1)
+    );
+    const rows = [...document.querySelectorAll('.navigator-row-main')];
+    const first = rows[0];
+    expect(first.getAttribute('data-active')).toBe('true');
     fireEvent.keyDown(screen.getByRole('searchbox'), { key: 'ArrowDown' });
-    expect(screen.getAllByRole('option')[1].getAttribute('aria-selected')).toBe('true');
+    expect(rows[1].getAttribute('data-active')).toBe('true');
     fireEvent.keyDown(screen.getByRole('searchbox'), { key: 'ArrowUp' });
-    expect(screen.getAllByRole('option')[0].getAttribute('aria-selected')).toBe('true');
+    expect(rows[0].getAttribute('data-active')).toBe('true');
   });
 
   it('closes on Escape', () => {
@@ -148,7 +170,7 @@ describe('GlobalNavigator', () => {
     cleanup();
     mockAuth.current = { user: { id: 999, role: 'admin' }, isMasquerade: false };
     open();
-    expect(screen.queryByText('Pinned')).toBeNull();
+    expect(document.querySelector('.navigator-pinned button')).toBeNull();
   });
 
   it('traps focus inside the panel when it lands outside after Tab', async () => {
@@ -167,6 +189,34 @@ describe('GlobalNavigator', () => {
 
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('searchbox')));
     document.body.removeChild(outside);
+  });
+
+  it('loops Tab and Shift+Tab across every interactive control', () => {
+    open();
+    const dialog = screen.getByRole('dialog');
+    const controls = [...dialog.querySelectorAll('button:not([disabled]), input:not([disabled])')];
+    const first = controls[0];
+    const last = controls.at(-1);
+
+    last.focus();
+    fireEvent.keyDown(last, { key: 'Tab' });
+    expect(document.activeElement).toBe(first);
+
+    first.focus();
+    fireEvent.keyDown(first, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(last);
+  });
+
+  it('marks the current page without relying on color alone', () => {
+    render(
+      <MemoryRouter initialEntries={['/hardware']}>
+        <GlobalNavigator isOpen onClose={vi.fn()} onNavigate={vi.fn()} />
+      </MemoryRouter>
+    );
+    const hardware = document.querySelector('.navigator-row-main[aria-current="page"]');
+    expect(hardware).toBeTruthy();
+    expect(hardware).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByText('Current')).toBeTruthy();
   });
 
   it('exposes each result group as a labelled ARIA group', () => {

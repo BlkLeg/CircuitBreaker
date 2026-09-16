@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import PropTypes from 'prop-types';
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { I18nextProvider } from 'react-i18next';
 import i18n from './i18n';
@@ -11,7 +12,7 @@ import { authApi } from './api/auth.js';
 import ErrorBoundary from './components/ErrorBoundary';
 import MacOSDOCK from './components/MacOSDOCK';
 import Header from './components/Header';
-import CommandPalette from './components/CommandPalette';
+import GlobalNavigator from './components/navigation/GlobalNavigator.jsx';
 import AuthModal from './components/auth/AuthModal.jsx';
 import ProfileModal from './components/auth/ProfileModal.jsx';
 import MiscPage from './pages/MiscPage';
@@ -27,6 +28,8 @@ import UpdateBanner from './components/UpdateBanner.jsx';
 import ServerLifecycleBanner from './components/ServerLifecycleBanner.jsx';
 import LoadingScreen from './components/common/LoadingScreen.jsx';
 import Guarded from './components/common/Guarded';
+import { canSeeNavItem, navGroupOf, navItem } from './data/navigation';
+import { namespaceFor, recordRecent } from './lib/navigatorPrefs';
 
 /**
  * `/discovery/history` folded into `/discovery` — carrying the query string.
@@ -79,12 +82,25 @@ const PrivacyPage = lazyRoute('PrivacyPage', () => import('./pages/PrivacyPage')
 const NotificationsPage = lazyRoute('NotificationsPage', () => import('./pages/NotificationsPage'));
 const IntelPage = lazyRoute('IntelPage', () => import('./pages/IntelPage'));
 
-function AppInner() {
-  const [paletteOpen, setPaletteOpen] = useState(false);
-  const { authModalOpen, setAuthModalOpen, profileModalOpen, setProfileModalOpen, isMasquerade } =
-    useAuth();
+// Exported for __tests__/navigator-wiring.test.jsx: this is the unit that owns
+// navigator state, the Ctrl/Cmd+K listener, activation, and recent
+// recording — U4's wiring guarantees are AppInner's, not the whole bootstrap
+// tree's, so the test renders exactly this and not App.
+export function AppInner() {
+  const [navigatorOpen, setNavigatorOpen] = useState(false);
+  const {
+    authModalOpen,
+    setAuthModalOpen,
+    profileModalOpen,
+    setProfileModalOpen,
+    openAuthModal,
+    openProfileModal,
+    isMasquerade,
+    user,
+  } = useAuth();
   const toast = useToast();
   const location = useLocation();
+  const navigate = useNavigate();
   const pathnameRef = useRef(location.pathname);
   pathnameRef.current = location.pathname;
 
@@ -114,14 +130,45 @@ function AppInner() {
     return () => discoveryEmitter.off('job:update', onJobUpdate);
   }, [toast]);
 
-  const handleClosePalette = useCallback(() => setPaletteOpen(false), []);
-  const handleOpenPalette = useCallback(() => setPaletteOpen(true), []);
+  const handleCloseNavigator = useCallback(() => setNavigatorOpen(false), []);
+  const handleOpenNavigator = useCallback(() => setNavigatorOpen(true), []);
+  const navigatorNamespace = useMemo(
+    () => namespaceFor({ user, isMasquerade }),
+    [user, isMasquerade]
+  );
+
+  const handleNavigatorActivate = useCallback(
+    (entry) => {
+      if (entry.path) {
+        navigate(entry.path);
+        return;
+      }
+      if (entry.actionFn === 'openAuthModal') openAuthModal();
+      if (entry.actionFn === 'openProfileModal') openProfileModal();
+    },
+    [navigate, openAuthModal, openProfileModal]
+  );
+
+  const handleRouteMounted = useCallback(
+    ({ pathname }) => {
+      const canonical = /^\/agents\/[^/]+/.test(pathname)
+        ? '/agents'
+        : /^\/monitors\/[^/]+/.test(pathname)
+          ? '/monitors'
+          : pathname;
+      const item = navItem(canonical);
+      const group = navGroupOf(canonical);
+      if (!item || !group || !canSeeNavItem(item, group, user)) return;
+      recordRecent(navigatorNamespace, `page:${item.path}`);
+    },
+    [navigatorNamespace, user]
+  );
 
   useEffect(() => {
     const handler = (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k' && !e.repeat && !e.isComposing) {
         e.preventDefault();
-        setPaletteOpen((v) => !v);
+        setNavigatorOpen((open) => !open);
       }
     };
     globalThis.addEventListener('keydown', handler);
@@ -130,8 +177,12 @@ function AppInner() {
 
   return (
     <div className="app-shell">
-      <CommandPalette isOpen={paletteOpen} onClose={handleClosePalette} />
-      <Header onOpenPalette={handleOpenPalette} />
+      <GlobalNavigator
+        isOpen={navigatorOpen}
+        onClose={handleCloseNavigator}
+        onNavigate={handleNavigatorActivate}
+      />
+      <Header onOpenNavigator={handleOpenNavigator} />
       <MasqueradeBanner />
       <ConnectionStatus discoveryConnected={discoveryConnected} />
       <div
@@ -176,7 +227,7 @@ function AppInner() {
                   incoming route has actually rendered — see
                   hooks/useNavigationTiming.js.
                 */}
-                <NavigationMountSignal />
+                <NavigationMountSignal onMounted={handleRouteMounted} />
                 <Routes location={location}>
                   <Route path="/" element={<Navigate to="/map" replace />} />
                   <Route path="/hardware" element={<HardwarePage />} />
@@ -301,10 +352,14 @@ function NavigationTimingWatcher() {
 // wraps it (see AppInner below) — the other half of useNavigationTiming.js.
 // Renders nothing; its only job is the mount effect useNavigationMountSignal
 // runs, which closes out whatever nav useNavigationTiming() opened.
-function NavigationMountSignal() {
-  useNavigationMountSignal();
+function NavigationMountSignal({ onMounted }) {
+  useNavigationMountSignal(onMounted);
   return null;
 }
+
+NavigationMountSignal.propTypes = {
+  onMounted: PropTypes.func,
+};
 
 // Preserves query-string (e.g. ?cb_auth_code= for OAuth exchange) when redirecting to /login
 function NavigateToLogin() {
