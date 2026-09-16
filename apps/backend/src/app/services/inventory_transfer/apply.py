@@ -177,6 +177,14 @@ def apply_import(
         name: {int(item["source_id"]): item for item in items}
         for name, items in preview.plan_json["mappings"].items()
     }
+    ref_overrides = {
+        entity_type: {int(source_id): overrides for source_id, overrides in rows.items()}
+        for entity_type, rows in (preview.plan_json.get("ref_overrides") or {}).items()
+    }
+    relation_overrides = {
+        relation_type: {int(index): overrides for index, overrides in rows.items()}
+        for relation_type, rows in (preview.plan_json.get("relation_overrides") or {}).items()
+    }
     mapping: dict[str, dict[int, int]] = {name: {} for name in ENTITY_FIELDS}
     created: dict[str, int] = {name: 0 for name in ENTITY_FIELDS}
     matched: dict[str, int] = {name: 0 for name in ENTITY_FIELDS}
@@ -184,6 +192,7 @@ def apply_import(
     for entity_type in _ENTITY_ORDER:
         model: Any = _ENTITY_MODELS[entity_type]
         refs = _INTERNAL_REFS.get(entity_type, {})
+        entity_overrides = ref_overrides.get(entity_type, {})
         for source in document.entities.get(entity_type, []):
             source_id = int(source["id"])
             action = actions[entity_type].get(source_id)
@@ -196,9 +205,14 @@ def apply_import(
                 matched[entity_type] += 1
                 continue
             values = {key: value for key, value in source.items() if key != "id"}
+            overrides = entity_overrides.get(source_id, {})
             for field, target_type in refs.items():
                 if field in values:
-                    values[field] = _remap(values[field], target_type, mapping)
+                    if field in overrides:
+                        values[field] = overrides[field]
+                    else:
+                        values[field] = _remap(values[field], target_type, mapping)
+            values.update(action.get("overrides") or {})
             row = model(**values)
             db.add(row)
             db.flush()
@@ -208,20 +222,33 @@ def apply_import(
     relationships_created: dict[str, int] = {}
     for relation_type, rows in document.relationships.items():
         model = _RELATION_MODELS[relation_type]
+        row_overrides = relation_overrides.get(relation_type, {})
         count = 0
-        for source in rows:
+        for index, source in enumerate(rows, start=1):
             values = dict(source)
+            overrides = row_overrides.get(index, {})
             if relation_type in {"entity_tags", "entity_docs"}:
                 source_type = _ATTACHMENT_TYPE.get(str(values["entity_type"]))
                 if source_type is None:
                     raise ValidationError("An attachment uses an unsupported entity type.")
-                values["entity_id"] = _remap(values["entity_id"], source_type, mapping)
+                values["entity_id"] = (
+                    overrides["entity_id"]
+                    if "entity_id" in overrides
+                    else _remap(values["entity_id"], source_type, mapping)
+                )
                 target_field = "tag_id" if relation_type == "entity_tags" else "doc_id"
                 target_type = "tags" if relation_type == "entity_tags" else "docs"
-                values[target_field] = _remap(values[target_field], target_type, mapping)
+                values[target_field] = (
+                    overrides[target_field]
+                    if target_field in overrides
+                    else _remap(values[target_field], target_type, mapping)
+                )
             else:
                 for field, target_type in _RELATION_REFS[relation_type].items():
-                    values[field] = _remap(values.get(field), target_type, mapping)
+                    if field in overrides:
+                        values[field] = overrides[field]
+                    else:
+                        values[field] = _remap(values.get(field), target_type, mapping)
             db.add(model(**{key: values.get(key) for key in RELATIONSHIP_FIELDS[relation_type]}))
             count += 1
         relationships_created[relation_type] = count
