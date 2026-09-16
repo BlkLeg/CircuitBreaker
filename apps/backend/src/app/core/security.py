@@ -486,7 +486,15 @@ def touch_api_token_last_used(db: Session, row: Any) -> None:
         try:
             db.rollback()
         except Exception:
-            pass
+            # A rollback that itself fails leaves the session unusable for the
+            # rest of the request, which is worth a line even though the stamp
+            # is best-effort — swallowing it is how that turns into a confusing
+            # downstream error with no origin.
+            _logger.debug(
+                "[security] rollback after a failed last_used_at touch also failed for token %s",
+                getattr(row, "id", None),
+                exc_info=True,
+            )
         _logger.debug(
             "[security] last_used_at touch failed for token %s: %s",
             getattr(row, "id", None),
