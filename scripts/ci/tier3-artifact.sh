@@ -271,6 +271,28 @@ t3::record_cb_cli() {
     # Phase 1 makes the documented operator CLI part of the package contract.
     [ -x /usr/local/bin/cb ] || fail "package did not install executable /usr/local/bin/cb"
     /usr/local/bin/cb --help > "$EVIDENCE/cb-help.txt" 2>&1
+
+    # Install identity + parseable doctor JSON (install-diagnosis simplification).
+    [ -f /etc/circuit-breaker/install-identity.json ] \
+        || fail "package postinstall did not write /etc/circuit-breaker/install-identity.json"
+    /usr/local/bin/cb info --json > "$EVIDENCE/cb-info.json" 2>"$EVIDENCE/cb-info.err" \
+        || fail "cb info --json failed"
+    python3 - "$EVIDENCE/cb-info.json" <<'PY' || fail "cb info --json is not valid JSON / wrong mode"
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data.get("mode") == "package", data
+assert data.get("schema_version") == 1, data
+PY
+    # Doctor may exit non-zero when deps are incomplete; stdout must still parse.
+    set +e
+    /usr/local/bin/cb doctor --json > "$EVIDENCE/cb-doctor.json" 2>"$EVIDENCE/cb-doctor.err"
+    set -e
+    python3 - "$EVIDENCE/cb-doctor.json" <<'PY' || fail "cb doctor --json is not a JSON array"
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert isinstance(data, list), type(data)
+assert data, "doctor returned an empty list"
+PY
 }
 
 t3::start_and_wait_ready() {

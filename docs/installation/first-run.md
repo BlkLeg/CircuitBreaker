@@ -40,7 +40,19 @@ Circuit Breaker accepts the token from one of two places:
 
 The token is never returned by the public status API or shown in the browser. It expires after 24 hours by default. To change the lifetime before setup, set `CB_SETUP_TOKEN_TTL_HOURS` to a value from `1` to `168`.
 
-If the generated token expires or is lost before setup completes, restart the backend or reload the setup status page to generate a fresh private token file. After bootstrap succeeds, the token is consumed and cannot be replayed.
+If the generated token expires or is lost before setup completes, restart the backend
+so a fresh private token file is issued, then retrieve it with:
+
+```bash
+cb setup-token
+```
+
+Do not paste the token into `cb doctor`, logs, or support bundles. After bootstrap
+succeeds, the token is consumed and cannot be replayed.
+
+Interrupted first-run (container restart before account creation) leaves setup
+available: backend `needs_bootstrap` is the source of truth. There is no
+`.oobe-complete` marker to delete.
 
 #### Local Account
 
@@ -51,7 +63,7 @@ Fill in:
 - **Password** — must be at least 8 characters with uppercase, lowercase, a digit, and a special character
 - **Confirm Password**
 
-Your **profile photo** is pulled from [Gravatar](https://gravatar.com) automatically based on your email. Click the avatar preview to upload a custom JPEG or PNG. The upload form says 10 MB, but the server rejects anything over **5 MB** — keep it under 5 MB.
+Your **profile photo** is pulled from [Gravatar](https://gravatar.com) automatically based on your email. Click the avatar preview to upload a custom JPEG or PNG. Keep uploads under **5 MB** (server limit).
 
 #### OAuth / SSO Account
 

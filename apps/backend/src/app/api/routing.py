@@ -54,6 +54,7 @@ from app.api.branding import router as branding_router
 from app.api.capabilities import router as capabilities_router
 from app.api.certificates import router as certificates_router
 from app.api.cve import router as cve_router
+from app.api.diagnostics import router as diagnostics_router
 from app.api.discovery import router as discovery_router
 from app.api.events import router as events_router
 from app.api.health import router as health_router
@@ -357,6 +358,12 @@ def include_all_routers(app: FastAPI) -> None:
         admin_db_router,
         prefix=f"{_V1}/admin",
         tags=["admin-db"],
+        dependencies=[Depends(require_auth)],
+    )
+    app.include_router(
+        diagnostics_router,
+        prefix=f"{_V1}/admin",
+        tags=["admin-diagnostics"],
         dependencies=[Depends(require_auth)],
     )
     app.include_router(

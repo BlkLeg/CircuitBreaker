@@ -37,27 +37,20 @@ keep the B15 limits on it rather than have them quietly stop being applied.
 import asyncio
 import logging
 import os
-import time
-from pathlib import Path
 from typing import Any
 
 from nats.js.api import RetentionPolicy
 
 from app.core.nats_client import nats_client
+from app.core.worker_heartbeat import touch_heartbeat
 from app.workers.stream_limits import update_stream_limits
 
 logger = logging.getLogger(__name__)
 
-_HEALTHY_FILE = Path("/data/worker-discovery.healthy")
-
 
 def _touch_healthy() -> None:
-    """Update heartbeat file so the container healthcheck can verify liveness."""
-    try:
-        _HEALTHY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _HEALTHY_FILE.write_text(str(time.time()))
-    except OSError:
-        pass
+    """Update heartbeat file so health/diagnostics can verify liveness."""
+    touch_heartbeat("worker-discovery")
 
 
 async def process_job(msg: Any, semaphore: asyncio.Semaphore) -> None:

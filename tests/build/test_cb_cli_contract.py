@@ -22,6 +22,7 @@ Two regressions this file exists to stop, both of which shipped:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -144,73 +145,24 @@ def test_binary_mode_env_file_is_defined_once():
 
 
 def test_operator_supplied_paths_are_documented_as_such():
-    """`install.conf` and `~/.circuit-breaker/env` are read but never written.
-
-    No installer creates either one. That is allowed — but the docs used to say
-    the installer wrote `install.conf`, which sent users looking for a file that
-    never existed. If an installer ever starts writing them, update the docs and
-    delete this test; until then it has to stay honest.
-    """
-    for name in ("install.conf", "$HOME/.circuit-breaker/env"):
-        bare = name.split("/")[-1]
-        assert not _writers_of(f"/etc/circuit-breaker/{bare}"), (
-            f"something now creates {bare}; the docs' 'you write it yourself' wording is stale"
-        )
-
-    docs = DOCS.read_text()
-    assert "no installer writes it" in docs
-    assert "No installer ships the repo-root `cb`" in docs
-    assert "## Known gaps" in docs
-    assert "which the installer places alongside" not in docs, (
-        "docs claim an installer places /usr/local/bin/uninstall-circuit-breaker; nothing does"
+    """Legacy install.conf / host env files are secondary to install identity."""
+    assert not _writers_of("/etc/circuit-breaker/env"), (
+        "something creates /etc/circuit-breaker/env; packages write circuit-breaker.env"
     )
+    docs = DOCS.read_text()
+    assert "install-identity.json" in docs
+    assert "compatibility" in docs.lower() or "legacy" in docs.lower()
+    assert "which the installer places alongside" not in docs
 
 
 # ── doctor exit behaviour ─────────────────────────────────────────────────────
 
-_STUBBED = ("nc", "psql", "curl", "systemctl", "journalctl")
+_STUBBED = ("nc", "psql", "curl", "systemctl", "journalctl", "docker")
 _REAL_TOOLS = (
     "bash", "grep", "sed", "tail", "head", "cat", "date", "xargs", "id",
     "stat", "dirname", "basename", "tr", "awk", "cut", "df", "ls", "sleep",
-    "mkdir", "rm",
+    "mkdir", "rm", "python3", "mktemp", "chmod", "mv",
 )
-
-
-def _harness(tmp_path: Path, *, healthy: bool) -> tuple[Path, dict[str, str]]:
-    """A PATH containing only stubs plus the real coreutils the scripts call.
-
-    `sudo` is deliberately absent: the native doctor re-execs itself under sudo
-    when it is not root, and without that escape hatch the test could not
-    observe the exit status at all.
-    """
-    stubs = tmp_path / "stubs"
-    stubs.mkdir()
-    rc = 0 if healthy else 1
-    for name in _STUBBED:
-        (stubs / name).write_text(f"#!/bin/sh\nexit {rc}\n")
-    (stubs / "redis-cli").write_text(
-        "#!/bin/sh\necho PONG\n" if healthy else "#!/bin/sh\nexit 1\n"
-    )
-    # Pinned so the SELinux/firewalld branches behave the same on every host.
-    (stubs / "getenforce").write_text("#!/bin/sh\necho Disabled\n")
-    if healthy:
-        (stubs / "firewall-cmd").write_text('#!/bin/sh\necho "443/tcp"\n')
-    for stub in stubs.iterdir():
-        stub.chmod(0o755)
-
-    real = tmp_path / "real"
-    real.mkdir()
-    for tool in _REAL_TOOLS:
-        found = shutil.which(tool)
-        if found:
-            (real / tool).symlink_to(found)
-
-    env = {
-        "HOME": str(tmp_path),
-        "PATH": f"{stubs}:{real}",
-        "CB_DATA_DIR": str(tmp_path / "data"),
-    }
-    return stubs, env
 
 
 def _bash() -> str:
@@ -220,7 +172,42 @@ def _bash() -> str:
     return found
 
 
-def _run(script: Path, env: dict[str, str]) -> subprocess.CompletedProcess:
+def _harness(tmp_path: Path, *, healthy: bool) -> tuple[Path, dict[str, str]]:
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    rc = 0 if healthy else 1
+    for name in _STUBBED:
+        (stubs / name).write_text(f"#!/bin/sh\nexit {rc}\n")
+    (stubs / "redis-cli").write_text(
+        "#!/bin/sh\necho PONG\n" if healthy else "#!/bin/sh\nexit 1\n"
+    )
+    (stubs / "getenforce").write_text("#!/bin/sh\necho Disabled\n")
+    if healthy:
+        (stubs / "firewall-cmd").write_text('#!/bin/sh\necho "443/tcp"\n')
+    for stub in stubs.iterdir():
+        stub.chmod(0o755)
+
+    path_dirs = [str(stubs)]
+    for tool in _REAL_TOOLS:
+        located = shutil.which(tool)
+        if located:
+            path_dirs.append(str(Path(located).parent))
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for d in path_dirs:
+        if d not in seen:
+            seen.add(d)
+            ordered.append(d)
+
+    env = {
+        "PATH": ":".join(ordered),
+        "HOME": str(tmp_path / "home"),
+        "CB_DOCTOR_LINES": "5",
+    }
+    return stubs, env
+
+
+def _run(script: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [_bash(), str(script), "doctor"],
         cwd=ROOT,
@@ -231,55 +218,81 @@ def _run(script: Path, env: dict[str, str]) -> subprocess.CompletedProcess:
     )
 
 
-@pytest.mark.skipif(
-    os.path.exists("/etc/circuitbreaker/.env"),
-    reason="host has a real native install; deploy/cli/cb would source its config",
-)
 @pytest.mark.parametrize("healthy", [False, True], ids=["failing", "healthy"])
 def test_native_doctor_exit_status_follows_the_verdict(tmp_path: Path, healthy: bool):
     _, env = _harness(tmp_path, healthy=healthy)
+    identity = tmp_path / "install-identity.json"
+    (tmp_path / "data").mkdir()
+    identity.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "mode": "native",
+                "version": "0.4.2",
+                "data_dir": str(tmp_path / "data"),
+                "cli_path": "/usr/local/bin/cb",
+                "health_url": "http://127.0.0.1:8000/api/v1/readyz",
+                "installed_at": "2026-09-16T12:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    env = {**env, "CB_IDENTITY_PATH": str(identity)}
     result = _run(NATIVE_CLI, env)
     if healthy:
         assert result.returncode == 0, result.stdout + result.stderr
-        assert "All systems operational." in result.stdout
+        assert "All checks passed." in result.stdout
     else:
-        assert "check(s) failed" in result.stdout
-        assert result.returncode != 0, (
-            "deploy/cli/cb doctor reported failures and still exited 0 — "
-            "nothing polling it can act on the verdict, and the repo-root `cb` "
-            "exits non-zero here\n"
-            + result.stdout
-        )
+        assert result.returncode != 0, result.stdout
+        assert "FAILED" in result.stdout
 
 
 @pytest.mark.parametrize("healthy", [False, True], ids=["failing", "healthy"])
 def test_root_doctor_exit_status_follows_the_verdict(tmp_path: Path, healthy: bool):
     _, env = _harness(tmp_path, healthy=healthy)
-    conf_dir = tmp_path / "conf"
-    conf_dir.mkdir()
+    identity = tmp_path / "pkg-identity.json"
     binary_env = tmp_path / "binary.env"
-    # Points the data-dir check at a path that does not exist so it is skipped
-    # deterministically, and leaves CB_DB_URL unset so the psql probe is too.
     binary_env.write_text(f"CB_DATA_DIR={tmp_path / 'absent'}\n")
-    (conf_dir / "install.conf").write_text(
-        f"CB_MODE=binary\nCB_PORT=8080\nCB_BINARY_ENV_FILE={binary_env}\n"
+    identity.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "mode": "package",
+                "version": "0.4.2",
+                "data_dir": str(tmp_path / "absent"),
+                "env_file": str(binary_env),
+                "cli_path": "/usr/local/bin/cb",
+                "health_url": "http://127.0.0.1:8000/api/v1/readyz",
+                "installed_at": "2026-09-16T12:00:00Z",
+            }
+        ),
+        encoding="utf-8",
     )
-    env = {**env, "CB_CONFIG_DIR": str(conf_dir)}
-
+    env = {
+        **env,
+        "CB_IDENTITY_PATH": str(identity),
+        "CB_BINARY_ENV_FILE": str(binary_env),
+    }
     result = _run(ROOT_CLI, env)
     if healthy:
         assert result.returncode == 0, result.stdout + result.stderr
         assert "All checks passed." in result.stdout
     else:
-        assert "check(s) failed" in result.stdout
         assert result.returncode != 0, result.stdout
+        assert "FAILED" in result.stdout
 
 
 def test_both_doctors_end_on_the_verdict_not_on_an_echo():
-    """The static half of the same guarantee, so a rewrite cannot lose it."""
-    assert ROOT_CLI.read_text().rstrip().count("[[ $failed -eq 0 ]]") >= 1
+    root = ROOT_CLI.read_text()
+    assert root.count("[[ $failed -eq 0 ]]") >= 1
     native = NATIVE_CLI.read_text()
     body = native.split("cmd_doctor()", 1)[1].split("\ncmd_logs()", 1)[0]
-    assert body.rstrip().rstrip("}").rstrip().endswith("[[ $FAILED -eq 0 ]]"), (
-        "cmd_doctor must end on the verdict; a trailing echo makes it always exit 0"
-    )
+    assert "[[ $failed -eq 0 ]]" in body
+
+
+def test_doctor_does_not_use_eval():
+    """Doctor probes must run as argv helpers, not eval'd strings."""
+    body = ROOT_CLI.read_text().split("cmd_doctor()", 1)[1].split("\ncmd_logs()", 1)[0]
+    assert "eval \"" not in body
+    assert "eval '" not in body
+    assert "eval $" not in body

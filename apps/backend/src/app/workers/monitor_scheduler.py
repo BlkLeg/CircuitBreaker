@@ -11,19 +11,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Any
 
 from app.core.job_lock import _lock_id_for, advisory_unlock, try_advisory_lock
 from app.core.nats_client import nats_client
+from app.core.worker_heartbeat import touch_heartbeat
 from app.services.monitoring import probe_reconcile
 from app.services.monitoring.scheduler import enqueue_due
 
 logger = logging.getLogger(__name__)
 
-_HEALTHY_FILE = Path("/data/worker-monitor-scheduler.healthy")
 _TICK_S = float(os.getenv("CB_MONITOR_SCHED_TICK_S", "1.0"))
 _BATCH = int(os.getenv("CB_MONITOR_SCHED_BATCH", "200"))
 # D-2 fair sharing: no vantage (the server, or any one agent) may take more
@@ -35,11 +33,7 @@ _LOCK_NAME = "monitor_scheduler"
 
 
 def _touch_healthy() -> None:
-    try:
-        _HEALTHY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _HEALTHY_FILE.write_text(str(time.time()))
-    except OSError:
-        pass
+    touch_heartbeat("worker-monitor-scheduler")
 
 
 async def tick(

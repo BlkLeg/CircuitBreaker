@@ -624,6 +624,50 @@ stage_docker_deploy() {
 
   cb_install_helper_daemon "${install_dir}"
 
+  # Host-side install identity (operator tooling on the Docker host).
+  local identity_lib=""
+  for identity_lib in \
+    "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/deploy/lib/install-identity.sh" \
+    /usr/local/lib/circuitbreaker/install-identity.sh
+  do
+    [[ -f "$identity_lib" ]] && break
+    identity_lib=""
+  done
+  local host_identity_dir="${target_home}/.circuit-breaker"
+  mkdir -p "${host_identity_dir}"
+  if [[ -n "$identity_lib" ]]; then
+    # shellcheck source=/dev/null
+    source "$identity_lib"
+    local mono_version="${version:-latest}"
+    write_install_identity "${host_identity_dir}/install-identity.json" \
+      mode=mono \
+      version="$mono_version" \
+      data_dir=/data \
+      env_file="${install_dir}/.env" \
+      container_name=circuitbreaker \
+      compose_file="${install_dir}/docker-compose.yml" \
+      cli_path=/usr/local/bin/cb \
+      health_url=http://127.0.0.1:8080/api/v1/readyz \
+      || cb_warn "Could not write host install identity"
+    # Legacy install.conf for one-release compatibility.
+    cat > "${host_identity_dir}/install.conf" <<EOF
+CB_MODE=docker
+CB_CONTAINER=circuitbreaker
+CB_PORT=8080
+CB_DATA_DIR=/data
+CB_INSTALL_DIR=${install_dir}
+CB_COMPOSE_FILE=${install_dir}/docker-compose.yml
+EOF
+    # Install host cb from checkout when available.
+    local repo_cb
+    repo_cb="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/cb"
+    if [[ -f "$repo_cb" ]]; then
+      install -Dm755 "$repo_cb" /usr/local/bin/cb 2>/dev/null \
+        || sudo install -Dm755 "$repo_cb" /usr/local/bin/cb 2>/dev/null \
+        || cb_warn "Could not install /usr/local/bin/cb — copy ${repo_cb} manually"
+    fi
+  fi
+
   # Everything below this line is the payoff for everything above it — the
   # install directory, the access URLs, the commands the operator needs next —
   # and nothing here is allowed to abort. This lookup in particular is cosmetic:
@@ -657,7 +701,12 @@ stage_docker_deploy() {
   cb_ok "Docker deployment complete"
   echo -e "  ${BOLD}Install directory:${RESET} ${install_dir}"
   echo -e "  ${BOLD}Access URLs:${RESET} https://${host_ip}/ or http://${host_ip}/"
+  echo -e "  ${BOLD}Health:${RESET} http://${host_ip}/api/v1/readyz"
+  echo -e "  ${BOLD}Next:${RESET} open the Access URL and complete first-run setup (cb setup-token)."
   echo -e "  ${BOLD}Useful commands:${RESET}"
+  echo -e "    cb info"
+  echo -e "    cb doctor"
+  echo -e "    cb setup"
   echo -e "    cd ${install_dir} && docker compose ps"
   echo -e "    cd ${install_dir} && docker compose logs -f"
   echo -e "    cd ${install_dir} && docker compose -f docker-compose.yml -f docker/docker-compose.socket.yml up -d"
@@ -1275,6 +1324,7 @@ main() {
     write_service_scripts
     stage6_apply_binary
     stage9_install_cb_cli
+    stage9_write_install_identity
 
     cb_arm_service_start_diagnostics
     stage8_start_services

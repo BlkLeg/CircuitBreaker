@@ -60,6 +60,11 @@ contents:
     file_info:
       mode: 0644
 
+  - src: deploy/lib/install-identity.sh
+    dst: /usr/local/lib/circuitbreaker/install-identity.sh
+    file_info:
+      mode: 0644
+
   # systemd unit
   - src: packaging/circuit-breaker.service
     dst: /lib/systemd/system/circuit-breaker.service

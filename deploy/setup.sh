@@ -1316,10 +1316,20 @@ stage9_install_cb_cli() {
   cb_section "Installing Management CLI"
   cb_step "Installing cb command-line tool"
   echo "    Location: /usr/local/bin/cb"
-  echo "    Commands: status, doctor, logs, restart, backup, update, version, uninstall"
+  echo "    Commands: info, status, doctor, logs, restart, backup, update, version, uninstall"
 
-  if [[ ! -f "/opt/circuitbreaker/deploy/cli/cb" ]] \
-    || ! cp "/opt/circuitbreaker/deploy/cli/cb" "/usr/local/bin/cb" \
+  # Canonical CLI is the repo-root `cb`. Bundles stage it under deploy/cli/cb
+  # (same file, or a thin wrapper); prefer the shared implementation when both
+  # exist so native and package/docker installs stay on one command matrix.
+  local cli_src=""
+  if [[ -f /opt/circuitbreaker/deploy/cli/cb ]]; then
+    cli_src="/opt/circuitbreaker/deploy/cli/cb"
+  elif [[ -f /opt/circuitbreaker/bin/cb ]]; then
+    cli_src="/opt/circuitbreaker/bin/cb"
+  fi
+
+  if [[ -z "$cli_src" ]] \
+    || ! cp "$cli_src" /usr/local/bin/cb \
     || ! chmod 755 /usr/local/bin/cb \
     || ! chown root:root /usr/local/bin/cb; then
     cb_warn "cb CLI could not be installed — falling back to systemctl"
@@ -1328,7 +1338,49 @@ stage9_install_cb_cli() {
     return 0
   fi
 
+  # Shared identity helpers travel with the bundle when present.
+  if [[ -f /opt/circuitbreaker/deploy/lib/install-identity.sh ]]; then
+    mkdir -p /usr/local/lib/circuitbreaker
+    cp /opt/circuitbreaker/deploy/lib/install-identity.sh \
+      /usr/local/lib/circuitbreaker/install-identity.sh 2>/dev/null || true
+    chmod 644 /usr/local/lib/circuitbreaker/install-identity.sh 2>/dev/null || true
+  fi
+
   cb_ok "CB CLI installed"
+}
+
+stage9_write_install_identity() {
+  local version
+  version="$(cat /opt/circuitbreaker/share/VERSION 2>/dev/null || echo unknown)"
+  local identity_lib=""
+  for identity_lib in \
+    /opt/circuitbreaker/deploy/lib/install-identity.sh \
+    /usr/local/lib/circuitbreaker/install-identity.sh \
+    "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/lib/install-identity.sh"
+  do
+    [[ -f "$identity_lib" ]] && break
+    identity_lib=""
+  done
+  if [[ -z "$identity_lib" ]]; then
+    cb_warn "install-identity helper missing — skipping identity write"
+    return 0
+  fi
+  # shellcheck source=/dev/null
+  source "$identity_lib"
+  local services="circuitbreaker-postgres,circuitbreaker-pgbouncer,circuitbreaker-redis,circuitbreaker-nats,circuitbreaker-backend,nginx"
+  if write_install_identity /etc/circuitbreaker/install-identity.json \
+    mode=native \
+    version="$version" \
+    config_path=/etc/circuitbreaker/.env \
+    data_dir="${CB_DATA_DIR:-/var/lib/circuitbreaker}" \
+    env_file=/etc/circuitbreaker/.env \
+    cli_path=/usr/local/bin/cb \
+    health_url=http://127.0.0.1:8000/api/v1/readyz \
+    service_names="$services"; then
+    cb_ok "Install identity written to /etc/circuitbreaker/install-identity.json"
+  else
+    cb_warn "Could not write install identity"
+  fi
 }
 
 stage10_final_output() {
@@ -1379,10 +1431,16 @@ stage10_final_output() {
     echo -e "  │  TLS:      ${CB_CERT_TYPE}"
   fi
   echo -e "  ├──────────────────────────────────────────────┤"
+  echo -e "  │  Identity: cb info"
   echo -e "  │  Status:   cb status"
   echo -e "  │  Health:   cb doctor"
+  echo -e "  │  Setup:    cb setup-token   (first-run token)"
   echo -e "  │  Logs:     cb logs"
   echo -e "  └──────────────────────────────────────────────┘"
+  echo ""
+  echo -e "  ${BOLD}Next:${RESET} open the Access URL above and complete first-run setup."
+  echo -e "  Health probe: http://127.0.0.1:8000/api/v1/readyz"
+  echo -e "  If setup is interrupted, restart services and run: cb setup"
   echo ""
 
   if [[ ! -x /usr/local/bin/cb ]]; then
@@ -1949,5 +2007,6 @@ run_upgrade() {
   CB_STAGE_HINTS=()
   CB_STAGE_DIAGS=()
 
+  stage9_write_install_identity
   stage10_final_output
 }

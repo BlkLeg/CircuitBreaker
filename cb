@@ -35,7 +35,20 @@
 
 set -eo pipefail
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# ── Paths ─────────────────────────────────────────────────────────────────────
+_CB_HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+for _id_lib in \
+  "${_CB_HERE}/deploy/lib/install-identity.sh" \
+  /usr/local/lib/circuitbreaker/install-identity.sh \
+  /opt/circuitbreaker/deploy/lib/install-identity.sh
+do
+  if [[ -f "$_id_lib" ]]; then
+    # shellcheck source=/dev/null
+    source "$_id_lib"
+    break
+  fi
+done
+
 CB_CONFIG_DIR="${CB_CONFIG_DIR:-$HOME/.circuit-breaker}"
 _CONF="$CB_CONFIG_DIR/install.conf"
 if [[ ! -f "$_CONF" && -f /etc/circuit-breaker/install.conf ]]; then
@@ -52,73 +65,61 @@ RED='\e[91m'
 LINE=" ${G}─────────────────────────────────────────${R}"
 
 _ok()   { echo -e "${GR}[${R}${G} OK ${R}${GR}]${R} $*"; }
-_info() { echo -e "${GR}[${R}${G} INFO ${R}${GR}]${R} $*"; }
-_warn() { echo -e "${GR}[${R}${Y}NOTICE${R}${GR}]${R} $*"; }
+_info() { echo -e "${GR}[${R}${G} INFO ${R}${GR}]${R} $*" >&2; }
+_warn() { echo -e "${GR}[${R}${Y}NOTICE${R}${GR}]${R} $*" >&2; }
 _fail() { echo -e "${GR}[${R}${RED}ERROR${R}${GR}]${R} $*" >&2; exit 1; }
 
-# ── Defaults — overridden by install.conf ─────────────────────────────────────
-CB_MODE="docker"
-CB_CONTAINER="circuit-breaker"   # primary/app container (single-container or compose backend)
-CB_VOLUME="circuit-breaker-data"
-CB_PORT="8080"
+_redact_evidence() {
+  # Bound + redact operator-facing evidence for doctor JSON/human tails.
+  local text="${1:-}"
+  if command -v python3 >/dev/null 2>&1; then
+    CB_EVIDENCE_IN="$text" python3 -c '
+import os, re
+text = os.environ.get("CB_EVIDENCE_IN") or ""
+text = re.sub(r"(?i)(PASSWORD|TOKEN|SECRET|VAULT_KEY|JWT)=\S+", r"\1=[REDACTED]", text)
+text = re.sub(
+    r"(?i)(postgresql|mysql|redis|nats)://([^:/@]+):([^@/\s]+)@",
+    r"\1://\2:[REDACTED]@",
+    text,
+)
+for key in ("CB_VAULT_KEY", "CB_JWT_SECRET", "CB_DB_PASSWORD", "NATS_AUTH_TOKEN"):
+    val = os.environ.get(key) or ""
+    if len(val) >= 4 and val in text:
+        text = text.replace(val, "[REDACTED]")
+print(text[:500], end="")
+' 2>/dev/null || printf '%s' "${text:0:500}"
+  else
+    printf '%s' "${text:0:500}"
+  fi
+}
+
+_doctor_emit_json() {
+  printf '%s\n' "${RESULTS[@]}" | python3 -c '
+import sys, json
+rows = [json.loads(line) for line in sys.stdin if line.strip()]
+print(json.dumps(rows, indent=2))
+'
+}
+
+# ── Identity + config (no unsafe container/port guesses) ──────────────────────
+CB_IDENTITY_FILE=""
+CB_IDENTITY_MODE=""
+CB_IDENTITY_LOADED=0
+CB_IDENTITY_JSON="{}"
+CB_HAS_LEGACY_CONF=0
+CB_MODE=""
+CB_CONTAINER=""
+CB_VOLUME=""
+CB_PORT=""
 CB_IMAGE="ghcr.io/blkleg/circuitbreaker:latest"
-# CB_BACKEND_CONTAINER: container that runs Python/the vault code.
-#   docker  → same as CB_CONTAINER
-#   compose → cb-backend
 CB_BACKEND_CONTAINER=""
-# CB_DATA_DIR: path to the data directory INSIDE the backend container.
-#   docker  → /data
-#   compose → /app/data
-#
-# Every `docker exec` below that runs a container-side script or the application's
-# own Python passes this in explicitly with `-e "CB_DATA_DIR=${CB_DATA_DIR}"`, and
-# that is not belt-and-braces. `docker exec` builds the new process's environment
-# from the *image's* ENV, not from anything the entrypoint exported — so
-# docker/entrypoint-mono.sh's own export is invisible here, and only Dockerfile.mono's
-# `ENV CB_DATA_DIR=/data` reaches an exec'd process. docker/backend.Dockerfile
-# (compose's cb-backend) declares no such ENV at all.
-#
-# Both halves of what that variable feeds fail quietly when it is missing:
-#
-#   * a single-quoted `sh -c '… ${CB_DATA_DIR}/tmp …'` body expands it to the
-#     empty string, so every staging path becomes /tmp/… — the 100 MB tmpfs the
-#     restore was moved off in the first place, reintroduced with no error;
-#   * services/db_backup.py resolves `_data_dir` from this variable and falls
-#     back to /var/lib/circuitbreaker, so a snapshot built without it is rooted
-#     somewhere the volume is not, and captures no uploads.
-#
-# tests/build/test_cb_update_recreate.py fails if a new call site forgets it.
 CB_DATA_DIR=""
-# CB_INSTALL_DIR, CB_COMPOSE_FILE: for compose mode (cb update, uninstall)
 CB_INSTALL_DIR=""
 CB_COMPOSE_FILE=""
-
-if [[ -f "$_CONF" ]]; then
-  # shellcheck source=/dev/null
-  source "$_CONF"
-else
-  _warn "Install config not found at $_CONF — using defaults."
-fi
-
-# Apply mode-specific defaults for values not set in install.conf
-if [[ -z "$CB_BACKEND_CONTAINER" ]]; then
-  [[ "$CB_MODE" == "compose" ]] && CB_BACKEND_CONTAINER="cb-backend" || CB_BACKEND_CONTAINER="$CB_CONTAINER"
-fi
-if [[ -z "$CB_DATA_DIR" ]]; then
-  [[ "$CB_MODE" == "compose" ]] && CB_DATA_DIR="/app/data" || CB_DATA_DIR="/data"
-fi
-# The environment file the *binary* (deb/rpm/apk) install actually gets.
-# packaging/postinstall.sh generates circuit-breaker.env, not env, and both
-# packaging/circuit-breaker.service and packaging/systemd/circuit-breaker-native.service
-# carry `EnvironmentFile=-/etc/circuit-breaker/circuit-breaker.env`. This name is
-# defined once, here, because every time it was spelled out at its four call
-# sites one of them drifted back to the path nothing creates.
-CB_BINARY_ENV_FILE="${CB_BINARY_ENV_FILE:-/etc/circuit-breaker/circuit-breaker.env}"
-# The binary a package install puts on the host. Named once for the same reason
-# as the env file above: it is invoked from three commands, and an unguarded
-# invocation of a path that is not there is what produced a raw bash
-# "No such file or directory" and exit 127 instead of an operator-readable error.
 CB_BINARY="${CB_BINARY:-/usr/local/bin/circuit-breaker}"
+CB_BINARY_ENV_FILE="${CB_BINARY_ENV_FILE:-/etc/circuit-breaker/circuit-breaker.env}"
+CB_NATIVE_BIN="${CB_NATIVE_BIN:-/opt/circuitbreaker/bin/circuit-breaker}"
+CB_HEALTH_URL=""
 CB_PACKAGE_UNITS=(
   circuit-breaker.service
   circuit-breaker-discovery.service
@@ -129,6 +130,158 @@ CB_PACKAGE_UNITS=(
   circuit-breaker-worker@monitor_poll.service
   circuit-breaker-worker@monitor_probe_dispatch.service
 )
+CB_NATIVE_SERVICES=(
+  circuitbreaker-postgres
+  circuitbreaker-pgbouncer
+  circuitbreaker-redis
+  circuitbreaker-nats
+  circuitbreaker-backend
+  "circuitbreaker-worker@discovery"
+  "circuitbreaker-worker@notification"
+  "circuitbreaker-worker@telemetry"
+  "circuitbreaker-worker@integration"
+  "circuitbreaker-worker@monitor_scheduler"
+  "circuitbreaker-worker@monitor_poll"
+  "circuitbreaker-worker@monitor_probe_dispatch"
+  nginx
+)
+
+_cb_json_get() {
+  local key="$1"
+  if command -v python3 >/dev/null 2>&1; then
+    CB_IDENTITY_JSON="$CB_IDENTITY_JSON" python3 -c '
+import json, os, sys
+data = json.loads(os.environ.get("CB_IDENTITY_JSON") or "{}")
+key = sys.argv[1]
+val = data.get(key)
+if val is None:
+    sys.exit(0)
+if isinstance(val, list):
+    print(",".join(str(x) for x in val))
+else:
+    print(val)
+' "$key" 2>/dev/null || true
+  fi
+}
+
+_load_install_identity() {
+  local path=""
+  if [[ -n "${CB_IDENTITY_PATH:-}" ]]; then
+    if [[ -f "$CB_IDENTITY_PATH" && -r "$CB_IDENTITY_PATH" ]]; then
+      path="$CB_IDENTITY_PATH"
+    else
+      return 1
+    fi
+  elif command -v cb_find_install_identity >/dev/null 2>&1; then
+    path="$(cb_find_install_identity 2>/dev/null || true)"
+  fi
+  if [[ -z "$path" && -z "${CB_IDENTITY_PATH:-}" ]]; then
+    local candidate
+    for candidate in \
+      /etc/circuitbreaker/install-identity.json \
+      /etc/circuit-breaker/install-identity.json \
+      ${CB_DATA_DIR:+"${CB_DATA_DIR}/install-identity.json"} \
+      "$HOME/.circuit-breaker/install-identity.json"
+    do
+      [[ -n "$candidate" && -f "$candidate" && -r "$candidate" ]] || continue
+      path="$candidate"
+      break
+    done
+  fi
+  [[ -n "$path" ]] || return 1
+  if command -v cb_validate_install_identity_file >/dev/null 2>&1; then
+    cb_validate_install_identity_file "$path" || return 1
+  fi
+  CB_IDENTITY_FILE="$path"
+  CB_IDENTITY_JSON="$(cat "$path")"
+  CB_IDENTITY_MODE="$(_cb_json_get mode)"
+  CB_IDENTITY_LOADED=1
+  local v
+  v="$(_cb_json_get data_dir)"; [[ -n "$v" ]] && CB_DATA_DIR="$v"
+  v="$(_cb_json_get env_file)"; [[ -n "$v" ]] && { [[ "$CB_IDENTITY_MODE" == "package" ]] && CB_BINARY_ENV_FILE="$v"; }
+  v="$(_cb_json_get container_name)"; [[ -n "$v" ]] && CB_CONTAINER="$v"
+  v="$(_cb_json_get compose_file)"; [[ -n "$v" ]] && CB_COMPOSE_FILE="$v"
+  v="$(_cb_json_get health_url)"; [[ -n "$v" ]] && CB_HEALTH_URL="$v"
+  v="$(_cb_json_get cli_path)"; [[ -n "$v" ]] && CB_CLI_PATH="$v"
+  case "$CB_IDENTITY_MODE" in
+    mono)
+      if [[ -n "$CB_COMPOSE_FILE" ]]; then
+        CB_MODE="compose"
+      else
+        CB_MODE="docker"
+      fi
+      CB_BACKEND_CONTAINER="${CB_CONTAINER}"
+      CB_DATA_DIR="${CB_DATA_DIR:-/data}"
+      CB_PORT="${CB_PORT:-8080}"
+      ;;
+    package)
+      CB_MODE="binary"
+      CB_DATA_DIR="${CB_DATA_DIR:-/var/lib/circuit-breaker}"
+      CB_PORT="${CB_PORT:-8000}"
+      ;;
+    native|proxmox)
+      CB_MODE="native"
+      CB_DATA_DIR="${CB_DATA_DIR:-/var/lib/circuitbreaker}"
+      CB_PORT="${CB_PORT:-8000}"
+      [[ -f /etc/circuitbreaker/.env ]] && {
+        # shellcheck source=/dev/null
+        set -a; source /etc/circuitbreaker/.env; set +a
+      }
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+if _load_install_identity; then
+  :
+elif [[ -f "$_CONF" ]]; then
+  CB_HAS_LEGACY_CONF=1
+  # shellcheck source=/dev/null
+  source "$_CONF"
+  _warn "Using legacy install.conf at ${_CONF}; migrate by re-running the installer so install-identity.json is written."
+  # Legacy conf may set CB_MODE=docker|compose|binary — keep those values.
+  if [[ -z "${CB_BACKEND_CONTAINER:-}" ]]; then
+    [[ "$CB_MODE" == "compose" ]] && CB_BACKEND_CONTAINER="cb-backend" || CB_BACKEND_CONTAINER="${CB_CONTAINER:-}"
+  fi
+  if [[ -z "${CB_DATA_DIR:-}" ]]; then
+    [[ "$CB_MODE" == "compose" ]] && CB_DATA_DIR="/app/data" || CB_DATA_DIR="/data"
+  fi
+else
+  _warn "Install identity not found — run 'cb info' for repair guidance. Most commands require identity."
+fi
+
+# Apply remaining mode-specific defaults ONLY when identity or legacy conf set a mode.
+if [[ -n "$CB_MODE" ]]; then
+  if [[ -z "$CB_BACKEND_CONTAINER" && -n "$CB_CONTAINER" ]]; then
+    CB_BACKEND_CONTAINER="$CB_CONTAINER"
+  fi
+  if [[ -z "$CB_DATA_DIR" ]]; then
+    case "$CB_MODE" in
+      compose) CB_DATA_DIR="/app/data" ;;
+      docker) CB_DATA_DIR="/data" ;;
+      binary) CB_DATA_DIR="/var/lib/circuit-breaker" ;;
+      native) CB_DATA_DIR="/var/lib/circuitbreaker" ;;
+    esac
+  fi
+fi
+
+_require_identity_or_fail() {
+  local cmd="$1"
+  if [[ -n "$CB_MODE" ]]; then
+    return 0
+  fi
+  _fail "$(printf '%s\n' \
+    "Command '${cmd}' requires install identity (or legacy install.conf)." \
+    "  $(command -v repair_hint_for_mode >/dev/null 2>&1 && true)" \
+    "  Re-run the installer for your mode so install-identity.json is written." \
+    "  Then: cb info")"
+}
+
+# Commands allowed without identity.
+_CB_IDENTITY_OPTIONAL_CMDS="info help version doctor setup setup-token"
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 _require_docker() {
@@ -136,22 +289,12 @@ _require_docker() {
   docker info >/dev/null 2>&1       || _fail "Docker daemon is not running."
 }
 
-# Binary-mode counterpart to _require_docker: refuse to exec a fixed path that
-# is not there. Without it the operator sees bash's own
-# "line NNN: /usr/local/bin/circuit-breaker: No such file or directory" and exit
-# 127; the docker branches already fail with a sentence and exit 1, and this
-# makes the binary branches match.
 _require_binary() {
   local path="$1" why="${2:-}"
   [[ -e "$path" ]] || _fail "${path} not found${why:+ — $why}"
   [[ -x "$path" ]] || _fail "${path} is not executable${why:+ — $why}"
 }
 
-# Preflight for binary mode: the snapshot builder shells out to pg_dump, which
-# a package install does not pull in. Without this the operator gets a Python
-# traceback ending in FileNotFoundError instead of the one sentence that names
-# the package to install. The container images already ship the client, so the
-# docker/compose paths do not need it.
 _require_postgres_client() {
   command -v pg_dump >/dev/null 2>&1 \
     || _fail "pg_dump is not installed on this host — install the PostgreSQL client package (postgresql-client) and retry."
@@ -159,37 +302,26 @@ _require_postgres_client() {
 
 _container_running() {
   local name="${1:-$CB_CONTAINER}"
+  [[ -n "$name" ]] || return 1
   docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${name}$"
 }
 
-# Generate a valid Fernet key using openssl (available on virtually every Linux/macOS host).
 _gen_fernet_key() {
   command -v openssl >/dev/null 2>&1 \
     || _fail "openssl is required to generate a vault key. Install it and retry."
   openssl rand -base64 32
 }
 
-# A snippet run *inside* the backend container that resolves the database
-# connection the way the app does and leaves it in "$@" for psql/pg_dump.
-# Compose passes CB_DB_URL into the backend container; the mono image builds
-# its URL at entrypoint time, so `docker exec` there only ever sees
-# CB_DB_PASSWORD and the connection has to be rebuilt from it.
+_unsupported() {
+  local op="$1" reason="$2" alt="$3"
+  _fail "$(printf '%s\n' \
+    "Operation '${op}' is unavailable for mode '${CB_IDENTITY_MODE:-${CB_MODE:-unknown}}'." \
+    "  Why: ${reason}" \
+    "  Use: ${alt}")"
+}
+
 _DB_CONN_SH='if [ -n "${CB_DB_URL:-}" ]; then set -- "$CB_DB_URL"; else export PGPASSWORD="${CB_DB_PASSWORD:-}"; set -- -h 127.0.0.1 -p 5432 -U breaker circuitbreaker; fi'
 
-# Every application program docker/supervisord.mono.conf defines, by the name it
-# actually defines — the whole list, because anything left out keeps writing to the
-# database while the schema is being replaced. `backend workers` used to stand here and
-# named nothing at all; supervisorctl said so and `2>/dev/null` ate the sentence.
-# `worker-monitor-poll` runs numprocs=2, which makes the bare name a *group*: a bare
-# `stop worker-monitor-poll` is an error, `worker-monitor-poll:*` is the two processes.
-# The datastores (postgres, pgbouncer, nats, redis) and nginx are deliberately absent —
-# Postgres is what is being restored into.
-# tests/services/test_restore_targets.py fails if this drifts from the config again.
-#
-# `-c` is not optional. entrypoint-mono.sh launches supervisord with
-# `-c /etc/supervisor/conf.d/supervisord.conf`, while a bare `supervisorctl` searches its
-# own path and finds Debian's /etc/supervisor/supervisord.conf first — a different file,
-# pointing at a socket nothing is listening on.
 _CB_SUPERVISORCTL=(supervisorctl -c /etc/supervisor/conf.d/supervisord.conf)
 _CB_APP_PROGRAMS=(
   backend-api
@@ -206,7 +338,158 @@ _CB_APP_PROGRAMS=(
 # COMMANDS
 ###############################################################################
 
+cmd_info() {
+  local as_json=0
+  [[ "${1:-}" == "--json" || "${1:-}" == "-j" ]] && as_json=1
+
+  if [[ "$CB_IDENTITY_LOADED" -eq 1 ]]; then
+    if [[ "$as_json" -eq 1 ]]; then
+      printf '%s\n' "$CB_IDENTITY_JSON"
+      return 0
+    fi
+    echo ""
+    echo -e "$LINE"
+    echo -e " ${B}Circuit Breaker — Install Identity${R}"
+    echo -e "$LINE"
+    echo ""
+    echo -e "  ${GR}File${R}       : ${CB_IDENTITY_FILE}"
+    echo -e "  ${GR}Mode${R}       : ${CB_IDENTITY_MODE}"
+    echo -e "  ${GR}Version${R}    : $(_cb_json_get version)"
+    echo -e "  ${GR}Data dir${R}   : ${CB_DATA_DIR:-—}"
+    echo -e "  ${GR}Config/env${R} : $(_cb_json_get env_file)$(_cb_json_get config_path)"
+    echo -e "  ${GR}Container${R}  : ${CB_CONTAINER:-—}"
+    echo -e "  ${GR}Compose${R}    : ${CB_COMPOSE_FILE:-—}"
+    echo -e "  ${GR}Health URL${R} : ${CB_HEALTH_URL:-—}"
+    echo -e "  ${GR}CLI path${R}   : $(_cb_json_get cli_path)"
+    echo -e "  ${GR}Installed${R}  : $(_cb_json_get installed_at)"
+    echo ""
+    return 0
+  fi
+
+  local remediation="Re-run the installer for your deployment mode so install-identity.json is written, then run: cb info"
+  if [[ "$CB_HAS_LEGACY_CONF" -eq 1 ]]; then
+    remediation="Legacy install.conf found at ${_CONF}. Re-run the installer to write install-identity.json (mode=${CB_MODE:-unknown})."
+  fi
+
+  if [[ "$as_json" -eq 1 ]]; then
+    CB_HAS_LEGACY_CONF="$CB_HAS_LEGACY_CONF" CB_CONF="$_CONF" CB_REMEDIATION="$remediation" \
+    python3 -c '
+import json, os
+print(json.dumps({
+  "error": "install_identity_missing",
+  "legacy_conf": os.environ.get("CB_HAS_LEGACY_CONF") == "1",
+  "legacy_conf_path": os.environ.get("CB_CONF", ""),
+  "remediation": os.environ.get("CB_REMEDIATION", ""),
+}, indent=2))
+'
+    return 1
+  fi
+
+  echo ""
+  echo -e "$LINE"
+  echo -e " ${B}Circuit Breaker — Install Identity${R}"
+  echo -e "$LINE"
+  echo ""
+  printf "  ${RED}✗${R}  %-30s MISSING\n" "install-identity.json"
+  echo "     → ${remediation}"
+  echo "     Searched: \$CB_IDENTITY_PATH, /etc/circuitbreaker/, /etc/circuit-breaker/, \$CB_DATA_DIR, ~/.circuit-breaker/"
+  echo ""
+  return 1
+}
+
+cmd_setup() {
+  local health="${CB_HEALTH_URL:-}"
+  if [[ -z "$health" && -n "$CB_PORT" ]]; then
+    health="http://127.0.0.1:${CB_PORT}/api/v1/readyz"
+  fi
+  local status_url=""
+  if [[ -n "$health" ]]; then
+    status_url="${health%/readyz}/bootstrap/status"
+    status_url="${status_url/\/api\/v1\/readyz/\/api\/v1\/bootstrap\/status}"
+    if [[ "$status_url" == "$health" ]]; then
+      status_url="http://127.0.0.1:${CB_PORT:-8080}/api/v1/bootstrap/status"
+    fi
+  else
+    status_url="http://127.0.0.1:8080/api/v1/bootstrap/status"
+  fi
+
+  echo ""
+  echo -e "$LINE"
+  echo -e " ${B}Circuit Breaker — Setup${R}"
+  echo -e "$LINE"
+  echo ""
+
+  if command -v curl >/dev/null 2>&1; then
+    local body
+    body="$(curl -sf --max-time 5 "$status_url" 2>/dev/null || true)"
+    if [[ -n "$body" ]] && command -v python3 >/dev/null 2>&1; then
+      printf '%s' "$body" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+need=bool(d.get("needs_bootstrap"))
+print("  Bootstrap pending:" if need else "  Bootstrap complete:", "yes" if need else "no")
+path=d.get("setup_token_path")
+if path:
+    print("  Setup token path:", path)
+    print("  Retrieve with: cb setup-token")
+' 2>/dev/null && echo "" && return 0
+    fi
+  fi
+
+  local token_path="${CB_DATA_DIR:-/data}/bootstrap-setup-token"
+  if [[ -f "$token_path" ]]; then
+    _info "Setup token file present at ${token_path}"
+    _info "Run: cb setup-token"
+    _info "Open the web UI to finish onboarding."
+  else
+    _warn "Could not reach ${status_url} and no token file at ${token_path}."
+    _info "If the stack is up, open the web UI; regenerate guidance: docs/installation/first-run.md"
+  fi
+  echo ""
+}
+
+cmd_setup_token() {
+  local data_dir="${CB_DATA_DIR:-}"
+  if [[ -z "$data_dir" && "$CB_IDENTITY_LOADED" -eq 1 ]]; then
+    data_dir="$(_cb_json_get data_dir)"
+  fi
+  data_dir="${data_dir:-/var/lib/circuitbreaker}"
+  local token_path="${data_dir}/bootstrap-setup-token"
+
+  if [[ ! -f "$token_path" ]]; then
+    # Mono host: token lives inside the container data volume.
+    if [[ "$CB_MODE" == "docker" || "$CB_MODE" == "compose" ]] && [[ -n "$CB_BACKEND_CONTAINER" ]]; then
+      _require_docker
+      if _container_running "$CB_BACKEND_CONTAINER"; then
+        local remote_path="/data/bootstrap-setup-token"
+        if docker exec "$CB_BACKEND_CONTAINER" test -f "$remote_path" 2>/dev/null; then
+          echo ""
+          _warn "Printing setup token once. Do not paste into logs or doctor output."
+          docker exec "$CB_BACKEND_CONTAINER" sh -c "umask 077; cat '$remote_path'; chmod 600 '$remote_path' 2>/dev/null || true"
+          echo ""
+          _info "Regenerate: restart the app so bootstrap issues a new token, or set CB_SETUP_TOKEN."
+          return 0
+        fi
+      fi
+    fi
+    _fail "Setup token not found at ${token_path}. Setup may be complete, or the file was removed. See docs/installation/first-run.md"
+  fi
+
+  local mode
+  mode="$(stat -c '%a' "$token_path" 2>/dev/null || stat -f '%OLp' "$token_path" 2>/dev/null || echo "")"
+  if [[ -n "$mode" && "$mode" != "600" && "$mode" != "0600" ]]; then
+    chmod 600 "$token_path" 2>/dev/null || _warn "Token file mode is ${mode}; expected 0600."
+  fi
+
+  echo ""
+  _warn "Printing setup token once. Do not include this value in cb doctor or support bundles."
+  cat "$token_path"
+  echo ""
+  _info "Regenerate: remove ${token_path} and restart the backend so a new token is issued, or set CB_SETUP_TOKEN."
+}
+
 cmd_status() {
+  _require_identity_or_fail status
   echo ""
   echo -e "$LINE"
   echo -e " ${B}Circuit Breaker — Status${R}"
@@ -216,6 +499,7 @@ cmd_status() {
   case "$CB_MODE" in
     docker)
       _require_docker
+      [[ -n "$CB_CONTAINER" ]] || _fail "container_name missing from install identity"
       if _container_running; then
         _ok "Container '${CB_CONTAINER}' is running."
         docker inspect --format \
@@ -224,7 +508,7 @@ cmd_status() {
   Status  : {{.State.Status}}" \
           "$CB_CONTAINER" 2>/dev/null || true
         echo ""
-        echo -e "  ${GR}Access :${R} http://localhost:${CB_PORT}"
+        echo -e "  ${GR}Access :${R} ${CB_HEALTH_URL:-http://localhost:${CB_PORT}}"
       else
         _warn "Container '${CB_CONTAINER}' is not running."
       fi
@@ -233,9 +517,13 @@ cmd_status() {
       _require_docker
       echo -e "  ${GR}Compose stack containers:${R}"
       echo ""
-      docker ps --filter "name=cb-" \
-        --format "  {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null \
-        | column -t || true
+      if [[ -n "$CB_COMPOSE_FILE" && -f "$CB_COMPOSE_FILE" ]]; then
+        docker compose -f "$CB_COMPOSE_FILE" ps 2>/dev/null || true
+      else
+        docker ps --filter "name=circuitbreaker" --filter "name=cb-" \
+          --format "  {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null \
+          | column -t || true
+      fi
       ;;
     binary)
       if command -v systemctl >/dev/null 2>&1; then
@@ -244,129 +532,222 @@ cmd_status() {
         _warn "systemctl not found — cannot query service status."
       fi
       ;;
+    native)
+      printf "  %-36s %-12s %s\n" "SERVICE" "STATUS" "UPTIME"
+      printf "  %-36s %-12s %s\n" "────────────────────────────────────" "──────────" "──────"
+      local svc active uptime color
+      for svc in "${CB_NATIVE_SERVICES[@]}"; do
+        active=$(systemctl is-active "$svc" 2>/dev/null || echo unknown)
+        uptime=$(systemctl show "$svc" --property=ActiveEnterTimestamp \
+          --value 2>/dev/null | xargs -I{} date -d{} "+%H:%M %b %d" 2>/dev/null || echo "—")
+        color="\033[0;32m"; [[ "$active" != "active" ]] && color="\033[0;31m"
+        printf "  %-36s ${color}%-12s\033[0m %s\n" "$svc" "$active" "$uptime"
+      done
+      ;;
+    *)
+      _fail "Unknown mode '${CB_MODE}'"
+      ;;
   esac
   echo ""
 }
 
 # ── doctor ────────────────────────────────────────────────────────────────────
-# The same top-down health check the native CLI runs, expressed for the
-# container world.  Checks are ordered so that the first failure is usually the
-# cause of every failure below it — fix top-down.
+# Top-down health checks. Prefer install identity; never guess container/port.
 cmd_doctor() {
-  echo ""
-  echo -e "$LINE"
-  echo -e " ${B}Circuit Breaker — Health Check${R}"
-  echo -e "$LINE"
-  echo ""
+  local as_json=0
+  [[ "${1:-}" == "--json" || "${1:-}" == "-j" ]] && as_json=1
 
+  local -a RESULTS=()
   local failed=0
   local diag_lines="${CB_DOCTOR_LINES:-30}"
 
-  # $4 is an optional read-only diagnostic, run only when the check fails.  A
-  # failed check otherwise just sends the operator off to run a `docker logs`
-  # line by hand — the reason is in those lines, so print them here instead.
-  # Read-only only: repair commands stay in the hint for a human to run.
-  check() {
-    local name=$1 cmd=$2 hint=$3 diag=${4:-}
-    if eval "$cmd" &>/dev/null; then
-      printf "  ${G}✓${R}  %-30s OK\n" "$name"
+  _doctor_add() {
+    local component="$1" check_name="$2" status="$3" severity="$4" evidence="$5" remediation="$6" safe_retry="${7:-true}"
+    RESULTS+=("$(python3 -c '
+import json,sys
+print(json.dumps({
+  "component": sys.argv[1],
+  "check": sys.argv[2],
+  "status": sys.argv[3],
+  "severity": sys.argv[4],
+  "evidence": sys.argv[5][:500],
+  "remediation": sys.argv[6],
+  "safe_to_retry": sys.argv[7].lower() == "true",
+}))
+' "$component" "$check_name" "$status" "$severity" "$evidence" "$remediation" "$safe_retry" 2>/dev/null || true)")
+  }
+
+  # Probe helpers — invoked as argv, never via eval.
+  _probe_true() { [[ "${1:-0}" -eq 1 ]]; }
+  _probe_ge() { [[ "${1:-0}" -ge "$2" ]]; }
+  _probe_systemctl_active() { systemctl is-active --quiet "$1"; }
+  _probe_curl_ok() { curl -sf --max-time 5 "$1" -o /dev/null; }
+  _probe_docker_not_restarting() {
+    [[ "$(docker inspect -f '{{.State.Restarting}}' "$1")" == false ]]
+  }
+  _probe_docker_exec_curl() {
+    docker exec "$1" curl -sf "$2" >/dev/null
+  }
+  _probe_vault_persisted() {
+    docker exec "$1" sh -c '[ -n "$CB_VAULT_KEY" ] || grep -qs "^CB_VAULT_KEY=" "'"$2"'/.env"'
+  }
+  _probe_psql_url() { psql "$1" -tAc 'SELECT 1' >/dev/null; }
+
+  # $1=name $2=hint $3=component $4=diag_cmd_or_empty; remaining argv = probe
+  _run_check() {
+    local name=$1 hint=$2 component=$3 diag=${4:-}
+    shift 4
+    if "$@" &>/dev/null; then
+      if [[ "$as_json" -eq 0 ]]; then
+        printf "  ${G}✓${R}  %-30s OK\n" "$name"
+      fi
+      _doctor_add "$component" "$name" pass info "ok" "" true
     else
-      printf "  ${RED}✗${R}  %-30s FAILED\n" "$name"
-      echo "     → $hint"
+      if [[ "$as_json" -eq 0 ]]; then
+        printf "  ${RED}✗${R}  %-30s FAILED\n" "$name"
+        echo "     → $hint"
+      fi
+      local out=""
       if [[ -n "$diag" ]]; then
-        local out=""
-        # A diagnostic that itself fails still tells us something, and `set -e`
-        # must not take the whole run down over it.
-        out="$(eval "$diag" 2>&1 | tail -n "$diag_lines")" || true
-        if [[ -n "$out" ]]; then
+        out="$(bash -c "$diag" 2>&1 | tail -n "$diag_lines")" || true
+        out="$(_redact_evidence "$out")"
+        if [[ "$as_json" -eq 0 && -n "$out" ]]; then
           printf "     ${GR}\$ %s${R}\n" "$diag"
           printf '%s\n' "$out" | sed 's/^/       /'
         fi
       fi
+      _doctor_add "$component" "$name" fail error "${out:-failed}" "$hint" true
       failed=$((failed + 1))
     fi
   }
 
+  if [[ -z "$CB_MODE" ]]; then
+    _doctor_add identity present fail critical "install-identity.json not found" \
+      "Re-run the installer so install-identity.json is written, then: cb info" true
+    if [[ "$as_json" -eq 1 ]]; then
+      _doctor_emit_json
+      return 1
+    fi
+    echo ""
+    echo -e "$LINE"
+    echo -e " ${B}Circuit Breaker — Health Check${R}"
+    echo -e "$LINE"
+    echo ""
+    printf "  ${RED}✗${R}  %-30s FAILED\n" "Install identity"
+    echo "     → Re-run the installer so install-identity.json is written, then: cb info"
+    echo ""
+    return 1
+  fi
+
+  if [[ "$as_json" -eq 0 ]]; then
+    echo ""
+    echo -e "$LINE"
+    echo -e " ${B}Circuit Breaker — Health Check${R}"
+    echo -e "$LINE"
+    echo ""
+  fi
+
+  if [[ "$CB_IDENTITY_LOADED" -eq 1 ]]; then
+    _doctor_add identity present pass info "$CB_IDENTITY_FILE" "" true
+    if [[ "$as_json" -eq 0 ]]; then
+      printf "  ${G}✓${R}  %-30s OK\n" "Install identity"
+    fi
+  elif [[ "$CB_HAS_LEGACY_CONF" -eq 1 ]]; then
+    _doctor_add identity present warn warning "legacy install.conf at ${_CONF}" \
+      "Re-run installer to write install-identity.json" true
+    if [[ "$as_json" -eq 0 ]]; then
+      printf "  ${Y}!${R}  %-30s WARN\n" "Install identity"
+      echo "     → Using legacy install.conf; write install-identity.json on next install"
+    fi
+  fi
+
   case "$CB_MODE" in
     docker|compose)
       local ctr="$CB_BACKEND_CONTAINER" api_port=8080
-      # The mono image serves the API behind its own nginx on 8080; the compose
-      # backend container listens on 8000 directly.
       if [[ "$CB_MODE" == "compose" ]]; then api_port=8000; fi
+      [[ -n "$ctr" ]] || { _fail "container_name missing from install identity"; }
 
       if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+        _doctor_add docker daemon fail critical "docker unavailable" "Install/start Docker: sudo systemctl start docker" true
+        if [[ "$as_json" -eq 1 ]]; then
+          _doctor_emit_json
+          return 1
+        fi
         printf "  ${RED}✗${R}  %-30s FAILED\n" "Docker daemon"
         echo "     → Install Docker, or start it: sudo systemctl start docker"
         echo ""
-        echo -e "  ${Y}1 check failed.${R} Everything below runs through the daemon — nothing else can be checked."
-        echo ""
         return 1
       fi
-      printf "  ${G}✓${R}  %-30s OK\n" "Docker daemon"
+      if [[ "$as_json" -eq 0 ]]; then
+        printf "  ${G}✓${R}  %-30s OK\n" "Docker daemon"
+      fi
+      _doctor_add docker daemon pass info "ok" "" true
 
-      check "Container '${ctr}'" \
-            "_container_running '${ctr}'" \
-            "Start it: cb restart   (or: docker start ${ctr})" \
-            "docker ps -a --filter 'name=^/${ctr}\$' --format '{{.Names}}  {{.Status}}'"
+      _run_check "Container '${ctr}'" \
+        "Start it: cb restart   (or: docker start ${ctr})" \
+        container \
+        "docker ps -a --filter 'name=^/${ctr}\$' --format '{{.Names}}  {{.Status}}'" \
+        _container_running "$ctr"
 
       if _container_running "$ctr"; then
-        check "Container not restarting" \
-              "[[ \$(docker inspect -f '{{.State.Restarting}}' '${ctr}') == false ]]" \
-              "The container is crash-looping — the reason is in its own logs." \
-              "docker logs --tail 30 '${ctr}'"
+        _run_check "Container not restarting" \
+          "The container is crash-looping — the reason is in its own logs." \
+          container \
+          "docker logs --tail 30 '${ctr}'" \
+          _probe_docker_not_restarting "$ctr"
 
-        check "Backend API (:${api_port})" \
-              "docker exec '${ctr}' curl -sf 'http://127.0.0.1:${api_port}/api/v1/health'" \
-              "The app is not answering inside the container." \
-              "docker logs --tail 30 '${ctr}'"
+        local ready_url="http://127.0.0.1:${api_port}/api/v1/readyz"
+        _run_check "Backend API readyz" \
+          "The app is not ready inside the container." \
+          backend \
+          "docker logs --tail 30 '${ctr}'" \
+          _probe_docker_exec_curl "$ctr" "$ready_url"
 
-        # A DB probe run the way the app connects: compose passes CB_DB_URL into
-        # the backend container, while the mono image builds its URL at
-        # entrypoint time, so `docker exec` there only ever sees CB_DB_PASSWORD.
         local db_ok=1
         docker exec "$ctr" sh -c "${_DB_CONN_SH}; exec psql \"\$@\" -tAc 'SELECT 1'" >/dev/null 2>&1 || db_ok=0
-        check "Database" \
-              "[[ $db_ok -eq 1 ]]" \
-              "Postgres is not accepting the app's credentials — check CB_DB_PASSWORD / CB_DB_URL." \
-              "docker logs --tail 30 '${ctr}'"
+        _run_check "Database" \
+          "Postgres is not accepting the app's credentials — check CB_DB_PASSWORD / CB_DB_URL." \
+          postgres \
+          "docker logs --tail 30 '${ctr}'" \
+          _probe_true "$db_ok"
 
-        # Postgres, the WAL and uploads all share the data volume; it filling up
-        # takes the whole stack down and shows up nowhere else until it does.
         local free_kb
         free_kb=$(docker exec "$ctr" df -Pk "$CB_DATA_DIR" 2>/dev/null | awk 'NR==2 {print $4}')
-        check "Free space on ${CB_DATA_DIR}" \
-              "[[ ${free_kb:-0} -ge 1048576 ]]" \
-              "Under 1 GiB free on the data volume — prune old backups or grow the volume." \
-              "docker exec '${ctr}' df -h '${CB_DATA_DIR}'"
+        _run_check "Free space on ${CB_DATA_DIR}" \
+          "Under 1 GiB free on the data volume — prune old backups or grow the volume." \
+          storage \
+          "docker exec '${ctr}' df -h '${CB_DATA_DIR}'" \
+          _probe_ge "${free_kb:-0}" 1048576
 
-        # An ephemeral vault (no persisted key) survives a restart looking fine
-        # and then cannot decrypt anything stored before it — see cb vault-recover.
-        check "Vault key persisted" \
-              "docker exec '${ctr}' sh -c '[ -n \"\$CB_VAULT_KEY\" ] || grep -qs \"^CB_VAULT_KEY=\" \"${CB_DATA_DIR}/.env\"'" \
-              "No persisted vault key — run: cb vault-recover"
+        _run_check "Vault key persisted" \
+          "No persisted vault key — run: cb vault-recover" \
+          vault \
+          "" \
+          _probe_vault_persisted "$ctr" "$CB_DATA_DIR"
       fi
 
-      # The published port is the only thing an actual user touches; a healthy
-      # container behind a port that never got published still looks broken.
-      check "Published port :${CB_PORT}" \
-            "curl -sf --max-time 5 'http://127.0.0.1:${CB_PORT}/api/v1/health' -o /dev/null" \
-            "Nothing answers on localhost:${CB_PORT} — check the port mapping and any host firewall." \
-            "docker port '${CB_CONTAINER}'"
+      if [[ -n "${CB_PORT:-}" ]]; then
+        _run_check "Published port :${CB_PORT}" \
+          "Nothing answers on localhost:${CB_PORT} — check the port mapping and any host firewall." \
+          network \
+          "docker port '${CB_CONTAINER}'" \
+          _probe_curl_ok "http://127.0.0.1:${CB_PORT}/api/v1/readyz"
+      fi
       ;;
 
     binary)
-      check "systemd unit" \
-            "systemctl is-active --quiet circuit-breaker" \
-            "Start it: sudo systemctl start circuit-breaker" \
-            "systemctl status circuit-breaker --no-pager -l | tail -n 5; journalctl -u circuit-breaker --no-pager -n 30"
+      _run_check "systemd unit" \
+        "Start it: sudo systemctl start circuit-breaker" \
+        service \
+        "systemctl status circuit-breaker --no-pager -l | tail -n 5; journalctl -u circuit-breaker --no-pager -n 30" \
+        _probe_systemctl_active circuit-breaker
 
-      check "Backend API (:${CB_PORT})" \
-            "curl -sf --max-time 5 'http://127.0.0.1:${CB_PORT}/api/v1/health' -o /dev/null" \
-            "The service is not answering on port ${CB_PORT}." \
-            "journalctl -u circuit-breaker --no-pager -n 30"
+      _run_check "Backend API readyz" \
+        "The service is not answering on port ${CB_PORT:-8000}." \
+        backend \
+        "journalctl -u circuit-breaker --no-pager -n 30" \
+        _probe_curl_ok "http://127.0.0.1:${CB_PORT:-8000}/api/v1/readyz"
 
-      # Read the service's own environment file rather than guessing: it is the
-      # only place the data directory and DB credentials are recorded.
       local env_file="$CB_BINARY_ENV_FILE" data_dir="/var/lib/circuit-breaker" db_url=""
       if [[ -r "$env_file" ]]; then
         data_dir=$(sed -n 's/^CB_DATA_DIR=//p' "$env_file" | tail -n1 | tr -d '"')
@@ -379,25 +760,143 @@ cmd_doctor() {
       if [[ -d "$data_dir" ]]; then
         local free_kb
         free_kb=$(df -Pk "$data_dir" 2>/dev/null | awk 'NR==2 {print $4}')
-        check "Free space on ${data_dir}" \
-              "[[ ${free_kb:-0} -ge 1048576 ]]" \
-              "Under 1 GiB free on the data directory — prune old backups or grow the filesystem." \
-              "df -h '${data_dir}'"
+        _run_check "Free space on ${data_dir}" \
+          "Under 1 GiB free on the data directory — prune old backups or grow the filesystem." \
+          storage \
+          "df -h '${data_dir}'" \
+          _probe_ge "${free_kb:-0}" 1048576
       fi
 
       if [[ -n "$db_url" ]]; then
         if command -v psql >/dev/null 2>&1; then
-          local db_ok=1
-          psql "$db_url" -tAc 'SELECT 1' >/dev/null 2>&1 || db_ok=0
-          check "Database" \
-                "[[ $db_ok -eq 1 ]]" \
-                "Postgres is not accepting CB_DB_URL from ${env_file}."
+          _run_check "Database" \
+            "Postgres is not accepting CB_DB_URL from ${env_file}." \
+            postgres \
+            "" \
+            _probe_psql_url "$db_url"
         else
           _info "psql not installed — skipping the database check."
+          _doctor_add postgres ready skipped info "psql not installed" "Install postgresql-client" true
         fi
       fi
       ;;
+
+    native)
+      local svc
+      for svc in circuitbreaker-postgres circuitbreaker-redis circuitbreaker-nats circuitbreaker-backend; do
+        _run_check "systemd ${svc}" \
+          "Start: sudo systemctl start ${svc}" \
+          service \
+          "journalctl -u '${svc}' --no-pager -n 30" \
+          _probe_systemctl_active "$svc"
+      done
+      _run_check "Backend API readyz" \
+        "Backend not answering on :8000" \
+        backend \
+        "journalctl -u circuitbreaker-backend --no-pager -n 30" \
+        _probe_curl_ok "http://127.0.0.1:8000/api/v1/readyz"
+      local data_dir="${CB_DATA_DIR:-/var/lib/circuitbreaker}"
+      if [[ -d "$data_dir" ]]; then
+        local free_kb
+        free_kb=$(df -Pk "$data_dir" 2>/dev/null | awk 'NR==2 {print $4}')
+        _run_check "Free space on ${data_dir}" \
+          "Under 1 GiB free — prune backups or grow the filesystem." \
+          storage \
+          "df -h '${data_dir}'" \
+          _probe_ge "${free_kb:-0}" 1048576
+      fi
+      ;;
   esac
+
+  # Public readyz from identity health_url (when distinct from probes above).
+  local health_target="${CB_HEALTH_URL:-}"
+  if [[ -n "$health_target" ]]; then
+    _run_check "Identity health_url" \
+      "health_url from install identity is not ready: ${health_target}" \
+      backend \
+      "" \
+      _probe_curl_ok "$health_target"
+  fi
+
+  # Merge authenticated admin diagnostics when CB_ADMIN_TOKEN is set.
+  local admin_token="${CB_ADMIN_TOKEN:-}"
+  local diag_base=""
+  if [[ -n "$health_target" ]]; then
+    diag_base="${health_target%/readyz}"
+    diag_base="${diag_base%/api/v1/readyz}"
+    if [[ "$diag_base" == "$health_target" ]]; then
+      diag_base="${health_target%/api/v1/health}"
+    fi
+  fi
+  case "$CB_MODE" in
+    docker|compose) diag_base="${diag_base:-http://127.0.0.1:${CB_PORT:-8080}}" ;;
+    binary|native) diag_base="${diag_base:-http://127.0.0.1:${CB_PORT:-8000}}" ;;
+  esac
+  local admin_url="${diag_base%/}/api/v1/admin/diagnostics"
+  if [[ -n "$admin_token" ]]; then
+    local admin_body=""
+    admin_body="$(curl -sf --max-time 8 -H "Authorization: Bearer ${admin_token}" "$admin_url" 2>/dev/null || true)"
+    if [[ -n "$admin_body" ]] && command -v python3 >/dev/null 2>&1; then
+      local merged
+      merged="$(ADMIN_BODY="$admin_body" python3 -c '
+import json, os
+payload = json.loads(os.environ["ADMIN_BODY"])
+for item in payload.get("checks") or []:
+    print(json.dumps({
+        "component": item.get("component") or "diagnostics",
+        "check": item.get("check") or "unknown",
+        "status": item.get("status") or "unknown",
+        "severity": item.get("severity") or "info",
+        "evidence": str(item.get("evidence") or "")[:500],
+        "remediation": str(item.get("remediation") or ""),
+        "safe_to_retry": bool(item.get("safe_to_retry", True)),
+    }))
+')" || true
+      if [[ -n "$merged" ]]; then
+        while IFS= read -r line; do
+          [[ -z "$line" ]] && continue
+          RESULTS+=("$line")
+          case "$(printf '%s' "$line" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("status",""))' 2>/dev/null || true)" in
+            fail) failed=$((failed + 1)) ;;
+          esac
+          if [[ "$as_json" -eq 0 ]]; then
+            local st nm
+            st="$(printf '%s' "$line" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("status","")); print(d.get("component","")+"/"+d.get("check",""))' 2>/dev/null || true)"
+            nm="$(printf '%s\n' "$st" | sed -n '2p')"
+            st="$(printf '%s\n' "$st" | sed -n '1p')"
+            if [[ "$st" == "pass" ]]; then
+              printf "  ${G}✓${R}  %-30s OK\n" "admin ${nm}"
+            elif [[ "$st" == "fail" ]]; then
+              printf "  ${RED}✗${R}  %-30s FAILED\n" "admin ${nm}"
+            elif [[ "$st" == "warn" ]]; then
+              printf "  ${Y}!${R}  %-30s WARN\n" "admin ${nm}"
+            fi
+          fi
+        done <<< "$merged"
+      else
+        _doctor_add diagnostics admin fail error "could not parse admin diagnostics" \
+          "Check ${admin_url} with a valid CB_ADMIN_TOKEN" true
+        failed=$((failed + 1))
+      fi
+    else
+      _doctor_add diagnostics admin fail error "admin diagnostics unreachable" \
+        "Ensure the API is up and CB_ADMIN_TOKEN is a valid admin bearer token" true
+      failed=$((failed + 1))
+    fi
+  else
+    _doctor_add diagnostics admin skipped info "CB_ADMIN_TOKEN unset" \
+      "export CB_ADMIN_TOKEN=<admin bearer> then re-run: cb doctor --json" true
+    if [[ "$as_json" -eq 0 ]]; then
+      printf "  ${Y}!${R}  %-30s SKIP\n" "Admin diagnostics"
+      echo "     → export CB_ADMIN_TOKEN=<admin bearer> then: cb doctor --json"
+    fi
+  fi
+
+  if [[ "$as_json" -eq 1 ]]; then
+    _doctor_emit_json
+    [[ $failed -eq 0 ]]
+    return
+  fi
 
   echo ""
   if [[ $failed -eq 0 ]]; then
@@ -410,18 +909,20 @@ cmd_doctor() {
 }
 
 cmd_logs() {
+  _require_identity_or_fail logs
   local follow=""
   [[ "${1:-}" == "-f" || "${1:-}" == "--follow" ]] && follow="-f"
 
   case "$CB_MODE" in
     docker)
       _require_docker
+      [[ -n "$CB_CONTAINER" ]] || _fail "container_name missing from install identity"
       # shellcheck disable=SC2086
       docker logs $follow --tail 100 "$CB_CONTAINER"
       ;;
     compose)
       _require_docker
-      # Show backend logs; most relevant for app-level debugging
+      [[ -n "$CB_BACKEND_CONTAINER" ]] || _fail "container_name missing from install identity"
       # shellcheck disable=SC2086
       docker logs $follow --tail 100 "$CB_BACKEND_CONTAINER"
       ;;
@@ -434,28 +935,51 @@ cmd_logs() {
       for unit in "${CB_PACKAGE_UNITS[@]}"; do unit_args+=(-u "$unit"); done
       journalctl "${unit_args[@]}" --no-pager $follow -n 100
       ;;
+    native)
+      command -v journalctl >/dev/null 2>&1 || _fail "journalctl not found."
+      # shellcheck disable=SC2086
+      journalctl -u 'circuitbreaker-*' --no-pager $follow -n 100
+      ;;
+    *)
+      _fail "Unknown mode '${CB_MODE}'"
+      ;;
   esac
 }
 
 cmd_restart() {
+  _require_identity_or_fail restart
   case "$CB_MODE" in
     docker)
       _require_docker
+      [[ -n "$CB_CONTAINER" ]] || _fail "container_name missing from install identity"
       _info "Restarting container '${CB_CONTAINER}'..."
       docker restart "$CB_CONTAINER"
       _ok "Restarted."
       ;;
     compose)
       _require_docker
-      _info "Restarting compose stack containers..."
-      for svc in cb-backend cb-frontend cb-caddy; do
-        docker restart "$svc" 2>/dev/null && _ok "Restarted $svc." || _warn "$svc not running — skipped."
-      done
+      if [[ -n "$CB_COMPOSE_FILE" && -f "$CB_COMPOSE_FILE" ]]; then
+        _info "Restarting compose stack..."
+        docker compose -f "$CB_COMPOSE_FILE" restart
+      elif [[ -n "$CB_BACKEND_CONTAINER" ]]; then
+        docker restart "$CB_BACKEND_CONTAINER"
+      else
+        _fail "compose_file / container_name missing from install identity"
+      fi
+      _ok "Restarted."
       ;;
     binary)
-      _info "Restarting systemd service..."
+      _info "Restarting circuit-breaker.service..."
       sudo systemctl restart circuit-breaker
       _ok "Restarted."
+      ;;
+    native)
+      _info "Restarting circuitbreaker.target..."
+      sudo systemctl restart circuitbreaker.target
+      _ok "Restarted."
+      ;;
+    *)
+      _fail "Unknown mode '${CB_MODE}'"
       ;;
   esac
 }
@@ -489,7 +1013,12 @@ _update_rollback_hint() {
 }
 
 cmd_update() {
+  _require_identity_or_fail update
   case "$CB_MODE" in
+    native)
+      _unsupported update "native installs upgrade via the installer" \
+        "curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | sudo bash -s -- --upgrade"
+      ;;
     docker)
       _require_docker
       _info "Pulling latest image: ${CB_IMAGE}"
@@ -1273,30 +1802,50 @@ cmd_version() {
   case "$CB_MODE" in
     docker|compose)
       _require_docker
-      if _container_running "$CB_BACKEND_CONTAINER"; then
+      if [[ -n "$CB_BACKEND_CONTAINER" ]] && _container_running "$CB_BACKEND_CONTAINER"; then
         docker exec "$CB_BACKEND_CONTAINER" cat /app/VERSION 2>/dev/null \
           || docker inspect --format '{{.Config.Image}}' "$CB_BACKEND_CONTAINER" 2>/dev/null \
           || _warn "Could not determine version."
       else
-        _warn "Container '${CB_BACKEND_CONTAINER}' is not running."
+        _warn "Container '${CB_BACKEND_CONTAINER:-unknown}' is not running."
       fi
       ;;
     binary)
       "$CB_BINARY" --version 2>/dev/null \
         || cat /etc/circuit-breaker/version 2>/dev/null \
+        || cat /usr/local/share/circuit-breaker/VERSION 2>/dev/null \
         || _warn "Version unknown."
+      ;;
+    native)
+      cat /opt/circuitbreaker/share/VERSION 2>/dev/null \
+        || "$CB_NATIVE_BIN" --version 2>/dev/null \
+        || _warn "Version unknown."
+      ;;
+    *)
+      if [[ "$CB_IDENTITY_LOADED" -eq 1 ]]; then
+        _cb_json_get version
+      else
+        _warn "Version unknown (no install identity)."
+      fi
       ;;
   esac
 }
 
-# The uninstaller for docker/compose/binary installs is the repo's uninstall.sh.
-# No installer copies it to /usr/local/bin/uninstall-circuit-breaker today, so
-# that path is only honoured when an operator has put it there themselves; the
-# checkout next to this script is the case that actually happens, and a plain
-# "not found" error is useless when the real command is one curl away.
 _CB_UNINSTALL_URL="https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh"
 
 cmd_uninstall() {
+  if [[ "$CB_MODE" == "native" ]]; then
+    read -rp "  Remove Circuit Breaker and ALL data? [y/N]: " confirm
+    [[ "$confirm" != "y" ]] && echo "Cancelled." && exit 0
+    systemctl stop circuitbreaker.target 2>/dev/null || true
+    systemctl disable circuitbreaker.target 2>/dev/null || true
+    rm -rf /opt/circuitbreaker /etc/circuitbreaker
+    rm -rf "${CB_DATA_DIR:-/var/lib/circuitbreaker}"
+    rm -f /usr/local/bin/cb
+    echo "Circuit Breaker removed (native)."
+    return 0
+  fi
+
   local here
   here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
 
@@ -1324,11 +1873,14 @@ usage() {
   echo -e "  ${GR}Usage:${R}  cb <command> [options]"
   echo ""
   echo -e "  ${G}Commands:${R}"
+  echo -e "    info [--json]       Show install identity (mode, paths, health URL)"
   echo -e "    status              Show container / service status"
-  echo -e "    doctor              Run health checks and diagnose issues"
+  echo -e "    doctor [--json]     Run health checks and diagnose issues"
+  echo -e "    setup               Report first-run / bootstrap status"
+  echo -e "    setup-token         Print the one-time setup token (not for logs)"
   echo -e "    logs [-f]           Show logs  (${GR}-f${R} to follow in real-time)"
   echo -e "    restart             Restart Circuit Breaker"
-  echo -e "    update              Pull latest image and restart  ${GR}(docker mode)${R}"
+  echo -e "    update              Pull latest image and restart  ${GR}(docker/mono)${R}"
   echo -e "    backup              Full-state snapshot (database, uploads, config, vault key)"
   echo -e "                        ${GR}--encrypt-to age1…  also write a copy safe to store off this host${R}"
   echo -e "    restore <archive>   Restore a snapshot  ${GR}(--identity for .age; destructive)${R}"
@@ -1343,8 +1895,9 @@ usage() {
   echo -e "    uninstall           Remove Circuit Breaker from this system"
   echo -e "    help                Show this help"
   echo ""
-  echo -e "  ${GR}Config : ${_CONF}${R}"
-  echo -e "  ${GR}Mode   : ${CB_MODE}${R}"
+  echo -e "  ${GR}Identity : ${CB_IDENTITY_FILE:-missing}${R}"
+  echo -e "  ${GR}Mode     : ${CB_IDENTITY_MODE:-${CB_MODE:-unknown}}${R}"
+  echo -e "  ${GR}Legacy   : ${_CONF}${R}"
   echo ""
 }
 
@@ -1353,19 +1906,22 @@ usage() {
 ###############################################################################
 
 case "${1:-help}" in
+  info)            cmd_info "${2:-}" ;;
   status)          cmd_status ;;
-  doctor)          cmd_doctor ;;
+  doctor)          cmd_doctor "${2:-}" ;;
+  setup)           cmd_setup ;;
+  setup-token)     cmd_setup_token ;;
   logs)            cmd_logs "${2:-}" ;;
   restart)         cmd_restart ;;
   update)          cmd_update ;;
-  backup)          cmd_backup "${@:2}" ;;
-  restore)         cmd_restore "${@:2}" ;;
-  migrate)         cmd_migrate "${@:2}" ;;
-  token)           cmd_token "${@:2}" ;;
-  user)            cmd_user "${@:2}" ;;
-  agent)           cmd_agent "${@:2}" ;;
-  config)          cmd_config "${2:-}" ;;
-  vault-recover)   cmd_vault_recover ;;
+  backup)          _require_identity_or_fail backup; cmd_backup "${@:2}" ;;
+  restore)         _require_identity_or_fail restore; cmd_restore "${@:2}" ;;
+  migrate)         _require_identity_or_fail migrate; cmd_migrate "${@:2}" ;;
+  token)           _require_identity_or_fail token; cmd_token "${@:2}" ;;
+  user)            _require_identity_or_fail user; cmd_user "${@:2}" ;;
+  agent)           _require_identity_or_fail agent; cmd_agent "${@:2}" ;;
+  config)          _require_identity_or_fail config; cmd_config "${2:-}" ;;
+  vault-recover)   _require_identity_or_fail vault-recover; cmd_vault_recover ;;
   version)         cmd_version ;;
   uninstall)       cmd_uninstall ;;
   help|--help|-h)  usage ;;

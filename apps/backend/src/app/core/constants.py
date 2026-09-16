@@ -61,3 +61,11 @@ API_TOKEN_LAST_USED_TOUCH_SECONDS = 300
 # stalls authentication itself, which is a far worse outcome than a missing
 # last_used_at, so the write fails fast and is skipped.
 API_TOKEN_LAST_USED_LOCK_TIMEOUT_MS = 50
+
+# ── Diagnostics (install diagnosis Phase 3) ───────────────────────────────────
+# Worker heartbeat files older than this are stale (warn).
+DIAGNOSTIC_WORKER_HEARTBEAT_STALE_SECONDS = 120
+# Free space on CB_DATA_DIR below this triggers a storage warn.
+DIAGNOSTIC_STORAGE_FREE_WARN_BYTES = 1_073_741_824  # 1 GiB
+# Cap on operator-facing evidence strings after redaction.
+DIAGNOSTIC_EVIDENCE_MAX_CHARS = 500

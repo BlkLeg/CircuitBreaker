@@ -509,7 +509,7 @@ def stage_bundle(
     # Bundle installer infrastructure for curl-pipe / Proxmox installs
     deploy_src = REPO_ROOT / "deploy"
     deploy_dst = bundle_dir / "deploy"
-    for subdir in ("config", "systemd", "nginx", "cli", "misc", "scripts", "helper"):
+    for subdir in ("config", "systemd", "nginx", "cli", "misc", "scripts", "helper", "lib"):
         src = deploy_src / subdir
         if src.exists():
             shutil.copytree(src, deploy_dst / subdir, dirs_exist_ok=True)

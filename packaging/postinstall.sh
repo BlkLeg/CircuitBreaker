@@ -129,6 +129,33 @@ for _kv in \
   fi
 done
 
+# Write install identity (secret-free). Used by /usr/local/bin/cb.
+_IDENTITY_VERSION="unknown"
+if [ -f /usr/local/share/circuit-breaker/VERSION ]; then
+  _IDENTITY_VERSION="$(tr -d '[:space:]' </usr/local/share/circuit-breaker/VERSION)"
+elif [ -x /usr/local/bin/circuit-breaker ]; then
+  _IDENTITY_VERSION="$(/usr/local/bin/circuit-breaker --version 2>/dev/null | head -1 || echo unknown)"
+fi
+if [ -f /usr/local/lib/circuitbreaker/install-identity.sh ]; then
+  # shellcheck source=/dev/null
+  . /usr/local/lib/circuitbreaker/install-identity.sh
+elif [ -f /usr/local/share/circuit-breaker/install-identity.sh ]; then
+  # shellcheck source=/dev/null
+  . /usr/local/share/circuit-breaker/install-identity.sh
+fi
+if command -v write_install_identity >/dev/null 2>&1; then
+  write_install_identity /etc/circuit-breaker/install-identity.json \
+    mode=package \
+    version="${_IDENTITY_VERSION}" \
+    config_path=/etc/circuit-breaker/config.toml \
+    data_dir=/var/lib/circuit-breaker \
+    env_file="$ENV_FILE" \
+    cli_path=/usr/local/bin/cb \
+    health_url=http://127.0.0.1:8000/api/v1/readyz \
+    service_names="circuit-breaker.service,circuit-breaker-discovery.service" \
+    || true
+fi
+
 # Enable and reload systemd
 systemctl daemon-reload
 systemctl enable circuit-breaker.service

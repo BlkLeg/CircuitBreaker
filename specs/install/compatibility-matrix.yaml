@@ -1,0 +1,137 @@
+# Circuit Breaker installation compatibility matrix.
+# Consumed by docs and contract tests. Modes match install-identity.json.
+schema_version: 1
+identity_schema: identity.schema.json
+diagnostic_schema: diagnostic-result.schema.json
+
+first_class:
+  - native
+  - mono
+  - proxmox
+
+advanced:
+  - package
+  - appimage
+  - archive
+
+modes:
+  native:
+    support: first_class
+    description: Host systemd install via install.sh / deploy/setup.sh
+    install_command: "curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | sudo bash"
+    config_path: /etc/circuitbreaker/.env
+    data_dir: /var/lib/circuitbreaker
+    env_file: /etc/circuitbreaker/.env
+    identity_path: /etc/circuitbreaker/install-identity.json
+    service_names:
+      - circuitbreaker-postgres
+      - circuitbreaker-pgbouncer
+      - circuitbreaker-redis
+      - circuitbreaker-nats
+      - circuitbreaker-backend
+      - circuitbreaker-worker@discovery
+      - circuitbreaker-worker@notification
+      - circuitbreaker-worker@telemetry
+      - circuitbreaker-worker@integration
+      - circuitbreaker-worker@monitor_scheduler
+      - circuitbreaker-worker@monitor_poll
+      - circuitbreaker-worker@monitor_probe_dispatch
+      - nginx
+    container_name: null
+    compose_file: null
+    cli_path: /usr/local/bin/cb
+    health_url: http://127.0.0.1:8000/api/v1/readyz
+    health_probe: /api/v1/livez
+    cli_available: true
+    backup_restore: true
+    update: true
+    uninstall_command: "cb uninstall"
+    repair_identity_hint: "Re-run the native installer so /etc/circuitbreaker/install-identity.json is written, then run: cb info"
+
+  mono:
+    support: first_class
+    description: Single mono image via Docker Compose or docker run
+    install_command: "bash install.sh --docker"
+    config_path: null
+    data_dir: /data
+    env_file: /data/.env
+    identity_path: /data/install-identity.json
+    host_identity_path: ~/.circuit-breaker/install-identity.json
+    service_names: []
+    container_name: circuitbreaker
+    compose_file: docker-compose.yml
+    cli_path: /usr/local/bin/cb
+    health_url: http://127.0.0.1:8080/api/v1/readyz
+    health_probe: /api/v1/livez
+    cli_available: true
+    backup_restore: true
+    update: true
+    uninstall_command: "cb uninstall"
+    repair_identity_hint: "Restart the container so entrypoint rewrites /data/install-identity.json, then ensure host ~/.circuit-breaker/install-identity.json exists"
+
+  proxmox:
+    support: first_class
+    description: Native install inside an LXC created by cb-proxmox-deploy.sh
+    install_command: "bash cb-proxmox-deploy.sh"
+    config_path: /etc/circuitbreaker/.env
+    data_dir: /var/lib/circuitbreaker
+    env_file: /etc/circuitbreaker/.env
+    identity_path: /etc/circuitbreaker/install-identity.json
+    service_names:
+      - circuitbreaker-postgres
+      - circuitbreaker-pgbouncer
+      - circuitbreaker-redis
+      - circuitbreaker-nats
+      - circuitbreaker-backend
+      - nginx
+    container_name: null
+    compose_file: null
+    cli_path: /usr/local/bin/cb
+    health_url: http://127.0.0.1:8088/api/v1/readyz
+    health_probe: /api/v1/livez
+    cli_available: true
+    backup_restore: true
+    update: true
+    uninstall_command: "bash cb-proxmox-uninstall.sh"
+    repair_identity_hint: "Re-run cb-proxmox-deploy.sh or set mode=proxmox in the CT identity after native install"
+
+  package:
+    support: advanced
+    description: Distro packages (deb/rpm/apk) via nfpm — advanced/manual channel
+    install_command: "Install the circuit-breaker package from GitHub Releases"
+    config_path: /etc/circuit-breaker/config.toml
+    data_dir: /var/lib/circuit-breaker
+    env_file: /etc/circuit-breaker/circuit-breaker.env
+    identity_path: /etc/circuit-breaker/install-identity.json
+    service_names:
+      - circuit-breaker.service
+      - circuit-breaker-discovery.service
+      - circuit-breaker-worker@notification.service
+      - circuit-breaker-worker@telemetry.service
+      - circuit-breaker-worker@integration.service
+      - circuit-breaker-worker@monitor_scheduler.service
+      - circuit-breaker-worker@monitor_poll.service
+      - circuit-breaker-worker@monitor_probe_dispatch.service
+    container_name: null
+    compose_file: null
+    cli_path: /usr/local/bin/cb
+    health_url: http://127.0.0.1:8000/api/v1/readyz
+    health_probe: /api/v1/livez
+    cli_available: true
+    backup_restore: true
+    update: true
+    uninstall_command: "Use the distro package manager to remove circuit-breaker"
+    repair_identity_hint: "Reinstall the package or run packaging/postinstall.sh so /etc/circuit-breaker/install-identity.json is written"
+
+identity_search_order:
+  - "$CB_IDENTITY_PATH"
+  - /etc/circuitbreaker/install-identity.json
+  - /etc/circuit-breaker/install-identity.json
+  - "$CB_DATA_DIR/install-identity.json"
+  - ~/.circuit-breaker/install-identity.json
+
+legacy_compat:
+  install_conf_paths:
+    - ~/.circuit-breaker/install.conf
+    - /etc/circuit-breaker/install.conf
+  note: "install.conf is a one-release secondary hint when identity is missing; cb doctor/info emit migration guidance."

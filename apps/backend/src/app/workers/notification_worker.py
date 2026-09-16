@@ -3,8 +3,6 @@ import hashlib
 import json
 import logging
 import os
-import time
-from pathlib import Path
 from typing import Any
 
 from nats.js.api import ConsumerConfig
@@ -12,6 +10,7 @@ from nats.js.api import ConsumerConfig
 from app.core.nats_client import nats_client
 from app.core.redis import get_redis
 from app.core.worker_audit import log_worker_audit
+from app.core.worker_heartbeat import touch_heartbeat
 from app.db.session import SessionLocal
 from app.schemas.notifications import AlertEnvelope, DeliveryOutcome
 from app.services.credential_vault import get_vault
@@ -27,8 +26,6 @@ from app.services.notification_routing import dispatch_event, stable_event_id
 from app.workers.dead_letter import handle_failed_delivery
 
 logger = logging.getLogger(__name__)
-
-_HEALTHY_FILE = Path("/data/worker-notification.healthy")
 
 _DEDUP_WINDOW_S = int(os.getenv("CB_ALERT_DEBOUNCE_S", "60"))
 _NOTIFICATION_RETRIES = int(os.getenv("CB_NOTIFICATION_RETRIES", "2"))
@@ -69,12 +66,8 @@ def _init_vault() -> None:
 
 
 def _touch_healthy() -> None:
-    """Update heartbeat file so the container healthcheck can verify liveness."""
-    try:
-        _HEALTHY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _HEALTHY_FILE.write_text(str(time.time()))
-    except OSError:
-        pass
+    """Update heartbeat file so health/diagnostics can verify liveness."""
+    touch_heartbeat("worker-notification")
 
 
 async def notify_slack(

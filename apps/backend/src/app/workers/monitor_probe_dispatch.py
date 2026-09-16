@@ -21,9 +21,7 @@ import asyncio
 import json
 import logging
 import os
-import time
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -32,6 +30,7 @@ from sqlalchemy.orm import Session
 from app.core.nats_client import nats_client
 from app.core.subjects import MONITOR_PROBE_REMOTE
 from app.core.time import utcnow
+from app.core.worker_heartbeat import touch_heartbeat
 from app.db.models import MonitorItem, MonitorProbeRun
 from app.schemas.agent_frame import TYPE_PROBE_ASSIGN
 from app.services import agent_registry
@@ -39,7 +38,6 @@ from app.services.monitoring import probe_eligibility
 
 logger = logging.getLogger(__name__)
 
-_HEALTHY_FILE = Path("/data/worker-monitor-probe-dispatch.healthy")
 _FETCH_BATCH = int(os.getenv("CB_MONITOR_PROBE_FETCH", "50"))
 _JS_STREAM = "MONITOR_PROBE"
 _JS_DURABLE = "monitor_probe_dispatchers"
@@ -56,11 +54,7 @@ _INVALID_RUN = "invalid_run"
 
 
 def _touch_healthy() -> None:
-    try:
-        _HEALTHY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _HEALTHY_FILE.write_text(str(time.time()))
-    except OSError:
-        pass
+    touch_heartbeat("worker-monitor-probe-dispatch")
 
 
 async def dispatch_run(db: Session, run_id: str) -> bool:

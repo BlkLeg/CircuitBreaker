@@ -10,15 +10,14 @@ import asyncio
 import json
 import logging
 import os
-import time
 from collections.abc import Callable
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from nats.js.api import ConsumerConfig
 
 from app.core.nats_client import nats_client
+from app.core.worker_heartbeat import touch_heartbeat
 from app.db.session import get_session_context
 from app.services.monitoring.collectors import COLLECTORS, CheckResult, Sample
 from app.services.monitoring.result_service import (
@@ -32,7 +31,6 @@ from app.workers.dead_letter import handle_failed_delivery
 
 logger = logging.getLogger(__name__)
 
-_HEALTHY_FILE = Path("/data/worker-monitor-poll.healthy")
 _MAX_PARALLEL = int(os.getenv("CB_MONITOR_POLL_PARALLEL", "50"))
 _FETCH_BATCH = int(os.getenv("CB_MONITOR_POLL_FETCH", "50"))
 _JS_STREAM = "MONITOR_POLL"
@@ -54,11 +52,7 @@ PollOutcome = tuple[SampleRow, bool, str, str, dict | None]
 
 
 def _touch_healthy() -> None:
-    try:
-        _HEALTHY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _HEALTHY_FILE.write_text(str(time.time()))
-    except OSError:
-        pass
+    touch_heartbeat("worker-monitor-poll")
 
 
 async def poll_one(item: dict) -> PollOutcome:

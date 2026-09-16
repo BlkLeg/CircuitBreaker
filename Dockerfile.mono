@@ -199,7 +199,10 @@ COPY docker/supervisord.mono.conf /etc/supervisor/conf.d/supervisord.conf
 COPY docker/nginx.mono.conf /etc/nginx/nginx.conf
 COPY docker/pgbouncer.ini /etc/pgbouncer/pgbouncer.ini
 COPY docker/10-init-postgres.sh docker/20-migrate.sh docker/30-oobe.sh docker/entrypoint-mono.sh docker/run-postgres-if-embedded.sh /docker/
-RUN chmod +x /docker/*.sh
+COPY deploy/lib/install-identity.sh /usr/local/lib/circuitbreaker/install-identity.sh
+COPY cb /usr/local/bin/cb
+RUN chmod +x /docker/*.sh /usr/local/bin/cb \
+    && chmod 644 /usr/local/lib/circuitbreaker/install-identity.sh
 
 # Runtime directories: /data/run/postgresql for socket/lock (breaker-owned); symlink so Postgres finds it
 RUN mkdir -p /app /data /data/uploads /data/tls /data/certs /data/redis /data/run/postgresql /var/log/circuitbreaker \
