@@ -8,6 +8,10 @@ export const listCapacityForecasts = () => client.get('/intel/capacity-forecasts
 export const listResourceEfficiency = () => client.get('/intel/resource-efficiency');
 
 // assetType is one of hardware | compute_unit | service | storage — the
-// backend's _VALID_TYPES (api/intel.py:19). Anything else is a 400.
-export const getBlastRadius = (assetType, assetId) =>
-  client.get(`/intel/blast-radius/${assetType}/${assetId}`);
+// backend's _VALID_TYPES (api/intel.py). Anything else is a 400.
+// options carries the query the backend accepts: include_inferred (plan 06's
+// confirmed/inferred scope switch) and the traversal limits.
+export const getBlastRadius = (assetType, assetId, options) =>
+  client.get(`/intel/blast-radius/${assetType}/${assetId}`, {
+    params: options || undefined,
+  });

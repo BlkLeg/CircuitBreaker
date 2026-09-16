@@ -25,7 +25,12 @@ them: the job writes nothing when it finds nothing.
 
 Blast radius is computed on demand when you expand the **Impact** panel, not on
 a schedule, because it reflects the dependency graph as it stands right now.
-"Nothing depends on this" is a real answer and is displayed as one.
+It reports **potential dependency impact** from declared relationships — what
+could lose its provider — never an observed outage. Every listed asset can
+show the path of evidence that connects it. "Nothing depends on this" is a
+real answer and is displayed as one; a traversal that stopped at a limit says
+so instead, because an empty result from part of the graph is not proof that
+nothing depends on the asset.
 
 ## Vulnerability assessment, honestly
 
@@ -89,7 +94,7 @@ All endpoints require authentication and are prefixed `/api/v1/intel/`.
 
 ### `GET /api/v1/intel/blast-radius/{asset_type}/{asset_id}`
 
-Returns the downstream impact of a given asset going offline. Performs a BFS traversal of the dependency graph starting from the specified asset.
+Returns the downstream impact of a given asset going offline. Performs a bounded breadth-first traversal of the operational dependency graph starting from the specified asset.
 
 **Path parameters:**
 
@@ -97,6 +102,14 @@ Returns the downstream impact of a given asset going offline. Performs a BFS tra
 |-----------|--------|
 | `asset_type` | `hardware`, `compute_unit`, `service`, `storage` |
 | `asset_id` | integer primary key |
+
+**Query parameters:**
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `include_inferred` | `false` | Also traverse edges whose provenance is inferred, not just confirmed ones. The response states whether any inferred edges exist (`inferred_available`). |
+| `max_nodes` | `500` | Traversal node cap (1–1000). |
+| `max_depth` | `12` | Traversal hop cap (1–24). |
 
 **Response:**
 
@@ -112,18 +125,55 @@ Returns the downstream impact of a given asset going offline. Performs a BFS tra
   ],
   "impacted_storage": [],
   "total_impact_count": 2,
-  "summary": "hypervisor-01 is DOWN. Impact: 1 VM, 1 service affected."
+  "summary": "hypervisor-01 is DOWN. Impact: 1 VM, 1 service affected.",
+  "paths": [
+    {
+      "asset": { "asset_type": "service", "asset_id": 7, "name": "api-server", "status": null },
+      "edges": [
+        { "identity": "compute_units.hardware_id:3:hardware:1:compute_unit:3",
+          "provider_type": "hardware", "provider_id": 1,
+          "dependent_type": "compute_unit", "dependent_id": 3,
+          "edge_type": "hosting", "provenance": "confirmed",
+          "source_kind": "compute_units.hardware_id", "source_id": 3,
+          "label": "hosted by" }
+      ],
+      "provenance": "confirmed"
+    }
+  ],
+  "edges": [],
+  "connectivity": [],
+  "evaluated_at": "2026-09-15T12:00:00Z",
+  "completeness": "complete",
+  "truncation_reason": null,
+  "limits": { "max_nodes": 500, "max_depth": 12, "max_edges": 5000 },
+  "inferred_available": false
 }
 ```
 
-**Dependency graph edges traversed:**
+Every listed asset has an entry in `paths` (unless a cap was hit first) made
+of typed, provenance-tagged edges. `edges` carries the deduplicated edges the
+traversal used; `connectivity` carries ordinary connectivity (physical links
+and network memberships) that is *not* counted as impact. `completeness` is
+`"truncated"` with a `truncation_reason` of `node_limit`, `depth_limit` or
+`edge_limit` when a cap stopped the traversal — a truncated result is partial,
+never exhaustive.
+
+**Dependency graph edges traversed (impact):**
+
+- `ComputeUnit.hardware_id` — compute units hosted on a hardware node (**hosting**)
+- `Service.hardware_id` / `Service.compute_id` — services running on hardware or compute (**hosting**)
+- `ServiceDependency` — if service A depends on service B, B going down impacts A (**dependency**)
+- `Storage.hardware_id` — storage attached to hardware (**hosting**)
+- `ServiceStorage` — services that use a storage target (**dependency**)
+
+**Edges reported as connectivity only (never traversed for impact):**
 
 - `HardwareConnection` — direct hardware-to-hardware links
-- `HardwareNetwork` — hardware nodes sharing a network (bidirectional)
-- `ComputeUnit.hardware_id` — compute units hosted on a hardware node
-- `Service.hardware_id` / `Service.compute_id` — services running on hardware or compute
-- `ServiceDependency` — if service A depends on service B, B going down impacts A
-- `Storage.hardware_id` — storage attached to hardware
+- `HardwareNetwork` / `ComputeNetwork` — network memberships
+
+Shared subnet membership is connectivity, not an operational dependency: two
+devices on the same network are not mutual dependents, and membership is never
+expanded into device pairs.
 
 ### `GET /api/v1/intel/capacity-forecasts`
 
@@ -253,4 +303,10 @@ Asset identity uses stable `(asset_type, asset_id)` tuples throughout, so extern
 
 ## Extending Blast Radius
 
-To add a new asset type to the blast-radius graph, add edges in `_build_adjacency()` inside `src/app/services/intelligence/dependency_graph.py`. Each edge is a `(asset_type, id) → (asset_type, id)` entry in the adjacency dict. The BFS traversal and result classification handle the rest automatically.
+To add a new relationship to the blast-radius graph, add it in
+`load_dependency_edges()` inside `src/app/services/intelligence/dependency_edges.py`.
+Operational relationships go in `dependencies` with an edge type (`hosting`,
+`dependency`) and provenance; physical links and memberships go in
+`connectivity`, which is reported but never traversed for impact. The
+traversal, path assembly and completeness handling in
+`dependency_graph.py` pick edges up from there automatically.

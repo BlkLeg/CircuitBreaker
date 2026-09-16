@@ -22,13 +22,44 @@ Proposed boundaries: typed dependency-edge building and bulk resolution within t
 
 ## Work packages
 
-- [ ] **I1:** Rebase integration assumptions on the completed map split; identify the selected-entity and detail-panel interfaces. Do not reopen unrelated layout/node-command refactoring.
-- [ ] **I2:** Define typed directed edges and response/evidence schema. Add graph fixtures for host/guest/service, service/storage, shared network, cycles, duplicate paths, and missing entities.
-- [ ] **I3:** Correct dependency construction and traversal in the existing service; include storage consumers and remove subnet clique construction.
-- [ ] **I4:** Bulk-resolve entity metadata and bound traversal with honest completeness indicators. Measure query/edge growth.
-- [ ] **I5:** Build the approved affected list, focused graph, path inspection, and confirmed/inferred controls using theme-aware graph styling.
-- [ ] **I6:** Wire selection and cancellation. Rapidly changing selected assets must not show an earlier asset's result under the new heading.
-- [ ] **I7:** Verify graph authorization: do not reveal names or paths through entities the user cannot access. Report incomplete evidence safely where filtering changes completeness.
+- [x] **I1:** Rebase integration assumptions on the completed map split; identify the selected-entity and detail-panel interfaces. Do not reopen unrelated layout/node-command refactoring.
+- [x] **I2:** Define typed directed edges and response/evidence schema. Add graph fixtures for host/guest/service, service/storage, shared network, cycles, duplicate paths, and missing entities.
+- [x] **I3:** Correct dependency construction and traversal in the existing service; include storage consumers and remove subnet clique construction.
+- [x] **I4:** Bulk-resolve entity metadata and bound traversal with honest completeness indicators. Measure query/edge growth.
+- [x] **I5:** Build the approved affected list, focused graph, path inspection, and confirmed/inferred controls using theme-aware graph styling.
+- [x] **I6:** Wire selection and cancellation. Rapidly changing selected assets must not show an earlier asset's result under the new heading.
+- [x] **I7:** Verify graph authorization: do not reveal names or paths through entities the user cannot access. Report incomplete evidence safely where filtering changes completeness.
+
+> Status 2026-09-15: I2/I3/I4 landed with the backend in `4729e8bd`
+> (`services/intelligence/dependency_edges.py` typed edges with provenance —
+> storage consumers via `ServiceStorage`, no subnet clique, memberships as
+> connectivity only; `dependency_graph.py` bounded traversal with
+> `completeness`/`truncation_reason`/`limits`; fixtures in
+> `apps/backend/tests/intelligence/test_dependency_graph.py` incl. cycle,
+> shared-network, storage-consumer, truncation and a
+> `test_query_count_is_bounded_not_per_asset` measurement: 128-asset and
+> 2-asset trees cost the same statement count). I1 required no map change —
+> the panel stays where the detail composition mounts it.
+> I5/I6 are the frontend correction this session
+> (`components/details/BlastRadiusPanel.jsx` + `lib/impactPaths.js` +
+> `styles/impact.css`): per-entry "Why" paths in dependency direction, an
+> opt-in confirmed/inferred toggle that appears only when
+> `inferred_available`, connectivity listed separately and never counted,
+> truncation disclosed, and a bounded token-themed focused graph (≤ 40 nodes,
+> skipped with a note beyond that). The result is stored with the exact
+> `asset:scope` key it answers and rendered only while that key matches, so a
+> changed selection can never show an earlier asset's answer; tests pin the
+> mid-flight supersession case. I7: the intel router is readable by any
+> signed-in user by existing documented policy (`api/intel.js`), the panel has
+> no write affordances, and the docs state the authorization boundary.
+> Tests: `__tests__/blast-radius-panel.test.jsx` (16 cases),
+> `__tests__/impact-paths-lib.test.js` (the pure projections:
+> truncation wording, honest empty, path chaining, graph bounds), plus
+> `__tests__/intel-api.test.js` for the scope parameter.
+>
+> Still open: the browser/theme/keyboard pass from *Acceptance and tests* below
+> has not been run in a real browser — including the graph's arrowheads and
+> dashed inferred strokes across light/dark themes.
 
 ## Acceptance and tests
 

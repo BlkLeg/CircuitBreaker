@@ -136,7 +136,49 @@ def test_traversal_limit_is_disclosed(db_session, factories):
     assert result.total_impact_count == 1
 
 
-# ── API tests ─────────────────────────────────────────────────────────────────
+def test_query_count_is_bounded_not_per_asset(db_session, factories):
+    """Plan 06, I4: edge loading and name resolution are bulk.
+
+    Sixty-four assets must not cost more statements than one: edges load one
+    query per relationship table and names resolve one query per asset type,
+    so the statement count is a property of the graph *shape*, not its size.
+    """
+    from sqlalchemy import event
+
+    def count_statements(asset_type, asset_id):
+        counter = {"statements": 0}
+
+        def hook(conn, cursor, statement, parameters, context, executemany):
+            counter["statements"] += 1
+
+        engine = db_session.get_bind()
+        event.listen(engine, "before_cursor_execute", hook)
+        try:
+            result = calculate_blast_radius(db_session, asset_type, asset_id)
+        finally:
+            event.remove(engine, "before_cursor_execute", hook)
+        return counter["statements"], result
+
+    bulk_host = factories.hardware(name="bulk-host", ip_address="10.30.0.1")
+    for index in range(64):
+        compute = factories.compute_unit(name=f"vm-{index}", hardware_id=bulk_host.id)
+        factories.service(name=f"svc-{index}", compute_id=compute.id)
+    tiny_host = factories.hardware(name="tiny-host", ip_address="10.30.0.2")
+    tiny_compute = factories.compute_unit(name="tiny-vm", hardware_id=tiny_host.id)
+    factories.service(name="tiny-svc", compute_id=tiny_compute.id)
+    db_session.flush()
+
+    # Warm any lazy identity-map behaviour, then measure the steady state.
+    count_statements("hardware", bulk_host.id)
+    bulk_statements, bulk_result = count_statements("hardware", bulk_host.id)
+    tiny_statements, tiny_result = count_statements("hardware", tiny_host.id)
+
+    assert bulk_result.total_impact_count == 128  # 64 compute units + 64 services
+    assert tiny_result.total_impact_count == 2
+    assert bulk_statements == tiny_statements
+
+
+# ── API tests# ── API tests ─────────────────────────────────────────────────────────────────
 
 
 async def test_blast_radius_api_returns_impact(client, auth_headers, db_session, factories):

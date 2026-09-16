@@ -44,6 +44,15 @@ directly verifiable in this tree.
   findings visibly stale. Editors can correct the identity in place — the
   save is revision-checked, keeps entered values on failure, and re-assesses
   immediately (plans 04; see `docs/business_intelligence.md`).
+- The **Impact** panel now explains itself instead of showing bare counts.
+  Every listed asset can show the typed, provenance-tagged path that connects
+  it; a small focused graph (theme-aware, bounded) sketches the same shape;
+  inferred relationships are opt-in and labelled when any exist; physical
+  links and network memberships are listed separately as connectivity and are
+  never counted as impact; and a traversal that stopped at a node/depth/edge
+  limit says so — "no dependents found before the traversal limit" is not
+  rendered as "nothing depends on this" (plan 06).
+
 - An agent that removed itself with `cb-agent uninstall` now reads as
   **Uninstalled** rather than *Revoked* across the fleet table and the agent
   page, and no longer tells you to go and clean up a host that has already
