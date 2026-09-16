@@ -33,6 +33,17 @@ directly verifiable in this tree.
 
 ### Changed
 
+- The vulnerability panel on hardware, compute and service detail views no
+  longer renders an empty result as **No known vulnerabilities**. It consumes
+  the assessment contract the server already shipped: readiness first (feed
+  missing/incomplete/stale, identity missing, version scheme unsupported),
+  then the matched identity with its provenance and revision, then findings
+  with the CPE evidence and version bounds that produced them. A completed
+  assessment with no matches reads **No matches in this assessment**, with an
+  explicit caveat that it is not a safety guarantee; a stale feed keeps its
+  findings visibly stale. Editors can correct the identity in place — the
+  save is revision-checked, keeps entered values on failure, and re-assesses
+  immediately (plans 04; see `docs/business_intelligence.md`).
 - An agent that removed itself with `cb-agent uninstall` now reads as
   **Uninstalled** rather than *Revoked* across the fleet table and the agent
   page, and no longer tells you to go and clean up a host that has already

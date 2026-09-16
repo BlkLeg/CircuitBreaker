@@ -98,7 +98,7 @@ Categories are not managed here — they are created inline while editing hardwa
 - Network threat intelligence
 - Docker integration (container discovery)
 - Privacy & threat intelligence
-- CVE feed sync
+- CVE feed sync — powers the [vulnerability assessment](business_intelligence.md#vulnerability-assessment-honestly) panels
 - Notification sinks and routing rules
 - Proxmox VE and OPNsense (both configured from the Discovery page)
 - Service integrations (for example Uptime Kuma)

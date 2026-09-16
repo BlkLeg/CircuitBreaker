@@ -566,6 +566,7 @@ export const ipCheckApi = {
 export const cveApi = {
   search: (params) => client.get('/cve/search', { params }),
   forEntity: (type, id) => client.get(`/cve/entity/${type}/${id}`),
+  updateIdentity: (type, id, data) => client.put(`/cve/entity/${type}/${id}/identity`, data),
   triggerSync: () => client.post('/cve/sync'),
   status: () => client.get('/cve/status'),
 };

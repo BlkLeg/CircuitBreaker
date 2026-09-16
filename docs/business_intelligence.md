@@ -1,6 +1,6 @@
 # Business Intelligence
 
-Circuit Breaker's intelligence layer provides automated blast-radius analysis, predictive capacity forecasting, right-sizing recommendations, flap detection, and configurable telemetry retention — all derived from the same asset graph and live-metric data already collected by the platform.
+Circuit Breaker's intelligence layer provides automated blast-radius analysis, predictive capacity forecasting, right-sizing recommendations, flap detection, vulnerability assessment, and configurable telemetry retention — all derived from the same asset graph and live-metric data already collected by the platform.
 
 ## Where these appear
 
@@ -9,8 +9,9 @@ Circuit Breaker's intelligence layer provides automated blast-radius analysis, p
 | Capacity forecasts | **Intel** page (`/intel`) |
 | Resource efficiency | **Intel** page (`/intel`) |
 | Blast radius | **Impact** panel on a hardware, compute unit, service, or storage detail view |
+| Vulnerability assessment | **Vulnerability assessment** panel on a hardware, compute unit, or service detail view |
 
-All three are readable by any signed-in user; they carry no role restriction.
+All of these are readable by any signed-in user; they carry no role restriction. Correcting an assessment identity and triggering a feed sync require editor access.
 
 ## When the data appears
 
@@ -25,6 +26,43 @@ them: the job writes nothing when it finds nothing.
 Blast radius is computed on demand when you expand the **Impact** panel, not on
 a schedule, because it reflects the dependency graph as it stands right now.
 "Nothing depends on this" is a real answer and is displayed as one.
+
+## Vulnerability assessment, honestly
+
+The **Vulnerability assessment** panel matches an entity's product identity
+against a locally cached NVD CVE feed. It separates readiness from findings:
+the first thing it shows is what state the assessment is in, and only a
+`completed` assessment with zero findings says **No matches in this
+assessment** — never "safe". A missing, incomplete, stale, or failed feed
+cannot produce an unqualified clean result.
+
+The assessment states:
+
+| State | Meaning |
+|-------|---------|
+| `unavailable` | No complete feed generation is active (never synced, incomplete, or failed). Findings are withheld. |
+| `unassessed` | The entity has no usable identity — missing product, missing version, or a version format with no supported comparator. |
+| `partial` | The assessment ran, but candidates or findings exceeded their limits, or some applicability could only evaluate to unknown. |
+| `completed` | Every matching candidate in the active feed was evaluated. |
+| `stale` | The findings come from a feed older than the freshness policy. They remain displayed, labelled stale, until a fresh sync completes. |
+
+**Identity.** The matcher evaluates vendor/product/version. It reads them from
+the entity's inventory fields first; an operator can correct them on the
+panel, and the correction carries a revision so a stale edit cannot silently
+overwrite a newer one. Editing the identity invalidates the previous
+assessment immediately.
+
+**Evidence and limits.** Each finding can show the CPE criteria that matched it,
+including inclusive/exclusive version bounds. Version comparison supports
+dotted-numeric versions only; any other scheme reports `unknown` rather than
+guessing. Unsupported applicability coexists with confirmed matches, and the
+result says which. Assessments are bounded (candidate and finding caps); when
+a cap is hit the result is `partial` with the limitation stated, not a silent
+truncation.
+
+The feed sync itself is configured under **Settings → Security** (CVE feed
+sync) and downloads the NVD feed to a local SQLite cache; no inventory data
+leaves the host. See [Privacy](security/privacy.md).
 
 ---
 
@@ -125,6 +163,24 @@ Returns right-sizing recommendations ordered by most recently evaluated.
   }
 ]
 ```
+
+---
+
+## Vulnerability assessment API
+
+Assessment endpoints are prefixed `/api/v1/cve/`. Reads are available to any
+signed-in user; identity correction and feed sync require editor access.
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/v1/cve/entity/{entity_type}/{entity_id}` | GET | The full `AssessmentResult` for one entity: state, reason code, identity and its revision, feed generation/age, findings with applicability evidence, completeness, and limitations. |
+| `/api/v1/cve/entity/{entity_type}/{entity_id}/identity` | PUT | Correct the identity. The request must carry the identity revision currently shown; a stale revision is rejected with `stale_identity`. |
+| `/api/v1/cve/status` | GET | Feed configuration and state: sync enabled, interval, entry count, and the active generation's state/freshness. |
+| `/api/v1/cve/sync` | POST | Trigger an immediate feed sync (also scheduled). |
+| `/api/v1/cve/search` | GET | Search the cached CVE catalog directly. |
+
+The identity revision makes out-of-order corrections rejectable on the client:
+a response for revision *n* cannot overwrite a state already advanced to *n+1*.
 
 ---
 
