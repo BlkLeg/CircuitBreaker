@@ -18,10 +18,12 @@ from typing import Any
 import bcrypt
 import jwt
 from fastapi import Depends, HTTPException
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from starlette.requests import HTTPConnection
 
 from app.core.constants import (
+    API_TOKEN_LAST_USED_LOCK_TIMEOUT_MS,
     API_TOKEN_LAST_USED_TOUCH_SECONDS,
     CLIENT_HASH_PBKDF2_ITERATIONS,
     CLIENT_HASH_V2_PREFIX,
@@ -459,45 +461,59 @@ def _is_pre_bootstrap_setup_surface(request: HTTPConnection) -> bool:
     return False
 
 
-def touch_api_token_last_used(db: Session, row: Any) -> None:
-    """Stamp ``last_used_at`` on an already-loaded APIToken using the auth session.
+def touch_api_token_last_used(row: Any) -> None:
+    """Stamp ``last_used_at`` on an APIToken, on a connection of its own.
 
-    Commits immediately so a read-only request still persists the stamp. Auth
-    runs before handlers mutate the session, so this should not flush unrelated
-    pending work. Failures roll back the stamp attempt and never raise into the
-    auth path.
+    Deliberately does *not* write through the caller's session. Auth runs inside
+    whatever transaction the request already holds, and an UPDATE there keeps a
+    row-level write lock on the token until that transaction ends -- which is
+    the whole request. Two consequences made that untenable: concurrent callers
+    sharing one automation token serialised on a single row, and under the test
+    suite's SAVEPOINT isolation ``commit()`` only releases a savepoint, so the
+    lock outlived the stamp and deadlocked the monitor-stream handshake against
+    the stream's own connection.
 
-    A separate SessionLocal was deliberately avoided: integration tests bind
-    the request to a SAVEPOINT-isolated session, and a second connection cannot
-    see those rows — so the stamp would silently no-op in the suite while
-    appearing to work.
+    A short-lived session sidesteps both, and ``lock_timeout`` bounds the write
+    so a contended row is skipped rather than waited on. The stamp is advisory:
+    losing the race costs an imprecise ``last_used_at``, while blocking here
+    costs the request.
+
+    The trade-off, recorded because the earlier design chose the other side of
+    it: a token row created inside a test's uncommitted SAVEPOINT is invisible
+    to this connection, so the stamp no-ops under those fixtures. The throttle
+    therefore reads committed state -- which is what the next request loads
+    anyway -- rather than an in-memory value.
     """
+    token_id = getattr(row, "id", None)
+    if token_id is None:
+        return
+
+    now = utcnow()
+    previous = getattr(row, "last_used_at", None)
+    if previous is not None and (now - previous).total_seconds() < (
+        API_TOKEN_LAST_USED_TOUCH_SECONDS
+    ):
+        return
+
+    from app.db.session import SessionLocal
+
     try:
-        now = utcnow()
-        previous = getattr(row, "last_used_at", None)
-        if previous is not None:
-            age = (now - previous).total_seconds()
-            if age < API_TOKEN_LAST_USED_TOUCH_SECONDS:
-                return
-        row.last_used_at = now
-        db.add(row)
-        db.commit()
-    except Exception as exc:
-        try:
-            db.rollback()
-        except Exception:
-            # A rollback that itself fails leaves the session unusable for the
-            # rest of the request, which is worth a line even though the stamp
-            # is best-effort — swallowing it is how that turns into a confusing
-            # downstream error with no origin.
-            _logger.debug(
-                "[security] rollback after a failed last_used_at touch also failed for token %s",
-                getattr(row, "id", None),
-                exc_info=True,
+        with SessionLocal() as writer:
+            # SET LOCAL is scoped to this transaction, so it cannot leak onto
+            # the pooled connection once the commit below ends it.
+            writer.execute(
+                text("SET LOCAL lock_timeout = :timeout"),
+                {"timeout": f"{API_TOKEN_LAST_USED_LOCK_TIMEOUT_MS}ms"},
             )
+            writer.execute(
+                text("UPDATE api_tokens SET last_used_at = :now WHERE id = :token_id"),
+                {"now": now, "token_id": token_id},
+            )
+            writer.commit()
+    except Exception as exc:
         _logger.debug(
-            "[security] last_used_at touch failed for token %s: %s",
-            getattr(row, "id", None),
+            "[security] last_used_at touch skipped for token %s: %s",
+            token_id,
             exc,
             exc_info=True,
         )
@@ -517,7 +533,7 @@ def service_account_token_is_live(db: Session, raw_token: str) -> bool:
         if verify_salted_api_token_hash(raw_token, candidate.token_hash or ""):
             if candidate.expires_at and candidate.expires_at <= utcnow():
                 return False
-            touch_api_token_last_used(db, candidate)
+            touch_api_token_last_used(candidate)
             return True
     return False
 
@@ -634,7 +650,7 @@ def resolve_optional_user_id_sync(db: Session, request: HTTPConnection) -> int |
                 # service account has no real creator — inheriting there would
                 # promote an empty-scoped service account to superuser.
                 token_scopes = None
-            touch_api_token_last_used(db, api_token_row)
+            touch_api_token_last_used(api_token_row)
             _session_cache_set(token_hash, uid, token_scopes)
             _set_request_token_scopes(request, token_scopes)
             return uid

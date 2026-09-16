@@ -1,6 +1,6 @@
 {
   "generated_by": "apps/backend/scripts/generate_endpoint_inventory.py",
-  "route_count": 467,
+  "route_count": 473,
   "routes": [
     {
       "auth_policy": "authenticated",
@@ -2609,6 +2609,26 @@
     {
       "auth_policy": "authenticated",
       "dependency_calls": [
+        "app.api.compute_units.list_compute_units_page",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.compute_units",
+      "endpoint_name": "list_compute_units_page",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_compute_units_page",
+      "path": "/api/v1/compute-units/page",
+      "rbac_policy": "authenticated-session",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
         "app.api.compute_units.delete_compute_unit",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
@@ -4147,6 +4167,26 @@
       "name": "create_external_node",
       "path": "/api/v1/external-nodes",
       "rbac_policy": "editor-or-admin-or-write-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.external_nodes.list_external_nodes_page",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.external_nodes",
+      "endpoint_name": "list_external_nodes_page",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_external_nodes_page",
+      "path": "/api/v1/external-nodes/page",
+      "rbac_policy": "authenticated-session",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
@@ -5811,6 +5851,27 @@
     {
       "auth_policy": "authenticated",
       "dependency_calls": [
+        "app.api.inventory_transfer.get_inventory_transfer_summary",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.inventory_transfer",
+      "endpoint_name": "get_inventory_transfer_summary",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_inventory_transfer_summary",
+      "path": "/api/v1/inventory-transfer/summary",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
         "app.api.inventory.list_options",
         "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
@@ -6527,6 +6588,26 @@
       "name": "create_misc_item",
       "path": "/api/v1/misc",
       "rbac_policy": "editor-or-admin-or-write-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.misc.list_misc_page",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.misc",
+      "endpoint_name": "list_misc_page",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_misc_page",
+      "path": "/api/v1/misc/page",
+      "rbac_policy": "authenticated-session",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
@@ -7894,6 +7975,26 @@
     {
       "auth_policy": "authenticated",
       "dependency_calls": [
+        "app.api.services.list_services_page",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.services",
+      "endpoint_name": "list_services_page",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_services_page",
+      "path": "/api/v1/services/page",
+      "rbac_policy": "authenticated-session",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
         "app.api.services.delete_service",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
@@ -8667,6 +8768,26 @@
       "name": "create_storage",
       "path": "/api/v1/storage",
       "rbac_policy": "editor-or-admin-or-write-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.storage.list_storage_page",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.storage",
+      "endpoint_name": "list_storage_page",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_storage_page",
+      "path": "/api/v1/storage/page",
+      "rbac_policy": "authenticated-session",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },

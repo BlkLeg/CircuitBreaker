@@ -54,3 +54,10 @@ DISCOVERY_RECONCILE_FAILURE_THRESHOLD = 3
 # chatty collector does not UPDATE on every request; the session cache already
 # skips the row scan for ~10s, and this keeps durable stamps coarse.
 API_TOKEN_LAST_USED_TOUCH_SECONDS = 300
+
+# How long that UPDATE may wait for a row lock before giving up. The stamp is
+# advisory: another transaction holding the row means someone else is already
+# writing it, or a long-running transaction has it pinned. Blocking there
+# stalls authentication itself, which is a far worse outcome than a missing
+# last_used_at, so the write fails fast and is skipped.
+API_TOKEN_LAST_USED_LOCK_TIMEOUT_MS = 50
