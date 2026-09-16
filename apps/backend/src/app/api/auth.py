@@ -35,6 +35,7 @@ from fastapi import (
 from pydantic import BaseModel, field_validator, model_validator
 from sqlalchemy.orm import Session
 
+from app.core.audit import log_audit
 from app.core.auth_cookie import auth_response_with_cookie, clear_auth_cookie_response
 from app.core.rate_limit import get_limit, limiter
 from app.core.rbac import effective_scopes, require_role
@@ -534,6 +535,26 @@ def create_service_account(
     db.commit()
     db.refresh(api_token)
 
+    log_audit(
+        db,
+        request,
+        user_id=current_user.id,
+        action="api_token_created",
+        resource="api_token",
+        status="ok",
+        details=json.dumps(
+            {
+                "id": api_token.id,
+                "label": api_token.label,
+                "scopes": list(api_token.scopes or []),
+                "service_account": True,
+                "via": "http",
+            },
+            sort_keys=True,
+            default=str,
+        ),
+    )
+
     return CreateAPITokenResponse(
         token=token,
         id=api_token.id,
@@ -578,6 +599,27 @@ def create_api_token(
     db.add(api_token)
     db.commit()
     db.refresh(api_token)
+
+    log_audit(
+        db,
+        request,
+        user_id=current_user.id,
+        action="api_token_created",
+        resource="api_token",
+        status="ok",
+        details=json.dumps(
+            {
+                "id": api_token.id,
+                "label": api_token.label,
+                "scopes": list(api_token.scopes or []),
+                "service_account": False,
+                "via": "http",
+            },
+            sort_keys=True,
+            default=str,
+        ),
+    )
+
     return CreateAPITokenResponse(
         token=raw_token,
         id=api_token.id,
@@ -652,11 +694,27 @@ def revoke_api_token(
     api_token = db.get(APIToken, token_id)
     if not api_token:
         raise HTTPException(status_code=404, detail="API token not found")
+    label = api_token.label
+    scopes = list(api_token.scopes or [])
     db.delete(api_token)
     db.commit()
     from app.core.security import invalidate_token_cache
 
     invalidate_token_cache()
+
+    log_audit(
+        db,
+        request,
+        user_id=current_user.id,
+        action="api_token_revoked",
+        resource="api_token",
+        status="ok",
+        details=json.dumps(
+            {"id": token_id, "label": label, "scopes": scopes, "via": "http"},
+            sort_keys=True,
+            default=str,
+        ),
+    )
 
 
 def _hours_until(expires_at: "Any") -> int | None:
@@ -721,6 +779,26 @@ def rotate_api_token(
     from app.core.security import invalidate_token_cache
 
     invalidate_token_cache()
+
+    log_audit(
+        db,
+        request,
+        user_id=current_user.id,
+        action="api_token_rotated",
+        resource="api_token",
+        status="ok",
+        details=json.dumps(
+            {
+                "old_id": token_id,
+                "id": replacement.id,
+                "label": replacement.label,
+                "scopes": scopes,
+                "via": "http",
+            },
+            sort_keys=True,
+            default=str,
+        ),
+    )
 
     return CreateAPITokenResponse(
         token=raw_token,

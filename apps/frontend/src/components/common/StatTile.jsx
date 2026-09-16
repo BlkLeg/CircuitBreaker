@@ -32,12 +32,20 @@ function polylinePoints(points) {
  * caller (formatMetric on the agent pages) and a second copy here is exactly
  * the drift this primitive would otherwise introduce.
  */
-export default function StatTile({ label, value, points = [], hot = false, flash = false }) {
+export default function StatTile({
+  label,
+  value,
+  points = [],
+  hot = false,
+  flash = false,
+  caption = null,
+}) {
   const hasSeries = points.length >= MIN_POINTS;
   return (
     <div className="cb-tile" data-hot={String(hot)} data-flash={String(flash)}>
       <div className="cb-tile__label">{label}</div>
       <div className="cb-tile__value">{value == null ? ABSENT : value}</div>
+      {caption === null ? null : <div className="cb-tile__caption">{caption}</div>}
       {hasSeries ? (
         <svg viewBox={`0 0 ${VIEW_W} ${VIEW_H}`} preserveAspectRatio="none" aria-hidden="true">
           <polyline points={polylinePoints(points)} />
@@ -53,4 +61,5 @@ StatTile.propTypes = {
   points: PropTypes.arrayOf(PropTypes.number),
   hot: PropTypes.bool,
   flash: PropTypes.bool,
+  caption: PropTypes.node,
 };

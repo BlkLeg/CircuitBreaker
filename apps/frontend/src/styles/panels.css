@@ -330,6 +330,14 @@
   margin: 2px 0 1px;
 }
 
+/* The one-line fact under a value: scope of the count, freshness of a
+   snapshot. Text-muted by design — it qualifies, it never shouts. */
+.cb-tile__caption {
+  font-size: var(--fs-micro);
+  color: var(--color-text-muted);
+  margin: 0;
+}
+
 .cb-tile svg {
   width: 100%;
   height: 30px;
@@ -587,4 +595,88 @@
   padding: 3px 0 4px;
   border-top: 1px solid rgba(80, 73, 69, 0.4);
   overflow-x: auto;
+}
+
+/* ── HighRiskConfirmDialog ───────────────────────────────────────────────── */
+
+.high-risk-confirm {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.high-risk-confirm__panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 24px 28px;
+  max-width: 520px;
+  width: 92%;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  color: var(--color-text);
+}
+
+.high-risk-confirm__title {
+  margin: 0 0 0.5rem;
+  font-size: 16px;
+  color: var(--color-text);
+}
+
+.high-risk-confirm__body {
+  font-size: 13px;
+  color: var(--color-text-muted);
+  margin-bottom: 16px;
+}
+
+.high-risk-confirm__error {
+  margin-bottom: 12px;
+  color: var(--color-danger, #f85149);
+}
+
+.high-risk-confirm__label {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.high-risk-confirm__input,
+.high-risk-confirm__textarea {
+  display: block;
+  width: 100%;
+  margin-bottom: 12px;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius, 6px);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.high-risk-confirm__input:focus,
+.high-risk-confirm__textarea:focus {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+.high-risk-confirm__input:disabled,
+.high-risk-confirm__textarea:disabled {
+  opacity: 0.65;
+}
+
+.high-risk-confirm__hint {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  margin: -4px 0 12px;
+}
+
+.high-risk-confirm__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
 }

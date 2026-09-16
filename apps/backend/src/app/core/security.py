@@ -21,7 +21,11 @@ from fastapi import Depends, HTTPException
 from sqlalchemy.orm import Session
 from starlette.requests import HTTPConnection
 
-from app.core.constants import CLIENT_HASH_PBKDF2_ITERATIONS, CLIENT_HASH_V2_PREFIX
+from app.core.constants import (
+    API_TOKEN_LAST_USED_TOUCH_SECONDS,
+    CLIENT_HASH_PBKDF2_ITERATIONS,
+    CLIENT_HASH_V2_PREFIX,
+)
 from app.core.time import utcnow
 from app.db.models import User
 from app.db.session import get_db
@@ -455,6 +459,42 @@ def _is_pre_bootstrap_setup_surface(request: HTTPConnection) -> bool:
     return False
 
 
+def touch_api_token_last_used(db: Session, row: Any) -> None:
+    """Stamp ``last_used_at`` on an already-loaded APIToken using the auth session.
+
+    Commits immediately so a read-only request still persists the stamp. Auth
+    runs before handlers mutate the session, so this should not flush unrelated
+    pending work. Failures roll back the stamp attempt and never raise into the
+    auth path.
+
+    A separate SessionLocal was deliberately avoided: integration tests bind
+    the request to a SAVEPOINT-isolated session, and a second connection cannot
+    see those rows — so the stamp would silently no-op in the suite while
+    appearing to work.
+    """
+    try:
+        now = utcnow()
+        previous = getattr(row, "last_used_at", None)
+        if previous is not None:
+            age = (now - previous).total_seconds()
+            if age < API_TOKEN_LAST_USED_TOUCH_SECONDS:
+                return
+        row.last_used_at = now
+        db.add(row)
+        db.commit()
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        _logger.debug(
+            "[security] last_used_at touch failed for token %s: %s",
+            getattr(row, "id", None),
+            exc,
+            exc_info=True,
+        )
+
+
 def service_account_token_is_live(db: Session, raw_token: str) -> bool:
     """True when `raw_token` still matches an unexpired APIToken row.
 
@@ -469,6 +509,7 @@ def service_account_token_is_live(db: Session, raw_token: str) -> bool:
         if verify_salted_api_token_hash(raw_token, candidate.token_hash or ""):
             if candidate.expires_at and candidate.expires_at <= utcnow():
                 return False
+            touch_api_token_last_used(db, candidate)
             return True
     return False
 
@@ -585,6 +626,7 @@ def resolve_optional_user_id_sync(db: Session, request: HTTPConnection) -> int |
                 # service account has no real creator — inheriting there would
                 # promote an empty-scoped service account to superuser.
                 token_scopes = None
+            touch_api_token_last_used(db, api_token_row)
             _session_cache_set(token_hash, uid, token_scopes)
             _set_request_token_scopes(request, token_scopes)
             return uid

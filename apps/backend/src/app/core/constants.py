@@ -49,3 +49,8 @@ PRIVACY_PERIODIC_INTERVAL_MINUTES = 15
 DISCOVERY_RECONCILE_INTERVAL_MINUTES = 15
 DISCOVERY_RECONCILE_BACKOFF_MINUTES = 60
 DISCOVERY_RECONCILE_FAILURE_THRESHOLD = 3
+
+# API / service-account token last_used_at writes (auth path). Throttle so a
+# chatty collector does not UPDATE on every request; the session cache already
+# skips the row scan for ~10s, and this keeps durable stamps coarse.
+API_TOKEN_LAST_USED_TOUCH_SECONDS = 300

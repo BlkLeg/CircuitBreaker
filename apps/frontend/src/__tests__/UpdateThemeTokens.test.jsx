@@ -13,7 +13,7 @@
  * contrast. It can, however, tell that a token has no definition.
  *
  * This test asserts a weaker but checkable property: every `var(--token)` these
- * two components reference is actually defined -- either statically in
+ * theme-sensitive surfaces reference is actually defined -- either statically in
  * src/styles/*.css, or at runtime by applyTheme's setProperty calls. A token
  * that is defined in both places is theme-tracked, which is what keeps a
  * background and its foreground a designed pair rather than an accident.
@@ -29,6 +29,7 @@ const SRC = path.resolve(HERE, '..');
 const COMPONENTS = {
   UpdateBanner: path.join(SRC, 'components/UpdateBanner.jsx'),
   UpdateStatusPanel: path.join(SRC, 'components/settings/UpdateStatusPanel.jsx'),
+  GlobalNavigatorStyles: path.join(SRC, 'styles/navigator.css'),
 };
 
 function referencedTokens(file) {
@@ -57,7 +58,7 @@ function runtimeDefinedTokens() {
 const STATIC = staticallyDefinedTokens();
 const RUNTIME = runtimeDefinedTokens();
 
-describe('the update surfaces only reference CSS variables that exist', () => {
+describe('theme-sensitive surfaces only reference CSS variables that exist', () => {
   test('the token scanner finds the known-good tokens (self-check)', () => {
     // Guards against a scanner that silently matches nothing and passes.
     expect(STATIC.has('--color-text')).toBe(true);
