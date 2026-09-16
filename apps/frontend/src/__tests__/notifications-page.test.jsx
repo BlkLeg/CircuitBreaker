@@ -110,15 +110,55 @@ describe('NotificationsPage', () => {
     expect(screen.getAllByText('1').length).toBeGreaterThan(0);
   });
 
-  it('tests a notification sink', async () => {
+  it('reports acceptance without claiming the message was delivered', async () => {
     render(<NotificationsPage />);
     await waitFor(() => screen.getByText('Slack Sink'));
 
-    notificationsApi.testSink.mockResolvedValue({ data: { ok: true } });
+    notificationsApi.testSink.mockResolvedValue({
+      data: {
+        ok: true,
+        state: 'accepted',
+        reason_code: 'provider_accepted',
+        message: 'Slack accepted the request.',
+        provider: 'slack',
+        sink_id: 1,
+        attempt_count: 1,
+        http_status: 200,
+      },
+    });
     fireEvent.click(screen.getAllByText('Test')[0]);
 
     await waitFor(() => expect(notificationsApi.testSink).toHaveBeenCalledWith(1));
-    expect(mockToast.success).toHaveBeenCalledWith('Test notification sent successfully.');
+    await waitFor(() => screen.getByText('Accepted by Slack'));
+
+    // The claim plan 05 forbids, and which this surface used to make on any 2xx.
+    expect(mockToast.success).not.toHaveBeenCalledWith('Test notification sent successfully.');
+    expect(screen.getByText(/not proof a person received it/i)).toBeInTheDocument();
+  });
+
+  it('shows a rejected provider response as a failure, not a success', async () => {
+    render(<NotificationsPage />);
+    await waitFor(() => screen.getByText('Slack Sink'));
+
+    notificationsApi.testSink.mockResolvedValue({
+      data: {
+        ok: false,
+        state: 'terminal',
+        reason_code: 'retry_exhausted',
+        message: 'The provider is temporarily unavailable.',
+        error: 'The provider is temporarily unavailable.',
+        provider: 'slack',
+        sink_id: 1,
+        attempt_count: 3,
+        http_status: 500,
+      },
+    });
+    fireEvent.click(screen.getAllByText('Test')[0]);
+
+    await waitFor(() => screen.getByText('Slack did not accept it'));
+    expect(screen.getByText('500')).toBeInTheDocument();
+    expect(screen.getByText('3')).toBeInTheDocument();
+    expect(mockToast.success).not.toHaveBeenCalled();
   });
 
   it('adds a new destination', async () => {

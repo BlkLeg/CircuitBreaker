@@ -22,13 +22,22 @@ Reuse the current notification worker, destinations, routing, and diagnostics. A
 
 ## Work packages
 
-- [ ] **N1:** Expand existing notification worker/API tests to capture Test versus production parity for Slack, Discord, Teams, and other already supported delivery adapters as applicable.
-- [ ] **N2:** Define a shared acceptance/retry classification and sanitized result contract. Identify existing diagnostic fields that can support the approved feedback panel.
-- [ ] **N3:** Build destination editing, existing severity routing, Test progress/result, and contextual error states. Preserve masked secrets unless deliberately changed; never reveal stored credentials in forms or diagnostics.
-- [ ] **N4:** Correct worker/provider result validation and bounded retry behavior. Ensure final outcome reaches the API/job/diagnostic surface accurately.
-- [ ] **N5:** Wire configuration and Test independently. A failed test does not discard valid unsaved configuration or imply it was saved.
-- [ ] **N6:** Cover destination removal/disable, missing routing, insufficient permissions, and repeated clicks. Make configuration and delivery actions separately auditable using existing mechanisms.
-- [ ] **N7:** Update operational troubleshooting guidance and document exactly what Test success establishes.
+- [x] **N1:** Expand existing notification worker/API tests to capture Test versus production parity for Slack, Discord, Teams, and other already supported delivery adapters as applicable.
+- [x] **N2:** Define a shared acceptance/retry classification and sanitized result contract. Identify existing diagnostic fields that can support the approved feedback panel.
+- [x] **N3:** Build destination editing, existing severity routing, Test progress/result, and contextual error states. Preserve masked secrets unless deliberately changed; never reveal stored credentials in forms or diagnostics.
+- [x] **N4:** Correct worker/provider result validation and bounded retry behavior. Ensure final outcome reaches the API/job/diagnostic surface accurately.
+- [x] **N5:** Wire configuration and Test independently. A failed test does not discard valid unsaved configuration or imply it was saved.
+- [x] **N6:** Cover destination removal/disable, missing routing, insufficient permissions, and repeated clicks. Make configuration and delivery actions separately auditable using existing mechanisms.
+- [x] **N7:** Update operational troubleshooting guidance and document exactly what Test success establishes.
+
+> Status 2026-09-15: N1/N2/N4 landed with the backend in `4729e8bd`
+> (`services/notification_delivery.py`, `notification_routing.py`, the `TestResult`
+> contract). N3/N5/N6/N7 are the frontend correction: both surfaces now render the
+> shared `DeliveryResult` instead of their own copy, which is how they drifted into
+> "Test delivered" apart from each other.
+>
+> Still open: the browser/theme/keyboard pass from *Acceptance and tests* below has
+> not been run in a real browser.
 
 ## Acceptance and tests
 
