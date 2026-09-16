@@ -1,7 +1,11 @@
 # Approved UI implementation plans
 
-Date: 2026-09-07  
-Status: all eight designs approved by the user; implementation has not started under these plans.
+Date: 2026-09-07 (Access Tokens plan added 2026-09-10; Inventory transfer plan upgraded to a
+canvas-backed implementation plan 2026-09-10)  
+Status: eight operational designs approved by the user; Inventory transfer (02) and Access
+Tokens (09) are canvas-backed implementation plans — the former for Data Management inventory
+import/export, the latter for the existing `/admin/tokens` admin surface. Navigator execution
+has progressed in the working tree — recheck plan 01 before treating its packages as open.
 
 ## Decisions of record
 
@@ -10,6 +14,7 @@ Status: all eight designs approved by the user; implementation has not started u
 3. Every approved surface is theme-aware. Gruvbox was the presentation theme, not a mandatory production palette. Preserve composition, density, hierarchy, interactions, and semantic status distinctions across all supported themes.
 4. This request authorizes plans, not application/backend changes. Canvas approval does not mean the mocked API contracts, sample records, or prototype-only controls already exist.
 5. Complete the promised workflows using existing services and components. New helpers must have a concrete responsibility and caller; no speculative framework or generic workflow engine.
+6. Access Tokens redesign reuses the INC-14 admin API and route. It is a presentation and honesty upgrade (posture, search, risk framing, secret modal, HTTP audit), not a second credential subsystem.
 
 These decisions supersede earlier instructions to retain a separate Ctrl/Cmd+K palette, use a fixed Gruvbox palette, or leave metric alert rules unselected.
 
@@ -32,8 +37,9 @@ The [backend function and helper plans](../backend-functions/README.md) specify 
 | [06 · Dependency impact](06-dependency-impact.md) | [Impact v1](https://p.superdesign.dev/draft/a2fae8fa-8586-4299-b24b-849c6b70501b) | Map / selected asset; existing impact panel |
 | [07 · Inventory workspace](07-inventory-workspace.md) | [Inventory v1](https://p.superdesign.dev/draft/71281813-1ede-42bd-bc7d-d2da53c66d34) | Existing inventory entity pages |
 | [08 · Metric alert rules](08-metric-alert-rules.md) | [Rules v1](https://p.superdesign.dev/draft/0d6b88b6-c407-45fa-a542-09fff90e0a7e) | Monitors → Alert rules |
+| [09 · Access Tokens](09-access-tokens.md) | [Credential ops v1](https://p.superdesign.dev/draft/7ee1e075-ef76-4eb3-a1e0-73d9e2a15a88) | `/admin/tokens` (Govern) |
 
-The seven v1 workflow references and navigation v2 are the approved visual baselines. Apply the subsequent navigator/theme decisions above when translating them into production. The navigator's “Planned workflows” tab, simulated navigation messages, sample-data controls, and external canvas links are review scaffolding; do not ship them.
+The seven v1 workflow references and navigation v2 are the approved visual baselines. Access Tokens (09) uses the SOC credential-operations draft as its visual baseline on top of the shipped INC-14 API. Inventory transfer (02) now translates the Transfer v1 draft into production contracts and records the already-shipped backend package; its earlier minimal contract decisions remain binding. Apply the subsequent navigator/theme decisions above when translating them into production. The navigator's “Planned workflows” tab, simulated navigation messages, sample-data controls, and external canvas links are review scaffolding; do not ship them.
 
 ## Ground truth and changes since the assessment
 
@@ -61,8 +67,9 @@ All file paths in the individual plans are repository-relative. New module names
 | F | Inventory transfer | Validated, previewed, safe import/export using corrected inventory/relationship contracts |
 | G | Metric alert rules | Durable evaluation and recovery transitions through verified notification delivery |
 | H | Integrated hardening and release documentation | End-to-end, role, theme, migration, performance, and regression evidence |
+| I | Access Tokens SOC workbench (plan 09) | Theme-aware posture/inventory/issuance; one-time secret modal; HTTP audit honesty |
 
-This is dependency order, not a demand for unrelated work to wait. Notification correctness can land early; impact work waits only for the relevant map integration boundary. Metric rules depend on notification correctness and selector/telemetry contracts.
+This is dependency order, not a demand for unrelated work to wait. Stage I can proceed independently of C–G; it still depends on plan 00 theme foundations. Notification correctness can land early; impact work waits only for the relevant map integration boundary. Metric rules depend on notification correctness and selector/telemetry contracts.
 
 Within each slice: (1) confirm behavior and write contract fixtures/tests; (2) build the approved UI against test fixtures; (3) implement the existing-service/backend changes; (4) wire real data and test end to end; (5) remove fixtures from production paths and release the completed slice. A mocked UI may be reviewed in tests, but must not be presented as a functioning production capability.
 
@@ -80,7 +87,7 @@ Within each slice: (1) confirm behavior and write contract fixtures/tests; (2) b
 
 ## Release gates
 
-- [ ] All eight approved surfaces are implemented against real contracts, not sample data.
+- [ ] All eight approved surfaces are implemented against real contracts, not sample data. Access Tokens (09) may ship independently once its acceptance checks pass.
 - [ ] All built-in presets resolve required tokens in their supported modes; representative light/dark/custom/auto-switch browser checks pass across every new surface.
 - [ ] Keyboard, focus return/trapping, reduced motion, readable contrast, small-screen scrolling, and enlarged text are verified in a real browser.
 - [ ] Existing viewer/editor/admin and applicable capability restrictions are covered in frontend and API tests.

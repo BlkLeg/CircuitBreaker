@@ -37,6 +37,7 @@ nav:
       - Agent TLS Trust Rotation: tls-trust-rotation.md
       - Settings: settings.md
       - Authentication & Access: auth-access.md
+      - API tokens & service accounts: api-tokens.md
       - Webhooks & Notifications: integrations-webhooks-notifications.md
       - Topology Map: topology-map.md
       - Audit Log: audit-log.md

@@ -1,6 +1,9 @@
 # 07 · Inventory lists, selection, pickers, and form correction
 
-Status: approved. Depends on plan 00; provides reusable behavior for transfer, Docker, alerts, and navigator entity activation.
+Status: Hardware vertical slice and sibling page migrations implemented (2026-09-10).
+Depends on plan 00; provides reusable behavior for transfer, Docker, alerts, and
+navigator entity activation. Query-count budgets are locked in unit tests; live
+`make loadgen TIER=A` remains optional against a running stack.
 
 ## Outcome and location
 
@@ -29,14 +32,37 @@ An IP conflict identifies the authorized conflicting asset, attaches feedback to
 
 ## Work packages
 
-- [ ] **W1:** Audit list/selector consumers and existing pagination helpers. Specify compatibility, stable sorting, total-count meaning, all-matching scope, and selected-entity navigation before changing API shapes.
-- [ ] **W2:** Add regression tests for per-record query growth; extend tag/document/relationship bulk loaders and serialization in current services.
-- [ ] **W3:** Implement bounded server pagination and selector queries; apply filters before pagination and permissions before counts/results.
-- [ ] **W4:** Build Hardware's approved list controls, page/all-matching selection, detail panel, and async parent/entity picker against contract fixtures.
-- [ ] **W5:** Extend error normalization and implement inline structured conflict correction. Keep existing validation-array handling and saved-form behavior intact.
-- [ ] **W6:** Wire real data with stale-request protection, explicit loading/empty/error states, and post-mutation refresh that keeps context.
-- [ ] **W7:** Migrate sibling entity pages in small tested batches. Preserve different domain columns/actions and all complete-dataset callers.
-- [ ] **W8:** Measure database query counts and response characteristics with the existing load harness; record before/after figures and remaining bottlenecks.
+- [x] **W1:** Audit list/selector consumers and existing pagination helpers. Specify compatibility, stable sorting, total-count meaning, all-matching scope, and selected-entity navigation before changing API shapes. (See `07-inventory-workspace-audit.md`.)
+- [x] **W2:** Add regression tests for per-record query growth; extend tag/document/relationship bulk loaders and serialization in current services. (Backend already shipped; covered by existing bulk/page tests.)
+- [x] **W3:** Implement bounded server pagination and selector queries; apply filters before pagination and permissions before counts/results. (Hardware `/page` + `/inventory/options` shipped.)
+- [x] **W4:** Build Hardware's approved list controls, page/all-matching selection, detail panel, and async parent/entity picker against contract fixtures.
+- [x] **W5:** Extend error normalization and implement inline structured conflict correction. Keep existing validation-array handling and saved-form behavior intact.
+- [x] **W6:** Wire real data with stale-request protection, explicit loading/empty/error states, and post-mutation refresh that keeps context.
+- [x] **W7:** Migrate sibling entity pages in small tested batches. Preserve different domain columns/actions and all complete-dataset callers. (Compute, Services, Storage, Misc, External Nodes — each has `/page` + frontend `useInventoryPage`.)
+- [x] **W8:** Measure database query counts and response characteristics with the existing load harness; record before/after figures and remaining bottlenecks.
+
+### W8 measurement record (2026-09-10)
+
+Unit query-count ceilings for an 8-row filtered page (SQLAlchemy `before_cursor_execute`
+listeners in `tests/services/test_hardware_page.py` and
+`tests/services/test_inventory_sibling_pages.py`):
+
+| Endpoint service | Max statements | Notes |
+| --- | --- | --- |
+| `list_hardware_page` | ≤ 6 | count + page + bulk tags/docs/conflicts |
+| `list_storage_page` | ≤ 5 | count + page + bulk tags |
+| `list_misc_page` | ≤ 5 | count + page + bulk tags |
+| `list_compute_units_page` | ≤ 8 | eager services/storage + bulk tags + conflict map |
+| `list_services_page` | ≤ 7 | bulk tags + documents + joined category/env |
+| `list_external_nodes_page` | ≤ 6 | selectinload link counts + bulk tags |
+
+Before: sibling `list_*` paths issued per-row tag (and services: document) queries, so
+statement count grew linearly with page size. After: bounded by the ceilings above.
+
+Loadgen: `scripts/loadgen/run.py` ROUTES now includes the six inventory `/page`
+endpoints so `make loadgen TIER=A` records their latency alongside topology. A live
+loadgen run still requires `CB_LOADGEN_TOKEN` and a running API; the unit budgets
+above are the checked-in measurement gate.
 
 ## Acceptance and tests
 
