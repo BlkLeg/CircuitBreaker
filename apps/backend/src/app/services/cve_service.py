@@ -19,7 +19,12 @@ from app.core.time import utcnow_iso
 from app.db.cve_session import CVESessionLocal
 from app.db.models import AppSettings, CVEEntry
 from app.db.session import SessionLocal
-from app.schemas.cve import AssessmentIdentity, AssessmentResult, IdentityPatch
+from app.schemas.cve import (
+    AssessmentIdentity,
+    AssessmentResult,
+    FleetAssessment,
+    IdentityPatch,
+)
 from app.services.intelligence.cve_assessment import (
     assess_entity,
     get_feed_state,
@@ -31,6 +36,7 @@ from app.services.intelligence.cve_feed import (
     ingest_feed_page,
     start_feed_generation,
 )
+from app.services.intelligence.fleet_assessment import assess_fleet
 from app.services.log_service import write_log
 
 _logger = logging.getLogger(__name__)
@@ -121,6 +127,17 @@ def assessment_for_entity(entity_type: str, entity_id: int) -> AssessmentResult:
     """Return a truthful assessment that keeps readiness separate from count."""
     with SessionLocal() as app_db, CVESessionLocal() as cache_db:
         return assess_entity(app_db, cache_db, entity_type, entity_id)
+
+
+def fleet_assessment() -> FleetAssessment:
+    """Assess every assessable entity in one pass.
+
+    Owns both sessions, like `assessment_for_entity`: the inventory and the CVE
+    cache are separate databases with separate engines, which is why this module
+    opens them rather than taking a `Depends(get_db)` session from the route.
+    """
+    with SessionLocal() as app_db, CVESessionLocal() as cache_db:
+        return assess_fleet(app_db, cache_db)
 
 
 def set_entity_identity(

@@ -8,8 +8,14 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
 
 from app.core.security import require_write_auth
-from app.schemas.cve import AssessmentIdentity, AssessmentResult, IdentityPatch
+from app.schemas.cve import (
+    AssessmentIdentity,
+    AssessmentResult,
+    FleetAssessment,
+    IdentityPatch,
+)
 from app.services import cve_service
+from app.services.intelligence.fleet_cache import clear_identity_cache
 
 router = APIRouter(tags=["cve"])
 
@@ -32,6 +38,12 @@ def search_cves(
         offset=offset,
     )
     return {"items": results, "total": total}
+
+
+@router.get("/fleet", response_model=FleetAssessment)
+def fleet_assessment() -> FleetAssessment:
+    """Assessment state for every assessable entity, with fleet counts."""
+    return cve_service.fleet_assessment()
 
 
 @router.get("/entity/{entity_type}/{entity_id}", response_model=AssessmentResult)
@@ -70,6 +82,10 @@ def update_entity_identity(
 @router.post("/sync", dependencies=[Depends(require_write_auth)])
 def trigger_sync(background_tasks: BackgroundTasks) -> dict:
     """Trigger an immediate NVD CVE feed sync in the background."""
+    # A completed sync changes the generation and so invalidates the fleet
+    # memo by key; clearing on *trigger* additionally stops a long-running sync
+    # from serving outcomes an operator has just asked to refresh.
+    clear_identity_cache()
     background_tasks.add_task(cve_service.sync_nvd_feed)
     return {"status": "sync_started"}
 
