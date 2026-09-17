@@ -22,6 +22,7 @@ from app.schemas.intelligence import (
     ImpactLimitsOut,
     ImpactPathOut,
 )
+from app.services.intelligence import analytics
 from app.services.intelligence.dependency_edges import DependencyEdge
 from app.services.intelligence.dependency_graph import (
     AssetRef,
@@ -221,12 +222,10 @@ def list_flap_incidents(
     """Return hardware seen transitioning up and down within one window.
 
     The analytics job has recorded these since it shipped; this is the first
-    endpoint to read them.
+    endpoint to read them. The query lives in the analytics service beside
+    the writer, keeping the route thin.
     """
-    query = db.query(FlapIncident)
-    if active is not None:
-        query = query.filter(FlapIncident.is_active.is_(active))
-    rows = query.order_by(FlapIncident.window_end.desc()).limit(limit).all()
+    rows = analytics.list_flap_incidents(db, active=active, limit=limit)
     names = _resolve_asset_names(db, rows)
     out: list[FlapIncidentOut] = []
     for row in rows:
