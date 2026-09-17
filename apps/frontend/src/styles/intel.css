@@ -45,6 +45,23 @@
   vertical-align: middle;
 }
 
+/* The entity link had no colour of its own, so it rendered at the user agent's
+   default #0000ee — 1.23:1 against the dark table surface, a serious axe
+   violation. Same treatment the agent fleet table gives its name cell:
+   --color-text is floored to AA against every surface it can land on, and the
+   accent plus an underline is reserved for hover. */
+.intel-fleet-table a {
+  color: var(--color-text);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.intel-fleet-table a:hover,
+.intel-fleet-table a:focus-visible {
+  color: var(--color-primary);
+  text-decoration: underline;
+}
+
 .intel-filters {
   display: flex;
   flex-wrap: wrap;
