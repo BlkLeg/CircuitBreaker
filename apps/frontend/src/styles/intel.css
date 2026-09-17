@@ -59,3 +59,14 @@
     overflow-x: auto;
   }
 }
+
+/* A forecast projected to saturate inside its warning threshold. This used to
+   be a data-warning attribute with no stylesheet reading it: present in the
+   DOM, invisible on the page. */
+.intel-row--warning td:first-child {
+  box-shadow: inset 3px 0 0 var(--color-warning);
+}
+
+.intel-row--warning td {
+  background: color-mix(in srgb, var(--color-warning) 8%, transparent);
+}

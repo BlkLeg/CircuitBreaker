@@ -1,5 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { listCapacityForecasts, listResourceEfficiency } from '../../api/intel';
+import PropTypes from 'prop-types';
+import { listCapacityForecasts, listFlapIncidents, listResourceEfficiency } from '../../api/intel';
+import EmptyState from '../common/EmptyState';
+import Panel from '../common/Panel';
+import { SkeletonTable } from '../common/SkeletonTable';
+import '../../styles/intel.css';
 
 const ANALYTICS_SCHEDULE = 'nightly at 02:30';
 
@@ -25,55 +30,82 @@ function daysUntil(iso) {
   return Number.isNaN(ms) ? null : Math.round(ms / 86400000);
 }
 
+/** The newest evaluated_at among received rows — what the panel can honestly claim. */
+function newestEvaluatedAt(rows) {
+  const stamps = rows.map((row) => row.evaluated_at).filter(Boolean);
+  if (stamps.length === 0) return null;
+  return formatDate(stamps.sort().at(-1));
+}
+
+function PanelError({ message, onRetry }) {
+  return (
+    <div role="alert">
+      <p>{message}</p>
+      <button type="button" className="btn btn-sm" onClick={onRetry}>
+        Retry
+      </button>
+    </div>
+  );
+}
+
+PanelError.propTypes = {
+  message: PropTypes.string.isRequired,
+  onRetry: PropTypes.func.isRequired,
+};
+
 function OperationsTab() {
   const [forecasts, setForecasts] = useState([]);
   const [efficiency, setEfficiency] = useState([]);
+  const [flaps, setFlaps] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [errors, setErrors] = useState({ forecasts: null, efficiency: null, flaps: null });
 
   const load = useCallback(async () => {
     setLoading(true);
-    setError(null);
-    try {
-      const [f, e] = await Promise.all([listCapacityForecasts(), listResourceEfficiency()]);
-      setForecasts(f.data || []);
-      setEfficiency(e.data || []);
-    } catch (err) {
-      setError(err?.userMessage || 'Could not load intelligence data.');
-    } finally {
-      setLoading(false);
-    }
+    setErrors({ forecasts: null, efficiency: null, flaps: null });
+    const [f, e, fl] = await Promise.allSettled([
+      listCapacityForecasts(),
+      listResourceEfficiency(),
+      listFlapIncidents({ active: true }),
+    ]);
+    setForecasts(f.status === 'fulfilled' ? f.value.data || [] : []);
+    setEfficiency(e.status === 'fulfilled' ? e.value.data || [] : []);
+    setFlaps(fl.status === 'fulfilled' ? fl.value.data || [] : []);
+    setErrors({
+      forecasts:
+        f.status === 'rejected'
+          ? f.reason?.userMessage || 'Capacity forecasts could not be read.'
+          : null,
+      efficiency:
+        e.status === 'rejected' ? e.reason?.userMessage || 'Right-sizing could not be read.' : null,
+      flaps:
+        fl.status === 'rejected'
+          ? fl.reason?.userMessage || 'Flap incidents could not be read.'
+          : null,
+    });
+    setLoading(false);
   }, []);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  if (loading) return <div>Loading…</div>;
+  if (loading) return <SkeletonTable rows={5} />;
 
-  if (error) {
-    return (
-      <div>
-        <div role="alert">
-          <p>{error}</p>
-          <button type="button" className="btn btn-sm" onClick={load}>
-            Retry
-          </button>
-        </div>
-      </div>
-    );
-  }
+  const forecastEvaluated = newestEvaluatedAt(forecasts);
+  const efficiencyEvaluated = newestEvaluatedAt(efficiency);
 
   return (
     <div>
-      <p style={{ opacity: 0.7, fontSize: 12 }}>
+      <p className="intel-muted" style={{ fontSize: 12 }}>
         Computed by the analytics job, {ANALYTICS_SCHEDULE}.
       </p>
 
-      <section>
-        <h3>Capacity forecasts</h3>
-        {forecasts.length === 0 ? (
-          <p style={{ opacity: 0.75, fontSize: 13 }}>{EMPTY_FORECASTS}</p>
+      <Panel title="Capacity forecasts" summary={forecastEvaluated}>
+        {errors.forecasts ? (
+          <PanelError message={errors.forecasts} onRetry={load} />
+        ) : forecasts.length === 0 ? (
+          <EmptyState message={EMPTY_FORECASTS} />
         ) : (
           <table className="entity-table">
             <thead>
@@ -95,6 +127,7 @@ function OperationsTab() {
                     key={row.id}
                     data-testid={`forecast-row-${row.id}`}
                     data-warning={String(warning)}
+                    className={warning ? 'intel-row--warning' : undefined}
                   >
                     <td>{row.hardware_name || `hardware #${row.hardware_id}`}</td>
                     <td>{row.metric}</td>
@@ -108,19 +141,20 @@ function OperationsTab() {
                         ? 'no saturation projected'
                         : `${formatDate(row.projected_full_at)} (in ${days} days)`}
                     </td>
-                    <td style={{ opacity: 0.7 }}>{row.warning_threshold_days}d</td>
+                    <td className="intel-muted">{row.warning_threshold_days}d</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
         )}
-      </section>
+      </Panel>
 
-      <section style={{ marginTop: 24 }}>
-        <h3>Right-sizing</h3>
-        {efficiency.length === 0 ? (
-          <p style={{ opacity: 0.75, fontSize: 13 }}>{EMPTY_EFFICIENCY}</p>
+      <Panel title="Right-sizing" summary={efficiencyEvaluated}>
+        {errors.efficiency ? (
+          <PanelError message={errors.efficiency} onRetry={load} />
+        ) : efficiency.length === 0 ? (
+          <EmptyState message={EMPTY_EFFICIENCY} />
         ) : (
           <table className="entity-table">
             <thead>
@@ -141,15 +175,49 @@ function OperationsTab() {
                     {pct(row.cpu_avg_pct)} / {pct(row.cpu_peak_pct)}
                   </td>
                   <td>{pct(row.mem_avg_pct)}</td>
-                  <td style={{ opacity: 0.85 }}>{row.recommendation}</td>
+                  <td>{row.recommendation}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
-      </section>
+      </Panel>
+
+      <Panel title="Flapping hardware" summary={`${flaps.length} active`}>
+        {errors.flaps ? (
+          <PanelError message={errors.flaps} onRetry={load} />
+        ) : flaps.length === 0 ? (
+          <EmptyState
+            message="No hardware is flapping."
+            hint={`The analytics job runs ${ANALYTICS_SCHEDULE} and opens an incident for a host that changes state repeatedly inside one window.`}
+          />
+        ) : (
+          <table className="entity-table">
+            <thead>
+              <tr>
+                <th>Asset</th>
+                <th>Transitions</th>
+                <th>Window</th>
+              </tr>
+            </thead>
+            <tbody>
+              {flaps.map((row) => (
+                <tr key={row.id} data-testid={`flap-row-${row.id}`}>
+                  <td>{row.asset_name || `${row.asset_type} #${row.asset_id}`}</td>
+                  <td>{row.transition_count}</td>
+                  <td>
+                    {formatDate(row.window_start)} → {formatDate(row.window_end)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Panel>
     </div>
   );
 }
+
+OperationsTab.propTypes = {};
 
 export default OperationsTab;

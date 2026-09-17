@@ -7,6 +7,12 @@ import client from './client.jsx';
 export const listCapacityForecasts = () => client.get('/intel/capacity-forecasts');
 export const listResourceEfficiency = () => client.get('/intel/resource-efficiency');
 
+// Flap incidents are written by the analytics job (run_flap_detection) and were
+// unreadable until the endpoint this calls existed. `active` omitted means both
+// active and resolved.
+export const listFlapIncidents = (options) =>
+  client.get('/intel/flap-incidents', { params: options || undefined });
+
 // assetType is one of hardware | compute_unit | service | storage — the
 // backend's _VALID_TYPES (api/intel.py). Anything else is a 400.
 // options carries the query the backend accepts: include_inferred (plan 06's

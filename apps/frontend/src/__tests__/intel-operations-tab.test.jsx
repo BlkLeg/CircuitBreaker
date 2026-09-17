@@ -5,10 +5,11 @@ import { render, screen, waitFor } from '@testing-library/react';
 vi.mock('../api/intel', () => ({
   listCapacityForecasts: vi.fn(),
   listResourceEfficiency: vi.fn(),
+  listFlapIncidents: vi.fn(),
   getBlastRadius: vi.fn(),
 }));
 
-import { listCapacityForecasts, listResourceEfficiency } from '../api/intel';
+import { listCapacityForecasts, listFlapIncidents, listResourceEfficiency } from '../api/intel';
 import OperationsTab from '../components/intel/OperationsTab.jsx';
 
 const FORECAST = {
@@ -40,6 +41,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   listCapacityForecasts.mockResolvedValue({ data: [] });
   listResourceEfficiency.mockResolvedValue({ data: [] });
+  listFlapIncidents.mockResolvedValue({ data: [] });
 });
 
 describe('OperationsTab', () => {
@@ -100,5 +102,48 @@ describe('OperationsTab', () => {
 
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
     expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument();
+  });
+
+  it('names the hardware that is flapping and how often', async () => {
+    listFlapIncidents.mockResolvedValue({
+      data: [
+        {
+          id: 1,
+          asset_type: 'hardware',
+          asset_id: 3,
+          asset_name: 'flappy-01',
+          window_start: '2026-09-17T09:30:00Z',
+          window_end: '2026-09-17T10:00:00Z',
+          transition_count: 7,
+          is_active: true,
+          resolved_at: null,
+        },
+      ],
+    });
+
+    render(<OperationsTab />);
+
+    await waitFor(() => expect(screen.getByText('flappy-01')).toBeInTheDocument());
+    expect(screen.getByText('7')).toBeInTheDocument();
+  });
+
+  it('distinguishes a forecast inside its warning threshold visibly, not only in the DOM', async () => {
+    listCapacityForecasts.mockResolvedValue({ data: [FORECAST] });
+
+    render(<OperationsTab />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('forecast-row-1')).toHaveClass('intel-row--warning')
+    );
+  });
+
+  it('reports a flap request failure without taking the other panels down', async () => {
+    listFlapIncidents.mockRejectedValue({ userMessage: 'nope' });
+    listCapacityForecasts.mockResolvedValue({ data: [FORECAST] });
+
+    render(<OperationsTab />);
+
+    await waitFor(() => expect(screen.getByText('nas-01')).toBeInTheDocument());
+    expect(screen.getByText(/nope|could not be read/i)).toBeInTheDocument();
   });
 });
