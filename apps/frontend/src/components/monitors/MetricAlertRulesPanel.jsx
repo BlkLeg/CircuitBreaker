@@ -116,7 +116,11 @@ function MetricAlertRulesPanel() {
                   <MetricAlertStateChip assessment={rule.assessment} />
                   {rule.assessment === 'unknown' && (
                     <span className="rule-reason" data-testid={`rule-hint-${rule.id}`}>
-                      Open the rule to see why it is not evaluating.
+                      {/* The reason lives only in the admin-only preview, so the
+                          pointer has to match what this viewer can actually do. */}
+                      {canWrite
+                        ? 'Open the rule to see why it is not evaluating.'
+                        : 'An administrator can open this rule to see why it is not evaluating.'}
                     </span>
                   )}
                 </td>

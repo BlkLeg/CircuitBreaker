@@ -120,6 +120,19 @@ describe('MetricAlertRulesPanel', () => {
     expect(screen.getByTestId('rule-hint-1')).toHaveTextContent(/open the rule/i);
   });
 
+  it('does not tell a viewer to open a rule they cannot open', async () => {
+    // Edit and the preview are both admin-only, so "Open the rule to see why"
+    // is an instruction a viewer cannot follow.
+    mockUser.value = { role: 'viewer' };
+    list.mockResolvedValue({ data: [rule({ assessment: 'unknown' })] });
+
+    render(<MetricAlertRulesPanel />);
+
+    await waitFor(() => expect(screen.getByText('Not evaluating')).toBeInTheDocument());
+    expect(screen.getByTestId('rule-hint-1')).toHaveTextContent(/administrator/i);
+    expect(screen.getByTestId('rule-hint-1')).not.toHaveTextContent(/^Open the rule/);
+  });
+
   it('hides every write control from a viewer', async () => {
     mockUser.value = { role: 'viewer' };
 
