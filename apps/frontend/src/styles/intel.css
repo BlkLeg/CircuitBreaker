@@ -1,0 +1,61 @@
+/* Intel console. Severity badges come from vulnerability.css; nothing here
+   re-defines a colour that the theme pipeline owns. */
+.intel-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.intel-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-alt);
+  color: var(--color-text);
+}
+
+/* One modifier per tone describeAssessment can produce: danger, muted,
+   warning, ok. A state whose tone class is missing would render as neutral,
+   which is the same failure the data-warning attribute used to hide. */
+.intel-chip--danger {
+  border-color: var(--color-danger);
+}
+.intel-chip--warning {
+  border-color: var(--color-warning);
+}
+.intel-chip--ok {
+  border-color: var(--color-success);
+}
+.intel-chip--muted {
+  color: var(--color-text-muted);
+}
+
+.intel-identity {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+.intel-muted {
+  color: var(--color-text-muted);
+}
+
+.intel-fleet-table td {
+  vertical-align: middle;
+}
+
+.intel-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+@media (max-width: 640px) {
+  .intel-fleet-table {
+    display: block;
+    overflow-x: auto;
+  }
+}
