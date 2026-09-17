@@ -292,6 +292,15 @@ def _worst(findings: list[VulnerabilityFinding]) -> tuple[str | None, float | No
 
 
 def _row(entity: FleetEntity, result: AssessmentResult) -> FleetAssessmentRow:
+    """Project one entity's share of a group's assessment onto a table row.
+
+    The identity comes from the entity, never from `result`. A group is keyed on
+    identity *values*, so its members can differ in provenance and revision — one
+    read from inventory, one corrected by an operator to the same values. Taking
+    the representative's identity reported the wrong revision for every other
+    member, and the revision is what a correction sends back: the next correction
+    of that entity would conflict with itself.
+    """
     severity, score = _worst(result.findings)
     return FleetAssessmentRow(
         entity_type=entity.entity_type,
@@ -299,7 +308,7 @@ def _row(entity: FleetEntity, result: AssessmentResult) -> FleetAssessmentRow:
         name=entity.name,
         state=result.state,
         reason_code=result.reason_code,
-        identity=result.identity,
+        identity=entity.identity,
         finding_count=result.total,
         max_severity=severity,
         max_cvss=score,
@@ -372,13 +381,18 @@ def assess_fleet(
                 )
             else:
                 candidates, limited = candidates_for(pool, identity)
-                if limited and identity.product:
-                    capped_products.add(identity.product)
                 result = evaluate_candidates(
                     candidates, identity, feed, assessed_at, candidate_limited=limited
                 )
                 if cache_key is not None:
                     remember_outcome(cache_key, result)
+        # Read the caveat off the result rather than off the branch that
+        # produced it. `evaluate_candidates` emits `candidate_limit` exactly when
+        # it was limited, so a cached outcome carries the fact too — collecting
+        # it only where candidates were selected meant a warm pass dropped the
+        # caveat while its rows still said `partial`.
+        if result.reason_code == "candidate_limit" and identity.product:
+            capped_products.add(identity.product)
         for entity in members:
             rows.append(_row(entity, result))
     for key in deferred_keys:

@@ -360,3 +360,64 @@ def test_the_identity_cap_marks_the_remainder_instead_of_dropping_it(db_session)
     assert fleet.limits.identities_assessed == 2
     assert any(row.reason_code == "fleet_limit" for row in fleet.rows)
     assert all(row.state == "unassessed" for row in fleet.rows if row.reason_code == "fleet_limit")
+
+
+def test_a_corrected_entity_reports_its_own_identity_not_a_sibling_s(db_session):
+    """Two entities can share an identity's *values* without sharing its provenance.
+
+    Entities are grouped so matching runs once, and the group's representative
+    supplied the row identity — so an operator-corrected host in a group whose
+    first member came from inventory reported provenance "inventory" and
+    revision 0. The revision is what a correction sends back, so the next
+    correction of that host conflicted with itself.
+    """
+    db = db_session
+    plain = Hardware(name="plain", vendor="acme", model="widget", os_version="1.9")
+    corrected = Hardware(name="corrected", vendor="wrong", model="wrong", os_version="0.1")
+    db.add_all([plain, corrected])
+    db.commit()
+    update_assessment_identity(
+        db,
+        "hardware",
+        corrected.id,
+        IdentityPatch(
+            vendor="acme",
+            product="widget",
+            version="1.9",
+            version_scheme="dotted_numeric",
+            revision=0,
+        ),
+        actor="test",
+    )
+    db.commit()
+
+    fleet = assess_fleet(db, _cache_session())
+    rows = {row.name: row for row in fleet.rows}
+
+    assert rows["corrected"].identity.provenance == "operator"
+    assert rows["corrected"].identity.revision == 1
+    assert rows["plain"].identity.provenance == "inventory"
+    assert rows["plain"].identity.revision == 0
+
+
+def test_a_warm_cache_still_reports_which_products_were_candidate_limited(db_session, monkeypatch):
+    """A second page load must not quietly drop the coverage caveat.
+
+    capped_products was collected only where candidates were selected, which a
+    cache hit skips — so the first load said coverage was partial for a product
+    and the reload said nothing, while the rows kept saying `partial`.
+    """
+    monkeypatch.setattr("app.services.intelligence.fleet_assessment.MAX_CANDIDATES", 2)
+    db = db_session
+    db.add(Hardware(name="host", vendor="acme", model="widget", os_version="1.9"))
+    db.commit()
+    cache, _ = _seeded_cache(
+        [_record(f"CVE-2026-90{index:02d}", "acme", "widget") for index in range(5)]
+    )
+
+    cold = assess_fleet(db, cache)
+    warm = assess_fleet(db, cache)
+
+    assert cold.limits.candidate_limited_products == ["widget"]
+    assert warm.limits.candidate_limited_products == cold.limits.candidate_limited_products
+    assert {row.reason_code for row in warm.rows} == {row.reason_code for row in cold.rows}
