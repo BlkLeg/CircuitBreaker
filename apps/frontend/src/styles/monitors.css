@@ -395,3 +395,73 @@
 .mon-run-from-warning {
   color: var(--color-warning, #d19a1c);
 }
+
+/* Metric alert rules. Tones come from the theme tokens, which deriveReadableText
+   floors to AA — no literal colours here. */
+.rule-list__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.rule-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-alt);
+  color: var(--color-text);
+}
+
+.rule-chip--danger {
+  border-color: var(--color-danger);
+}
+.rule-chip--warning {
+  border-color: var(--color-warning);
+}
+.rule-chip--success {
+  border-color: var(--color-success);
+}
+.rule-chip--muted {
+  color: var(--color-text-muted);
+}
+
+.rule-reason {
+  display: block;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  margin-top: 4px;
+  max-width: 44ch;
+}
+
+.rule-incident {
+  display: inline-block;
+  margin-left: 8px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+/* An entity link with no colour of its own renders at the user agent default,
+   which is a serious contrast violation on a dark surface. */
+.rule-table a {
+  color: var(--color-text);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.rule-table a:hover,
+.rule-table a:focus-visible {
+  color: var(--color-primary);
+  text-decoration: underline;
+}
+
+@media (max-width: 640px) {
+  .rule-table {
+    display: block;
+    overflow-x: auto;
+  }
+}
