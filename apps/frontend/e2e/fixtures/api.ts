@@ -61,6 +61,61 @@ const DEFAULTS: Record<string, unknown> = {
   maps: [{ id: 1, name: 'Main', is_default: true }],
   graph: { nodes: [], edges: [] },
   'graph/topology': { nodes: [], edges: [] },
+
+  // Intelligence. The fleet stub must be the full FleetAssessment shape, not
+  // the [] the catch-all would answer an unknown endpoint with: the hook
+  // reads data.rows and data.summary off it, and an array would crash the
+  // console into its ErrorBoundary before the a11y scan could see the page.
+  'cve/fleet': {
+    feed: { state: 'ready', reason_code: 'ready', generation: 'gen-e2e', age_seconds: 60 },
+    assessed_at: '2026-09-17T10:00:00Z',
+    summary: {
+      total_entities: 1,
+      by_state: { completed: 1 },
+      entities_with_findings: 0,
+      findings_total: 0,
+      by_severity: {},
+    },
+    rows: [
+      {
+        entity_type: 'hardware',
+        entity_id: 1,
+        name: 'nas-01',
+        state: 'completed',
+        reason_code: 'completed',
+        identity: {
+          vendor: 'acme',
+          product: 'widget',
+          version: '1.9',
+          provenance: 'inventory',
+          revision: 0,
+        },
+        finding_count: 0,
+        max_severity: null,
+        max_cvss: null,
+        completeness: 'complete',
+      },
+    ],
+    limits: {
+      identity_limit: 250,
+      identities_total: 1,
+      identities_assessed: 1,
+      identity_limit_reached: false,
+      candidate_limited_products: [],
+    },
+  },
+  'cve/entity': {
+    state: 'completed',
+    reason_code: 'completed',
+    identity: null,
+    findings: [],
+    limitations: [],
+    assessed_at: '2026-09-17T10:00:00Z',
+    completeness: 'complete',
+    total: 0,
+  },
+  'cve/status': { enabled: true, total_entries: 1, feed: { state: 'ready' } },
+  'intel/flap-incidents': [],
 };
 
 export async function stubApi(page: Page, overrides: Record<string, unknown> = {}): Promise<void> {

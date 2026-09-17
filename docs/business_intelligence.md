@@ -4,12 +4,21 @@ Circuit Breaker's intelligence layer provides automated blast-radius analysis, p
 
 ## Where these appear
 
+The **Intel** page (`/intel`) is two tabs. The **Vulnerabilities** tab is the
+fleet vulnerability console: one assessment state per assessable entity —
+hardware, compute unit, service — with fleet counts, readiness first, and
+identity correction inline. The **Operations** tab holds the operational
+analytics: capacity forecasts, right-sizing recommendations and flapping
+hardware. Both tabs are deep-linkable through `?tab=`.
+
 | Capability | Surface |
 |---|---|
-| Capacity forecasts | **Intel** page (`/intel`) |
-| Resource efficiency | **Intel** page (`/intel`) |
+| Fleet vulnerability assessment | **Intel → Vulnerabilities** tab (`/intel`), plus the **Vulnerability assessment** panel on each entity's detail view |
+| Capacity forecasts | **Intel → Operations** tab (`/intel?tab=operations`) |
+| Resource efficiency | **Intel → Operations** tab |
+| Flap detection | **Intel → Operations** tab |
 | Blast radius | **Impact** panel on a hardware, compute unit, service, or storage detail view |
-| Vulnerability assessment | **Vulnerability assessment** panel on a hardware, compute unit, or service detail view |
+| Vulnerability assessment (per entity) | **Vulnerability assessment** panel on a hardware, compute unit, or service detail view |
 
 All of these are readable by any signed-in user; they carry no role restriction. Correcting an assessment identity and triggering a feed sync require editor access.
 
@@ -214,6 +223,41 @@ Returns right-sizing recommendations ordered by most recently evaluated.
 ]
 ```
 
+### `GET /api/v1/intel/flap-incidents`
+
+Returns flap incidents recorded by the analytics job's flap-detection pass:
+hardware seen transitioning UP/DOWN repeatedly within one window. This is the
+reader for data `run_flap_detection` has been writing since it shipped.
+
+**Query parameters:**
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `active` | *(unset)* | `true` returns only unresolved incidents, `false` only resolved ones. Omitted returns both. |
+| `limit` | `50` | Maximum rows returned (1–500), newest window first. |
+
+**Response:**
+
+```json
+[
+  {
+    "id": 1,
+    "asset_type": "hardware",
+    "asset_id": 3,
+    "asset_name": "flappy-01",
+    "window_start": "2026-09-17T09:30:00Z",
+    "window_end": "2026-09-17T10:00:00Z",
+    "transition_count": 7,
+    "is_active": true,
+    "resolved_at": null
+  }
+]
+```
+
+`asset_name` is resolved per request and is `null` when the referenced asset
+no longer exists — a deleted host's historical incidents are still reported,
+with the labelled id in place of a name.
+
 ---
 
 ## Vulnerability assessment API
@@ -223,6 +267,7 @@ signed-in user; identity correction and feed sync require editor access.
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
+| `/api/v1/cve/fleet` | GET | The whole-fleet assessment behind the Intel console: feed state, fleet summary, one row per assessable entity, and the pass's limits. |
 | `/api/v1/cve/entity/{entity_type}/{entity_id}` | GET | The full `AssessmentResult` for one entity: state, reason code, identity and its revision, feed generation/age, findings with applicability evidence, completeness, and limitations. |
 | `/api/v1/cve/entity/{entity_type}/{entity_id}/identity` | PUT | Correct the identity. The request must carry the identity revision currently shown; a stale revision is rejected with `stale_identity`. |
 | `/api/v1/cve/status` | GET | Feed configuration and state: sync enabled, interval, entry count, and the active generation's state/freshness. |
@@ -231,6 +276,65 @@ signed-in user; identity correction and feed sync require editor access.
 
 The identity revision makes out-of-order corrections rejectable on the client:
 a response for revision *n* cannot overwrite a state already advanced to *n+1*.
+
+### `GET /api/v1/cve/fleet`
+
+Assesses every assessable entity — hardware, compute units and services — in one
+pass, evaluating each **distinct identity** once (a rack of identical hosts costs
+one evaluation, reported on every row) and issuing a single batched candidate
+query for the whole request. It shares its evaluation code with the per-entity
+endpoint, so a fleet row's state and reason are what the entity panel shows for
+the same asset.
+
+**Response:**
+
+```json
+{
+  "feed": { "state": "ready", "reason_code": "ready", "generation": "gen-1", "age_seconds": 3600, "coverage_complete": true },
+  "assessed_at": "2026-09-17T10:00:00Z",
+  "summary": {
+    "total_entities": 42,
+    "by_state": { "completed": 30, "unassessed": 8, "stale": 3, "unavailable": 1 },
+    "entities_with_findings": 12,
+    "findings_total": 57,
+    "by_severity": { "critical": 2, "high": 5, "medium": 4, "low": 1 }
+  },
+  "rows": [
+    {
+      "entity_type": "hardware",
+      "entity_id": 1,
+      "name": "nas-01",
+      "state": "completed",
+      "reason_code": "completed",
+      "identity": { "vendor": "acme", "product": "widget", "version": "1.9", "version_scheme": "dotted_numeric", "provenance": "inventory", "revision": 0 },
+      "finding_count": 3,
+      "max_severity": "high",
+      "max_cvss": 8.1,
+      "completeness": "complete"
+    }
+  ],
+  "limits": {
+    "identity_limit": 250,
+    "identities_total": 19,
+    "identities_assessed": 19,
+    "identity_limit_reached": false,
+    "candidate_limited_products": []
+  }
+}
+```
+
+`summary.by_state` counts readiness apart from findings: an entity with no
+product identity is `unassessed`, never folded into a count that could read as
+clean. `by_severity` is a histogram over each entity's *worst* finding.
+
+**Bounding.** The pass assesses at most `identity_limit` distinct identities
+(default 250). Entities beyond the cap are returned with state `unassessed` and
+reason `fleet_limit` — never dropped — and `limits.identity_limit_reached` says
+the summary is a floor, not a total. Products whose candidate set hit the
+per-pair cap are listed in `candidate_limited_products`, and their rows are
+`partial`. With no complete feed generation, every row is `unavailable` and
+nothing can read as an all-clear. There is no pagination: the summary requires
+the full pass, and the console filters client-side over the complete set.
 
 The revision counts *corrections*, not identities. An identity read from the
 entity's own inventory fields has never been corrected, so it reports revision
@@ -261,7 +365,7 @@ Runs three passes in order:
    - `over_provisioned` — CPU avg < 10% and memory avg < 15%
    - `balanced` — everything else
 
-3. **Flap detection** (`run_flap_detection`) — Counts UP/DOWN status transitions within a 30-minute window. Nodes with ≥ 5 transitions get an active `FlapIncident`. Incidents are resolved automatically when transitions drop below threshold.
+3. **Flap detection** (`run_flap_detection`) — Counts UP/DOWN status transitions within a 30-minute window. Nodes with ≥ 5 transitions get an active `FlapIncident`. Incidents are resolved automatically when transitions drop below threshold. Its output is served by `GET /api/v1/intel/flap-incidents` and shown on the **Intel → Operations** tab — the first surface flap detection has ever had.
 
 ### Retention job (`run_retention_job`)
 

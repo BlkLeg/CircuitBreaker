@@ -1,11 +1,40 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { expectNoErrorBoundary, stubApi, waitForRouteSettled } from './fixtures/api';
 
 // ACC-10: WCAG 2.2 AA automation plus keyboard/focus checks. NB: '/' redirects
 // to /map and '/networks' to /ipam (App.jsx:145,150), so both are named by
 // their real destinations.
 const PAGES = ['/map', '/hardware', '/services', '/ipam', '/storage', '/settings'];
+
+/** The axe ritual the PAGES loop performs, as one reusable step. */
+async function scanSettled(page: Page, context: string) {
+  await page.addStyleTag({
+    content: `*, *::before, *::after {
+      animation-duration: 0s !important;
+      animation-delay: 0s !important;
+      transition-duration: 0s !important;
+      transition-delay: 0s !important;
+    }`,
+  });
+  await expectNoErrorBoundary(page, context);
+
+  const results = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
+    .analyze();
+
+  const blocking = results.violations.filter((v) =>
+    ['serious', 'critical'].includes(v.impact ?? '')
+  );
+  const summary = blocking
+    .map(
+      (v) =>
+        `${v.id} (${v.impact}) x${v.nodes.length}: ${v.help}\n    ${v.nodes[0]?.target?.join(' ')}`
+    )
+    .join('\n');
+  expect(blocking, `axe violations on ${context}:\n${summary}`).toHaveLength(0);
+}
 
 test.describe('WCAG 2.2 AA', () => {
   for (const path of PAGES) {
@@ -23,30 +52,22 @@ test.describe('WCAG 2.2 AA', () => {
       // one in flight makes axe sample a colour composited toward the page
       // background and report a contrast violation that is not there once the
       // page is still.
-      await page.addStyleTag({
-        content: `*, *::before, *::after {
-          animation-duration: 0s !important;
-          animation-delay: 0s !important;
-          transition-duration: 0s !important;
-          transition-delay: 0s !important;
-        }`,
-      });
-      await expectNoErrorBoundary(page, `a11y scan of ${path}`);
+      await scanSettled(page, path);
+    });
+  }
+});
 
-      const results = await new AxeBuilder({ page })
-        .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
-        .analyze();
-
-      const blocking = results.violations.filter((v) =>
-        ['serious', 'critical'].includes(v.impact ?? '')
-      );
-      const summary = blocking
-        .map(
-          (v) =>
-            `${v.id} (${v.impact}) x${v.nodes.length}: ${v.help}\n    ${v.nodes[0]?.target?.join(' ')}`
-        )
-        .join('\n');
-      expect(blocking, `axe violations on ${path}:\n${summary}`).toHaveLength(0);
+// /intel had never been opened by this suite. The console adds a tablist,
+// state chips and an expanding table — all of it new ARIA — and the Operations
+// tab carries the analytics panels the old page rendered unscanned.
+test.describe('WCAG 2.2 AA — Intel console', () => {
+  for (const path of ['/intel', '/intel?tab=operations']) {
+    test(`${path} has no serious or critical violations`, async ({ page }) => {
+      await stubApi(page);
+      await page.goto(path);
+      await expect(page.locator('.page-content')).toBeVisible();
+      await waitForRouteSettled(page);
+      await scanSettled(page, path);
     });
   }
 });

@@ -31,6 +31,36 @@ claiming a shipped state that isn't backed by release evidence yet. This entry
 covers only the commits below, which are complete, self-contained, and
 directly verifiable in this tree.
 
+### Added
+
+- The **Intelligence** page now delivers what its navigation entry always
+  promised. It opens on a **Vulnerabilities** tab: the fleet vulnerability
+  console, one assessment state per assessable entity (hardware, compute
+  units, services) with fleet counts that keep readiness apart from findings —
+  an entity that cannot be assessed is counted as **Needs identity**, never
+  folded into a number that could read as clean. The counts and per-row states
+  come from the same evaluation code as the entity panel behind them, so the
+  two cannot drift. Rows expand to the full entity panel's findings and
+  evidence, fetched by the same call; a rack of identical hosts is assessed
+  once and reported on every row; and every degraded state — no feed, stale
+  feed, capped pass, air-gapped install — renders as itself, never as an
+  all-clear. The capacity and right-sizing content that used to be the whole
+  page moves to an **Operations** tab, deep-linked with `?tab=`.
+- An entity the console reads as **Needs identity** can be corrected without
+  leaving the fleet. The revision-checked identity drawer opens from the row,
+  accepts whatever the operator types, keeps every entered value on a failed
+  save, and refetches the whole fleet on success so the summary above the
+  table is never locally recomputed guesswork.
+- Flapping hardware is visible for the first time. `run_flap_detection` has
+  recorded and resolved flap incidents on every analytics pass since it
+  shipped, and no endpoint or page ever read them. `GET /api/v1/intel/flap-incidents`
+  now serves that history, and the Operations tab shows the flapping asset,
+  its transition count and the window it flapped in. While there, a capacity
+  forecast projected to saturate inside its warning threshold is finally
+  distinguished on the page — the warning existed only as a `data-warning`
+  attribute no stylesheet read — and the three analytics lists load
+  independently, so one dead endpoint no longer blanks the other two panels.
+
 ### Changed
 
 - The vulnerability panel on hardware, compute and service detail views no
