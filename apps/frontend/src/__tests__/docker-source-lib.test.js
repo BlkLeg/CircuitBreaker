@@ -164,3 +164,64 @@ describe('parentAssignmentNote', () => {
     expect(note).toMatch(/not .*assigned|unresolved/i);
   });
 });
+
+describe('a source whose run is unknown', () => {
+  it('is never described as synced just because it was attempted', () => {
+    const status = describeSourceStatus(source({ last_attempt_at: '2026-09-17T10:00:00Z' }), null);
+
+    expect(status.state).toBe('unknown');
+    expect(status.title).toBe('Outcome unknown');
+    expect(status.detail).not.toMatch(/reachable/i);
+  });
+
+  it('keeps a prior success visibly prior rather than presenting it as current', () => {
+    const status = describeSourceStatus(
+      source({ last_attempt_at: '2026-09-17T10:00:00Z', last_success_at: '2026-09-14T09:00:00Z' }),
+      null
+    );
+
+    expect(status.showsStaleInventory).toBe(true);
+  });
+
+  it('still reports a source that has never been attempted as never synced', () => {
+    expect(describeSourceStatus(source(), null).state).toBe('never-run');
+  });
+
+  it('does not explain an empty list as a reachable daemon reporting nothing', () => {
+    const list = describeContainerList(
+      source({ last_attempt_at: '2026-09-17T10:00:00Z' }),
+      null,
+      0
+    );
+
+    expect(list.emptyReason).toMatch(/run is unknown/i);
+    expect(list.emptyReason).not.toMatch(/reachable/i);
+  });
+});
+
+describe('an unreadable container list', () => {
+  it('is reported as unknown rather than as empty', () => {
+    const list = describeContainerList(source(), run(), 0, true);
+
+    expect(list.unreadable).toBe(true);
+    expect(list.emptyReason).toMatch(/could not be loaded/i);
+  });
+
+  it('takes precedence over a successful run that observed containers', () => {
+    const list = describeContainerList(source(), run({ containers_observed: 5 }), 0, true);
+
+    expect(list.emptyReason).not.toMatch(/reported no containers/i);
+  });
+
+  it('leaves a readable empty list alone', () => {
+    const list = describeContainerList(
+      source({ last_attempt_at: '2026-09-17T10:00:00Z' }),
+      run({ containers_observed: 0 }),
+      0,
+      false
+    );
+
+    expect(list.unreadable).toBe(false);
+    expect(list.emptyReason).toMatch(/reachable and reported no containers/i);
+  });
+});

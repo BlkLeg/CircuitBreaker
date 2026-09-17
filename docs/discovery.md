@@ -135,6 +135,16 @@ reconciliation could not tell "this host runs nothing" from "the daemon did not 
 | **Partial sync** | Some containers were read; coverage is incomplete | Nothing is marked stopped — an unseen container is not a confirmed absent one |
 | **Sync failed** / **interrupted** | Enumeration did not complete | Prior inventory and the last success timestamp are preserved untouched |
 | **Never synced** | No attempt has completed | Nothing is inferred |
+| **Outcome unknown** | The source was attempted, but the run that would explain it is not available | Nothing is inferred |
+
+Every source carries the run that last spoke for it, so the card reports the outcome above the
+moment the page loads — you do not have to trigger a sync yourself to find out how the previous one
+went. **Outcome unknown** is what you see when that run genuinely cannot be read (an older server,
+or a pruned run row). It is deliberately not reported as success: an unknown outcome is not a good
+one.
+
+If a source's container list cannot be loaded at all, the card says so rather than showing an empty
+list. A request that failed is the absence of an answer, not an answer of "nothing".
 
 **Last attempt** and **last success** are shown as two separate values on purpose. A source whose
 daemon has been down for a week still shows last week's success, and the card says plainly that
@@ -161,6 +171,13 @@ not infer that something is gone from a reading it knows to be incomplete.
 Recreated containers are matched on their durable identity, not their display name, so restarting a
 container does not produce a duplicate and a similarly named container on another host does not
 absorb it.
+
+### Syncing one source
+
+The **Sync** button on a card syncs that card's source. `POST /discovery/docker/sync` takes an
+optional `source_id` to say which one; posting no body syncs whichever daemon is configured now,
+which is what Settings → Integrations does and what older clients send. A source that already has a
+queued or running sync refuses a second one until it finishes.
 
 ## Safety and Good Practice
 

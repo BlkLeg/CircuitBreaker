@@ -91,6 +91,32 @@ describe('DockerSourceCard', () => {
     expect(screen.getByText(/reachable and reported no containers/i)).toBeInTheDocument();
   });
 
+  it('will not call an attempted source synced when no run explains it', () => {
+    renderCard({
+      source: source({ last_attempt_at: '2026-09-17T10:00:00Z' }),
+      run: null,
+    });
+
+    expect(screen.getByText('Outcome unknown')).toBeInTheDocument();
+    expect(screen.queryByText('Synced')).not.toBeInTheDocument();
+    expect(screen.queryByText(/reachable and reported no containers/i)).not.toBeInTheDocument();
+  });
+
+  it('separates a container list it could not read from one that is empty', () => {
+    renderCard({
+      source: source({
+        last_attempt_at: '2026-09-17T10:00:00Z',
+        last_success_at: '2026-09-17T10:00:00Z',
+      }),
+      run: run({ containers_observed: 3 }),
+      containers: [],
+      containersUnreadable: true,
+    });
+
+    expect(screen.getByText(/container list could not be loaded/i)).toBeInTheDocument();
+    expect(screen.queryByText(/reachable and reported no containers/i)).not.toBeInTheDocument();
+  });
+
   it('blocks a second sync while one is running and says why', () => {
     const onSync = vi.fn();
     renderCard({ run: run({ status: 'running' }), onSync });

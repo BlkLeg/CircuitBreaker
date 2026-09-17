@@ -55,6 +55,22 @@ export function describeSourceStatus(source, run) {
     };
   }
 
+  // Attempted, but we hold no run to say how it went. Older servers do not
+  // return `last_run` on a source, and a run row can be pruned. Saying
+  // "Synced" here is exactly the failure this module exists to prevent, so
+  // report the gap instead and keep any prior success visibly prior.
+  if (!run) {
+    return {
+      state: 'unknown',
+      title: 'Outcome unknown',
+      detail:
+        'This source was attempted, but its result is not available, so nothing is concluded from it.',
+      lastAttemptAt,
+      lastSuccessAt,
+      showsStaleInventory: hasPriorSuccess,
+    };
+  }
+
   if (run?.status === 'failed' || run?.status === 'interrupted') {
     return {
       state: 'failed',
@@ -94,16 +110,25 @@ export function describeSourceStatus(source, run) {
 /**
  * How to render the container list, including *why* it is empty when it is.
  *
+ * `unreadable` is the case where we could not load the list at all. An empty
+ * array is the answer to "what is running here"; a failed request is the
+ * absence of an answer, and rendering the two the same way is the mistake this
+ * module exists to prevent — one level further down than the run outcome.
+ *
  * @param {object} source
  * @param {object|null} run - most recent run for this source.
  * @param {number} count - containers currently held for the source.
+ * @param {boolean} [unreadable] - the container list could not be fetched.
  */
-export function describeContainerList(source, run, count) {
+export function describeContainerList(source, run, count, unreadable = false) {
   const failed = run?.status === 'failed' || run?.status === 'interrupted';
   const incomplete = run?.status === 'partial' || run?.containers_complete === false;
 
   let emptyReason = null;
-  if (count === 0) {
+  if (unreadable) {
+    emptyReason =
+      'The container list could not be loaded, so what this source holds is unknown right now.';
+  } else if (count === 0) {
     if (failed) {
       emptyReason = source?.last_success_at
         ? 'The daemon could not be read. This is the last successful picture, not the current one.'
@@ -112,6 +137,9 @@ export function describeContainerList(source, run, count) {
       emptyReason = 'The sync is still running.';
     } else if (!run && !source?.last_attempt_at) {
       emptyReason = 'This source has not been synced yet.';
+    } else if (!run) {
+      emptyReason =
+        'This source was attempted, but its run is unknown, so nothing can be concluded about it.';
     } else {
       emptyReason = 'The daemon was reachable and reported no containers.';
     }
@@ -119,6 +147,7 @@ export function describeContainerList(source, run, count) {
 
   return {
     emptyReason,
+    unreadable: Boolean(unreadable),
     provisional: Boolean(incomplete),
     note: incomplete
       ? 'Coverage was incomplete, so this list may be missing containers that are still running.'

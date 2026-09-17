@@ -23,11 +23,19 @@ function formatStamp(iso) {
  * them into one "last synced" value is what let a daemon fail quietly for days
  * while the page still looked current.
  */
-function DockerSourceCard({ source, run, containers, onSync, onAssignParent, busy }) {
+function DockerSourceCard({
+  source,
+  run,
+  containers,
+  containersUnreadable,
+  onSync,
+  onAssignParent,
+  busy,
+}) {
   const [pickerOpen, setPickerOpen] = useState(false);
 
   const status = describeSourceStatus(source, run);
-  const list = describeContainerList(source, run, containers.length);
+  const list = describeContainerList(source, run, containers.length, containersUnreadable);
   const sync = canSyncSource(source, run);
   const parentNote = parentAssignmentNote(source);
   const hasParent = Boolean(source.parent_type && source.parent_id);
@@ -101,7 +109,9 @@ function DockerSourceCard({ source, run, containers, onSync, onAssignParent, bus
       {list.note && <p className="docker-source__warning">{list.note}</p>}
 
       {containers.length === 0 ? (
-        <p className="docker-source__empty">{list.emptyReason}</p>
+        <p className={list.unreadable ? 'docker-source__warning' : 'docker-source__empty'}>
+          {list.emptyReason}
+        </p>
       ) : (
         <ul className="docker-source__containers">
           {containers.map((container) => (
@@ -140,10 +150,14 @@ DockerSourceCard.propTypes = {
     parent_provenance: PropTypes.string,
     last_attempt_at: PropTypes.string,
     last_success_at: PropTypes.string,
+    /** The run that last spoke for this source, as the listing returns it. */
+    last_run: PropTypes.object,
   }).isRequired,
   /** The most recent run for this source, if one is known. */
   run: PropTypes.object,
   containers: PropTypes.arrayOf(PropTypes.object),
+  /** The container list could not be fetched, which is not the same as it being empty. */
+  containersUnreadable: PropTypes.bool,
   onSync: PropTypes.func.isRequired,
   onAssignParent: PropTypes.func.isRequired,
   busy: PropTypes.bool,
@@ -152,6 +166,7 @@ DockerSourceCard.propTypes = {
 DockerSourceCard.defaultProps = {
   run: null,
   containers: [],
+  containersUnreadable: false,
   busy: false,
 };
 

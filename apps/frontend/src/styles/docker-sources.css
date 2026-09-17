@@ -34,6 +34,12 @@
   border-left-color: var(--color-border);
 }
 
+/* Attempted, but nothing can be concluded about how it went. Warning rather
+   than success: an unknown outcome is not a good one. */
+.docker-source--unknown {
+  border-left-color: var(--color-warning);
+}
+
 .docker-source__head {
   display: flex;
   flex-wrap: wrap;
@@ -76,6 +82,10 @@
 
 .docker-source--failed .docker-source__state {
   color: var(--color-danger);
+}
+
+.docker-source--unknown .docker-source__state {
+  color: var(--color-warning);
 }
 
 .docker-source__note,

@@ -43,6 +43,23 @@ Containers retain source/provenance identity. Preserve explicit user parent assi
 > arriving over the existing `docker_sync_completed` discovery-stream event
 > rather than a new poll loop.
 >
+> Status 2026-09-17 (correction): the surface above was only honest inside the
+> session that triggered a sync. `GET /docker/sources` carried no run, so every
+> page load rendered `run = null` and fell through to "Synced — the daemon was
+> reachable and reported 0 container(s)", failing the first acceptance check on
+> this page for any failed daemon. Fixed by giving a source its `last_run`
+> (`DockerSourceOut.last_run`, `docker_sources.source_view`), which the parent
+> route now answers with too, so assigning a host cannot blank it. Three further
+> gaps closed with it: a queued run was never refreshed (a finished sync stayed
+> "Sync queued" with Sync disabled until reload — run state is now the server's
+> on every load, and the locally queued run is dropped as soon as it answers); a
+> container list that failed to load was rendered as a source reporting no
+> containers (now reported unreadable); and the per-source Sync button discarded
+> the source id it was given (`POST /docker/sync` now takes an optional
+> `source_id`, and an empty body still means the configured daemon). An
+> attempted source with no run available is reported "Outcome unknown" rather
+> than as success.
+>
 > Still open: the real-browser regression pass in *Acceptance and tests* below —
 > theme switching, keyboard correction, and responsive tables have unit coverage
 > but have not been exercised in a browser.

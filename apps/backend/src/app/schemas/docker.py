@@ -66,24 +66,6 @@ class DockerEnumeration(BaseModel):
         return self
 
 
-class DockerSourceOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    name: str
-    connection_kind: str
-    endpoint_hint: str
-    enabled: bool
-    revision: int
-    parent_type: str | None
-    parent_id: int | None
-    parent_provenance: str
-    last_attempt_at: datetime | None
-    last_success_at: datetime | None
-    created_at: datetime
-    updated_at: datetime
-
-
 class DockerSyncRunOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -107,6 +89,35 @@ class DockerSyncRunOut(BaseModel):
     reason_code: str | None
     safe_message: str | None
     created_at: datetime
+
+
+class DockerSourceOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    connection_kind: str
+    endpoint_hint: str
+    enabled: bool
+    revision: int
+    parent_type: str | None
+    parent_id: int | None
+    parent_provenance: str
+    last_attempt_at: datetime | None
+    last_success_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    # The most recent run for this source, so a caller that has just loaded the
+    # page can tell a failed enumeration from an empty one. Without it a
+    # listing carries only timestamps, and "the daemon could not be read" and
+    # "the daemon reported nothing" become the same screen.
+    last_run: DockerSyncRunOut | None = None
+
+
+class DockerSyncRequest(BaseModel):
+    """Which source to sync. Omitted means the currently configured daemon."""
+
+    source_id: int | None = Field(default=None, gt=0)
 
 
 class DockerSyncAccepted(BaseModel):

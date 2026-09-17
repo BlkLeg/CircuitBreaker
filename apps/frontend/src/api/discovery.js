@@ -64,7 +64,12 @@ export const getDockerNetworks = () => client.get('/discovery/docker/networks');
 // and self-hosters upgrade on their own schedule. It answers 202 with
 // `{status, source_id, run_id}` — the run ID is what makes the outcome
 // knowable, which the older caller simply discarded.
-export const syncDocker = () => client.post('/discovery/docker/sync');
+//
+// `sourceId` names the source the caller is looking at. Omitting it keeps the
+// original behaviour of syncing whichever daemon is configured now, which is
+// what the settings entry point wants and what older deployments send.
+export const syncDocker = (sourceId) =>
+  client.post('/discovery/docker/sync', sourceId ? { source_id: sourceId } : {});
 export const listDockerSources = () => client.get('/discovery/docker/sources');
 export const getDockerSourceContainers = (sourceId) =>
   client.get(`/discovery/docker/sources/${sourceId}/containers`);

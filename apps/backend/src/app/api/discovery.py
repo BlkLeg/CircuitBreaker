@@ -54,6 +54,7 @@ from app.schemas.docker import (
     DockerParentAssignment,
     DockerSourceOut,
     DockerSyncAccepted,
+    DockerSyncRequest,
     DockerSyncRunOut,
 )
 from app.schemas.proxmox import ProxmoxDiscoverRunOut
@@ -1389,10 +1390,10 @@ def docker_status(db: Session = Depends(get_db)):
 
 @router.get("/docker/sources", response_model=list[DockerSourceOut])
 def docker_sources(db: Session = Depends(get_db)) -> list[DockerSourceOut]:
-    """List configured source records; ensure the installed source is represented."""
-    from app.services.docker_sources import list_configured_sources
+    """List source records with their latest run; ensure the installed one exists."""
+    from app.services.docker_sources import list_source_views
 
-    return [DockerSourceOut.model_validate(row) for row in list_configured_sources(db)]
+    return list_source_views(db)
 
 
 @router.get(
@@ -1416,10 +1417,15 @@ def docker_source_containers(
 @router.post("/docker/sync", response_model=DockerSyncAccepted, status_code=202)
 def docker_sync(
     background_tasks: BackgroundTasks,
+    payload: DockerSyncRequest | None = None,
     user: User = require_role("admin"),
     db: Session = Depends(get_db),
 ):
-    """Durably admit a source sync before returning its stable run ID."""
+    """Durably admit a source sync before returning its stable run ID.
+
+    The body is optional so the older settings caller, which posts nothing,
+    keeps syncing the configured daemon exactly as before.
+    """
     from app.services.docker_discovery import queue_configured_sync, run_source_sync
     from app.services.docker_sources import (
         DockerSourceConfigurationError,
@@ -1427,7 +1433,9 @@ def docker_sync(
     )
 
     try:
-        run = queue_configured_sync(db, _get_actor(db, user.id))
+        run = queue_configured_sync(
+            db, _get_actor(db, user.id), payload.source_id if payload else None
+        )
     except DockerSourceConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except DockerSourceConfigurationError as exc:
@@ -1460,11 +1468,14 @@ def docker_source_parent(
         DockerSourceConfigurationError,
         DockerSourceConflict,
         assign_source_parent_committed,
+        source_view_committed,
     )
 
     try:
         source = assign_source_parent_committed(db, source_id, assignment, _get_actor(db, user.id))
-        return DockerSourceOut.model_validate(source)
+        # Answer with the same projection the listing uses: a host assignment
+        # must not blank the run state the caller is already rendering.
+        return source_view_committed(db, source)
     except DockerSourceConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except DockerSourceConfigurationError as exc:

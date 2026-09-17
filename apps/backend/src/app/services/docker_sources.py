@@ -337,6 +337,46 @@ def list_configured_sources(db: Session) -> list[DockerSource]:
         raise
 
 
+def source_view(db: Session, source: DockerSource) -> DockerSourceOut:
+    """Project one source together with the run that last spoke for it.
+
+    A source row carries only attempt/success timestamps, which cannot
+    distinguish a daemon that failed from one that reported nothing. Attaching
+    the latest run is what lets a caller render that difference on first load
+    rather than only after it triggers a sync itself.
+
+    `latest_run` interrupts expired runs, so this leaves pending writes: the
+    caller owns the commit. Use `source_view_committed` from a request that has
+    no other transaction boundary of its own.
+    """
+    run = latest_run(db, source.id)
+    view = DockerSourceOut.model_validate(source)
+    view.last_run = DockerSyncRunOut.model_validate(run) if run is not None else None
+    return view
+
+
+def source_view_committed(db: Session, source: DockerSource) -> DockerSourceOut:
+    """`source_view`, owning its transaction so the lease reaping is durable."""
+    try:
+        view = source_view(db, source)
+        db.commit()
+        return view
+    except Exception:
+        db.rollback()
+        raise
+
+
+def list_source_views(db: Session) -> list[DockerSourceOut]:
+    """Project every durable source with its latest run, owning the transaction."""
+    try:
+        views = [source_view(db, source) for source in list_configured_sources(db)]
+        db.commit()
+        return views
+    except Exception:
+        db.rollback()
+        raise
+
+
 def list_source_containers(db: Session, source_id: int) -> list[DockerManagedContainerOut]:
     """Project one source's managed containers without leaking session work to API."""
     if db.get(DockerSource, source_id) is None:

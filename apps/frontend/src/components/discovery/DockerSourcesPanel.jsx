@@ -23,15 +23,24 @@ import '../../styles/docker-sources.css';
  * is what makes the eventual outcome knowable at all — the older Integrations
  * button threw it away and said "Docker scan started", which was the last word
  * the user ever got.
+ *
+ * Run state is the server's, not this component's: each source carries its
+ * `last_run`, so a page load can tell a failed enumeration from an empty one
+ * without having triggered the sync itself. The only local run state is the
+ * one this panel just queued, and every reload drops it — an optimistic run
+ * that outlives its answer is how a finished sync stayed "running" forever.
  */
 function DockerSourcesPanel({ reloadToken }) {
   const toast = useToast();
   const [sources, setSources] = useState([]);
   const [containersBySource, setContainersBySource] = useState({});
-  const [runsBySource, setRunsBySource] = useState({});
+  const [containerErrorsBySource, setContainerErrorsBySource] = useState({});
+  // Runs this panel queued itself, shown until the server's own `last_run`
+  // supersedes them on the next load.
+  const [queuedRunBySource, setQueuedRunBySource] = useState({});
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
-  const [busySourceId, setBusySourceId] = useState(null);
+  const [busySourceIds, setBusySourceIds] = useState([]);
   const fetchSeq = useRef(0);
 
   const load = useCallback(async () => {
@@ -48,16 +57,25 @@ function DockerSourcesPanel({ reloadToken }) {
         rows.map(async (row) => {
           try {
             const containers = await getDockerSourceContainers(row.id);
-            return [row.id, containers.data || []];
+            return [row.id, containers.data || [], false];
           } catch {
-            // One unreadable source must not blank the whole panel; the card
-            // still renders and explains its own state.
-            return [row.id, []];
+            // One unreadable source must not blank the whole panel. It is
+            // reported as unreadable rather than as empty: an empty array is an
+            // answer, and a failed request is the absence of one.
+            return [row.id, [], true];
           }
         })
       );
       if (seq !== fetchSeq.current) return;
-      setContainersBySource(Object.fromEntries(containerEntries));
+      setContainersBySource(
+        Object.fromEntries(containerEntries.map(([id, containers]) => [id, containers]))
+      );
+      setContainerErrorsBySource(
+        Object.fromEntries(containerEntries.map(([id, , failed]) => [id, failed]))
+      );
+      // The server has now spoken for every source, so anything this panel was
+      // holding optimistically is superseded.
+      setQueuedRunBySource({});
     } catch (err) {
       if (seq !== fetchSeq.current) return;
       setLoadError(err.message || 'Docker sources could not be loaded.');
@@ -71,16 +89,18 @@ function DockerSourcesPanel({ reloadToken }) {
   }, [load, reloadToken]);
 
   const handleSync = async (sourceId) => {
-    if (busySourceId !== null) return;
-    setBusySourceId(sourceId);
+    if (busySourceIds.includes(sourceId)) return;
+    setBusySourceIds((prev) => [...prev, sourceId]);
     try {
-      const res = await syncDocker();
+      // Sync the source the operator is looking at, not whichever daemon
+      // happens to be configured now.
+      const res = await syncDocker(sourceId);
       const { run_id: runId, source_id: acceptedId } = res.data || {};
       toast.info('Sync queued. The result will appear when it finishes.');
       if (runId) {
         try {
           const run = await getDockerRun(runId);
-          setRunsBySource((prev) => ({ ...prev, [acceptedId ?? sourceId]: run.data }));
+          setQueuedRunBySource((prev) => ({ ...prev, [acceptedId ?? sourceId]: run.data }));
         } catch {
           // The run exists -- we just cannot describe it yet. The stream will
           // bring the outcome; saying nothing beats inventing a status.
@@ -89,7 +109,7 @@ function DockerSourcesPanel({ reloadToken }) {
     } catch (err) {
       toast.error(err?.response?.data?.detail || err.message || 'The sync could not be started.');
     } finally {
-      setBusySourceId(null);
+      setBusySourceIds((prev) => prev.filter((id) => id !== sourceId));
     }
   };
 
@@ -143,11 +163,12 @@ function DockerSourcesPanel({ reloadToken }) {
         <DockerSourceCard
           key={row.id}
           source={row}
-          run={runsBySource[row.id] || null}
+          run={queuedRunBySource[row.id] || row.last_run || null}
           containers={containersBySource[row.id] || []}
+          containersUnreadable={Boolean(containerErrorsBySource[row.id])}
           onSync={handleSync}
           onAssignParent={handleAssignParent}
-          busy={busySourceId === row.id}
+          busy={busySourceIds.includes(row.id)}
         />
       ))}
     </div>

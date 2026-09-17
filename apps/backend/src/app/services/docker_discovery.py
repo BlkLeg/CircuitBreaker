@@ -68,14 +68,22 @@ def get_last_sync_result() -> dict:
         return DockerSyncRunOut.model_validate(run).model_dump(mode="json")
 
 
-def queue_configured_sync(db: Session, actor: str) -> DockerSyncRun:
-    """Resolve the installed source and durably admit one run."""
+def queue_configured_sync(db: Session, actor: str, source_id: int | None = None) -> DockerSyncRun:
+    """Resolve the target source and durably admit one run.
+
+    `source_id` names an existing durable source — a caller looking at a list of
+    them is asking about the one it can see, not about whichever daemon is
+    configured right now. Omitting it keeps the original behaviour of resolving
+    (and creating) the currently configured source, which is what the settings
+    entry point and older clients still do.
+    """
     from app.services.settings_service import get_or_create_settings
 
     try:
-        config = resolve_source_config(get_or_create_settings(db))
-        source = get_or_create_configured_source(db, config)
-        run = start_sync(db, source.id, actor)
+        if source_id is None:
+            config = resolve_source_config(get_or_create_settings(db))
+            source_id = get_or_create_configured_source(db, config).id
+        run = start_sync(db, source_id, actor)
         db.commit()
         db.refresh(run)
         return run
