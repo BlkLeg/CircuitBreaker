@@ -53,6 +53,22 @@ describe('IdentityCorrectionDrawer', () => {
     expect(screen.getByLabelText(/product/i)).toHaveValue('widget-pro');
   });
 
+  it('does not pin the old version scheme to a newly typed version', async () => {
+    // The entity panel omits version_scheme so the backend infers it from the
+    // version just entered (`patch.version_scheme or infer_version_scheme(...)`).
+    // Sending the previous scheme would pin a dotted-numeric comparator to a
+    // version that is no longer dotted numeric -- the same correction behaving
+    // differently depending on which surface it was made from.
+    updateIdentity.mockResolvedValue({ data: { ...ROW.identity, revision: 1 } });
+
+    render(<IdentityCorrectionDrawer row={ROW} onClose={() => {}} onSaved={() => {}} />);
+    fireEvent.change(screen.getByLabelText(/version/i), { target: { value: '2024-Q1' } });
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(updateIdentity).toHaveBeenCalled());
+    expect(updateIdentity.mock.calls[0][2]).not.toHaveProperty('version_scheme');
+  });
+
   it('opens with empty fields for an entity that has no identity at all', () => {
     render(
       <IdentityCorrectionDrawer

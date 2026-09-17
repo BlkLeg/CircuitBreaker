@@ -33,7 +33,9 @@ function IdentityCorrectionDrawer({ row, onClose, onSaved }) {
         vendor: form.vendor || null,
         product: form.product || null,
         version: form.version || null,
-        version_scheme: identity?.version_scheme || null,
+        // No version_scheme, matching VulnerabilityPanel: the backend infers it
+        // from the version just entered. Sending the previous scheme would pin a
+        // dotted-numeric comparator to a version that is no longer one.
         revision: identity?.revision ?? 0,
       });
       onSaved(row);
