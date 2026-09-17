@@ -116,6 +116,29 @@ export function definitionFor(catalog, metricKey) {
  * direction after a round trip. The server remains the authority — its field
  * errors are still rendered, and this never suppresses them.
  */
+/** Every numeric field the form owns. A blank one is missing, never zero. */
+const NUMERIC_FIELDS = [
+  'threshold',
+  'recovery_threshold',
+  'breach_duration_s',
+  'recovery_duration_s',
+  'max_gap_s',
+  'freshness_s',
+];
+
+/**
+ * True only for a value that is actually a number.
+ *
+ * A cleared number input hands the form an empty string, and `Number('')` is 0
+ * — so a bare `Number.isFinite(Number(value))` check reads "I cleared this
+ * field" as "I meant zero". For a threshold that is the difference between a
+ * refused save and a `cpu_pct > 0` rule that fires immediately and forever.
+ */
+function isNumber(value) {
+  if (value === '' || value === null || value === undefined) return false;
+  return Number.isFinite(Number(value));
+}
+
 export function validateRule(rule, catalog) {
   const errors = {};
   const definition = definitionFor(catalog, rule.metric_key);
@@ -134,11 +157,8 @@ export function validateRule(rule, catalog) {
     }
   }
 
-  if (!Number.isFinite(Number(rule.threshold))) {
-    errors.threshold = 'Enter a number.';
-  }
-  if (!Number.isFinite(Number(rule.recovery_threshold))) {
-    errors.recovery_threshold = 'Enter a number.';
+  for (const field of NUMERIC_FIELDS) {
+    if (!isNumber(rule[field])) errors[field] = 'Enter a number.';
   }
 
   if (!errors.threshold && !errors.recovery_threshold) {

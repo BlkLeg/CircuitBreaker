@@ -134,6 +134,38 @@ describe('validateRule', () => {
     expect(errors.recovery_threshold).toMatch(/at or above/i);
   });
 
+  // A cleared number input hands the form an empty string, and Number('') is 0.
+  // Left unguarded that turns "I cleared this field" into "I meant zero": a
+  // cleared threshold saved a cpu_pct > 0 rule that fires immediately and
+  // forever, and it reported the problem against recovery_threshold.
+  it('treats a cleared threshold as missing, not as zero', () => {
+    const errors = validateRule(rule({ threshold: '' }), CATALOG);
+
+    expect(errors).toHaveProperty('threshold');
+    expect(errors).not.toHaveProperty('recovery_threshold');
+  });
+
+  it('treats a cleared recovery threshold as missing', () => {
+    expect(validateRule(rule({ recovery_threshold: '' }), CATALOG)).toHaveProperty(
+      'recovery_threshold'
+    );
+  });
+
+  it('treats a cleared duration as missing rather than sending it to the server', () => {
+    expect(validateRule(rule({ breach_duration_s: '' }), CATALOG)).toHaveProperty(
+      'breach_duration_s'
+    );
+    expect(validateRule(rule({ recovery_duration_s: '' }), CATALOG)).toHaveProperty(
+      'recovery_duration_s'
+    );
+    expect(validateRule(rule({ max_gap_s: '' }), CATALOG)).toHaveProperty('max_gap_s');
+    expect(validateRule(rule({ freshness_s: '' }), CATALOG)).toHaveProperty('freshness_s');
+  });
+
+  it('still accepts a legitimate zero threshold', () => {
+    expect(validateRule(rule({ threshold: 0, recovery_threshold: 0 }), CATALOG)).toEqual({});
+  });
+
   it('refuses to enable a rule with no destination', () => {
     expect(validateRule(rule({ enabled: true, sink_id: null }), CATALOG)).toHaveProperty('sink_id');
   });
