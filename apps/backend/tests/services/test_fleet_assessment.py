@@ -4,13 +4,17 @@ from sqlalchemy.orm import sessionmaker
 from app.db.cve_models import CVECacheBase
 from app.db.models import ComputeUnit, Hardware, Service
 from app.schemas.cve import AssessmentIdentity, IdentityPatch
-from app.services.intelligence.cve_assessment import update_assessment_identity
+from app.services.intelligence.cve_assessment import (
+    assess_entity,
+    update_assessment_identity,
+)
 from app.services.intelligence.cve_feed import (
     complete_feed_generation,
     ingest_feed_page,
     start_feed_generation,
 )
 from app.services.intelligence.fleet_assessment import (
+    assess_fleet,
     candidates_for,
     group_by_identity,
     resolve_fleet_identities,
@@ -230,3 +234,119 @@ def test_a_noisy_product_does_not_starve_another_products_budget(monkeypatch):
     assert ("acme", "widget") in pool.capped_pairs
     assert len(pool.by_pair[("globex", "gadget")]) == 1
     assert ("globex", "gadget") not in pool.capped_pairs
+
+
+def test_fleet_row_agrees_with_the_entity_panel_for_the_same_entity(db_session):
+    db = db_session
+    hardware = Hardware(name="nas-01", vendor="acme", model="widget", os_version="1.9")
+    db.add(hardware)
+    db.commit()
+    cache, _ = _seeded_cache([_record("CVE-2026-0001", "acme", "widget")])
+
+    fleet = assess_fleet(db, cache)
+    row = next(r for r in fleet.rows if r.entity_type == "hardware" and r.entity_id == hardware.id)
+    entity = assess_entity(db, cache, "hardware", hardware.id)
+
+    assert row.state == entity.state
+    assert row.reason_code == entity.reason_code
+    assert row.finding_count == entity.total
+
+
+def test_an_entity_with_no_product_is_unassessed_not_clean(db_session):
+    db = db_session
+    hardware = Hardware(name="mystery-box")
+    db.add(hardware)
+    db.commit()
+    cache, _ = _seeded_cache([_record("CVE-2026-0001", "acme", "widget")])
+
+    fleet = assess_fleet(db, cache)
+    row = next(r for r in fleet.rows if r.entity_id == hardware.id and r.entity_type == "hardware")
+
+    assert row.state == "unassessed"
+    assert row.reason_code == "identity_missing"
+    assert row.finding_count == 0
+    assert fleet.summary.by_state["unassessed"] >= 1
+
+
+def test_no_ingested_feed_makes_every_row_unavailable(db_session):
+    db = db_session
+    db.add(Hardware(name="nas-01", vendor="acme", model="widget", os_version="1.9"))
+    db.commit()
+    cache = _cache_session()
+
+    fleet = assess_fleet(db, cache)
+
+    assert fleet.feed.state == "unavailable"
+    assert fleet.rows
+    assert {row.state for row in fleet.rows} == {"unavailable"}
+    assert fleet.summary.entities_with_findings == 0
+
+
+def test_summary_counts_reconcile_with_the_rows(db_session):
+    db = db_session
+    db.add_all(
+        [
+            Hardware(name="a", vendor="acme", model="widget", os_version="1.9"),
+            Hardware(name="b", vendor="acme", model="widget", os_version="1.9"),
+            Hardware(name="c"),
+        ]
+    )
+    db.commit()
+    cache, _ = _seeded_cache([_record("CVE-2026-0001", "acme", "widget")])
+
+    fleet = assess_fleet(db, cache)
+
+    assert fleet.summary.total_entities == len(fleet.rows)
+    assert sum(fleet.summary.by_state.values()) == len(fleet.rows)
+    assert fleet.summary.entities_with_findings == sum(
+        1 for row in fleet.rows if row.finding_count > 0
+    )
+    assert fleet.summary.findings_total == sum(row.finding_count for row in fleet.rows)
+
+
+def test_identical_hosts_are_assessed_once_and_reported_twice(db_session, monkeypatch):
+    db = db_session
+    db.add_all(
+        [
+            Hardware(name=f"node-{i}", vendor="acme", model="widget", os_version="1.9")
+            for i in range(6)
+        ]
+    )
+    db.commit()
+    cache, _ = _seeded_cache([_record("CVE-2026-0001", "acme", "widget")])
+
+    calls = {"n": 0}
+    import app.services.intelligence.fleet_assessment as module
+
+    original = module.evaluate_candidates
+
+    def counting(*args, **kwargs):
+        calls["n"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "evaluate_candidates", counting)
+
+    fleet = assess_fleet(db, cache)
+
+    assert calls["n"] == 1
+    assert len([r for r in fleet.rows if r.finding_count > 0]) == 6
+
+
+def test_the_identity_cap_marks_the_remainder_instead_of_dropping_it(db_session):
+    db = db_session
+    db.add_all(
+        [
+            Hardware(name=f"n{i}", vendor="acme", model=f"widget{i}", os_version="1.9")
+            for i in range(4)
+        ]
+    )
+    db.commit()
+    cache, _ = _seeded_cache([_record("CVE-2026-0001", "acme", "widget0")])
+
+    fleet = assess_fleet(db, cache, identity_limit=2)
+
+    assert len(fleet.rows) == 4
+    assert fleet.limits.identity_limit_reached is True
+    assert fleet.limits.identities_assessed == 2
+    assert any(row.reason_code == "fleet_limit" for row in fleet.rows)
+    assert all(row.state == "unassessed" for row in fleet.rows if row.reason_code == "fleet_limit")

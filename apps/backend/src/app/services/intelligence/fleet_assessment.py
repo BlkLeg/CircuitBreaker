@@ -10,14 +10,34 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.cve_models import CVEApplicability, CVENormalizedRecord
-from app.db.models import ComputeUnit, EntityAssessmentIdentity, Hardware, Service
-from app.schemas.cve import AssessmentIdentity
-from app.services.intelligence.cve_assessment import MAX_CANDIDATES
+from app.db.models import (
+    AppSettings,
+    ComputeUnit,
+    EntityAssessmentIdentity,
+    Hardware,
+    Service,
+)
+from app.schemas.cve import (
+    AssessmentIdentity,
+    AssessmentResult,
+    FleetAssessment,
+    FleetAssessmentLimits,
+    FleetAssessmentRow,
+    FleetAssessmentSummary,
+    VulnerabilityFinding,
+)
+from app.services.intelligence.cve_assessment import (
+    MAX_CANDIDATES,
+    evaluate_candidates,
+    get_feed_state,
+    readiness_result,
+)
 from app.services.intelligence.cve_matching import infer_version_scheme
 
 IdentityKey = tuple[str | None, str | None, str | None, str | None]
@@ -246,3 +266,130 @@ def candidates_for(
         records = records[:MAX_CANDIDATES]
         limited = True
     return records, limited
+
+
+DEFAULT_IDENTITY_LIMIT = 250
+
+SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+
+
+def _worst(findings: list[VulnerabilityFinding]) -> tuple[str | None, float | None]:
+    """The severity and score a row leads with: its worst finding."""
+    severity: str | None = None
+    score: float | None = None
+    for finding in findings:
+        current = (finding.severity or "").casefold() or None
+        if current and SEVERITY_RANK.get(current, 0) > SEVERITY_RANK.get(severity or "", 0):
+            severity = current
+        if finding.cvss_score is not None and (score is None or finding.cvss_score > score):
+            score = finding.cvss_score
+    return severity, score
+
+
+def _row(entity: FleetEntity, result: AssessmentResult) -> FleetAssessmentRow:
+    severity, score = _worst(result.findings)
+    return FleetAssessmentRow(
+        entity_type=entity.entity_type,
+        entity_id=entity.entity_id,
+        name=entity.name,
+        state=result.state,
+        reason_code=result.reason_code,
+        identity=result.identity,
+        finding_count=result.total,
+        max_severity=severity,
+        max_cvss=score,
+        completeness=result.completeness,
+    )
+
+
+def _over_budget(entity: FleetEntity, assessed_at: datetime) -> AssessmentResult:
+    return AssessmentResult(
+        state="unassessed",
+        reason_code="fleet_limit",
+        identity=entity.identity,
+        identity_revision=entity.identity.revision,
+        feed_generation=None,
+        feed_age_seconds=None,
+        assessed_at=assessed_at,
+        findings=[],
+        total=0,
+        completeness="none",
+        limitations=["The fleet pass reached its per-request identity budget."],
+    )
+
+
+def assess_fleet(
+    app_db: Session,
+    cache_db: Session,
+    *,
+    now: datetime | None = None,
+    identity_limit: int = DEFAULT_IDENTITY_LIMIT,
+) -> FleetAssessment:
+    """Assess every assessable entity, once per distinct identity."""
+    assessed_at = now or datetime.now(UTC)
+    settings = app_db.query(AppSettings).first()
+    feed = get_feed_state(cache_db, settings, assessed_at)
+    entities = resolve_fleet_identities(app_db)
+    grouped = group_by_identity(entities)
+
+    ordered_keys = sorted(grouped, key=lambda key: tuple("" if p is None else p for p in key))
+    assessed_keys = ordered_keys[:identity_limit]
+    deferred_keys = ordered_keys[identity_limit:]
+
+    pool = CandidatePool(by_pair={}, capped_pairs=set())
+    if feed.generation is not None:
+        products = {
+            key[1]
+            for key in assessed_keys
+            if key[1] is not None
+            and readiness_result(grouped[key][0].identity, feed, assessed_at) is None
+        }
+        pool = select_candidates(cache_db, feed.generation, products)
+
+    rows: list[FleetAssessmentRow] = []
+    capped_products: set[str] = set()
+    for key in assessed_keys:
+        members = grouped[key]
+        identity = members[0].identity
+        blocked = readiness_result(identity, feed, assessed_at)
+        if blocked is not None:
+            result = blocked
+        else:
+            candidates, limited = candidates_for(pool, identity)
+            if limited and identity.product:
+                capped_products.add(identity.product)
+            result = evaluate_candidates(
+                candidates, identity, feed, assessed_at, candidate_limited=limited
+            )
+        for entity in members:
+            rows.append(_row(entity, result))
+    for key in deferred_keys:
+        for entity in grouped[key]:
+            rows.append(_row(entity, _over_budget(entity, assessed_at)))
+
+    by_state: dict[str, int] = defaultdict(int)
+    by_severity: dict[str, int] = defaultdict(int)
+    for row in rows:
+        by_state[row.state] += 1
+        if row.max_severity:
+            by_severity[row.max_severity] += 1
+
+    return FleetAssessment(
+        feed=feed,
+        assessed_at=assessed_at,
+        summary=FleetAssessmentSummary(
+            total_entities=len(rows),
+            by_state=dict(by_state),
+            entities_with_findings=sum(1 for row in rows if row.finding_count > 0),
+            findings_total=sum(row.finding_count for row in rows),
+            by_severity=dict(by_severity),
+        ),
+        rows=rows,
+        limits=FleetAssessmentLimits(
+            identity_limit=identity_limit,
+            identities_total=len(ordered_keys),
+            identities_assessed=len(assessed_keys),
+            identity_limit_reached=bool(deferred_keys),
+            candidate_limited_products=sorted(capped_products),
+        ),
+    )

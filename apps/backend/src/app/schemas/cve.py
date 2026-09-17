@@ -97,3 +97,48 @@ class AssessmentResult(BaseModel):
     def items(self) -> list[VulnerabilityFinding]:
         """Compatibility alias for the existing entity-panel client."""
         return self.findings
+
+
+class FleetAssessmentRow(BaseModel):
+    """One entity's assessment, projected to what a fleet table needs."""
+
+    entity_type: str
+    entity_id: int
+    name: str
+    state: AssessmentState
+    reason_code: AssessmentReason
+    identity: AssessmentIdentity | None = None
+    finding_count: int = Field(ge=0)
+    max_severity: str | None = None
+    max_cvss: float | None = None
+    completeness: Literal["none", "partial", "complete"]
+
+
+class FleetAssessmentSummary(BaseModel):
+    """Fleet counts. Readiness is counted separately from findings, always."""
+
+    total_entities: int = Field(ge=0)
+    by_state: dict[str, int]
+    entities_with_findings: int = Field(ge=0)
+    findings_total: int = Field(ge=0)
+    by_severity: dict[str, int]
+
+
+class FleetAssessmentLimits(BaseModel):
+    """What the pass could not do. A capped pass reports a floor, not a total."""
+
+    identity_limit: int = Field(ge=1)
+    identities_total: int = Field(ge=0)
+    identities_assessed: int = Field(ge=0)
+    identity_limit_reached: bool = False
+    candidate_limited_products: list[str] = Field(default_factory=list)
+
+
+class FleetAssessment(BaseModel):
+    """The whole-fleet answer behind the Intel console."""
+
+    feed: FeedState
+    assessed_at: datetime
+    summary: FleetAssessmentSummary
+    rows: list[FleetAssessmentRow]
+    limits: FleetAssessmentLimits
