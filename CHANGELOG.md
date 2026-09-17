@@ -73,6 +73,17 @@ directly verifiable in this tree.
   on. The two places the engine deliberately declines to fabricate a recovery
   (editing or deleting a firing rule) are stated where they happen instead of
   left as surprises. See [docs/metric-alerts.md](docs/metric-alerts.md).
+- A rule that is not evaluating now says **why**. `metric_alert_states` recorded
+  the assessment and discarded the evaluator's reason for it, so three separate
+  problems — the host has never reported this metric, it has stopped reporting
+  recently enough, or it reports with gaps too wide to measure a breach across
+  — all surfaced as one word, with three different fixes behind it. The reason
+  is persisted alongside the assessment and carried on the rule list, so every
+  reader gets it rather than only an admin who opens the evaluation preview.
+  Migration `0116_metric_alert_reason_code` adds the column; it is nullable
+  with no backfill, and a rule the evaluator has not reached since the upgrade
+  reads *"has not been evaluated yet"* rather than borrowing an explanation it
+  was never given. The scheduled evaluator fills each rule in on its next pass.
 
 ### Changed
 
@@ -111,6 +122,14 @@ directly verifiable in this tree.
   instead of by hand (`ef729552`).
 
 ### Fixed
+
+- The Alert rules tab pointed at a place that does not exist. Its
+  "no notification destination" banner named **Settings → Notifications**, and
+  there is no such tab — destinations are created by the notifications manager
+  that Settings renders inside **Integrations**, while `/notifications` is the
+  delivery feed, where an operator following the instruction would have arrived
+  unable to do what it asked. The banner and the editor's inert *Enabled*
+  control now link straight to the page that creates one.
 
 - The navigator's search field no longer draws a permanent outline. `main.css`
   sets `*:focus-visible { outline: ... !important }` as an app-wide baseline,
