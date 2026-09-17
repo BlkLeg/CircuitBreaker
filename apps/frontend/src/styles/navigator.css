@@ -381,8 +381,22 @@
   cursor: pointer;
 }
 
+/* main.css sets `*:focus-visible { outline: ... !important }` as an app-wide
+   baseline, so the search field drew a ring the navigator never asked for and
+   could not switch off without matching that !important.
+   
+   The field is focused the instant the overlay opens, and a text input matches
+   :focus-visible whenever it is focused, so that ring was permanently on --
+   read as a border drawn around the box rather than as a focus cue, which is
+   the opposite of what a focus indicator is for. The caret does that job for a
+   text field, and it is the only element here that has one. */
+.navigator-input:focus-visible {
+  outline: none !important;
+}
+
+/* Every control below has no caret, so the ring is the only indicator they
+   have and it stays. */
 .navigator-close:focus-visible,
-.navigator-input:focus-visible,
 .navigator-modes button:focus-visible,
 .navigator-categories button:focus-visible,
 .navigator-pinned button:focus-visible,

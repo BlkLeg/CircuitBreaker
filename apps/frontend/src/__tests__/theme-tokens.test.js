@@ -2,12 +2,15 @@ import { describe, expect, it } from 'vitest';
 import {
   DERIVED_TOKEN_NAMES,
   STATUS_DEFAULTS,
+  contrastRatio,
   contrastingForeground,
+  deriveReadableText,
   deriveSurfaceRaised,
   isLightColor,
   mixHex,
   relativeLuminance,
 } from '../theme/tokens';
+import { THEME_PRESETS } from '../theme/presets';
 
 describe('relativeLuminance', () => {
   it('brackets black and white', () => {
@@ -104,5 +107,94 @@ describe('DERIVED_TOKEN_NAMES', () => {
     expect(DERIVED_TOKEN_NAMES).toContain('--color-surface-raised');
     expect(DERIVED_TOKEN_NAMES).toContain('--color-primary-fg');
     expect(DERIVED_TOKEN_NAMES).toContain('--color-success');
+  });
+});
+
+describe('contrastRatio', () => {
+  it('brackets the WCAG range', () => {
+    expect(contrastRatio('#000000', '#ffffff')).toBeCloseTo(21, 2);
+    expect(contrastRatio('#777777', '#777777')).toBeCloseTo(1, 5);
+  });
+
+  it('does not care which way round the pair is given', () => {
+    expect(contrastRatio('#123456', '#fedcba')).toBeCloseTo(
+      contrastRatio('#fedcba', '#123456'),
+      10
+    );
+  });
+});
+
+describe('deriveReadableText', () => {
+  it('returns a colour that already passes, untouched', () => {
+    // The palette's hue is kept wherever it was legible to begin with.
+    expect(deriveReadableText('#ffffff', ['#000000'])).toBe('#ffffff');
+    expect(deriveReadableText('#0f172a', ['#ffffff'])).toBe('#0f172a');
+  });
+
+  it('lifts unreadable text off a dark surface until it clears AA', () => {
+    const lifted = deriveReadableText('#75715e', ['#272822']);
+
+    expect(lifted).not.toBe('#75715e');
+    expect(contrastRatio(lifted, '#272822')).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('darkens unreadable text on a light surface instead of lightening it', () => {
+    const darkened = deriveReadableText('#c0c0c0', ['#ffffff']);
+
+    expect(relativeLuminance(darkened)).toBeLessThan(relativeLuminance('#c0c0c0'));
+    expect(contrastRatio(darkened, '#ffffff')).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('clears every surface it is given, not just the first', () => {
+    const surfaces = ['#0a0e1a', '#020617', '#10162a'];
+    const readable = deriveReadableText('#4a6a7a', surfaces);
+
+    for (const surface of surfaces) {
+      expect(contrastRatio(readable, surface)).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it('moves as little as it can get away with', () => {
+    // A floor, not a repaint: the result should not overshoot to pure white
+    // when a small nudge clears the bar.
+    const nudged = deriveReadableText('#6272a4', ['#282a36']);
+
+    expect(nudged).not.toBe('#ffffff');
+    expect(contrastRatio(nudged, '#282a36')).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('leaves input it cannot parse alone', () => {
+    expect(deriveReadableText('not-a-color', ['#000000'])).toBe('not-a-color');
+    expect(deriveReadableText('#ffffff', [])).toBe('#ffffff');
+  });
+});
+
+describe('every shipped preset is readable on its own surfaces', () => {
+  // Measured before this floor existed: 20 of 28 preset/mode pairs put muted
+  // text below 4.5:1 against the surface it sits on, 8 below 3:1, and
+  // monokai/dark at 1.74:1 — in the DOM and invisible. The navigator showed it
+  // worst because it is almost entirely secondary text, but nothing about it
+  // was navigator-specific.
+  const cases = [];
+  for (const [name, preset] of Object.entries(THEME_PRESETS)) {
+    for (const mode of ['dark', 'light']) {
+      if (preset[mode]?.surface) cases.push([`${name}/${mode}`, preset[mode]]);
+    }
+  }
+
+  it.each(cases)('%s keeps both text tokens at AA', (_id, variant) => {
+    const surfaces = [
+      variant.surface,
+      variant.background,
+      variant.surfaceAlt,
+      deriveSurfaceRaised(variant.surface),
+    ].filter(Boolean);
+
+    for (const token of [variant.text, variant.textMuted].filter(Boolean)) {
+      const readable = deriveReadableText(token, surfaces);
+      for (const surface of surfaces) {
+        expect(contrastRatio(readable, surface)).toBeGreaterThanOrEqual(4.5);
+      }
+    }
   });
 });

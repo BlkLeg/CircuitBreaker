@@ -2,6 +2,7 @@ import {
   DERIVED_TOKEN_NAMES,
   STATUS_DEFAULTS,
   contrastingForeground,
+  deriveReadableText,
   deriveSurfaceRaised,
   isLightColor,
 } from './tokens';
@@ -71,8 +72,27 @@ export function applyTheme(presetOrColors, presetKey) {
   if (variant.surfaceAlt) root.style.setProperty('--color-surface-alt', variant.surfaceAlt);
   if (variant.secondary) root.style.setProperty('--color-secondary', variant.secondary);
   if (variant.border) root.style.setProperty('--color-border', variant.border);
-  if (variant.text) root.style.setProperty('--color-text', variant.text);
-  if (variant.textMuted) root.style.setProperty('--color-text-muted', variant.textMuted);
+  // Text is floored to WCAG AA against every surface it can land on, rather
+  // than written through as the palette supplied it. A preset's muted colour is
+  // chosen for looks, and across the shipped presets most of them chose one
+  // that cannot be read on their own panels — see deriveReadableText. The floor
+  // only ever raises contrast: a palette whose text already passes is written
+  // through unchanged.
+  const textSurfaces = [
+    variant.surface,
+    variant.background,
+    variant.surfaceAlt,
+    variant.surface ? deriveSurfaceRaised(variant.surface) : null,
+  ].filter(Boolean);
+  if (variant.text) {
+    root.style.setProperty('--color-text', deriveReadableText(variant.text, textSurfaces));
+  }
+  if (variant.textMuted) {
+    root.style.setProperty(
+      '--color-text-muted',
+      deriveReadableText(variant.textMuted, textSurfaces)
+    );
+  }
   if (variant.gridLine) root.style.setProperty('--color-grid-line', variant.gridLine);
 
   // Raised surfaces and status colours: no preset carries either, so they are

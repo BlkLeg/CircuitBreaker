@@ -69,6 +69,29 @@ directly verifiable in this tree.
 
 ### Fixed
 
+- The navigator's search field no longer draws a permanent outline. `main.css`
+  sets `*:focus-visible { outline: ... !important }` as an app-wide baseline,
+  and the field is focused the moment the overlay opens — a text input matches
+  `:focus-visible` whenever it is focused — so the ring was always on and read
+  as a border around the box rather than as a focus cue. The caret does that job
+  for a text field, and it is the only element in the panel that has one; every
+  other control keeps its ring.
+
+- Secondary text is legible in every theme. `applyTheme` wrote each preset's
+  `text` and `textMuted` straight through, so legibility was whatever the
+  palette author's eye had settled on: across the shipped presets, 20 of 28
+  preset/mode pairs put muted text below WCAG AA's 4.5:1 against the surface it
+  sits on, 8 were below 3:1, monokai's dark muted was 1.74:1, and
+  `solarized-dark` managed 3.19:1 with its primary text. Both tokens are now
+  floored to AA against every surface they can land on, blending toward black or
+  white only as far as the threshold requires — a colour that already passes is
+  written through untouched, so palettes keep their hue wherever the hue was
+  readable. The navigator showed this worst, being almost entirely group labels,
+  row descriptions, category filters and footer hints, but nothing about it was
+  navigator-specific. The axe suite now opens the navigator and scans it under
+  the three worst presets; it had never scanned that surface at all, because
+  every page scan runs with the overlay shut.
+
 - `tests/build/test_install_docker_staging.py` no longer hangs forever. The
   harness runs the shipped `stage_docker_deploy` with `curl`, `docker` and `ip`
   stubbed, but not the `install … || sudo install …` pair that writes

@@ -83,6 +83,12 @@ export function contrastingForeground(hex) {
   return relativeLuminance(hex) > BLACK_TEXT_THRESHOLD ? '#000000' : '#ffffff';
 }
 
+/** WCAG contrast ratio between two colours, 1..21. */
+export function contrastRatio(a, b) {
+  const [lighter, darker] = [relativeLuminance(a), relativeLuminance(b)].sort((x, y) => y - x);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
 /** Linear channel-wise blend from `hex` toward `towardHex`, `pct` in 0..100. */
 export function mixHex(hex, towardHex, pct) {
   const from = channels(hex);
@@ -104,6 +110,42 @@ export function deriveSurfaceRaised(surfaceHex) {
   return isLightColor(surfaceHex)
     ? mixHex(surfaceHex, '#000000', 6)
     : mixHex(surfaceHex, '#ffffff', 8);
+}
+
+/**
+ * A palette's text colour, lightened or darkened only as far as legibility needs.
+ *
+ * Presets carry `text` and `textMuted` as raw values and applyTheme used to
+ * write them through untouched, so how readable the app was depended entirely
+ * on the palette author. Measured across the shipped presets, 20 of 28
+ * preset/mode pairs put muted text below WCAG AA's 4.5:1 against the surface it
+ * sits on; 8 were below 3:1, and monokai's dark muted was 1.74:1 — present in
+ * the DOM and effectively invisible. `solarized-dark` managed it with its
+ * *primary* text, at 3.19:1.
+ *
+ * Text is blended toward whichever of black/white contrasts with the surface,
+ * in 2% steps, stopping at the first value that clears `minRatio` against every
+ * surface it can appear on. That keeps the palette's hue wherever the hue was
+ * already legible — a passing colour is returned untouched — and gives up the
+ * hue only where keeping it would mean text nobody can read.
+ *
+ * @param {string} hex - the palette's colour.
+ * @param {string[]} surfaces - every background this text may sit on.
+ * @param {number} [minRatio] - 4.5:1, WCAG AA for body text.
+ */
+export function deriveReadableText(hex, surfaces, minRatio = 4.5) {
+  const backgrounds = surfaces.filter((s) => channels(s));
+  if (!channels(hex) || backgrounds.length === 0) return hex;
+  const clears = (candidate) => backgrounds.every((s) => contrastRatio(candidate, s) >= minRatio);
+  if (clears(hex)) return hex;
+  // Direction is decided by the primary surface: on a dark panel text moves
+  // toward white, on a light one toward black.
+  const target = contrastingForeground(backgrounds[0]) === '#000000' ? '#000000' : '#ffffff';
+  for (let pct = 2; pct < 100; pct += 2) {
+    const candidate = mixHex(hex, target, pct);
+    if (clears(candidate)) return candidate;
+  }
+  return target;
 }
 
 /**

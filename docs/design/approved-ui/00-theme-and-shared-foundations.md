@@ -51,3 +51,31 @@ Never treat `accent2` as automatically meaning success: decorative palette accen
 - Confirm existing agent/shared-panel surfaces do not regress when shared tokens change.
 
 Done means the theme pipeline and consumers are verified. A component using `var(...)` with a permanently dark value is not theme-aware.
+
+## Text legibility is a floor, not a palette decision (2026-09-17)
+
+`applyTheme` used to write a preset's `text` and `textMuted` through to the DOM
+exactly as authored, so how readable the app was depended entirely on the
+palette author's eye. Measured across the shipped presets against the surface
+the text actually sits on, **20 of 28 preset/mode pairs put muted text below
+WCAG AA's 4.5:1**; eight were below 3:1, monokai's dark muted was 1.74:1, and
+`solarized-dark` managed 3.19:1 with its *primary* text.
+
+`deriveReadableText` (theme/tokens.js) now floors both tokens against every
+surface they can land on — `--color-bg`, `--color-surface`,
+`--color-surface-alt` and the derived `--color-surface-raised`. It blends toward
+black or white in 2% steps and stops at the first value that clears the
+threshold, so a palette keeps its hue wherever the hue was already legible: a
+passing colour is returned unchanged, and the hue is surrendered only where
+keeping it would mean text nobody can read. The floor only ever raises contrast.
+
+This is a token-level guarantee on purpose. A per-surface override cannot
+promise legibility "no matter the theme", and the navigator — which is almost
+entirely secondary text — is only where it showed worst.
+
+Two gates hold it: `__tests__/theme-tokens.test.js` asserts every shipped
+preset/mode clears AA on all four surfaces, and `e2e/accessibility.spec.ts`
+opens the navigator and runs axe against it under the three worst presets.
+Before the floor, that axe scan reports 34 `color-contrast` violations in the
+monokai navigator; every page scan in that suite had passed throughout, because
+they all run with the overlay shut.
