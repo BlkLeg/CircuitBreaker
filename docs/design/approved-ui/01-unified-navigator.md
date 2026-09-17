@@ -253,6 +253,50 @@ The backend diff for this slice should be empty. If implementation changes backe
 
 Use one reviewable commit per unit: registry/settings contract; approved shell alignment; durable entity selection; App/Header cutover; palette removal; browser evidence. Do not mix plans 02–08 into these commits.
 
+> Status 2026-09-17 (correction): five defects against the *Keyboard* and
+> *Responsive/accessibility* rules above.
+>
+> 1. **The pointer did not move the highlight.** `activeIndex` was keyboard-only
+>    and rows had no hover rule at all, so a mouse user got no feedback from
+>    hovering and Enter opened whatever the keyboard had last selected —
+>    possibly a row nowhere near the pointer. Rows now select on `mousemove`
+>    (not `mouseenter`: arrowing scrolls the list, and a row sliding under a
+>    still pointer would otherwise steal the keyboard's selection).
+> 2. **Late asset results reset the selection.** The clamp effect ran on every
+>    change of the flattened list and jumped back to the best local match, so
+>    arrowing during a search was undone when debounced asset results landed
+>    ~200 ms later. The snap now happens once per *question* (query, or
+>    mode/category while browsing); the same question re-rendered with more
+>    results keeps the operator's selection and only clamps it back into range.
+>    Switching mode now starts from the top, which it previously did not.
+> 3. **`aria-activedescendant` was never wired.** Rows carried
+>    `id="navigator-option-N"` for it and nothing pointed at them, so the
+>    highlight existed only for sighted users. The search field now names the
+>    highlighted row through `aria-activedescendant`, and the pointer moves it
+>    too, so what is announced is what is highlighted.
+>
+>    It is deliberately **not** a `combobox`/`listbox`/`option` structure. That
+>    is the textbook pattern for a search field driving a result list, and it
+>    was tried here first — but a `listbox` may not contain the per-row pin
+>    buttons, and axe reports `aria-required-children` (critical) once per row
+>    for exactly that. `e2e/accessibility.spec.ts` is what caught it. A
+>    `searchbox` supports `aria-activedescendant` on its own, which is the part
+>    that was actually missing; promising a listbox the DOM cannot honour would
+>    trade a silent gap for a stated falsehood. Any future move to `listbox`
+>    has to relocate the pin action out of the row first.
+> 4. **Arrow keys and focus disagreed.** Arrows moved the highlight from
+>    anywhere in the panel, but Enter only opened the highlighted row while the
+>    search field held focus — so after tabbing to a row, arrowing moved the
+>    highlight and Enter opened something else. Arrowing now returns focus to
+>    the search field, leaving one notion of "selected".
+> 5. **Selection was signalled by colour alone** (background and border colour),
+>    against "no color-only selection". The active row now also carries an inset
+>    edge bar.
+>
+> Still open: the real-browser pass — the keyboard, focus-return and theme
+> checks in the acceptance list below have component coverage but have not been
+> exercised in a browser.
+
 ## Acceptance
 
 - Both click and Ctrl/Cmd+K open the same overlay exactly once; no legacy palette remains.

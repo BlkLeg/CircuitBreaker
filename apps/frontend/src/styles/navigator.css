@@ -295,6 +295,20 @@
 .navigator-row--active {
   background: var(--color-surface-alt);
   border-color: var(--color-primary);
+  /* A bar that is either there or not, as well as a colour change: plan 01
+     requires the selected row to be distinguishable without relying on colour,
+     and background plus border-colour were both colour. Inset, so appearing
+     costs no layout shift. */
+  box-shadow: inset 3px 0 0 0 var(--color-primary);
+}
+
+/* The pointer and the keyboard drive the same highlight, so a row does not get
+   a second, competing hover treatment. This rule exists to say that out loud:
+   hovering *is* selecting here. */
+@media (hover: hover) {
+  .navigator-row:hover {
+    cursor: pointer;
+  }
 }
 
 .navigator-row-main {

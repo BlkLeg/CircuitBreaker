@@ -60,6 +60,13 @@ function GlobalNavigator({ isOpen, onClose, onNavigate }) {
   const activeRowRef = useRef(null);
   const openerRef = useRef(null);
   const suppressFocusTrapRef = useRef(false);
+  // True when the keyboard moved the selection. A hover must not scroll the
+  // list out from under the pointer that caused it.
+  const scrollActiveIntoViewRef = useRef(false);
+  // The question the current selection was chosen for. While it is unchanged,
+  // a list that grows underneath (assets arriving after their debounce) must
+  // not move the selection the operator already made.
+  const snappedForRef = useRef(null);
   const namespace = useMemo(() => namespaceFor({ user, isMasquerade }), [user, isMasquerade]);
 
   const { localResults, assetResults, assetsLoading, assetsError, hasMore, retryAssets } =
@@ -76,6 +83,7 @@ function GlobalNavigator({ isOpen, onClose, onNavigate }) {
     setMode('all');
     setCategory('all');
     setActiveIndex(0);
+    snappedForRef.current = null;
     setPins(readPins(namespace).filter((id) => byId.has(id)));
     setRecents(readRecents(namespace).filter((id) => byId.has(id)));
     const frame = requestAnimationFrame(() => inputRef.current?.focus());
@@ -83,6 +91,8 @@ function GlobalNavigator({ isOpen, onClose, onNavigate }) {
   }, [isOpen, namespace, byId]);
 
   useEffect(() => {
+    if (!scrollActiveIntoViewRef.current) return;
+    scrollActiveIntoViewRef.current = false;
     activeRowRef.current?.scrollIntoView?.({ block: 'nearest' });
   }, [activeIndex]);
 
@@ -154,16 +164,28 @@ function GlobalNavigator({ isOpen, onClose, onNavigate }) {
   }, [searching, localResults, assetResults, mode, recentEntries, category, visibleGroups]);
 
   const flat = useMemo(() => groups.flatMap((group) => group.entries), [groups]);
+
+  // What the operator is currently asking for. A new question earns a fresh
+  // selection; the same question re-rendered with more results does not.
+  const question = searching ? `search:${query.trim()}` : `browse:${mode}:${category}`;
+
   useEffect(() => {
-    if (searching && localResults.length) {
-      const bestLocalIndex = flat.findIndex((entry) => entry.id === localResults[0].id);
-      if (bestLocalIndex >= 0) {
-        setActiveIndex(bestLocalIndex);
-        return;
-      }
+    if (snappedForRef.current !== question) {
+      snappedForRef.current = question;
+      // Actions sort after assets, so the best local match is not always
+      // flat[0] — find it rather than assuming the top of the list.
+      const bestLocalIndex =
+        searching && localResults.length
+          ? flat.findIndex((entry) => entry.id === localResults[0].id)
+          : -1;
+      if (bestLocalIndex > 0) scrollActiveIntoViewRef.current = true;
+      setActiveIndex(bestLocalIndex >= 0 ? bestLocalIndex : 0);
+      return;
     }
+    // Same question, longer list: keep the selection, only pull it back into
+    // range if the list shrank beneath it.
     setActiveIndex((indexValue) => (indexValue < flat.length ? indexValue : 0));
-  }, [flat, searching, localResults]);
+  }, [flat, searching, localResults, question]);
 
   const handleActivate = useCallback(
     (entry) => {
@@ -174,6 +196,10 @@ function GlobalNavigator({ isOpen, onClose, onNavigate }) {
     },
     [onClose, onNavigate]
   );
+
+  // Stable, and takes the index rather than closing over it, so the memoized
+  // rows are not invalidated on every render.
+  const handleHover = useCallback((rowIndex) => setActiveIndex(rowIndex), []);
 
   const handleTogglePin = useCallback(
     (entry) => {
@@ -204,12 +230,21 @@ function GlobalNavigator({ isOpen, onClose, onNavigate }) {
       return;
     }
     if (event.nativeEvent?.isComposing) return;
-    if (event.key === 'ArrowDown') {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
-      setActiveIndex((indexValue) => (flat.length ? Math.min(indexValue + 1, flat.length - 1) : 0));
-    } else if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      setActiveIndex((indexValue) => Math.max(indexValue - 1, 0));
+      scrollActiveIntoViewRef.current = true;
+      // Arrowing is list navigation, and Enter opens the *selected* row only
+      // while the search field holds focus. Returning focus here keeps one
+      // notion of "selected": a row that was tabbed to would otherwise be
+      // opened by Enter while the highlight sat somewhere else entirely.
+      inputRef.current?.focus();
+      if (event.key === 'ArrowDown') {
+        setActiveIndex((indexValue) =>
+          flat.length ? Math.min(indexValue + 1, flat.length - 1) : 0
+        );
+      } else {
+        setActiveIndex((indexValue) => Math.max(indexValue - 1, 0));
+      }
     } else if (event.key === 'Enter' && event.target === inputRef.current) {
       event.preventDefault();
       handleActivate(flat.at(activeIndex));
@@ -219,6 +254,8 @@ function GlobalNavigator({ isOpen, onClose, onNavigate }) {
   if (!isOpen) return null;
 
   const pinSet = new Set(pins);
+  const activeOptionId =
+    activeIndex >= 0 && activeIndex < flat.length ? `navigator-option-${activeIndex}` : undefined;
   let cursor = -1;
   const totalVisiblePages = visibleGroups.reduce((total, group) => total + group.entries.length, 0);
 
@@ -253,6 +290,15 @@ function GlobalNavigator({ isOpen, onClose, onNavigate }) {
             ref={inputRef}
             type="search"
             role="searchbox"
+            // Which row is highlighted, for anyone who cannot see it. The row
+            // ids existed for this from the start and nothing pointed at them.
+            //
+            // Not `role="combobox"`: that promises a listbox popup, and a
+            // listbox may not contain the per-row pin buttons — axe reports
+            // `aria-required-children` (critical) for every row. A searchbox
+            // supports aria-activedescendant on its own, which is the part
+            // that was actually missing.
+            aria-activedescendant={activeOptionId}
             className="navigator-input"
             placeholder="Search pages, settings, and assets…"
             aria-label="Search pages, settings, and assets"
@@ -373,6 +419,7 @@ function GlobalNavigator({ isOpen, onClose, onNavigate }) {
                         current={isCurrentEntry(entry, location)}
                         index={cursor}
                         onActivate={handleActivate}
+                        onHover={handleHover}
                         onTogglePin={
                           ['page', 'settings'].includes(entry.kind) && namespace
                             ? handleTogglePin

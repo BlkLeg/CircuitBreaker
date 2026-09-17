@@ -12,14 +12,30 @@ function NavigatorResultRow({
   current = false,
   index,
   onActivate,
+  onHover = null,
   onTogglePin = null,
   pinned = false,
 }) {
   const Icon = entry.icon ?? null;
   return (
-    <div className={`navigator-row${active ? ' navigator-row--active' : ''}`}>
+    <div
+      className={`navigator-row${active ? ' navigator-row--active' : ''}`}
+      // Hovering a row makes it the highlighted one, so the pointer and the
+      // arrow keys drive a single selection. Without this the highlight stayed
+      // wherever the keyboard left it while the pointer moved over something
+      // else, and Enter opened neither of the rows the operator was looking at.
+      //
+      // `mousemove`, not `mouseenter`: arrowing through a long list scrolls it
+      // under a stationary pointer, and `mouseenter` would fire for whatever
+      // row slid beneath it — the mouse would steal the keyboard's selection
+      // without the operator having moved it at all. It re-fires with the same
+      // index harmlessly, since setting identical state does not re-render.
+      onMouseMove={onHover ? () => onHover(index) : undefined}
+    >
       <button
         type="button"
+        // The search field points at this id with aria-activedescendant when
+        // this row is the highlighted one.
         id={`navigator-option-${index}`}
         data-active={active ? 'true' : undefined}
         aria-current={current ? 'page' : undefined}
@@ -66,6 +82,8 @@ NavigatorResultRow.propTypes = {
   current: PropTypes.bool,
   index: PropTypes.number.isRequired,
   onActivate: PropTypes.func.isRequired,
+  /** Called with this row's index when the pointer moves over it. */
+  onHover: PropTypes.func,
   onTogglePin: PropTypes.func,
   pinned: PropTypes.bool,
 };
