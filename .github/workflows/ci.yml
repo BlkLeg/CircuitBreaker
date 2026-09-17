@@ -5,9 +5,29 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Manual re-run against an arbitrary ref. The gate is the only thing standing
+  # between a branch and `main`, and when it fails for a reason outside the
+  # commit — a runner image change, a registry timeout, a flaky Testcontainer —
+  # the only recovery was to push an empty commit, which rewrites the history
+  # being gated in order to test it. This re-runs the same ref instead.
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+# One in-flight run per pull request. Pushing three times in a minute used to
+# start three full copies of the gate — 4 backend shards, 2 Playwright shards
+# and the migration job each time — and the first two were obsolete the moment
+# the third started.
+#
+# cancel-in-progress is deliberately scoped to pull_request. A push to `main`
+# is the run of record for a commit that is already merged; cancelling it to
+# start the next one leaves the first commit with no evidence at all, which is
+# exactly the history someone bisecting a release needs. Queued, those runs
+# cost time; cancelled, they cost the record.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # REL-20, first half: determinism. Every knob that can reorder or reseed a run
 # is pinned here instead of left to the runner's defaults, and each job copies
@@ -40,16 +60,34 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-22.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
 
+      # Caching here is pip's and npm's own download caches, not the installed
+      # environment: every job below still runs a real `pip install -e` into a
+      # fresh .venv and a real `npm ci`, so the lockfiles remain the only thing
+      # that decides which versions are used and a cache hit cannot change a
+      # resolution. What it removes is re-downloading the same wheels and
+      # tarballs in each of the eight jobs that need them.
+      #
+      # cache-dependency-path names apps/backend/pyproject.toml because
+      # `cache: pip` needs a file to key on and that is the file the install
+      # reads. The backend's dev extras are not fully pinned, so this key does
+      # not change when a floating dependency publishes — which is harmless,
+      # because pip's cache is keyed by artifact URL underneath and is still
+      # revalidated against the index.
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/backend/pyproject.toml
 
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
 
       - name: Install Python deps
         run: |
@@ -77,12 +115,15 @@ jobs:
   security-gate:
     name: Security Gate
     runs-on: ubuntu-22.04
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/backend/pyproject.toml
 
       # SECURITY_SCAN_VENV has to match on both steps. security_scan.sh reads
       # it to find its toolchain and provisions the venv itself when it is
@@ -117,6 +158,7 @@ jobs:
     # 16.2 testcontainer used by tests/conftest.py. Ubuntu 22.04's pg_dump 14
     # cannot dump that server and breaks the real snapshot tests.
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     # Docker is required, not optional: tests/conftest.py boots a TimescaleDB
     # testcontainer and sets CB_DB_URL from it BEFORE any app module is
     # imported, so there is no sqlite-only mode to fall back to. GitHub-hosted
@@ -163,6 +205,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/backend/pyproject.toml
 
       - name: Install PostgreSQL 16 client
         run: |
@@ -183,6 +227,8 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
 
       - name: Build frontend (route surface under test)
         run: cd apps/frontend && npm ci && npm run build
@@ -263,12 +309,15 @@ jobs:
     # evidence regardless, so nothing is lost by not running this.
     needs: backend-tests
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/backend/pyproject.toml
 
       - name: Install Python deps
         run: |
@@ -341,6 +390,7 @@ jobs:
   fresh-install-migrations:
     name: Fresh-install migrations
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16
@@ -365,6 +415,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/backend/pyproject.toml
 
       - name: Install Python deps
         run: |
@@ -436,12 +488,15 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-22.04
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
 
       - uses: actions/setup-go@v5
         with:
@@ -574,6 +629,7 @@ jobs:
   browser-e2e:
     name: Browser E2E (shard ${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-22.04
+    timeout-minutes: 45
     # Pinned to the Playwright image so rendering matches the container the
     # REL-18 visual baselines are generated in. A version skew between this tag
     # and the @playwright/test version in package.json shows up as
@@ -602,6 +658,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # No `cache: npm` here, unlike every other job. This one runs inside the
+      # Playwright container with HOME forced to /root (see above), so the npm
+      # cache directory the cache step would save is not the one the runner
+      # restores into on the next run, and the mismatch is silent — a cache
+      # that never hits costs an upload per shard and saves nothing. The
+      # container is the reason this job exists; keeping its dependency install
+      # honest is worth more than the cache.
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
@@ -656,3 +719,42 @@ jobs:
             artifacts/
           if-no-files-found: warn
           retention-days: 14
+
+  # ── Browser E2E aggregate ────────────────────────────────────────────────────
+  # The check-run name branch protection can actually require.
+  #
+  # `browser-e2e` is a matrix, so it produces no check named `Browser E2E` — it
+  # produces `Browser E2E (shard 1/2)` and `(shard 2/2)`. Requiring the bare
+  # name, which .github/branch-protection.md did, requires a check that is never
+  # reported: the rule matches nothing and contributes nothing. Requiring the
+  # two shard names instead works, but couples the branch settings to the shard
+  # count — changing `shard: [1, 2]` to `[1, 2, 3]` silently stops enforcing the
+  # third, because a required check that no longer exists blocks merges while a
+  # new one nobody required does not.
+  #
+  # This job is the stable name in front of that. It has no steps worth running;
+  # its value is entirely in `needs` and in the assertion below.
+  browser-e2e-gate:
+    name: Browser E2E
+    needs: browser-e2e
+    # Required, and the whole point. Without it this job is skipped whenever a
+    # shard fails, and GitHub counts a skipped required check as satisfied — so
+    # the aggregate would turn red shards green, which is worse than the naming
+    # bug it replaces. `always()` makes it run regardless, and the step decides.
+    if: always()
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Assert every Playwright shard passed
+        env:
+          # The matrix's combined result: `success` only when every leg
+          # succeeded, `failure` if any leg failed, and `skipped`/`cancelled`
+          # for the cases that must not read as a pass either.
+          SHARDS_RESULT: ${{ needs.browser-e2e.result }}
+        run: |
+          echo "browser-e2e matrix result: ${SHARDS_RESULT}"
+          if [ "${SHARDS_RESULT}" != "success" ]; then
+            echo "::error::browser E2E did not pass (matrix result: ${SHARDS_RESULT})"
+            exit 1
+          fi
+          echo "all Playwright shards passed"

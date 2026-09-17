@@ -11,9 +11,19 @@ on:
   # replaced them.
   pull_request:
     branches: [dev]
+  # Same reason as ci.yml: re-running the gate against a ref should not require
+  # pushing a commit to that ref.
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+# Same contract as ci.yml, including the deliberate asymmetry: pull-request runs
+# cancel their predecessors, pushes to `dev` do not, because a push run is the
+# only evidence that a merged commit was ever green.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # REL-20, first half: determinism. Same values and same reasoning as ci.yml —
 # PYTHONHASHSEED removes per-process hash salting as a source of run-to-run
@@ -30,16 +40,24 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-22.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
 
+      # pip's and npm's download caches only — the installs below are unchanged
+      # and the lockfiles still decide every version. ci.yml's `lint` job has
+      # the full reasoning, including why the key is pyproject.toml.
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/backend/pyproject.toml
 
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
 
       - name: Install Python deps
         run: |
@@ -71,6 +89,7 @@ jobs:
     # 16.2 testcontainer used by tests/conftest.py. Ubuntu 22.04's pg_dump 14
     # cannot dump that server and breaks the real snapshot tests.
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     # Docker is required, not optional: tests/conftest.py boots a TimescaleDB
     # testcontainer and sets CB_DB_URL from it BEFORE any app module is
     # imported, so there is no sqlite-only mode to fall back to. GitHub-hosted
@@ -117,6 +136,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/backend/pyproject.toml
 
       - name: Install PostgreSQL 16 client
         run: |
@@ -139,6 +160,8 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
 
       - name: Build frontend (route surface under test)
         run: cd apps/frontend && npm ci && npm run build
@@ -219,12 +242,15 @@ jobs:
     # evidence regardless, so nothing is lost by not running this.
     needs: backend-tests
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/backend/pyproject.toml
 
       - name: Install Python deps
         run: |
@@ -297,6 +323,7 @@ jobs:
   fresh-install-migrations:
     name: Fresh-install migrations
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16
@@ -321,6 +348,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/backend/pyproject.toml
 
       - name: Install Python deps
         run: |
@@ -392,12 +421,15 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-22.04
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
 
       - uses: actions/setup-go@v5
         with:
@@ -531,12 +563,15 @@ jobs:
   security-gate:
     name: Security Gate
     runs-on: ubuntu-22.04
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/backend/pyproject.toml
 
       # SECURITY_SCAN_VENV has to match on both steps. security_scan.sh reads
       # it to find its toolchain and provisions the venv itself when it is
@@ -569,16 +604,21 @@ jobs:
   build-native:
     name: Build Native (amd64)
     runs-on: ubuntu-22.04
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/backend/pyproject.toml
 
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
 
       - name: Derive version
         id: ver
@@ -619,6 +659,7 @@ jobs:
   build-docker:
     name: Build Docker (smoke test)
     runs-on: ubuntu-22.04
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
 
@@ -640,3 +681,355 @@ jobs:
         run: |
           docker run --rm --entrypoint sh "circuitbreaker:${CB_VERSION}" \
             -c 'test -s /opt/circuitbreaker/agent-binaries/manifest.json && ls /opt/circuitbreaker/agent-binaries'
+
+      # Everything below this line is the smoke test the job was named after and
+      # did not contain. Until now it built the image and asserted that one file
+      # existed inside it, which a `COPY` of an empty tree would also satisfy:
+      # the container was never started, so a broken entrypoint, a failed
+      # migration, a supervisord program that dies on boot, an nginx config that
+      # does not parse, or a frontend stage that produced no bundle all shipped
+      # as green. Each of those has a different symptom and none of them are
+      # visible from the outside of an unstarted image.
+      #
+      # This runs the image through docker-compose.yml rather than a hand-written
+      # `docker run`, because that file is what users are given and what
+      # install.sh uses. read_only, the tmpfs set, cap_drop/cap_add and the
+      # healthcheck are all part of what has to work; a bespoke `docker run` here
+      # would test an arrangement nobody deploys and would keep passing after
+      # compose stopped working.
+
+      # Ephemeral, per-run, never stored: the four values the compose file guards
+      # with ${VAR:?} and refuses to start without. token_hex for the three
+      # opaque ones, and a real Fernet key for the vault — urlsafe base64 of 32
+      # bytes, the same shape Fernet.generate_key() produces in
+      # services/vault_service.py, because the vault rejects anything else at
+      # startup and "container never became live" is a poor way to learn that.
+      #
+      # ::add-mask:: is registered before the values are written anywhere, so a
+      # later step that dumps the environment or a compose error that echoes a
+      # variable is redacted in the log rather than after the fact.
+      - name: Mint ephemeral secrets for the smoke run
+        env:
+          CB_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          hexgen() { python3 -c 'import secrets; print(secrets.token_hex(32))'; }
+          DB_PASSWORD="$(hexgen)"
+          JWT_SECRET="$(hexgen)"
+          NATS_TOKEN="$(hexgen)"
+          VAULT_KEY="$(python3 -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
+          for secret in "${DB_PASSWORD}" "${JWT_SECRET}" "${NATS_TOKEN}" "${VAULT_KEY}"; do
+            echo "::add-mask::${secret}"
+          done
+
+          # printf per line rather than a heredoc: the values are written
+          # verbatim with no chance of picking up the block's indentation.
+          umask 077
+          {
+            printf 'CB_DB_PASSWORD=%s\n' "${DB_PASSWORD}"
+            printf 'CB_JWT_SECRET=%s\n' "${JWT_SECRET}"
+            printf 'NATS_AUTH_TOKEN=%s\n' "${NATS_TOKEN}"
+            printf 'CB_VAULT_KEY=%s\n' "${VAULT_KEY}"
+            printf 'CB_IMAGE=circuitbreaker:%s\n' "${CB_VERSION}"
+            # Not 80/443: the runner already has services on the low ports, and
+            # a bind failure here would read as a container fault.
+            printf 'CB_PORT=%s\n' "18080"
+            printf 'CB_PORT_HTTPS=%s\n' "18443"
+            printf 'CB_DATA_DIR=%s\n' "${RUNNER_TEMP}/cb-smoke-data"
+          } > .env
+          echo "wrote .env with $(wc -l < .env) settings (values masked)"
+
+      - name: Start the image through docker-compose.yml
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/cb-smoke-data"
+          # No --build: the image under test is the one the step above tagged,
+          # and CB_IMAGE points compose at it. Letting compose build would test
+          # a second, differently-cached image.
+          docker compose -f docker-compose.yml up -d
+          docker compose -f docker-compose.yml ps
+
+      # The probe is character-for-character the one in the compose healthcheck
+      # and in Dockerfile.mono, including the grep. That is not redundancy: the
+      # :8080 server block 301-redirects anything it does not proxy, and
+      # `curl -f` treats a 301 as success, so a status-only probe passes against
+      # a container whose backend never started. Matching "alive" in the body is
+      # what makes this an assertion about the application.
+      - name: Wait for /livez
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            if curl -fsS --max-time 4 http://127.0.0.1:18080/api/v1/livez | grep -q '"alive"'; then
+              echo "live after ${attempt} attempt(s)"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::container never reported live within 300s"
+          exit 1
+
+      # Separate from /livez and with its own budget, because they fail for
+      # different reasons and the distinction is the diagnosis: live-but-never-
+      # ready is a dependency that did not come up — embedded Postgres, NATS,
+      # Redis or a migration that did not finish — while never-live is the
+      # application process itself. Dockerfile.mono deliberately healthchecks
+      # only /livez so a slow dependency cannot become a restart loop; that is
+      # the right call for the runtime and the wrong one for a gate, which is
+      # why readiness is asserted here instead.
+      - name: Wait for /readyz
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 36); do
+            code="$(curl -s -o /tmp/readyz.json -w '%{http_code}' --max-time 5 http://127.0.0.1:18080/api/v1/readyz || true)"
+            if [ "${code}" = "200" ]; then
+              echo "ready after ${attempt} attempt(s)"
+              cat /tmp/readyz.json
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::container never became ready within 180s; last /readyz body:"
+          cat /tmp/readyz.json 2>/dev/null || echo "(no response body)"
+          exit 1
+
+      # The frontend half. The backend can be live and ready in an image whose
+      # Alpine builder stage produced no bundle, and nothing else in this
+      # workflow would notice: nginx serves the SPA, so a 200 with HTML here is
+      # the assertion that the build stage and the nginx config agree about
+      # where the files are.
+      - name: Assert nginx serves the frontend
+        run: |
+          set -euo pipefail
+          code="$(curl -s -o /tmp/index.html -w '%{http_code}' --max-time 10 http://127.0.0.1:18080/)"
+          [ "${code}" = "200" ] || { echo "::error::GET / returned HTTP ${code}, expected 200"; exit 1; }
+          grep -qi '<div id="root"' /tmp/index.html \
+            || { echo "::error::GET / returned 200 but not the SPA shell"; head -c 400 /tmp/index.html; exit 1; }
+          echo "frontend served"
+
+      # supervisord is the only thing that knows whether the other twelve
+      # processes are alive. Every program in supervisord.mono.conf is
+      # long-running with autorestart=true, so FATAL, BACKOFF or EXITED all mean
+      # something died — and with the API answering on :8080, a dead telemetry
+      # or monitor worker is invisible to every probe above it.
+      - name: Assert every supervisord program is running
+        run: |
+          set -euo pipefail
+          # The same -c the entrypoint execs supervisord with. `|| true`
+          # because `supervisorctl status` exits non-zero when any program is
+          # not RUNNING, which is the case this step exists to report rather
+          # than to abort on — the assertions below read the output instead.
+          docker compose -f docker-compose.yml exec -T circuitbreaker \
+            supervisorctl -c /etc/supervisor/conf.d/supervisord.conf status \
+            | tee /tmp/supervisor-status.txt || true
+
+          # Guard the guard: with `|| true` above, an exec that failed outright
+          # leaves an empty file, and grepping an empty file for FATAL finds
+          # nothing and would pass. supervisord.mono.conf defines 13 programs
+          # and every one is long-running, so the line count is the check that
+          # this step saw the whole process table.
+          programs="$(grep -c . /tmp/supervisor-status.txt || echo 0)"
+          echo "supervisorctl reported ${programs} program(s)"
+          if [ "${programs}" -ne 13 ]; then
+            echo "::error::expected 13 supervisord programs, got ${programs} — supervisorctl did not report the full process table"
+            exit 1
+          fi
+          if grep -Eq '(FATAL|BACKOFF|EXITED)' /tmp/supervisor-status.txt; then
+            echo "::error::a supervisord program is not running"
+            exit 1
+          fi
+          echo "all supervisord programs running"
+
+      # A container that crashed and was restarted back into health passes every
+      # probe above. RestartCount is what separates "came up" from "kept coming
+      # up": restart is `unless-stopped`, so anything above zero is a boot the
+      # image did not survive.
+      - name: Assert the container never restarted
+        run: |
+          set -euo pipefail
+          restarts="$(docker inspect -f '{{.RestartCount}}' circuitbreaker)"
+          echo "RestartCount=${restarts}"
+          [ "${restarts}" = "0" ] || { echo "::error::container restarted ${restarts} time(s) during the smoke run"; exit 1; }
+
+      # `stop`, not `down`, and its own step: a container that ignores SIGTERM is
+      # stopped by SIGKILL ten seconds later, which users experience as a
+      # `docker compose down` that hangs and, with an embedded Postgres, as an
+      # unclean shutdown. Timing the stop is how that becomes visible here.
+      - name: Assert the container stops on SIGTERM
+        run: |
+          set -euo pipefail
+          start="${SECONDS}"
+          docker compose -f docker-compose.yml stop -t 30
+          elapsed="$(( SECONDS - start ))"
+          echo "stopped in ${elapsed}s"
+          [ "${elapsed}" -lt 30 ] || { echo "::error::container did not exit on SIGTERM; it was killed after ${elapsed}s"; exit 1; }
+
+      # if: always() — the run that most needs its logs is the one that failed
+      # before reaching the step that would have collected them.
+      - name: Collect container diagnostics
+        if: always()
+        run: |
+          mkdir -p artifacts/diagnostics
+          docker compose -f docker-compose.yml ps -a > artifacts/diagnostics/compose-ps.txt 2>&1 || true
+          docker compose -f docker-compose.yml logs --no-color --timestamps \
+            > artifacts/diagnostics/container.log 2>&1 || true
+          docker inspect circuitbreaker > artifacts/diagnostics/inspect.json 2>&1 || true
+          cp /tmp/supervisor-status.txt artifacts/diagnostics/ 2>/dev/null || true
+          cp /tmp/readyz.json artifacts/diagnostics/ 2>/dev/null || true
+
+      - name: Upload smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: docker-smoke-diagnostics
+          path: artifacts/diagnostics/
+          if-no-files-found: warn
+          retention-days: 14
+
+      # The .env holds four live secrets. They are ephemeral and single-run, but
+      # the workspace is not guaranteed to be discarded before another step
+      # reads it, and `docker compose down -v` needs the file to resolve the
+      # project. Teardown first, then remove it, always.
+      - name: Tear down and shred the smoke secrets
+        if: always()
+        run: |
+          docker compose -f docker-compose.yml down -v --remove-orphans || true
+          shred -u .env 2>/dev/null || rm -f .env
+          sudo rm -rf "${RUNNER_TEMP}/cb-smoke-data" || true
+
+  # ── Browser E2E ──────────────────────────────────────────────────────────────
+  # Ported from ci.yml, verbatim apart from this comment. It was main-only, so
+  # every UI regression reached `dev` unmeasured and was found by the `main` PR
+  # that carried a fortnight of them at once — the branch that receives the work
+  # is the branch where a bisect is cheap.
+  browser-e2e:
+    name: Browser E2E (shard ${{ matrix.shard }}/${{ strategy.job-total }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    # Pinned to the Playwright image so rendering matches the container the
+    # REL-18 visual baselines are generated in. A version skew between this tag
+    # and the @playwright/test version in package.json shows up as
+    # unexplainable screenshot diffs.
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.1-noble
+    # Steps in a container run as root, but the runner mounts its own home at
+    # /github/home and hands it to the job as $HOME — owned by the image's
+    # `pwuser`, not by root. Firefox refuses to start in that situation
+    # ("Running Nightly as root in a regular user's session is not supported"),
+    # which is why all 15 firefox specs failed to launch a browser at all while
+    # chromium, webkit and mobile-chrome passed. /root is root's own directory,
+    # so the ownership check succeeds. This is the workaround Playwright itself
+    # prints in the failure message. Nothing in this job needs $HOME to persist.
+    env:
+      HOME: /root
+    # REL-20: Playwright's --shard is deterministic by construction — it sorts
+    # the test list and slices it — so shard N holds the same specs on every
+    # run. Two shards, not four: each one still pays the production build in
+    # playwright.config.ts's webServer, so the split stops paying for itself
+    # quickly.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v5
+
+      # No `cache: npm` here, unlike every other job. This one runs inside the
+      # Playwright container with HOME forced to /root (see above), so the npm
+      # cache directory the cache step would save is not the one the runner
+      # restores into on the next run, and the mismatch is silent — a cache
+      # that never hits costs an upload per shard and saves nothing. The
+      # container is the reason this job exists; keeping its dependency install
+      # honest is worth more than the cache.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - name: Install frontend deps
+        run: cd apps/frontend && npm ci
+
+      - name: Record the run manifest
+        run: |
+          mkdir -p artifacts
+          {
+            echo "commit=${GITHUB_SHA}"
+            echo "workflow=${GITHUB_WORKFLOW}"
+            echo "job=browser-e2e"
+            echo "shard=${{ matrix.shard }}/${{ strategy.job-total }}"
+            echo "image=mcr.microsoft.com/playwright:v1.62.1-noble"
+            echo "node=$(node -v)"
+            echo "playwright=$(cd apps/frontend && npx playwright --version)"
+            echo "CB_TEST_SEED=${CB_TEST_SEED}"
+          } | tee artifacts/run-manifest.txt
+
+      # The visual-* projects carry the REL-18 baselines (committed 2026-08-19,
+      # see docs/testing-visual-baselines.md). They are separate projects so a
+      # stale baseline fails the visual gate and not the functional one;
+      # playwright.config.ts keeps visual.spec.ts out of the other four.
+      - name: Run Playwright suite
+        shell: bash
+        run: |
+          cd apps/frontend
+          npx playwright test \
+            --shard="${{ matrix.shard }}/${{ strategy.job-total }}" \
+            --project=chromium \
+            --project=firefox \
+            --project=webkit \
+            --project=mobile-chrome \
+            --project=visual-desktop \
+            --project=visual-mobile \
+            2>&1 | tee "${GITHUB_WORKSPACE}/artifacts/playwright.log"
+
+      # REL-20: a failed job must be diagnosable from retained artifacts alone.
+      # playwright.config.ts already writes the JUnit report and keeps traces,
+      # screenshots and video on failure; test-results/ is where those land, so
+      # the two paths below cover every artifact class this job produces.
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: playwright-report-shard-${{ matrix.shard }}
+          path: |
+            apps/frontend/playwright-report/
+            apps/frontend/test-results/
+            artifacts/
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ── Browser E2E aggregate ────────────────────────────────────────────────────
+  # The check-run name branch protection can actually require.
+  #
+  # `browser-e2e` is a matrix, so it produces no check named `Browser E2E` — it
+  # produces `Browser E2E (shard 1/2)` and `(shard 2/2)`. Requiring the bare
+  # name, which .github/branch-protection.md did, requires a check that is never
+  # reported: the rule matches nothing and contributes nothing. Requiring the
+  # two shard names instead works, but couples the branch settings to the shard
+  # count — changing `shard: [1, 2]` to `[1, 2, 3]` silently stops enforcing the
+  # third, because a required check that no longer exists blocks merges while a
+  # new one nobody required does not.
+  #
+  # This job is the stable name in front of that. It has no steps worth running;
+  # its value is entirely in `needs` and in the assertion below.
+  browser-e2e-gate:
+    name: Browser E2E
+    needs: browser-e2e
+    # Required, and the whole point. Without it this job is skipped whenever a
+    # shard fails, and GitHub counts a skipped required check as satisfied — so
+    # the aggregate would turn red shards green, which is worse than the naming
+    # bug it replaces. `always()` makes it run regardless, and the step decides.
+    if: always()
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Assert every Playwright shard passed
+        env:
+          # The matrix's combined result: `success` only when every leg
+          # succeeded, `failure` if any leg failed, and `skipped`/`cancelled`
+          # for the cases that must not read as a pass either.
+          SHARDS_RESULT: ${{ needs.browser-e2e.result }}
+        run: |
+          echo "browser-e2e matrix result: ${SHARDS_RESULT}"
+          if [ "${SHARDS_RESULT}" != "success" ]; then
+            echo "::error::browser E2E did not pass (matrix result: ${SHARDS_RESULT})"
+            exit 1
+          fi
+          echo "all Playwright shards passed"

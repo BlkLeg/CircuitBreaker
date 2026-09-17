@@ -27,8 +27,25 @@ Apply the following settings via GitHub Settings > Branch protection rules:
     - `Trivy Filesystem Scan` and `Trivy Config / IaC Scan` (`security.yml`) — the
       two jobs `trivy-scan` was presumably meant to name
     - `Fresh-install migrations`
-    - `Browser E2E`
+    - `Browser E2E` — the **aggregate** job (`browser-e2e-gate`), not the shards.
+      The Playwright job is a matrix, so it reports `Browser E2E (shard 1/2)` and
+      `(shard 2/2)` and never a check called `Browser E2E`: naming the bare string
+      here required a check that is never reported, which matches nothing and
+      enforces nothing. Naming the two shards instead would work until the shard
+      count changes, at which point the new shard is unrequired and silently
+      optional. `browser-e2e-gate` is `name: Browser E2E`, needs both shards, and
+      runs under `if: always()` so that a failed shard cannot skip it — a skipped
+      required check counts as satisfied, so the aggregate had to be written to
+      fail rather than to vanish. Until 2026-09-17 this suite ran on `main` only;
+      `dev-ci.yml` now runs the same matrix, so this check exists on both branches.
   - **Require branches to be up to date before merging**: ✓ Enabled
+  - Checks that exist on **one** branch only, and so cannot be required on both:
+    - `Build Native (amd64)` and `Build Docker (smoke test)` are `dev-ci.yml` only.
+      The second builds the mono image and then actually starts it through
+      `docker-compose.yml` — `/livez`, `/readyz`, the served frontend, every
+      supervisord program, restart count and SIGTERM shutdown. `main`'s
+      equivalent coverage is `release.yml` at tag time, which builds the image
+      per-architecture and calls `artifact-smoke.yml` for the packages.
 
 ### Administration
 - **Enforce all above rules for administrators**: ✓ Enabled
