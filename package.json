@@ -40,7 +40,7 @@
   },
   "lint-staged": {
     "*.{js,jsx,py}": "make lint",
-    "apps/**/tests/**": "echo '🚫 Tests blocked from prod paths' && exit 1"
+    "apps/backend/src/**/{tests/**,test_*.py,*_test.py,conftest.py}": "echo '🚫 Tests blocked from prod paths' && exit 1"
   },
   "dependencies": {
     "@lottiefiles/dotlottie-react": "^0.19.9"

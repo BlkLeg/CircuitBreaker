@@ -104,3 +104,26 @@ in the message — the diff is the review.
 `mobile-chrome`) a `testIgnore` for `visual.spec.ts`. Visual regression runs only under the
 dedicated `visual-desktop` and `visual-mobile` projects, so a stale baseline fails the visual gate
 and nothing else.
+
+## Running the browser suite locally
+
+```bash
+cd apps/frontend && npx playwright test --project=chromium
+```
+
+`playwright.config.ts` builds the app and serves it with `vite preview` on **4173**, and outside CI
+it reuses a server already listening there. That reuse saves a rebuild per run, but the port is a
+common default and the reuse is not fussy about *what* answers on it. If another program owns 4173,
+Playwright attaches to it and the whole suite runs against a different website — every spec fails in
+`waitForRouteSettled`, which reads exactly like the app being broken.
+
+`e2e/fixtures/assert-server-is-ours.ts` runs as `globalSetup` and refuses that case before any spec
+does, naming what actually answered. To run alongside whatever holds the port:
+
+```bash
+CB_E2E_PORT=4273 npx playwright test --project=chromium
+```
+
+Run `e2e/accessibility.spec.ts` with any change to roles or ARIA attributes. It is an axe gate for
+WCAG 2.2 AA, and it is what caught a `listbox` that contained per-row buttons — a `critical`
+`aria-required-children` violation that every unit test had passed.

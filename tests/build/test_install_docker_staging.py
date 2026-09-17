@@ -18,11 +18,12 @@ Two defects in stage_docker_deploy, both observable by running it:
     revision running as root. --version now pins the ref for the assets and
     CB_TAG for the image, so the three cannot disagree.
 
-stage_docker_deploy is run for real in a sandbox: docker, curl, systemctl and
-the secret generators are stubbed, everything else -- the mkdir, the umask, the
-cp, the appends, the branch on an existing .env -- is the shipped code. Modes
-are read off the filesystem rather than matched in the source, and the fetched
-URLs are read from the stub's log.
+stage_docker_deploy is run for real in a sandbox: docker, curl, systemctl, the
+secret generators and the `install`/`sudo` pair that writes /usr/local/bin/cb
+are stubbed, everything else -- the mkdir, the umask, the cp, the appends, the
+branch on an existing .env -- is the shipped code. Modes are read off the
+filesystem rather than matched in the source, and the fetched URLs are read
+from the stub's log.
 """
 
 from __future__ import annotations
@@ -71,6 +72,14 @@ cb_generate_secret_base64() { printf 'b64secret%s' "$1"; }
 cb_generate_secret_hex() { printf 'hexsecret%s' "$1"; }
 docker() { echo "docker $*" >> "$SANDBOX_HOME/docker.log"; }
 ip() { echo "1.1.1.1 via 10.0.0.1 dev eth0 src 10.0.0.2 uid 0"; }
+# The stage installs the host `cb` into /usr/local/bin and escalates with sudo
+# when it cannot write there. Both touch the host, so both are replaced --
+# `install` succeeds, exactly as it does for the root that CI runs as, and the
+# sudo fallback is therefore never reached. Left unstubbed the sudo blocks on a
+# password prompt on any developer host that asks for one, and the suite hangs
+# forever rather than failing.
+install() { echo "install $*" >> "$SANDBOX_HOME/install.log"; }
+sudo() { echo "sudo $*" >> "$SANDBOX_HOME/sudo.log"; }
 curl() {
   local dest="" url=""
   while [[ $# -gt 0 ]]; do
@@ -113,7 +122,7 @@ def stage(
     )
     env = dict(os.environ, SANDBOX_HOME=str(home))
     result = subprocess.run(
-        ["bash", "-c", script], capture_output=True, text=True, env=env
+        ["bash", "-c", script], capture_output=True, text=True, env=env, cwd=REPO_ROOT
     )
     if check:
         assert result.returncode == 0, result.stdout + result.stderr
@@ -134,6 +143,27 @@ def home(tmp_path):
         yield tmp_path
     finally:
         os.umask(previous)
+
+
+# --------------------------------------------------------------------------
+# The sandbox must stay a sandbox.
+# --------------------------------------------------------------------------
+
+
+def test_the_host_cb_is_never_really_installed(home):
+    """The stage writes /usr/local/bin/cb; in this suite it must only be logged.
+
+    `install` and `sudo` went unstubbed until 2026-09-17, so the shipped
+    `install … || sudo install …` reached a real sudo. On a host that prompts
+    for a password that call blocks forever, and `make verify-full` never
+    finished -- a hang rather than a failure, which is the harder of the two to
+    read. Assert the attempt is recorded and that it never escalated.
+    """
+    stage(home)
+
+    install_log = (home / "install.log").read_text()
+    assert "/usr/local/bin/cb" in install_log
+    assert not (home / "sudo.log").exists(), "the stage escalated to a real sudo"
 
 
 # --------------------------------------------------------------------------
@@ -359,7 +389,7 @@ def _run_function(
     script = "\n".join([HARNESS, overrides, _extract(name), call])
     env = dict(os.environ, SANDBOX_HOME=str(home))
     return subprocess.run(
-        ["bash", "-c", script], capture_output=True, text=True, env=env
+        ["bash", "-c", script], capture_output=True, text=True, env=env, cwd=REPO_ROOT
     )
 
 
