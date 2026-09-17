@@ -86,6 +86,19 @@ target has never reported this metric, it has stopped reporting recently enough,
 reporting with holes too large to evaluate across. Collapsing them into one "Unknown" chip
 would discard a distinction the evaluator went to real trouble to make.
 
+**Where a reason code can actually be read, established while planning.** `MetricAlertState`
+persists `assessment` and **no reason code** (`db/models/monitors.py:61-73`), and `_out`
+copies only `assessment` and `open_incident_id` (`metric_rules.py:58-62`). An
+`EvaluationDecision`'s reason is produced during evaluation and discarded. The only endpoint
+that returns one is the admin-only `/preview`, and it speaks about a *prospective* rule.
+
+So the rule list shows six assessments and no reasons, and it must not invent one: a row
+reading **Not evaluating** points at where the reason can be found rather than guessing
+between the three. The nine-code vocabulary is still built, because the editor's preview is
+where a reason arrives. Closing this properly is a backend change — a `reason_code` column on
+`MetricAlertState`, set in `persist_rule_transition` from the decision already in hand, and a
+field on `MetricAlertRuleOut` — and §3 puts that outside this design rather than inside it.
+
 ### 4.3 Validation, and what it implies for the form
 
 `metric_rules.py:34-56`, in order:
@@ -149,10 +162,18 @@ destination; `Tabs`, `Panel`, `Banner`, `EmptyState`, `Drawer`, `SkeletonTable` 
 ### 6.1 `lib/metricAlerts.js`
 
 `describeRuleState({ assessment, reason_code })` returns `{ tone, title, detail, guidance }`,
-following `lib/vulnerabilityAssessment.js`'s shape. **All nine reason codes carry guidance.**
-A reason code with none reaches the operator with an explanation and nothing to do about it
-— the defect fixed for `credential_unavailable` in notification delivery, and the one the
-Intel round reintroduced through `fleet_limit` before a test caught it.
+following `lib/vulnerabilityAssessment.js`'s shape. **Every reason code carries a title and a
+detail**, and guidance is required for the five an operator can act on — `disabled`,
+`no_samples`, `stale_samples`, `sample_gap`, `threshold_duration`.
+
+An earlier draft of this section demanded guidance for all nine. Four of them —
+`condition_not_met`, `recovered`, `recovery_duration`, `breach_duration` — describe normal
+operation, and inventing an action for a healthy state is the guessing
+`vulnerabilityAssessment.js` explicitly refuses ("an unknown code yields no guidance rather
+than a guess"). The test asserts description for all nine and guidance for the actionable
+five, which still catches the defect that motivated the rule: a reason reaching the operator
+with something to fix and no way to fix it, as `credential_unavailable` did in notification
+delivery and `fleet_limit` nearly did on Intel.
 
 The lib also mirrors §4.3's rules 1–4 client-side. Duplicating server validation is
 normally worth resisting; it is deliberate here, because the alternative is a form that
@@ -232,14 +253,15 @@ rule. The honesty belongs in the sentence, not in the friction.
 **Frontend**
 
 - `metric-alerts-lib.test.js` — every one of the six assessments has a title and tone;
-  **every one of the nine reason codes has non-null guidance** (the test that would have
-  caught `fleet_limit`); recovery-direction validation in both comparator directions;
-  unit and comparator derivation from a catalog fixture.
+  **every one of the nine reason codes has a detail, and each of the five actionable ones has
+  non-null guidance** (the test that would have caught `fleet_limit`); recovery-direction
+  validation in both comparator directions; unit and comparator derivation from a catalog
+  fixture.
 - `use-rule-preview.test.jsx` — debounce; a late response for superseded values is
   dropped; no request when client validation fails; no request for a non-admin.
-- `metric-alert-rules-panel.test.jsx` — each assessment renders its own chip; the three
-  `unknown` reason codes render three different explanations; empty state; admin versus
-  viewer controls; the delete confirm names an open incident when there is one.
+- `metric-alert-rules-panel.test.jsx` — each assessment renders its own chip; a row never
+  renders a reason the list endpoint did not return; empty state; admin versus viewer
+  controls; the delete confirm names an open incident when there is one.
 - `metric-alert-rule-editor.test.jsx` — catalog drives unit and comparators; recovery
   direction refused client-side; Enable inert with no available sink, with the link;
   a 409 keeps entered values; editing a firing rule warns before saving.
@@ -277,8 +299,9 @@ latency history" and gains threshold alerting.
 
 - [ ] An admin can create a rule against a hardware target and one of the five catalog
       metrics, and see it listed with its assessment.
-- [ ] Each of the six assessments renders distinctly, and the three `unknown` reason codes
-      read as three different problems.
+- [ ] Each of the six assessments renders distinctly. The three `unknown` reasons read as
+      three different problems **in the editor's preview** — the list cannot distinguish them
+      until `MetricAlertState` persists a reason code, which §4.2 records as a follow-up.
 - [ ] Adjusting a threshold re-previews within a second, and a superseded response can
       never overwrite a newer one.
 - [ ] A rule cannot be enabled with no live destination, and the page says why and where
