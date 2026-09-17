@@ -24,8 +24,9 @@ describe('NAV_GROUPS structure', () => {
     ]);
   });
 
-  it('holds all 21 destinations', () => {
-    expect(NAV_ITEMS_FLAT).toHaveLength(21);
+  it('holds all 22 destinations', () => {
+    // 22 since Parked Messages joined Observe (route F14's operator surface).
+    expect(NAV_ITEMS_FLAT).toHaveLength(22);
   });
 
   it('gives every item a path, icon, label and labelKey', () => {

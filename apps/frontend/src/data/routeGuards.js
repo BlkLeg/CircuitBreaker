@@ -38,6 +38,7 @@ export const ROUTE_GUARDS = {
   '/intel': null,
   '/logs': 'admin',
   '/logs/audit': 'admin',
+  '/logs/parked': 'admin',
   '/settings': 'editor',
   '/discovery': null,
   '/discovery/history': null,

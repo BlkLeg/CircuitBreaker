@@ -55,6 +55,33 @@ const DEFAULTS: Record<string, unknown> = {
   // missing them would render the table but lie about every rule's state. Two
   // rules so the scan sees a firing row with its incident handle and a
   // not-evaluating row with its hint, not one lonely Normal.
+  // Two parked rows so the scan sees an actionable row with its buttons and a
+  // resolved one with its stamp, rather than an empty state that exercises no
+  // table markup at all.
+  'failed-messages': [
+    {
+      id: 1,
+      stream: 'CB_MONITOR',
+      subject: 'monitor.result',
+      consumer: 'monitor-poll',
+      error: 'ValueError: expected a dict, got list',
+      delivered_count: 5,
+      parked_at: '2026-09-17T10:00:00Z',
+      requeued_at: null,
+      discarded_at: null,
+    },
+    {
+      id: 2,
+      stream: 'CB_DISCOVERY',
+      subject: 'discovery.enrich',
+      consumer: 'discovery-reconciler',
+      error: 'TimeoutError: enrichment did not answer in 30s',
+      delivered_count: 5,
+      parked_at: '2026-09-17T09:00:00Z',
+      requeued_at: '2026-09-17T09:30:00Z',
+      discarded_at: null,
+    },
+  ],
   'monitors/alert-rules': [
     {
       id: 1,

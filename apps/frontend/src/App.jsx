@@ -60,6 +60,10 @@ const ComputeUnitsPage = lazyRoute('ComputeUnitsPage', () => import('./pages/Com
 const ServicesPage = lazyRoute('ServicesPage', () => import('./pages/ServicesPage'));
 const StoragePage = lazyRoute('StoragePage', () => import('./pages/StoragePage'));
 const LogsPage = lazyRoute('LogsPage', () => import('./pages/LogsPage'));
+const ParkedMessagesPage = lazyRoute(
+  'ParkedMessagesPage',
+  () => import('./pages/ParkedMessagesPage')
+);
 const ExternalNodesPage = lazyRoute('ExternalNodesPage', () => import('./pages/ExternalNodesPage'));
 const AdminUsersPage = lazyRoute('AdminUsersPage', () => import('./pages/AdminUsersPage'));
 const AccessTokensPage = lazyRoute('AccessTokensPage', () => import('./pages/AccessTokensPage'));
@@ -282,6 +286,14 @@ export function AppInner() {
                     element={
                       <Guarded path="/logs/audit">
                         <LogsPage auditMode />
+                      </Guarded>
+                    }
+                  />
+                  <Route
+                    path="/logs/parked"
+                    element={
+                      <Guarded path="/logs/parked">
+                        <ParkedMessagesPage />
                       </Guarded>
                     }
                   />

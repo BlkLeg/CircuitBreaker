@@ -572,6 +572,16 @@ export const cveApi = {
   status: () => client.get('/cve/status'),
 };
 
+// Parked JetStream work (route F14). All three routes are admin-only. The list
+// deliberately carries no payload -- api/failed_messages.py keeps the raw bytes
+// out of the response because a message that parked for being malformed has no
+// encoding that is both honest and safe to hand a browser.
+export const failedMessagesApi = {
+  list: (params) => client.get('/failed-messages', { params }),
+  requeue: (id) => client.post(`/failed-messages/${id}/requeue`),
+  discard: (id) => client.post(`/failed-messages/${id}/discard`),
+};
+
 export const capabilitiesApi = {
   get: () => client.get('/capabilities'),
 };

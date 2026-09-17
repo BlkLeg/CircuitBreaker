@@ -88,6 +88,19 @@ test.describe('WCAG 2.2 AA — Monitors console', () => {
   }
 });
 
+// Parked messages is route F14's operator surface: a table with per-row actions,
+// a resolved-row toggle and a confirm dialog, none of which the unit tests see
+// rendered. It is admin-only, like the /logs siblings it sits beside.
+test.describe('WCAG 2.2 AA — Parked messages', () => {
+  test('/logs/parked has no serious or critical violations', async ({ page }) => {
+    await stubApi(page);
+    await page.goto('/logs/parked');
+    await expect(page.locator('.page-content')).toBeVisible();
+    await waitForRouteSettled(page);
+    await scanSettled(page, '/logs/parked');
+  });
+});
+
 // The navigator is the densest secondary-text surface in the app -- group
 // labels, per-row descriptions, category filters, footer hints -- and none of it
 // was ever scanned, because every page above is captured with the overlay shut.
