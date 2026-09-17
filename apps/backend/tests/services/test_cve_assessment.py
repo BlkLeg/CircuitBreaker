@@ -5,9 +5,13 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db.cve_models import CVECacheBase, CVEFeedGeneration
 from app.db.models import Hardware
-from app.schemas.cve import IdentityPatch
+from app.schemas.cve import AssessmentIdentity, FeedState, IdentityPatch
 from app.services.intelligence.cve_assessment import (
     assess_entity,
+    assess_identity,
+    evaluate_candidates,
+    get_feed_state,
+    readiness_result,
     resolve_assessment_identity,
     update_assessment_identity,
 )
@@ -199,3 +203,72 @@ def test_failed_refresh_does_not_replace_previous_complete_generation():
     from app.services.intelligence.cve_feed import active_feed_generation
 
     assert active_feed_generation(cache).id == complete.id
+
+
+def _ready_feed():
+    return FeedState(
+        state="ready",
+        reason_code="ready",
+        generation="gen-1",
+        completed_at=datetime.now(UTC),
+        age_seconds=60,
+        total_records=1,
+        coverage_complete=True,
+    )
+
+
+def _identity(**over):
+    base = {
+        "vendor": "acme",
+        "product": "widget",
+        "version": "1.9",
+        "version_scheme": "dotted_numeric",
+        "provenance": "inventory",
+        "revision": 0,
+    }
+    base.update(over)
+    return AssessmentIdentity(**base)
+
+
+def test_readiness_returns_none_when_matching_must_run():
+    assert readiness_result(_identity(), _ready_feed(), datetime.now(UTC)) is None
+
+
+def test_readiness_decides_a_missing_product_without_touching_the_cache():
+    result = readiness_result(_identity(product=None), _ready_feed(), datetime.now(UTC))
+
+    assert result is not None
+    assert result.state == "unassessed"
+    assert result.reason_code == "identity_missing"
+
+
+def test_evaluate_candidates_reports_a_caller_supplied_candidate_limit():
+    result = evaluate_candidates(
+        [], _identity(), _ready_feed(), datetime.now(UTC), candidate_limited=True
+    )
+
+    assert result.state == "partial"
+    assert result.reason_code == "candidate_limit"
+    assert "Candidate limit reached; coverage is partial." in result.limitations
+
+
+def test_assess_identity_matches_the_same_finding_assess_entity_does(db_session):
+    db = db_session
+    hardware = Hardware(name="host", vendor="acme", model="widget", os_version="1.9")
+    db.add(hardware)
+    db.commit()
+    cache = _cache_session()
+    generation = start_feed_generation(cache)
+    ingest_feed_page(cache, generation, [_nvd_record()])
+    complete_feed_generation(cache, generation, total_records=1)
+    cache.commit()
+
+    entity_result = assess_entity(db, cache, "hardware", hardware.id)
+    identity = resolve_assessment_identity(db, "hardware", hardware.id)
+    feed = get_feed_state(cache, None, entity_result.assessed_at)
+    identity_result = assess_identity(cache, identity, feed, entity_result.assessed_at)
+
+    assert entity_result.state == identity_result.state
+    assert [f.cve_id for f in entity_result.findings] == [
+        f.cve_id for f in identity_result.findings
+    ]

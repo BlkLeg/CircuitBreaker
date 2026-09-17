@@ -183,22 +183,21 @@ def get_feed_state(
     )
 
 
-def assess_entity(
-    app_db: Session,
-    cache_db: Session,
-    entity_type: str,
-    entity_id: int,
-    *,
-    now: datetime | None = None,
-) -> AssessmentResult:
-    assessed_at = now or datetime.now(UTC)
-    identity = resolve_assessment_identity(app_db, entity_type, entity_id)
-    settings = app_db.query(AppSettings).first()
-    feed = get_feed_state(cache_db, settings, assessed_at)
-    if feed.state in {"unavailable", "incomplete"}:
+def readiness_result(
+    identity: AssessmentIdentity,
+    feed: FeedState,
+    assessed_at: datetime,
+) -> AssessmentResult | None:
+    """Return the assessment readiness alone decides, or None to run matching.
+
+    Split out so the fleet pass and the per-entity path apply identical
+    readiness rules without one of them re-deriving them.
+    """
+
+    def _blocked(state: str, reason: str, limitation: str) -> AssessmentResult:
         return AssessmentResult(
-            state="unavailable",
-            reason_code=feed.reason_code,  # type: ignore[arg-type]
+            state=state,  # type: ignore[arg-type]
+            reason_code=reason,  # type: ignore[arg-type]
             identity=identity,
             identity_revision=identity.revision,
             feed_generation=feed.generation,
@@ -207,68 +206,49 @@ def assess_entity(
             findings=[],
             total=0,
             completeness="none",
-            limitations=["A complete vulnerability feed is not available."],
-        )
-    if not identity.product:
-        return AssessmentResult(
-            state="unassessed",
-            reason_code="identity_missing",
-            identity=identity,
-            identity_revision=identity.revision,
-            feed_generation=feed.generation,
-            feed_age_seconds=feed.age_seconds,
-            assessed_at=assessed_at,
-            findings=[],
-            total=0,
-            completeness="none",
-            limitations=["A product identity is required before matching."],
-        )
-    if not identity.version:
-        return AssessmentResult(
-            state="unassessed",
-            reason_code="version_missing",
-            identity=identity,
-            identity_revision=identity.revision,
-            feed_generation=feed.generation,
-            feed_age_seconds=feed.age_seconds,
-            assessed_at=assessed_at,
-            findings=[],
-            total=0,
-            completeness="none",
-            limitations=["A product version is required before matching."],
-        )
-    if not identity.version_scheme:
-        return AssessmentResult(
-            state="unassessed",
-            reason_code="version_unsupported",
-            identity=identity,
-            identity_revision=identity.revision,
-            feed_generation=feed.generation,
-            feed_age_seconds=feed.age_seconds,
-            assessed_at=assessed_at,
-            findings=[],
-            total=0,
-            completeness="none",
-            limitations=["This version format does not have a supported comparator."],
+            limitations=[limitation],
         )
 
-    query = (
-        cache_db.query(CVENormalizedRecord)
-        .join(CVEApplicability)
-        .filter(CVENormalizedRecord.generation_id == feed.generation)
-        .filter(func.lower(CVEApplicability.product) == identity.product.casefold())
-    )
-    if identity.vendor:
-        query = query.filter(func.lower(CVEApplicability.vendor) == identity.vendor.casefold())
-    candidates = (
-        query.options(selectinload(CVENormalizedRecord.applicability))
-        .order_by(CVENormalizedRecord.cvss_score.desc().nullslast())
-        .distinct()
-        .limit(MAX_CANDIDATES + 1)
-        .all()
-    )
-    candidate_limited = len(candidates) > MAX_CANDIDATES
-    candidates = candidates[:MAX_CANDIDATES]
+    if feed.state in {"unavailable", "incomplete"}:
+        return _blocked(
+            "unavailable",
+            feed.reason_code,
+            "A complete vulnerability feed is not available.",
+        )
+    if not identity.product:
+        return _blocked(
+            "unassessed",
+            "identity_missing",
+            "A product identity is required before matching.",
+        )
+    if not identity.version:
+        return _blocked(
+            "unassessed",
+            "version_missing",
+            "A product version is required before matching.",
+        )
+    if not identity.version_scheme:
+        return _blocked(
+            "unassessed",
+            "version_unsupported",
+            "This version format does not have a supported comparator.",
+        )
+    return None
+
+
+def evaluate_candidates(
+    candidates: list[CVENormalizedRecord],
+    identity: AssessmentIdentity,
+    feed: FeedState,
+    assessed_at: datetime,
+    *,
+    candidate_limited: bool = False,
+) -> AssessmentResult:
+    """Evaluate already-selected candidates against one identity.
+
+    `candidate_limited` is supplied by the caller because the fleet pass caps
+    candidates in SQL, per product, rather than per query.
+    """
     findings: list[VulnerabilityFinding] = []
     limitations: set[str] = set()
     unknown = False
@@ -322,3 +302,55 @@ def assess_entity(
         completeness="partial" if partial else "complete",
         limitations=sorted(limitations),
     )
+
+
+def assess_identity(
+    cache_db: Session,
+    identity: AssessmentIdentity,
+    feed: FeedState,
+    assessed_at: datetime,
+) -> AssessmentResult:
+    """Assess one identity, selecting its own candidates."""
+    blocked = readiness_result(identity, feed, assessed_at)
+    if blocked is not None:
+        return blocked
+    assert identity.product is not None  # readiness_result guarantees it
+    query = (
+        cache_db.query(CVENormalizedRecord)
+        .join(CVEApplicability)
+        .filter(CVENormalizedRecord.generation_id == feed.generation)
+        .filter(func.lower(CVEApplicability.product) == identity.product.casefold())
+    )
+    if identity.vendor:
+        query = query.filter(func.lower(CVEApplicability.vendor) == identity.vendor.casefold())
+    candidates = (
+        query.options(selectinload(CVENormalizedRecord.applicability))
+        .order_by(CVENormalizedRecord.cvss_score.desc().nullslast())
+        .distinct()
+        .limit(MAX_CANDIDATES + 1)
+        .all()
+    )
+    candidate_limited = len(candidates) > MAX_CANDIDATES
+    return evaluate_candidates(
+        candidates[:MAX_CANDIDATES],
+        identity,
+        feed,
+        assessed_at,
+        candidate_limited=candidate_limited,
+    )
+
+
+def assess_entity(
+    app_db: Session,
+    cache_db: Session,
+    entity_type: str,
+    entity_id: int,
+    *,
+    now: datetime | None = None,
+) -> AssessmentResult:
+    """Assess one entity: resolve its identity, then match."""
+    assessed_at = now or datetime.now(UTC)
+    identity = resolve_assessment_identity(app_db, entity_type, entity_id)
+    settings = app_db.query(AppSettings).first()
+    feed = get_feed_state(cache_db, settings, assessed_at)
+    return assess_identity(cache_db, identity, feed, assessed_at)
