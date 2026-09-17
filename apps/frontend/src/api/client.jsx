@@ -669,6 +669,19 @@ export const notificationsApi = {
   deleteRoute: (id) => client.delete(`/notifications/routes/${id}`),
 };
 
+// Metric alert rules. Mounted at /monitors/alert-rules (api/routing.py:419-424);
+// create, update, delete and preview are admin-only, list and get are not.
+export const metricAlertsApi = {
+  catalog: () => client.get('/monitors/alert-rules/catalog'),
+  list: () => client.get('/monitors/alert-rules'),
+  get: (id) => client.get(`/monitors/alert-rules/${id}`),
+  create: (data) => client.post('/monitors/alert-rules', data),
+  update: (id, data) => client.put(`/monitors/alert-rules/${id}`, data),
+  remove: (id) => client.delete(`/monitors/alert-rules/${id}`),
+  preview: (rule, windowSeconds) =>
+    client.post('/monitors/alert-rules/preview', { rule, window_seconds: windowSeconds }),
+};
+
 export const deviceRolesApi = {
   list: () => client.get('/settings/roles').then((r) => r.data),
   create: (data) => client.post('/settings/roles', data).then((r) => r.data),
