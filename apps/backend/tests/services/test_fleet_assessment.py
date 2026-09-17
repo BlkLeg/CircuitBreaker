@@ -1,3 +1,4 @@
+import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
@@ -20,6 +21,15 @@ from app.services.intelligence.fleet_assessment import (
     resolve_fleet_identities,
     select_candidates,
 )
+from app.services.intelligence.fleet_cache import clear_identity_cache
+
+
+@pytest.fixture(autouse=True)
+def _clean_identity_cache():
+    """A memo that survived between tests would make them pass in isolation only."""
+    clear_identity_cache()
+    yield
+    clear_identity_cache()
 
 
 def _cache_session():

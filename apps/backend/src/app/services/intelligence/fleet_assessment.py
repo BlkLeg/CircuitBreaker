@@ -39,6 +39,11 @@ from app.services.intelligence.cve_assessment import (
     readiness_result,
 )
 from app.services.intelligence.cve_matching import infer_version_scheme
+from app.services.intelligence.fleet_cache import (
+    cached_outcome,
+    identity_cache_key,
+    remember_outcome,
+)
 
 IdentityKey = tuple[str | None, str | None, str | None, str | None]
 
@@ -355,12 +360,25 @@ def assess_fleet(
         if blocked is not None:
             result = blocked
         else:
-            candidates, limited = candidates_for(pool, identity)
-            if limited and identity.product:
-                capped_products.add(identity.product)
-            result = evaluate_candidates(
-                candidates, identity, feed, assessed_at, candidate_limited=limited
+            cache_key = (
+                identity_cache_key(feed.generation, feed.state, key)
+                if feed.generation is not None
+                else None
             )
+            cached = cached_outcome(cache_key) if cache_key is not None else None
+            if cached is not None:
+                result = cached.model_copy(
+                    update={"assessed_at": assessed_at, "feed_age_seconds": feed.age_seconds}
+                )
+            else:
+                candidates, limited = candidates_for(pool, identity)
+                if limited and identity.product:
+                    capped_products.add(identity.product)
+                result = evaluate_candidates(
+                    candidates, identity, feed, assessed_at, candidate_limited=limited
+                )
+                if cache_key is not None:
+                    remember_outcome(cache_key, result)
         for entity in members:
             rows.append(_row(entity, result))
     for key in deferred_keys:
