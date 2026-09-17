@@ -321,10 +321,18 @@ panel additionally reports the newest `evaluated_at` among the rows it did recei
 
 ### 9.1 Backend
 
-`tests/intelligence/test_fleet_assessment.py`:
+`tests/services/test_fleet_assessment.py` (beside the existing `test_cve_assessment.py`):
 
 - **Parity** — for every entity, the fleet row's state and reason equal `assess_entity`'s for
   that entity. This is what keeps §4.3's split honest permanently.
+
+  **Scope, established while planning:** the per-entity query applies its vendor filter in SQL
+  before its `LIMIT`, while the batched query caps per `(vendor, product)` pair. For any pair
+  under the cap both select the same candidates and parity is exact. For a pair *at* the cap
+  both paths report `candidate_limit` and neither claims completeness, but their candidate sets
+  may differ. The parity test therefore asserts exact equality for uncapped identities and
+  equality of the `candidate_limit` signal for capped ones. Asserting identical findings for a
+  capped pair would be asserting something untrue.
 - **Batching** — N entities over M distinct identities issue **one** candidate query and call
   `evaluate_candidates` exactly M times, asserted with a spy and a query counter.
 - **Per-product cap** — a product with more than `MAX_CANDIDATES` candidates does not starve
