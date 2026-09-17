@@ -101,6 +101,23 @@ test.describe('WCAG 2.2 AA — Parked messages', () => {
   });
 });
 
+// The two largest, least-designed pages in the app, and the two nobody measured:
+// neither /logs nor /admin/users was ever in PAGES, which is how inline styles
+// that dim text below the palette's AA floor survived the contrast work. Both
+// need populated fixtures -- an empty table exercises none of the row markup
+// where their colour and legibility decisions actually live.
+test.describe('WCAG 2.2 AA — unmeasured pages', () => {
+  for (const path of ['/logs', '/admin/users']) {
+    test(`${path} has no serious or critical violations`, async ({ page }) => {
+      await stubApi(page);
+      await page.goto(path);
+      await expect(page.locator('.page-content')).toBeVisible();
+      await waitForRouteSettled(page);
+      await scanSettled(page, path);
+    });
+  }
+});
+
 // The navigator is the densest secondary-text surface in the app -- group
 // labels, per-row descriptions, category filters, footer hints -- and none of it
 // was ever scanned, because every page above is captured with the overlay shut.

@@ -25,13 +25,31 @@ import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 
+// All three are theme tokens. `admin` was a hardcoded #3b82f6, which axe
+// measured at 2.73:1 against the surface on the default palette and which no
+// theme could correct.
 const ROLE_COLORS = {
-  admin: '#3b82f6',
+  admin: 'var(--color-info)',
   editor: 'var(--color-primary)',
   viewer: 'var(--color-text-muted)',
 };
 
+/**
+ * A role, told by colour and readable regardless of it.
+ *
+ * The label was drawn in the role's own colour at 11px, which axe measured at
+ * 2.73:1 — and no palette fixes that, because an accent chosen to stand out
+ * against a surface is not chosen to be read at small sizes against it. Even
+ * --color-info only reached 3.73:1 here.
+ *
+ * So the colour moves to the background tint and the left edge, where contrast
+ * is decoration, and the text takes --color-text, which deriveReadableText
+ * floors to AA against every surface it can land on. The roles stay
+ * distinguishable at a glance and the word stays legible — and the distinction
+ * no longer rests on colour alone, which it should not have anyway.
+ */
 function RoleBadge({ role }) {
+  const accent = ROLE_COLORS[role] || ROLE_COLORS.viewer;
   return (
     <span
       style={{
@@ -39,8 +57,12 @@ function RoleBadge({ role }) {
         fontWeight: 600,
         padding: '2px 8px',
         borderRadius: 4,
-        background: `${ROLE_COLORS[role] || ROLE_COLORS.viewer}22`,
-        color: ROLE_COLORS[role] || ROLE_COLORS.viewer,
+        // color-mix rather than appending "22": alpha-hex concatenation only
+        // works on a hex literal, so `var(--color-primary)22` was invalid CSS
+        // and the editor and viewer badges had no background at all.
+        background: `color-mix(in srgb, ${accent} 18%, transparent)`,
+        borderLeft: `3px solid ${accent}`,
+        color: 'var(--color-text)',
         textTransform: 'capitalize',
       }}
     >

@@ -55,6 +55,106 @@ const DEFAULTS: Record<string, unknown> = {
   // missing them would render the table but lie about every rule's state. Two
   // rules so the scan sees a firing row with its incident handle and a
   // not-evaluating row with its hint, not one lonely Normal.
+  // /logs returns an object, not a list: LogsPage reads res.data.logs and
+  // res.data.total_count, so the catch-all's [] would leave `logs` undefined and
+  // the page would render nothing worth scanning. Entries span severities
+  // because the severity chips, the uppercase level label and the diff table
+  // header are where this page's colour and legibility decisions live.
+  logs: {
+    total_count: 3,
+    logs: [
+      {
+        id: 1,
+        timestamp: '2026-09-17T10:00:00Z',
+        created_at_utc: '2026-09-17T10:00:00Z',
+        action: 'hardware.update',
+        actor: 'operator@example.test',
+        actor_name: 'Operator',
+        role_at_time: 'admin',
+        entity_type: 'hardware',
+        entity_id: 12,
+        entity_name: 'nas-01',
+        severity: 'info',
+        status_code: 200,
+        ip_address: '192.0.2.10',
+        details: 'Renamed from nas-1',
+        elapsed_seconds: 0.12,
+      },
+      {
+        id: 2,
+        timestamp: '2026-09-17T09:45:00Z',
+        created_at_utc: '2026-09-17T09:45:00Z',
+        action: 'auth.login_failed',
+        actor: 'unknown',
+        actor_name: null,
+        role_at_time: null,
+        entity_type: 'user',
+        entity_id: 3,
+        entity_name: 'someone@example.test',
+        severity: 'warn',
+        status_code: 401,
+        ip_address: '198.51.100.7',
+        details: 'Invalid credentials',
+        elapsed_seconds: 0.03,
+      },
+      {
+        id: 3,
+        timestamp: '2026-09-17T09:30:00Z',
+        created_at_utc: '2026-09-17T09:30:00Z',
+        action: 'vault.rotate_failed',
+        actor: 'system',
+        actor_name: 'System',
+        role_at_time: null,
+        entity_type: 'vault',
+        entity_id: 1,
+        entity_name: 'primary',
+        severity: 'error',
+        status_code: 500,
+        ip_address: null,
+        details: 'Rotation aborted',
+        elapsed_seconds: 1.4,
+      },
+    ],
+  },
+
+  // Roles differ across rows because the role control and the lock/disable
+  // affordances are per-row, and an empty table exercises none of them.
+  'admin/users': [
+    {
+      id: 1,
+      email: 'operator@example.test',
+      display_name: 'Operator',
+      role: 'admin',
+      is_active: true,
+      last_login: '2026-09-17T09:00:00Z',
+      locked_until: null,
+      session_count: 2,
+      gravatar_hash: null,
+    },
+    {
+      id: 2,
+      email: 'viewer@example.test',
+      display_name: 'Viewer',
+      role: 'viewer',
+      is_active: true,
+      last_login: '2026-09-16T08:00:00Z',
+      locked_until: null,
+      session_count: 0,
+      gravatar_hash: null,
+    },
+    {
+      id: 3,
+      email: 'locked@example.test',
+      display_name: 'Locked Out',
+      role: 'editor',
+      is_active: false,
+      last_login: null,
+      locked_until: '2026-09-18T00:00:00Z',
+      session_count: 0,
+      gravatar_hash: null,
+    },
+  ],
+
   // Two parked rows so the scan sees an actionable row with its buttons and a
   // resolved one with its stamp, rather than an empty state that exercises no
   // table markup at all.
