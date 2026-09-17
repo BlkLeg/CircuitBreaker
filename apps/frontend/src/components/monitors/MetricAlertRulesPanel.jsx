@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 import Banner from '../common/Banner';
 import ConfirmDialog from '../common/ConfirmDialog';
 import EmptyState from '../common/EmptyState';
@@ -98,7 +99,12 @@ function MetricAlertRulesPanel() {
         <Banner
           tone="warn"
           title="No notification destination is available"
-          body="A rule can be created and saved, but it cannot be enabled until an enabled destination exists in Settings → Notifications."
+          body="A rule can be created and saved, but it cannot be enabled until an enabled destination exists."
+          actions={
+            <Link className="btn btn-sm" to="/settings?tab=integrations">
+              Notification destinations
+            </Link>
+          }
         />
       )}
 

@@ -80,10 +80,10 @@ telemetry, not a prediction of the future, and it sends nothing.
 ## Enabling a rule and destinations
 
 Rules are created disabled. An **enabled** rule needs a notification
-destination that exists and is enabled — Settings → Notifications owns
+destination that exists and is enabled — **Settings → Integrations** owns
 destinations; a rule only points at one. Until an enabled destination exists,
-a rule can be built and saved but the Enabled control stays inert and says
-where to fix it.
+a rule can be built and saved but the Enabled control stays inert, and both the
+Alert rules tab and the editor link straight to the page that creates one.
 
 ## Two silences worth knowing
 

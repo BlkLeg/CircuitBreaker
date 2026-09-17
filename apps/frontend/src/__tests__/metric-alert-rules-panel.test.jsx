@@ -1,6 +1,7 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 
 const { mockUser } = vi.hoisted(() => ({ mockUser: { value: { role: 'admin' } } }));
 vi.mock('../context/AuthContext', () => ({ useAuth: () => ({ user: mockUser.value }) }));
@@ -46,6 +47,13 @@ const rule = (over = {}) => ({
   ...over,
 });
 
+const renderPanel = () =>
+  render(
+    <MemoryRouter>
+      <MetricAlertRulesPanel />
+    </MemoryRouter>
+  );
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockUser.value = { role: 'admin' };
@@ -69,13 +77,13 @@ beforeEach(() => {
 
 describe('MetricAlertRulesPanel', () => {
   it('shows a skeleton while loading', () => {
-    render(<MetricAlertRulesPanel />);
+    renderPanel();
 
     expect(screen.getByTestId('rules-loading')).toBeInTheDocument();
   });
 
   it('names the rule and the condition it watches', async () => {
-    render(<MetricAlertRulesPanel />);
+    renderPanel();
 
     await waitFor(() => expect(screen.getByText('CPU hot')).toBeInTheDocument());
     expect(screen.getByTestId('rule-condition-1')).toHaveTextContent('CPU utilization');
@@ -87,7 +95,7 @@ describe('MetricAlertRulesPanel', () => {
       data: [rule({ assessment: 'normal', reason_code: 'condition_not_met' })],
     });
 
-    render(<MetricAlertRulesPanel />);
+    renderPanel();
 
     await waitFor(() => expect(screen.getByText('Normal')).toBeInTheDocument());
     expect(screen.getByTestId('rule-reason-1')).toHaveTextContent(/safe side of the threshold/i);
@@ -102,7 +110,7 @@ describe('MetricAlertRulesPanel', () => {
       ],
     });
 
-    render(<MetricAlertRulesPanel />);
+    renderPanel();
 
     await waitFor(() => expect(screen.getByText('Firing')).toBeInTheDocument());
     expect(screen.getByText('Pending')).toBeInTheDocument();
@@ -118,7 +126,7 @@ describe('MetricAlertRulesPanel', () => {
       ],
     });
 
-    render(<MetricAlertRulesPanel />);
+    renderPanel();
 
     await waitFor(() => expect(screen.getByTestId('rule-reason-1')).toBeInTheDocument());
     const details = [1, 2, 3].map((id) => screen.getByTestId(`rule-reason-${id}`).textContent);
@@ -128,7 +136,7 @@ describe('MetricAlertRulesPanel', () => {
   it('says a rule has not been evaluated yet rather than inventing a reason', async () => {
     list.mockResolvedValue({ data: [rule({ assessment: 'unknown', reason_code: null })] });
 
-    render(<MetricAlertRulesPanel />);
+    renderPanel();
 
     await waitFor(() => expect(screen.getByText('Not evaluating')).toBeInTheDocument());
     expect(screen.getByTestId('rule-reason-1')).toHaveTextContent(/not been evaluated yet/i);
@@ -142,7 +150,7 @@ describe('MetricAlertRulesPanel', () => {
       data: [rule({ assessment: 'unknown', reason_code: 'stale_samples' })],
     });
 
-    render(<MetricAlertRulesPanel />);
+    renderPanel();
 
     await waitFor(() => expect(screen.getByText('Not evaluating')).toBeInTheDocument());
     expect(screen.getByTestId('rule-reason-1')).toHaveTextContent(/stopped reporting/i);
@@ -151,7 +159,7 @@ describe('MetricAlertRulesPanel', () => {
   it('hides every write control from a viewer', async () => {
     mockUser.value = { role: 'viewer' };
 
-    render(<MetricAlertRulesPanel />);
+    renderPanel();
 
     await waitFor(() => expect(screen.getByText('CPU hot')).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: /new rule/i })).not.toBeInTheDocument();
@@ -162,7 +170,7 @@ describe('MetricAlertRulesPanel', () => {
   it('warns that deleting a firing rule takes its open incident with it', async () => {
     list.mockResolvedValue({ data: [rule({ assessment: 'firing', open_incident_id: 'inc-1' })] });
 
-    render(<MetricAlertRulesPanel />);
+    renderPanel();
     await waitFor(() => expect(screen.getByText('CPU hot')).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
@@ -171,7 +179,7 @@ describe('MetricAlertRulesPanel', () => {
   });
 
   it('asks plainly before deleting a rule with no open incident', async () => {
-    render(<MetricAlertRulesPanel />);
+    renderPanel();
     await waitFor(() => expect(screen.getByText('CPU hot')).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
@@ -191,7 +199,7 @@ describe('MetricAlertRulesPanel', () => {
     // say nothing until the operator pressed Save.
     catalog.mockRejectedValue(new Error('catalog down'));
 
-    render(<MetricAlertRulesPanel />);
+    renderPanel();
 
     await waitFor(() => expect(screen.getByText('CPU hot')).toBeInTheDocument());
     expect(screen.getByRole('button', { name: /new rule/i })).toBeDisabled();
@@ -199,10 +207,24 @@ describe('MetricAlertRulesPanel', () => {
     expect(screen.getByText(/metric catalog could not be read/i)).toBeInTheDocument();
   });
 
+  it('offers a way to go and create a destination, not just the name of one', async () => {
+    listSinks.mockResolvedValue({ data: [] });
+
+    renderPanel();
+
+    await waitFor(() =>
+      expect(screen.getByText(/no notification destination is available/i)).toBeInTheDocument()
+    );
+    // Destinations are created by NotificationsManager, which Settings renders
+    // inside the Integrations tab — there is no Settings → Notifications.
+    const link = screen.getByRole('link', { name: /notification destinations/i });
+    expect(link).toHaveAttribute('href', '/settings?tab=integrations');
+  });
+
   it('shows an empty state rather than an empty table', async () => {
     list.mockResolvedValue({ data: [] });
 
-    render(<MetricAlertRulesPanel />);
+    renderPanel();
 
     await waitFor(() => expect(screen.getByText(/no alert rules/i)).toBeInTheDocument());
   });
@@ -210,7 +232,7 @@ describe('MetricAlertRulesPanel', () => {
   it('renders an error with retry', async () => {
     list.mockRejectedValue({ userMessage: 'boom' });
 
-    render(<MetricAlertRulesPanel />);
+    renderPanel();
 
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
     expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument();

@@ -1,6 +1,7 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 
 vi.mock('../api/client', () => ({
   metricAlertsApi: { preview: vi.fn(() => Promise.resolve({ data: null })) },
@@ -72,15 +73,17 @@ const existing = (over = {}) => ({
 
 const renderEditor = (props = {}) =>
   render(
-    <MetricAlertRuleEditor
-      rule={null}
-      catalog={CATALOG}
-      sinks={SINKS}
-      canWrite
-      onSave={vi.fn(() => Promise.resolve())}
-      onCancel={vi.fn()}
-      {...props}
-    />
+    <MemoryRouter>
+      <MetricAlertRuleEditor
+        rule={null}
+        catalog={CATALOG}
+        sinks={SINKS}
+        canWrite
+        onSave={vi.fn(() => Promise.resolve())}
+        onCancel={vi.fn()}
+        {...props}
+      />
+    </MemoryRouter>
   );
 
 beforeEach(() => vi.clearAllMocks());
@@ -133,7 +136,13 @@ describe('MetricAlertRuleEditor', () => {
     renderEditor({ sinks: [] });
 
     expect(screen.getByLabelText(/^enabled/i)).toBeDisabled();
-    expect(screen.getByText(/settings → notifications/i)).toBeInTheDocument();
+    // Destinations are created by NotificationsManager, which Settings renders
+    // inside the Integrations tab. There is no Settings → Notifications, and
+    // /notifications is the delivery feed rather than where a sink is made.
+    expect(screen.getByRole('link', { name: /create one/i })).toHaveAttribute(
+      'href',
+      '/settings?tab=integrations'
+    );
   });
 
   it('sets the target from the picker', async () => {

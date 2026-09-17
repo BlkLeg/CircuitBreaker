@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
+import { Link } from 'react-router-dom';
 import Banner from '../common/Banner';
 import EntityPicker from '../common/EntityPicker';
 import { useRulePreview } from '../../hooks/useRulePreview';
@@ -277,8 +278,8 @@ function MetricAlertRuleEditor({ rule, catalog, sinks, canWrite, onSave, onCance
           />
           {enabledSinks.length === 0 && (
             <p className="form-hint">
-              A rule needs a notification destination before it can be enabled. Create one in
-              Settings → Notifications, then come back.
+              A rule needs a notification destination before it can be enabled.{' '}
+              <Link to="/settings?tab=integrations">Create one</Link>, then come back.
             </p>
           )}
         </div>
