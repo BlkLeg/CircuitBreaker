@@ -165,3 +165,17 @@ describe('graphLayout', () => {
     expect(graphLayout(wide)).toBeNull();
   });
 });
+
+describe('graphLayout guards', () => {
+  it('draws nothing when the result carries no root to anchor on', () => {
+    expect(
+      graphLayout({
+        total_impact_count: 1,
+        root_asset: null,
+        impacted_services: [{ asset_type: 'service', asset_id: 2, name: 'api' }],
+        paths: [],
+        edges: [],
+      })
+    ).toBeNull();
+  });
+});

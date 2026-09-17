@@ -398,7 +398,7 @@ function BlastRadiusPanel({ assetType, assetId }) {
                   </button>
                   {showConnectivity && (
                     <ul className="impact-connectivity__list">
-                      {connectivity.map((edge) => {
+                      {connectivity.map((edge, index) => {
                         const from =
                           names.get(`${edge.provider_type}:${edge.provider_id}`) ||
                           `${edge.provider_type} #${edge.provider_id}`;
@@ -406,7 +406,12 @@ function BlastRadiusPanel({ assetType, assetId }) {
                           names.get(`${edge.dependent_type}:${edge.dependent_id}`) ||
                           `${edge.dependent_type} #${edge.dependent_id}`;
                         return (
-                          <li key={edge.identity}>
+                          <li
+                            key={
+                              edge.identity ||
+                              `${edge.provider_type}:${edge.provider_id}-${edge.dependent_type}:${edge.dependent_id}-${index}`
+                            }
+                          >
                             {from} —{edge.label || 'connects to'}→ {to}
                           </li>
                         );

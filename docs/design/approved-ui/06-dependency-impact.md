@@ -57,6 +57,11 @@ Proposed boundaries: typed dependency-edge building and bulk resolution within t
 > truncation wording, honest empty, path chaining, graph bounds), plus
 > `__tests__/intel-api.test.js` for the scope parameter.
 >
+> Status 2026-09-17 (correction): two robustness gaps, no contract change.
+> `graphLayout` dereferenced `root_asset` unguarded, so a result with impact but
+> no root would take the panel down rather than falling back to the list; it now
+> returns no layout. Connectivity rows keyed on `edge.identity` with no fallback.
+>
 > Still open: the browser/theme/keyboard pass from *Acceptance and tests* below
 > has not been run in a real browser — including the graph's arrowheads and
 > dashed inferred strokes across light/dark themes.

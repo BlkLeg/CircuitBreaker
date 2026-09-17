@@ -114,6 +114,9 @@ export function pathSteps(path, names) {
  */
 export function graphLayout(result, maxNodes = MAX_GRAPH_NODES) {
   if (!result || result.total_impact_count === 0) return null;
+  // Every node is positioned relative to the root, so without one there is no
+  // graph to draw. The list and its paths remain the complete answer.
+  if (!result.root_asset) return null;
   const groups = [
     result.impacted_hardware,
     result.impacted_compute_units,
