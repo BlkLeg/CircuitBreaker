@@ -232,6 +232,13 @@ signed-in user; identity correction and feed sync require editor access.
 The identity revision makes out-of-order corrections rejectable on the client:
 a response for revision *n* cannot overwrite a state already advanced to *n+1*.
 
+The revision counts *corrections*, not identities. An identity read from the
+entity's own inventory fields has never been corrected, so it reports revision
+**0** — which is the base revision the first correction must send, because no
+operator-override row exists yet to compare against. The first accepted
+correction creates that row at revision 1. The panel shows a revision only for
+an identity an operator has actually corrected.
+
 ---
 
 ## Analytics Jobs

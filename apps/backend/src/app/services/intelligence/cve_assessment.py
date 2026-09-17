@@ -92,7 +92,9 @@ def resolve_assessment_identity(
         version=version,
         version_scheme=infer_version_scheme(version),  # type: ignore[arg-type]
         provenance="inventory",
-        revision=1,
+        # No override row exists yet, so the base revision a correction must
+        # send is 0.
+        revision=0,
     )
 
 

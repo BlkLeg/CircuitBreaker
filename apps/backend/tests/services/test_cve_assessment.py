@@ -110,6 +110,36 @@ def test_stale_complete_feed_returns_stale_not_clean(db_session):
     assert result.reason_code == "feed_stale"
 
 
+def test_an_uncorrected_identity_reports_the_revision_a_correction_must_send(db_session):
+    """The revision is the override row's token, and no override yet means 0.
+
+    Reporting 1 for an inventory identity made the very first correction from
+    the UI conflict with itself: the client echoed the identity's revision back
+    and the server compared it against the absent row's 0.
+    """
+    db = db_session
+    hardware = Hardware(name="uncorrected-host")
+    db.add(hardware)
+    db.commit()
+
+    identity = resolve_assessment_identity(db, "hardware", hardware.id)
+
+    assert identity.provenance == "inventory"
+    assert identity.revision == 0
+
+    created = update_assessment_identity(
+        db,
+        "hardware",
+        hardware.id,
+        IdentityPatch(product="widget", version="1.10", revision=identity.revision),
+        actor="7",
+    )
+    db.commit()
+
+    assert created.revision == 1
+    assert resolve_assessment_identity(db, "hardware", hardware.id).revision == 1
+
+
 def test_identity_updates_are_revision_checked(db_session):
     db = db_session
     hardware = Hardware(name="host")

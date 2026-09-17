@@ -26,7 +26,11 @@ class AssessmentIdentity(BaseModel):
     version: str | None = None
     version_scheme: Literal["dotted_numeric"] | None = None
     provenance: Literal["inventory", "operator"]
-    revision: int = Field(ge=1)
+    # The operator-override row's revision, and the value a correction must send
+    # back. An identity read from inventory has never been corrected, so its
+    # revision is 0 — which is what `update_assessment_identity` expects for the
+    # first correction. Reporting 1 here made every first correction conflict.
+    revision: int = Field(ge=0)
 
 
 class IdentityPatch(BaseModel):
