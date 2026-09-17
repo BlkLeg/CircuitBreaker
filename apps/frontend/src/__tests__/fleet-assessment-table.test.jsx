@@ -116,6 +116,27 @@ describe('FleetSummaryStrip', () => {
     expect(screen.getByTestId('tile-with-findings')).toHaveTextContent('4');
   });
 
+  it('renders the severity histogram the summary carries', () => {
+    render(<FleetSummaryStrip summary={SUMMARY} feed={{ state: 'ready', age_seconds: 60 }} />);
+
+    const histogram = screen.getByTestId('fleet-severity');
+    expect(histogram).toHaveTextContent(/critical/i);
+    expect(histogram).toHaveTextContent('1');
+    expect(histogram).toHaveTextContent(/high/i);
+    expect(histogram).toHaveTextContent('3');
+  });
+
+  it('omits the histogram entirely when nothing has a finding', () => {
+    render(
+      <FleetSummaryStrip
+        summary={{ ...SUMMARY, by_severity: {}, entities_with_findings: 0, findings_total: 0 }}
+        feed={{ state: 'ready', age_seconds: 60 }}
+      />
+    );
+
+    expect(screen.queryByTestId('fleet-severity')).not.toBeInTheDocument();
+  });
+
   it('never renders a single aggregate score', () => {
     render(<FleetSummaryStrip summary={SUMMARY} feed={{ state: 'ready', age_seconds: 60 }} />);
 

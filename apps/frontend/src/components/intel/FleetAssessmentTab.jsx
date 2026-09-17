@@ -7,7 +7,7 @@ import FleetAssessmentTable from './FleetAssessmentTable';
 import FleetSummaryStrip from './FleetSummaryStrip';
 import IdentityCorrectionDrawer from './IdentityCorrectionDrawer';
 import { useFleetAssessment } from '../../hooks/useFleetAssessment';
-import { STATE_FILTERS } from '../../lib/fleetAssessment';
+import { SEVERITY_ORDER, STATE_FILTERS } from '../../lib/fleetAssessment';
 import { useAuth } from '../../context/AuthContext';
 import { describeAssessment } from '../../lib/vulnerabilityAssessment';
 import '../../styles/intel.css';
@@ -119,6 +119,24 @@ function FleetAssessmentTab() {
           value={filters.query}
           onChange={(event) => setFilters({ query: event.target.value })}
         />
+        <label htmlFor="fleet-severity-floor" className="tw-sr-only">
+          Minimum severity
+        </label>
+        {/* A floor over findings. filterRows deliberately keeps unassessable
+            rows visible through it: they have no findings to floor, and hiding
+            them would let the filter imply they are clean. */}
+        <select
+          id="fleet-severity-floor"
+          value={filters.minSeverity || ''}
+          onChange={(event) => setFilters({ minSeverity: event.target.value || null })}
+        >
+          <option value="">Any severity</option>
+          {SEVERITY_ORDER.map((severity) => (
+            <option key={severity} value={severity}>
+              {severity} and above
+            </option>
+          ))}
+        </select>
       </div>
 
       {rows.length === 0 ? (

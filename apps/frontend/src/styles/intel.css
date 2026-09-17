@@ -70,3 +70,26 @@
 .intel-row--warning td {
   background: color-mix(in srgb, var(--color-warning) 8%, transparent);
 }
+
+/* Entities counted under their worst finding's severity. A list, not a chart:
+   four numbers do not need an axis. */
+.intel-severity {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.intel-severity li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.intel-severity__count {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text);
+}

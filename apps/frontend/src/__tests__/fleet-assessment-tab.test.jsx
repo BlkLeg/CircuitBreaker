@@ -187,6 +187,31 @@ describe('FleetAssessmentTab', () => {
     await waitFor(() => expect(fleet).toHaveBeenCalledTimes(2));
   });
 
+  it('offers a severity floor, and applies it', async () => {
+    fleet.mockResolvedValue({
+      data: payload({
+        rows: [
+          ROW,
+          {
+            ...ROW,
+            entity_id: 2,
+            name: 'low-only',
+            finding_count: 1,
+            max_severity: 'low',
+            max_cvss: 2.1,
+          },
+        ],
+      }),
+    });
+    renderTab();
+    await waitFor(() => expect(screen.getByText('low-only')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText(/minimum severity/i), { target: { value: 'high' } });
+
+    expect(screen.getByText('nas-01')).toBeInTheDocument();
+    expect(screen.queryByText('low-only')).not.toBeInTheDocument();
+  });
+
   it('renders an error with retry rather than an empty table', async () => {
     fleet.mockRejectedValue({ userMessage: 'boom' });
 
