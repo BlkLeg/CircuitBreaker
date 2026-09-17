@@ -169,6 +169,21 @@ describe('MetricAlertRulesPanel', () => {
     expect(dialog).not.toHaveTextContent(/no recovery notification/i);
   });
 
+  it('refuses to open the editor when the metric catalog could not be read', async () => {
+    // The hook degrades a catalog failure to [] because only the rule list
+    // failing is worth taking the panel down for. But the editor is unusable
+    // without the catalog: its metric and comparator selects would be empty and
+    // say nothing until the operator pressed Save.
+    catalog.mockRejectedValue(new Error('catalog down'));
+
+    render(<MetricAlertRulesPanel />);
+
+    await waitFor(() => expect(screen.getByText('CPU hot')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /new rule/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^edit$/i })).toBeDisabled();
+    expect(screen.getByText(/metric catalog could not be read/i)).toBeInTheDocument();
+  });
+
   it('shows an empty state rather than an empty table', async () => {
     list.mockResolvedValue({ data: [] });
 

@@ -35,6 +35,10 @@ function MetricAlertRulesPanel() {
   const [editing, setEditing] = useState(null);
   const { user } = useAuth();
   const canWrite = user?.role === 'admin';
+  // The editor derives its metric, unit and comparator options from the catalog.
+  // Without it there is nothing to build a rule from, so the controls that open
+  // it say so instead of opening an unusable form.
+  const catalogUnavailable = catalog.length === 0;
 
   if (loading) {
     return (
@@ -69,12 +73,26 @@ function MetricAlertRulesPanel() {
           <button
             type="button"
             className="btn btn-sm btn-primary"
+            disabled={catalogUnavailable}
             onClick={() => setEditing('new')}
           >
             New rule
           </button>
         )}
       </div>
+
+      {catalogUnavailable && canWrite && (
+        <Banner
+          tone="warn"
+          title="The metric catalog could not be read"
+          body="Rules cannot be created or edited until it loads — the editor takes its metrics, units and comparators from it. Existing rules and their states are unaffected."
+          actions={
+            <button type="button" className="btn btn-sm" onClick={reload}>
+              Retry
+            </button>
+          }
+        />
+      )}
 
       {sinks.filter((sink) => sink.enabled).length === 0 && canWrite && (
         <Banner
@@ -128,7 +146,12 @@ function MetricAlertRulesPanel() {
                 <td>
                   {canWrite && (
                     <>
-                      <button type="button" className="btn btn-sm" onClick={() => setEditing(rule)}>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        disabled={catalogUnavailable}
+                        onClick={() => setEditing(rule)}
+                      >
                         Edit
                       </button>
                       <button
