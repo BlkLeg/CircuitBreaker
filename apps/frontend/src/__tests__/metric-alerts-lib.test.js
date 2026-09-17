@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   ACTIONABLE_REASONS,
+  DESTINATION_MISSING_DETAIL,
+  destinationMissing,
   ASSESSMENTS,
   REASON_CODES,
   describeRuleState,
@@ -172,6 +174,29 @@ describe('validateRule', () => {
 
   it('allows a disabled rule with no destination', () => {
     expect(validateRule(rule({ enabled: false, sink_id: null }), CATALOG)).toEqual({});
+  });
+});
+
+describe('destinationMissing', () => {
+  // validate_metric_rule refuses enabled-with-no-destination on create and on
+  // update, so this state cannot be reached through the API. Its only cause is
+  // metric_alert_rules.sink_id carrying ON DELETE SET NULL when the destination
+  // is deleted -- which is why the message can name that cause outright.
+  it('flags an enabled rule whose destination went away', () => {
+    expect(destinationMissing({ enabled: true, sink_id: null })).toBe(true);
+  });
+
+  it('does not flag a disabled rule with no destination', () => {
+    // That is the ordinary starting state of every new rule.
+    expect(destinationMissing({ enabled: false, sink_id: null })).toBe(false);
+  });
+
+  it('does not flag an enabled rule that still has one', () => {
+    expect(destinationMissing({ enabled: true, sink_id: 2 })).toBe(false);
+  });
+
+  it('carries a sentence that says what happens to the alerts now', () => {
+    expect(DESTINATION_MISSING_DETAIL).toMatch(/severity route/i);
   });
 });
 

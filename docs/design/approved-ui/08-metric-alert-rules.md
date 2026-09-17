@@ -56,14 +56,23 @@ Acknowledgement, escalation, correlation, maintenance windows, advanced alert po
 
 ### What is not done
 
-**A7 — a deleted destination leaves an enabled rule firing into nothing.** The preview,
-the no-polling refresh policy and the stale-telemetry states all shipped.
-`metric_alert_rules.sink_id` carries `ON DELETE SET NULL`, so deleting a notification
-destination nulls the rule's `sink_id` and leaves `enabled` true: the rule keeps evaluating,
-and a firing transition emits an event whose `sink_id` is `None`. `validate_metric_rule`
-would refuse that combination on the next save, which is precisely the point — the database
-holds a state the API would reject. Deciding what should happen (disable the rule, refuse
-the sink delete, or surface it as a rule-level fault) is a product call, not a bug fix.
+**A7 — surfaced 2026-09-17; the underlying behaviour is intentional.** The preview, the
+no-polling refresh policy and the stale-telemetry states shipped with the tab.
+
+An earlier revision of this note claimed a deleted destination left a rule "firing into
+nothing". That was wrong, twice over. `notification_routing.select_delivery_targets` branches
+on the event's `sink_id`: set, it delivers directly to that sink if it still exists and is
+enabled; null, it falls back to the global severity routes, and a miss there is recorded as a
+terminal `no_route` delivery outcome, not a silent drop. So `ON DELETE SET NULL` does not
+lose the alert — it **silently moves it** from the destination the operator chose to whatever
+the severity routes say.
+
+The fix is visibility rather than behaviour: an enabled rule with no `sink_id` is
+unreachable through the API, because `validate_metric_rule` refuses that combination on both
+create and update, so the delete cascade is its only possible cause and the row says so
+outright. The rule list now reports it, and the editor already refused to save such a rule.
+Changing the delivery behaviour — disabling the rule, or refusing the sink delete — was
+considered and declined: the fallback is reasonable, it was only ever invisible.
 
 **A8 — no end-to-end test.** The migration chain is verified
 (`tests/integration/test_fresh_install_migration_chain.py` runs `alembic upgrade head`

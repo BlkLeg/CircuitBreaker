@@ -536,3 +536,10 @@
 .rule-preview__facts {
   color: var(--color-text-muted);
 }
+
+/* A rule that lost its destination: still evaluating, no longer going where the
+   operator sent it. Warning-toned, but it sits beside the assessment rather
+   than replacing it -- the rule's state is still the rule's state. */
+.rule-reason--warn {
+  color: var(--color-warning);
+}

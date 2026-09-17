@@ -221,6 +221,44 @@ describe('MetricAlertRulesPanel', () => {
     expect(link).toHaveAttribute('href', '/settings?tab=integrations');
   });
 
+  it('says when a rule lost the destination it was given', async () => {
+    list.mockResolvedValue({ data: [rule({ enabled: true, sink_id: null })] });
+
+    renderPanel();
+
+    await waitFor(() => expect(screen.getByTestId('rule-destination-1')).toBeInTheDocument());
+    expect(screen.getByTestId('rule-destination-1')).toHaveTextContent(/deleted/i);
+    expect(screen.getByTestId('rule-destination-1')).toHaveTextContent(/severity route/i);
+  });
+
+  it('still shows that rule its assessment rather than replacing it', async () => {
+    list.mockResolvedValue({
+      data: [rule({ enabled: true, sink_id: null, assessment: 'firing' })],
+    });
+
+    renderPanel();
+
+    await waitFor(() => expect(screen.getByText('Firing')).toBeInTheDocument());
+    expect(screen.getByTestId('rule-destination-1')).toBeInTheDocument();
+  });
+
+  it('says nothing about destinations for a disabled rule that has none', async () => {
+    // Every new rule starts here; it is not a fault.
+    list.mockResolvedValue({ data: [rule({ enabled: false, sink_id: null })] });
+
+    renderPanel();
+
+    await waitFor(() => expect(screen.getByText('CPU hot')).toBeInTheDocument());
+    expect(screen.queryByTestId('rule-destination-1')).not.toBeInTheDocument();
+  });
+
+  it('says nothing for an enabled rule that still has a destination', async () => {
+    renderPanel();
+
+    await waitFor(() => expect(screen.getByText('CPU hot')).toBeInTheDocument());
+    expect(screen.queryByTestId('rule-destination-1')).not.toBeInTheDocument();
+  });
+
   it('shows an empty state rather than an empty table', async () => {
     list.mockResolvedValue({ data: [] });
 

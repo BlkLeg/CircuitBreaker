@@ -7,7 +7,12 @@ import { SkeletonTable } from '../common/SkeletonTable';
 import MetricAlertRuleEditor from './MetricAlertRuleEditor';
 import MetricAlertStateChip from './MetricAlertStateChip';
 import { useMetricAlertRules } from '../../hooks/useMetricAlertRules';
-import { definitionFor, describeRuleState } from '../../lib/metricAlerts';
+import {
+  DESTINATION_MISSING_DETAIL,
+  definitionFor,
+  describeRuleState,
+  destinationMissing,
+} from '../../lib/metricAlerts';
 import { useAuth } from '../../context/AuthContext';
 import '../../styles/monitors.css';
 
@@ -138,6 +143,14 @@ function MetricAlertRulesPanel() {
                 <td data-testid={`rule-condition-${rule.id}`}>{conditionText(rule, catalog)}</td>
                 <td>
                   <MetricAlertStateChip assessment={rule.assessment} reason={rule.reason_code} />
+                  {destinationMissing(rule) && (
+                    <span
+                      className="rule-reason rule-reason--warn"
+                      data-testid={`rule-destination-${rule.id}`}
+                    >
+                      {DESTINATION_MISSING_DETAIL}
+                    </span>
+                  )}
                   {rule.assessment !== 'disabled' && (
                     <span className="rule-reason" data-testid={`rule-reason-${rule.id}`}>
                       {/* The evaluator's own reason, carried on the list

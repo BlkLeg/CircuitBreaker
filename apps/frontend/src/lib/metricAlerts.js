@@ -105,6 +105,30 @@ export function describeRuleState({ assessment, reason_code: reason } = {}) {
   };
 }
 
+/**
+ * The alerts of a rule whose destination was deleted.
+ *
+ * `metric_alert_rules.sink_id` carries `ON DELETE SET NULL`, so deleting a
+ * notification destination nulls it and leaves the rule enabled. Delivery then
+ * falls back to the global severity routes
+ * (`notification_routing.select_delivery_targets` branches on the event's
+ * `sink_id`), which is reasonable behaviour but not what the operator chose,
+ * and nothing announced the change.
+ */
+export const DESTINATION_MISSING_DETAIL =
+  'The destination this rule was pointed at has been deleted. It is still evaluating, but its alerts now follow the global severity routes instead — and if none match, delivery is recorded as “no route”. Edit the rule to choose a destination again.';
+
+/**
+ * Whether a rule lost the destination it was given.
+ *
+ * `validate_metric_rule` refuses an enabled rule with no destination on both
+ * create and update, so this combination cannot be reached through the API. The
+ * delete cascade is its only cause, which is why the message names it.
+ */
+export function destinationMissing(rule) {
+  return Boolean(rule?.enabled) && !rule?.sink_id;
+}
+
 export function definitionFor(catalog, metricKey) {
   return (catalog || []).find((entry) => entry.key === metricKey) || null;
 }
