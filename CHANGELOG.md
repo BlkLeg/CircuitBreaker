@@ -69,6 +69,109 @@ directly verifiable in this tree.
 
 ### Fixed
 
+- `tests/build/test_install_docker_staging.py` no longer hangs forever. The
+  harness runs the shipped `stage_docker_deploy` with `curl`, `docker` and `ip`
+  stubbed, but not the `install … || sudo install …` pair that writes
+  `/usr/local/bin/cb` — so the test reached a real `sudo` and blocked on a
+  password prompt on any host that asks for one, taking `make verify-full` with
+  it. Both are stubbed now, the sandbox's working directory is pinned so the
+  shipped code's `$(pwd)` lookups do not depend on where pytest was invoked
+  from, and a test asserts the escalation never happens. The file runs in under
+  a second.
+- `apps/backend/src/app/security/endpoint_inventory.json` records
+  `GET /api/v1/admin/diagnostics`, which shipped in `67dbefb8` without being
+  added to the inventory. `test_full_endpoint_inventory_matches_runtime_routes`
+  had been failing at "recorded 472 vs runtime 473" ever since. The endpoint is
+  gated by `require_role` and `require_auth_always`; recording it changes no
+  policy.
+- `test_cb_admin_surface.py`'s native-CLI cases work against the current `cb`.
+  `67dbefb8` replaced `deploy/cli/cb` with the unified, identity-gated CLI, and
+  the test still supplied the old `CB_BIN` variable and no install identity, so
+  all four admin groups failed on the identity gate before reaching the binary.
+  The test now provisions a `package`-mode identity through `CB_IDENTITY_PATH`
+  — which also stops a host's own `/etc` identity leaking into the test — and a
+  new case covers the gate refusing a host that has none.
+- Playwright no longer runs the whole browser suite against a stranger. The
+  preview port (4173) is reused outside CI without checking what answers on it,
+  so an unrelated server holding that port silently became the system under
+  test: every spec failed in `waitForRouteSettled`, which looks precisely like
+  an application regression. A `globalSetup` now refuses that case up front and
+  names what actually answered, and `CB_E2E_PORT` moves the suite to a free
+  port.
+
+- The global navigator's highlight now follows the pointer. It was driven by the
+  arrow keys alone and rows had no hover treatment at all, so hovering gave no
+  feedback and Enter opened whichever row the keyboard had last selected rather
+  than the one under the cursor. Rows select on pointer movement — deliberately
+  on `mousemove` rather than `mouseenter`, so a list scrolling under a
+  stationary pointer cannot take the selection away from the keyboard.
+- The navigator no longer discards your selection when asset results arrive.
+  Entity search is debounced ~200ms, and its results re-ran the effect that
+  snaps the highlight to the best local match, so arrowing down during a search
+  was silently undone a moment later. The snap now happens once per question;
+  the same question with more results keeps the selection. Switching between
+  All pages and Recent also starts from the top rather than keeping an index
+  that pointed into the previous list.
+- The navigator's active row is now exposed to assistive technology. Rows
+  carried `id="navigator-option-N"` attributes generated for an
+  `aria-activedescendant` that was never wired up, so a screen-reader user was
+  never told which row was highlighted. The search field now names the
+  highlighted row, whether the keyboard or the pointer moved it. It stays a
+  `searchbox` rather than becoming a `combobox` with a `listbox` popup: a
+  listbox may not contain the per-row pin buttons, and axe rejects that
+  structure outright.
+- Arrow keys and Enter no longer disagree in the navigator. Arrows moved the
+  highlight from anywhere in the panel while Enter only opened the highlighted
+  row when the search field had focus, so after tabbing to a row the two
+  diverged. Arrowing now returns focus to the search field.
+- The navigator's selected row is no longer distinguished by colour alone; it
+  carries an inset edge bar as well.
+
+- The Docker sources panel no longer reports a source as **Synced** when it has
+  no idea how the last sync went. `GET /discovery/docker/sources` returned only
+  attempt/success timestamps, so a run's outcome was knowable exclusively to the
+  browser session that had clicked Sync itself; every other page load fell
+  through to "The daemon was reachable and reported 0 container(s)" — including
+  for a daemon whose last enumeration failed, which is precisely the
+  empty-versus-failed conflation the source-oriented surface was built to end.
+  A source now carries its `last_run`, so first load tells the two apart, and an
+  attempted source with no run available is reported as **Outcome unknown**
+  rather than as success.
+- A queued Docker sync no longer sticks at **Sync queued** forever. The panel
+  fetched the run once at queue time and never refreshed it, so a completed run
+  kept rendering as in-flight and its Sync button stayed disabled until a full
+  page reload. Run state now comes from the server on every reload, and the
+  locally queued run is dropped as soon as the server speaks for that source.
+- A Docker source's container list that could not be *loaded* is no longer
+  rendered as a source that reported *no containers*. The failed request is
+  reported as unreadable, and the rest of the panel still renders.
+- `POST /discovery/docker/sync` now accepts an optional `source_id`, and the
+  per-source Sync button sends the source it belongs to. It previously accepted
+  the source id from the card and discarded it, always syncing whichever daemon
+  was configured at that moment. Posting no body still syncs the configured
+  daemon, so the settings entry point and older clients are unaffected.
+- Correcting a vulnerability assessment identity for the first time no longer
+  fails with a spurious "The identity changed while you were editing." An
+  identity read from inventory reported revision 1 while the server compares a
+  correction against the operator-override row's revision, which is 0 until one
+  exists — so every first correction conflicted with itself. An uncorrected
+  identity now reports revision 0, and the panel shows no revision for one that
+  has never been corrected, since the number counts corrections.
+- The **Set identity** button in the vulnerability panel now opens a form. It
+  rendered whenever an entity had no identity at all, but the form behind it was
+  gated on an identity already existing, so the button did nothing.
+- A notification delivery result now names the destination it belongs to. The
+  Notifications page renders one shared result panel above the table and titled
+  it by provider alone, which cannot distinguish one of several Slack
+  destinations.
+- `credential_unavailable`, `delivery_error`, and `request_failed` delivery
+  outcomes now carry a next action. All three are emitted in practice and had no
+  entry in the guidance table, so they reached the operator with a reason and
+  nothing to do about it.
+- The Notifications page read a tested sink's provider from a `type` field the
+  API does not return (it is `provider_type`), so a failed test request was
+  attributed to "The destination" rather than to the provider.
+
 - An agent no longer tears down its own link while applying a self-update.
   The update used to run inline on the `/link` event-loop goroutine, so a
   download occupied the connection's only worker for up to two minutes:
