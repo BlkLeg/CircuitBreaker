@@ -6,6 +6,10 @@
  * could show rows that disagree with the counts above them.
  */
 
+/* eslint-disable security/detect-object-injection -- severity keys come from the
+   server's fixed severity vocabulary, the same keyed-table pattern as
+   lib/vulnerabilityAssessment.js */
+
 export const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low'];
 
 const SEVERITY_RANK = { critical: 4, high: 3, medium: 2, low: 1 };
