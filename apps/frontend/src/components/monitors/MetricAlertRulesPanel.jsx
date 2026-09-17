@@ -3,6 +3,7 @@ import Banner from '../common/Banner';
 import ConfirmDialog from '../common/ConfirmDialog';
 import EmptyState from '../common/EmptyState';
 import { SkeletonTable } from '../common/SkeletonTable';
+import MetricAlertRuleEditor from './MetricAlertRuleEditor';
 import MetricAlertStateChip from './MetricAlertStateChip';
 import { useMetricAlertRules } from '../../hooks/useMetricAlertRules';
 import { definitionFor } from '../../lib/metricAlerts';
@@ -28,8 +29,10 @@ function deleteMessage(rule) {
 }
 
 function MetricAlertRulesPanel() {
-  const { rules, catalog, sinks, loading, error, reload, deleteRule } = useMetricAlertRules();
+  const { rules, catalog, sinks, loading, error, reload, createRule, updateRule, deleteRule } =
+    useMetricAlertRules();
   const [confirming, setConfirming] = useState(null);
+  const [editing, setEditing] = useState(null);
   const { user } = useAuth();
   const canWrite = user?.role === 'admin';
 
@@ -63,7 +66,11 @@ function MetricAlertRulesPanel() {
       <div className="rule-list__header">
         <h3>Alert rules</h3>
         {canWrite && (
-          <button type="button" className="btn btn-sm btn-primary">
+          <button
+            type="button"
+            className="btn btn-sm btn-primary"
+            onClick={() => setEditing('new')}
+          >
             New rule
           </button>
         )}
@@ -117,7 +124,7 @@ function MetricAlertRulesPanel() {
                 <td>
                   {canWrite && (
                     <>
-                      <button type="button" className="btn btn-sm">
+                      <button type="button" className="btn btn-sm" onClick={() => setEditing(rule)}>
                         Edit
                       </button>
                       <button
@@ -134,6 +141,21 @@ function MetricAlertRulesPanel() {
             ))}
           </tbody>
         </table>
+      )}
+
+      {editing && (
+        <MetricAlertRuleEditor
+          rule={editing === 'new' ? null : editing}
+          catalog={catalog}
+          sinks={sinks}
+          canWrite={canWrite}
+          onSave={async (payload) => {
+            if (editing === 'new') await createRule(payload);
+            else await updateRule(editing.id, payload);
+            setEditing(null);
+          }}
+          onCancel={() => setEditing(null)}
+        />
       )}
 
       <ConfirmDialog

@@ -465,3 +465,74 @@
     overflow-x: auto;
   }
 }
+
+/* The rule editor and its preview. Colours come from the theme tokens, which
+   deriveReadableText floors to AA — no literal colours here. */
+.form-error {
+  font-size: 12px;
+  color: var(--color-danger, var(--color-text));
+  margin: 2px 0 0;
+}
+
+.rule-editor__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px 16px;
+  margin-bottom: 12px;
+}
+
+.rule-editor__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.rule-editor__field > label,
+.rule-editor__field > span {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.rule-editor__unit {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.rule-editor__target {
+  font-size: 12px;
+  color: var(--color-text);
+}
+
+.rule-editor__actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.rule-preview {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-alt);
+  padding: 12px 16px;
+}
+
+.rule-preview h4 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: var(--color-text);
+}
+
+.rule-preview__result {
+  margin-top: 8px;
+}
+
+.rule-preview__result p {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--color-text);
+}
+
+.rule-preview__facts {
+  color: var(--color-text-muted);
+}
