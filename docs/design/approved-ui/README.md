@@ -2,10 +2,16 @@
 
 Date: 2026-09-07 (Access Tokens plan added 2026-09-10; Inventory transfer plan upgraded to a
 canvas-backed implementation plan 2026-09-10)  
-Status: eight operational designs approved by the user; Inventory transfer (02) and Access
-Tokens (09) are canvas-backed implementation plans — the former for Data Management inventory
-import/export, the latter for the existing `/admin/tokens` admin surface. Navigator execution
-has progressed in the working tree — recheck plan 01 before treating its packages as open.
+Status: **all ten plans implemented as of 2026-09-17.** Each plan's own `Status:` line
+records where its work landed and what, if anything, it left open — plan 08 is the only one
+carrying named open items (a deleted destination leaving an enabled rule, and the absence of
+an end-to-end test). Treat these documents as the record of what was decided and built, not
+as a work list.
+
+Two designs written after this series extend it and live beside it in `docs/design/`:
+[the Intel fleet console](../2026-09-17-intel-fleet-console-design.md), which built the fleet
+entry point plan 04 named, and
+[metric alert rules](../2026-09-17-metric-alert-rules-ui-design.md), which is plan 08's UI half.
 
 ## Decisions of record
 

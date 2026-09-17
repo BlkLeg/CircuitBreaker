@@ -1,6 +1,9 @@
 # 03 · Docker discovery and source reconciliation
 
-Status: approved. Depends on plan 00 and shared selectors/errors in 07.
+Status: **implemented.** The source-oriented Docker surface shipped with
+`components/discovery/DockerSourcesPanel.jsx` and its per-source sync, outcome and
+reconciliation handling; see the 0.4.2 entries in [CHANGELOG.md](../../../CHANGELOG.md).
+Depends on plan 00 and shared selectors/errors in 07.
 
 ## Outcome and location
 

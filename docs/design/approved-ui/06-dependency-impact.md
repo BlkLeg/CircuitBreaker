@@ -1,6 +1,9 @@
 # 06 · Explainable dependency impact
 
-Status: approved. Depends on plan 00; integrate after the separate map refactor exposes its stable selection/detail boundary.
+Status: **implemented.** The Impact panel explains itself with typed, provenance-tagged
+paths, a bounded focused graph, opt-in inferred relationships and explicit traversal limits;
+see the 0.4.2 entries in [CHANGELOG.md](../../../CHANGELOG.md).
+Depends on plan 00.
 
 ## Outcome and location
 

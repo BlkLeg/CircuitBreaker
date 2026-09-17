@@ -1,6 +1,9 @@
 # 05 · Notification configuration and honest delivery feedback
 
-Status: approved. Depends on plan 00; must complete before enabling metric-rule notification dispatch in 08.
+Status: **implemented.** Destinations, routing and honest delivery outcomes shipped;
+see the 0.4.2 entries in [CHANGELOG.md](../../../CHANGELOG.md). Its dependant, plan 08's
+metric-rule dispatch, shipped 2026-09-17 on top of it.
+Depends on plan 00.
 
 ## Outcome and location
 

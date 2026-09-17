@@ -1,6 +1,14 @@
 # 08 · Metric alert rules, firing, and recovery
 
-Status: selected and approved product expansion. Depends on plans 00, 05 (truthful notification dispatch), 07 (selectors), and the existing telemetry/freshness contract.
+Status: **implemented 2026-09-17.** Backend (catalog, evaluator, CRUD, scheduled
+evaluation) landed earlier; the Monitors → Alert rules surface, the reason-code
+persistence behind it, and the docs landed 2026-09-17. Two items remain open and are
+named at the end of the task list rather than checked off. See
+[the UI design](../2026-09-17-metric-alert-rules-ui-design.md) and
+[docs/metric-alerts.md](../../metric-alerts.md).
+
+Depends on plans 00, 05 (truthful notification dispatch), 07 (selectors), and the existing
+telemetry/freshness contract.
 
 ## Outcome and location
 
@@ -24,12 +32,12 @@ Proposed boundaries: `components/monitors/MetricAlertRulesPanel.jsx` plus a focu
 
 ## Work packages
 
-- [ ] **A1:** Audit available telemetry and existing evaluation/job infrastructure. Define the initial metric/target catalog, permissions, missing-data policy, and preview window.
-- [ ] **A2:** Write pure evaluator transition tests before UI/backend persistence. Cover durations, gaps, hysteresis, duplicate/out-of-order points, and edits to an active rule.
-- [ ] **A3:** Build the approved rule list/editor, validation, metric availability hints, current state, and evaluation preview. Preserve unsaved edits and label historical sample coverage.
-- [ ] **A4:** Add the smallest necessary rule/state schema and migration, authorized CRUD, validation, and bounded list/selector contracts. Decide deletion/disable/edit behavior for an active incident without sending misleading recovery.
-- [ ] **A5:** Implement evaluation through existing worker/scheduler infrastructure. Batch telemetry reads, bound work, protect against concurrent evaluators, and persist transitions safely.
-- [ ] **A6:** Connect firing/recovery to the corrected notification pipeline with stable deduplication keys. A failed delivery changes delivery status, not the underlying metric assessment.
+- [x] **A1:** Audit available telemetry and existing evaluation/job infrastructure. Define the initial metric/target catalog, permissions, missing-data policy, and preview window.
+- [x] **A2:** Write pure evaluator transition tests before UI/backend persistence. Cover durations, gaps, hysteresis, duplicate/out-of-order points, and edits to an active rule.
+- [x] **A3:** Build the approved rule list/editor, validation, metric availability hints, current state, and evaluation preview. Preserve unsaved edits and label historical sample coverage.
+- [x] **A4:** Add the smallest necessary rule/state schema and migration, authorized CRUD, validation, and bounded list/selector contracts. Decide deletion/disable/edit behavior for an active incident without sending misleading recovery.
+- [x] **A5:** Implement evaluation through existing worker/scheduler infrastructure. Batch telemetry reads, bound work, protect against concurrent evaluators, and persist transitions safely.
+- [x] **A6:** Connect firing/recovery to the corrected notification pipeline with stable deduplication keys. A failed delivery changes delivery status, not the underlying metric assessment.
 - [ ] **A7:** Wire preview and real-time/refresh updates without per-rule polling loops. Handle deleted targets/destinations and stale telemetry explicitly.
 - [ ] **A8:** Add restart/migration and end-to-end tests; update release notes, monitoring docs, and support-contract scope to reflect this newly selected capability.
 
@@ -45,3 +53,20 @@ Proposed boundaries: `components/monitors/MetricAlertRulesPanel.jsx` plus a focu
 - Load tests measure evaluator cost and dispatch latency on a stated fixture before performance claims.
 
 Acknowledgement, escalation, correlation, maintenance windows, advanced alert policy, expression languages, and external metric ingestion remain deferred. Approval of metric rules does not expand those boundaries.
+
+### What is not done
+
+**A7 — a deleted destination leaves an enabled rule firing into nothing.** The preview,
+the no-polling refresh policy and the stale-telemetry states all shipped.
+`metric_alert_rules.sink_id` carries `ON DELETE SET NULL`, so deleting a notification
+destination nulls the rule's `sink_id` and leaves `enabled` true: the rule keeps evaluating,
+and a firing transition emits an event whose `sink_id` is `None`. `validate_metric_rule`
+would refuse that combination on the next save, which is precisely the point — the database
+holds a state the API would reject. Deciding what should happen (disable the rule, refuse
+the sink delete, or surface it as a rule-level fault) is a product call, not a bug fix.
+
+**A8 — no end-to-end test.** The migration chain is verified
+(`tests/integration/test_fresh_install_migration_chain.py` runs `alembic upgrade head`
+against an empty database), docs and release notes are written, and the axe suite covers
+both Monitors tabs. There is no browser test that creates a rule, fires it and observes the
+notification.
