@@ -16,6 +16,7 @@ AssessmentReason = Literal[
     "version_missing",
     "version_unsupported",
     "candidate_limit",
+    "fleet_limit",
     "completed",
 ]
 
