@@ -95,6 +95,10 @@ function NotificationsPage() {
   // never look like a change to saved configuration (plan 05, N5).
   const [testingSinkId, setTestingSinkId] = useState(null);
   const [testResult, setTestResult] = useState(null);
+  // Which destination the visible result belongs to. The provider name alone
+  // cannot identify one of several Slack destinations, and `testingSinkId` is
+  // cleared the moment the test finishes -- exactly when the result appears.
+  const [testedSink, setTestedSink] = useState(null);
   const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
   const [selectedSinkIds, setSelectedSinkIds] = useState([]);
   const [selectedRouteIds, setSelectedRouteIds] = useState([]);
@@ -226,8 +230,10 @@ function NotificationsPage() {
     // A test says nothing about saved configuration, so it never refetches or
     // mutates the list -- the result is reported beside the table and nowhere
     // else (plan 05, N5).
+    const target = sinks.find((sink) => sink.id === id) || null;
     setTestingSinkId(id);
     setTestResult(null);
+    setTestedSink(target);
     try {
       const res = await notificationsApi.testSink(id);
       setTestResult(res.data);
@@ -240,7 +246,7 @@ function NotificationsPage() {
         state: 'terminal',
         reason_code: 'request_failed',
         message: err.message || 'The test request could not be sent.',
-        provider: sinks.find((sink) => sink.id === id)?.type,
+        provider: target?.provider_type,
         attempt_count: 0,
       });
       toast.error('The test request could not be sent.');
@@ -468,7 +474,11 @@ function NotificationsPage() {
                     destinations.
                   </div>
                 )}
-                <DeliveryResult result={testResult} pending={testingSinkId !== null} />
+                <DeliveryResult
+                  result={testResult}
+                  pending={testingSinkId !== null}
+                  destination={testedSink?.name}
+                />
                 <EntityTable
                   columns={sinkColumns}
                   data={sinks}

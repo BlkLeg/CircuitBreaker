@@ -50,6 +50,14 @@
   color: var(--color-danger);
 }
 
+/* Which destination answered, directly under the outcome it belongs to. */
+.delivery-result__destination {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
 .delivery-result__detail,
 .delivery-result__caveat,
 .delivery-result__guidance {

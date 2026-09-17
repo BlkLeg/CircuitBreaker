@@ -74,3 +74,20 @@ describe('DeliveryResult', () => {
     expect(container.innerHTML).not.toMatch(/#[0-9a-f]{3,8}\b/i);
   });
 });
+
+describe('DeliveryResult destination', () => {
+  it('names the destination the result belongs to', () => {
+    render(<DeliveryResult result={failed} destination="Ops Slack" />);
+    expect(screen.getByText('Ops Slack')).toBeInTheDocument();
+  });
+
+  it('names the destination while the test is still running', () => {
+    render(<DeliveryResult pending destination="Ops Slack" />);
+    expect(screen.getByRole('status')).toHaveTextContent(/testing ops slack/i);
+  });
+
+  it('renders without one when the caller has no name to give', () => {
+    render(<DeliveryResult result={failed} />);
+    expect(screen.getByRole('status')).toBeInTheDocument();
+  });
+});

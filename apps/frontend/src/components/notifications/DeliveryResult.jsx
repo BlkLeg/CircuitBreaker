@@ -15,11 +15,13 @@ import '../../styles/notifications.css';
  * something the operator just asked for, so it should be announced politely
  * rather than interrupting them.
  */
-function DeliveryResult({ result, pending }) {
+function DeliveryResult({ result, pending, destination }) {
   if (pending) {
     return (
       <div className="delivery-result delivery-result--pending" role="status">
-        <span className="delivery-result__title">Testing…</span>
+        <span className="delivery-result__title">
+          {destination ? `Testing ${destination}…` : 'Testing…'}
+        </span>
       </div>
     );
   }
@@ -31,6 +33,10 @@ function DeliveryResult({ result, pending }) {
   return (
     <div className={`delivery-result delivery-result--${view.tone}`} role="status">
       <span className="delivery-result__title">{view.title}</span>
+      {/* Which destination answered. A provider name alone cannot identify one
+          of several Slack destinations, and an outcome that names no
+          destination is not an outcome the operator can act on. */}
+      {destination && <span className="delivery-result__destination">{destination}</span>}
       <p className="delivery-result__detail">{view.detail}</p>
 
       {view.caveat && <p className="delivery-result__caveat">{view.caveat}</p>}
@@ -64,11 +70,14 @@ DeliveryResult.propTypes = {
   }),
   /** A test is in flight; the outcome is not known yet. */
   pending: PropTypes.bool,
+  /** The name of the destination this result belongs to. */
+  destination: PropTypes.string,
 };
 
 DeliveryResult.defaultProps = {
   result: null,
   pending: false,
+  destination: null,
 };
 
 export default DeliveryResult;

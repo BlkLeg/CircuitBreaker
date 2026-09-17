@@ -47,6 +47,10 @@ const GUIDANCE_BY_REASON = {
   retry_exhausted: 'Every attempt failed. Fix the destination, then test again.',
   destination_unavailable: 'The destination is disabled or removed. Re-enable it, then test again.',
   no_route: 'No severity route points at this destination yet.',
+  credential_unavailable:
+    'The stored credentials could not be decrypted. Re-enter them for this destination, then test again.',
+  delivery_error: 'Delivery failed before the provider answered. Test again to see if it persists.',
+  request_failed: 'The request never left Circuit Breaker. Check your connection, then test again.',
 };
 
 function providerLabel(provider) {

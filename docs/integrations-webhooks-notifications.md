@@ -75,6 +75,13 @@ way, so the two agree. What it proves is bounded, and the result panel is worded
 The panel reports the attempt count, the HTTP status, and any `Retry-After` window the provider
 asked for. A rejected response is never reported as success: acceptance, configuration being saved,
 and a human reading the message are three separate events.
+
+The result also names **which destination** answered. The provider name alone cannot tell two Slack
+destinations apart, and an outcome you cannot attribute is not one you can act on.
+
+Where the outcome has a known next action, the panel states it — re-enter credentials that could not
+be decrypted, wait out a rate-limit window, complete a half-configured destination. An outcome the
+UI does not recognise is reported with the server's own reason and no invented advice.
 - For Email sinks, check **Settings → SMTP**, since the sink sends through it.
 - If a sink starts failing right after a vault key change, re-save its webhook URL — the stored
   ciphertext can no longer be decrypted with the current key.

@@ -121,3 +121,33 @@ describe('describeDeliveryResult', () => {
     expect(view.facts).toEqual([]);
   });
 });
+
+describe('guidance covers every reason code the backend emits', () => {
+  // The module claims to be keyed by the codes the backend actually emits. These
+  // three were emitted with no next action, which is the gap this closes.
+  it.each([
+    ['credential_unavailable', /re-enter them/i],
+    ['delivery_error', /test again/i],
+    ['request_failed', /never left/i],
+  ])('offers a next action for %s', (reason_code, expected) => {
+    const view = describeDeliveryResult({
+      state: 'terminal',
+      reason_code,
+      message: 'Something went wrong.',
+      provider: 'slack',
+    });
+
+    expect(view.guidance).toMatch(expected);
+  });
+
+  it('still refuses to invent guidance for a code it does not know', () => {
+    const view = describeDeliveryResult({
+      state: 'terminal',
+      reason_code: 'a_code_from_the_future',
+      message: 'Something went wrong.',
+      provider: 'slack',
+    });
+
+    expect(view.guidance).toBeNull();
+  });
+});

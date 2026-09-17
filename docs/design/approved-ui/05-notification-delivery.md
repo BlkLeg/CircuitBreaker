@@ -36,6 +36,16 @@ Reuse the current notification worker, destinations, routing, and diagnostics. A
 > shared `DeliveryResult` instead of their own copy, which is how they drifted into
 > "Test delivered" apart from each other.
 >
+> Status 2026-09-17 (correction): three gaps against the delivery contract above.
+> The Notifications page renders one shared result panel above the table and
+> titled it by provider alone, so with several Slack destinations the outcome
+> named no destination the operator could act on — it now names it. Three reason
+> codes the backend actually emits (`credential_unavailable`, `delivery_error`,
+> `request_failed`) had no entry in the guidance table and reached the operator
+> with a reason and no next action. And the page read the tested sink's provider
+> from a `type` field the API does not return, so a failed request was
+> attributed to "The destination" instead of the provider.
+>
 > Still open: the browser/theme/keyboard pass from *Acceptance and tests* below has
 > not been run in a real browser.
 

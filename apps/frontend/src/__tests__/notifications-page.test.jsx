@@ -161,6 +161,63 @@ describe('NotificationsPage', () => {
     expect(mockToast.success).not.toHaveBeenCalled();
   });
 
+  it('names which destination the result belongs to', async () => {
+    render(<NotificationsPage />);
+    await waitFor(() => screen.getByText('Slack Sink'));
+
+    notificationsApi.testSink.mockResolvedValue({
+      data: {
+        ok: false,
+        state: 'terminal',
+        reason_code: 'authentication_rejected',
+        message: 'The provider rejected the destination credentials.',
+        provider: 'slack',
+        sink_id: 1,
+        attempt_count: 1,
+        http_status: 401,
+      },
+    });
+    fireEvent.click(screen.getAllByText('Test')[0]);
+
+    await waitFor(() => screen.getByText('Slack did not accept it'));
+    // A provider name alone cannot identify one of several Slack destinations.
+    expect(
+      screen.getByText('Slack Sink', { selector: '.delivery-result__destination' })
+    ).toBeInTheDocument();
+  });
+
+  it('tells the operator what to do when stored credentials cannot be read', async () => {
+    render(<NotificationsPage />);
+    await waitFor(() => screen.getByText('Slack Sink'));
+
+    notificationsApi.testSink.mockResolvedValue({
+      data: {
+        ok: false,
+        state: 'terminal',
+        reason_code: 'credential_unavailable',
+        message: 'Destination credentials are unavailable.',
+        provider: 'slack',
+        sink_id: 1,
+        attempt_count: 0,
+      },
+    });
+    fireEvent.click(screen.getAllByText('Test')[0]);
+
+    expect(await screen.findByText(/re-enter them for this destination/i)).toBeInTheDocument();
+  });
+
+  it('names the provider when the request never reaches the server', async () => {
+    render(<NotificationsPage />);
+    await waitFor(() => screen.getByText('Slack Sink'));
+
+    notificationsApi.testSink.mockRejectedValue(new Error('Network Error'));
+    fireEvent.click(screen.getAllByText('Test')[0]);
+
+    // Read from the sink's `provider_type`; the row has no `type` field at all.
+    await waitFor(() => screen.getByText('Slack did not accept it'));
+    expect(screen.getByText(/never left Circuit Breaker/i)).toBeInTheDocument();
+  });
+
   it('adds a new destination', async () => {
     render(<NotificationsPage />);
     fireEvent.click(screen.getByText(/Add Destination/));
