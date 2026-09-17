@@ -60,6 +60,19 @@ directly verifiable in this tree.
   distinguished on the page — the warning existed only as a `data-warning`
   attribute no stylesheet read — and the three analytics lists load
   independently, so one dead endpoint no longer blanks the other two panels.
+- The metric alerting engine finally has a surface. Its catalog, CRUD,
+  evaluation and scheduling shipped complete — routes mounted, worker
+  registered, unit tests green — and every request an operator could make of
+  it was unreachable: no page created a rule, showed one, or reported that one
+  was firing. The Monitors page is now a two-tab shell, and its **Alert rules**
+  tab lists rules with the six assessments the evaluator actually decides
+  (not "OK"/"Alerting"), creates, edits and deletes them with the server's own
+  gates mirrored — admin writes, destination required to enable,
+  revision-checked saves that keep every entered value — and previews a
+  prospective rule against the samples already stored before it is switched
+  on. The two places the engine deliberately declines to fabricate a recovery
+  (editing or deleting a firing rule) are stated where they happen instead of
+  left as surprises. See [docs/metric-alerts.md](docs/metric-alerts.md).
 
 ### Changed
 

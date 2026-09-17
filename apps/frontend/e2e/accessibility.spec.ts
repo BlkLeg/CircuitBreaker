@@ -72,6 +72,22 @@ test.describe('WCAG 2.2 AA — Intel console', () => {
   }
 });
 
+// The Monitors console gained a second tab. /monitors was never in PAGES —
+// its tablist, the alert-rule table, the state chips and the not-evaluating
+// hint are all new ARIA that the unit tests cannot see, so both tabs of the
+// shell are scanned, exactly as the Intel console's are.
+test.describe('WCAG 2.2 AA — Monitors console', () => {
+  for (const path of ['/monitors', '/monitors?tab=alert-rules']) {
+    test(`${path} has no serious or critical violations`, async ({ page }) => {
+      await stubApi(page);
+      await page.goto(path);
+      await expect(page.locator('.page-content')).toBeVisible();
+      await waitForRouteSettled(page);
+      await scanSettled(page, path);
+    });
+  }
+});
+
 // The navigator is the densest secondary-text surface in the app -- group
 // labels, per-row descriptions, category filters, footer hints -- and none of it
 // was ever scanned, because every page above is captured with the overlay shut.

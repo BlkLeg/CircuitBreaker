@@ -50,6 +50,116 @@ const DEFAULTS: Record<string, unknown> = {
   notifications: [],
   certificates: [],
 
+  // Metric alert rules. Full MetricAlertRuleOut shape (schemas/metric_alerts.py):
+  // the panel reads assessment and open_incident_id off each row, and an array
+  // missing them would render the table but lie about every rule's state. Two
+  // rules so the scan sees a firing row with its incident handle and a
+  // not-evaluating row with its hint, not one lonely Normal.
+  'monitors/alert-rules': [
+    {
+      id: 1,
+      name: 'CPU hot',
+      target_type: 'hardware',
+      target_id: 30,
+      metric_key: 'cpu_pct',
+      source: null,
+      comparator: '>',
+      threshold: 90,
+      unit: '%',
+      breach_duration_s: 300,
+      recovery_threshold: 80,
+      recovery_duration_s: 300,
+      max_gap_s: 180,
+      freshness_s: 180,
+      enabled: true,
+      severity: 'critical',
+      sink_id: 2,
+      revision: 1,
+      created_at: '2026-09-17T10:00:00Z',
+      updated_at: '2026-09-17T10:00:00Z',
+      assessment: 'firing',
+      open_incident_id: 'inc-e2e-1',
+    },
+    {
+      id: 2,
+      name: 'Disk filling',
+      target_type: 'hardware',
+      target_id: 31,
+      metric_key: 'disk_pct',
+      source: null,
+      comparator: '>=',
+      threshold: 85,
+      unit: '%',
+      breach_duration_s: 300,
+      recovery_threshold: 75,
+      recovery_duration_s: 300,
+      max_gap_s: 300,
+      freshness_s: 300,
+      enabled: true,
+      severity: 'warning',
+      sink_id: 2,
+      revision: 1,
+      created_at: '2026-09-17T10:00:00Z',
+      updated_at: '2026-09-17T10:00:00Z',
+      assessment: 'unknown',
+      open_incident_id: null,
+    },
+  ],
+  // MetricDefinition per metric_catalog.py — five hardware gauges, each with
+  // its own unit, comparators and freshness/gap defaults.
+  'monitors/alert-rules/catalog': [
+    {
+      key: 'cpu_pct',
+      label: 'CPU utilization',
+      unit: '%',
+      comparators: ['>', '>=', '<', '<='],
+      target_types: ['hardware'],
+      default_freshness_s: 180,
+      default_max_gap_s: 180,
+    },
+    {
+      key: 'mem_pct',
+      label: 'Memory utilization',
+      unit: '%',
+      comparators: ['>', '>=', '<', '<='],
+      target_types: ['hardware'],
+      default_freshness_s: 180,
+      default_max_gap_s: 180,
+    },
+    {
+      key: 'disk_pct',
+      label: 'Disk utilization',
+      unit: '%',
+      comparators: ['>', '>=', '<', '<='],
+      target_types: ['hardware'],
+      default_freshness_s: 300,
+      default_max_gap_s: 300,
+    },
+    {
+      key: 'temp_c',
+      label: 'Temperature',
+      unit: '°C',
+      comparators: ['>', '>=', '<', '<='],
+      target_types: ['hardware'],
+      default_freshness_s: 180,
+      default_max_gap_s: 180,
+    },
+    {
+      key: 'power_w',
+      label: 'Power',
+      unit: 'W',
+      comparators: ['>', '>=', '<', '<='],
+      target_types: ['hardware'],
+      default_freshness_s: 180,
+      default_max_gap_s: 180,
+    },
+  ],
+  // SinkOut (schemas/notifications.py): the rules panel reads id/name/enabled
+  // to decide whether the New rule / Enable flow is possible at all.
+  'notifications/sinks': [
+    { id: 2, name: 'Slack', provider_type: 'webhook', provider_config: {}, enabled: true },
+  ],
+
   // Topology
   topologies: [],
   // NOT []: useMapTabs (hooks/useMapTabs.js:15-22) reacts to an empty list by

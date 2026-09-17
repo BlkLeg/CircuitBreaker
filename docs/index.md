@@ -38,7 +38,7 @@ To see how to begin adding these components, proceed to [Getting Started](gettin
 - **[Settings](settings.md):** Control timezone, appearance, map defaults, and system behavior.
 - **[Authentication & Access](auth-access.md):** Local auth, OAuth/OIDC, MFA, invites, and recovery workflows.
 - **[Notifications](integrations-webhooks-notifications.md):** Route alerts to notification sinks and manage delivery.
-- **Monitoring:** Native ICMP, TCP, HTTP, and DNS checks with live status, uptime history, and latency history, on hardware, compute units, and services.
+- **Monitoring:** Native ICMP, TCP, HTTP, and DNS checks with live status, uptime history, and latency history, on hardware, compute units, and services — plus [threshold alert rules](metric-alerts.md) that watch collected hardware gauges and notify a destination when a value stays past its threshold.
 - **[Backup & Restore](backup-restore.md):** Export your inventory snapshot and restore when needed.
 - **[Deployment & Security](deployment-security.md):** Choose a quick lab setup or a hardened setup.
 
