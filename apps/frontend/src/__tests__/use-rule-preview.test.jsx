@@ -93,6 +93,25 @@ describe('useRulePreview', () => {
     expect(preview).not.toHaveBeenCalled();
   });
 
+  it('clears a stale preview when the rule stops being valid', async () => {
+    // Otherwise the panel keeps rendering "Normal — the most recent samples are
+    // on the safe side of the threshold" next to a form whose threshold has just
+    // been cleared. The token guards a late response; nothing guarded the result
+    // already on screen.
+    const { rerender } = render(<Probe value={rule()} />);
+    await act(async () => {
+      vi.advanceTimersByTime(700);
+    });
+    await waitFor(() => expect(screen.getByTestId('assessment')).toHaveTextContent('normal'));
+
+    rerender(<Probe value={rule({ threshold: '' })} />);
+    await act(async () => {
+      vi.advanceTimersByTime(700);
+    });
+
+    expect(screen.getByTestId('assessment')).toHaveTextContent('none');
+  });
+
   it('drops a response for values that have since changed', async () => {
     let resolveFirst;
     preview.mockImplementationOnce(
