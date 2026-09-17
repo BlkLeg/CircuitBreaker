@@ -66,6 +66,11 @@ class MetricAlertState(Base):
     )
     rule_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     assessment: Mapped[str] = mapped_column(String(16), nullable=False, default="unknown")
+    # Why the evaluator reached that assessment. `unknown` covers three separate
+    # problems -- no samples, stale samples, gaps too wide -- with three separate
+    # fixes, and without this the surface can only say which of them is not
+    # happening. NULL means the rule has not been evaluated yet.
+    reason_code: Mapped[str | None] = mapped_column(String(32))
     pending_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     recovery_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     open_incident_id: Mapped[str | None] = mapped_column(String(32))

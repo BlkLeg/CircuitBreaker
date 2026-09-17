@@ -58,6 +58,7 @@ def validate_metric_rule(db: Session, payload: MetricAlertRuleCreate) -> None:
 def _out(rule: MetricAlertRule, state: MetricAlertState | None) -> MetricAlertRuleOut:
     item = MetricAlertRuleOut.model_validate(rule)
     item.assessment = state.assessment if state else ("disabled" if not rule.enabled else "unknown")
+    item.reason_code = state.reason_code if state else ("disabled" if not rule.enabled else None)
     item.open_incident_id = state.open_incident_id if state else None
     return item
 
@@ -90,6 +91,7 @@ def create_rule(
         rule_id=rule.id,
         rule_revision=rule.revision,
         assessment="unknown" if rule.enabled else "disabled",
+        reason_code=None if rule.enabled else "disabled",
     )
     db.add(state)
     db.flush()
@@ -117,6 +119,9 @@ def update_rule(db: Session, rule_id: int, payload: MetricAlertRuleUpdate) -> Me
         db.add(state)
     state.rule_revision = rule.revision
     state.assessment = "unknown" if rule.enabled else "disabled"
+    # The stored reason described the rule as it was. It does not survive an
+    # edit any more than the pending clock does.
+    state.reason_code = None if rule.enabled else "disabled"
     state.pending_since = None
     state.recovery_since = None
     # Disabling/editing does not fabricate recovery. Preserve an open incident.
@@ -196,6 +201,7 @@ def persist_rule_transition(
     elif decision.event_type == "recovered" and not incident_id:
         return None
     state.assessment = decision.assessment
+    state.reason_code = decision.reason_code
     state.pending_since = decision.pending_since
     state.recovery_since = decision.recovery_since
     state.open_incident_id = incident_id if decision.assessment != "normal" else None

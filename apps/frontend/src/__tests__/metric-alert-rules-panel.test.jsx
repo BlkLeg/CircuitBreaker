@@ -82,13 +82,15 @@ describe('MetricAlertRulesPanel', () => {
     expect(screen.getByTestId('rule-condition-1')).toHaveTextContent('> 90');
   });
 
-  it('does not invent a reason the list endpoint never returned', async () => {
-    list.mockResolvedValue({ data: [rule({ assessment: 'normal' })] });
+  it('explains a healthy rule too', async () => {
+    list.mockResolvedValue({
+      data: [rule({ assessment: 'normal', reason_code: 'condition_not_met' })],
+    });
 
     render(<MetricAlertRulesPanel />);
 
     await waitFor(() => expect(screen.getByText('Normal')).toBeInTheDocument());
-    expect(screen.queryByTestId('rule-reason-1')).not.toBeInTheDocument();
+    expect(screen.getByTestId('rule-reason-1')).toHaveTextContent(/safe side of the threshold/i);
   });
 
   it('renders each assessment with its own chip', async () => {
@@ -107,30 +109,43 @@ describe('MetricAlertRulesPanel', () => {
     expect(screen.getByText('Not evaluating')).toBeInTheDocument();
   });
 
-  it('says where to find out why a rule is not evaluating', async () => {
-    // The list endpoint returns `assessment` and no reason: MetricAlertState
-    // persists no reason_code, and only /preview reports one. So the row says
-    // the state and points at the place that can explain it, rather than
-    // inventing a reason it was not given.
-    list.mockResolvedValue({ data: [rule({ assessment: 'unknown' })] });
+  it('tells the three not-evaluating reasons apart', async () => {
+    list.mockResolvedValue({
+      data: [
+        rule({ id: 1, name: 'a', assessment: 'unknown', reason_code: 'no_samples' }),
+        rule({ id: 2, name: 'b', assessment: 'unknown', reason_code: 'stale_samples' }),
+        rule({ id: 3, name: 'c', assessment: 'unknown', reason_code: 'sample_gap' }),
+      ],
+    });
 
     render(<MetricAlertRulesPanel />);
 
-    await waitFor(() => expect(screen.getByText('Not evaluating')).toBeInTheDocument());
-    expect(screen.getByTestId('rule-hint-1')).toHaveTextContent(/open the rule/i);
+    await waitFor(() => expect(screen.getByTestId('rule-reason-1')).toBeInTheDocument());
+    const details = [1, 2, 3].map((id) => screen.getByTestId(`rule-reason-${id}`).textContent);
+    expect(new Set(details).size).toBe(3);
   });
 
-  it('does not tell a viewer to open a rule they cannot open', async () => {
-    // Edit and the preview are both admin-only, so "Open the rule to see why"
-    // is an instruction a viewer cannot follow.
-    mockUser.value = { role: 'viewer' };
-    list.mockResolvedValue({ data: [rule({ assessment: 'unknown' })] });
+  it('says a rule has not been evaluated yet rather than inventing a reason', async () => {
+    list.mockResolvedValue({ data: [rule({ assessment: 'unknown', reason_code: null })] });
 
     render(<MetricAlertRulesPanel />);
 
     await waitFor(() => expect(screen.getByText('Not evaluating')).toBeInTheDocument());
-    expect(screen.getByTestId('rule-hint-1')).toHaveTextContent(/administrator/i);
-    expect(screen.getByTestId('rule-hint-1')).not.toHaveTextContent(/^Open the rule/);
+    expect(screen.getByTestId('rule-reason-1')).toHaveTextContent(/not been evaluated yet/i);
+  });
+
+  it('gives a viewer the same reason an admin gets', async () => {
+    // The reason now rides on the list response, so it no longer depends on
+    // reaching the admin-only preview to find out.
+    mockUser.value = { role: 'viewer' };
+    list.mockResolvedValue({
+      data: [rule({ assessment: 'unknown', reason_code: 'stale_samples' })],
+    });
+
+    render(<MetricAlertRulesPanel />);
+
+    await waitFor(() => expect(screen.getByText('Not evaluating')).toBeInTheDocument());
+    expect(screen.getByTestId('rule-reason-1')).toHaveTextContent(/stopped reporting/i);
   });
 
   it('hides every write control from a viewer', async () => {

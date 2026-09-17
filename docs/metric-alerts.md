@@ -61,10 +61,17 @@ before saving; the server checks it again.
 
 **Not evaluating** has three different causes — the target has never reported
 this metric, it has stopped reporting recently enough, or it reports with gaps
-too wide to measure across — and they are three different fixes. The rule list
-cannot tell them apart (the list carries the state, not the reason); open the
-rule and read the **Evaluation preview**, which reports the evaluator's own
-reason, or check the host's telemetry integration.
+too wide to measure across — and they are three different fixes. Each rule
+carries the evaluator's own reason, so the list says which of the three applies:
+
+| Reason | What it means | What to do |
+|---|---|---|
+| No samples | Nothing was found for this metric in the window | Check that telemetry collection is configured for the host and reports this metric |
+| Stale samples | The newest sample is older than the freshness window | The collector or agent stopped reporting; check the integration, or raise the freshness window if this cadence is expected |
+| Sample gap | Samples arrive with holes wider than the rule allows | Raise the maximum gap to match how often the host reports, or fix the collection interval |
+
+A rule the evaluator has not reached yet says so rather than borrowing one of
+these explanations.
 
 The preview is honest about what it is: what this rule *would* conclude from the
 samples already stored over the chosen window. It is an evaluation of collected

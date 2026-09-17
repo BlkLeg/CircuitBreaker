@@ -99,6 +99,14 @@ where a reason arrives. Closing this properly is a backend change — a `reason_
 `MetricAlertState`, set in `persist_rule_transition` from the decision already in hand, and a
 field on `MetricAlertRuleOut` — and §3 puts that outside this design rather than inside it.
 
+> **Closed 2026-09-17, on the author's instruction.** Migration
+> `0116_metric_alert_reason_code` adds the nullable column, `persist_rule_transition` records
+> the decision's reason, and `MetricAlertRuleOut` carries it. The list now distinguishes the
+> three, for every reader rather than only for an admin who opens the preview. The column is
+> nullable with no backfill: NULL means "not evaluated since the column existed", which is
+> true of every pre-existing row, and inventing a reason for a state decided before the column
+> existed would be fabricating evidence.
+
 ### 4.3 Validation, and what it implies for the form
 
 `metric_rules.py:34-56`, in order:

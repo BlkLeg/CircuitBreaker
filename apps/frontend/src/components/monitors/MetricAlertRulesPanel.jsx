@@ -6,7 +6,7 @@ import { SkeletonTable } from '../common/SkeletonTable';
 import MetricAlertRuleEditor from './MetricAlertRuleEditor';
 import MetricAlertStateChip from './MetricAlertStateChip';
 import { useMetricAlertRules } from '../../hooks/useMetricAlertRules';
-import { definitionFor } from '../../lib/metricAlerts';
+import { definitionFor, describeRuleState } from '../../lib/metricAlerts';
 import { useAuth } from '../../context/AuthContext';
 import '../../styles/monitors.css';
 
@@ -131,14 +131,18 @@ function MetricAlertRulesPanel() {
                 </td>
                 <td data-testid={`rule-condition-${rule.id}`}>{conditionText(rule, catalog)}</td>
                 <td>
-                  <MetricAlertStateChip assessment={rule.assessment} />
-                  {rule.assessment === 'unknown' && (
-                    <span className="rule-reason" data-testid={`rule-hint-${rule.id}`}>
-                      {/* The reason lives only in the admin-only preview, so the
-                          pointer has to match what this viewer can actually do. */}
-                      {canWrite
-                        ? 'Open the rule to see why it is not evaluating.'
-                        : 'An administrator can open this rule to see why it is not evaluating.'}
+                  <MetricAlertStateChip assessment={rule.assessment} reason={rule.reason_code} />
+                  {rule.assessment !== 'disabled' && (
+                    <span className="rule-reason" data-testid={`rule-reason-${rule.id}`}>
+                      {/* The evaluator's own reason, carried on the list
+                          response since 0116. A rule it has not reached yet
+                          says so rather than borrowing an explanation. */}
+                      {rule.reason_code
+                        ? describeRuleState({
+                            assessment: rule.assessment,
+                            reason_code: rule.reason_code,
+                          }).detail
+                        : 'This rule has not been evaluated yet.'}
                     </span>
                   )}
                 </td>

@@ -51,6 +51,9 @@ class MetricAlertRuleOut(MetricAlertRuleCreate):
     created_at: datetime
     updated_at: datetime
     assessment: str = "unknown"
+    # The evaluator's reason for `assessment`, or None before the first
+    # evaluation. Same vocabulary as MetricAlertPreview.reason_code.
+    reason_code: str | None = None
     open_incident_id: str | None = None
 
 
