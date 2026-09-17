@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 
-from app.db.models import CapacityForecast, ResourceEfficiencyRecommendation
+from app.db.models import (
+    CapacityForecast,
+    FlapIncident,
+    ResourceEfficiencyRecommendation,
+)
 from app.db.session import get_db
 from app.schemas.intelligence import (
     AssetRefOut,
@@ -53,6 +58,20 @@ class ResourceEfficiencyOut(BaseModel):
     mem_avg_pct: float | None
     recommendation: str
     evaluated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class FlapIncidentOut(BaseModel):
+    id: int
+    asset_type: str
+    asset_id: int
+    asset_name: str | None = None
+    window_start: datetime
+    window_end: datetime
+    transition_count: int
+    is_active: bool
+    resolved_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -152,7 +171,8 @@ def list_capacity_forecasts(db: Session = Depends(get_db)) -> list[CapacityForec
 
 
 def _resolve_asset_names(
-    db: Session, rows: list[ResourceEfficiencyRecommendation]
+    db: Session,
+    rows: Sequence[ResourceEfficiencyRecommendation | FlapIncident],
 ) -> dict[tuple[str, int], str]:
     """id -> name for every asset referenced by `rows`, in one query per
     asset TYPE present (at most four), never one per row.
@@ -187,6 +207,30 @@ def list_resource_efficiency(
     out: list[ResourceEfficiencyOut] = []
     for row in rows:
         item = ResourceEfficiencyOut.model_validate(row)
+        item.asset_name = names.get((row.asset_type, row.asset_id))
+        out.append(item)
+    return out
+
+
+@router.get("/flap-incidents", response_model=list[FlapIncidentOut])
+def list_flap_incidents(
+    active: bool | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[FlapIncidentOut]:
+    """Return hardware seen transitioning up and down within one window.
+
+    The analytics job has recorded these since it shipped; this is the first
+    endpoint to read them.
+    """
+    query = db.query(FlapIncident)
+    if active is not None:
+        query = query.filter(FlapIncident.is_active.is_(active))
+    rows = query.order_by(FlapIncident.window_end.desc()).limit(limit).all()
+    names = _resolve_asset_names(db, rows)
+    out: list[FlapIncidentOut] = []
+    for row in rows:
+        item = FlapIncidentOut.model_validate(row)
         item.asset_name = names.get((row.asset_type, row.asset_id))
         out.append(item)
     return out
