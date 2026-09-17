@@ -1,13 +1,20 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 from app.db.cve_models import CVECacheBase
 from app.db.models import ComputeUnit, Hardware, Service
-from app.schemas.cve import IdentityPatch
+from app.schemas.cve import AssessmentIdentity, IdentityPatch
 from app.services.intelligence.cve_assessment import update_assessment_identity
+from app.services.intelligence.cve_feed import (
+    complete_feed_generation,
+    ingest_feed_page,
+    start_feed_generation,
+)
 from app.services.intelligence.fleet_assessment import (
+    candidates_for,
     group_by_identity,
     resolve_fleet_identities,
+    select_candidates,
 )
 
 
@@ -89,3 +96,137 @@ def test_identity_key_folds_case_so_vendor_spelling_does_not_split_a_group(db_se
     groups = group_by_identity(resolve_fleet_identities(db))
 
     assert len([key for key in groups if key[1] == "widget"]) == 1
+
+
+def _record(cve_id, vendor, product, *, score=8.1):
+    return {
+        "cve": {
+            "id": cve_id,
+            "descriptions": [{"lang": "en", "value": "Example issue"}],
+            "metrics": {
+                "cvssMetricV31": [{"cvssData": {"baseScore": score, "baseSeverity": "HIGH"}}]
+            },
+            "published": "2026-09-01T00:00:00Z",
+            "configurations": [
+                {
+                    "nodes": [
+                        {
+                            "operator": "OR",
+                            "cpeMatch": [
+                                {
+                                    "criteria": f"cpe:2.3:a:{vendor}:{product}:*:*:*:*:*:*:*:*",
+                                    "vulnerable": True,
+                                    "versionStartIncluding": "1.0",
+                                    "versionEndExcluding": "9.0",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ],
+        }
+    }
+
+
+def _seeded_cache(records):
+    cache = _cache_session()
+    generation = start_feed_generation(cache)
+    ingest_feed_page(cache, generation, records)
+    complete_feed_generation(cache, generation, total_records=len(records))
+    cache.commit()
+    return cache, generation.id
+
+
+class _QueryCounter:
+    """Counts statements touching cve_applicability on one engine."""
+
+    def __init__(self, session):
+        self.count = 0
+        self._engine = session.get_bind()
+        event.listen(self._engine, "before_cursor_execute", self._on_execute)
+
+    def _on_execute(self, conn, cursor, statement, parameters, context, executemany):
+        if "cve_applicability" in statement:
+            self.count += 1
+
+    def stop(self):
+        event.remove(self._engine, "before_cursor_execute", self._on_execute)
+
+
+def test_one_statement_covers_every_product_in_the_pass():
+    cache, generation = _seeded_cache(
+        [
+            _record("CVE-2026-0001", "acme", "widget"),
+            _record("CVE-2026-0002", "globex", "gadget"),
+            _record("CVE-2026-0003", "initech", "sprocket"),
+        ]
+    )
+    counter = _QueryCounter(cache)
+    try:
+        pool = select_candidates(cache, generation, {"widget", "gadget", "sprocket"})
+    finally:
+        counter.stop()
+
+    assert counter.count == 1
+    assert set(pool.by_pair) == {("acme", "widget"), ("globex", "gadget"), ("initech", "sprocket")}
+
+
+def test_an_identity_with_a_vendor_takes_only_its_own_pair():
+    cache, generation = _seeded_cache(
+        [
+            _record("CVE-2026-0001", "acme", "widget"),
+            _record("CVE-2026-0002", "other", "widget"),
+        ]
+    )
+    pool = select_candidates(cache, generation, {"widget"})
+    identity = AssessmentIdentity(
+        vendor="acme",
+        product="widget",
+        version="1.9",
+        version_scheme="dotted_numeric",
+        provenance="inventory",
+        revision=0,
+    )
+
+    records, limited = candidates_for(pool, identity)
+
+    assert [r.cve_id for r in records] == ["CVE-2026-0001"]
+    assert limited is False
+
+
+def test_an_identity_with_no_vendor_takes_every_vendor_for_its_product():
+    cache, generation = _seeded_cache(
+        [
+            _record("CVE-2026-0001", "acme", "widget"),
+            _record("CVE-2026-0002", "other", "widget"),
+        ]
+    )
+    pool = select_candidates(cache, generation, {"widget"})
+    identity = AssessmentIdentity(
+        vendor=None,
+        product="widget",
+        version="1.9",
+        version_scheme="dotted_numeric",
+        provenance="inventory",
+        revision=0,
+    )
+
+    records, limited = candidates_for(pool, identity)
+
+    assert {r.cve_id for r in records} == {"CVE-2026-0001", "CVE-2026-0002"}
+    assert limited is False
+
+
+def test_a_noisy_product_does_not_starve_another_products_budget(monkeypatch):
+    monkeypatch.setattr("app.services.intelligence.fleet_assessment.MAX_CANDIDATES", 2)
+    cache, generation = _seeded_cache(
+        [_record(f"CVE-2026-10{i:02d}", "acme", "widget") for i in range(5)]
+        + [_record("CVE-2026-2001", "globex", "gadget")]
+    )
+
+    pool = select_candidates(cache, generation, {"widget", "gadget"})
+
+    assert len(pool.by_pair[("acme", "widget")]) == 2
+    assert ("acme", "widget") in pool.capped_pairs
+    assert len(pool.by_pair[("globex", "gadget")]) == 1
+    assert ("globex", "gadget") not in pool.capped_pairs
