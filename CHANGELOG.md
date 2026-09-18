@@ -316,3 +316,27 @@ directly verifiable in this tree.
 - A `/link` peer that disconnects during the hello exchange is now an ordinary
   disconnect rather than an unhandled ASGI exception with a full traceback per
   occurrence (`4f25e7cf`).
+
+### Security
+
+- `anyio` moved to 4.14.2, the fixed release for CVE-2026-63374 (`TLSStream`
+  encoded host names with IDNA 2003, which can enable TLS certificate spoofing)
+  and CVE-2026-64847 (process-pool workers could block indefinitely on undrained
+  stderr). The lock had resolved `anyio>=4.0,<4.15` to 4.12.1 when that upper
+  bound was added for Starlette's `TestClient`, and nothing re-resolved it once
+  4.14.x shipped. The bound is still required — `starlette.testclient`
+  references `anyio.abc.BlockingPortal`, which 4.15.0 deprecates, and with
+  `filterwarnings = error` that is a collection failure rather than a warning —
+  so the floor moved and the ceiling stayed (`727fe374`).
+
+- The backend's three dependency files are now held to one story, because each
+  is read by something different: CI installs from `pyproject.toml`, every
+  shipped image installs `requirements.txt`, and the security gate's `pip-audit`
+  step audits that same generated file. The vulnerable `anyio` was therefore in
+  the containers while the environment the tests ran in had already resolved
+  past it, and a floor raised in `pyproject.toml` alone would have left it
+  there. `tests/build/test_backend_dependency_pins.py` now fails if
+  `requirements.txt` stops matching what `scripts/gen_requirements.py` renders
+  from `poetry.lock` — hand-editing the pins is the tempting way to green the
+  gate, since that is the file `pip-audit` reads — or if any pin in it falls
+  outside the constraint `pyproject.toml` declares (`727fe374`).
