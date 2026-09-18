@@ -196,13 +196,23 @@ docker exec "$CONTAINER_NAME" \
   supervisorctl -c /etc/supervisor/conf.d/supervisord.conf status \
   > /tmp/cb-mono-supervisor.txt 2>&1 || true
 cat /tmp/cb-mono-supervisor.txt
-programs=$(grep -c . /tmp/cb-mono-supervisor.txt || echo 0)
-if [[ "$programs" -ne 13 ]]; then
-  dump_logs_and_fail "Expected 13 supervisord programs, got ${programs}"
+# Not a count: supervisord.mono.conf has 13 [program:] sections, but
+# worker-monitor-poll sets numprocs=2 with a process_name template, so
+# supervisorctl reports 14 processes. Any hardcoded total is wrong again as soon
+# as a program or a numprocs changes. Reading the state column also catches
+# STOPPED and a stuck STARTING, which a FATAL grep does not.
+not_running=$(awk 'NF && $2 != "RUNNING" {print}' /tmp/cb-mono-supervisor.txt)
+if [[ -n "$not_running" ]]; then
+  echo "[E2E] Not RUNNING:"
+  echo "$not_running"
+  dump_logs_and_fail "A supervisord program is not RUNNING"
 fi
-if grep -Eq '(FATAL|BACKOFF|EXITED)' /tmp/cb-mono-supervisor.txt; then
-  dump_logs_and_fail "A supervisord program is not running"
-fi
+# Non-vacuous guard: the `|| true` above means a failed exec leaves an empty
+# file, which satisfies every assertion made over it.
+for proc in postgres nats redis backend-api nginx; do
+  grep -Eq "^${proc}[[:space:]]" /tmp/cb-mono-supervisor.txt \
+    || dump_logs_and_fail "supervisorctl did not report ${proc}"
+done
 
 # A container that crashed and was restarted back into health passes everything
 # above. This is what separates "came up" from "kept coming up".

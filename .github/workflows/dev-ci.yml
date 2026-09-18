@@ -845,21 +845,49 @@ jobs:
             supervisorctl -c /etc/supervisor/conf.d/supervisord.conf status \
             | tee /tmp/supervisor-status.txt || true
 
-          # Guard the guard: with `|| true` above, an exec that failed outright
-          # leaves an empty file, and grepping an empty file for FATAL finds
-          # nothing and would pass. supervisord.mono.conf defines 13 programs
-          # and every one is long-running, so the line count is the check that
-          # this step saw the whole process table.
-          programs="$(grep -c . /tmp/supervisor-status.txt || echo 0)"
-          echo "supervisorctl reported ${programs} program(s)"
-          if [ "${programs}" -ne 13 ]; then
-            echo "::error::expected 13 supervisord programs, got ${programs} — supervisorctl did not report the full process table"
+          # Not a count. The first version of this step asserted exactly 13,
+          # because supervisord.mono.conf has 13 [program:] sections — but
+          # worker-monitor-poll carries numprocs=2 and a process_name template,
+          # so supervisorctl reports 14 processes and the job failed against a
+          # container in which everything was running. Any hardcoded total is
+          # wrong again the next time a program or a numprocs changes.
+          #
+          # Reading the state column is also stricter than grepping for FATAL:
+          # a state this job never thought of — STOPPED, or a STARTING that
+          # never settles — fails here too instead of passing unnoticed.
+          #
+          # Retried, because /readyz answering does not mean every worker has
+          # finished starting; a process still in STARTING is not yet a fault.
+          all_running=""
+          for attempt in $(seq 1 6); do
+            docker compose -f docker-compose.yml exec -T circuitbreaker \
+              supervisorctl -c /etc/supervisor/conf.d/supervisord.conf status \
+              > /tmp/supervisor-status.txt 2>&1 || true
+            not_running="$(awk 'NF && $2 != "RUNNING" {print}' /tmp/supervisor-status.txt)"
+            if [ -z "${not_running}" ]; then
+              all_running="yes"
+              break
+            fi
+            echo "attempt ${attempt}: not yet all RUNNING"
+            sleep 5
+          done
+          cat /tmp/supervisor-status.txt
+
+          if [ -z "${all_running}" ]; then
+            echo "::error::a supervisord program is not RUNNING"
+            awk 'NF && $2 != "RUNNING" {print}' /tmp/supervisor-status.txt
             exit 1
           fi
-          if grep -Eq '(FATAL|BACKOFF|EXITED)' /tmp/supervisor-status.txt; then
-            echo "::error::a supervisord program is not running"
-            exit 1
-          fi
+
+          # Non-vacuous guard. With `|| true` above, an exec that failed outright
+          # leaves an empty file — and every assertion over an empty file passes,
+          # including the one immediately above. These five are the processes
+          # without which the container is not the product, so requiring them by
+          # name proves the status was actually read.
+          for proc in postgres nats redis backend-api nginx; do
+            grep -Eq "^${proc}[[:space:]]" /tmp/supervisor-status.txt \
+              || { echo "::error::supervisorctl did not report ${proc}"; exit 1; }
+          done
           echo "all supervisord programs running"
 
       # A container that crashed and was restarted back into health passes every
