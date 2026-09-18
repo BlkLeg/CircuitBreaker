@@ -271,7 +271,25 @@ def test_public_endpoint_allowlist_requires_codeowner_review():
     assert matching_lines == [f"{_ENDPOINT_POLICY_REPO_PATH} @blkleg"], (
         "SEC-07 public endpoint policy must require security-owner CODEOWNERS review"
     )
-    assert "Require review from Code Owners: \u2713 Enabled" in branch_protection
+    # SEC-07's stated mechanism is Code Owner approval. GitHub does not let an
+    # author approve their own pull request, and this repository has exactly one
+    # codeowner (EXC-002), so that mechanism cannot operate here: requiring it
+    # would make every pull request permanently unmergeable. This assertion used
+    # to demand that branch-protection.md claim the review was enabled, which as
+    # of 2026-09-17 would be a documented control that provably does not run.
+    #
+    # What is asserted instead is that the document states which of the two
+    # states holds, and only one of them. That keeps the test load-bearing in
+    # both directions: it fails if someone quietly drops the note explaining that
+    # the gate is unenforced, and it fails again if a second maintainer joins and
+    # review is enabled without the note being removed.
+    review_enabled = "Require review from Code Owners: \u2713 Enabled" in branch_protection
+    review_unenforced = "This gate is not currently enforced by review" in branch_protection
+    assert review_enabled != review_unenforced, (
+        "SEC-07: branch-protection.md must state exactly one of 'Code Owner review "
+        "is enabled' or 'this gate is not currently enforced by review' -- it "
+        f"currently says enabled={review_enabled}, unenforced={review_unenforced}"
+    )
     assert "SEC-07 Public Route Review Gate" in branch_protection
 
 
