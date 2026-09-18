@@ -84,7 +84,7 @@ func shouldEnroll(stateDir string) bool {
 // enrollment failed for good.
 //
 // Every non-refusal attempt is scheduled by link.RetrySchedule, reusing
-// Phase 1's classification and ladder rather than a second, independently-
+// the link's own classification and ladder rather than a second, independently-
 // tuned copy of it — see that type's doc comment for why. A "rejected" or
 // "revoked" answer is different in kind, not just severity: it means an
 // operator looked at this device and said no, which retrying at network

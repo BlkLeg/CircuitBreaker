@@ -261,8 +261,8 @@ func constantTimeEqualHexFold(a, b string) bool {
 }
 
 // moveFile renames src to dst, falling back to a copy+remove when the rename
-// fails across a filesystem boundary (EXDEV). Rarer than it used to be:
-// Download() now stages inside the agent's own state directory when it can
+// fails across a filesystem boundary (EXDEV). Rare in practice:
+// Download() stages inside the agent's own state directory when it can
 // (see scratchCandidates), which is the same filesystem as the install
 // target. The fallback still has to be correct, because a host whose state
 // directory is unwritable stages in a temp directory that usually is on a
@@ -506,7 +506,7 @@ func Swap(newBinaryPath, version, stateDir string) (prevVersionDir string, err e
 // currentLink's live target and keepVersionDir (the version an update was
 // just confirmed away from) — called once an update confirms (a
 // post-update hello.ack arrives; see cmd/cb-agent/main.go's onConnected),
-// mirroring the single-".previous"-backup retention the old scheme kept.
+// keeping one backup version, no more.
 // keepVersionDir may be "" (nothing to additionally retain beyond
 // current). Best-effort: a failure removing one stale version directory is
 // collected and returned, but does not stop pruning from attempting the

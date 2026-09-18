@@ -180,10 +180,10 @@ func TestPrintStatus_ReflectsWriterState(t *testing.T) {
 			wantNot: []string{"spool loss"},
 		},
 		{
-			// The point of Phase 3: destroyed history is stated in plain
-			// words, names the window that is gone, and names the remedy.
+			// Destroyed history must be stated in plain words, naming the
+			// window that is gone and the remedy.
 			//
-			// Both remedies, since Phase 5. The same counter now records
+			// Both remedies: the same counter also records
 			// observations the spool could not write at all — every data
 			// frame goes through the spool before it can reach a socket, so
 			// a refused write ends the observation — and telling an operator
@@ -591,7 +591,7 @@ func stageSwappedUpdate(t *testing.T, deadline time.Time) (dir, currentLink, old
 }
 
 // TestRollbackExpiredUpdate_RollsBackAndReExecsWithoutEverReachingTheServer is
-// the regression test for F-8. runDaemon calls this before enroll.Run, so the
+// the durable half of the rollback net. runDaemon calls this before enroll.Run, so the
 // path exercised here is the one an agent takes when the update it just
 // installed is the reason it can no longer reach the server: enrollment would
 // fail, os.Exit(1) would follow, and watchForRollback — spawned only after a
@@ -925,7 +925,7 @@ func TestWatchForRollback_FailedRollbackStillClearsMarker(t *testing.T) {
 	}
 }
 
-// --- Bug 1 fix round 4: test-only pre-re-exec delay override -------------
+// --- test-only pre-re-exec delay override ---------------------------------
 
 // TestResolveReExecDelay_UnsetIsInert pins the production-safety guarantee
 // for reExecDelayEnvOverride: with CB_AGENT_TEST_PRE_REEXEC_DELAY_MS unset
@@ -3321,11 +3321,11 @@ func TestConfigureLogging_RejectsAnUnknownLevel(t *testing.T) {
 
 // ── The agent must survive a server outage at startup ─────────────────────
 //
-// runDaemon used to call enroll.Run synchronously and os.Exit(1) on any
-// failure, so an agent that restarted while the server was down — or that
-// was enrolling for the very first time against one that simply was not up
-// yet — died immediately and crash-looped under systemd's or Docker's
-// restart policy, collecting and spooling nothing for as long as the outage
+// Calling enroll.Run synchronously and os.Exit(1) on any failure means an
+// agent that restarts while the server is down — or that is enrolling for the
+// very first time against one that is not up yet — dies immediately and
+// crash-loops under systemd's or Docker's restart policy, collecting and
+// spooling nothing for as long as the outage
 // lasted. shouldEnroll and retryEnroll below are what replace that.
 
 func TestShouldEnroll_TrueWithoutAMarkerFalseWithOne(t *testing.T) {
@@ -3520,7 +3520,7 @@ func TestRetryEnroll_SucceedsOnceTheServerAccepts(t *testing.T) {
 	// The upgrade path: an agent with no marker yet — this build's first run
 	// after upgrading from one that predates enroll.MarkEnrolled — must still
 	// reach an ordinary "active" outcome through retryEnroll, exactly as the
-	// direct Run call runDaemon used to make.
+	// a direct Run call would.
 	serverPriv, serverPub := generateDaemonTestKeypair(t)
 	upgrader := websocket.Upgrader{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

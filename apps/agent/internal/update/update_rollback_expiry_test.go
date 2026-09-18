@@ -8,10 +8,10 @@ import (
 	"time"
 )
 
-// The defect these tests pin (F-8, diagnosed 2026-08-09):
+// The defect these tests pin:
 //
-// The rollback safety net used to live entirely in cmd/cb-agent's
-// watchForRollback — an in-process `time.Sleep(rollbackWindow)`. That
+// A rollback safety net living entirely in cmd/cb-agent's watchForRollback —
+// an in-process `time.Sleep(rollbackWindow)` — cannot cover itself. That
 // goroutine is only spawned *after* runDaemon's unconditional, fatal
 // enroll.Run succeeds, so an update that leaves the agent unable to reach the
 // server at all (a bad server URL, a broken TLS pin, a partitioned network, or

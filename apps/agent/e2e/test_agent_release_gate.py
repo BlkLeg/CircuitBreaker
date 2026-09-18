@@ -1,9 +1,7 @@
 """Docker E2E: the full-system cbi-agent release gate — ONE journey, ONE stack.
 
-`plans/2026-08-04-cbi-agent-e2e-cohesion-review.md`'s "Full-System E2E Release Gate"
-section is the spec for this file: its Topology, its 17-step Journey, and its
-"Required assertions" list. `plans/2026-08-09-cbi-agent-finalization.md` item 4 is
-why it exists.
+The spec for this file is a Topology, a 17-step Journey, and a list of required
+assertions.
 
 **What this test adds that `test_agent_e2e.py` structurally cannot.** That file
 holds twelve tests and every individual capability is covered by one of them. Each
@@ -17,8 +15,8 @@ that disabling a capability mid-scan and then revoking the agent is one continuo
 act rather than two independent demonstrations. The single-stack continuity IS the
 deliverable. Everything below runs against one `_up_server()` and one `_down()`.
 
-**The central hole this was designed around — journey step 8.** Slice 3's
-`test_remote_probe_assignment_execution_and_unavailability` does create ICMP, TCP,
+**The central hole this was designed around — journey step 8.** The remote-probe
+test `test_remote_probe_assignment_execution_and_unavailability` does create ICMP, TCP,
 HTTP and DNS monitors with `probe_agent_id`, but against a **hardcoded fixture IP**
 (`_PROBE_TARGET_IP`). No test in the suite creates a monitor against a Hardware row
 that agent discovery FOUND and an operator IMPORT created. This one makes that
@@ -264,7 +262,7 @@ _POST_REVOKE_SILENCE_S = _DEFAULT_TELEMETRY_INTERVAL_S * 3
 
 # `internal/frame/frame.go`'s `controlFrameTypes`, restated. The spool exists for
 # host DATA, and link-protocol control traffic plus the heartbeat liveness signal
-# must never reach its write path (spec §4.4). This is a deny-list on the Go side
+# must never reach its write path (spec the plan). This is a deny-list on the Go side
 # on purpose — every type NOT named classifies as a data frame, so a future slice's
 # data frame needs no code change — and it is restated rather than derived here for
 # the same reason `frame_test.go` keeps a hand-written literal: a list derived from
@@ -584,7 +582,7 @@ def _uptime(client: httpx.Client, monitor_id: int) -> dict:
 def _transitions(client: httpx.Client, monitor_id: int) -> list[dict]:
     """One monitor's target-state transitions, OLDEST FIRST.
 
-    Two transformations, both load-bearing. `execution` events are dropped: §7 is
+    Two transformations, both load-bearing. `execution` events are dropped: the plan is
     explicit that they describe the VANTAGE and never the target, and folding the
     two together would make "the agent's outage changed the target's state" look
     true. And the list is reversed, because `/monitors/{id}/events` returns newest
@@ -659,7 +657,7 @@ def _assert_spool_holds_only_data_frames(frames: list[dict]) -> None:
     assert not leaked, (
         f"control frame type(s) {leaked} are on the agent's outbound spool. The spool "
         "buffers host DATA through an outage; link-protocol control traffic and the "
-        "heartbeat liveness signal must never reach its write path (spec §4.4, "
+        "heartbeat liveness signal must never reach its write path ("
         f"internal/frame's controlFrameTypes). On disk: {sorted(t for t in spooled_types if t)}"
     )
 
@@ -852,7 +850,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 assert latest["summary"]["mem_pct"] is not None, latest
                 assert latest["summary"]["uptime_s"] is not None, latest
                 assert latest["status"] in ("healthy", "degraded"), latest
-                # Collector readiness, which is Slice 2's contract and the thing
+                # Collector readiness, which is the contract and the thing
                 # remote probe and discovery both reuse: the core collector is
                 # ready, and the one that genuinely cannot run here (no Docker
                 # socket is mounted into cb-agent, and `include_docker` is false in
@@ -997,7 +995,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 assert view["paused"] is False and view["globally_paused"] is False, view
                 assert view["limits"]["scope_mode"] == "direct_private", view["limits"]
 
-                # D-12: one system-managed profile PER directly connected subnet,
+                # one system-managed profile PER directly connected subnet,
                 # which for a container on two networks is two — "exactly one
                 # overall" is the thing that cannot hold here and asserting it would
                 # be asserting the harness rather than the product.
@@ -1016,7 +1014,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 assert all(p["enabled"] and p["paused_at"] is None for p in profiles_at_bootstrap)
                 assert probe_profile["scan_types"] == [_AGENT_SCAN_TYPE], probe_profile
                 assert probe_profile["nmap_arguments"] is None, probe_profile
-                # D-7's derived six-hourly cadence with per-agent jitter. Restated
+                # the derived six-hourly cadence with per-agent jitter. Restated
                 # as the literal the server derives, so a cadence that silently
                 # became "never" fails here rather than in step 14.
                 expected_cron = f"{agent_id % 60} */6 * * *"
@@ -1115,7 +1113,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
 
                 assert _hardware_with_ip(client, _PROBE_TARGET_IP) == [], (
                     "a Hardware row for the fixture existed before anyone imported it — the "
-                    "scan or the finalizer auto-merged an agent finding, which plan §5 forbids"
+                    "scan or the finalizer auto-merged an agent finding, which the acceptance flow forbids"
                 )
                 nodes_before_import = _topology_nodes(client)
                 merged = client.post(
@@ -1148,7 +1146,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 )
 
                 # ATTRIBUTED. `scan_results.discovery_agent_id` is the provenance
-                # column plan §2 adds and it is deliberately not on the wire
+                # column the plan adds and it is deliberately not on the wire
                 # (`ScanResultOut` omits it), so this is read straight out of the
                 # backend's own database. Both halves are compared — the row's own
                 # reporter AND its job's executor — because they are written by two
@@ -1620,7 +1618,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     unavailable = _wait_until_and_return(
                         _is_unavailable, timeout=_PROBE_UNAVAILABLE_BUDGET_S
                     )
-                    # §2's vocabulary. Which of these lands depends only on whether
+                    # the vocabulary. Which of these lands depends only on whether
                     # the presence key expired before or after the next scheduler
                     # tick, so all four are legal and none of them is "the target
                     # went down".
@@ -1632,7 +1630,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     }, unavailable
                     assert unavailable["status"] == "up", unavailable
                     assert unavailable["probe_agent_id"] == agent_id, (
-                        "an unavailable vantage was silently taken away from the monitor — §2 "
+                        "an unavailable vantage was silently taken away from the monitor — the contract "
                         "keeps the assignment and never falls back to the server"
                     )
 
@@ -1646,13 +1644,13 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                         "wrote a result the agent cannot have produced"
                     )
                     assert set(_monitor_samples(client, icmp_id, "avail")) == {1.0}, (
-                        "an avail=0 sample was written while the vantage was unavailable. §2/D-12 "
+                        "an avail=0 sample was written while the vantage was unavailable. "
                         "forbid it: agent unavailability is not target downtime, and this sample "
                         "would corrupt the discovered device's uptime for the whole outage"
                     )
                     assert _uptime(client, icmp_id)["pct_24h"] == 100.0
                     # No TARGET transition either. `execution` events may be added —
-                    # one per change of reason, §6 — and they carry the target's
+                    # one per change of reason, the plan — and they carry the target's
                     # state through unchanged rather than rewriting it.
                     events_during = _monitor_events(client, icmp_id)
                     new_events = events_during[: len(events_during) - len(events_before_cut)]
@@ -1666,7 +1664,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     # a wedge rather than of a lease running its course.
                     assert len(_probe_runs(client, icmp_id)) > runs_before_cut, (
                         "the scheduler stopped opening runs for an assigned monitor whose agent "
-                        "is offline — §2 requires it to keep trying on its normal interval"
+                        "is offline — the contract requires it to keep trying on its normal interval"
                     )
                     wedged = [
                         r
@@ -1869,7 +1867,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     "an operator is asked to look"
                 )
                 assert not _hardware_with_ip(client, _PROBE_TARGET_NEW_IP), (
-                    "the recurring sweep imported the new device by itself — plan §5 requires an "
+                    "the recurring sweep imported the new device by itself — the acceptance flow requires an "
                     "agent-authored row to reach the inventory only when a user accepts it"
                 )
                 assert recurring["hosts_new"] >= 1, recurring
@@ -1880,7 +1878,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     f"{recurring}"
                 )
 
-                # §8 step 13 asks for the known device's `last_seen` to be
+                # steps 13 asks for the known device's `last_seen` to be
                 # updated, which the AGENT path does not do:
                 # `_auto_merge_known_devices` is reachable only from
                 # `_scan_finalize`, and an agent job is closed by
@@ -1890,12 +1888,12 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 # change fails here rather than being silently blessed.
                 assert known["merge_status"] == "pending", (
                     "an agent-executed recurring scan auto-updated a known unchanged device out "
-                    "of the review queue. That IS what §8 step 13 asks for, and it is NOT what "
+                    "of the review queue. That IS what step 13 asks for, and it is NOT what "
                     "`finalize_agent_job` does today. Something changed on purpose: update this "
                     f"assertion rather than reverting the change. Row: {known}"
                 )
                 assert _hardware_row(client, hardware_id)["last_seen"] == hardware_last_seen_before, (
-                    "an agent-executed scan refreshed Hardware.last_seen. §8 step 13 asks for "
+                    "an agent-executed scan refreshed Hardware.last_seen. step 13 asks for "
                     "exactly that and `finalize_agent_job` does not do it today — see the note "
                     "on `merge_status` above"
                 )
@@ -2031,9 +2029,9 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 # ALL FOUR SLICES LIVE AT ONCE, after both restarts. This is the
                 # part no per-slice test can assert, and it is asserted as four
                 # things being simultaneously true of one running system.
-                #  1 (Slice 1) the link is up and the identity is the same one:
+                #  1 the link is up and the identity is the same one:
                 assert _agent_status()["link_state"] == "accepted"
-                #  2 (Slice 2) telemetry is flowing again, with a sample newer than
+                #  2 telemetry is flowing again, with a sample newer than
                 #    the restart:
                 restart_watermark = datetime.now(timezone.utc)
                 _wait_until(
@@ -2043,7 +2041,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     > restart_watermark,
                     timeout=_FIRST_SAMPLE_BUDGET_S,
                 )
-                #  3 (Slice 3) the agent-vantage monitors on the discovered device
+                #  3 the agent-vantage monitors on the discovered device
                 #    still hold their assignment and are producing results again:
                 assert {
                     name: _monitor(client, created["id"])["probe_agent_id"]
@@ -2057,7 +2055,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     timeout=_PROBE_RECONNECT_BUDGET_S,
                 )
                 assert _monitor(client, icmp_id)["status"] == "up"
-                #  4 (Slice 4) the imported inventory row, its topology placement and
+                #  4 the imported inventory row, its topology placement and
                 #    its provenance are untouched by any of it:
                 assert _hardware_identity(client, hardware_id) == hardware_before_restart, (
                     "the restarts changed the imported Hardware row"
@@ -2071,7 +2069,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 #   stay stable
                 # Only the host part moves; the subnet is unchanged. That is the
                 # shape that breaks things: the CIDR in every `hello` — and so the
-                # `normalized_cidr` half of D-7's partial unique index — is
+                # `normalized_cidr` half of the partial unique index — is
                 # identical, so anything keyed on an address-shaped value mints a
                 # second profile here and nowhere else.
                 #
@@ -2324,13 +2322,13 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 # An in-flight probe run too, so there is a `probe.result` to be
                 # late with. The slow monitor's check outlives the partition's
                 # detection window by construction.
-                # 200, never "200 or 409". D-14 answers 409 when the vantage
+                # 200, never "200 or 409". the rule answers 409 when the vantage
                 # cannot take the check, and this monitor's interval is 3600s, so a
                 # 409 means no run is EVER dispatched and the wait below fails with
                 # "no dispatched run" — the symptom, not the cause. The agent is
                 # online, granted and ready here, so 200 is the only right answer.
                 #
-                # Nothing may be in flight when check-now is issued: D-6 enforces
+                # Nothing may be in flight when check-now is issued: the rule enforces
                 # one active run per monitor in the DATABASE
                 # (`uq_monitor_probe_runs_active`), so a monitor that has one
                 # answers 409 `previous_run_in_flight`. Step 12's reconnect makes
@@ -2384,7 +2382,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
 
                     cancelled_job = _scan_job(client, doomed_job_id)
                     assert cancelled_job["status"] == "cancelled", (
-                        "disabling local_discovery left the running dispatch open — D-14 "
+                        "disabling local_discovery left the running dispatch open — the contract "
                         f"requires it closed in the same transaction: {cancelled_job}"
                     )
                     assert cancelled_job["error_reason"] == "capability_disabled", cancelled_job
@@ -2684,8 +2682,8 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     opening runs for a monitor whose vantage is unavailable — step
                     11 asserts that as correct while the agent is merely
                     partitioned, and a revoked agent is a special case of an
-                    unavailable vantage rather than a different mechanism. Slice 3
-                    §8 requires revocation to "cancel runs and preserve assignments
+                    unavailable vantage rather than a different mechanism. the design
+                    the plan requires revocation to "cancel runs and preserve assignments
                     as unavailable"; it does not require the scheduler to stop
                     noticing the monitor is due. A total would therefore measure
                     the scheduler's cadence rather than the revocation, and grows
@@ -2797,7 +2795,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                         f"late finding: {(status, dispatch_status)}"
                     )
                 # The assignments are RETAINED and reported unavailable rather than
-                # silently handed back to the server: §2 forbids an automatic
+                # silently handed back to the server: the plan forbids an automatic
                 # fallback, and a revoked vantage is the sharpest case of it.
                 for name, created in monitors.items():
                     current = _monitor(client, created["id"])

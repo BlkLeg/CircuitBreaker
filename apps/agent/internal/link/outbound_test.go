@@ -236,7 +236,7 @@ func TestDataFrameSender_LiveSendNoLongerDrains(t *testing.T) {
 	wire := &fakeWire{}
 	sender := newDataFrameSender(sp, wire.send, nil)
 
-	const liveSends = 8 // twice the old 1:4 ratio, so the old code drained twice
+	const liveSends = 8 // enough that a drain-on-live-send would fire twice
 	for i := uint64(0); i < liveSends; i++ {
 		if err := sender.sendLive(fakeDataFrame(i)); err != nil {
 			t.Fatalf("sendLive(%d) error = %v", i, err)
@@ -1035,7 +1035,7 @@ func TestDataFrameSender_AckStallFiresUnderAFastProducerAtTheCap(t *testing.T) {
 
 	const held = maxInflightFrames
 	// Sized so the producer below churns the whole window several times over
-	// within one deadline — the rate that used to switch the detector off.
+	// within one deadline — the rate that would switch the detector off.
 	const perTick = 24
 	fixture, capBytes := numberedFixture(t, held+perTick*400, held)
 	sp := newTestSpool(t, capBytes)

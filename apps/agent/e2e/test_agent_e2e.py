@@ -1,4 +1,4 @@
-"""Docker E2E: the full 12-step cb-agent acceptance flow (Task 31).
+"""Docker E2E: the full 12-step cb-agent acceptance flow.
 
 Requires Docker; not run by default pytest invocations.
 
@@ -17,7 +17,7 @@ test_agent_full_lifecycle_enroll_through_revoke_and_reconnect's step
 11/isolation probe below) — and what makes "the backend cannot reach this
 target, so a passing check can only have come from the agent" provable too.
 
-Slice 4 (Task 31, D-12) pins every subnet to a literal /24 and adds three
+The harness pins every subnet to a literal /24 and adds three
 things to that picture: `probe-target-new`, a second host started mid-test on
 the subnet the agent already knows; `late-net`, whose fixture target and agent
 attachment both arrive MID-TEST so a whole directly connected subnet can appear
@@ -61,14 +61,14 @@ full stack, so failures/timing in one scenario can't leak into another:
       independently (not `down`/`up`, which would lose volumes/state).
 
   * test_agent_host_telemetry_first_sample_catchup_and_disable
-      Task 20: the host-telemetry outbound path end to end — collector ->
+      the host-telemetry outbound path end to end — collector ->
       spool -> Noise -> dispatch_frame -> AgentHostSample -> REST. Proves
       first-sample acceptance, unlinked retention + collector readiness,
       bounded outage catch-up with original collected_at values and no
       duplicate rows, a live cadence change with no reconnect, and that
       revoking host_telemetry both stops collection and actively rewrites
-      every host.* readiness row to "disabled" (D-4). Driven at
-      interval_s: 10 (the production minimum, internal/capability) per D-13,
+      every host.* readiness row to "disabled". Driven at
+      interval_s: 10 (the production minimum, internal/capability) per the rule,
       restoring 30 before it exits.
 
   * test_agent_black_hole_partition_is_detected_and_spools
@@ -80,7 +80,7 @@ full stack, so failures/timing in one scenario can't leak into another:
       60s deadline; no test-only override.
 
   * test_remote_probe_assignment_execution_and_unavailability
-      Slice 3 §9 steps 1-6 and 9-11, in one stack lifetime: an ICMP, TCP,
+      in one stack lifetime: an ICMP, TCP,
       HTTP and DNS monitor executed by the agent against a target the
       backend provably cannot reach; the same events/history/uptime/retry
       semantics a server-executed check produces; an unavailable vantage
@@ -91,7 +91,7 @@ full stack, so failures/timing in one scenario can't leak into another:
       are unit/integration-covered elsewhere and are not repeated here.
 
   * test_e2e_harness_topology_is_pinned_and_two_agents_stay_isolated
-      Slice 4 Task 31 (D-12): the harness's own preconditions, asserted
+      the harness's own preconditions, asserted
       before Tasks 32-33 rest on them. Every subnet is the pinned one (read
       back live from Docker, not trusted from the compose file); a subnet
       can materialise on an already-enrolled agent and reach the server's
@@ -104,10 +104,10 @@ full stack, so failures/timing in one scenario can't leak into another:
       discovery assertion is worth exactly as much as.
 
   * test_agent_zero_configuration_discovery_import_and_replay
-      Slice 4 Task 32 (§8 steps 1-7): the slice's central claim, end to end.
+      the slice's central claim, end to end.
       One install command and one ordinary approval — no CIDR typed anywhere
       — put both directly connected subnets into the server's derived scope,
-      mint one system-managed profile per subnet (D-12), and start an initial
+      mint one system-managed profile per subnet, and start an initial
       scan by themselves; the fixture's finding is pushed incrementally on
       the Discovery page's own WebSocket before the job's terminal event,
       lands in the ordinary review queue, imports as exactly one Hardware
@@ -117,7 +117,7 @@ full stack, so failures/timing in one scenario can't leak into another:
       after, so the only possible source of that row is the agent.
 
   * test_agent_discovery_capability_disable_cancels_and_late_findings_die
-      Slice 4 Task 33 (§8 step 8): the capability is turned off in the middle
+      the capability is turned off in the middle
       of a running sweep while the agent is partitioned from the server, so
       the `discovery.cancel` provably never arrives. The agent goes on
       scanning and spooling findings for a dispatch the server has already
@@ -127,7 +127,7 @@ full stack, so failures/timing in one scenario can't leak into another:
       identical `scan_results` table when the cancel does get through.
 
   * test_agent_discovery_reconnects_per_agent_and_requeues_only_changes
-      Slice 4 Task 33 (§8 steps 9-11): both ends restart and the agent's
+      both ends restart and the agent's
       address moves inside its own subnet, and it comes back with no
       re-enrollment, no second profile for the subnet whose address changed,
       and its six-hourly cadence still registered; a second agent on its own
@@ -166,7 +166,7 @@ BASE_URL = "https://localhost:8443"
 WS_BASE_URL = "wss://localhost:8443"
 # The agent's own view of the server — a Docker-DNS service name on the
 # isolated agent-net bridge network, NOT localhost (see module docstring /
-# docker-compose.yml). tls_pin verification (Task 17) ignores hostname
+# docker-compose.yml). tls_pin verification ignores hostname
 # entirely, so this mismatch with BASE_URL's "localhost" is deliberate and
 # safe — see apps/agent/internal/tlsdial's package doc comment.
 AGENT_SERVER_URL = "https://circuitbreaker:8443"
@@ -198,7 +198,7 @@ _ADMIN_PASSWORD = "E2eTest1234!"
 _AGENT_SERVICE = "cb-agent"
 _AGENT_2_SERVICE = "cb-agent-2"
 
-# cb-agent's route to the server. Pinned to a /24 by Slice 4 D-12: as an
+# cb-agent's route to the server. Pinned to a /24 by as an
 # unpinned bridge Docker gave it a /16, whose 65 534 addresses exceed the
 # local_discovery grant's max_addresses_per_job on their own, so the agent's
 # own directly connected subnet could never be dispatched as a discovery
@@ -380,7 +380,7 @@ def _new_client() -> httpx.Client:
     # a fresh self-signed cert per run with no stable CA to pin/trust here,
     # and this harness never leaves localhost. Do not carry this pattern into
     # any production code path — agent_install.py's tls_pin mechanism
-    # (Task 17) is the real integrity anchor for actual installs.
+    # is the real integrity anchor for actual installs.
     return httpx.Client(base_url=BASE_URL, verify=False, timeout=30.0)
 
 
@@ -532,7 +532,7 @@ def _fetch_install_material(client: httpx.Client, headers: dict) -> dict:
 
 def _agent_status(env: dict | None = None, *, service: str = _AGENT_SERVICE) -> dict:
     """Reads <state-dir>/status.json directly from the running cb-agent
-    container (Task 20's status.json — see internal/status/status.go),
+    container (the status.json — see internal/status/status.go),
     rather than shelling out to `cb-agent status` (which prints human text,
     not JSON) — simpler and exactly as authoritative, since that file is the
     one thing both `cb-agent status` and this test ultimately read.
@@ -566,7 +566,7 @@ def _tls_context() -> ssl.SSLContext:
 
 
 class _AgentStreamListener:
-    """Connects to GET /api/v1/agents/stream (Task 14's live-agent-event
+    """Connects to GET /api/v1/agents/stream (the live-agent-event
     push — token-as-first-message auth, see ws_agents.py's
     agent_presence_stream) and records every event_type-bearing message it
     receives, from a background thread — so a test can assert an event
@@ -659,7 +659,7 @@ def _enroll_agent(
     `service` picks which agent container enrolls. The second agent goes
     through this identical path — same binary, same agent.toml, same default
     grants, no argument distinguishing it — because "a second agent needs no
-    special handling" is the property Slice 4 §8 step 10 is really claiming;
+    special handling" is the property is really claiming;
     a bespoke enrollment path for it would assume that claim rather than test
     it.
     """
@@ -721,9 +721,9 @@ def _enroll_agent(
     _wait_until(lambda: stream.has_event(agent_id, "enrolled"), timeout=15)
 
     # Step 4: approve with default grants (no `capabilities` in the body — the
-    # server applies its own CAPABILITY_DEFINITIONS registry, D-10: all three
+    # server applies its own CAPABILITY_DEFINITIONS registry, all three
     # enabled) and an explicit host-link selection ("unlinked" is a real,
-    # UI-supported selection — Task 18's AgentApprovalModal — not a
+    # UI-supported selection — the AgentApprovalModal — not a
     # null/omitted value).
     approve = client.post(
         f"/api/v1/agents/{agent_id}/approve",
@@ -841,7 +841,7 @@ def _agent_network_name(
     The attached set is asserted rather than merely filtered, against
     `_AGENT_TOPOLOGY[service]`: see that table's comment for what each half of
     the assertion catches and why an exact-set assertion stopped being the
-    right shape in Slice 4.
+    right shape in the design.
     """
     topology = _AGENT_TOPOLOGY[service]
     container = subprocess.run(
@@ -999,8 +999,8 @@ def _attach_agent_to_late_net(env: dict | None = None, *, service: str = _AGENT_
     """Gives a already-running, already-enrolled agent a directly connected
     subnet it did not have when it started, and returns the network's live name.
 
-    This is the zero-configuration trigger in its sharpest form (plan §8 step
-    3): nothing is configured on the agent, no CIDR is typed anywhere, and the
+    This is the zero-configuration trigger in its sharpest form: nothing is
+    configured on the agent, no CIDR is typed anywhere, and the
     server is told nothing — a new interface simply appears in the agent's
     namespace, exactly as it would if someone plugged the host into another
     VLAN.
@@ -1041,10 +1041,10 @@ def _cut_agent_network(env: dict | None = None, *, service: str = _AGENT_SERVICE
     deadline (readTimeout, 60s = three missed server pings). Until that
     deadline was added the agent never noticed at all: nothing spooled and
     every frame written into the void was lost, which is why this helper
-    used to carry a warning against using it for outbound-spool tests.
+    once made this helper unusable for outbound-spool tests.
 
-    That warning no longer holds, but the ~60s detection lag it was really
-    describing does. Any test using this helper must budget for it — see
+    That no longer holds, but the ~60s detection lag behind it does. Any test
+    using this helper must budget for it — see
     test_agent_black_hole_partition_is_detected_and_spools, which asserts
     the detection itself. `_backend_outage` remains the right stimulus when
     a test only wants a backlog quickly, since a closed socket fails the
@@ -1134,7 +1134,7 @@ def _backend_outage(client: httpx.Client, env: dict | None = None):
 
     Stopping the container instead closes the socket, so the agent's next
     write fails immediately, the link goes down, and every sample collected
-    from then on is spooled — which is the scenario Task 13's paced catch-up
+    from then on is spooled — which is the scenario the paced catch-up
     burst was built for and names in its own doc comment ("a backend outage
     grows the backlog"). `stop`/`start`, not `down`/`up`: the Postgres data,
     the vault key and the agent's approval all have to survive.
@@ -1341,7 +1341,7 @@ def test_agent_full_lifecycle_enroll_through_revoke_and_reconnect():
             # must see the "revoked" push directly — not by polling.
             _wait_until(lambda: stream.has_event(agent_id, "revoked"), timeout=10)
 
-            # Task 12's /link poll interval is 5s — allow a bit of margin for
+            # the /link poll interval is 5s — allow a bit of margin for
             # the immediate cross-worker disconnect push to land and the
             # daemon to log the resulting drop.
             _wait_until(
@@ -1577,7 +1577,7 @@ def _inject_binary_version(version: str, binary_path: Path) -> str:
     """Copies binary_path into the running circuitbreaker container's
     AGENT_BINARIES_DIR under `version`, and adds a matching manifest.json
     entry — the same {version: {os-arch: sha256}} shape
-    app/services/agent_update.py reads (Task 23's manifest format).
+    app/services/agent_update.py reads (the manifest format).
     Returns the binary's sha256."""
     sha256 = hashlib.sha256(binary_path.read_bytes()).hexdigest()
 
@@ -1847,9 +1847,9 @@ def test_agent_independent_restarts_recover_without_new_setup():
         _clear_agent_toml()
 
 
-# Task 20: host telemetry acceptance, bounded catch-up, live cadence change, and disable
+# host telemetry acceptance, bounded catch-up, live cadence change, and disable
 
-# D-13: the daemon is driven at the real production minimum
+# the daemon is driven at the real production minimum
 # (internal/capability/capability.go's 10s floor), not the 30s default, so
 # the outage-catch-up step costs a minute rather than four. Cadence is pure
 # configuration and its default path stays covered by the Go and backend
@@ -2057,13 +2057,13 @@ def test_agent_host_telemetry_first_sample_catchup_and_disable():
                 outage_end = datetime.now(timezone.utc)
 
                 # Spool depth first and immediately: the value comes from
-                # hello.spool_depth (D-12) and the next heartbeat (20s)
+                # hello.spool_depth and the next heartbeat (20s)
                 # overwrites it with the by-then-drained 0, so polling fast is
                 # what makes the non-zero window observable at all.
                 #
                 # Two properties, two clocks — the separation IS the assertion
                 # (F-6.2). A single combined budget lets a regressed drain hide
-                # behind a slow reconnect, the very property D-5 pins.
+                # behind a slow reconnect, the very property the paced catch-up pins.
                 #
                 # (a) RECONNECT, bounded by internal/link's backoff progression
                 # and measured from when the server was answering again.
@@ -2148,7 +2148,7 @@ def test_agent_host_telemetry_first_sample_catchup_and_disable():
                 )
 
                 # The indicator has to clear on its own, from the heartbeat
-                # (D-12) — hello alone could never lower it. Two heartbeat
+                # — hello alone could never lower it. Two heartbeat
                 # intervals (20s each, internal/link) plus margin. This also
                 # establishes that the backlog is fully drained, which is what
                 # makes the duplicate check below a comparison of settled data
@@ -2246,10 +2246,10 @@ def test_agent_host_telemetry_first_sample_catchup_and_disable():
                 # ---- 5. Disable stops collection and reports it ----------
                 _put_host_telemetry(client, headers, agent_id, {"enabled": False})
 
-                # D-4: ingest_readiness only ever upserts, so the ONLY way
+                # ingest_readiness only ever upserts, so the ONLY way
                 # these rows stop claiming the collectors are live is the
                 # agent actively republishing every name in
-                # host.CollectorNames as "disabled" (Task 11).
+                # host.CollectorNames as "disabled".
                 host_collectors = (
                     "host.core",
                     "host.filesystems",
@@ -2282,7 +2282,7 @@ def test_agent_host_telemetry_first_sample_catchup_and_disable():
                     _agent_telemetry(client, agent_id)
                 )
             finally:
-                # D-13: restore the production default cadence before
+                # restore the production default cadence before
                 # exiting, so nothing this test did to the grant outlives it.
                 # Best-effort — the stack is torn down below regardless, and
                 # a failure here must not mask the real assertion failure.
@@ -2467,10 +2467,10 @@ def test_agent_black_hole_partition_is_detected_and_spools():
         _clear_agent_toml()
 
 
-# Slice 3 §9 steps 1-6 and 9-11: remote-probe acceptance
+# remote-probe acceptance
 
 # probe-net's pinned addresses moved to the topology block at the top of this
-# file when Slice 4 added a second agent, a second fixture subnet and a late
+# file when added a second agent, a second fixture subnet and a late
 # one: _PROBE_NET_CIDR, _PROBE_TARGET_IP and _PROBE_TARGET_NAME are defined
 # there alongside their siblings. Only the port numbers, which are properties
 # of what probe-target *serves* rather than of the topology, stay here.
@@ -2564,7 +2564,7 @@ def _probe_run(client: httpx.Client, monitor_id: int, run_id: str) -> dict:
 def _probe_eligible_row(
     client: httpx.Client, agent_id: int, *, host: str, check_type: str = "icmp"
 ) -> dict:
-    """§7's eligible-agent listing, reduced to the one agent this stack has."""
+    """the eligible-agent listing, reduced to the one agent this stack has."""
     resp = client.get(
         "/api/v1/agents/probe-eligible", params={"host": host, "check_type": check_type}
     )
@@ -2577,7 +2577,7 @@ def _probe_eligible_row(
 
 @pytest.mark.e2e
 def test_remote_probe_assignment_execution_and_unavailability():
-    """Slice 3 §9's acceptance list, steps 1-6 and 9-11, in one stack lifetime.
+    """'s acceptance list, steps 1-6 and 9-11, in one stack lifetime.
 
     The premise is step 1 and it is asserted before anything else: probe-target
     sits on probe-net, circuitbreaker does not, and Docker's inter-bridge
@@ -2601,7 +2601,7 @@ def test_remote_probe_assignment_execution_and_unavailability():
     PATCH route is synchronous, so `_publish_soon` finds no running loop and
     the advisory `probe.cancel` is never delivered — the agent runs the check
     to its deadline and posts a result for a run the server has already closed,
-    which is precisely the "old vantage's late result" §9 step 9 is about. What
+    which is precisely the "old vantage's late result" steps 9 is about. What
     is observable is that the result changes nothing: the run row keeps the
     cancellation the server wrote, `outcome` stays NULL (it records what the
     agent reported, and the agent's report was refused), and the monitor's
@@ -2656,7 +2656,7 @@ def test_remote_probe_assignment_execution_and_unavailability():
             # ---- Step 11: eligible on the agent's own reported networks,
             # with no scope edit whatsoever ----
             # Nothing in this test ever PUTs /capabilities. The agent was
-            # provisioned by _enroll_agent (the Slice 1 install path) and the
+            # provisioned by _enroll_agent (the install path) and the
             # only thing that put 10.77.0.0/24 in its scope is the interface
             # facts it reported in `hello`.
             _wait_until(
@@ -2672,7 +2672,7 @@ def test_remote_probe_assignment_execution_and_unavailability():
             assert eligible["max_concurrent"] == 20, eligible
             assert _PROBE_NET_CIDR in eligible["scope_networks"], (
                 f"{_PROBE_NET_CIDR} is not in the agent's derived scope {eligible['scope_networks']} "
-                "— the directly-connected facts in `hello` did not produce it, and §9 step 11 "
+                "— the directly-connected facts in `hello` did not produce it, and step 11 "
                 "(select the agent without first editing scope) does not hold"
             )
             grant = client.get(f"/api/v1/agents/{agent_id}").json()["capabilities"]["remote_probe"]
@@ -2723,7 +2723,7 @@ def test_remote_probe_assignment_execution_and_unavailability():
                 # it is resolved on the server (extra_hosts) to decide scope,
                 # resolved again on the agent (Docker DNS) immediately before
                 # connecting, and the resolver it queries — probe-target's own
-                # dnsmasq — is itself scope-checked by the agent (§3).
+                # dnsmasq — is itself scope-checked by the agent.
                 "dns": _create_monitor(
                     client,
                     name="e2e remote dns",
@@ -2776,7 +2776,7 @@ def test_remote_probe_assignment_execution_and_unavailability():
                 events = _monitor_events(client, monitor_id)
                 # `execution` events describe the vantage, never the target, so
                 # they are filtered out of the transition log rather than
-                # asserted absent — §7 is explicit that the two must not fold
+                # asserted absent — the plan is explicit that the two must not fold
                 # into one another.
                 transitions = [e for e in events if e["event_type"] != "execution"]
                 assert [e["event_type"] for e in transitions] == ["up"], (check_type, events)
@@ -2872,7 +2872,7 @@ def test_remote_probe_assignment_execution_and_unavailability():
                 unavailable = _wait_until_and_return(
                     _is_unavailable, timeout=_PROBE_UNAVAILABLE_BUDGET_S
                 )
-                # §2's vocabulary: we know *why* the vantage cannot run the
+                # the vocabulary: we know *why* the vantage cannot run the
                 # check. Which of these lands depends only on whether the
                 # presence key expired before or after the next scheduler tick.
                 assert unavailable["probe_execution_reason"] in {
@@ -2883,7 +2883,7 @@ def test_remote_probe_assignment_execution_and_unavailability():
                 }, unavailable
                 # The target is still up as far as anyone knows, and the
                 # assignment is retained — an unavailable vantage never falls
-                # back to the server (§2, and step 10 below is the only way
+                # back to the server (the plan, and step 10 below is the only way
                 # back).
                 assert unavailable["status"] == "up", unavailable
                 assert unavailable["probe_agent_id"] == agent_id, unavailable
@@ -2900,7 +2900,7 @@ def test_remote_probe_assignment_execution_and_unavailability():
                     "wrote a result the agent cannot have produced"
                 )
                 assert set(_monitor_samples(client, icmp_id, "avail")) == {1.0}, (
-                    "an avail=0 sample was written while the vantage was unavailable — §2/D-12 "
+                    "an avail=0 sample was written while the vantage was unavailable — "
                     "forbid it: agent unavailability is not target downtime, and this sample "
                     "would corrupt uptime for the outage's whole duration"
                 )
@@ -2908,7 +2908,7 @@ def test_remote_probe_assignment_execution_and_unavailability():
 
                 # No target transition was recorded either. The execution
                 # condition may add `execution` events (one per change of
-                # reason, §6) and those carry the target's state through
+                # reason, the plan) and those carry the target's state through
                 # unchanged rather than rewriting it.
                 events_during = _monitor_events(client, icmp_id)
                 new_events = events_during[: len(events_during) - len(events_before_cut)]
@@ -2936,7 +2936,7 @@ def test_remote_probe_assignment_execution_and_unavailability():
                 )
                 assert len(_probe_runs(client, icmp_id)) > runs_before_cut, (
                     "the scheduler stopped opening runs for an assigned monitor whose agent is "
-                    "offline — the monitor has to keep trying on its normal interval (§2)"
+                    "offline — the monitor has to keep trying on its normal interval "
                 )
 
             # ---- Step 6: the route comes back and the warning clears ----
@@ -2949,7 +2949,7 @@ def test_remote_probe_assignment_execution_and_unavailability():
                 timeout=_PROBE_RECONNECT_BUDGET_S,
             )
 
-            # "Check now" is accepted again rather than answering D-14's 409.
+            # "Check now" is accepted again rather than answering the 409.
             # It is retried because a scheduled run may legitimately be in
             # flight at any moment (409 `previous_run_in_flight`), which is a
             # different answer from "this vantage cannot take the check".
@@ -3099,7 +3099,7 @@ def test_remote_probe_assignment_execution_and_unavailability():
         _clear_agent_toml()
 
 
-# Task 31: the harness itself (D-12)
+# the harness itself
 
 # Long enough for hello -> registry -> readiness ingest to land, on the same
 # order as this file's other first-signal budgets. Nothing here waits on a
@@ -3114,15 +3114,15 @@ _BACKEND_HTTPS_PORT = 8443
 
 @pytest.mark.e2e
 def test_e2e_harness_topology_is_pinned_and_two_agents_stay_isolated():
-    """Task 31 (D-12): the harness's own topology, asserted before Tasks 32-33
+    """the harness's own topology, asserted before Tasks 32-33
     are allowed to rest on it.
 
-    This test pins the four properties every Slice 4 discovery assertion will
+    This test pins the four properties every discovery assertion will
     quietly assume, and it exists because assuming them is exactly how an E2E
     test comes to prove nothing:
 
     1. **The subnets are the pinned ones.** `agent-net` was an unpinned bridge
-       until D-12, so Docker handed it a /16 — 65 534 addresses, more than the
+       until the rule, so Docker handed it a /16 — 65 534 addresses, more than the
        local_discovery grant's `max_addresses_per_job` (1024) on its own, which
        means the agent's own directly connected subnet could never have been
        dispatched as a discovery target at all. Every subnet is now hand-pinned
@@ -3135,7 +3135,7 @@ def test_e2e_harness_topology_is_pinned_and_two_agents_stay_isolated():
        already running.** `probe-target-new` starts on probe-net with the
        topology otherwise untouched — the agent's routing table does not
        change, only the set of hosts answering on a subnet it has already
-       scanned, which is plan §8 step 11's "genuinely new device". `late-net`
+       scanned, which is step 11's "genuinely new device". `late-net`
        does not exist when cb-agent starts. `late-target` is brought up
        mid-test and cb-agent is attached to it afterwards, so a directly
        connected network materializes on an already-enrolled, already-approved,
@@ -3147,10 +3147,10 @@ def test_e2e_harness_topology_is_pinned_and_two_agents_stay_isolated():
        zero-configuration trigger, reduced to its mechanism.
 
     3. **`_agent_network_name` still identifies the route to the server once
-       the topology grows.** Its assertion used to be `suffixes ==
-       {"agent-net", "probe-net"}`, which step 2 above makes false and which a
-       second agent makes false twice over. It is now required-subset plus
-       allowed-superset (see `_AGENT_TOPOLOGY`), and this test exercises both
+       the topology grows.** An exact `suffixes == {"agent-net", "probe-net"}`
+       assertion is made false by step 2 above, and false twice over by a
+       second agent. It is required-subset plus allowed-superset instead
+       (see `_AGENT_TOPOLOGY`), and this test exercises both
        the legitimate growth it must now permit and, via cb-agent-2, a
        completely different legal shape.
 
@@ -3163,7 +3163,7 @@ def test_e2e_harness_topology_is_pinned_and_two_agents_stay_isolated():
        could see what.
 
     And throughout, the negative: the backend is made to try, and fail, to
-    reach all three fixture subnets over both ICMP and TCP. Slice 4's central
+    reach all three fixture subnets over both ICMP and TCP. the central
     claim is that an agent discovers hosts the backend cannot reach; a
     discovery result in the database is evidence of that only for as long as
     this loop keeps failing. It is asserted here, in the harness test, so
@@ -3184,7 +3184,7 @@ def test_e2e_harness_topology_is_pinned_and_two_agents_stay_isolated():
         # their targets are brought up below.
         assert _network_subnet(_AGENT_NET) == _AGENT_NET_CIDR, (
             f"agent-net is {_network_subnet(_AGENT_NET)}, not the pinned "
-            f"{_AGENT_NET_CIDR} (D-12) — Docker declined the ipam.config entry, and "
+            f"{_AGENT_NET_CIDR} — Docker declined the ipam.config entry, and "
             "the agent's own directly connected subnet is back to being too wide to "
             "dispatch as a discovery target"
         )
@@ -3235,8 +3235,8 @@ def test_e2e_harness_topology_is_pinned_and_two_agents_stay_isolated():
             # ---- (2a) a new host on a subnet the agent already has ----
             # No topology change at all: probe-net is unchanged, the agent's
             # routing table is unchanged, and only the set of hosts answering
-            # on 10.77.0.0/24 is different. That is the stimulus plan §8 step
-            # 11's "genuinely new device" needs, and it must stay unreachable
+            # on 10.77.0.0/24 is different. That is the stimulus a "genuinely
+            # new device" needs, and it must stay unreachable
             # from the backend exactly as its neighbour is.
             routes_before_new_host = _agent_route_networks()
             _up_fixture_target(_PROBE_TARGET_NEW_SERVICE)
@@ -3425,7 +3425,7 @@ def test_e2e_harness_topology_is_pinned_and_two_agents_stay_isolated():
         _clear_agent_toml()
 
 
-# Slice 4 Task 32: zero-configuration discovery, plan §8 steps 1-7
+# zero-configuration discovery, steps 1-7
 #
 # One install command, one ordinary approval, and no CIDR typed anywhere.
 # The budgets below are wall-clock ceilings, not expectations — every one of
@@ -3441,7 +3441,7 @@ def test_e2e_harness_topology_is_pinned_and_two_agents_stay_isolated():
 _DISCOVERY_BOOTSTRAP_BUDGET_S = 240
 
 # The automatic first scan: `initial_scan_delay_s` is 5 + (agent_id % 60)
-# seconds of deliberate jitter (D-7) before the dispatch is even published,
+# seconds of deliberate jitter before the dispatch is even published,
 # then two /24 sweeps at the default `max_concurrent_hosts` of 64 and a
 # 1500 ms per-host budget, which may or may not share a concurrency slot.
 _INITIAL_SCAN_BUDGET_S = 420
@@ -3451,7 +3451,7 @@ _INITIAL_SCAN_BUDGET_S = 420
 # which is paced at 4 frames per 100 ms.
 _SPOOL_DRAIN_BUDGET_S = 240
 
-# Plan §3: an agent profile carries exactly this scan type and nothing else.
+# The acceptance flow: an agent profile carries exactly this scan type and nothing else.
 _AGENT_SCAN_TYPE = "agent_connect"
 
 # internal/spool's on-disk layout, read and (for the replay) rewound from the
@@ -3504,7 +3504,7 @@ class _DiscoveryStreamListener:
     concurrency finishes in seconds, so a poller that happened to miss the
     window would report a job that went straight from queued to completed —
     indistinguishable from a backend that buffered every finding and wrote them
-    all at the end, which is exactly the design the streaming ingest path
+    all at the end, which is exactly what the streaming ingest path
     exists to rule out. Order between two events on one channel is the
     assertion; wall-clock timing is not.
 
@@ -3571,7 +3571,7 @@ def _discovery_profiles(client: httpx.Client, agent_id: int) -> list[dict]:
     """Every discovery profile pointed at this agent, automatic or not.
 
     Read from `GET /discovery/profiles` — the list the Discovery page renders —
-    rather than from an agent-scoped route, because plan §8 step 3's claim is
+    rather than from an agent-scoped route, because step 3's claim is
     about what an operator finds in the *ordinary* profile list after doing
     nothing but approving an agent.
     """
@@ -3586,7 +3586,7 @@ def _discovery_view(client: httpx.Client, agent_id: int) -> dict:
     One request answers what a vantage point is discovering and, if nothing,
     why: the derived scope with each entry's provenance, the grant's limits,
     collector readiness, all three pause scopes, the active and recent jobs, and
-    the profiles pointed at this agent. Every Slice 4 test asks "what does the
+    the profiles pointed at this agent. Every test asks "what does the
     SERVER believe about this agent" here and nowhere else, so two of them
     disagreeing can never be an artefact of two different endpoints.
     """
@@ -3601,7 +3601,7 @@ def _automatic_scope(client: httpx.Client, agent_id: int) -> set[str]:
     `provenance == "automatic"` drops an administrator's routed overrides and
     `effective` drops anything policy then refused, so what is left is exactly
     "the subnets this agent is plugged into that the server will scan" — the set
-    plan §8 step 3 requires to appear with no CIDR typed anywhere.
+    step 3 requires to appear with no CIDR typed anywhere.
     """
     return {
         entry["cidr"]
@@ -3642,7 +3642,7 @@ def _review_queue(client: httpx.Client) -> list[dict]:
 
     `GET /discovery/results?status=pending` with no agent parameter, no job
     parameter and no execution-location filter — `src/api/discovery.js`'s
-    `listPendingResults`. Plan §8 step 5 is satisfied only if an agent finding
+    `listPendingResults`. The acceptance flow's step 5 is satisfied only if an agent finding
     is here, and finding it through an agent-specific route instead would prove
     the opposite of what the step claims.
     """
@@ -3669,7 +3669,7 @@ def _put_local_discovery(
     """PUT one `local_discovery` grant config. `set_capability_grants` merges
     against the stored config, so a partial `config` keeps every setting it
     omits — including the scope lists, which is what keeps this edit out of
-    D-16's scope-version path (see `put_capabilities`: "an unrelated setting
+    the scope-version path (see `put_capabilities`: "an unrelated setting
     change (a smaller max_concurrent_hosts, say) retires nothing")."""
     resp = client.put(
         f"/api/v1/agents/{agent_id}/capabilities",
@@ -3855,7 +3855,7 @@ def _finding_rejections(client: httpx.Client, agent_id: int) -> list[int]:
 
 @pytest.mark.e2e
 def test_agent_zero_configuration_discovery_import_and_replay():
-    """Slice 4 §8 steps 1-7: the claim the whole slice exists to make.
+    """the claim the whole slice exists to make.
 
     One install command, one ordinary approval with the server's own default
     grants, and **no CIDR typed anywhere** — then a host the backend cannot
@@ -3886,16 +3886,16 @@ def test_agent_zero_configuration_discovery_import_and_replay():
 
     What each step pins:
 
-    1. **The agent reports its directly connected subnets** (§8 step 3, first
+    1. **The agent reports its directly connected subnets** (steps 3, first
        half). Both pinned /24s reach the server's derived scope with
        `provenance: automatic`, from the interface facts in `hello` alone.
        Asserted as an *equality*: a scope that also contained something never
        plugged in would mean the derivation is reading something other than the
        agent's own kernel.
 
-    2. **The backend mints the system-managed profiles, D-12.** One enabled
+    2. **The backend mints the system-managed profiles, the rule.** One enabled
        `managed_by="system"` profile per reported subnet — not "exactly one"
-       overall, which cannot hold for a container on two networks (see D-12) —
+       overall, which cannot hold for a container on two networks (see the rule) —
        exactly one of them targeting the fixture subnet, each carrying the
        single `agent_connect` scan type and no `nmap_arguments`, and no
        user-created profile alongside them.
@@ -3914,7 +3914,7 @@ def test_agent_zero_configuration_discovery_import_and_replay():
 
     4. **The fixture lands in the ordinary review queue.** Found through `GET
        /discovery/results?status=pending` with no agent parameter and no
-       execution-location filter — plan §8's "no separate UI path" is a claim
+       execution-location filter — the plan's "no separate UI path" is a claim
        about *this* endpoint, so locating the row through an agent-scoped route
        would prove the opposite. Its open ports are 53 and 8080, both of which
        are in the grant's port list and neither of which anything but a connect
@@ -3950,10 +3950,10 @@ def test_agent_zero_configuration_discovery_import_and_replay():
        stretches a 254-address sweep from seconds to minutes and makes the
        window between the fixture's finding and the terminal summary wide enough
        to drive a replay inside it deliberately rather than by winning a race.
-       That is an ordinary central "scan depth" control (plan §6), it is applied
+       That is an ordinary central "scan depth" control, it is applied
        only *after* every zero-configuration claim above has been proven, and it
        is provably not a scope change — `_scope_version` digests the scope's
-       four dimensions and nothing else, so D-16's version check cannot be what
+       four dimensions and nothing else, so the version check cannot be what
        admits or refuses these findings. The agent is killed before the sweep
        ends, so no summary is ever produced and the dispatch stays open on its
        own 1800 s lease.
@@ -3978,7 +3978,7 @@ def test_agent_zero_configuration_discovery_import_and_replay():
        byte-for-byte comparison that fails, because a restart whose marker was
        never rewound compacts the delivered prefix away on load.
 
-    7. **Plan §3's idempotency, incidentally but deliberately.** The agent
+    7. **Bootstrap idempotency, incidentally but deliberately.** The agent
        connects three times over this test (start, post-outage, post-replay) and
        every `hello` re-runs the bootstrap pass. The profile set and the count
        of `triggered_by="bootstrap"` jobs are asserted unchanged at the end:
@@ -3986,8 +3986,8 @@ def test_agent_zero_configuration_discovery_import_and_replay():
        scans" is exactly the kind of claim that only an end-to-end run with real
        reconnections can falsify.
 
-    Steps 8-11 of §8 (capability disable mid-scan, restart/address change,
-    second agent, recurrence) are Task 33's; nothing here depends on them.
+    Steps 8-11 of the plan (capability disable mid-scan, restart/address change,
+    second agent, recurrence) are the; nothing here depends on them.
     """
     _up_server()
     try:
@@ -4054,7 +4054,7 @@ def test_agent_zero_configuration_discovery_import_and_replay():
                 assert view["paused"] is False and view["globally_paused"] is False, view
                 assert view["limits"]["scope_mode"] == "direct_private", view["limits"]
 
-                # ---- 2. The system-managed profiles (D-12) ------------------
+                # ---- 2. The system-managed profiles ------------------
                 _wait_until(
                     lambda: len(_discovery_profiles(client, agent_id)) >= 2,
                     timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
@@ -4062,7 +4062,7 @@ def test_agent_zero_configuration_discovery_import_and_replay():
                 profiles = _discovery_profiles(client, agent_id)
                 assert {p["cidr"] for p in profiles} == {_AGENT_NET_CIDR, _PROBE_NET_CIDR}, (
                     "the bootstrap did not create exactly one profile per directly connected "
-                    f"subnet (D-12): {[(p['cidr'], p['managed_by']) for p in profiles]}"
+                    f"subnet: {[(p['cidr'], p['managed_by']) for p in profiles]}"
                 )
                 assert all(p["managed_by"] == "system" for p in profiles), profiles
                 assert all(p["enabled"] for p in profiles), profiles
@@ -4072,7 +4072,7 @@ def test_agent_zero_configuration_discovery_import_and_replay():
                 assert probe_profile["scan_types"] == [_AGENT_SCAN_TYPE], probe_profile
                 assert probe_profile["nmap_arguments"] is None, probe_profile
                 assert probe_profile["schedule_cron"], (
-                    "the automatic profile has no recurring cadence — plan §3 step 5 asks for "
+                    "the automatic profile has no recurring cadence — step 5 asks for "
                     "a six-hourly schedule with per-agent jitter"
                 )
 
@@ -4154,7 +4154,7 @@ def test_agent_zero_configuration_discovery_import_and_replay():
                 # ---- 5. Import: exactly one Hardware row --------------------
                 assert _hardware_with_ip(client, _PROBE_TARGET_IP) == [], (
                     "a Hardware row for the fixture existed before it was imported — the scan "
-                    "or the finalizer auto-merged it, which plan §5 forbids for an agent finding"
+                    "or the finalizer auto-merged it, which the acceptance flow forbids for an agent finding"
                 )
                 merged = client.post(
                     f"/api/v1/discovery/results/{review_row['id']}/merge",
@@ -4177,9 +4177,9 @@ def test_agent_zero_configuration_discovery_import_and_replay():
                 imported_results = _job_results(client, job_id)
 
                 # ---- 6. A real replay of the agent's own findings -----------
-                # An ordinary scan-depth edit (plan §6) and an ordinary "Run
+                # An ordinary scan-depth edit and an ordinary "Run
                 # now" on the profile the *server* created. See the docstring:
-                # this is not a scope change, so D-16's version check is not
+                # this is not a scope change, so the version check is not
                 # what decides anything below.
                 _put_local_discovery(client, headers, agent_id, _REPLAY_DISCOVERY_CONFIG)
                 run = client.post(f"/api/v1/discovery/profiles/{probe_profile['id']}/run")
@@ -4250,7 +4250,7 @@ def test_agent_zero_configuration_discovery_import_and_replay():
                     "would be a first delivery of the remainder rather than a replay"
                 )
                 # The server's own view of the same thing, which it only ever
-                # learns from the agent's 20s heartbeat (D-12) — so this lags
+                # learns from the agent's 20s heartbeat — so this lags
                 # the on-disk truth above by up to one interval and is waited
                 # for rather than asserted outright.
                 _wait_until(
@@ -4285,7 +4285,7 @@ def test_agent_zero_configuration_discovery_import_and_replay():
                 _rewind_spool_head()
                 # The server's own witness that the restarted agent came back
                 # holding undelivered frames: `hello` carries the spool depth
-                # (D-12), so the BACKEND reports the backlog, not the test reading
+                #, so the BACKEND reports the backlog, not the test reading
                 # the agent's disk. It says a backlog existed, not which frames —
                 # both halves are needed, because with the rewind removed this
                 # wait still passes and only the comparison below fails.
@@ -4354,7 +4354,7 @@ def test_agent_zero_configuration_discovery_import_and_replay():
                 assert {p["id"] for p in _discovery_profiles(client, agent_id)} == {
                     p["id"] for p in profiles
                 }, (
-                    "a reconnect created or replaced a system profile; plan §3 requires "
+                    "a reconnect created or replaced a system profile; the acceptance flow requires "
                     "repeated hello/readiness frames to be a no-op"
                 )
                 bootstrap_jobs = [
@@ -4378,9 +4378,9 @@ def test_agent_zero_configuration_discovery_import_and_replay():
         _clear_agent_toml()
 
 
-# Slice 4 Task 33: cancellation, restart, a second agent, recurrence (plan §8 steps 8-11)
+# cancellation, restart, a second agent, recurrence
 #
-# Task 32 proves the central claim on the happy path. These two attack the four
+# these prove the central claim on the happy path. These two attack the four
 # ways it could be true by accident:
 #
 #   * work that keeps producing accepted results after cancellation,
@@ -4426,8 +4426,8 @@ _RECONNECT_BUDGET_S = 300
 _RECURRING_SCAN_BUDGET_S = _INITIAL_SCAN_BUDGET_S
 
 # Where cb-agent is moved to on agent-net. The subnet is deliberately unchanged:
-# plan §8 step 9's profile-duplication risk is precisely an agent whose ADDRESS
-# moves while the network it is directly connected to does not, because D-7's
+# step 9's profile-duplication risk is precisely an agent whose ADDRESS
+# moves while the network it is directly connected to does not, because the
 # partial unique index is keyed on `(scan_agent_id, normalized_cidr)` and a
 # bootstrap that keyed on anything address-shaped would mint a second profile
 # for the same subnet here and nowhere else.
@@ -4435,7 +4435,7 @@ _AGENT_NET_MOVED_IP = "10.88.0.77"
 
 # The name an operator gives the imported fixture, so that the hostname the
 # agent keeps reporting (Docker's embedded-DNS PTR record for the container)
-# stops agreeing with it. Plan §4 lists hostname among the agent's untrusted
+# stops agreeing with it. The acceptance flow lists hostname among the agent's untrusted
 # observations, so this disagreement must be a review and never a rename.
 _OPERATOR_HARDWARE_NAME = "e2e-operator-named-fixture"
 
@@ -4450,7 +4450,7 @@ def _backend_sql(query: str) -> list[list[str]]:
 
     Reserved for the columns the product deliberately keeps off the wire, and in
     this file that means exactly one: `scan_results.discovery_agent_id`. It is
-    the provenance column plan §2 adds and the column plan §8 step 10 is
+    the provenance column and the column step 10 is
     entirely about, and `ScanResultOut` omits it because nothing renders it — so
     "no finding was attributed to the wrong agent" is not a question any REST
     response can answer.
@@ -4540,8 +4540,8 @@ def _result_provenance() -> list[dict]:
 def _job_dispatch_state(job_id: int) -> tuple[str, str]:
     """One job's `(status, dispatch_status)`, the second of which is not on the wire.
 
-    `dispatch_status` is what makes a late finding refusable at all — Task 21's
-    `finalize_agent_job` and Task 22's `_close_jobs` both move it to a closed
+    `dispatch_status` is what makes a late finding refusable at all — the
+    `finalize_agent_job` and the `_close_jobs` both move it to a closed
     value in the same statement that closes the job, and `agent_discovery`'s
     ingest reads it — but `ScanJobOut` carries only `status`. A test that
     asserted the job was `cancelled` and stopped there would not have checked
@@ -4590,7 +4590,7 @@ def _unfinished_agent_jobs(client: httpx.Client, agent_id: int) -> list[dict]:
     """This agent's jobs that are still queued or running.
 
     Used to reach quiescence before a test changes the grant underneath a scan:
-    the bootstrap queues one initial scan per subnet (D-12), so an edit made
+    the bootstrap queues one initial scan per subnet, so an edit made
     while those are in flight would be cancelling or re-depthing work the test
     has said nothing about.
     """
@@ -4648,10 +4648,10 @@ def _change_agent_address(
 ) -> tuple[str, str]:
     """Move an agent to a different address on the SAME directly connected subnet.
 
-    Returns `(old_ip, new_ip)`. This is plan §8 step 9's "change the agent's
+    Returns `(old_ip, new_ip)`. This is step 9's "change the agent's
     address" in the form that can actually break something: the subnet the agent
     reports in every `hello` is unchanged, so the server's derived scope and the
-    key of D-7's partial unique index are unchanged too, and the only thing that
+    key of the partial unique index are unchanged too, and the only thing that
     moved is the host part. An implementation that keyed a system profile, a
     dispatch lease or an identity on anything address-shaped produces a second
     profile for 10.88.0.0/24 here and nowhere else in this suite.
@@ -4664,7 +4664,7 @@ def _change_agent_address(
     old_ip = _container_ipv4(container, network)
     assert old_ip != new_ip, (
         f"{service} is already at {new_ip}; this helper would change nothing and the "
-        "address-change half of plan §8 step 9 would go untested"
+        "address-change half of step 9 would go untested"
     )
     subprocess.run(["docker", "network", "disconnect", network, container], check=True)
     subprocess.run(["docker", "network", "connect", "--ip", new_ip, network, container], check=True)
@@ -4703,7 +4703,7 @@ def _discovery_status(client: httpx.Client) -> dict:
 def _system_profile_for(client: httpx.Client, agent_id: int, cidr: str) -> dict:
     """The one enabled system-managed profile for `(agent, cidr)`, asserting it is one.
 
-    D-12's assertion in reusable form: the bootstrap mints one automatic profile
+    the assertion in reusable form: the bootstrap mints one automatic profile
     per directly connected subnet, and "one" is the part that matters — a second
     row for the same subnet is what a duplicated upsert looks like, and it would
     otherwise show up only as two scans of the same /24 several minutes later.
@@ -4715,20 +4715,20 @@ def _system_profile_for(client: httpx.Client, agent_id: int, cidr: str) -> dict:
     ]
     assert len(matches) == 1, (
         f"agent {agent_id} has {len(matches)} system-managed profiles for {cidr}, expected "
-        f"exactly one (D-7's partial unique index keys them on this pair): {matches}"
+        f"exactly one (the partial unique index keys them on this pair): {matches}"
     )
     return matches[0]
 
 
 @pytest.mark.e2e
 def test_agent_discovery_capability_disable_cancels_and_late_findings_die():
-    """Slice 4 §8 step 8: the server enforces the cancellation; the agent's
+    """the server enforces the cancellation; the agent's
     cooperation is not part of the mechanism.
 
     Disabling `local_discovery` mid-scan has to do two things — cancel the work,
     and refuse anything that arrives for it afterwards — and the second is the
     one that is hard to test honestly. `discovery.cancel` is best-effort by
-    design (plan §4), so on the ordinary path the agent receives it, stops, and
+    design, so on the ordinary path the agent receives it, stops, and
     sends nothing more; the database then looks exactly the way it would if the
     backend were enforcing nothing at all. **A passing test on that path proves
     only that the agent is well behaved.**
@@ -4820,7 +4820,7 @@ def test_agent_discovery_capability_disable_cancels_and_late_findings_die():
             for address in (_PROBE_TARGET_IP, _PROBE_TARGET_NEW_IP):
                 _assert_backend_cannot_reach(address, _PROBE_NET_CIDR)
 
-            # ---- zero-configuration bootstrap, as Task 32 establishes it ----
+            # ---- zero-configuration bootstrap, as established above ----
             _wait_until(
                 lambda: {_AGENT_NET_CIDR, _PROBE_NET_CIDR} <= _automatic_scope(client, agent_id),
                 timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
@@ -4863,7 +4863,7 @@ def test_agent_discovery_capability_disable_cancels_and_late_findings_die():
                 cancelled = _scan_job(client, job_id)
                 assert cancelled["status"] == "cancelled", (
                     "PROPERTY 1 (cancellation): disabling local_discovery left the running "
-                    f"dispatch open — D-14 requires it closed in the same transaction: {cancelled}"
+                    f"dispatch open — the contract requires it closed in the same transaction: {cancelled}"
                 )
                 assert cancelled["error_reason"] == "capability_disabled", (
                     "PROPERTY 1 (cancellation): the job was closed for the wrong reason, so an "
@@ -5009,7 +5009,7 @@ def _in_any(address: str, cidrs) -> bool:
 
 @pytest.mark.e2e
 def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
-    """Slice 4 §8 steps 9-11, in one stack lifetime.
+    """in one stack lifetime.
 
     Three claims that only a real restart, a real second host and a real second
     agent can falsify, and each one has an obvious way of being true for the
@@ -5020,7 +5020,7 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
     duplicating anything" is the claim. The address change is what makes the
     duplication half real rather than decorative: `cb-agent` is moved to
     10.88.0.77 on the same `agent-net`, so the subnet it reports in every
-    `hello` — and therefore the `normalized_cidr` half of D-7's partial unique
+    `hello` — and therefore the `normalized_cidr` half of the partial unique
     index — is *unchanged* while its host address is not. A bootstrap that
     keyed a system profile on anything address-shaped mints a second profile
     for 10.88.0.0/24 exactly here. That the address really moved is asserted
@@ -5050,14 +5050,14 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
       * a device whose agent-reported hostname disagrees with the name an
         operator gave it comes back `conflict`, stays `pending`, names both
         halves of the disagreement in `conflicts_json` — and **the stored name
-        is not touched**. Plan §4 lists hostname among the agent's untrusted
+        is not touched**. The acceptance flow lists hostname among the agent's untrusted
         observations, and the disagreement is manufactured the way it happens
         in real life: an operator renames the device in the inventory while the
         agent keeps reporting the PTR record it reads off the subnet.
 
       The half of step 11 that this deliberately does **not** assert is the
       `last_seen` auto-update. `_auto_merge_known_devices` — the function
-      Task 25 hardened for exactly this case — is reachable only from
+      hardened for exactly this case — is reachable only from
       `_scan_finalize`, and an agent job is closed by `finalize_agent_job`,
       which states in its own docstring that it never calls it at any setting
       (`tests/services/test_agent_discovery_ingest.py::
@@ -5139,7 +5139,7 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
             _system_profile_for(client, agent_id, _AGENT_NET_CIDR)
             expected_cron = f"{agent_id % 60} */6 * * *"
             assert probe_profile["schedule_cron"] == expected_cron, (
-                "the automatic profile does not carry D-7's derived six-hourly cadence, so "
+                "the automatic profile does not carry the derived six-hourly cadence, so "
                 f"there is no recurrence for the restart to resume: {probe_profile}"
             )
 
@@ -5161,7 +5161,7 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
             observed_hostname = fixture_row["hostname"]
             assert observed_hostname, (
                 "the agent reported no hostname for the fixture, so the untrusted-hostname "
-                "half of plan §8 step 11 has nothing to disagree about. probe-net's resolver "
+                "half of step 11 has nothing to disagree about. probe-net's resolver "
                 "is Docker's embedded DNS, which answers PTR for containers on a user-defined "
                 "network; if it has stopped doing so this test needs a fixture that supplies "
                 f"a name some other way. Row: {fixture_row}"
@@ -5382,10 +5382,10 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
             ], "PROPERTY 11 (known device): the recurring sweep created a second Hardware row"
             assert not _hardware_with_ip(client, _PROBE_TARGET_NEW_IP), (
                 "PROPERTY 11 (new device): the recurring sweep imported the new device by "
-                "itself — plan §5 requires an agent-authored row to reach the inventory only "
+                "itself — the acceptance flow requires an agent-authored row to reach the inventory only "
                 "when a user accepts it"
             )
-            # The current contract, stated as such. Plan §8 step 11 also asks
+            # The current contract, stated as such. The acceptance flow's step 11 also asks
             # for an unchanged known device to be auto-updated out of the queue
             # with a refreshed `last_seen`; `_auto_merge_known_devices` is
             # reachable only from `_scan_finalize`, and an agent job is closed
@@ -5394,7 +5394,7 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
             # the refresh instead of pinning its absence.
             assert known["merge_status"] == "pending", (
                 "an agent-executed recurring scan auto-updated a known unchanged device out "
-                "of the review queue. That is what plan §8 step 11 asks for, and it is NOT "
+                "of the review queue. That is what step 11 asks for, and it is NOT "
                 "what `finalize_agent_job` does today (it documents never calling "
                 "`_auto_merge_known_devices` at any setting). Something has changed on "
                 f"purpose: update this test rather than reverting it. Row: {known}"
@@ -5420,7 +5420,7 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
             )
             assert conflicted["merge_status"] == "pending", (
                 "PROPERTY 11 (untrusted hostname): the disagreement was resolved without an "
-                f"operator; plan §4 requires it to be a review: {conflicted}"
+                f"operator; the acceptance flow requires it to be a review: {conflicted}"
             )
             fields = {
                 entry["field"]: entry
@@ -5436,7 +5436,7 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
             after_rename = _hardware_row(client, hardware_id)
             assert after_rename["name"] == _OPERATOR_HARDWARE_NAME, (
                 "PROPERTY 11 (untrusted hostname): the agent's reported hostname overwrote the "
-                "name an operator gave the device. Plan §4 lists hostname among the agent's "
+                "name an operator gave the device. The acceptance flow lists hostname among the agent's "
                 f"untrusted observations: {after_rename}"
             )
             assert any(row["id"] == conflicted["id"] for row in _review_queue(client)), (
@@ -5447,7 +5447,7 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
             # no `last_seen` refresh either, on the conflicting row or on any
             # other agent-reported one.
             assert after_rename["last_seen"] == last_seen_before, (
-                "an agent-executed scan refreshed Hardware.last_seen. Plan §8 step 11 asks "
+                "an agent-executed scan refreshed Hardware.last_seen. Step 11 asks "
                 "for exactly that, and `finalize_agent_job` does not do it today — see the "
                 f"note on `merge_status` above: {last_seen_before} -> {after_rename['last_seen']}"
             )
@@ -5584,7 +5584,7 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
         _clear_agent_toml()
 
 
-# Slice 4.1 (F4): a certificate change must not strand the fleet
+# the design.1 (F4): a certificate change must not strand the fleet
 
 
 def _tls_pin_status(client: httpx.Client) -> dict:
@@ -5777,7 +5777,7 @@ def test_activation_is_refused_while_an_agent_cannot_confirm():
         _clear_agent_toml()
 
 
-# Slice 4.2 (F3): a tampered update binary is refused
+# the design.2 (F3): a tampered update binary is refused
 
 
 def _generate_signing_keypair() -> tuple[str, str]:

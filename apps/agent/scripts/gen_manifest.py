@@ -41,7 +41,7 @@ for f in sorted(dist.glob("cb-agent-*")):
         f.read_bytes()
     ).hexdigest()
 
-# Slice 4.2 (F3): a detached Ed25519 signature over each binary. The digest
+# A detached Ed25519 signature over each binary. The digest
 # above proves the download matches what the *server* said; only this proves
 # the bytes came from whoever holds the signing key, which is what a
 # compromised server cannot forge.

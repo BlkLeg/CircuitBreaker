@@ -175,9 +175,9 @@ func (w *Writer) SetGrants(grants map[string]bool) error {
 // It is an upsert, not a replacement, because two independent producers write
 // here: the identity report collected once at startup (internal/hostinfo,
 // "agent.identity") and every subsequent host collection (internal/collect,
-// "host.*"). A whole-slice replacement — what this method used to be — let
-// whichever producer wrote last erase the other's rows, so status.json
-// oscillated between the two views depending on startup timing. Sorting on
+// "host.*"). A whole-slice replacement would let whichever producer wrote
+// last erase the other's rows, so status.json would oscillate between the two
+// views depending on startup timing. Sorting on
 // every merge is what keeps status.json and `cb-agent status`'s readiness
 // listing deterministic regardless of the order the producers happen to run
 // in. The persisted JSON field name is unchanged.

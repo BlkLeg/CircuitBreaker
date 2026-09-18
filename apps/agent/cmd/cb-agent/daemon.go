@@ -58,9 +58,8 @@ func runDaemon() {
 	// Before enrolling, not after: enrollment is a network call, and — even
 	// now that a failed one retries below instead of exiting — a retry loop
 	// that never gets past a broken update is exactly the case the rollback
-	// window exists for. That was F-8 — the rollback safety net was
-	// unavailable in exactly the case it exists for. This check reads the
-	// marker's durable deadline off disk and needs no server at all.
+	// window exists for. This check reads the marker's durable deadline off
+	// disk and needs no server at all.
 	rollbackExpiredUpdate(config.StateDir(), update.CurrentLinkPath(config.StateDir()), time.Now(), func() error {
 		return syscall.Exec(installedBinaryPath, os.Args, os.Environ())
 	})
