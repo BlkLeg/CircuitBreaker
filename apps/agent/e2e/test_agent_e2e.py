@@ -72,7 +72,7 @@ full stack, so failures/timing in one scenario can't leak into another:
       restoring 30 before it exits.
 
   * test_agent_black_hole_partition_is_detected_and_spools
-      F-5: a severed route rather than a stopped server — `docker network
+      A severed route rather than a stopped server — `docker network
       disconnect`, which closes no socket and produces silence instead of a
       write error. Proves internal/link's steady-state read deadline takes
       the link down on that silence and diverts collection into the spool,
@@ -1075,7 +1075,7 @@ def _reattach_network(container: str, network: str, address: str | None = None) 
     """Re-attaches `network` to `container`, tolerating a container that is
     crash-looping rather than merely idle.
 
-    This is the F-8 failure, and it is NOT the one previously recorded: the
+    This is the crash-loop failure, and it is NOT the in-process one: the
     entry `docker network disconnect` succeeds. It is the reconnect, 150s
     later, that dies with "network sandbox for container ... not found".
 
@@ -1121,7 +1121,7 @@ def _backend_outage(client: httpx.Client, env: dict | None = None):
     the agent's very next write fails and spooling starts within one
     collection interval. A network detach sends nothing, so the agent can
     only infer the partition from silence and takes a full readTimeout (60s)
-    to do it. Both are now detected — that is F-5's fix — but only this one
+    to do it. Both are detected, but only this one
     produces a backlog promptly, which is what makes it the cheaper stimulus
     for a test whose subject is bounded catch-up rather than detection.
 
@@ -1906,7 +1906,7 @@ def _reconnect_budget_s(outage_len_s: float) -> float:
     This is deliberately NOT folded into _CATCHUP_BUDGET_S. Reconnect backoff
     is not the property under test, and it can legitimately dwarf catch-up: one
     combined budget lets a regressed drain hide behind a slow dial, which is
-    exactly what F-6.2 records.
+    exactly what this measures.
     """
     return _BACKOFF_JITTER * (outage_len_s + _BACKOFF_BASE_S) + _RECONNECT_ATTEMPT_SLACK_S
 
@@ -1916,7 +1916,7 @@ def _last_connect_at(client: httpx.Client, agent_id: int, *, after: datetime):
     that has not happened since `after`.
 
     This, and not a local time.monotonic() reading, is the instant a catch-up
-    budget must be measured from (F-6.2). `agent_events` rows come back
+    budget must be measured from. `agent_events` rows come back
     newest-first and a `connected` row is written once per accepted /link
     connection, in the same committed transaction as hello's spool-depth
     snapshot and strictly before the hello.ack that gates the drain. So it is
@@ -2044,7 +2044,7 @@ def test_agent_host_telemetry_first_sample_catchup_and_disable():
                 # outage_start comes from the manager, not from here: it is
                 # the moment the API was CONFIRMED unreachable, so the sleep
                 # below happens entirely inside a real outage and every bucket
-                # this window selects was necessarily spooled (F-6.3).
+                # this window selects was necessarily spooled.
                 with _backend_outage(client) as outage_start:
                     # The daemon keeps collecting throughout: internal/link's
                     # Run routes data frames to the spool whenever the link
@@ -2062,7 +2062,7 @@ def test_agent_host_telemetry_first_sample_catchup_and_disable():
                 # what makes the non-zero window observable at all.
                 #
                 # Two properties, two clocks — the separation IS the assertion
-                # (F-6.2). A single combined budget lets a regressed drain hide
+                # A single combined budget lets a slow drain hide
                 # behind a slow reconnect, the very property the paced catch-up pins.
                 #
                 # (a) RECONNECT, bounded by internal/link's backoff progression
@@ -2171,7 +2171,7 @@ def test_agent_host_telemetry_first_sample_catchup_and_disable():
                         "— the spool's at-least-once redelivery was not deduped"
                     )
 
-                # (c) Per-SAMPLE, not inferred from bucket aggregates (F-6.1).
+                # (c) Per-SAMPLE, not inferred from bucket aggregates.
                 # The plan's requirement is that every sample_id appears once,
                 # and no history endpoint can express that — see
                 # _agent_host_samples. This also catches the one case the
@@ -2300,7 +2300,7 @@ def test_agent_host_telemetry_first_sample_catchup_and_disable():
         _clear_agent_toml()
 
 
-# F-5: black-hole network partition detection
+# Black-hole network partition detection
 
 # internal/link's readTimeout: 3 * the 20s heartbeatInterval, matching the
 # backend's own _LINK_DEAD_SECONDS. Deliberately NOT overridden for this test.
@@ -2324,7 +2324,7 @@ def test_agent_black_hole_partition_is_detected_and_spools():
     """A severed route — no FIN, no RST, just silence — must take the link
     down and divert collection into the spool.
 
-    This is the scenario F-5 records as covered by no test. It is distinct
+    This is the scenario no other test covers. It is distinct
     from `test_agent_host_telemetry_first_sample_catchup_and_disable`'s
     outage in the one way that matters: `docker compose stop` closes the
     socket, so the agent's next write fails and the existing write-error
@@ -2422,7 +2422,7 @@ def test_agent_black_hole_partition_is_detected_and_spools():
 
                     # Now that the agent knows it is offline, everything it
                     # collects must be queued rather than written into the
-                    # void — the actual product consequence of F-5.
+                    # void — the actual product consequence.
                     time.sleep(_PARTITION_SPOOL_S)
                     spooled = _agent_status()["spool_depth"]
                     assert spooled > 0, (
@@ -4484,7 +4484,7 @@ def _backend_sql(query: str) -> list[list[str]]:
 def _agent_host_samples(agent_id: int, start: datetime, end: datetime) -> list[tuple[str, float]]:
     """Every RAW agent host sample in a window, one tuple per sample.
 
-    A direct DB read because no endpoint can answer this (F-6.1).
+    A direct DB read because no endpoint can answer this.
     `GET /agents/{id}/telemetry` serializes exactly one row — the newest — and
     `/telemetry/history` never materializes raw samples at all; it aggregates
     entirely in SQL over an epoch-aligned grid. `sample_id` is simply not on

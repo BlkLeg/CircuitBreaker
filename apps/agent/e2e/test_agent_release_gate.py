@@ -1135,7 +1135,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     f"agent's observation did not reach the inventory at all: {hardware}"
                 )
                 # The provenance the merge writes onto the row itself
-                # (`discovery_merge`, CB-REL-001): this Hardware record points back
+                # (`discovery_merge`): this Hardware record points back
                 # at the exact ScanResult the agent produced, which is what makes it
                 # an ATTRIBUTED record rather than a row that happens to carry the
                 # same address.

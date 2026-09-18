@@ -70,7 +70,7 @@ func TestScratchDirHonoursTheOperatorsOverride(t *testing.T) {
 
 // A regular file rather than a mode-0000 directory: root ignores permission
 // bits, and this fallback must be exercised for every uid the agent might run
-// as rather than skipping under one of them (REL-19).
+// as rather than skipping under one of them.
 func TestScratchDirFallsBackWhenTheStateDirIsUnusable(t *testing.T) {
 	_, temp := isolateScratch(t)
 	blocked := filepath.Join(t.TempDir(), "not-a-directory")

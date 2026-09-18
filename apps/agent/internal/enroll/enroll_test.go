@@ -328,7 +328,7 @@ func TestReadEnrollToken_ReportsAPathItCannotRead(t *testing.T) {
 	//
 	// A directory rather than a mode-0000 file: root can read 0000, so that
 	// version of this test had to skip under root, and a skip needs a register
-	// row (REL-19). os.ReadFile on a directory fails for every uid, which
+	// row. os.ReadFile on a directory fails for every uid, which
 	// exercises the same branch with no exemption to justify.
 	if _, err := readEnrollToken(t.TempDir()); err == nil {
 		t.Fatal("an unreadable token path must be reported, not ignored")
