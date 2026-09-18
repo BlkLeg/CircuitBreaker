@@ -6,40 +6,24 @@ import { stubApi } from './fixtures/api';
 /**
  * Route §4.3's scripted journey, run under CPU throttle, counting wedges.
  *
- * Three things about this harness are deliberate and were wrong in an earlier
- * revision, so they are worth stating plainly.
+ * Three constraints the measurement depends on:
  *
- * **Navigation goes through the UI, not through `history.pushState`.** The
- * earlier version pushed a URL and dispatched a synthetic `PopStateEvent`. Its
- * recorded evidence showed why that is not good enough: for both captured
- * wedges the diagnostics buffer held *no nav entry at all* for the target path,
- * meaning React Router never processed the navigation — the URL had moved
- * because `pushState` moved it directly. That is a stuck harness, not a stuck
- * router, and it was written up as "the requested navigation remains pending",
- * which the evidence did not show. Clicking a dock link (MacOSDOCK.jsx) goes
- * through a real `<NavLink>` and so through the router's own `navigate()`,
- * which is the code path react-router v7 wraps in `startTransition` and
- * therefore the one hypothesis H1 is about.
+ * - Navigate through the UI, never `history.pushState`. A dock click
+ *   (MacOSDOCK.jsx) goes through a real `<NavLink>` and so through the router's
+ *   own `navigate()` — the path react-router v7 wraps in `startTransition`, and
+ *   the one H1 is about. Pushing a URL moves the address bar without the router
+ *   processing anything, which measures the harness, not the product.
+ * - Find the route by `[data-route-path]`, not by position. `.page-content >
+ *   div` first-child is the `<UpdateBanner>` or the Suspense `LoadingScreen`,
+ *   neither of which carries the attribute, so every navigation would count as
+ *   a wedge with nothing to show the selector had missed.
+ * - A missing nav entry is evidence, not a discarded sample. `navigateByUi` has
+ *   already proven the URL moved, so a `useLocation` that never updated is the
+ *   defect itself.
  *
- * **The rendered route is found by `[data-route-path]`, not by position.** The
- * earlier selector was `.page-content > div` first-child, which is the
- * `<UpdateBanner>` when an update is available and the Suspense `LoadingScreen`
- * whenever a chunk is in flight. In either case it has no `data-route-path`, so
- * every navigation in the run would have been counted as a wedge with nothing
- * in the output to indicate the selector had missed.
- *
- * **A missing nav entry is evidence, not an excuse to discard the sample.** Once
- * `navigateByUi` has proven the URL moved, the router was definitely asked to
- * navigate — so a `useLocation` that never updated is the defect, not a bad
- * measurement. A revision that treated it as a harness fault threw away 40% of
- * its own findings, including every instance of the branch the known bug
- * describes. It is now a wedge, sub-classified by `WedgeBranch`.
- *
- * The report separates outcomes rather than collapsing them into pass/fail: a
- * wedge (URL advanced, outgoing page still on screen), a visible loading
- * fallback (slow but behaving correctly — the wedge's whole signature is that no
- * fallback appears), and a UI failure to even deliver the click. Only the first
- * is a wedge, and every wedge names which branch of §4.4 it took.
+ * Outcomes stay separate rather than collapsing to pass/fail: a wedge (URL
+ * advanced, outgoing page still on screen), a visible loading fallback (slow
+ * but correct — a wedge shows none), and a click the UI never delivered.
  */
 
 // Route §4.3's journey. The page is already on /map before the loop, so the
@@ -118,11 +102,9 @@ async function readRenderedRoute(locator: Locator): Promise<string | null> {
  * Every route element currently in the DOM, outgoing first.
  *
  * With `AnimatePresence mode="wait"` there should only ever be one. Two means
- * the outgoing page's exit animation has not completed and framer-motion has
- * not removed it — which is §4.4's third YES branch ("React committed but old
- * tree visible → framer-motion exit never completed"), and a different finding
- * from a chunk that never arrived. Recording only the first element would hide
- * the distinction behind a single value that looks the same either way.
+ * framer-motion has not finished the outgoing exit — §4.4's third YES branch,
+ * and a different finding from a chunk that never arrived. Recording only the
+ * first element would hide that distinction.
  */
 async function readRenderedRoutes(page: Page): Promise<string[]> {
   return page
@@ -133,11 +115,10 @@ async function readRenderedRoutes(page: Page): Promise<string[]> {
 }
 
 /**
- * How long to wait for the URL to move after a click before deciding the click
- * was never delivered. A wedge's whole signature is that the URL advances and
- * the render does not, so a URL that never moves is a click that missed — the
- * dock magnifies under the cursor, and under 6x throttle a link can shift
- * between Playwright judging it stable and the click landing.
+ * How long to wait for the URL to move before deciding the click never landed.
+ * A wedge is defined by the URL advancing while the render does not, so a URL
+ * that never moves is a missed click, not a wedge — the dock magnifies under
+ * the cursor and at 6x throttle a link can shift after being judged stable.
  */
 const URL_SETTLE_TIMEOUT_MS = 2_000;
 
@@ -147,22 +128,17 @@ const CLICK_ATTEMPTS = 2;
 /**
  * Navigate the way a user does: click the route's dock icon.
  *
- * The dock (MacOSDOCK.jsx) is the app's primary navigation and its entries are
- * real `<NavLink>`s, so a click here goes through react-router's own
- * `navigate()` — the code path v7 wraps in `React.startTransition`, and
- * therefore the one hypothesis H1 is about. The header's route menu was the
- * first choice and is not usable: a `HeaderWidgets` element overlaps the menu
- * button at the default viewport and intercepts the click.
+ * The dock (MacOSDOCK.jsx) entries are real `<NavLink>`s, so a click goes
+ * through react-router's own `navigate()`. The header's route menu is not
+ * usable here: a `HeaderWidgets` element overlaps its button at the default
+ * viewport and intercepts the click.
  *
- * The shelf auto-hides, so hover it before reaching for a link. Matching on the
- * `href` rather than the label keeps this independent of translation.
+ * The shelf auto-hides, so hover before reaching for a link. Match on `href`
+ * rather than label to stay independent of translation.
  *
- * Returns whether the URL actually moved. A click Playwright reports as
- * delivered is not necessarily a click the link received: the dock magnifies
- * under the cursor, and at 6x throttle a link can shift between being judged
- * stable and the pointer landing. Since a wedge is defined by the URL advancing
- * while the render does not, a URL that never moves is proof the router was
- * never asked — a distinct failure that must not be counted as a wedge.
+ * Returns whether the URL moved: a delivered click is not necessarily a
+ * received one, and a URL that never moves means the router was never asked —
+ * which must not be counted as a wedge.
  */
 async function navigateByUi(page: Page, path: string): Promise<boolean> {
   const link = page.locator(`.macos-dock-link[href="${path}"]`);
@@ -254,13 +230,10 @@ test('records the navigation wedge rate under 6x CPU throttle', async ({
         .filter((entry) => entry.kind === 'chunk' && entry.pending === true)
         .map((entry) => String(entry.chunk));
 
-      // `uiFailure` is the *only* harness fault, and `navigateByUi` has already
-      // proven the URL moved before this point. A missing nav entry is
-      // therefore evidence about the product, not about the click: with a real
-      // `<NavLink>` the router was definitely asked to navigate, so a location
-      // update that never reached `useLocation` is the defect itself. An
-      // earlier revision classified that as a harness fault and discarded 40%
-      // of its own findings.
+      // `uiFailure` is the only harness fault, and `navigateByUi` has already
+      // proven the URL moved. A missing nav entry is therefore evidence about
+      // the product: the router was asked, so a location update that never
+      // reached `useLocation` is the defect itself.
       let outcome: Outcome;
       let branch: WedgeBranch | null = null;
       if (uiFailure !== null) {

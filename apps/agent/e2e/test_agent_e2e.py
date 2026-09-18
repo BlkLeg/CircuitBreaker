@@ -194,17 +194,13 @@ _ADMIN_PASSWORD = "E2eTest1234!"
 # docker-compose.yml's pinned topology, in one place
 # ─────────────────────────────────────────────────────────────────────────
 #
-# Every network in the harness has a hand-pinned subnet (see the compose
-# file's own topology note for why each one exists). Restating the numbers
-# here is unavoidable — Docker owns them at runtime, this file owns the
-# assertions about them — so they live in ONE block rather than scattered
-# through the tests, and `_network_subnet()` re-reads the live network so a
-# drift between the two halves fails as a named assertion instead of as an
-# unexplained timeout somewhere downstream.
+# Docker owns these subnets at runtime; this file owns the assertions about
+# them. Restated in ONE block rather than scattered through the tests, and
+# `_network_subnet()` re-reads the live network so drift fails as a named
+# assertion rather than an unexplained timeout downstream.
 #
-# The compose *service* names are constants for the same reason: with two
-# agent services and three fixture targets, a bare "cb-agent" string literal
-# inside a helper is a silent single-agent assumption.
+# Service names are constants for the same reason: with two agent services, a
+# bare "cb-agent" literal inside a helper is a silent single-agent assumption.
 
 _AGENT_SERVICE = "cb-agent"
 _AGENT_2_SERVICE = "cb-agent-2"
@@ -250,26 +246,19 @@ _PROBE_TARGET_2_IP = "10.78.0.10"
 # Which Docker networks each agent service may be attached to, and which one
 # carries its route to the SERVER. Keyed by compose service name.
 #
-# `required` is what a caller may rely on being present; `allowed` bounds what
-# may be present at all. Both halves are load-bearing, and they catch opposite
-# failures — both of which would otherwise leave a *passing* test:
+# `required` is what a caller may rely on; `allowed` bounds what may be present
+# at all. Both catch opposite failures that would otherwise leave a PASSING
+# test:
 #
-#   * falling below `required` means a route this suite's proofs depend on has
-#     silently gone away. cb-agent losing probe-net turns "the backend cannot
-#     reach the target, so only the agent can have" into "nobody can reach the
-#     target", and every check simply fails for the wrong reason.
-#   * rising above `allowed` — `default` above all, or the other agent's
-#     networks — means the isolation those same proofs rest on has silently
-#     been widened, and an agent-executed result becomes indistinguishable
-#     from a server-executed one.
+#   * below `required`, a route the proofs depend on has gone away — cb-agent
+#     losing probe-net turns "only the agent can reach the target" into "nobody
+#     can", and every check fails for the wrong reason.
+#   * above `allowed` (`default` especially, or the other agent's networks) the
+#     isolation those proofs rest on has been widened, and an agent-executed
+#     result becomes indistinguishable from a server-executed one.
 #
-# This was a single exact-set assertion (`== {"agent-net", "probe-net"}`) up
-# to Slice 4. An exact set is now wrong rather than merely strict: cb-agent
-# legitimately GAINS late-net partway through a test — that is the
-# zero-configuration trigger under test, not a topology bug — and cb-agent-2
-# has a different set entirely. Required-subset plus allowed-superset keeps
-# every failure the exact set used to catch while admitting the two shapes
-# that are now legitimate.
+# Not an exact set: cb-agent legitimately GAINS late-net mid-test (the
+# zero-configuration trigger under test) and cb-agent-2 has a different set.
 _AGENT_TOPOLOGY = {
     _AGENT_SERVICE: {
         "server_net": _AGENT_NET,
@@ -473,22 +462,15 @@ def _down(env: dict | None = None) -> None:
     shutil.rmtree(_E2E_DATA_DIR, ignore_errors=True)
 
 
-# The host side of the agents' /etc/circuit-breaker. A *directory* mount, not
-# the file mount this used to be, and the reason is
-# test_agent_uninstall_marks_server_revoked_and_removes_local_files: a
-# `:ro` bind mount of agent.toml itself makes that test's own subject —
-# `cb-agent uninstall` removing the files the installer wrote — impossible to
-# satisfy. Unlinking a bind-mount target from inside the container fails with
-# EBUSY however privileged the caller is, so the assertion could only ever have
-# been weakened to accommodate an artefact of the harness. Mounting the
-# directory leaves agent.toml an ordinary file inside it, exactly as it is on a
-# real host, and removal is then a real question with a real answer.
+# The host side of the agents' /etc/circuit-breaker. A DIRECTORY mount, never a
+# bind mount of agent.toml itself: unlinking a bind-mount target from inside the
+# container fails with EBUSY however privileged the caller, which would make
+# `cb-agent uninstall` removing its own files impossible to assert. Mounting the
+# directory leaves agent.toml an ordinary file inside it, as on a real host.
 #
-# /etc/circuit-breaker itself remains un-removable (it is now the mount point),
-# which is faithful in its own way: on a host that also runs the CircuitBreaker
-# server, `performUninstall` deliberately leaves that directory alone. It
-# reports the failed rmdir, and this suite already tolerates a reported
-# systemctl failure for the same class of reason — see the uninstall test.
+# The mount point itself stays un-removable, which is faithful: on a host also
+# running the server, `performUninstall` leaves that directory alone and reports
+# the failed rmdir.
 AGENT_ETC_DIR = E2E_DIR / "agent-etc"
 AGENT_TOML = AGENT_ETC_DIR / "agent.toml"
 
@@ -612,15 +594,11 @@ class _AgentStreamListener:
         from websockets.sync.client import connect
 
         # Authorization header at handshake time so the router-level
-        # `Depends(require_auth)` (defense-in-depth on this route — see
-        # agent_presence_stream's docstring) doesn't 401 the handshake
-        # outright: HTTPConnection-based auth (_extract_token) does read
-        # this header for a websocket scope, even though the *endpoint's
-        # own* auth (token_from_websocket_scope) only ever reads the
-        # cb_session cookie from the handshake — hence still sending the
-        # same token as the first text message below, which is the actual
-        # mechanism this endpoint's body uses to authenticate a bearer-only
-        # (no-cookie) client such as this one.
+        # `Depends(require_auth)` does not 401 outright: `_extract_token` reads
+        # this header for a websocket scope. The endpoint's own auth
+        # (`token_from_websocket_scope`) reads only the cb_session cookie, so
+        # the same token is also sent as the first text message below — the
+        # mechanism a bearer-only client actually authenticates with.
         # Two websockets deprecations are load-bearing here, because pytest.ini's
         # `filterwarnings = error` makes both fatal and e2e.yml pins no version:
         #
@@ -1187,20 +1165,14 @@ def _backend_outage(client: httpx.Client, env: dict | None = None):
     """
     subprocess.run([*COMPOSE, "stop", "circuitbreaker"], check=True, cwd=E2E_DIR, env=env)
 
-    # The instant yielded is the first moment this process could not reach the
-    # API at all — NOT the moment `docker compose stop` returned, and not a
-    # timestamp the caller took beforehand (F-6.3). Between a caller-side stamp
-    # and the server actually going away sit SIGTERM, supervisord's shutdown of
-    # uvicorn and Postgres, and the kill grace; samples collected and delivered
-    # LIVE in that span would otherwise fall inside a window the caller treats
-    # as "these buckets can only have come out of the spool". At a 30s history
-    # grain a slow stop can satisfy that floor entirely from pre-outage
-    # buckets, which degrades the "collected_at preserved rather than rewritten
-    # to reconnect time" proof into a tautology.
+    # The instant yielded is the first moment the API was unreachable — NOT when
+    # `docker compose stop` returned, and not a caller-side stamp. SIGTERM,
+    # supervisord's shutdown and the kill grace all sit in between, and samples
+    # delivered LIVE in that span would fall inside a window the caller treats as
+    # "these can only have come from the spool", degrading the proof to a
+    # tautology.
     #
-    # Only a transport failure counts — a 5xx would mean the server is still
-    # there. That is the same socket the agent's /link connection terminates
-    # on, so this is a fact about the server rather than about docker's CLI.
+    # Only a transport failure counts — a 5xx means the server is still there.
     def _api_unreachable() -> bool:
         try:
             client.get("/api/v1/bootstrap/status", timeout=2.0)
@@ -1440,31 +1412,13 @@ def _wait_until_and_return(getter, *, timeout=30, interval=1.0):
 
 
 @pytest.mark.e2e
-# The repository's only xfail lived here, and this is the commit that earned its
-# removal. Worth keeping the history, because it took three passes to find the
-# real cause and two of them were confidently wrong:
-#
-#   1. Its first reason named three bugs — link.go's single-message drain,
-#      ws_agents swallowing decrypt failures, a second /link teardown evicting
-#      the first connection's registry entry. All three were real, all three
-#      were fixed (4aab49d5, ad197961), and the test still failed.
-#   2. Its second reason (2026-09-07) said the server "accepts the uninstall
-#      notification but does not act on it". Also wrong, in an instructive way:
-#      the server never received the notification at all. `cb-agent uninstall`
-#      wrote the frame, wrote a WebSocket close immediately after, and returned
-#      success — and uvicorn completed that close handshake while link_stream was
-#      still committing the hello, so its next send raised and the handler left
-#      before its receive loop ever ran. There was no POST and no endpoint; the
-#      earlier reason's wording invented both.
-#   3. The fix (2026-09-08) is in three parts, each with its own regression test
-#      at a level this e2e cannot reach: the agent waits for a delivery
-#      acknowledgement before closing, the server flushes a pending
-#      acknowledgement before a status flip ends the link, and the hello phase
-#      treats a vanished peer as an ordinary disconnect instead of raising.
-#
-# This test is the only thing that could have caught it, and the only thing that
-# proves it fixed: every hop is individually correct in isolation, and a
-# pure-pytest client that does not slam the socket shut is served correctly.
+# The uninstall notification is delivered on a link the agent closes immediately
+# afterwards, so this test is the only thing that exercises the race: every hop
+# is correct in isolation, and a client that does not slam the socket shut is
+# served correctly. It holds three behaviours together — the agent waits for a
+# delivery acknowledgement before closing, the server flushes a pending
+# acknowledgement before a status flip ends the link, and the hello phase treats
+# a vanished peer as an ordinary disconnect rather than raising.
 def test_agent_uninstall_marks_server_revoked_and_removes_local_files():
     _up_server()
     try:
@@ -1798,25 +1752,18 @@ def test_agent_update_success_and_forced_rollback():
             ), f"expected a version_changed event for {baked_version}, got {events}"
 
             # ---- Step 7b: forced rollback ----
-            # Build+inject a genuinely newer version, trigger an update to
-            # it, then sever outbound connectivity the instant the swap
-            # completes (watched via the daemon's own "updated to
-            # <rollback_version> — re-executing" log line — see main.go's
-            # onUpdate) — so the freshly re-exec'd binary can never complete
-            # a post-update hello.ack, exactly the "update never confirms"
-            # case internal/update's rollbackWindow (2 real minutes) guards
-            # against. The predicate below matches specifically on
-            # rollback_version, not the bare "re-executing" substring —
-            # _agent_logs() returns the container's whole accumulated
-            # stdout, and step 7a already logged its own "re-executing" line
-            # earlier in this same container, so a bare-substring match
-            # would return true on the very first poll here, long before
-            # this update's actual re-exec, and race the binary *download*
-            # instead. The 0.05s poll interval (rather than _wait_until's 1s
-            # default) plus CB_AGENT_TEST_PRE_REEXEC_DELAY_MS (set above)
-            # then close the race this step used to lose against a
-            # same-host re-exec that can reconnect and self-confirm in well
-            # under 100ms.
+            # Inject a genuinely newer version, trigger an update, then sever
+            # connectivity the instant the swap completes (watched via the
+            # daemon's "updated to <version> — re-executing" line) so the
+            # re-exec'd binary can never complete a post-update hello.ack —
+            # the "update never confirms" case rollbackWindow guards.
+            #
+            # The predicate matches on rollback_version, not a bare
+            # "re-executing": `_agent_logs()` returns the whole accumulated
+            # stdout and step 7a logged its own line, so a substring match would
+            # fire on the first poll and race the binary download. The 0.05s
+            # interval plus CB_AGENT_TEST_PRE_REEXEC_DELAY_MS close the race
+            # against a same-host re-exec that can self-confirm under 100ms.
             with tempfile.TemporaryDirectory() as tmp:
                 rollback_version = "9.9.9-e2e-rollback"
                 binary = _build_test_agent_binary(rollback_version, Path(tmp))
@@ -1842,25 +1789,18 @@ def test_agent_update_success_and_forced_rollback():
                 # interval, so this test just pays the real cost once.
                 time.sleep(150)
 
-            # Wait on the ROLLBACK EVENT first, not on status.json's version.
-            # status.json is written by startDaemonState, which runs after
-            # runDaemon's fatal enroll.Run — so the partitioned 9.9.9 binary
-            # never got to write one, and the file still holds the string the
-            # *previous* (0.3.5) process left there. Asserting on it before
-            # the agent has reconnected is therefore a tautology: it passes
-            # whether or not the rollback ever happened, which is precisely
-            # how this test could time out at the next line with nothing to
-            # show for it. The audit event is the first thing here that can
-            # only exist if the rollback really ran: the rolling-back process
-            # has no live link, so it persists a rollback report
-            # (update.WriteRollbackReport) that the re-exec'd binary sends as
-            # update.status(rolled_back) once it reconnects — see
-            # services/agent_link.py's "rolled_back" mapping.
+            # Wait on the ROLLBACK EVENT, not on status.json's version.
+            # status.json is written after `enroll.Run`, which the partitioned
+            # binary never reaches, so the file still holds the previous
+            # process's string — asserting on it before reconnect passes whether
+            # or not the rollback happened. The audit event is the first thing
+            # that can only exist if it really ran: the rolling-back process
+            # persists a rollback report that the re-exec'd binary sends as
+            # update.status(rolled_back) once it reconnects.
             #
-            # The budget is generous because the agent has to get there the
-            # slow way: it crash-loops for the whole cut (enroll.Run cannot
-            # succeed with agent-net detached), rolls back on the first start
-            # after its durable deadline, and only then reconnects.
+            # The budget is generous because the agent gets there the slow way:
+            # it crash-loops for the whole cut, rolls back after its durable
+            # deadline, and only then reconnects.
             def _rolled_back():
                 events = client.get(f"/api/v1/agents/{agent_id}/events", headers=headers).json()
                 return any(e["event_type"] == "update_rolled_back" for e in events)
@@ -2109,21 +2049,16 @@ def test_agent_host_telemetry_first_sample_catchup_and_disable():
                     {"enabled": True, "config": _HOST_TELEMETRY_FAST_CONFIG},
                 )
 
-                # cpu_pct (and every rate-derived field) is a delta between
-                # two /proc/stat snapshots, so the very first collection of
-                # any freshly constructed collector — and applying a config
-                # constructs one, see main.go's applyHostConfig — carries a
-                # null cpu_pct. Requiring BOTH "collected after the grant
-                # landed" and "carries a rate" therefore waits for the second
-                # sample produced under the new cadence, which is what proves
-                # the whole outbound path is running steadily rather than
-                # having delivered exactly one frame.
+                # cpu_pct is a delta between two /proc/stat snapshots, and
+                # applying a config constructs a fresh collector, so the first
+                # sample after a grant carries a null cpu_pct. Requiring both
+                # "collected after the grant" and "carries a rate" waits for the
+                # SECOND sample under the new cadence, which proves the outbound
+                # path runs steadily rather than having sent one frame.
                 #
-                # The whole response is captured by the predicate rather than
-                # re-fetched afterwards: at a 10s cadence the next sample can
-                # land between the two calls, and the config change's own
-                # first (rate-less) sample would then be what the assertions
-                # below ran against.
+                # The predicate captures the whole response rather than
+                # re-fetching: at a 10s cadence the next sample can land between
+                # the two calls.
                 def _rate_bearing_telemetry() -> dict | None:
                     current = _agent_telemetry(client, agent_id)
                     sample = current["latest"]
@@ -2139,22 +2074,14 @@ def test_agent_host_telemetry_first_sample_catchup_and_disable():
                 assert summary["cpu_pct"] is not None, summary
                 assert summary["mem_pct"] is not None, summary
                 assert summary["uptime_s"] is not None, summary
-                # root_disk_pct is deliberately NOT asserted non-null here.
-                # host.Collector only sets it from a /proc/self/mounts entry
-                # whose mountpoint is exactly "/" and whose fs type is not in
-                # its pseudoFS deny-list — and "overlay" is in that list, so
-                # in ANY container (this harness included) the root mount is
-                # skipped by design. That is a property of running the
-                # collector inside a container, not of the collector: on a
-                # real host "/" is ext4/xfs and the field is populated. What
-                # is assertable here is the capability behind it — real
-                # statfs numbers for real mounts — so the filesystems list is
-                # checked for a usable used_pct below instead.
+                # root_disk_pct is deliberately NOT asserted non-null: the
+                # collector skips mounts whose fs type is in its pseudoFS
+                # deny-list, and "overlay" is in it, so in ANY container the root
+                # mount is skipped by design. On a real host "/" is ext4/xfs and
+                # the field is populated. The capability behind it is assertable,
+                # so the filesystems list is checked for a usable used_pct below.
                 #
-                # host.Collector stamps "healthy" and only downgrades to
-                # "degraded"/"unavailable" on a real probe failure (see
-                # internal/collect/host/host.go). "unavailable" would mean
-                # core /proc telemetry itself failed.
+                # "unavailable" would mean core /proc telemetry itself failed.
                 assert latest["status"] in ("healthy", "degraded"), latest["status"]
                 payload = latest["payload"]
                 assert payload["filesystems"], "no filesystem entries in the sample payload"
@@ -2200,21 +2127,17 @@ def test_agent_host_telemetry_first_sample_catchup_and_disable():
                 # collecting into the spool for all of it.
                 outage_end = datetime.now(timezone.utc)
 
-                # Spool depth first, and immediately: the value the server
-                # holds during catch-up comes from hello.spool_depth (D-12) —
-                # it CANNOT have moved during the outage, because no frame
-                # reached the server while the agent was disconnected — and
-                # the very next heartbeat (20s) overwrites it with the
-                # by-then-drained 0. Polling fast from here is what makes the
-                # non-zero window observable at all.
-                # Two properties, two clocks — the separation IS the
-                # assertion (F-6.2). The old single 240s magic-number poll
-                # bounded neither: it let a regressed drain hide behind a slow
-                # reconnect, which is the very property D-5 exists to pin.
+                # Spool depth first and immediately: the value comes from
+                # hello.spool_depth (D-12) and the next heartbeat (20s)
+                # overwrites it with the by-then-drained 0, so polling fast is
+                # what makes the non-zero window observable at all.
                 #
-                # (a) RECONNECT, bounded by internal/link's own backoff
-                # progression and measured from the moment the server was
-                # answering again.
+                # Two properties, two clocks — the separation IS the assertion
+                # (F-6.2). A single combined budget lets a regressed drain hide
+                # behind a slow reconnect, the very property D-5 pins.
+                #
+                # (a) RECONNECT, bounded by internal/link's backoff progression
+                # and measured from when the server was answering again.
                 observed_depth = 0
                 reconnect_budget_s = _reconnect_budget_s(
                     (outage_end - outage_start).total_seconds()
@@ -3532,21 +3455,17 @@ def test_e2e_harness_topology_is_pinned_and_two_agents_stay_isolated():
                 )
 
                 # ---- the negative, for all three fixture subnets ----
-                # Every Slice 4 assertion of the form "the agent found a host
-                # the backend cannot reach" is worth exactly as much as this
-                # loop. Run last so it covers the topology as it finally
-                # stands, including the subnet that arrived mid-test.
+                # Every "the agent found a host the backend cannot reach"
+                # assertion is worth exactly as much as this loop. Run last so it
+                # covers the topology as it finally stands, including the subnet
+                # that arrived mid-test.
                 #
-                # Positive controls first, because a loop of `assert
-                # returncode != 0` is satisfied just as well by a missing
-                # binary, a dropped capability or a typo as by an absent
-                # route — and the resulting test would pass forever while
-                # proving nothing. The backend container drops ALL caps and
-                # adds back NET_RAW (repo-root docker-compose.yml), so ICMP
-                # is *supposed* to work from here; it is demonstrated against
-                # cb-agent's own agent-net address, a network the backend IS
-                # on. `nc` is demonstrated against the backend's own HTTPS
-                # listener, the one open TCP port it can reach at all.
+                # Positive controls first: a loop of `assert returncode != 0` is
+                # satisfied just as well by a missing binary, a dropped capability
+                # or a typo as by an absent route, and would pass forever while
+                # proving nothing. ICMP is demonstrated against cb-agent's
+                # agent-net address and `nc` against the backend's own HTTPS
+                # listener.
                 reachable = _backend_sh(f"ping -c 2 -W 2 {agent_ip}")
                 assert reachable.returncode == 0, (
                     "the backend cannot ICMP a host on a network it is attached to, so "
@@ -4550,36 +4469,29 @@ def test_agent_zero_configuration_discovery_import_and_replay():
 # (plan §8 steps 8-11)
 # ─────────────────────────────────────────────────────────────────────────
 #
-# Task 32 proves the slice's central claim on the happy path. These two tests
-# attack the four ways that claim could be true by accident:
+# Task 32 proves the central claim on the happy path. These two attack the four
+# ways it could be true by accident:
 #
-#   * work that keeps producing accepted results after it was cancelled,
-#   * an agent that silently needs re-enrolling or re-configuring when either
-#     end restarts or its address moves,
-#   * findings attributed to whichever agent happened to report them last,
-#   * a recurring cadence that cannot tell a device it has already seen from a
-#     new one, or that lets an untrusted reporter rename inventory.
+#   * work that keeps producing accepted results after cancellation,
+#   * an agent that silently needs re-enrolling when either end restarts or its
+#     address moves,
+#   * findings attributed to whichever agent reported them last,
+#   * a recurring cadence that cannot tell a known device from a new one, or
+#     that lets an untrusted reporter rename inventory.
 #
-# As everywhere else in this file the budgets below are `_wait_until` ceilings,
-# not expectations: a scenario that gets there sooner pays nothing.
+# Budgets below are `_wait_until` ceilings, not expectations.
 
-# The scan-depth edit step 8 runs its doomed sweep under, and the reason it is
-# this extreme is arithmetic rather than taste. Two things have to be true at
-# once: the scan must still be running minutes after it starts (so "mid-scan"
-# is not a race), and the agent must still be FINDING hosts after internal/
-# link's 60s steady-state read deadline has taken the partitioned link down (so
-# its late findings reach the server through the spool rather than vanishing
-# into the black hole — see `_cut_agent_network`).
+# These values are arithmetic, not taste. Two things must hold at once: the scan
+# must still be running minutes in (so "mid-scan" is not a race), and the agent
+# must still be FINDING hosts after internal/link's 60s read deadline has taken
+# the partitioned link down, so late findings reach the server through the spool.
 #
-# `Liveness.probeHost` gives each address one shared wall-clock budget and
-# `session.Ping` waits the whole of it for a reply, so an address nobody
-# answers on costs a full `host_timeout_ms`. At the grant's 10 000 ms maximum
-# and one host at a time, a 10.77.0.0/24 sweep answers for 10.77.0.1 and the
-# agent's own address within a second and then spends ten seconds per dead
-# address: 10.77.0.10 is not reached for ~70s and 10.77.0.20 not for ~160s,
-# both comfortably past the deadline. `job_timeout_seconds` is the grant's
-# maximum for the same reason — the dispatch must not expire on its own before
-# the test has finished with it.
+# `Liveness.probeHost` gives each address one shared wall-clock budget and waits
+# the whole of it, so an unanswered address costs a full `host_timeout_ms`. At
+# the grant's 10 000 ms maximum, one host at a time, 10.77.0.10 is not reached
+# for ~70s and 10.77.0.20 not for ~160s — both past the deadline.
+# `job_timeout_seconds` is the grant's maximum so the dispatch cannot expire
+# before the test is finished with it.
 _CANCEL_DISCOVERY_CONFIG = {
     "max_concurrent_hosts": 1,
     "host_timeout_ms": 10_000,
@@ -5379,18 +5291,14 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
                 lambda: client.get("/api/v1/bootstrap/status").status_code == 200, timeout=240
             )
             old_ip, new_ip = _change_agent_address(_AGENT_NET_MOVED_IP)
-            # Read *here*, immediately before the restart, and from the agent's
-            # own status file rather than from the server. `compose restart`
-            # keeps the state volume, so the container comes back to the
-            # status.json it left behind — a bare `link_state == "accepted"`
-            # would be satisfied by the stale value already in that file, and
-            # the assertions below would be describing the connection this test
-            # has just broken rather than the one it is waiting for.
+            # Read HERE, immediately before the restart, from the agent's own
+            # status file. `compose restart` keeps the state volume, so the
+            # container returns to the status.json it left behind and a bare
+            # `link_state == "accepted"` would be satisfied by that stale value —
+            # describing the connection just broken, not the one being awaited.
             #
-            # (`AgentRead.connected_since` looks like the obvious server-side
-            # witness and is not one: presence lives in Redis, and the ORM
-            # column that field is validated from is never written, so it reads
-            # NULL for a connected agent.)
+            # `AgentRead.connected_since` is not a usable server-side witness:
+            # presence lives in Redis and that ORM column is never written.
             status_before = _agent_status()["updated_at"]
             # `restart`, never `up --force-recreate`: the state volume carries
             # the enrollment whose survival is half of what this step claims,

@@ -3,10 +3,9 @@ import type { Page } from '@playwright/test';
 
 /**
  * Every /api/v1 response the app makes on boot, keyed by the tail of the URL.
- * The list was not guessed — e2e/_probe captured the actual calls across the
- * primary routes. Shapes matter: a page handed `{}` where it expects an array
- * renders its ErrorBoundary ("a.map is not a function") instead of the page,
- * which silently weakens every assertion made against it.
+ * Shapes matter: a page handed `{}` where it expects an array renders its
+ * ErrorBoundary instead of the page, silently weakening every assertion
+ * made against it.
  */
 const DEFAULTS: Record<string, unknown> = {
   // Identity and app state
@@ -50,16 +49,12 @@ const DEFAULTS: Record<string, unknown> = {
   notifications: [],
   certificates: [],
 
-  // Metric alert rules. Full MetricAlertRuleOut shape (schemas/metric_alerts.py):
-  // the panel reads assessment and open_incident_id off each row, and an array
-  // missing them would render the table but lie about every rule's state. Two
-  // rules so the scan sees a firing row with its incident handle and a
-  // not-evaluating row with its hint, not one lonely Normal.
+  // Full MetricAlertRuleOut shape (schemas/metric_alerts.py): the panel reads
+  // assessment and open_incident_id off each row. Two rules so both a firing
+  // and a not-evaluating state are covered.
   // /logs returns an object, not a list: LogsPage reads res.data.logs and
-  // res.data.total_count, so the catch-all's [] would leave `logs` undefined and
-  // the page would render nothing worth scanning. Entries span severities
-  // because the severity chips, the uppercase level label and the diff table
-  // header are where this page's colour and legibility decisions live.
+  // res.data.total_count, so the catch-all's [] leaves `logs` undefined.
+  // Entries span severities to cover the chips and level labels.
   logs: {
     total_count: 3,
     logs: [
@@ -290,11 +285,9 @@ const DEFAULTS: Record<string, unknown> = {
   // Topology
   topologies: [],
   // NOT []: useMapTabs (hooks/useMapTabs.js:15-22) reacts to an empty list by
-  // POSTing mapsApi.create('Main') and reading `.id` off the response. The
-  // catch-all answers that POST with [], so activeMapId becomes undefined and
-  // MapPage.jsx:2997 sits on "Loading maps…" forever. Every /map assertion —
-  // the a11y scan included — was then measuring a loading placeholder rather
-  // than the topology page.
+  // POSTing mapsApi.create('Main') and reading `.id` off the response, which
+  // the catch-all answers with []. activeMapId is then undefined and MapPage
+  // sits on "Loading maps…", so every /map assertion measures a placeholder.
   maps: [{ id: 1, name: 'Main', is_default: true }],
   graph: { nodes: [], edges: [] },
   'graph/topology': { nodes: [], edges: [] },
@@ -366,15 +359,12 @@ export async function stubApi(page: Page, overrides: Record<string, unknown> = {
     /* accept the connection and send nothing */
   });
 
-  // EventSource is not reachable through page.route either: fulfilling
-  // /api/v1/events/stream with JSON makes the browser fail the connection, so
-  // `sseClient` reports disconnected and `ConnectionStatus` renders its
-  // "Reconnecting to live data..." banner once its 5s grace timer elapses.
-  // That banner shifts the whole page, and whether it had appeared by
-  // screenshot time depended on how long the page took to settle — which is
-  // what made the agents and monitors visual baselines flap. Substituting an
-  // EventSource that opens and stays quiet is the SSE equivalent of the
-  // WebSocket stub above.
+  // EventSource is not reachable through page.route: fulfilling
+  // /api/v1/events/stream with JSON fails the connection, so `sseClient`
+  // reports disconnected and `ConnectionStatus` renders its "Reconnecting to
+  // live data..." banner after its 5s grace timer. That banner shifts the
+  // whole page and makes visual baselines flap. Substitute one that opens and
+  // stays quiet — the SSE equivalent of the WebSocket stub above.
   await page.addInitScript(() => {
     class QuietEventSource extends EventTarget {
       static readonly CONNECTING = 0;
@@ -403,13 +393,11 @@ export async function stubApi(page: Page, overrides: Record<string, unknown> = {
     });
   });
 
-  // The UI's fonts are self-hosted (`public/fonts`, declared in
-  // `styles/fonts.css`), so nothing here should reach a font CDN at all. These
-  // routes are a backstop, not a workaround: if a regression reintroduces a
-  // fonts.googleapis.com <link>, they stop the suite going non-hermetic and
-  // flaking on whether the round-trip beat the screenshot — which is exactly
-  // what it used to do. `no-third-party-fonts.spec.ts` is the loud half; this
-  // is the quiet one.
+  // Fonts are self-hosted (`public/fonts`, `styles/fonts.css`), so nothing
+  // should reach a font CDN. These routes are a backstop: if a regression
+  // reintroduces a fonts.googleapis.com <link>, they keep the suite hermetic
+  // instead of flaking on whether the round-trip beat the screenshot.
+  // `no-third-party-fonts.spec.ts` is the loud half; this is the quiet one.
   //
   // Fulfilled rather than aborted: an aborted request logs
   // "Failed to load resource: net::ERR_FAILED", which the smoke and navigation
@@ -441,11 +429,10 @@ export async function stubApi(page: Page, overrides: Record<string, unknown> = {
     });
   });
 
-  // HeaderWidgets.jsx:60,103 calls open-meteo.com directly — not through
-  // /api/v1, so the handler above never sees it. Left unstubbed the suite
-  // reaches the public internet on every page load: non-hermetic (it hangs or
-  // fails on a network-restricted runner), and it bakes the live temperature
-  // into every screenshot baseline.
+  // HeaderWidgets.jsx:60,103 calls open-meteo.com directly, not through
+  // /api/v1, so the handler above never sees it. Unstubbed, the suite reaches
+  // the public internet on every page load and bakes the live temperature into
+  // every screenshot baseline.
   await page.route('**://*.open-meteo.com/**', (route) => {
     const isGeocoding = route.request().url().includes('geocoding-api');
     return route.fulfill({
@@ -479,9 +466,8 @@ export function collectConsoleErrors(page: Page): string[] {
 
 /**
  * Noise that is not a product defect: a missing favicon in the preview server,
- * and the benign ResizeObserver loop notice browsers emit for legitimate
- * observer-driven layout. Filtered by name rather than by count, so a real
- * error is never absorbed by a threshold.
+ * and the benign ResizeObserver loop notice. Filtered by name rather than by
+ * count, so a real error is never absorbed by a threshold.
  */
 export function significantErrors(errors: string[]): string[] {
   return errors.filter((e) => !/favicon|ResizeObserver loop|Failed to load resource.*404/i.test(e));
@@ -490,11 +476,8 @@ export function significantErrors(errors: string[]): string[] {
 /**
  * Assert the page is not showing its ErrorBoundary.
  *
- * Worth its own helper because the boundary renders INSIDE `.page-content`: a
- * test that only checks `.page-content` is visible passes just as happily on a
- * crashed page as on a working one. That is how the first version of
- * navigation.spec.ts passed while /hardware was actually throwing
- * "a.map is not a function".
+ * The boundary renders INSIDE `.page-content`, so a test that only checks
+ * `.page-content` is visible passes just as happily on a crashed page.
  */
 export async function expectNoErrorBoundary(page: Page, context: string): Promise<void> {
   const text = await page.locator('.page-content').innerText();
@@ -504,58 +487,38 @@ export async function expectNoErrorBoundary(page: Page, context: string): Promis
 }
 
 /**
- * Wait for the route-enter animation to finish before measuring anything.
+ * The route element: the `motion.div` that fades 0 -> 1 on each route change.
  *
- * `.page-content` (App.jsx:127) is a static wrapper and is always opacity 1.
- * The element that actually animates is the `motion.div` inside it, which
- * fades 0 -> 1 over 150ms on every route change (App.jsx:135-141). Anything
- * that samples colour during that window sees every pixel composited toward
- * the page background: an axe scan 27ms in measured `.entity-table th` as
- * #454341 on #2f2e2d (1.37:1) when the settled values are #c8bfb0 on #504945
- * (4.85:1, passing). That is a spurious violation, and with CI retries it
- * shows up as an unexplained flake rather than a failure.
- *
- * Returns the settled wrapper so callers can assert against it directly.
- *
- * Selected by `[data-route-path]`, not by position. `.page-content > div`
- * first-child is the `<UpdateBanner>` whenever an update is available and the
- * Suspense `LoadingScreen` whenever a chunk is in flight (App.jsx:200-202) —
- * neither of which is the route, and neither of which carries the attribute.
- * nav-wedge.spec.ts already made this correction in its own harness; the
- * shared fixture kept the positional selector.
+ * Selected by `[data-route-path]`, not by position. `.page-content` is a
+ * static wrapper always at opacity 1, and `.page-content > div` first-child is
+ * the `<UpdateBanner>` or the Suspense `LoadingScreen` (App.jsx:200-202) —
+ * neither of which is the route or carries the attribute.
  */
 export function routeWrapper(page: Page) {
   return page.locator('[data-route-path]').first();
 }
 
 /**
- * 15s, not the 150ms the fade actually takes. The animation is rAF-driven, so
- * it does not advance while the browser is starved — and with six projects
- * running two workers each, alongside full-page screenshot capture, WebKit was
- * observed sitting at opacity 0 for more than five seconds on /map, the
- * heaviest route. A wedged AnimatePresence never resolves at all, so a longer
- * ceiling still catches the known_bugs #1 symptom this assertion exists for;
- * it only stops a slow machine from being reported as a wedge.
+ * 15s, not the 150ms the fade takes: the animation is rAF-driven and does not
+ * advance while the browser is starved, and WebKit has been seen at opacity 0
+ * for over five seconds on /map under full CI load. A wedged AnimatePresence
+ * never resolves at all, so a longer ceiling still catches that symptom and
+ * only stops a slow machine being reported as a wedge.
  */
 const ROUTE_SETTLE_TIMEOUT_MS = 15_000;
 
 /**
- * Opacity alone is not "settled": it is satisfied by the *outgoing* route.
+ * Settled means all three: the route element exists, it renders the path the
+ * address bar is on, and its enter fade has finished.
  *
- * `AnimatePresence mode="wait"` (App.jsx:217) keeps the previous page mounted,
- * at opacity 1, until its exit finishes and the incoming route's lazy chunk
- * resolves. A helper that only reads opacity therefore returns the instant a
- * navigation *starts*, handing the caller the page it just left. In WebKit that
- * gap is around a second — long enough that agent-monitor-vantage.spec.ts ran
- * `getByLabel('Host')` against the agent detail page, where three fields match
- * that substring ("Concurrent hosts", "Host timeout (ms)", "Scan depth (TCP
- * ports)"). A strict-mode violation is fatal rather than retried, so the test
- * died on the outgoing page instead of waiting for the one it asked for.
+ * Opacity alone is satisfied by the *outgoing* route — `AnimatePresence
+ * mode="wait"` (App.jsx:217) keeps the previous page mounted at opacity 1
+ * until its exit finishes and the incoming chunk resolves, so an opacity-only
+ * check returns the instant a navigation starts and hands the caller the page
+ * it just left. Measuring mid-fade also samples colours composited toward the
+ * page background, which an axe scan reports as a contrast violation.
  *
- * So settled means all three: the route element exists, it is rendering the
- * path the address bar is on, and its enter fade has finished. The returned
- * string names which of the three is outstanding, so a failure here says what
- * it saw rather than only that it waited.
+ * The polled value names which of the three is outstanding.
  */
 export async function waitForRouteSettled(page: Page): Promise<void> {
   await routeWrapper(page).waitFor({ state: 'visible' });

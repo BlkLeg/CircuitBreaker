@@ -1,19 +1,9 @@
 name: Composed Agent E2E
 
-# AGT-01: the composed Docker journey must run against every RC and on a
-# schedule. It ran nowhere — ci.yml and dev-ci.yml both declared it
-# "deliberately NOT run here and remains a local/manual gate", and release.yml
-# never invoked it. 35+ minutes is a fair reason to keep it off the PR path;
-# it is not a reason for it never to run.
-#
-# The per-RC half of that runs here, on the tag push, rather than as a job
-# called from release.yml. AGT-01 also wants the journey *required* before
-# publication, and it is not: the agent has open troubleshooting and likely
-# missing development, so this suite is expected to fail for a while, and as a
-# gate it would hold every artifact of an otherwise-green release. The AGT-01
-# ledger row is `not_started`/`not_evidenced` and stays that way — it cannot be
-# evidenced as passing while publication does not depend on it. `workflow_call`
-# is kept for exactly that restoration: re-gating is one job in release.yml.
+# AGT-01: the composed journey runs per RC (tag push) and nightly. It is
+# deliberately NOT a release gate — the agent has open development, and gating
+# would hold every artifact of an otherwise-green release. `workflow_call`
+# exists so re-gating is one job in release.yml when that changes.
 on:
   push:
     tags:
@@ -32,21 +22,10 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 75
     steps:
-      # A `schedule` event only ever fires on the default branch, so the
-      # nightly checked out `main` — which trails the integration branch by
-      # hundreds of commits. It was re-testing frozen code every night and
-      # reporting defects that `dev` had already fixed: the enrollment failure
-      # that opened every red run since 2026-09-11
-      # (`dial wss://circuitbreaker:8443: connection refused`) passes on `dev`,
-      # where `8672705a` and `d0ee8396` fixed the peer-certificate read and the
-      # forwarded-header port. The harness had moved too — 16 tests on `dev`
-      # against 12 on `main`.
-      #
-      # Thirty-five minutes a night against code nobody is working on is not a
-      # gate, it is noise that trains everyone to ignore this job. Only the
-      # scheduled run is redirected; tag pushes, `workflow_dispatch` and
-      # `workflow_call` keep testing the ref that triggered them, which for the
-      # per-RC half of AGT-01 is the release tag and must stay that way.
+      # `schedule` only fires on the default branch, and `main` trails the
+      # integration branch, so the nightly would otherwise test frozen code.
+      # Only the scheduled run is redirected: tag pushes, `workflow_dispatch`
+      # and `workflow_call` must keep testing the ref that triggered them.
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}
@@ -55,59 +34,29 @@ jobs:
         with:
           python-version: "3.12"
 
-      # httpx, not requests: every HTTP call in test_agent_e2e.py and
-      # test_agent_release_gate.py goes through httpx.Client, and `requests` was
-      # installed here but imported by nothing. Collection therefore died on
-      # `ModuleNotFoundError: No module named 'httpx'` before a single container
-      # started, so this job has never got past collection since it was added.
-      #
-      # websockets for the same reason: _PresenceStream (test_agent_e2e.py:532)
-      # and the discovery stream (:3564) both open a websocket with
-      # `websockets.sync.client.connect`, and it was never installed here, so
-      # every test that asserts against a push stream died on
-      # `ModuleNotFoundError: No module named 'websockets'` — 11 of 12, after
-      # each had already built and run its containers.
-      #
-      # cryptography is the third instance of the same omission.
-      # test_tampered_agent_binary_is_refused signs and re-signs an agent binary
-      # with Ed25519 (test_agent_e2e.py:5974,6028) to prove the daemon refuses
-      # one whose signature does not match, so without it that test dies on
-      # `ModuleNotFoundError: No module named 'cryptography'` — after building
-      # its containers and enrolling an agent, which is what makes it read as a
-      # product failure rather than a missing dependency. A test whose subject
-      # is signature verification cannot be evidence of anything while the
-      # library that makes the signature is absent.
+      # httpx (all HTTP), websockets (presence and discovery streams) and
+      # cryptography (Ed25519 signing in the tampered-binary test) are all
+      # imported by the suite. A missing one fails deep into a test that has
+      # already built containers, so it reads as a product defect.
       - name: Install test deps
         run: |
           python -m pip install --upgrade pip
           pip install pytest pytest-timeout httpx websockets cryptography
 
-      # BLOCKING-2/6: GOV-12 untracked apps/agent/e2e/.env and replaced it
-      # with .env.example, but nothing recreated it. Every test in the suite
-      # shells out to `docker compose -f apps/agent/e2e/docker-compose.yml`,
-      # which `extends` the repo-root compose file and so has to interpolate
-      # its ${VAR:?...} guards from that .env — without it even `config` exits
-      # 1 ("required variable CB_DB_PASSWORD is missing a value"), before a
-      # single container is built. conftest.py's autouse fixture runs this same
-      # helper, so a local `pytest` needs no preceding ritual; running it here
-      # as well means the file also exists for the non-pytest parts of this job
-      # and that a template problem fails on a step that names itself rather
-      # than 40 minutes into the journey. `config` is the smoke check that the
-      # materialised file actually satisfies every guard.
+      # `.env` is untracked but every compose call interpolates its
+      # ${VAR:?...} guards, so without it even `config` exits 1. conftest.py
+      # does the same for a local pytest; doing it here too covers this job's
+      # non-pytest steps and fails on a step that names itself. `config` is
+      # the smoke check that the materialised file satisfies every guard.
       - name: Materialise the e2e env file
         run: |
           cd apps/agent/e2e
           python ensure_env.py
           docker compose -f docker-compose.yml config >/dev/null
 
-      # REL-20: the seed is fixed, not derived from the run id.
-      #
-      # ${{ github.run_id }} was recorded but never repeated, so two runs of the
-      # same tag seeded themselves differently and a green run could not be used
-      # to characterise a red one. A constant makes the journey reproducible by
-      # default and still leaves the value in the manifest below, so changing it
-      # is a visible change rather than an invisible one. PYTHONHASHSEED is
-      # pinned for the same reason it is in ci.yml.
+      # REL-20: seed and PYTHONHASHSEED are constants, not derived from the
+      # run id, so a green run can be used to characterise a red one. Both are
+      # recorded below, making a change to them visible.
       - name: Record the run manifest
         env:
           CB_E2E_SEED: "20260826"
@@ -130,10 +79,9 @@ jobs:
         env:
           CB_E2E_SEED: "20260826"
           PYTHONHASHSEED: "0"
-          # Each test tears its own stack down (`_down()` in a `finally`), so a
-          # workflow step cannot collect container logs afterwards — there is
-          # nothing left to collect. `_dump_compose_logs` writes them here
-          # instead, from inside `_down()` while the containers still exist.
+          # Each test tears its own stack down in a `finally`, so a later
+          # workflow step has nothing left to collect. `_dump_compose_logs`
+          # writes here from inside `_down()`, while containers still exist.
           CB_E2E_DIAGNOSTICS_DIR: ${{ github.workspace }}/diagnostics
         run: |
           cd apps/agent/e2e
@@ -142,13 +90,8 @@ jobs:
             --timeout=3600 \
             2>&1 | tee "${GITHUB_WORKSPACE}/diagnostics/composed-journey.log"
 
-      # Whatever is still standing — normally nothing, because the suite cleans
-      # up after itself. The per-container logs that actually explain a failure
-      # come from CB_E2E_DIAGNOSTICS_DIR above; this step is only the backstop
-      # for a run killed before any `_down()` ran, and it no longer pretends to
-      # be the primary source. Until 2026-09-18 it *was* the primary source and
-      # collected nothing: eight consecutive red nightlies uploaded a
-      # `containers.txt` holding one header line and no logs at all.
+      # Backstop only, for a run killed before any `_down()`. The logs that
+      # explain a failure come from CB_E2E_DIAGNOSTICS_DIR above.
       - name: Collect surviving container diagnostics
         if: always()
         run: |
