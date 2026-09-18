@@ -36,7 +36,7 @@ import RemoteProbeConfigEditor, {
   REMOTE_PROBE_MIN_CONCURRENT,
 } from '../components/agents/RemoteProbeConfigEditor';
 
-// Task 14: there is no local copy of the host-telemetry defaults any more.
+// There is no local copy of the host-telemetry defaults any more.
 // `capabilityDefaults` below is fetched from
 // GET /api/v1/agents/capability-defaults — the server's single
 // CAPABILITY_DEFINITIONS registry — and drives which settings render, what
@@ -244,7 +244,7 @@ export default function AgentDetailPage() {
         'Scanning is confined to that derived scope; widening it is a separate, confirmed change.'
       );
     }
-    // §7: turning remote probing off while monitors still run from this vantage
+    // Turning remote probing off while monitors still run from this vantage
     // is confirmation-worthy, because nothing is deleted — the assignments and
     // their last known target state survive, and only the execution condition
     // changes. With no assignments there is nothing to retain, so nothing to
@@ -257,7 +257,7 @@ export default function AgentDetailPage() {
         'become probe-unavailable and run no checks until remote probing is re-enabled.'
       );
     }
-    // Slice 4 D-14: turning `local_discovery` off retires every in-flight
+    // Turning `local_discovery` off retires every in-flight
     // dispatch immediately, and retains every result and history row. An
     // operator who expects the opposite — that history is lost — will not
     // disable when they should, so the dialog says which it is.

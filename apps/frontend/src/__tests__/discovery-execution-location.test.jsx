@@ -151,8 +151,8 @@ describe('DiscoveryHistoryPage — execution location', () => {
   });
 });
 
-describe('DiscoveryHistoryPage — the D-4 failure vocabulary', () => {
-  it('renders a human label for each D-4 error_reason the server can send', async () => {
+describe('DiscoveryHistoryPage — the failure vocabulary', () => {
+  it('renders a human label for each error_reason the server can send', async () => {
     const reasons = [
       'agent_unavailable',
       'agent_disconnected',
@@ -217,7 +217,7 @@ describe('DiscoveryHistoryPage — the D-4 failure vocabulary', () => {
     expect(rows.queryByText(/partial results/i)).not.toBeInTheDocument();
   });
 
-  it('filters the history by a D-4 error reason from the status filter', async () => {
+  it('filters the history by an error reason from the status filter', async () => {
     renderHistory([
       agentJob({ id: 801, status: 'failed', error_reason: 'agent_unavailable' }),
       agentJob({

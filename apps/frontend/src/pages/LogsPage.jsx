@@ -608,7 +608,7 @@ function LogRow({
                 // No opacity: deriveReadableText floors --color-text-muted to
                 // AA against the surface it sits on, and dimming it puts the
                 // text back under the floor the theme just guaranteed. Measured
-                // at 4.0:1 on gruvbox before this changed. 9px went with it.
+                // at 4.0:1 on gruvbox without it. 9px goes with it.
                 <span
                   style={{
                     fontSize: 11,

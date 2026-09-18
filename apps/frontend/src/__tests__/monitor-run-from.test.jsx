@@ -2,7 +2,7 @@ import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
-// Slice 3 Task 21: defaults live in a hoisted object so beforeEach can *restore*
+// Defaults live in a hoisted object so beforeEach can *restore*
 // them. `vi.clearAllMocks()` clears call records but leaves implementations
 // installed, so a `mockResolvedValue` set by one test would otherwise become the
 // fixture for every test after it.
@@ -69,7 +69,7 @@ const existing = {
   target_type: 'hardware',
   target_id: 5,
   probe_agent_id: null,
-  // The read-only half of §7's probe block, exactly as MonitorRead returns it
+  // The read-only half of the probe block, exactly as MonitorRead returns it
   // and as MonitorsPage seeds edit state with.
   probe_mode: 'server',
   probe_agent: null,
@@ -165,7 +165,7 @@ describe('MonitorForm "Run from" vantage selector', () => {
 
     await waitFor(() => expect(screen.getByRole('option', { name: /branch-office/ })).toBeTruthy());
     // The check type is immutable on edit; the vantage deliberately is not —
-    // §7/§8 make reassignment an explicit action from this form.
+    // Reassignment is an explicit action from this form.
     expect(screen.getByLabelText('Check type').disabled).toBe(true);
     expect(screen.getByLabelText('Run from').disabled).toBe(false);
 

@@ -464,8 +464,8 @@ export function useMapNodeCommands({
       const { nodeId, targetId } = data;
       const resolved = resolveMapAction(action);
       if (resolved.kind === 'unknown') {
-        // Explicit failure. This used to be `toast.info(... not implemented
-        // yet)`, which reads as progress for something that did nothing.
+        // Explicit failure. `toast.info(... not implemented yet)` reads as
+        // progress for something that did nothing.
         console.error('[map] unhandled context action:', action);
         toast.error(`Unsupported action: ${action}`);
         return;

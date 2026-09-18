@@ -156,7 +156,7 @@ describe('AgentTelemetryTab', () => {
   });
 
   it('renders the host-telemetry settings the registry declares', () => {
-    // Spec §7 puts the cadence settings on this tab. The key list comes from
+    // The spec puts the cadence settings on this tab. The key list comes from
     // the fetched registry, so a collector only the server knows about still
     // gets a control.
     renderTab({
@@ -181,7 +181,7 @@ describe('AgentTelemetryTab', () => {
   });
 });
 
-describe('the permanent-loss banner (plan Phase 3)', () => {
+describe('the permanent-loss banner', () => {
   const LOSS = {
     depth: 4096,
     bytes: 67108864,
@@ -248,7 +248,7 @@ describe('the permanent-loss banner (plan Phase 3)', () => {
   });
 });
 
-describe('a backlog reading that is no longer current (plan Phase 4)', () => {
+describe('a backlog reading that is no longer current', () => {
   const STALE_AT = '2026-09-05T09:00:00Z';
   const stale = (depth, extra = {}) => ({ depth, reported_at: STALE_AT, stale: true, ...extra });
 
@@ -288,7 +288,7 @@ describe('a backlog reading that is no longer current (plan Phase 4)', () => {
   });
 
   it('keeps the destroyed-history banner beside it', () => {
-    // Phase 3's fact and this one are independent. "History was destroyed" is
+    // That fact and this one are independent. "History was destroyed" is
     // cumulative and stays true however stale the current reading is; letting
     // the unknown swallow it would hide the permanent loss behind a temporary
     // one.
@@ -326,7 +326,7 @@ describe('a backlog reading that is no longer current (plan Phase 4)', () => {
   });
 });
 
-describe('the at-most-once delivery warning (plan Phase 5)', () => {
+describe('the at-most-once delivery warning', () => {
   // The spool fixture shape the endpoint ships: `ack_negotiated` is True for a
   // current agent, False for one whose build predates the acknowledgement
   // handshake, and null for one that has not connected since this server

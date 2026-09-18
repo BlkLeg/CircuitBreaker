@@ -20,7 +20,7 @@ const TONE_MAP = { critical: 'danger' };
  * on an agent that had done nothing yet.
  *
  * The split here is positional only. The imperative (state.action) is promoted
- * to the always-visible body; the composite the <dl> used to render is
+ * to the always-visible body; the composite a <dl> would render is
  * reproduced byte for byte in the disclosure. No wording in lib/agentState is
  * edited by this component or by anything downstream of it.
  */

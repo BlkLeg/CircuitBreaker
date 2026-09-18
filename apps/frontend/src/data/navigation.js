@@ -31,7 +31,7 @@ import { guardFor } from './routeGuards';
  * Consumers: components/Header.jsx, components/MacOSDOCK.jsx (the dock),
  * components/settings/DockSettings.jsx (dock preferences), and the global navigator.
  * None of them may keep its own list or its own role filter — see
- * specs/2026-08-24-navigation-ia-rework-design.md.
+ *.
  *
  * Groups follow the lifecycle of a tracked thing: it is acquired, it becomes
  * inventory, it is observed, access to it is governed. System is the app itself.
@@ -315,8 +315,8 @@ const NAV_GROUP_OF = Object.fromEntries(
 /**
  * NAV_MAP lookup for a path that came from outside the code — a stored `dock_order`, a
  * URL. Both maps are plain objects, so a bare `NAV_MAP[path]` resolves `constructor` or
- * `toString` to a truthy function whose `.path` is undefined; the dock used to crash the
- * whole app on that. Every consumer of an untrusted path goes through here, which is also
+ * `toString` to a truthy function whose `.path` is undefined, which crashes the whole
+ * app. Every consumer of an untrusted path goes through here, which is also
  * why the object-injection suppression exists once rather than at each call site.
  */
 export function navItem(path) {
@@ -334,8 +334,7 @@ export function navGroupOf(path) {
 export const DEFAULT_DOCK_ITEMS = NAV_ITEMS_FLAT.filter((i) => i.dockDefault).map((i) => i.path);
 
 /**
- * The dock as it shipped before this rework — the old ORIGINAL_DOCK_ORDER minus the
- * dead /networks entry. Migration input only: it is what an install that predates
+ * The dock as it shipped, minus the dead /networks entry. Migration input only: it is what an install that predates
  * `dock_order` gets, so upgrading never silently removes icons. Delete this once
  * every install has written `dock_order` at least once.
  */

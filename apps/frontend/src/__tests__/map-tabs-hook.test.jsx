@@ -62,7 +62,7 @@ describe('useMapTabs', () => {
     expect(screen.getByTestId('active').textContent).toBe('9');
   });
 
-  // Regression test for the wedge: previously there was no .catch anywhere in
+  // Regression test for the wedge: without a .catch anywhere in
   // the hook, so a rejected list() left loading stuck at true forever with no
   // error state and no way to escape short of a full page reload.
   it('sets loading false and an error when list() rejects, instead of hanging forever', async () => {

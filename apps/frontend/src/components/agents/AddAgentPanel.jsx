@@ -31,7 +31,7 @@ const GENERIC_INSTALL_ERROR =
 // permissions" at someone who cannot act on it.
 const INSTALL_ADMIN_ONLY = 'Ask an administrator for the install command';
 
-// Spec §6 item 3. An install that is going to fail fails silently: the agent
+// An install that is going to fail fails silently: the agent
 // that would report "I cannot reach you" is the one that cannot reach us. After
 // this long with no check-in, say which address to go and verify rather than
 // spinning "listening…" indefinitely.
@@ -134,7 +134,7 @@ export default function AddAgentPanel({
     } catch (err) {
       if (!isMountedRef.current) return;
       const message = installErrorMessage(err);
-      // Inline *and* toast, deliberately (design §4): inline puts the reason
+      // Inline *and* toast, deliberately: inline puts the reason
       // where the operator is already looking, and the toast is what reaches
       // them if they have scrolled past the panel by the time it answers.
       setInstallError(message);
@@ -361,7 +361,7 @@ export default function AddAgentPanel({
               <h3>Waiting for the machine to check in</h3>
               <span className="add-agent__chip">listening…</span>
               <p>The moment it enrolls it appears here — no need to reload.</p>
-              {/* Spec §6 item 3: an agent that cannot reach the server cannot
+              {/* An agent that cannot reach the server cannot
                   say so, so after long enough this names the address to check
                   rather than leaving "listening…" to imply progress. */}
               {isCheckInOverdue && (

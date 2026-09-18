@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { NAV_MAP } from '../data/navigation';
 
 /**
- * The guarantee spec §9 actually commissioned: the dock never offers a destination the
+ * The guarantee: the dock never offers a destination the
  * route menu withholds. This has to render both components — comparing canSeeNavItem
  * against itself proves only that a pure function is deterministic, and would still
  * pass if someone reintroduced a local role filter inside MacOSDOCK, which is exactly

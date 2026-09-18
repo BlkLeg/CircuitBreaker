@@ -10,7 +10,7 @@ import {
   findTelemetryBanners,
 } from './helpers/agentDetailHarness';
 
-// Task 19: the default API responses live here rather than inline in the
+// The default API responses live here rather than inline in the
 // vi.mock factory so that beforeEach can *restore* them. `vi.clearAllMocks()`
 // clears call records but leaves implementations installed, so a
 // `mockResolvedValue` set by one test silently became the fixture for every
@@ -35,7 +35,7 @@ const apiDefaults = vi.hoisted(() => {
       Promise.resolve({
         data: [{ id: 1, event_type: 'approved', created_at: '2026-07-27T12:00:00Z', detail: null }],
       }),
-    // Slice 3 Task 21: the page now also loads its assigned probes. Empty
+    // The page now also loads its assigned probes. Empty
     // here — the assigned-probes surface has its own suite
     // (agent-assigned-probes.test.jsx); this fixture only has to keep the
     // section from reporting a load failure in every unrelated test.
@@ -64,7 +64,7 @@ const apiDefaults = vi.hoisted(() => {
           },
         ],
       }),
-    // Task 14: HOST_DEFAULTS is gone from the page; the host-telemetry config
+    // HOST_DEFAULTS is gone from the page; the host-telemetry config
     // key list and every fallback value come from the server registry. This
     // fixture deliberately carries a key the frontend has never heard of
     // (`include_gpu`) so the test proves the page renders whatever the server
@@ -110,7 +110,7 @@ vi.mock('../api/agents', () => ({
   setAgentCapabilities: vi.fn(apiDefaults.setAgentCapabilities),
   revokeAgent: vi.fn(apiDefaults.revokeAgent),
   triggerAgentUpdate: vi.fn(apiDefaults.triggerAgentUpdate),
-  // Slice 4 Task 27: AgentDetailPage now also loads GET /agents/{id}/discovery
+  // AgentDetailPage now also loads GET /agents/{id}/discovery
   // for the Discovery scope section. Plain functions rather than vi.fn(): these
   // tests assert nothing about discovery, and a stub with no implementation
   // would throw inside the page's loader.
@@ -123,7 +123,7 @@ vi.mock('../api/agents', () => ({
 const mockUseAgentLive = vi.hoisted(() => vi.fn());
 vi.mock('../hooks/useAgentLive', () => ({ useAgentLive: mockUseAgentLive }));
 
-// Task 18: the page consumes the telemetry stream's `data` Map directly, so
+// The page consumes the telemetry stream's `data` Map directly, so
 // the tests drive it by swapping the Map. The returned object identity is
 // stable across renders on purpose — a fresh object (or a fresh Map) per
 // render would re-fire the live-update effects on every commit.

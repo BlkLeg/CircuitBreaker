@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import FleetRow from '../components/agents/FleetRow';
 
 /**
- * FleetRow's four variants (design §5): online, offline, telemetry-off and
+ * FleetRow's four variants: online, offline, telemetry-off and
  * pending-pinned. They exist because the same eleven columns have to answer
  * four different questions, and each variant has a specific way of lying:
  *
@@ -192,7 +192,7 @@ describe('FleetRow offline variant', () => {
 });
 
 describe('FleetRow telemetry-off variant', () => {
-  // Design §4 and §1.3, stated twice in the design because it is the row's
+  // Stated twice in the design because it is the row's
   // worst failure: `latest: null` is a real state and must NEVER render as 0%.
   const NO_TELEMETRY_AGENT = {
     ...ONLINE_AGENT,
@@ -297,7 +297,7 @@ describe('FleetRow pending-pinned variant', () => {
 
 describe('FleetRow spool backlog', () => {
   it('flags an online agent that is quietly buffering', () => {
-    // Design §4: the one signal that predicts trouble before anything goes red.
+    // The one signal that predicts trouble before anything goes red.
     // The agent is up, green and reporting — and none of it is reaching us.
     renderRow({ ...ONLINE_AGENT, spool_depth: 42 });
 
@@ -317,7 +317,7 @@ describe('FleetRow spool backlog', () => {
   });
 });
 
-describe('FleetRow backlog reading freshness (plan Phase 4)', () => {
+describe('FleetRow backlog reading freshness', () => {
   // Hours old: the agent has not been able to report its spool since the link
   // dropped, which is the whole of the window in which the backlog grows.
   const STALE_ISO = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
@@ -381,7 +381,7 @@ describe('FleetRow backlog reading freshness (plan Phase 4)', () => {
   });
 
   it('states the unknown backlog and the destroyed history at the same time', () => {
-    // Phase 3's fact and phase 4's are independent: history that is already
+    // The two facts are independent: history that is already
     // gone stays gone however stale the current reading is. One suppressing
     // the other is exactly how a loss stays invisible.
     renderRow({

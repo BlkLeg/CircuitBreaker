@@ -35,7 +35,7 @@ function getStateConfig(state) {
  * Wraps the app. Shows a status overlay during starting / stopping / offline
  * states, over a route tree that stays mounted.
  *
- * R5's second half: this used to return a replacement element instead of its
+ * This must not return a replacement element instead of its
  * children, so a degraded banner unmounted every page in the app and threw away
  * its state — an open form, a running scan view, an unsent edit — and remounted
  * the whole tree from scratch on recovery. A health blip is not a reason to

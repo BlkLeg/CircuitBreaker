@@ -120,7 +120,7 @@ describe('useAgentDetail', () => {
     expect(api.getAgentDiscovery).toHaveBeenCalled();
   });
 
-  // Fix round: reloadProbes/reloadDiscovery are reachable both from the
+  // reloadProbes/reloadDiscovery are reachable both from the
   // tab-gated effect and as an external "refresh after mutation" callback, so
   // rapid re-triggering (e.g. tab switching) can leave two requests in flight
   // at once. A slower, earlier one resolving after a fresher one must not be
@@ -274,7 +274,7 @@ describe('useAgentDetail', () => {
     );
   });
 
-  // Fix round: the hook subscribed to both WebSockets but read neither, so
+  // The hook must read both WebSockets it subscribes to, or
   // `online` never moved off the initial presence poll and a live
   // sample/readiness push sat unread in `liveTelemetry` until the next 30s
   // poll clobbered it. These four tests prove all three merges actually run.
@@ -346,7 +346,7 @@ describe('useAgentDetail', () => {
   });
 
   it('keeps a merged sample when a poll issued before it resolves afterwards', async () => {
-    // Fix round: the merge below used to have no re-apply-after-poll guard, so
+    // The merge below needs a re-apply-after-poll guard, or
     // a GET that was already in flight when the push landed overwrote the
     // pushed sample the moment it resolved — and nothing re-fired the merge
     // effect afterwards, because `liveTelemetry`'s identity had not changed.

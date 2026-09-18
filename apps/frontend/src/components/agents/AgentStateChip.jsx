@@ -78,7 +78,7 @@ export function stateDetailText(state) {
     // Deliberately never a bare number. The last known depth is stated as what
     // it is — a value from a named moment in the past — and a last-known 0 is
     // spelled out rather than dropped, because "it was 0 when we last heard"
-    // is the exact reading that used to render as "no backlog".
+    // is the exact reading that must not render as "no backlog".
     const when = detail.reportedAt
       ? ` on ${new Date(detail.reportedAt).toLocaleString()}`
       : ' the last time it connected';

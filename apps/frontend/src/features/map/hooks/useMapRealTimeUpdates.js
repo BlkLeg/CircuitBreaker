@@ -94,11 +94,11 @@ export function useMapRealTimeUpdates({
 
   // Fallback: telemetry polling with exponential backoff (only when WS telemetry is NOT connected)
   //
-  // H5: this used to fan one HTTP request out per due node (Promise.allSettled
-  // over telemetryApi.get(n._refId)). At >=8 nodes that alone wanted more
+  // Must not fan one HTTP request out per due node (Promise.allSettled over
+  // telemetryApi.get(n._refId)). At >=8 nodes that alone wants more
   // requests/minute than the "telemetry" rate-limit budget allows, and every
-  // node is due on mount, so the first tick fired one burst per node. Batched
-  // via telemetryApi.getBatch() instead: one request per chunk of due nodes,
+  // node is due on mount, so the first tick would fire one burst per node.
+  // Batched via telemetryApi.getBatch(): one request per chunk of due nodes,
   // chunked at the batch endpoint's own id cap.
   useEffect(() => {
     if (telemetryConnected) return;

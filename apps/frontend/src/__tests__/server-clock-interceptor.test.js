@@ -3,7 +3,7 @@ import client from '../api/client.jsx';
 import { __resetServerClock, serverClockOffsetMs, serverNow } from '../utils/serverClock';
 
 /**
- * AGT-14 / slice AGT-6 §3: "avoid client-clock-only truth."
+ * Avoid client-clock-only truth.
  *
  * utils/serverClock is unit-tested in agent-state.test.js. What that cannot
  * show is that the offset is ever actually measured in the running app — the

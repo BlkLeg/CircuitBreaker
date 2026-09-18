@@ -7,7 +7,7 @@ import {
   findTelemetryBanners,
 } from './helpers/agentDetailHarness';
 
-// Task 19: the default API responses live here rather than inline in the
+// The default API responses live here rather than inline in the
 // vi.mock factory so that beforeEach can *restore* them. `vi.clearAllMocks()`
 // clears call records but leaves implementations installed, so a
 // `mockResolvedValue` set by one test silently became the fixture for every
@@ -32,7 +32,7 @@ const apiDefaults = vi.hoisted(() => {
       Promise.resolve({
         data: [{ id: 1, event_type: 'approved', created_at: '2026-07-27T12:00:00Z', detail: null }],
       }),
-    // Slice 3 Task 21: the page now also loads its assigned probes. Empty
+    // The page now also loads its assigned probes. Empty
     // here — the assigned-probes surface has its own suite
     // (agent-assigned-probes.test.jsx); this fixture only has to keep the
     // section from reporting a load failure in every unrelated test.
@@ -61,7 +61,7 @@ const apiDefaults = vi.hoisted(() => {
           },
         ],
       }),
-    // Task 14: HOST_DEFAULTS is gone from the page; the host-telemetry config
+    // HOST_DEFAULTS is gone from the page; the host-telemetry config
     // key list and every fallback value come from the server registry. This
     // fixture deliberately carries a key the frontend has never heard of
     // (`include_gpu`) so the test proves the page renders whatever the server
@@ -107,7 +107,7 @@ vi.mock('../api/agents', () => ({
   setAgentCapabilities: vi.fn(apiDefaults.setAgentCapabilities),
   revokeAgent: vi.fn(apiDefaults.revokeAgent),
   triggerAgentUpdate: vi.fn(apiDefaults.triggerAgentUpdate),
-  // Slice 4 Task 27: AgentDetailPage now also loads GET /agents/{id}/discovery
+  // AgentDetailPage now also loads GET /agents/{id}/discovery
   // for the Discovery scope section. Plain functions rather than vi.fn(): these
   // tests assert nothing about discovery, and a stub with no implementation
   // would throw inside the page's loader.
@@ -120,7 +120,7 @@ vi.mock('../api/agents', () => ({
 const mockUseAgentLive = vi.hoisted(() => vi.fn());
 vi.mock('../hooks/useAgentLive', () => ({ useAgentLive: mockUseAgentLive }));
 
-// Task 18: the page consumes the telemetry stream's `data` Map directly, so
+// The page consumes the telemetry stream's `data` Map directly, so
 // the tests drive it by swapping the Map. The returned object identity is
 // stable across renders on purpose — a fresh object (or a fresh Map) per
 // render would re-fire the live-update effects on every commit.
@@ -171,7 +171,7 @@ describe('AgentDetailPage', () => {
     vi.restoreAllMocks();
   });
 
-  // ── Task 16 / D-12: the spool catch-up indicator ──────────────────────────
+  // ── The spool catch-up indicator ─────────────────────────────────────────
 
   // A backlog the agent reported seconds ago. The tab renders a live catch-up
   // indicator only for a reading it can still call current — a spool block
@@ -235,7 +235,7 @@ describe('AgentDetailPage', () => {
     expect(screen.queryByText(/Catching up/)).not.toBeInTheDocument();
   });
 
-  // ── Task 17: gaps that only show up when there is no sample ───────────────
+  // ── Gaps that only show up when there is no sample ───────────────────────
 
   it('renders readiness warnings for an agent that has never produced a sample', async () => {
     const { getAgentTelemetry } = await import('../api/agents');
@@ -307,7 +307,7 @@ describe('AgentDetailPage', () => {
   });
 
   it('omits the cadence segment while the capability registry is still loading', async () => {
-    // `interval` comes from the fetched registry (Task 14), so before
+    // `interval` comes from the fetched registry, so before
     // GET /agents/capability-defaults resolves there is no cadence to show.
     // Rendering the label anyway produced a bare "Cadence s".
     const { getAgentTelemetry, getCapabilityDefaults } = await import('../api/agents');

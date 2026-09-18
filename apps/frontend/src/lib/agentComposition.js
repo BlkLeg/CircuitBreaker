@@ -1,9 +1,9 @@
 /**
- * Spec §6: which page an agent gets, decided by its lifecycle state.
+ * Which page an agent gets, decided by its lifecycle state.
  *
- * The detail page used to render the same eight sections for every agent. For
- * a pending machine that meant eight sections of nothing surrounding the one
- * thing available to do — compare a fingerprint and approve. Composition is a
+ * Rendering the same eight sections for every agent gives a pending machine
+ * eight sections of nothing surrounding the one thing available to do —
+ * compare a fingerprint and approve. Composition is a
  * table lookup here rather than conditionals in JSX so that every STATE_ORDER
  * code can be asserted without mounting anything.
  */

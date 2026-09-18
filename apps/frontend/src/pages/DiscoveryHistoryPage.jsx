@@ -415,7 +415,7 @@ export default function DiscoveryHistoryPage({
   const [detailedLogs, setDetailedLogs] = useState([]);
 
   const profileMap = useMemo(() => new Map(profiles.map((p) => [p.id, p.name])), [profiles]);
-  // Plan §6: the history row names the agent a scan ran on. `ScanJobOut` carries
+  // The history row names the agent a scan ran on. `ScanJobOut` carries
   // only `scan_agent_id`, so the name is resolved against the fleet the parent
   // already loaded — the same shape `profiles`/`profileMap` uses — and a job
   // whose agent has since been deleted still renders, as `agent <id>`.
@@ -620,7 +620,7 @@ export default function DiscoveryHistoryPage({
           <option value="completed">Completed</option>
           <option value="failed">Failed</option>
           <option value="cancelled">Cancelled</option>
-          {/* D-4: an agent failure closes the job as `failed` with a machine
+          {/* An agent failure closes the job as `failed` with a machine
               readable `error_reason`. Filtering on the reason is the only way to
               separate "the agent was offline" from "the agent refused the
               scope", which the shared `failed` status cannot express. */}

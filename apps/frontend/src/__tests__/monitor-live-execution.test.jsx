@@ -3,7 +3,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
-// D-13: an execution-condition refresh publishes {monitor_id,
+// An execution-condition refresh publishes {monitor_id,
 // probe_execution_status, probe_execution_reason, ts} with **no** status key,
 // because the vantage becoming unavailable is not a target transition. These
 // tests pin that the wall's fold never invents one.

@@ -55,7 +55,7 @@ export default function MonitorCardDetail({
               <span>In state</span>
             </div>
             <div>
-              {/* §7's "last successful result time". A server-executed monitor
+              {/* The "last successful result time". A server-executed monitor
                   has no probe run, so it falls back to its last poll. */}
               <b>{formatSince(monitor.probe_last_result_at || monitor.last_polled_at)}</b>
               <span>Last result</span>

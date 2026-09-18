@@ -204,7 +204,7 @@ describe('MonitorDetailPage probe vantage', () => {
   });
 });
 
-// ── D-12: observed coverage ─────────────────────────────────────────────────
+// ── Observed coverage ──────────────────────────────────────────────────────
 //
 // A vantage that could not run a check writes no availability sample, so an
 // unobserved stretch shrinks the denominator instead of showing as downtime.

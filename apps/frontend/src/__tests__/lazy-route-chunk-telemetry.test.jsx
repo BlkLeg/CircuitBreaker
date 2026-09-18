@@ -3,11 +3,10 @@ import { loadChunkWithTelemetry } from '../lib/lazyRoute';
 import { getEntries, clearEntries } from '../lib/diagnosticsBuffer';
 
 /**
- * Route §4.2 asks for per-chunk fetch telemetry, and §4.4's decision tree opens
- * with "chunk fetch pending/failed at wedge time → H1 CONFIRMED". Before this
- * existed, no chunk record existed anywhere: a captured wedge could be assigned
- * to H1 only by eliminating the other branches, and one was — described as
- * "taking the H1 branch" on evidence containing no chunk data at all.
+ * Per-chunk fetch telemetry, because the wedge decision tree opens with
+ * "chunk fetch pending/failed at wedge time". Without a chunk record anywhere,
+ * a captured wedge can only reach that branch by eliminating the others, which
+ * is a conclusion drawn from evidence containing no chunk data at all.
  *
  * The retry is a user-facing fix rather than instrumentation: all 25 routes sit
  * behind one shared Suspense, so a single transient chunk failure sends the
@@ -46,7 +45,7 @@ describe('lazyRoute chunk telemetry', () => {
     });
     const loading = loadChunkWithTelemetry('MonitorsPage', () => pending);
 
-    // This is the state §4.4 branches on: a chunk entry still open at the moment
+    // This is the state the decision tree branches on: a chunk entry still open at the moment
     // a navigation is observed to have wedged.
     await Promise.resolve();
     const inFlight = chunkEntries();

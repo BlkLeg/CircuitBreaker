@@ -65,7 +65,7 @@ describe('applyTheme derived tokens', () => {
 
   it('clears stale properties when moving to a sparser palette', () => {
     // The bug plan 00 names: `if (variant.x)` means an absent field keeps the
-    // PREVIOUS theme's value, so a custom two-colour palette used to inherit
+    // PREVIOUS theme's value, so a custom two-colour palette would inherit
     // Cyberpunk's borders and text.
     applyTheme(RICH);
     expect(token('--accent-1')).toBe('#ff2d95');

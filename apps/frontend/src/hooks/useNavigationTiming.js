@@ -72,7 +72,7 @@ export function useNavigationTiming() {
         // mounted and closed. Without this, those late entries were pushed into
         // the array the closed entry had already been handed, so a recorded nav
         // could read `longTasks: [123ms, 122ms], longTaskTotalMs: 0` — the total
-        // snapshotted at close, the list still growing afterwards. §4.4's
+        // snapshotted at close, the list still growing afterwards. The decision tree's
         // decision tree branches on "longtask > 1s present", so an inconsistent
         // pair there is instrumentation that misdirects the investigation.
         if (!openNav || openNav.closed) return;

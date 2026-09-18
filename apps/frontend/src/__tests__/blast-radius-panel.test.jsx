@@ -10,7 +10,7 @@ import BlastRadiusPanel from '../components/details/BlastRadiusPanel.jsx';
 
 // Full BlastRadiusOut contract (schemas/intelligence.py). Paths, edges,
 // connectivity, completeness and limits are plan 06's additions; the panel
-// must render them rather than the bare count the old fixture carried.
+// must render them rather than a bare count.
 const edge = (over = {}) => ({
   identity: 'compute_units.hardware_id:7:hardware:3:compute_unit:7',
   provider_type: 'hardware',

@@ -13,7 +13,7 @@ import { createContext, useContext } from 'react';
  * A context is the right shape for a wizard: the page owns the state and the
  * transitions, each step reads the slice it needs, and adding a field to a step
  * does not mean editing a prop list in two files. Nothing re-renders that did
- * not re-render before — the steps used to be part of the page's own render.
+ * not re-render already — the steps are otherwise part of the page's own render.
  */
 const OOBEContext = createContext(null);
 

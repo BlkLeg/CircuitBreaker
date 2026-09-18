@@ -42,9 +42,9 @@ export default function ReviewDrawer({ result, onClose, onAccepted, onRejected }
 
   const isConflict = result.state === 'conflict';
   const isNew = result.state === 'new';
-  // The third state the backend has always produced. This drawer used to treat
-  // `state` as a two-way choice, so a matched row fell through both branches
-  // and rendered an empty body with nothing but Accept and Reject under it.
+  // The third state the backend produces. Treating `state` as a two-way
+  // choice drops a matched row through both branches, rendering an empty body
+  // with nothing but Accept and Reject under it.
   const isMatched = result.state === 'matched';
 
   // Form state

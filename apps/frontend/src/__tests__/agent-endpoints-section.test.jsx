@@ -51,7 +51,7 @@ describe('AgentEndpointsSection', () => {
     );
   });
 
-  // Spec §6 item 4: an endpoint nothing ever enrolled through is a smell the
+  // An endpoint nothing ever enrolled through is a smell the
   // operator can act on. The alternative evidence is an agent that never
   // appeared, which is the invisible failure this slice exists to end.
   it('says how many agents came through each address', () => {

@@ -29,20 +29,20 @@ export const SOURCE_COLORS = {
   deep_dive: '#f43f5e',
   docker: '#0ea5e9',
   listener_triggered: '#06b6d4',
-  // Slice 4. `ScanJobOut.source_type` gained `agent` alongside `scan_agent_id`,
+  // `ScanJobOut.source_type` gained `agent` alongside `scan_agent_id`,
   // and without its own entry an agent run fell through to the same grey the
   // unknown-source fallback uses — indistinguishable from a manual sweep in the
   // one badge that is supposed to say where a scan ran.
   agent: '#14b8a6',
 };
 
-// ── Execution location (plan §6) ──────────────────────────────────────────────
+// ── Execution location ──────────────────────────────────────────────
 
 /** What `scan_agent_id === null` means, in the operator's words rather than SQL's. */
 export const SERVER_EXECUTION_LABEL = 'Circuit Breaker server';
 
 /**
- * The D-4 `scan_jobs.error_reason` vocabulary, in the server's exact spelling.
+ * The `scan_jobs.error_reason` vocabulary, in the server's exact spelling.
  *
  * Keys are copied from `agent_discovery.JOB_ERROR_REASONS`; a value the server
  * grows before this map does still renders (as its raw code) rather than
@@ -73,7 +73,7 @@ const PARTIAL_RESULTS_COUNT_RE = /partial_results_retained=(\d+)/;
 /**
  * How many findings a failed job kept, or null when it kept none.
  *
- * D-4 gives an interrupted agent sweep no status of its own: it closes as
+ * The spec gives an interrupted agent sweep no status of its own: it closes as
  * `failed` with the hosts it did observe accepted and reviewable. A bare
  * "Failed" on such a row is actively misleading — an operator will not think to
  * open a failed scan looking for results — so the row has to say so, and the
@@ -90,7 +90,7 @@ export function partialFindingsKept(job) {
 
 /**
  * Where a scan ran. The agent name is a link into its detail page, mirroring
- * Slice 3's `MonitorDetailPage:138` "Run from" row, and stops the click from
+ * MonitorDetailPage's "Run from" row, and stops the click from
  * reaching a row that would otherwise expand underneath it.
  */
 export function ExecutionLocation({ agentId = null, agentName = null }) {

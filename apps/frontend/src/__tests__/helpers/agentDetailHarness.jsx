@@ -1,6 +1,6 @@
 // Shared render/data helpers for the AgentDetailPage split suites
 // (agent-detail-*.test.jsx). Extracted verbatim from the single
-// agent-detail-page.test.jsx this repo used to carry (Task 4 of the
+// agent-detail-page.test.jsx this repo previously carried (see the
 // 2026-09-07 tech-debt cleanup) so every split file renders the page and
 // reads its DOM the same way.
 //
@@ -10,7 +10,7 @@
 // needs `apiDefaults` declared locally via vi.hoisted() in the SAME file —
 // importing it from here throws "Cannot access '__vi_import_N__' before
 // initialization" (confirmed by actually running the split suites; see the
-// Task 4 report). `apiDefaults` and the vi.mock('../api/agents', ...) call
+// report). `apiDefaults` and the vi.mock('../api/agents', ...) call
 // that reads it are therefore duplicated verbatim at the top of every
 // split file instead. What lives here is REGISTRY_HOST_CONFIG (plain data,
 // never read from inside a same-file vi.mock factory) and render/query
@@ -49,7 +49,7 @@ export function renderDetail() {
 }
 
 /**
- * Task 14: a section is only in the DOM while its tab is selected, so every
+ * A section is only in the DOM while its tab is selected, so every
  * assertion about probes, discovery, telemetry or events has to ask for that
  * section first. `fireEvent` rather than `userEvent` on purpose — two tests
  * below drive the poll with fake timers, and userEvent's own timer advance
@@ -62,7 +62,7 @@ export async function openTab(name) {
 
 /**
  * What the page says about the agent's state. The old <section aria-label="Agent
- * state"> held a chip row and a <dl> together; Task 14 splits the same wording
+ * state"> held a chip row and a <dl> together; these split the same wording
  * across the primary state's banner, the secondary states' header chips, and
  * the unverified-clock note, so the assertions that read one element read all
  * three.
@@ -84,10 +84,10 @@ export function stateText() {
     .join(' ');
 }
 
-// ── Task 19: the telemetry section, end to end ────────────────────────────
+// ── The telemetry section, end to end ─────────────────────────────────────
 //
 // Shape mirrors GET /api/v1/agents/{id}/telemetry (api/agents.py:288-303)
-// plus Task 16's `spool` key. `latest` is merged shallowly so a test can
+// plus the `spool` key. `latest` is merged shallowly so a test can
 // override one field without restating the whole sample; passing
 // `latest: null` clears it outright.
 export function telemetryFixture({ latest, ...rest } = {}) {
@@ -125,7 +125,7 @@ export function telemetryFixture({ latest, ...rest } = {}) {
 }
 
 /**
- * The Telemetry tab's own section. Task 14 put a live strip in the sticky
+ * The Telemetry tab's own section. A live strip lives in the sticky
  * header that repeats CPU/MEM/DISK/NET/TEMP and their formatted values, so
  * an unscoped getByText('CPU') now matches two elements. Every assertion
  * about the cards is scoped here; the strip has its own suite
@@ -140,9 +140,9 @@ export const findCards = () =>
     return telemetrySection();
   });
 
-// Task 16: a summary card is a StatTile — <div class="cb-tile"> with its
+// A summary card is a StatTile — <div class="cb-tile"> with its
 // label and value in their own elements — rather than the bare
-// <article><span><strong> the page used to emit.
+// <article><span><strong> shape.
 export function cardValue(label) {
   const tile = within(telemetrySection()).getByText(label).closest('.cb-tile');
   return tile.querySelector('.cb-tile__value').textContent;
@@ -151,7 +151,7 @@ export function cardValue(label) {
 /**
  * The readiness and truncation callouts on the Telemetry tab.
  *
- * Task 16 renders these as Banners, which are role="status" and not
+ * These render as Banners, which are role="status" and not
  * role="alert" — every one of these conditions is already true when the tab
  * opens, and an alert would interrupt a screen reader on each navigation.
  * Scoped to the tab body because the page header carries a Banner of its own

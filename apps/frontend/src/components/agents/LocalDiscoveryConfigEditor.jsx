@@ -2,7 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
 
-// Slice 4 Global Constraints, "one capability registry": every bound below is
+// One capability registry: every bound below is
 // the backend's, byte-identical. `_normalize_local_discovery_config` in
 // `services/agent_capabilities.py` rejects anything outside these ranges, so a
 // value this editor accepts must be a value that endpoint accepts — the checks
@@ -117,7 +117,7 @@ const splitList = (text, numeric) =>
     .map((entry) => (numeric ? Number(entry) : entry));
 
 /**
- * The `local_discovery` grant's structured config (plan §1, §6).
+ * The `local_discovery` grant's structured config.
  *
  * Presentational, exactly as `RemoteProbeConfigEditor` is: every edit is handed
  * to `onChange(patch)`, which owns the write, the confirmation and the

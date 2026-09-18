@@ -33,7 +33,7 @@ describe('ServerLifecycleBanner', () => {
 
   it('shows the startup banner without unmounting the app below it', async () => {
     // R5: "never unmount the route tree for a degraded banner". This component
-    // used to return a replacement element instead of its children, so a health
+    // must not return a replacement element instead of its children, or a health
     // blip destroyed every page's state — an open form, a running scan view, an
     // unsent edit — and remounted the whole tree on recovery.
     useServerLifecycle.mockReturnValue({

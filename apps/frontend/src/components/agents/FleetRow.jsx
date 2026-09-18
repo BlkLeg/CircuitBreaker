@@ -106,7 +106,7 @@ function formatBytesPerSecond(value) {
 
 function grantedCapabilityLabels(capabilities) {
   if (!capabilities) return [];
-  // Task 15 / D-11: a withheld grant arrives as {enabled: false, config: {}},
+  // A withheld grant arrives as {enabled: false, config: {}},
   // which is truthy — the object is never the test, `.enabled` is.
   return Object.entries(capabilities)
     .filter(([, value]) => normalizeCapability(value).enabled)
@@ -311,7 +311,7 @@ function StatusCell({ agent, state, states }) {
   // Suppressed while the agent is offline for the same reason the loss chip
   // below is: OfflineCell renders this very chip in the metric columns, and
   // the fact must appear exactly once per row. It is no longer gated on
-  // `online === true`, which used to mean an offline agent got no chip at all
+  // `online === true`, which would mean an offline agent gets no chip at all
   // — the silent zero in a different costume.
   const spoolReading = agent.online === false ? null : spoolReadingOf(agent);
   // AGT-14: everything the row's own dot/word/chips cannot express — stale
@@ -330,7 +330,7 @@ function StatusCell({ agent, state, states }) {
       <span className="fleet-dot" data-state={state} />
       <span className="fleet-status">{presenceWordFor(agent)}</span>
       {agent.status !== ACTIVE_STATUS && <StatusChip status={agent.status} />}
-      {/* Design §4: a backlog on a *healthy* agent is the one signal that
+      {/* A backlog on a *healthy* agent is the one signal that
           predicts trouble before anything goes red, so it sits beside the
           status word rather than hidden in the metric columns. */}
       <SpoolReadingChip reading={spoolReading} />
@@ -489,7 +489,7 @@ function OfflineCell({ agent }) {
 OfflineCell.propTypes = { agent: PropTypes.object.isRequired };
 
 function TelemetryOffCell() {
-  // Design §4: `latest: null` is a real state and must never render as 0%.
+  // `latest: null` is a real state and must never render as 0%.
   // Zeros here would read as "this host is idle" when the truth is that nobody
   // granted it the capability that produces the numbers.
   return (

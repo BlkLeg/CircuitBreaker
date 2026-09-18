@@ -1,7 +1,7 @@
 /**
  * The review queue's handling of devices discovery already knows.
  *
- * A re-found device used to arrive here looking exactly like a brand-new host:
+ * A re-found device must not arrive here looking like a brand-new host:
  * `StatePill` special-cased only `conflict`, so `matched` rendered the same
  * amber "New" badge, and the row sat in the queue waiting for the same manual
  * Accept the device had already been given once. These cases pin the three
@@ -221,7 +221,7 @@ describe('accepting a row for a device that already exists', () => {
   it('sends no name or role from the row action, so the device is not renamed', async () => {
     // `merge_scan_result` applies overrides with a blanket setattr, and the
     // row's name default is the discovered hostname or the bare IP — so this
-    // used to rename an existing device to its own IP address and reset its
+    // would rename an existing device to its own IP address and reset its
     // role to "server".
     getPendingResults.mockResolvedValue({ data: [matched] });
     renderPanel();

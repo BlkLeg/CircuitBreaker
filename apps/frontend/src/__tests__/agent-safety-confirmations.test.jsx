@@ -177,9 +177,9 @@ describe('update dispatch', () => {
 });
 
 describe('granting a capability that expands what the agent may do', () => {
-  // Task 15: the capability controls are AgentCapabilitiesPanel's switches
+  // The capability controls are AgentCapabilitiesPanel's switches
   // rather than bare checkboxes, so they are addressed by their role. That
-  // also settles what used to be an ambiguity here — "Host telemetry" is the
+  // also settles an ambiguity here — "Host telemetry" is the
   // name of a switch and of the telemetry tab's region, and only one of them
   // is a switch.
   const toggle = (label) => screen.getByRole('switch', { name: label });

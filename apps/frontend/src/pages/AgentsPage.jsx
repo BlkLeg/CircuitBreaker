@@ -359,7 +359,7 @@ export default function AgentsPage() {
     refreshPresence();
   }, [loadAgents, refreshPresence]);
 
-  // Live "enrolled" events (Task 10) name only an agent_id — fetch and splice
+  // Live "enrolled" events name only an agent_id — fetch and splice
   // in the new record immediately rather than waiting up to REFRESH_MS for the
   // next poll to surface it as a pinned pending row. The presence refetch rides
   // along so the new row arrives with its presence slice already filled in.
@@ -470,7 +470,7 @@ export default function AgentsPage() {
 
   if (loading) return <div className="agents-page">Loading…</div>;
 
-  // Design §4, "No agents at all": the Add-agent panel *is* the page — expanded,
+  // "No agents at all": the Add-agent panel *is* the page — expanded,
   // no filters and no table chrome, because there is nothing to filter or sort
   // and an empty 11-column header is a worse answer than a guided flow. An
   // active filter is excluded on purpose: "nothing matched" is a filter result,

@@ -5,7 +5,7 @@ import { recordServerDate } from '../utils/serverClock';
 import { recordRequest } from '../lib/diagnosticsBuffer';
 import { buildUserMessage as shapeUserMessage, decorateApiError } from '../lib/apiErrors';
 
-// Task 1 (server) mints a UUID4 for any inbound `X-Request-ID` that doesn't
+// The server mints a UUID4 for any inbound `X-Request-ID` that doesn't
 // pass its filter (<=64 chars of [A-Za-z0-9_.-]); a crypto.randomUUID() value
 // passes unchanged, so the ID minted here is the one that comes back on the
 // response and lands in server logs / slow-query warnings.
@@ -526,7 +526,7 @@ export const telemetryApi = {
   pollNow: (id) => client.post(`/hardware/${id}/telemetry/poll`).then((r) => r.data),
   getEntity: (entityType, entityId) =>
     client.get(`/telemetry/entity/${entityType}/${entityId}`).then((r) => r.data),
-  // H5: one request for N nodes instead of one per node. `_noRateLimitRetry`
+  // One request for N nodes instead of one per node. `_noRateLimitRetry`
   // opts this background-poll call out of the client's silent Retry-After
   // sleep on 429 — the caller's own backoff (useMapRealTimeUpdates) is the
   // right handler, and it needs the 429 immediately to drive that backoff

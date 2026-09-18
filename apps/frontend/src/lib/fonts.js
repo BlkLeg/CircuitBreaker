@@ -3,9 +3,9 @@
  *
  * Every family here is self-hosted — the faces are declared in
  * `styles/fonts.css` and served from /fonts — so an entry is just a name and a
- * CSS stack. Entries used to carry a `googleUrl` that three different call
- * sites injected as a <link>, which made the UI's typography depend on
- * reaching fonts.googleapis.com. Adding a family means adding its woff2 files
+ * CSS stack. No entry may carry a `googleUrl` for a call site to inject as a
+ * <link>: that makes the UI's typography depend on reaching
+ * fonts.googleapis.com. Adding a family means adding its woff2 files
  * and an @font-face block, not a URL: see scripts/fetch-ui-fonts.py.
  */
 export const FONT_OPTIONS = [

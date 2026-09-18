@@ -7,7 +7,7 @@ import { resolve } from 'node:path';
 
 /**
  * The post-deletion parity snapshot for the unified navigator: everything the
- * CommandPalette used to promise is still reachable, through the mounted
+ * CommandPalette promised is still reachable, through the mounted
  * navigator where rendering is involved and through the shared data layer
  * where it is not. This file exists so removing the palette cannot remove a
  * destination with it.

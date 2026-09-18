@@ -30,7 +30,7 @@ vi.mock('../api/agents', async () => {
       })
     ),
     getAgentsPresence: vi.fn(() => Promise.resolve({ data: [] })),
-    // The fleet redesign's second metric read (design §1.2). It has its own
+    // The fleet redesign's second metric read. It has its own
     // 120s cadence inside useFleetMetrics, so it has to exist on the mock even
     // for the tests that only care about presence — an undefined export throws
     // out of the hook's mount effect and takes the whole page down with it.
@@ -51,7 +51,7 @@ vi.mock('../api/agents', async () => {
     getCapabilityDefaults: vi.fn(() => Promise.resolve({ data: {} })),
     rejectAgent: vi.fn(),
     // The REAL implementation, pulled through importActual rather than
-    // re-implemented here: Task 15 makes every REST response emit
+    // re-implemented here: every REST response emits
     // {enabled, config}, and normalizeCapability is what keeps AgentsPage from
     // reading an always-truthy grant object as "granted". A hand-written copy
     // would keep passing after the real normalizer's semantics changed, which
@@ -146,12 +146,12 @@ describe('AgentsPage', () => {
     );
 
     await waitFor(() => expect(screen.getByText('online')).toBeInTheDocument());
-    // Scoped to the table: the Task 15 capability filter's <select> now also
+    // Scoped to the table: the capability filter's <select> also
     // renders a "Host telemetry" option, so an unscoped getByText would match
     // both.
     const table = screen.getByRole('table');
     expect(within(table).getByText('Host telemetry')).toBeInTheDocument();
-    // Task 15 / D-11: a disabled grant arrives as {enabled: false, config: {}},
+    // A disabled grant arrives as {enabled: false, config: {}},
     // which is truthy — the row must still report it as not granted.
     expect(within(table).queryByText('Remote probe')).not.toBeInTheDocument();
     expect(within(table).getByText('rack-a-switch')).toBeInTheDocument();
@@ -223,7 +223,7 @@ describe('AgentsPage', () => {
     await waitFor(() => expect(screen.getByText(/box1/i)).toBeInTheDocument());
     expect(screen.queryByText(/freshbox/i)).not.toBeInTheDocument();
 
-    // Simulate the live "enrolled" stream event (Task 10) — no poll tick.
+    // Simulate the live "enrolled" stream event — no poll tick.
     mockUseAgentLive.mockReturnValue({
       statuses: new Map([[99, { event_type: 'enrolled', detail: null, ts: Date.now() }]]),
       connected: true,
@@ -297,7 +297,7 @@ describe('AgentsPage', () => {
       connected: true,
     });
 
-    // The bulk presence poll (Task 12) lands after that stale event, and
+    // The bulk presence poll lands after that stale event, and
     // says the agent is actually offline with an updated last_seen_at.
     getAgentsPresence.mockResolvedValue({
       data: [
@@ -363,7 +363,7 @@ describe('AgentsPage', () => {
   });
 });
 
-// Task 15: status / capability / online filters, plus verifying pending rows
+// Status / capability / online filters, plus verifying pending rows
 // stay pinned at the top of the (now filterable) fleet table under every
 // combination.
 describe('AgentsPage fleet filters', () => {
@@ -549,7 +549,7 @@ describe('AgentsPage fleet filters', () => {
   });
 });
 
-// Design §4's two states that used to have no rendering at all: an empty fleet
+// The two states with no rendering of their own: an empty fleet
 // (which showed an empty 11-column table) and a failed presence poll (which
 // AgentsPage swallowed with `.catch(() => {})`, freezing every metric while the
 // page still looked live).
@@ -629,7 +629,7 @@ describe('AgentsPage degraded states', () => {
   });
 });
 
-// Design §3's invariant, stated there as a rule the whole three-clock
+// The invariant, stated as a rule the whole three-clock
 // arrangement rests on: "a WS push never overrides a metric value". The three
 // sources have deliberately disjoint slices — the stream owns presence
 // transitions, the 30s poll owns the head values, the 120s series owns the

@@ -2,7 +2,7 @@ import client from './client.jsx';
 
 export const listAgents = (params = {}) => client.get('/agents', { params });
 export const listPendingAgents = () => client.get('/agents/pending');
-// Task 12 bulk lookup: online/connected_since/last_seen_at/capabilities/hardware
+// Bulk lookup: online/connected_since/last_seen_at/capabilities/hardware
 // for the whole fleet in one request, or an explicit `ids` list (e.g. a single
 // agent's detail page). See AgentPresenceRead on the backend.
 export const getAgentsPresence = (params = {}) =>
@@ -13,7 +13,7 @@ export const getAgentsPresence = (params = {}) =>
     paramsSerializer: { indexes: null },
   });
 export const getAgent = (id) => client.get(`/agents/${id}`);
-// Task 14: the server capability registry's approval defaults, as
+// The server capability registry's approval defaults, as
 // {name: {enabled, config}}. The single source of the approval preset and of
 // the host-telemetry config key list / fallback values — the frontend keeps no
 // copy of either, so it can never drift from CAPABILITY_DEFINITIONS.
@@ -21,14 +21,14 @@ export const getCapabilityDefaults = () => client.get('/agents/capability-defaul
 export const getAgentEvents = (id, limit = 50) =>
   client.get(`/agents/${id}/events`, { params: { limit } });
 export const getAgentTelemetry = (id) => client.get(`/agents/${id}/telemetry`);
-// Slice 3 §7: the Assigned Probes section on Agent Detail. Returns
+// The Assigned Probes section on Agent Detail. Returns
 // {agent_id, max_concurrent, active_runs, assignments} — see AgentProbesRead.
 // Target state (`status`) and execution condition (`probe_execution_*`) come
 // back side by side and are never folded into one another: the UP/DOWN pill
 // shows target state only, so a monitor whose agent went offline keeps its last
 // known target state while its execution condition turns unavailable.
 export const getAgentProbes = (id) => client.get(`/agents/${id}/probes`);
-// Slice 3 §7's eligible-agent listing, for the "Run from" selector and for the
+// The eligible-agent listing, for the "Run from" selector and for the
 // reassign action on Agent Detail. Scope compatibility is a property of the
 // (agent, destination) *pair*, so the backend requires a destination — either
 // `monitor_id` for an existing monitor or `host` (plus optional
@@ -40,7 +40,7 @@ export const getAgentProbes = (id) => client.get(`/agents/${id}/probes`);
 export const listProbeEligibleAgents = (params = {}) =>
   client.get('/agents/probe-eligible', { params });
 
-// Slice 4 §6: the Discovery scope section on Agent Detail, and `GET
+// The Discovery scope section on Agent Detail, and `GET
 // /agents/{id}/probes`' counterpart — one request answers "what is this vantage
 // point discovering, and if nothing, why". Returns AgentDiscoveryRead:
 // {granted, paused, globally_paused, eligible, reason, detail, scope_version,
@@ -108,7 +108,7 @@ export const listEnrollmentTokens = () => client.get('/agents/enrollment-tokens'
 // — they hold their own device identity and never present it again.
 export const revokeEnrollmentToken = (id) => client.post(`/agents/enrollment-tokens/${id}/revoke`);
 
-// Fleet redesign §1.2: the sparkline series for the Agents page, deliberately a
+// The sparkline series for the Agents page, deliberately a
 // second endpoint rather than a flag on /agents/presence. The two reads have
 // different costs and therefore different cadences — presence carries the head
 // values and ticks every 30s, while this returns a 30-minute downsampled window

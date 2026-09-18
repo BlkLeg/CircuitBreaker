@@ -1,7 +1,7 @@
 /**
  * Canonical map graph -> graphology serialization for the Sigma renderer.
  *
- * SigmaMap used to fetch `format: 'sigma'`, a format the backend never
+ * SigmaMap must not fetch `format: 'sigma'`, a format the backend never
  * implemented, and hand the ordinary topology payload to `Graph.import` —
  * which rejects it with "serialized node is missing its key". The renderer now
  * draws the same document React Flow draws, so this conversion is where the

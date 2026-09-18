@@ -242,7 +242,7 @@ function SidebarTelemetryBlock({ node }) {
   // 0-1 fraction at ingest (services/proxmox_telemetry.py,
   // proxmox_discovery.py, discovery_proxmox_merge.py) and
   // services/agent_telemetry.py rejects an agent summary outside 0..100. This
-  // used to scale by 100 a second time (F-1), rendering a 12.5% host as 1250%.
+  // Scaling by 100 a second time here renders a 12.5% host as 1250%.
   // components/map/TelemetrySidebar.jsx reads the same response the same way.
   const cpuPct = data.cpu_pct != null ? Math.round(data.cpu_pct) : null;
   const memUsed =

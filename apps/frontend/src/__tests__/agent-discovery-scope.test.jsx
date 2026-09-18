@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import AgentDetailPage from '../pages/AgentDetailPage';
 
-// Slice 4 Task 27, cloned from agent-assigned-probes.test.jsx. Same discipline:
+// Cloned from agent-assigned-probes.test.jsx. Same discipline:
 // every default implementation lives in this hoisted object and is re-applied in
 // beforeEach, because vi.clearAllMocks() clears call records but leaves
 // implementations installed — a mockResolvedValue set by one test would
@@ -251,7 +251,7 @@ vi.mock('../api/discovery', () => ({
   updateProfile: vi.fn(apiDefaults.updateProfile),
   pauseProfile: vi.fn(apiDefaults.pauseProfile),
   resumeProfile: vi.fn(apiDefaults.resumeProfile),
-  // The section's "Devices found by this agent" list (Slice 3 §7's "Create
+  // The section's "Devices found by this agent" list (the "Create
   // monitor from this agent"). Empty here: these tests are about scope.
   getAgentDiscoveredDevices: vi.fn(() => Promise.resolve({ data: [] })),
 }));
@@ -287,7 +287,7 @@ function renderDetail() {
 // the readiness table (GET /agents/{id}/discovery) and the config editor
 // (GET /agents/capability-defaults) — is what makes the rest synchronous.
 async function scopeSection() {
-  // Task 14: the section is a tab now, so asking for it starts by selecting it.
+  // The section is a tab now, so asking for it starts by selecting it.
   fireEvent.click(await screen.findByRole('tab', { name: 'Discovery' }));
   const section = await screen.findByRole('region', { name: 'Discovery scope' });
   await within(section).findByRole('table', { name: 'Collector readiness' });
@@ -361,7 +361,7 @@ describe('Agent Detail — discovery scope', () => {
   });
 
   it('keeps the disabled-discovery wording exactly as written', async () => {
-    // Task 18 moved this sentence into a Banner. It is the only place the page
+    // This sentence lives in a Banner. It is the only place the page
     // says that nothing is lost by disabling — subnets, results and history
     // all survive — so the assertion is byte for byte.
     const { getAgent } = await import('../api/agents');

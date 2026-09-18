@@ -21,7 +21,7 @@ import { resolveDeviceIcon } from '../model/mapConstants';
  *  - 8-point dynamic handles with connect-aware visibility
  *  - Smart node rendering: hardware nodes use Lucide icon as shape (neon cyan glow)
  *
- * Extracted from MapPage.jsx IconNode and extended with Phase 2 v2 features.
+ * Extracted from MapPage.jsx IconNode and extended with the v2 features.
  */
 
 const TELEMETRY_RING = {
