@@ -23,9 +23,8 @@ var AgentVersion = "0.0.0-dev"
 // up), queueReadiness drops it. reconcileTickInterval is how often the daemon
 // re-offers the current report to that floor, so the server hears from an
 // agent at least once every readiness interval *even when host_telemetry is
-// disabled and no collection ever runs* — the slice-2 contract's "every 15
-// minutes as reconciliation", which used to be a side effect of a successful
-// collection and therefore stopped exactly when it mattered most.
+// disabled and no collection ever runs*. Tying reconciliation to a successful
+// collection instead stops it exactly when it matters most.
 //
 // Vars, not consts, so tests can shrink them rather than waiting out the
 // production values — same pattern as rollbackWindow above.
@@ -57,8 +56,8 @@ func main() {
 }
 
 // configureLogging gives agent.toml's log_level an effect. An unknown value is
-// returned as an error rather than ignored: the setting used to be decoded and
-// dropped, so a typo looked exactly like a working configuration.
+// returned as an error rather than ignored, so a typo cannot look exactly
+// like a working configuration.
 func configureLogging(cfg *config.Config) error {
 	return logging.Configure(cfg.LogLevel)
 }
@@ -85,7 +84,7 @@ func shouldEnroll(stateDir string) bool {
 // enrollment failed for good.
 //
 // Every non-refusal attempt is scheduled by link.RetrySchedule, reusing
-// Phase 1's classification and ladder rather than a second, independently-
+// the link's own classification and ladder rather than a second, independently-
 // tuned copy of it — see that type's doc comment for why. A "rejected" or
 // "revoked" answer is different in kind, not just severity: it means an
 // operator looked at this device and said no, which retrying at network

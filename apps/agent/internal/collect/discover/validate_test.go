@@ -131,7 +131,7 @@ func rejectionCases() []validatorCase {
 			// netscope.Derive only ever fills Networks from the directly connected and the
 			// administrator-approved halves, so this scope cannot come from Derive — which is
 			// exactly the case the check exists for. A target that reached the allow list some
-			// other way is authorized by nothing this host can corroborate, and §7 requires the
+			// other way is authorized by nothing this host can corroborate, and an agent must re-check the
 			// agent to re-check attachment at execution time rather than trust the derivation.
 			name: "a target in scope but attached to nothing",
 			scope: func() netscope.Scope {
@@ -221,7 +221,7 @@ func TestValidator_RefusesEveryOutOfGrantRequest(t *testing.T) {
 }
 
 // TestValidator_AcceptsWhatTheGrantPermits covers the two shapes of a permitted target. The
-// routed one is the load-bearing case: plan §2 lets an administrator add a routed subnet and §3
+// routed one is the load-bearing case: an administrator may add a routed subnet, and the agent-side rule
 // scopes the directly-connected requirement to automatically derived targets, so a prefix that is
 // in additional_cidrs but on no segment of this host must still run.
 func TestValidator_AcceptsWhatTheGrantPermits(t *testing.T) {
@@ -357,7 +357,7 @@ func TestValidator_ToleratesAZeroGrant(t *testing.T) {
 	}
 }
 
-// TestValidator_PerformsNoNetworkIO is plan §7's "validate before opening a socket", asserted
+// TestValidator_PerformsNoNetworkIO is the plan's "validate before opening a socket", asserted
 // rather than assumed: a request is refused on what it says, never on what the network answers.
 //
 // net.DefaultResolver is the one dialer a validator could plausibly reach on its own — a

@@ -17,7 +17,7 @@ from tests.discovery.helpers import (
 # GET /discovery/eligible-agents (Slice 4, §6 "Discovery page" / Task 26)
 # ---------------------------------------------------------------------------
 #
-# Plan §6: "Show why an agent is ineligible." The selector therefore renders
+# "Show why an agent is ineligible." The selector therefore renders
 # *every* active agent and never filters the list down to the choosable ones —
 # an agent that has silently disappeared from a dropdown is the failure mode this
 # endpoint exists to prevent.
@@ -26,7 +26,7 @@ from tests.discovery.helpers import (
 # function `POST /discovery/scan` and `POST /discovery/profiles` refuse with, so
 # the listing and the refusal cannot disagree about a reason or drift apart when
 # a new one is added. In particular that means the listing judges with
-# `require_online=False`, exactly as creation does (D-5): an offline agent is a
+# `require_online=False`, exactly as creation does: an offline agent is a
 # legitimate choice whose job parks as `waiting_for_agent`, so `online` is
 # rendered as a warning and never as a refusal.
 

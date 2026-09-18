@@ -1,4 +1,4 @@
-"""Phase 3 — Messaging & Realtime tests.
+"""Messaging and realtime tests.
 
 Covers:
   - NATSClient: no-op graceful degradation when NATS is unavailable

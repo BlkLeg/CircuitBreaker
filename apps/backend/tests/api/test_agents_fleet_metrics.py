@@ -246,7 +246,7 @@ async def test_presence_latest_is_the_newest_sample_for_each_agent(
     assert latest_a["uptime_s"] == 7200
     assert datetime.fromisoformat(latest_a["collected_at"]) == newest_a
     # The backend does not judge staleness — it hands the client the stamp and
-    # lets the client decide (design §1.3), so this must be tz-aware.
+    # lets the client decide, so this must be tz-aware.
     assert datetime.fromisoformat(latest_a["collected_at"]).tzinfo is not None
     # Columns the sample never carried stay null rather than becoming 0.0.
     assert latest_a["max_temp_c"] is None
@@ -285,7 +285,7 @@ async def test_presence_carries_the_spool_backlog_with_null_distinct_from_zero(
     client, factories, viewer_headers, monkeypatch
 ):
     """Spool depth is "the one signal that predicts trouble before anything
-    goes red" (design §4), so it rides the presence row straight off the
+    goes red", so it rides the presence row straight off the
     already-loaded `Agent` — no extra query.
 
     `None` (the agent has never reported a spool) and `0` (it reported, and the
@@ -531,7 +531,7 @@ async def test_series_never_selects_the_raw_jsonb_column(
     assert len(points) <= _SERIES_MAX_POINTS
 
 
-# ── Shared rules (design §1.3) ───────────────────────────────────────────────
+# ── Shared rules ───────────────────────────────────────────────
 
 
 @pytest.mark.asyncio

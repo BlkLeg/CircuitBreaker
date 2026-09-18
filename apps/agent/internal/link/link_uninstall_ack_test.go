@@ -21,22 +21,13 @@ import (
 
 // Uninstall's contract, and why it is what it is.
 //
-// Uninstall used to write the uninstall frame, immediately write a WebSocket
-// close, and return nil — which said only that the local kernel had accepted
-// the bytes. Against the real server that was reliably wrong: uvicorn
-// completes the close handshake as soon as it arrives, so link_stream's very
-// next send (the hello.ack, sent after a chunk of database work) raised, the
-// handler exited before its receive loop ever started, and the uninstall
-// frame was never read. `cb-agent uninstall` printed "Notified the server
-// (agent record marked revoked)" while the agent stayed active forever.
-// Reproduced end to end on 2026-09-08 against the docker harness, and proved
-// by keeping the socket open instead: same run, agent revoked.
-//
-// So the close is no longer what ends this connection — the server's
-// acknowledgement is. The hello asks for delivery acks, and Uninstall returns
-// nil only once a `data.ack` watermark has reached the uninstall frame's own
-// sequence number, which by then means `_handle_uninstall` has run and
-// committed. Everything below pins one clause of that.
+// Writing the uninstall frame, closing immediately and returning nil reports
+// only that the local kernel accepted the bytes. Against the real server that
+// is reliably wrong: uvicorn completes the close handshake as soon as it
+// arrives, so link_stream's next send (the hello.ack, after a chunk of database
+// work) raises and the handler exits before its receive loop ever starts. The
+// uninstall frame is never read, and `cb-agent uninstall` reports success while
+// the agent stays active forever.
 
 // uninstallAckServer is a fake /link server shaped like the real one:
 // Noise handshake, read hello, read one frame, then whatever `respond` does
@@ -234,14 +225,13 @@ func TestUninstall_AsksForDeliveryAcknowledgement(t *testing.T) {
 	}
 }
 
-// The close is what used to lose the frame. It must now come last.
+// The close is what loses the frame, so it must come last.
 func TestUninstall_ClosesOnlyAfterTheServerAcknowledges(t *testing.T) {
 	serverPriv, serverPub := generateTestKeypair(t)
 	srv := newUninstallAckServer(t, serverPriv, serverPub, func(send func(frame.Frame)) {
 		send(helloAckFrame(true))
 		// A deliberate gap: if Uninstall closed on write success, the close
-		// would land inside it and the ordering assertion below would catch
-		// exactly the regression this test exists for.
+		// would land inside it and the ordering assertion below would catch it.
 		time.Sleep(300 * time.Millisecond)
 		send(dataAckFrame(1, 1))
 	})
@@ -297,8 +287,9 @@ func TestUninstall_ReadsPastHelloAckAndCapabilitiesToFindTheAck(t *testing.T) {
 }
 
 // A watermark behind the uninstall frame acknowledges something else. The
-// server coalesces acks, so one for an earlier frame can legitimately arrive
-// on this connection; treating it as confirmation would put the old lie back.
+// server coalesces acks, so one for an earlier frame can legitimately arrive on
+// this connection; treating it as confirmation would report a revoke that never
+// happened.
 func TestUninstall_IgnoresAnAcknowledgementBehindTheUninstallFrame(t *testing.T) {
 	serverPriv, serverPub := generateTestKeypair(t)
 	srv := newUninstallAckServer(t, serverPriv, serverPub, func(send func(frame.Frame)) {

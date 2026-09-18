@@ -246,7 +246,7 @@
   white-space: nowrap;
 }
 
-/* Slice 3 §7: the vantage and the secondary execution condition. Both sit under
+/* The vantage and the secondary execution condition. Both sit under
    the target line and neither is allowed to look like the UP/DOWN pill — the
    pill shows target state only. */
 .mon-vantage {
@@ -316,7 +316,7 @@
 }
 .mon-stats {
   display: grid;
-  /* auto-fit rather than a fixed count: Slice 3 added a fifth tile and five
+  /* auto-fit rather than a fixed count: a fifth tile makes five
      fixed columns are unreadable on a narrow card. */
   grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
   gap: 8px;

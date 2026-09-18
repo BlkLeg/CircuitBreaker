@@ -1,6 +1,6 @@
 """certbot has to be in the image, and its inputs have to reach the process.
 
-INC-07 listed four independent reasons Let's Encrypt could not work in a shipped
+Four independent reasons Let's Encrypt could not work in a shipped
 deployment. Two of them are packaging rather than code, and neither would fail any test
 that existed:
 
@@ -11,7 +11,7 @@ that existed:
     pass it through, and never reached a native install, because the installer collects
     the same address under a different name.
 
-Everything here is a static read of the build inputs. Building the image is Task 9 Step 4's
+Everything here is a static read of the build inputs. Building the image is the image job's
 manual check; these are the assertions that keep it true afterwards.
 """
 
@@ -29,7 +29,7 @@ ACME_REQUIREMENTS = ROOT / "apps" / "backend" / "requirements-acme.txt"
 # Every runtime directory certbot needs under the data volume, and why:
 #   acme-challenge — the HTTP-01 webroot both nginx and the app serve
 #   letsencrypt    — account key, config and logs; the default /etc/letsencrypt is not
-#                    writable by a non-root process, which is INC-07's reason #2
+#                    writable by a non-root process, the second reason
 #   tmp            — where the credentials file and certbot's output live for one call
 ACME_DIRS = ("acme-challenge", "letsencrypt", "tmp")
 
@@ -65,7 +65,7 @@ def test_both_images_install_the_acme_requirements(dockerfile):
 
     assert "requirements-acme.txt" in content, (
         f"{dockerfile}: certbot is not installed, so issuance raises "
-        "'certbot is not available in this image' — INC-07's first cause"
+        "'certbot is not available in this image' — the first cause"
     )
     # Copied as well as referenced: a -r against a file that was never COPYed fails the
     # build, but only at build time, and only for whichever image forgot it.

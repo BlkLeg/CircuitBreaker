@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import AddAgentPanel from '../components/agents/AddAgentPanel';
 
-// Design §5 pins two behaviours of this panel: the waiting → checked-in
+// The spec pins two behaviours of this panel: the waiting → checked-in
 // transition (driven by the pending rows a live `enrolled` event splices into
 // the page) and the inline install-command error. Both are what make the flow
 // "one continuous flow that ends when the agent is approved" rather than a
@@ -155,7 +155,7 @@ describe('AddAgentPanel', () => {
   it('puts the failure inline in the panel the operator just opened, not only in a toast', async () => {
     // The standalone case above covers the empty-fleet page; this is the common
     // one — a fleet that already exists, so the panel is inline and collapsed
-    // until asked for. Design §4 puts the reason where the operator is looking,
+    // until asked for. The reason belongs where the operator is looking,
     // and a toast that has faded by the time they scroll back is not that.
     getInstallCommand.mockRejectedValueOnce({
       response: { status: 503, data: { detail: 'No TLS certificate has been issued yet' } },

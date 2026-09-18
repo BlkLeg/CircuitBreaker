@@ -105,7 +105,7 @@ def _add_slo_gauges(reg: CollectorRegistry, db: Session) -> None:
         0, 0, 0, 0, 0, 0, MonitorItem.interval_secs * 2
     )
     # `lag` above only sees checks *more than two intervals* late, which makes it
-    # useless for §5's first objective — "monitor scheduling lag < the shortest
+    # useless forthe first objective — "monitor scheduling lag < the shortest
     # supported poll interval", 30s at Tier C. Against a 30s interval it reads
     # 0.0 for every lag below 60s and jumps straight past the target once it is
     # non-zero, so "passed" reduced to "lag == 0" and the region the objective
@@ -121,7 +121,7 @@ def _add_slo_gauges(reg: CollectorRegistry, db: Session) -> None:
     # Both figures come off one scan. The overdue cutoff is strictly earlier than
     # `now`, so narrowing the filter to `next_due_at < now` leaves the overdue
     # subset unchanged and lets a conditional aggregate carry it — a second
-    # query here would add a direct-DB call in api/, which the F6 ratchet
+    # query here would add a direct-DB call in api/, which the layering ratchet
     # (rightly) refuses.
     is_overdue = MonitorItem.next_due_at < overdue_cutoff
     overdue_count, oldest_due, oldest_due_at_all = (

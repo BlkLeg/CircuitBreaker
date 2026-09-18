@@ -1,4 +1,4 @@
-"""Phase 1 of ADR 0005: the contract every scripts/ci gate script must satisfy.
+"""The contract every scripts/ci gate script must satisfy (ADR 0005).
 
 These are the rules that make `make verify` trustworthy. A gate that can pass
 because a tool is missing is not a gate (design P2/R4), and a gate body that

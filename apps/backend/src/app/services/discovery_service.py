@@ -339,7 +339,7 @@ def create_scan_job(
     final_cidrs = sorted(set(cidrs))
     target_cidr_str = ",".join(final_cidrs) if final_cidrs else None
 
-    # Plan §3's job-creation checkpoint, against the resolved targets rather than
+    # the job-creation checkpoint, against the resolved targets rather than
     # the request's: a VLAN id becomes CIDRs above, and the indirection must not
     # be a way past the agent's scope. A server job (`scan_agent_id is None`)
     # returns from here untouched.
@@ -350,7 +350,7 @@ def create_scan_job(
         nmap_arguments=nmap_arguments,
     )
 
-    # B12: encode ad-hoc nmap override into the label field (validated for injection)
+    # Encode ad-hoc nmap override into the label field (validated for injection)
     stored_label = label
     if nmap_arguments:
         safe_nmap = validate_nmap_arguments(nmap_arguments)
@@ -358,13 +358,13 @@ def create_scan_job(
 
     job = ScanJob(
         # The execution location, persisted alongside the change that routes on
-        # it (`execute_scan_job`). Plan §3 is explicit that there is no fallback
+        # it (`execute_scan_job`). the contract is explicit that there is no fallback
         # from agent to server, because that would silently change the discovery
         # vantage point, so the column and the branch that reads it have to land
         # together or a row carrying an agent is run by the server scanner.
         scan_agent_id=scan_agent_id,
         source_type=SOURCE_TYPE_AGENT if scan_agent_id is not None else "manual",
-        # D-17: derived from the agent, never accepted from the request. Ingest
+        # Derived from the agent, never accepted from the request. Ingest
         # asserts the finding's job tenant equals the reporting agent's, so a
         # NULL here would make that assertion vacuous rather than safe.
         tenant_id=_agent_tenant_id(db, scan_agent_id),
@@ -385,7 +385,7 @@ def create_scan_job(
 
 
 def _scan_setup(job_id: int) -> dict | None:
-    """Phase 1 (sync, runs in executor): Read job config, verify slot, mark running.
+    """Sync, runs in executor: read job config, verify slot, mark running.
     Returns setup dict or None if the job should not run."""
     db = SessionLocal()
     try:
@@ -509,7 +509,7 @@ def _scan_setup(job_id: int) -> dict | None:
 
 
 def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
-    """Phase 3 (sync, runs in executor): Write scan results to DB, match hardware, auto-merge.
+    """Sync, runs in executor: write scan results to DB, match hardware, auto-merge.
     Each entry in raw_results is a dict with probe data. Returns stats + serialised result list."""
     db = SessionLocal()
     try:
@@ -566,7 +566,7 @@ def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
             if enrichment.enriched and enrichment.fields:
                 _enriched.append((res, enrichment))
 
-            # The counters stay here, and stay absolute (D-10): this function
+            # The counters stay here, and stay absolute: this function
             # owns a whole batch and overwrites `job.hosts_*` at the end, while
             # the agent path increments them one finding at a time. That is the
             # reason the shared builder returns a verdict instead of counting.
@@ -636,22 +636,22 @@ def _auto_merge_known_devices(db: Session, job_id: int) -> None:
     Auto-update Hardware rows for already-known devices.
     Only new/changed devices stay pending.
 
-    This is what makes a *recurring* cadence bearable (Slice 4 plan §3 step 5,
-    Task 25): a profile that rescans the same subnet every six hours has to
+    This is what makes a *recurring* cadence bearable: a profile that rescans
+    the same subnet every six hours has to
     refresh `last_seen` on the devices the inventory already knows, or every
     pass adds the same rows to the review queue again.
 
-    The one thing it will not do is let an **agent** rename a device. Plan §4
+    The one thing it will not do is let an **agent** rename a device. the contract
     lists `hostname` among the agent's untrusted observations, beside banner and
     evidence, so an agent-sourced row whose hostname disagrees with the
     inventory is treated exactly as an `ip_changed`/`mac_changed` already is —
     left `pending` for an operator, with `Hardware` untouched.
 
     **The guard is provenance-scoped, and deliberately not global.** It reads
-    `ScanResult.discovery_agent_id` — the row's own reporter (Task 4) — rather
+    `ScanResult.discovery_agent_id` — the row's own reporter — rather
     than the setting or the job, so the server's own scan of a network the
     server can see keeps renaming hardware exactly as it has since the feature
-    shipped. Plan §4's rule is written about the `discovery.finding` frame; a
+    shipped. the rule is written about the `discovery.finding` frame; a
     hostname the server resolved itself is inside its own trust boundary, and
     widening the rule to every result would move every DHCP rename on every
     existing installation into the review queue for no stated requirement.
@@ -683,7 +683,7 @@ def _auto_merge_known_devices(db: Session, job_id: int) -> None:
         ip_changed = result.ip_address and hw.ip_address != result.ip_address
         mac_changed = result.mac_address and hw.mac_address != result.mac_address
         hostname_changed = result.hostname and hw.hostname != result.hostname
-        # Plan §4: the reporting agent's hostname is an observation, not a fact
+        # The reporting agent's hostname is an observation, not a fact
         # about the device, so a disagreement is a review and not a rename. Held
         # to the same shape as the two above rather than to a quieter "refresh
         # `last_seen` but skip the name": an operator who is shown nothing has no
@@ -725,7 +725,7 @@ def _schedule_privacy_recompute() -> None:
 
 
 def _scan_finalize(job_id: int, stats: dict, final_status: str, auto_merge: bool = False) -> int:
-    """Phase 4 (sync, runs in executor): finalize job status, write audit log,
+    """Sync, runs in executor: finalize job status, write audit log,
     schedule queued scans.
 
     Returns the total count of ScanResult rows with merge_status='pending' so callers can
@@ -849,15 +849,15 @@ async def run_scan_job(job_id: int) -> None:
     Background worker function that performs the actual network scanning orchestration.
 
     Structured into 4 phases to avoid holding a DB session open during async network I/O:
-      Phase 1 (_scan_setup)    — sync, in executor: read config, mark job running
-      Phase 2                  — async: network discovery, per-host probing
-      Phase 3 (_scan_import)   — sync, in executor: write results, match hardware
-      Phase 4 (_scan_finalize) — sync, in executor: finalize job status
+      the design (_scan_setup)    — sync, in executor: read config, mark job running
+      the design                  — async: network discovery, per-host probing
+      the design (_scan_import)   — sync, in executor: write results, match hardware
+      the design (_scan_finalize) — sync, in executor: finalize job status
     """
     logger.info(f"Starting execution of Discovery Job {job_id}")
     loop = asyncio.get_running_loop()
 
-    # ── Phase 1: Setup ────────────────────────────────────────────────────────
+    # ── Setup ────────────────────────────────────────────────────────────────────
     async with _scan_start_gate:
         setup = await loop.run_in_executor(None, _scan_setup, job_id)
     if not setup:
@@ -1008,7 +1008,7 @@ async def run_scan_job(job_id: int) -> None:
             _last_progress_snap.pop(job_id, None)
             return
 
-        # ── Phase 2: Network Discovery ─────────────────────────────────────
+        # ── Network Discovery ─────────────────────────────────────────────────
         active_ips: set[str] = set()
         nmap_results: dict = {}
         arp_mac_by_ip: dict[str, str] = {}
@@ -1732,7 +1732,7 @@ async def run_scan_job(job_id: int) -> None:
                     }
                 )
 
-        # ── Phase 3: Import results to DB ─────────────────────────────────────
+        # ── Import results to DB ─────────────────────────────────────────────────
         await _update_job_progress(
             job_id,
             "reconcile",
@@ -1756,7 +1756,7 @@ async def run_scan_job(job_id: int) -> None:
             total=max(hosts_found, n_active),
         )
 
-        # ── Phase 4: Finalize ─────────────────────────────────────────────────
+        # ── Finalize ─────────────────────────────────────────────────────────────
         _pending_count = await loop.run_in_executor(
             None, _scan_finalize, job_id, stats, "completed", auto_merge
         )

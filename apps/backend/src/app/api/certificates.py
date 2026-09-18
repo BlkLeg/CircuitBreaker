@@ -157,7 +157,7 @@ def renew_certificate(
     try:
         renewed = svc.renew_certificate(db, cert)
     except svc.CertificateRenewalError as exc:
-        # The audit entry used to say "ok" unconditionally, recording renewals that never
+        # The audit entry must not say "ok" unconditionally: that records renewals that never
         # happened. 502 rather than 500: the failure is in an upstream certificate authority
         # or a missing external tool, not in this application.
         log_audit(
@@ -196,7 +196,7 @@ def activate_certificate_route(
     A reload that did not happen is audited as "partial" and returned as `reloaded: false`,
     not raised: the files are on disk either way and the operator needs both facts.
 
-    Slice 4.1: refused with 409 while any active agent has not confirmed the
+    the design: refused with 409 while any active agent has not confirmed the
     advertised successor TLS policy. An agent's `tls_pin` is loaded once from
     agent.toml and never rewritten, and it gates all four of its dial paths
     including the update download — so activating underneath an unconverged

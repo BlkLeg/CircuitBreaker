@@ -585,7 +585,7 @@ async def test_overview_route_wins_over_monitor_id(client, auth_headers):
     assert isinstance(resp.json(), list)
 
 
-# ── Slice 3 §7: the probe vantage on the monitor API ─────────────────────────
+# ── the probe vantage on the monitor API ─────────────────────────
 # `probe_agent_id` is the only writable half; everything else in the probe block
 # is server-derived and must survive being echoed back by a frontend that sends
 # the whole form verbatim.
@@ -819,7 +819,7 @@ async def test_check_now_on_an_eligible_agent_opens_a_run(
 async def test_check_now_that_cannot_be_dispatched_answers_409_and_closes_the_run(
     client, auth_headers, factories, db_session, presence, monkeypatch
 ):
-    """D-14: "accepted" is a claim this route must be able to stand behind, so a
+    """An "accepted" claim this route must be able to stand behind, so a
     publish that never left the building is a refusal, not a 200 — and the run
     it opened has to be closed instead of holding the active-run index."""
     from app.core.nats_client import nats_client
@@ -885,7 +885,7 @@ async def test_probe_runs_endpoint_is_bounded_and_newest_first(
 
 @pytest.mark.asyncio
 async def test_assignment_write_requires_editor_level_auth(client, viewer_headers, factories):
-    """D-15: `require_write_auth` already *is* editor-level; no new dependency."""
+    """`require_write_auth` already *is* editor-level; no new dependency."""
     agent = _probe_agent(factories)
     monitor = factories.monitor_item(host="10.0.0.9", check_type="icmp")
 

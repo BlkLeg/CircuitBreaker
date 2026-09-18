@@ -74,7 +74,7 @@ def _create_service(client, name="svc-1", **kwargs):
     return resp.json()
 
 
-# ── 3. CB-REL-002: Service hardware_id denorm ─────────────────────────────────
+# ── 3. Service hardware_id denorm ─────────────────────────────────────────────
 
 
 def test_service_hardware_id_denorm(client):
@@ -202,7 +202,7 @@ def test_catalog_autofill(client):
     assert data["name"] == "Auto-fill Test"
 
 
-# ── 14. CB-REL-001: source_scan_result_id populated on merge accept ───────────
+# ── 14. source_scan_result_id populated on merge accept ──────────────────────
 
 
 def test_source_scan_result_id(client, db):

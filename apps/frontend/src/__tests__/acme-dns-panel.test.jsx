@@ -5,7 +5,7 @@ import { CERTIFICATE_FIELDS } from '../pages/CertificatesPage.jsx';
 import { settingsApi } from '../api/client';
 
 /**
- * INC-07. The DNS-01 credential is a bearer credential for the install's DNS zone: it is
+ * The DNS-01 credential is a bearer credential for the install's DNS zone: it is
  * write-only across the API, so the panel's whole job is to submit a new one without ever
  * destroying the stored one by accident. Every case below is a way that goes wrong.
  */

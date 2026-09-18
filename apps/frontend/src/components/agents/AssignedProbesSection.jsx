@@ -13,7 +13,7 @@ import AgentOpsStrip from './AgentOpsStrip';
 
 // `monitor_items.probe_execution_status` (db/models.py:272) — the *vantage's*
 // condition, which is orthogonal to `last_status` (whether the target is up).
-// Rendering these two in separate cells is the load-bearing rule of §7: the
+// Rendering these two in separate cells is the load-bearing rule: the
 // UP/DOWN pill shows target state only, and a monitor whose agent went offline
 // keeps its last known target state while turning probe-unavailable here.
 const EXECUTION_LABELS = {
@@ -48,7 +48,7 @@ function ExecutionCondition({ assignment }) {
 ExecutionCondition.propTypes = { assignment: PropTypes.object.isRequired };
 
 /**
- * §7's Assigned Probes section on Agent Detail.
+ * The Assigned Probes section on Agent Detail.
  *
  * Extracted rather than inlined: AgentDetailPage is already far past the
  * 150-line component budget, and this is a self-contained surface with its own
@@ -82,7 +82,7 @@ export default function AssignedProbesSection({
     }
   };
 
-  // D-14: the agent path answers 409 with the machine-readable eligibility
+  // The agent path answers 409 with the machine-readable eligibility
   // reason rather than silently accepting a check it cannot run, so the detail
   // is the message worth showing.
   const handleCheckNow = (assignment) =>
@@ -130,7 +130,7 @@ export default function AssignedProbesSection({
       }
     });
 
-  // §7 acceptance 10: a monitor returns to server execution only through an
+  // A monitor returns to server execution only through an
   // explicit user action — never as an automatic fallback when the agent is
   // unavailable.
   const handleReturnToServer = (assignment) =>

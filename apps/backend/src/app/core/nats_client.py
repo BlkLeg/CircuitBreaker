@@ -1,4 +1,4 @@
-"""NATS client abstraction — scaffold for Phase 3 messaging integration.
+"""NATS client abstraction — scaffold for the design messaging integration.
 
 Provides connection management and publish/subscribe helpers.  Degrades
 gracefully to a no-op when NATS is unavailable so the rest of the app
@@ -33,7 +33,7 @@ NATS_TLS = os.getenv("NATS_TLS", "").strip().lower() in ("1", "true", "yes")
 # to make into a hang: the `except` clause sets no-op mode, and the lifespan calls
 # validate_core_dependencies() immediately afterwards to decide whether a missing
 # NATS is fatal or degraded. Neither could run. uvicorn logged "Waiting for
-# application startup." forever and /livez never answered (ADR 0005 Phase 2).
+# application startup." forever and /livez never answered (ADR 0005 the design).
 #
 # Not hypothetical on a packaged host: nats-server is in no Fedora repository and
 # nfpm.yaml only *recommends* it, so a Fedora install has no broker by default.

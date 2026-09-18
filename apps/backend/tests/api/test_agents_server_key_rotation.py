@@ -1,4 +1,4 @@
-"""Server-key rotation admin endpoints (Task 28, INC-13): starting a rotation,
+"""Server-key rotation admin endpoints: starting a rotation,
 status reporting, fleet-adoption bucketing by which key an agent last pinned,
 and the pending-agents listing.
 
@@ -11,7 +11,7 @@ import pytest
 
 from tests.api.agent_fakes import _capture_sql
 
-# ── server-key rotation admin endpoints (Task 28) ──────────────────────────
+# ── server-key rotation admin endpoints ──────────────────────────
 
 
 @pytest.mark.asyncio
@@ -72,7 +72,7 @@ async def test_server_key_rotate_rejects_second_call_while_overlap_active(client
     assert status.json()["successor_key_fingerprint"] == first.json()["successor_key_fingerprint"]
 
 
-# ── server-key rotation: fleet adoption (INC-13) ──────────────────────────────
+# ── server-key rotation: fleet adoption ──────────────────────────────
 
 
 @pytest.mark.asyncio

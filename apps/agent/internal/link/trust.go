@@ -11,22 +11,19 @@ import (
 )
 
 // ResolveTrust returns the TLS trust policy every dial in this agent should
-// honor: the effective policy — a previously promoted successor
-// (config.TLSTrustPolicy) if one exists, otherwise agent.toml's tls_pin —
-// plus any successor a `tls.pin.rotate` frame advertised and internal/config
-// durably persisted.
+// honor: the effective policy — a promoted successor (config.TLSTrustPolicy) if
+// one exists, otherwise agent.toml's tls_pin — plus any successor a
+// `tls.pin.rotate` frame advertised and internal/config persisted.
 //
-// This is the single resolver. All four dial sites — enrollment
-// (internal/enroll), the /link websocket and its re-dial (internal/link), and
-// the update download (internal/update) — go through it, so no path can be
-// left behind on a trust change. That mattered enough to gate: the update
-// download is how a broken agent would otherwise be repaired, so a stranded
-// download path makes every other stranding unrecoverable.
+// This must stay the single resolver. All four dial sites — enrollment, the
+// /link websocket and its re-dial, and the update download — go through it, so
+// no path is left behind on a trust change. The update download is how a broken
+// agent would otherwise be repaired, so a stranded download path makes every
+// other stranding unrecoverable.
 // tests/build/test_phase4_supply_chain_ratchets.py enforces it.
 //
-// stateDir == "" skips both persisted lookups entirely and returns just the
-// configured policy, unchanged from this function's absence — matching
-// serverKeyCandidates' handling of the same case.
+// stateDir == "" skips both persisted lookups and returns just the configured
+// policy, matching serverKeyCandidates' handling of the same case.
 func ResolveTrust(cfg *config.Config, stateDir string) tlsdial.Trust {
 	trust := tlsdial.Trust{Mode: tlsdial.ModeSelfSigned, Pins: []string{cfg.TLSPin}}
 	if cfg.TLSPin == "" {
@@ -70,30 +67,24 @@ func ResolveTrust(cfg *config.Config, stateDir string) tlsdial.Trust {
 // PromoteTrust records the outcome of one completed TLS handshake against a
 // trust policy ResolveTrust produced, and reports which policy matched.
 //
-// matchedIndex is the candidate index tlsdial.Trust.Matches returned. Index 0
-// is the effective policy ("current"); anything above it is the advertised
-// successor. A successor match means the server is now serving the new
-// certificate, so the rotation has completed from this agent's point of view:
-// the successor is recorded as the effective policy and the rotation file is
-// cleared.
+// matchedIndex is the candidate index tlsdial.Trust.Matches returned: index 0 is
+// the effective policy ("current"), anything above it the advertised successor.
+// A successor match means the server is now serving the new certificate, so the
+// rotation is complete — the successor becomes the effective policy and the
+// rotation file is cleared.
 //
-// Recording it is not optional. agent.toml is root-owned and never rewritten,
-// so its tls_pin still names the certificate the rotation retired; an agent
-// that only cleared the rotation would fall back to that retired pin and
-// strand on its very next reconnect, one connection past the cutover.
+// Recording it is not optional. agent.toml is root-owned and never rewritten, so
+// its tls_pin still names the certificate the rotation retired; an agent that
+// only cleared the rotation would fall back to that retired pin and strand on
+// its next reconnect.
 //
-// A current match deliberately keeps the rotation: the cutover has not
-// happened yet, and dropping the successor here would mean the agent has to
-// be re-advertised before it can survive the actual change.
+// A current match deliberately keeps the rotation: the cutover has not happened
+// yet, and dropping the successor would mean re-advertising the agent before it
+// can survive the actual change. A successful cross-mode retry passes
+// successorRetryIndex and lands in the same successor branch.
 //
-// A successful cross-mode retry passes successorRetryIndex and lands in the
-// same successor branch: there is no pin candidate to point at, but the
-// server is demonstrably serving the advertised policy, which is exactly
-// what promotion means.
-//
-// The returned kind travels to the server on the next hello as
-// `tls_pin_kind`, which is what feeds the operator's convergence view and
-// the activation gate (agent_registry.record_tls_pin).
+// The returned kind travels to the server on the next hello as `tls_pin_kind`,
+// feeding the operator's convergence view and the activation gate.
 func PromoteTrust(cfg *config.Config, stateDir string, matchedIndex int) (string, error) {
 	if matchedIndex <= 0 {
 		return "current", nil

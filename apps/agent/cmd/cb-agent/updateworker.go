@@ -1,7 +1,6 @@
 // The daemon's serialized self-update worker: everything `cb-agent` does
 // between receiving a server `update` instruction and re-exec'ing into the
-// new binary, moved off the link's event-loop goroutine (§3.1/§8.2 of
-// docs/design/2026-09-16-agent-deployment-connection-plan.md).
+// new binary, moved off the link's event-loop goroutine.
 //
 // Same package as daemon.go — a file boundary, not an API one. The link's
 // Options.OnUpdate is the enqueue boundary this worker sits behind; the
@@ -28,29 +27,27 @@ import (
 	"circuitbreaker.dev/cb-agent/internal/update"
 )
 
-// updateStatusQueueDepth is the buffer depth of the channel the update
-// worker reports through and every runOnce drains (link.Options.
-// UpdateStatusFrames). Four is the smallest depth that makes "the worker
-// never blocks on the channel" a structural property rather than a hope:
-// one update reports at most a started+terminal pair (two events), the
-// worker executes at most one job at a time, and a second instruction can
-// only be accepted once the first job finished — the drain consumer being
-// gone (a link between connections) for the whole of that window — so two
-// jobs' worth of events, four, is the most that can ever be pending. A send
-// beyond capacity would mean a bug elsewhere (a job executing concurrently
-// with another), and the worker's report() is ctx-guarded so even that
+// updateStatusQueueDepth is the buffer depth of the channel the update worker
+// reports through and every runOnce drains (link.Options.UpdateStatusFrames).
+//
+// Four is the smallest depth that makes "the worker never blocks on the
+// channel" structural rather than hopeful: one update reports at most a
+// started+terminal pair, the worker executes at most one job at a time, and a
+// second instruction is only accepted once the first finished — so two jobs'
+// worth of events is the most that can ever be pending. A send beyond capacity
+// would mean a bug elsewhere, and report() is ctx-guarded so even that
 // degenerates to a dropped status rather than a deadlock.
 const updateStatusQueueDepth = 4
 
 // errUpdateInProgress is the deterministic refusal the enqueue boundary
-// returns while an update is queued or running (§3.1/§8.6). The exact
+// returns while an update is queued or running. The exact
 // wording is the contract: runOnce reports it verbatim as the failed
 // update's error text, the backend stores it on the agent timeline, and
 // cmd/cb-agent's worker tests assert it.
 var errUpdateInProgress = errors.New("update already in progress")
 
 // updateJob is one validated server instruction plus everything the worker
-// needs to execute it (§8.2's update-job type). The payload is parsed at the
+// needs to execute it (the update-job type). The payload is parsed at the
 // enqueue boundary, not here: the link's TypeUpdate arm must return to its
 // select loop immediately, so validation belongs to the boundary that can
 // refuse the instruction synchronously, and the worker then works from a
@@ -61,7 +58,7 @@ type updateJob struct {
 
 // updateWorker is the daemon's single serialized update executor. One
 // worker, one in-flight job, one pending slot behind it (jobC's capacity-1
-// queue, §3.1): a second instruction that arrives while one is queued or
+// queue): a second instruction that arrives while one is queued or
 // running is refused with errUpdateInProgress rather than applied
 // concurrently — a second swap racing the first could interleave marker
 // writes and symlink repointing against each other, and both instructions
@@ -77,7 +74,7 @@ type updateWorker struct {
 	// accepted until its job finishes executing — deliberately wider than
 	// jobC's occupancy, because a dequeued job leaves the queue empty while
 	// still mid-flight, and a second instruction accepted in that window
-	// would not be "refused while running" (§8.6) but queued behind it.
+	// would not be "refused while running" but queued behind it.
 	// Atomic CAS in enqueue: exactly one instruction is admitted between
 	// idle states, queue slot or not.
 	busy atomic.Bool
@@ -103,7 +100,7 @@ type updateWorker struct {
 // newUpdateWorker builds the daemon's worker. statusC is the same channel
 // handed to link.Run as Options.UpdateStatusFrames — the worker is its only
 // producer and the link's event loop its only consumer, which is the entire
-// single-writer story for update.status frames (§3.1).
+// single-writer story for update.status frames.
 func newUpdateWorker(ctx context.Context, cfg *config.Config, stateDir string, statusC chan link.UpdateStatusEvent) *updateWorker {
 	w := &updateWorker{
 		ctx:      ctx,
@@ -128,7 +125,7 @@ func (w *updateWorker) start() {
 }
 
 // stop waits for the worker goroutine to exit. Bounded by the worker's ctx —
-// a job mid-download aborts through its context-aware HTTP request (§8.5),
+// a job mid-download aborts through its context-aware HTTP request,
 // and the remaining local steps are sub-second — so shutdown never waits
 // out downloadTimeout for a stalled response.
 func (w *updateWorker) stop() {
@@ -138,7 +135,7 @@ func (w *updateWorker) stop() {
 // enqueue is the link's Options.OnUpdate: validate the raw instruction,
 // queue it, return. Called on the link's event-loop goroutine, so it must
 // never block: the select is bounded by jobC's capacity (a full queue is a
-// refusal, not a wait) and by ctx (a shutdown refuses new work, §3.1).
+// refusal, not a wait) and by ctx (a shutdown refuses new work).
 func (w *updateWorker) enqueue(payload json.RawMessage) error {
 	var instr update.Instruction
 	if err := json.Unmarshal(payload, &instr); err != nil {
@@ -146,13 +143,13 @@ func (w *updateWorker) enqueue(payload json.RawMessage) error {
 	}
 	// ctx first, so a stopped worker's answer is deterministic: once the
 	// daemon is shutting down no instruction is ever admitted, not even
-	// into a queue slot nobody will drain (§3.1 — “stop accepting new work
+	// into a queue slot nobody will drain (“stop accepting new work
 	// when the parent context is cancelled”).
 	if err := w.ctx.Err(); err != nil {
 		return fmt.Errorf("update worker is stopping: %w", err)
 	}
 	// busy before the queue: a job that has been dequeued for execution
-	// still has the worker occupied even though jobC is empty, and §8.6's
+	// still has the worker occupied even though jobC is empty, and the
 	// refusal must cover "queued or running" exactly. CAS makes the
 	// check-and-admit one atomic step, so two instructions arriving
 	// together cannot both win.
@@ -175,11 +172,11 @@ func (w *updateWorker) enqueue(payload json.RawMessage) error {
 }
 
 // report hands one status event to whatever runOnce is currently draining.
-// ctx-guarded (§8.7): the capacity argument in updateStatusQueueDepth's doc
+// ctx-guarded: the capacity argument in updateStatusQueueDepth's doc
 // comment is why an unguarded send cannot hang in practice, but a shutdown
 // racing a full channel must still exit the worker rather than park it
 // forever — and a dropped status is recoverable precisely because terminal
-// outcomes are durable (§3.3).
+// outcomes are durable.
 func (w *updateWorker) report(ctx context.Context, evt link.UpdateStatusEvent) error {
 	select {
 	case w.statusC <- evt:
@@ -190,7 +187,7 @@ func (w *updateWorker) report(ctx context.Context, evt link.UpdateStatusEvent) e
 }
 
 // run is the worker loop: one job at a time, forever, until ctx is
-// cancelled (§8.2). Nothing here writes to a socket or a marker file — that
+// cancelled. Nothing here writes to a socket or a marker file — that
 // is all execute's.
 func (w *updateWorker) run() {
 	defer w.wg.Done()
@@ -199,20 +196,20 @@ func (w *updateWorker) run() {
 		case <-w.ctx.Done():
 			return
 		case job := <-w.jobC:
-			// The "update queued" observability line (§4): the version is
+			// The "update queued" observability line: the version is
 			// the one operator-facing fact, and it is all that is logged —
 			// never the payload, URL, or anything derived from them.
 			log.Printf("cb-agent: update to %s accepted — executing off the link's event loop", job.instr.Version)
 			err := w.execute(w.ctx, job, func(evt link.UpdateStatusEvent) error {
 				return w.report(w.ctx, evt)
 			}, w.exec)
-			// busy stays set for exactly the life of the job (§enqueue's doc
-			// comment): cleared here, not in execute, so a test seam that
+			// busy stays set for exactly the life of the job (see enqueue):
+			// cleared here, not in execute, so a test seam that
 			// returns early cannot leave the worker stuck refusing work.
 			w.busy.Store(false)
 			if err != nil {
 				if w.ctx.Err() != nil {
-					// The "canceled" line (§4): shutdown raced the update.
+					// The "canceled" line: shutdown raced the update.
 					// Not a failure — nothing further is owed to the
 					// server, which re-issues the instruction after
 					// restart.
@@ -227,19 +224,17 @@ func (w *updateWorker) run() {
 	}
 }
 
-// executeUpdate is the update sequence itself — the body runDaemon's
-// onUpdate used to run inline on the link's event loop, moved here intact
-// (§8.2). Its contract with runOnce is now a channel: report() queues
-// update.status events the event loop transmits, exec() replaces the
-// process image on success (and never returns), and a non-nil return means
-// the update did not land.
+// executeUpdate is the update sequence itself. Its contract with runOnce is a
+// channel: report() queues update.status events the event loop transmits,
+// exec() replaces the process image on success (and never returns), and a
+// non-nil return means the update did not land.
 //
-// Ordering rules that predate this file and must not change (§3.4): the
-// trust policy is resolved once per update; the rollback marker is written
-// before the swap; MarkSwapped is the transition that records the actual
-// previous version and the confirmation deadline; and the pending outcome
-// is persisted before the live succeeded send (§3.3), so process
-// replacement cannot discard the status before the backend receives it.
+// Ordering rules that must not change: the trust policy is resolved once per
+// update; the rollback marker is written before the swap; MarkSwapped is the
+// transition that records the actual previous version and the confirmation
+// deadline; and the pending outcome is persisted before the live succeeded
+// send, so process replacement cannot discard the status before the backend
+// receives it.
 func (w *updateWorker) executeUpdate(
 	ctx context.Context, job updateJob, report func(link.UpdateStatusEvent) error, exec func() error,
 ) error {
@@ -261,7 +256,7 @@ func (w *updateWorker) executeUpdate(
 	tmpPath, err := update.Download(ctx, w.cfg, trust, instr)
 	if err != nil {
 		if ctx.Err() != nil {
-			// Shutdown canceled the download mid-flight (§8.5). Not a
+			// Shutdown canceled the download mid-flight. Not a
 			// failed update — nothing was installed, no marker was
 			// written, no status is owed, and the server re-issues the
 			// instruction once the daemon is back.
@@ -274,7 +269,7 @@ func (w *updateWorker) executeUpdate(
 	// Everything below is fast, non-interruptible local work, so this is
 	// the one remaining cancellation checkpoint: a shutdown that lands
 	// post-download must not write a marker or swap a binary into a process
-	// that is on its way out (§3.1). A cancellation landing *after* this
+	// that is on its way out. A cancellation landing *after* this
 	// check still ends safely mid-sequence — the existing crash semantics
 	// (pending-swap / pending-confirm marker states, the rollback window)
 	// are exactly the machinery that handles an interrupted update, and a
@@ -289,7 +284,7 @@ func (w *updateWorker) executeUpdate(
 		sendFailed(err)
 		return err
 	}
-	// Slice 4.2 (F3): the SHA-256 above proves the download matches what
+	// The SHA-256 above proves only that the download matches what
 	// the *server* said. That is worth nothing against a compromised
 	// server, which can serve any binary along with a matching digest.
 	// The detached signature is checked against a key embedded at build
@@ -316,7 +311,7 @@ func (w *updateWorker) executeUpdate(
 			"refuse instead; see `make agent-signing-key` if this build has no "+
 			"embedded key.", instr.Version, verifyErr)
 	}
-	// Task 25: the rollback marker must be durably written *before* the
+	// The rollback marker must be durably written *before* the
 	// binary is actually replaced, not after. If a crash lands between
 	// these two steps, the marker still correctly names the version
 	// that was about to be installed — a recoverable state, since the
@@ -341,23 +336,21 @@ func (w *updateWorker) executeUpdate(
 		sendFailed(err)
 		return err
 	}
-	// Swap succeeded — durably transition the marker from
-	// phasePendingSwap to phasePendingConfirm and record prevVersionDir
-	// (see update.MarkSwapped's doc comment) so a restart's
-	// watchForRollback can trust which version directory is genuinely
-	// this update's own backup, not a stale one from some earlier,
-	// already-confirmed update. The swap itself has already happened
-	// and can't be undone from here, so a failure here is logged, not
-	// treated as a failed update: it only costs this particular update
-	// its rollback safety net (see MarkSwapped's doc comment), not
-	// correctness.
-	// The deadline is stamped here, not at process start, so it measures
-	// from the swap itself and survives the crash-loop an update that
-	// breaks connectivity produces — see update.RollbackIfExpired.
+	// Swap succeeded — durably transition the marker from phasePendingSwap to
+	// phasePendingConfirm and record prevVersionDir (see update.MarkSwapped) so a
+	// restart's watchForRollback can trust which version directory is genuinely
+	// this update's own backup, not a stale one from an earlier, already-confirmed
+	// update. The swap has already happened and cannot be undone from here, so a
+	// failure is logged rather than treated as a failed update: it costs this
+	// update its rollback safety net, not correctness.
+	//
+	// The deadline is stamped here, not at process start, so it measures from the
+	// swap itself and survives the crash-loop an update that breaks connectivity
+	// produces — see update.RollbackIfExpired.
 	if err := update.MarkSwapped(w.stateDir, instr.Version, prevVersionDir, time.Now().Add(rollbackWindow)); err != nil {
 		log.Printf("cb-agent: %v — update to %s already installed but will not be protected by the rollback window", err, instr.Version)
 	}
-	// §3.3/§8.4: persist the succeeded outcome *before* attempting the
+	// persist the succeeded outcome *before* attempting the
 	// live send. A successful local WebSocket write is not an
 	// acknowledgement from the server, and re-exec replaces the process
 	// image immediately after this — so without the record, a connection
@@ -366,7 +359,7 @@ func (w *updateWorker) executeUpdate(
 	// first accepted hello.ack and clears it only after that send
 	// succeeds, exactly as the rollback report has always done.
 	if err := update.WritePendingOutcome(w.stateDir, instr.Version, "succeeded"); err != nil {
-		// The persistence error is logged explicitly, never hidden (§7)
+		// The persistence error is logged explicitly, never hidden
 		// — but the update itself did land, so this is not a failure
 		// status and must never become one. Only the replay net is
 		// missing; the live send below is still the primary path.
@@ -379,7 +372,7 @@ func (w *updateWorker) executeUpdate(
 	if d := resolveReExecDelay(); d > 0 {
 		// The test-only delay stays bounded against shutdown: ctx wins,
 		// so a SIGTERM during the window still stops the daemon rather
-		// than waiting it out (§8.7).
+		// than waiting it out.
 		select {
 		case <-time.After(d):
 		case <-ctx.Done():

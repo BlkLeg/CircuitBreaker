@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# REL-07 fault-metric identity for this stream; also the log prefix.
+# Fault-metric identity for this stream; also the log prefix.
 _COMPONENT = "ws_discovery"
 _EVENT_CHANNEL = "cb:discovery:events"
 # RFC 6455 1011 "internal error" — the server cannot fulfil the stream contract.
@@ -87,7 +87,7 @@ def trusted_ws_client_ip(websocket: WebSocket) -> str:
     peer is not one of our own proxies.
 
     This lives here, and ws_telemetry/ws_monitors/ws_topology/ws_agents import
-    it, because B24 was exactly the cost of having had five byte-identical
+    it, because the contract was exactly the cost of having had five byte-identical
     copies of the old two-line read: the first fix pass corrected two of them and
     left the /ws/monitors allowlist bypass live in the other three. Do not paste
     a sixth copy into a new stream, and do not "simplify" the body back to
@@ -172,10 +172,10 @@ async def _redis_discovery_listener(ws: WebSocket, stop_event: asyncio.Event) ->
         pass
     except Exception as exc:
         # Redis pub/sub is the *only* cross-worker delivery path for this
-        # stream. Losing it used to be a DEBUG line and a silent return, which
-        # left the socket open, pinging, and permanently empty — the client had
-        # no way to tell a quiet scan queue from a broken fan-out. Classify it,
-        # count it, and close the socket so the client reconnects (REL-07).
+        # stream. A DEBUG line and a silent return would leave the socket open,
+        # pinging, and permanently empty — the client has no way to tell a quiet
+        # scan queue from a broken fan-out. Classify it,
+        # count it, and close the socket so the client reconnects.
         record_stream_fault(
             f"{_COMPONENT}.subscribe", exc, logger=logger, context={"channel": _EVENT_CHANNEL}
         )

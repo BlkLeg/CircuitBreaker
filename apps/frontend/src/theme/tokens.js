@@ -115,9 +115,9 @@ export function deriveSurfaceRaised(surfaceHex) {
 /**
  * A palette's text colour, lightened or darkened only as far as legibility needs.
  *
- * Presets carry `text` and `textMuted` as raw values and applyTheme used to
- * write them through untouched, so how readable the app was depended entirely
- * on the palette author. Measured across the shipped presets, 20 of 28
+ * Presets carry `text` and `textMuted` as raw values; writing them through
+ * untouched would leave readability entirely to the palette author. Measured
+ * across the shipped presets, 20 of 28
  * preset/mode pairs put muted text below WCAG AA's 4.5:1 against the surface it
  * sits on; 8 were below 3:1, and monokai's dark muted was 1.74:1 — present in
  * the DOM and effectively invisible. `solarized-dark` managed it with its
@@ -173,8 +173,8 @@ export const STATUS_DEFAULTS = {
 /**
  * Every custom property applyTheme writes.
  *
- * Task 2 clears this exact list before each apply, so switching from a rich
- * palette to a sparse one cannot leave a stale value behind. Task 10's token
+ * This exact list is cleared before each apply, so switching from a rich
+ * palette to a sparse one cannot leave a stale value behind. The token
  * gate reads it to know which tokens count as runtime-defined.
  */
 export const DERIVED_TOKEN_NAMES = [

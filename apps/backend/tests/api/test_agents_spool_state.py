@@ -10,7 +10,7 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_get_agent_detail_exposes_spool_state(client, factories, viewer_headers):
-    """`AgentRead` carries the reported spool backlog (Task 16, D-12). NULL
+    """`AgentRead` carries the reported spool backlog. NULL
     means "never reported" — an agent predating `HeartbeatPayload` — and must
     survive serialization as null rather than being coerced to 0."""
     from app.core.time import utcnow

@@ -1,10 +1,10 @@
-"""The single path from a normalized check outcome to monitor state (§6).
+"""The single path from a normalized check outcome to monitor state.
 
 Whoever ran the check — this server's poll worker or a remote agent — hands the
 identical record shape to `process_results`, and everything downstream of that
 point is the same code: the Proxmox priority override, the availability samples,
 the retry/PENDING/DOWN/UP state machine, the transition events, the down and
-recovered alerts, and the live status push. §6's requirement that "server and
+recovered alerts, and the live status push.the requirement that "server and
 agent checks must produce the same status, event, history, and alert semantics"
 is therefore a property of there being one implementation, not of two
 implementations agreeing.
@@ -18,19 +18,19 @@ Provenance is carried, not branched on:
   it — a second source string would silently split, and then double-count, one
   monitor's uptime.
 * `details` and per-sample `error_reason` are persisted **only** in
-  `monitor_probe_runs.result_metadata` (D-8). Server-executed checks discard
+  `monitor_probe_runs.result_metadata`. Server-executed checks discard
   both today; `telemetry_timeseries` is a compressed Timescale hypertable with a
   90-day retention policy, and widening it for audit metadata that monitor state
   does not depend on would mean the disable/restore-compression dance from
   migration 0095 for no product benefit. The asymmetry is a decision.
 
-Execution errors are the one branch that does not describe the target (§6). A
+Execution errors are the one branch that does not describe the target. A
 vantage that could not run the check says nothing about whether the host is up,
 so that branch writes no availability sample, never reaches `state.apply_result`
 — which unconditionally rewrites `last_polled_at` and `consecutive_failures` —
 and never moves `last_status` or `next_due_at`. It updates the execution
 condition, records an event only when the reason actually changes, and pushes a
-live refresh that deliberately carries no `status` key (D-13).
+live refresh that deliberately carries no `status` key.
 
 Transaction ownership: `writer.write_samples` and `state.apply_result` both
 document that the caller owns the transaction, so this module is that caller. It
@@ -71,7 +71,7 @@ from app.services.stream_faults import (
 
 logger = logging.getLogger(__name__)
 
-# REL-07 fault-metric identity for the monitor result fan-out.
+# Fault-metric identity for the monitor result fan-out.
 _COMPONENT = "monitor_results"
 
 # Who ran the check. Recorded on the run and used for logging; never written to
@@ -86,7 +86,7 @@ OUTCOME_COMPLETED = "completed"
 OUTCOME_EXECUTION_ERROR = "execution_error"
 
 # `monitor_items.probe_execution_status`. `ready` is the vantage working;
-# `unavailable` is a named failure; `stale` is D-4's "looks healthy, results are
+# `unavailable` is a named failure; `stale` isthe "looks healthy, results are
 # not arriving" and is written by the reconciliation pass, not from a result.
 EXECUTION_READY = "ready"
 EXECUTION_UNAVAILABLE = "unavailable"
@@ -107,7 +107,7 @@ class MonitorResult:
     `apply_proxmox_overrides` needs the item dicts to decide whether a
     hypervisor's fresher opinion outranks a raw ICMP/TCP answer, and a remote
     result that skipped that step would invert UP/DOWN relative to the
-    byte-identical server-executed check (D-7).
+    byte-identical server-executed check.
     """
 
     item_id: int
@@ -285,7 +285,7 @@ def record_execution_condition(
     path, shared by the execution-error branch below and by the reconciliation
     pass (`probe_reconcile`). It writes no sample, touches no retry counter and
     does not pull `next_due_at` back: the monitor simply tries again on its
-    normal interval, which is §2's rule and what keeps a broken agent from
+    normal interval, which isthe rule and what keeps a broken agent from
     reading as a broken target.
 
     Returns the live-refresh payload for the caller to publish after the commit,
@@ -309,7 +309,7 @@ def record_execution_condition(
 
 
 def _record_execution_event(db: Session, monitor: MonitorItem, reason: str | None) -> None:
-    """§6: one event per *change* of reason, not one per occurrence.
+    """one event per *change* of reason, not one per occurrence.
 
     The monitor's own column cannot be the memory: `scheduler._MARK_QUEUED_SQL`
     clears `probe_execution_reason` every time the monitor is queued, so a
@@ -334,7 +334,7 @@ def _record_execution_event(db: Session, monitor: MonitorItem, reason: str | Non
             event_type=EVENT_EXECUTION,
             # The target's state is carried through, never rewritten — the same
             # shape `monitor_service.set_paused` uses, and what keeps the status
-            # pill and the check-history bar honest (§7).
+            # pill and the check-history bar honest.
             status_from=monitor.last_status,
             status_to=monitor.last_status or PENDING,
             msg=reason,
@@ -359,7 +359,7 @@ def _close_failed_run(db: Session, result: MonitorResult, reason: str) -> None:
     """Retire the lease an execution error answers.
 
     `probe_last_result_at` is deliberately left alone: an execution error is not
-    a result, and D-4's staleness rule has to keep seeing a monitor that is
+    a result, andthe staleness rule has to keep seeing a monitor that is
     producing none.
     """
     if result.run_id is None:
@@ -382,7 +382,7 @@ def _complete_run(db: Session, result: MonitorResult) -> None:
     """Close the lease this result answers, inside the same transaction.
 
     A no-op for server-executed checks, which have no run. The run row is where
-    `details` and per-sample `error_reason` come to rest (D-8).
+    `details` and per-sample `error_reason` come to rest.
     """
     if result.run_id is None:
         return
@@ -435,7 +435,7 @@ async def _publish_transitions(transitions: list[AppliedTransition]) -> None:
             await nats_client.js_publish(subject, payload)
         except Exception as exc:
             # Best-effort, but throttled: a NATS outage during a mass
-            # down-transition used to produce one WARNING per monitor.
+            # down-transition would otherwise produce one WARNING per monitor.
             record_stream_fault(
                 f"{_COMPONENT}.alert", exc, logger=logger, context={"subject": subject}
             )
@@ -450,7 +450,7 @@ async def _publish_live_status(live_status: list[dict]) -> None:
         # Serializing this entry and publishing it are different failures. They
         # shared one handler that `return`ed, so a single unserializable entry
         # silently dropped the live status of every monitor after it in the
-        # batch — and did so with no log line and no metric (REL-07).
+        # batch — and did so with no log line and no metric.
         try:
             payload = json.dumps(entry)
         except (TypeError, ValueError) as exc:

@@ -547,7 +547,7 @@ def register(
         actor_id=user.id,
     )
 
-    # B28: record the session before handing the token back. Revocation in this
+    # Record the session before handing the token back. Revocation in this
     # codebase is table-driven — is_session_revoked() (called from
     # core.security.resolve_user_id on every authenticated request),
     # revoke_all_sessions() behind the admin reset-password button, and
@@ -790,7 +790,7 @@ def bootstrap_initialize(
     user.last_login = utcnow_iso()
     db.commit()
     db.refresh(user)
-    # ── Phase 7: Generate and persist the vault key ────────────────────────
+    # ── Generate and persist the vault key ────────────────────────────────────
     vault_key_plaintext = _generate_and_persist_vault_key(db)
 
     settings_bootstrap: dict[str, object] = {}
@@ -1052,7 +1052,7 @@ def login(
     _hash_to_check = user.hashed_password if user else _DUMMY_HASH
     _password_valid = verify_password(password_or_hash, _hash_to_check)
 
-    # Task 3: Migrate existing legacy tokens (on first valid login with plaintext)
+    # Migrate existing legacy tokens (on first valid login with plaintext)
     if not _password_valid and user and not _is_client_hash(password_or_hash):
         from app.core.security import (
             _DEFAULT_SALT,

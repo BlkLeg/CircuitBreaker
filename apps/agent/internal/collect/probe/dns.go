@@ -29,11 +29,11 @@ const (
 )
 
 // dnsErrorReason is the per-sample annotation collect_dns attaches to a failed lookup. It is
-// audit metadata, persisted only in monitor_probe_runs.result_metadata (D-8).
+// audit metadata, persisted only in monitor_probe_runs.result_metadata.
 const dnsErrorReason = "dns_error"
 
-// dnsRecordTypes is the closed set §5 names. Stdlib net.Resolver cannot query SOA or CAA at all,
-// which is the whole reason github.com/miekg/dns is a dependency (D-11).
+// dnsRecordTypes is the closed set. Stdlib net.Resolver cannot query SOA or CAA at all,
+// which is the whole reason github.com/miekg/dns is a dependency.
 //
 // A record type outside this set is a *lookup* failure rather than an execution error, mirroring
 // dnspython: `resolver.resolve(host, "FOO")` raises UnknownRdatatype from inside collect_dns's
@@ -189,7 +189,7 @@ func dnsExpectationMet(records, expected []string) bool {
 
 // resolverServers decides which nameservers this check may talk to.
 //
-// §3 requires DNS resolver destinations to be validated like any other network target, and this
+// A DNS resolver destination must be validated like any other network target, and this
 // is where that happens: a monitor-supplied resolver is an operator-controlled address the agent
 // is about to send packets to, so an unchecked one would be a hole straight through the scope
 // evaluator. The *host's own* resolvers are not scope-checked — they are this machine's
@@ -315,7 +315,7 @@ func exchangeDNS(ctx context.Context, msg *dns.Msg, server string, timeout time.
 }
 
 // SystemNameservers reads this host's own resolvers. An empty list is reported as such rather
-// than defaulted to a public resolver: §5's readiness contract is that DNS is *degraded* when no
+// than defaulted to a public resolver: the readiness contract is that DNS is *degraded* when no
 // usable resolver is configured, not that the agent silently picks one.
 //
 // Exported because internal/collect/discover's readiness answers the same question about the same

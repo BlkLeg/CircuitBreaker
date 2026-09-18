@@ -31,12 +31,12 @@ const proxmoxNode = {
   },
 };
 
-describe('map/Sidebar CPU row (F-1)', () => {
+describe('map/Sidebar CPU row', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  // F-1: this row used to render `Math.round(data.cpu_pct * 100)`, which
+  // Rendering `Math.round(data.cpu_pct * 100)` here would
   // assumes the raw Proxmox 0-1 fraction. Every backend producer of `cpu_pct`
   // is on the 0-100 convention — the Proxmox pollers convert at ingest
   // (services/proxmox_telemetry.py, proxmox_discovery.py,

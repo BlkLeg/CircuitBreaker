@@ -170,7 +170,7 @@ describe('FleetTable empty states', () => {
   });
 
   it('renders no chrome at all for an empty, unfiltered fleet', () => {
-    // Design §4 state 1: the Add-agent panel *is* the page. An empty
+    // State 1: the Add-agent panel *is* the page. An empty
     // 11-column header is a worse answer than a guided flow.
     render(
       <MemoryRouter>

@@ -132,7 +132,7 @@ func TestMarker_MarkSwappedTransitionsPhase(t *testing.T) {
 }
 
 // TestRollbackReport_WriteReadClear mirrors TestMarker_WriteReadClear for the
-// rollback-report marker (Task 24): the version a rollback restored away
+// rollback-report marker: the version a rollback restored away
 // from, persisted across the re-exec back into the prior binary so the fresh
 // process can report update.status(rolled_back) once reconnected.
 func TestRollbackReport_WriteReadClear(t *testing.T) {

@@ -1,5 +1,5 @@
 /**
- * Spec §5.3 — what makes a tabbed console safe.
+ * What makes a tabbed console safe.
  *
  * Tabs hide content by design. Without this, a CPU spike or a finished
  * discovery job on a tab the operator is not looking at is simply invisible

@@ -3906,7 +3906,7 @@ body {
 /* The device tables' own rules live in agents.css beside the rest of the agent
    pages; only the chart grid above is still styled from here. */
 
-/* ── Assigned probes (Slice 3, §7) ──────────────────────────────────────────
+/* ── Assigned probes ───────────────────────────────────────────────────────
    Shipped unstyled: the section, its two status vocabularies and the config
    fieldset all rendered as bare browser defaults. Same rem scale and token set
    as the agent-telemetry block above, since they are neighbours on the same
@@ -3933,7 +3933,7 @@ body {
   margin: 0.5rem 0;
 }
 
-/* Target state and execution condition are deliberately two cells (§7). They
+/* Target state and execution condition are deliberately two cells. They
    get two visibly different shapes — a filled pill for the target, an
    outlined tag for the vantage — so a glance never confuses one for the
    other, and so neither reads as a colour swatch alone. */
@@ -4085,7 +4085,7 @@ body {
   font-size: 0.75rem;
 }
 
-/* ── Discovery scope (Slice 4, plan §6) ─────────────────────────────────────
+/* ── Discovery scope ───────────────────────────────────────────────────────
    The Agent Detail section that owns local discovery. Same rem scale and token
    set as the agent-telemetry and agent-probes blocks above — the three are
    neighbours on one page and must not read as three designs. */
@@ -4152,7 +4152,7 @@ body {
 }
 
 /* Provenance is encoded three ways at once — border style, leading glyph and
-   colour — because plan §6's "visibly different provenance" has to survive a
+   colour — because a visibly different provenance has to survive a
    colour-blind operator, a greyscale print and forced-colours mode, where a
    hue-only badge collapses into one indistinguishable chip. */
 .agent-discovery__provenance {

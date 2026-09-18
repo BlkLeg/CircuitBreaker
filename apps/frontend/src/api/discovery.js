@@ -6,7 +6,7 @@ export const createProfile = (data) => client.post('/discovery/profiles', data);
 export const updateProfile = (id, data) => client.patch(`/discovery/profiles/${id}`, data);
 export const deleteProfile = (id) => client.delete(`/discovery/profiles/${id}`);
 export const runProfile = (id) => client.post(`/discovery/profiles/${id}/run`);
-// Slice 4 §6 / M14's per-subnet hold. A pause withholds future scheduling and
+// The per-subnet hold. A pause withholds future scheduling and
 // deletes nothing — no profile, job or result — and `paused_at` is "held since",
 // so pausing an already-held profile keeps the original timestamp. Both answer
 // with the `DiscoveryProfileOut` they changed.
@@ -48,7 +48,7 @@ export const getEnrichedResults = (params) =>
   client.get('/discovery/results', { params: { status: 'auto_updated', limit: 25, ...params } });
 
 // Every device a given agent's local-discovery scans have turned up, at any
-// merge status — the accepted ones are what Slice 3 §7's "Create monitor from
+// merge status — the accepted ones are what "Create monitor from
 // this agent" action builds a monitor from, and those are no longer `pending`.
 export const getAgentDiscoveredDevices = (agentId, params) =>
   client.get('/discovery/results', {
@@ -86,7 +86,7 @@ export const enrichOpnsenseJob = (jobId) => client.post(`/discovery/jobs/${jobId
 // Discovery readiness
 export const getDiscoveryReadiness = () => client.get('/discovery/readiness');
 
-// Slice 4 §6's "Scan from" selector. Every **active** agent comes back whether
+// The "Scan from" selector. Every **active** agent comes back whether
 // or not it may be chosen, each carrying `eligible` plus the machine-readable
 // `reason`/`detail` pair `POST /discovery/scan` refuses with — produced by the
 // same call — so the selector can never advertise an agent the next request

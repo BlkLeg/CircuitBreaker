@@ -170,7 +170,7 @@ describe('deriveReadableText', () => {
 });
 
 describe('every shipped preset is readable on its own surfaces', () => {
-  // Measured before this floor existed: 20 of 28 preset/mode pairs put muted
+  // Measured without this floor: 20 of 28 preset/mode pairs put muted
   // text below 4.5:1 against the surface it sits on, 8 below 3:1, and
   // monokai/dark at 1.74:1 — in the DOM and invisible. The navigator showed it
   // worst because it is almost entirely secondary text, but nothing about it

@@ -29,7 +29,7 @@ import { ENTITY_TYPES } from '../lib/entityTypes';
 // save cycle; each section renders one tab's fields and hands changes back
 // through `set`. Splitting them is what took this file from 1,886 lines to a
 // shell — a settings tab is the most-edited surface in the product and every
-// edit used to land in the same file as every other tab's.
+// edit would otherwise land in the same file as every other tab's.
 import GeneralSection from './settings/GeneralSection.jsx';
 import AppearanceSection from './settings/AppearanceSection.jsx';
 import ResourcesSection from './settings/ResourcesSection.jsx';
@@ -110,7 +110,7 @@ export default function SettingsPage() {
       show_weather_widget: ctxSettings.show_weather_widget ?? true,
       weather_location: ctxSettings.weather_location ?? 'Phoenix, AZ',
       timezone: ctxSettings.timezone ?? 'UTC',
-      // Phase 4: Discovery Engine v2
+      // Discovery Engine v2
       listener_enabled: ctxSettings.listener_enabled ?? false,
       mdns_enabled: ctxSettings.mdns_enabled ?? true,
       ssdp_enabled: ctxSettings.ssdp_enabled ?? true,
@@ -119,7 +119,7 @@ export default function SettingsPage() {
       prober_interval_minutes: ctxSettings.prober_interval_minutes ?? 15,
       deep_dive_max_parallel: ctxSettings.deep_dive_max_parallel ?? 5,
       scan_aggressiveness: ctxSettings.scan_aggressiveness ?? 'normal',
-      // Phase 6: topology + integrations
+      // Topology + integrations
       graph_default_layout: ctxSettings.graph_default_layout ?? 'dagre',
       map_title: ctxSettings.map_title ?? 'Topology',
       ui_font: ctxSettings.ui_font ?? 'inter',
@@ -132,7 +132,7 @@ export default function SettingsPage() {
       cve_sync_enabled: ctxSettings.cve_sync_enabled ?? false,
       cve_sync_interval_hours: ctxSettings.cve_sync_interval_hours ?? 24,
       audit_log_retention_days: ctxSettings.audit_log_retention_days ?? 90,
-      // Phase 6.5: User management
+      // 5: User management
       concurrent_sessions: ctxSettings.concurrent_sessions ?? 5,
       login_lockout_attempts: ctxSettings.login_lockout_attempts ?? 5,
       login_lockout_minutes: ctxSettings.login_lockout_minutes ?? 15,

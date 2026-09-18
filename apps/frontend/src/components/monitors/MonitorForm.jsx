@@ -15,7 +15,7 @@ const DEFAULTS = {
   enabled: true,
   target_type: null,
   target_id: null,
-  // Slice 3 §7: the vantage. null is Circuit Breaker server execution — today's
+  // The vantage. null is Circuit Breaker server execution — today's
   // behaviour and the only value any pre-Slice-3 monitor has.
   probe_agent_id: null,
   config: {},
@@ -51,7 +51,7 @@ export function stripReadOnlyProbeFields(form) {
 export default function MonitorForm({ initial = null, prefill = null, onSubmit, onCancel }) {
   // `initial` is overloaded: it seeds the form AND switches the whole
   // component into edit mode (the title, the disabled check-type select, the
-  // submit label). `prefill` seeds a CREATE — it is what Slice 3 §7's "Create
+  // submit label). `prefill` seeds a CREATE — it is what the "Create
   // monitor from this agent" action passes so the discovered device and the
   // discovering agent arrive already chosen, while type, interval and alert
   // policy stay the operator's. Order matters: `initial` still wins, so an

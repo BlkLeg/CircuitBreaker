@@ -9,12 +9,12 @@ import {
 } from '../lib/diagnosticsBuffer';
 
 /**
- * The ring buffer is instrumentation for Route §4.2's browser-half of the
+ * The ring buffer is the browser half of the
  * request-correlation path (nav-ID → request-IDs → server logs → slow
  * queries). Its hard requirements are covered here: it must never grow past
  * its fixed capacity, it must never throw into a caller — a bad argument
  * here can never be the thing that breaks a page render or an HTTP call —
- * and (review fix) a pending nav must never be silently lost to eviction by
+ * and a pending nav must never be silently lost to eviction by
  * unrelated request volume, nor corrupted if its own slot is ever reused.
  */
 

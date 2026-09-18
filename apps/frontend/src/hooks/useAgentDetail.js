@@ -247,7 +247,7 @@ export function useAgentDetail(id, { activeTab = 'overview' } = {}) {
 
   // reloadProbes/reloadDiscovery are called both from the tab-gated effects
   // below AND handed to child sections as an external "refresh after mutation"
-  // callback (Task 14), so a closure-local `cancelled` flag (as the history
+  // callback, so a closure-local `cancelled` flag (as the history
   // effect above uses) cannot cover every call site: an external call has no
   // effect-cleanup to set it. A per-call generation counter does — only the
   // response matching the most recently issued request for that resource is

@@ -46,12 +46,10 @@ test.describe('WCAG 2.2 AA', () => {
       // background, which axe reports as a contrast violation that is not
       // there once the transition ends. See waitForRouteSettled.
       await waitForRouteSettled(page);
-      // Belt and braces with the settle wait above. That one covers the
-      // framer-motion route fade; this covers per-component CSS transitions
-      // that start later, when a table or panel mounts on its own data. Either
-      // one in flight makes axe sample a colour composited toward the page
-      // background and report a contrast violation that is not there once the
-      // page is still.
+      // The settle wait above covers the route fade; this covers per-component
+      // CSS transitions that start later, when a table or panel mounts on its
+      // own data. Either in flight makes axe sample a composited colour and
+      // report a contrast violation that is not there once the page is still.
       await scanSettled(page, path);
     });
   }
@@ -101,11 +99,8 @@ test.describe('WCAG 2.2 AA — Parked messages', () => {
   });
 });
 
-// The two largest, least-designed pages in the app, and the two nobody measured:
-// neither /logs nor /admin/users was ever in PAGES, which is how inline styles
-// that dim text below the palette's AA floor survived the contrast work. Both
-// need populated fixtures -- an empty table exercises none of the row markup
-// where their colour and legibility decisions actually live.
+// Scanned separately because both need populated fixtures: an empty table
+// exercises none of the row markup where their colour decisions live.
 test.describe('WCAG 2.2 AA — unmeasured pages', () => {
   for (const path of ['/logs', '/admin/users']) {
     test(`${path} has no serious or critical violations`, async ({ page }) => {
@@ -118,14 +113,9 @@ test.describe('WCAG 2.2 AA — unmeasured pages', () => {
   }
 });
 
-// The navigator is the densest secondary-text surface in the app -- group
-// labels, per-row descriptions, category filters, footer hints -- and none of it
-// was ever scanned, because every page above is captured with the overlay shut.
-// A palette whose muted colour could not be read on its own panel therefore
-// passed this suite while the overlay was, in a user's words, hard to see.
-//
-// These three presets measured worst before applyTheme floored text to AA:
-// monokai/dark at 1.74:1, nord/dark at 2.22:1, solarized-dark at 2.31:1.
+// The navigator is the densest secondary-text surface in the app, and every
+// page above is captured with the overlay shut, so it needs its own scan.
+// These three presets measure worst, so they are the ones held.
 const CONTRAST_HOSTILE_PRESETS = ['monokai', 'nord', 'solarized-dark'];
 
 test.describe('the navigator is readable in every theme', () => {

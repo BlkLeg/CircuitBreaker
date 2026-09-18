@@ -314,7 +314,7 @@ async def _run_router_ssh_dhcp(
             # wait_for's first argument is evaluated *before* the call, so if
             # anything goes wrong reaching the await — including the caller
             # being cancelled — the coroutine that argument built is left
-            # created and never awaited (REL-08). Wrapping the await instead
+            # created and never awaited. Wrapping the await instead
             # means there is no coroutine object in flight that nothing owns.
             async with asyncio.timeout(timeout + _SSH_COMMUNICATE_GRACE_SECONDS):
                 stdout, _ = await proc.communicate()

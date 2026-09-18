@@ -203,13 +203,13 @@ async def test_import_as_network_router_override_is_tree_root(client, auth_heade
 
 
 # ---------------------------------------------------------------------------
-# Scan-type vocabulary (Slice 4, D-6)
+# Scan-type vocabulary
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_profile_with_server_scan_type_and_agent_is_422(client, auth_headers):
-    """A server-only scan type may not be dispatched to an agent (plan §3)."""
+    """A server-only scan type may not be dispatched to an agent."""
     payload = {
         "name": "agent-profile",
         "cidr": "10.88.0.0/24",

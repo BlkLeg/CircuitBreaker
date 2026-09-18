@@ -198,7 +198,7 @@ describe('navigation derives its role gate from routeGuards', () => {
 });
 
 /**
- * INC-09 was a configuration advertising content that did not exist: six languages in
+ * The defect is a configuration advertising content that does not exist: six languages in
  * supportedLngs, five namespaces, three of them empty files, and about twenty-two
  * translated strings in total. This is that made into a test.
  */
@@ -222,7 +222,7 @@ describe('i18n advertises only what it ships', () => {
     expect(
       declared.slice().sort(),
       'i18n.js advertises a language with no locale directory, or a directory ships ' +
-        'without being advertised. Either is INC-09 returning.'
+        'without being advertised. Either is the defect returning.'
     ).toEqual(present);
   });
 

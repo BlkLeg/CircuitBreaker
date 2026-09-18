@@ -353,7 +353,7 @@ async def test_an_expired_lease_fails_as_agent_disconnected_and_keeps_its_findin
     assert job.status == "failed"
     assert job.error_reason == agent_discovery.ERROR_AGENT_DISCONNECTED
     assert job.dispatch_status == agent_discovery_reconcile.DISPATCH_STATUS_EXPIRED
-    # The counters the ingest path accumulated are not rewritten either (D-10).
+    # The counters the ingest path accumulated are not rewritten either.
     assert (job.hosts_found, job.finding_count) == (2, 2)
     surviving = db_session.query(ScanResult).filter(ScanResult.scan_job_id == job.id).all()
     assert {r.id for r in surviving} == {r.id for r in kept}

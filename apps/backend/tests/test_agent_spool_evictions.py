@@ -1,4 +1,4 @@
-"""When the agent destroys history, the server has to say so (plan Phase 3).
+"""When the agent destroys history, the server has to say so.
 
 The agent's disk spool is capped and drops its oldest buffered observations to
 make room. The policy stays. What is pinned here is that it is no longer

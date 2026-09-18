@@ -46,17 +46,10 @@ jobs:
         run: python3 scripts/check_version_parity.py --expected "${{ steps.ver.outputs.version }}"
 
   # ── Tier 0 gate (C2) ─────────────────────────────────────────────────────────
-  # This workflow triggers on a tag push and every job below used to depend only
-  # on other jobs in this same file. Nothing consulted ci.yml, and there is no
-  # workflow_run gate — so `git push origin v0.4.0` published a GitHub Release
-  # and pushed images to GHCR with CI red, the release-control ledger
-  # unevidenced, and the composed E2E failing. The release checklist's "hard
-  # stops" were prose that a tag push never read.
-  #
-  # Running the gates here rather than depending on ci.yml is deliberate: a
-  # workflow_run dependency is only as good as whether ci.yml happened to run on
-  # the tagged commit, and on a tag push it generally has not. This asserts the
-  # tagged tree itself passes, which is the claim that actually matters.
+  # The gates run HERE rather than depending on ci.yml: a workflow_run
+  # dependency is only as good as whether ci.yml happened to run on the tagged
+  # commit, and on a tag push it generally has not. This asserts the tagged tree
+  # itself passes, which is the claim that matters.
   gate:
     name: Release Gate (Tier 0)
     runs-on: ubuntu-22.04
@@ -126,39 +119,23 @@ jobs:
       version: ${{ needs.version.outputs.version }}
 
   # ── Composed agent acceptance (AGT-01) ───────────────────────────────────────
-  # Deliberately absent, and deliberately not in `needs` below. The composed
-  # journey still runs against this RC — e2e.yml triggers on the same tag push,
-  # and nightly — so the run and its retained diagnostics are unchanged. What it
-  # no longer does is hold an otherwise-green release behind it: the agent has
-  # open troubleshooting and known-missing development, so the suite is expected
-  # to be red for a while, and a red gate there blocks artifacts that Derive
-  # Version, Build Packages and Artifact Smoke have all already passed.
+  # Deliberately absent from `needs`. The composed journey still runs against
+  # this RC (e2e.yml triggers on the same tag push), it just does not hold an
+  # otherwise-green release behind it while the agent has open development.
   #
-  # This diverges from AGT-01, which asks for the journey as a *required*
-  # workflow. The divergence is recorded rather than hidden: see the header of
-  # e2e.yml. Restoring the gate is one `uses:` job plus one entry in `needs`.
+  # This diverges from AGT-01, which asks for it as a required workflow, and the
+  # divergence is recorded in e2e.yml's header. Restoring the gate is one
+  # `uses:` job plus one entry in `needs`.
 
   # ── Container image, built natively per architecture ─────────────────────────
-  # This was one `buildx build --platform linux/amd64,linux/arm64` inside the
-  # Publish Release job, with the arm64 half emulated through QEMU on an amd64
-  # runner. That build died in v1.0.0-rc.4 with
+  # One runner per architecture, never a single emulated
+  # `buildx --platform linux/amd64,linux/arm64`: buildx runs both platforms and
+  # every independent stage concurrently, so an emulated arm64 leg carrying pip,
+  # npm and Go builds at once OOM-kills apt mid-index-read. Native runners
+  # remove the emulation and the contention together.
   #
-  #   E: Could not read from .../packagecloud.io_..._InRelease
-  #      - getline (12: Cannot allocate memory)
-  #
-  # at Dockerfile.mono:134 — not a bad instruction (the same RUN succeeds on
-  # arm64 under QEMU when it is the only thing running, and the amd64 leg of
-  # that same step passed) but an out-of-memory kill. buildx runs both platforms
-  # and every independent stage concurrently, so a 15.6 GiB runner was carrying
-  # emulated pip, npm and Go builds at the moment apt tried to read a package
-  # index.
-  #
-  # Building each architecture on its own native runner removes the emulation
-  # and the contention together. build.yml already ships the native packages
-  # this way on the same pair of runner labels; only the image was still
-  # emulated. Each leg pushes by digest under no tag, and the merge job below
-  # is what makes those digests addressable — so a half-built release never
-  # leaves a usable tag behind.
+  # Each leg pushes by digest under no tag; the merge job below is what makes
+  # those digests addressable, so a half-built release leaves no usable tag.
   image:
     name: Build Image (${{ matrix.arch }})
     needs: [version, gate]
@@ -185,13 +162,10 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Slice 4.2 (F3). The private key reaches the build as a BuildKit secret
-      # written to a file, never as --build-arg: build args land in image
-      # metadata and are readable with `docker history`. The public half is a
-      # repository variable and is a plain build arg, because it is public by
-      # construction — it is compiled into the binary and any agent will print
-      # it. Without these the mono image shipped unsigned agent binaries with no
-      # .sig, so 4.2 did nothing for the artifact most installs run.
+      # The private key reaches the build as a BuildKit secret written to a
+      # file, NEVER as --build-arg: build args land in image metadata and are
+      # readable with `docker history`. The public half is a plain build arg
+      # because it is public by construction — compiled into the binary.
       - name: Stage the agent signing key
         env:
           AGENT_SIGNING_PRIVATE_KEY: ${{ secrets.AGENT_SIGNING_PRIVATE_KEY }}
@@ -247,14 +221,10 @@ jobs:
           retention-days: 30
 
   # ── Assemble the multi-arch manifest list ────────────────────────────────────
-  # GOV-20 twice over. The tag list comes from scripts/release_channel.py, so a
-  # release candidate cannot move :latest; and this job — not the matrix above —
-  # is what `artifact-smoke` gates, because this is the first point at which any
-  # tag exists. The matrix pushes only untagged blobs addressable by digest,
-  # which nothing can pull by name, so letting it run alongside the smoke test
-  # publishes nothing early. Creating a tag before that gate is green would
-  # publish an image the installed-artifact test had not yet cleared, which is
-  # the property GOV-20 exists to prevent.
+  # GOV-20 twice over: the tag list comes from scripts/release_channel.py so a
+  # candidate cannot move :latest, and THIS job — not the matrix above — is what
+  # `artifact-smoke` gates, because it is the first point at which any tag
+  # exists. The matrix pushes only untagged blobs nothing can pull by name.
   image-merge:
     name: Merge Image Manifest
     needs: [version, build, artifact-smoke, image]
@@ -424,16 +394,12 @@ jobs:
           output: trivy-image-results.sarif
           severity: 'CRITICAL,HIGH'
           exit-code: '1'
-          # Block on findings that can actually be acted on. A pre-flight scan of
-          # the built image measured 109 HIGH/CRIT, of which 4 were fixable — all
-          # four are fixed in ffee1414. The other 105 are Debian stable packages
-          # (perl-base, zlib1g, libsqlite3-0, util-linux, ncurses) marked
-          # affected, fix_deferred or will_not_fix, with no upstream patch to
-          # apply. Without this the gate can never pass, and a gate that can
-          # never pass gets bypassed instead of obeyed. Any NEW vulnerability
-          # that has a fix still fails the release, which is the property worth
-          # keeping. The SARIF upload below is unfiltered, so all 105 stay
-          # visible in code scanning.
+          # Block only on findings that can be acted on. The base image carries
+          # ~105 HIGH/CRIT Debian stable CVEs marked fix_deferred or
+          # will_not_fix, with no upstream patch to apply — a gate that can never
+          # pass gets bypassed rather than obeyed. Any NEW vulnerability that has
+          # a fix still fails the release, and the SARIF upload below is
+          # unfiltered so everything stays visible in code scanning.
           ignore-unfixed: true
           limit-severities-for-sarif: true
           trivyignores: '.trivyignore'

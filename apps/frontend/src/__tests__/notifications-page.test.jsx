@@ -131,7 +131,7 @@ describe('NotificationsPage', () => {
     await waitFor(() => expect(notificationsApi.testSink).toHaveBeenCalledWith(1));
     await waitFor(() => screen.getByText('Accepted by Slack'));
 
-    // The claim plan 05 forbids, and which this surface used to make on any 2xx.
+    // The forbidden claim, which this surface must not make on any 2xx.
     expect(mockToast.success).not.toHaveBeenCalledWith('Test notification sent successfully.');
     expect(screen.getByText(/not proof a person received it/i)).toBeInTheDocument();
   });
@@ -233,7 +233,7 @@ describe('NotificationsPage', () => {
 
 describe('NotificationsPage sink editing', () => {
   // A sink as the API now serves it: the webhook URL is masked and carries a
-  // read-only set-flag alongside it (INC-06).
+  // read-only set-flag alongside it.
   const MASK = 'https://hooks.slack.com/services/•••';
   const maskedSink = {
     id: 7,

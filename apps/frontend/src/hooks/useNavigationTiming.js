@@ -48,17 +48,13 @@ function longtaskObserverSupported() {
 let openNav = null; // { id, path, startTime, longTasks, closed }
 
 /**
- * Marks the start and end of every route navigation and records a `'nav'`
- * entry in the diagnostics ring buffer (`lib/diagnosticsBuffer.js`), with any
- * long tasks that land inside the navigation attributed to it. A navigation
- * that never closes (`pending` stays `true`) is the wedge signal Task 8's
- * Playwright spec reads for.
+ * Marks the start and end of every route navigation in the diagnostics ring
+ * buffer, attributing any long tasks that land inside it. A navigation that
+ * never closes (`pending` stays `true`) is the wedge signal.
  *
- * Mount this once, inside the router context but above the route tree, so it
- * observes every navigation regardless of which page is showing. Pair it
- * with `useNavigationMountSignal()` (below), mounted once inside the
- * `Suspense` boundary that wraps `<Routes>`, which is what actually closes
- * the entry this hook opens.
+ * Mount once, inside the router context but ABOVE the route tree, so it sees
+ * every navigation. Pair with `useNavigationMountSignal()` below, which is what
+ * closes the entry this opens.
  */
 export function useNavigationTiming() {
   const location = useLocation();
@@ -76,7 +72,7 @@ export function useNavigationTiming() {
         // mounted and closed. Without this, those late entries were pushed into
         // the array the closed entry had already been handed, so a recorded nav
         // could read `longTasks: [123ms, 122ms], longTaskTotalMs: 0` — the total
-        // snapshotted at close, the list still growing afterwards. §4.4's
+        // snapshotted at close, the list still growing afterwards. The decision tree's
         // decision tree branches on "longtask > 1s present", so an inconsistent
         // pair there is instrumentation that misdirects the investigation.
         if (!openNav || openNav.closed) return;
@@ -112,35 +108,22 @@ export function useNavigationTiming() {
 /**
  * Closes the nav entry `useNavigationTiming()` opened for the current path.
  *
- * Mount this once, as a sibling of `<Routes>`, inside the same `Suspense`
- * boundary that wraps it — NOT above the route tree like
- * `useNavigationTiming()` itself, and not inside any individual page.
+ * Mount once as a sibling of `<Routes>`, inside the same `Suspense` boundary
+ * that wraps it — NOT above the route tree, and not inside any page.
  *
- * React does not commit a `Suspense` boundary's subtree — any of it,
- * including a plain sibling like this one — until every suspending
- * descendant (here, the `React.lazy` chunk for the route being navigated to)
- * has resolved. Combined with `key={location.pathname}` on this app's
- * `AnimatePresence` child (which forces a fresh mount, not an update, on
- * every navigation), this component's mount effect fires exactly when — and
- * only when — the incoming route has actually rendered.
+ * React does not commit a `Suspense` subtree, including a plain sibling like
+ * this, until every suspending descendant has resolved. With
+ * `key={location.pathname}` forcing a fresh mount on each navigation, this
+ * effect fires exactly when the incoming route has rendered — and when it never
+ * renders, this never mounts and the entry stays `pending: true`. That absence
+ * IS the wedge signal; no DOM observation is needed.
  *
- * That makes it a direct, sufficient close signal on its own: no DOM
- * observation is needed. When the incoming route never renders, this
- * component never mounts, this effect never runs, and the entry
- * `useNavigationTiming()` opened stays `pending: true` forever: that
- * absence *is* the wedge signal Task 8 reads for, not something a positive
- * check has to detect.
- *
- * **The effect must not depend on `location.pathname`, and the path must be
- * captured at mount.** It used to do both the other way round, and that made
- * the close signal lie. With `AnimatePresence mode="wait"` the outgoing
- * `motion.div` stays mounted for the length of the exit animation, so the
- * instance living inside it is still subscribed to the router when the
- * location changes. A `[location.pathname]` dependency therefore re-ran this
- * effect *on the outgoing instance* and closed the incoming path's entry — a
- * navigation recorded as `pending: false`, meaning "the route mounted", for a
- * route that had not rendered and never would. That is the exact reading the
- * wedge diagnostic branches on, and it sent it to the wrong branch.
+ * The effect must NOT depend on `location.pathname`, and the path must be
+ * captured at mount. With `AnimatePresence mode="wait"` the outgoing
+ * `motion.div` stays mounted through its exit animation and is still subscribed
+ * to the router, so a `[location.pathname]` dependency re-runs this on the
+ * OUTGOING instance and closes the incoming path's entry — recording "the route
+ * mounted" for a route that never rendered.
  */
 export function useNavigationMountSignal(onMounted) {
   const location = useLocation();

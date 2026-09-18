@@ -2,7 +2,7 @@ import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
-// Slice 4 Task 28. Cloned from `monitor-run-from.test.jsx:9-52` — same product
+// Cloned from `monitor-run-from.test.jsx:9-52` — same product
 // idea one slice later, so the fixture shape, the hoisted-defaults trick and the
 // beforeEach restore are deliberately identical. Defaults live in a hoisted
 // object so `beforeEach` can *restore* them: `vi.clearAllMocks()` clears call
@@ -145,13 +145,13 @@ beforeEach(() => {
 
 describe('ScanProfileForm CIDR validation', () => {
   it('accepts IPv6 ULA prefixes as well as IPv4', () => {
-    // fc00::/7 is the only IPv6 range plan §7 lets an agent scope contain, and
+    // fc00::/7 is the only IPv6 range an agent scope may contain, and
     // the agent's own scope is exactly what this field has to be able to hold.
     expect(CIDR_RE.test('fd00::/8')).toBe(true);
     expect(CIDR_RE.test('fd12:3456:789a:1::/64')).toBe(true);
     expect(CIDR_RE.test('fc00::/7')).toBe(true);
     expect(CIDR_RE.test('192.168.1.0/24')).toBe(true);
-    // Still not a free pass for every IPv6 prefix: §7 rejects link-local,
+    // Still not a free pass for every IPv6 prefix: link-local is rejected,
     // globally routable and unspecified ranges.
     expect(CIDR_RE.test('fe80::/10')).toBe(false);
     expect(CIDR_RE.test('2001:db8::/32')).toBe(false);

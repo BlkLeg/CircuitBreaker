@@ -16,7 +16,7 @@ export const SCAN_TYPES = ['nmap', 'snmp', 'arp', 'http', 'deep_dive', 'docker',
  * Deliberately one focused type: an agent performs bounded connect-based
  * discovery on its own segment and bundles no scanner. The two vocabularies are
  * disjoint on the wire, so the execution location fully determines which
- * checkboxes are legal, and the API stays the authoritative validator (§3).
+ * checkboxes are legal, and the API stays the authoritative validator.
  */
 export const AGENT_SCAN_TYPES = ['agent_connect'];
 
@@ -29,12 +29,12 @@ const isValidCron = (val) => {
 /**
  * An IPv4 prefix, or an IPv6 **ULA** one.
  *
- * IPv4-only until Slice 4, which would have rejected an agent's own scope: plan
- * §7 makes a subnet eligible when it is "private IPv4 or IPv6 ULA unicast", so
+ * IPv4-only would reject an agent's own scope:
+ * The spec makes a subnet eligible when it is "private IPv4 or IPv6 ULA unicast", so
  * a `fd00::/8` segment an agent reports is a legal discovery target that this
  * field could not hold. `fc00::/7` is the whole of that range, hence the leading
  * `fc`/`fd` — link-local (`fe80::/10`), globally routable (`2001:db8::/32`) and
- * the unspecified prefix stay rejected here exactly as §7 rejects them on the
+ * the unspecified prefix stay rejected here exactly rejects them on the
  * wire. Kept as one flat alternation with no nested quantifier so it cannot
  * backtrack pathologically on a half-typed prefix.
  */
@@ -84,7 +84,7 @@ export function discoveryReasonText(reason) {
 // consumers already import it from here.
 export { agentDisplayName };
 
-/** "branch-office — online · ready · in scope" — §6's readiness/scope indicators. */
+/** "branch-office — online · ready · in scope" — the readiness/scope indicators. */
 export function scanFromOptionLabel(agent) {
   const indicators = [agent.online ? 'online' : 'offline', agent.readiness || 'readiness unknown'];
   // `in_scope` is null when no CIDR has been typed yet. "Not asked" is a
@@ -113,7 +113,7 @@ export function executionLocationMessage(err) {
 }
 
 /**
- * "Scan from" — plan §6's execution-location picker, shared by the profile form
+ * "Scan from" — the execution-location picker, shared by the profile form
  * and the ad hoc new-scan form.
  *
  * `RunFromSelect`'s twin one slice later, and deliberately reads like it. Two
@@ -123,12 +123,12 @@ export function executionLocationMessage(err) {
  *   would silently move where every existing scan runs.
  * * Ineligible agents are listed (disabled, with their reason) rather than
  *   filtered out. An agent missing from a dropdown is the one failure an
- *   operator cannot debug, and §6 asks the UI to "show why an agent is
+ *   operator cannot debug, so the UI must "show why an agent is
  *   ineligible". The currently selected agent stays selectable even when it has
  *   become ineligible, so saving a profile cannot silently return it to the
  *   server.
  *
- * Lives in this file rather than its own module only because Slice 4 Task 28
+ * Lives in this file rather than its own module only because this
  * owns these two forms and the API client; extracting it to
  * `components/discovery/ScanFromSelect.jsx` is a pure move.
  */
@@ -228,8 +228,8 @@ export default function ScanProfileForm({ profile, onClose, onSaved }) {
   const [selectedVlans, setSelectedVlans] = useState(initialVlans);
 
   const [scanTypes, setScanTypes] = useState(profile?.scan_types ?? ['nmap']);
-  // Plan §3's execution location. `null` is the existing server discovery
-  // engine — every profile that predates Slice 4 — and an id dispatches the
+  // The execution location. `null` is the existing server discovery
+  // engine — every profile that predates agent scanning — and an id dispatches the
   // profile to that agent instead.
   const [scanAgentId, setScanAgentId] = useState(profile?.scan_agent_id ?? null);
   const [nmapArgs, setNmapArgs] = useState(profile?.nmap_arguments ?? '-sV -O --open -T4');

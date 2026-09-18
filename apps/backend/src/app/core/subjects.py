@@ -1,4 +1,4 @@
-"""NATS subject constants and payload helpers for Phase 3 messaging.
+"""NATS subject constants and payload helpers for the design messaging.
 
 All subjects follow the pattern: <domain>.<entity>.<event>
 

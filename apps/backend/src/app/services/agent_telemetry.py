@@ -35,7 +35,7 @@ from app.services.telemetry_normalize import (
 _SAMPLE_ID = re.compile(r"^[0-9a-f]{32}$")
 _logger = logging.getLogger(__name__)
 
-# REL-07 fault-metric identity. Both publishes below run once per telemetry
+# Fault-metric identity. Both publishes below run once per telemetry
 # sample per agent, so a Redis outage on a 100-agent fleet drove hundreds of
 # unthrottled log lines a minute — at DEBUG, where nobody saw the outage at all.
 _COMPONENT = "agent_telemetry"
@@ -43,7 +43,7 @@ _MAX_PAYLOAD = 256 << 10
 _LIST_LIMITS = {"filesystems": 128, "disks": 128, "interfaces": 128, "temperatures": 256}
 _PERCENT_FIELDS = {"cpu_pct", "mem_pct", "swap_pct", "root_disk_pct"}
 # The complete readiness vocabulary; anything else is a protocol violation.
-# Slice 3 probe collectors and slice 4 discovery collectors reuse these four.
+# Probe collectors and slice 4 discovery collectors reuse these four.
 _READINESS_STATES = frozenset({"ready", "degraded", "unavailable", "disabled"})
 _violation_lock = threading.Lock()
 #: Keyed by (agent_id, kind). Keying on the agent alone would collapse two
@@ -261,7 +261,7 @@ async def ingest_readiness(db: Session, agent: Agent, payload: dict[str, Any]) -
     partial write durable. Direct callers get the same guarantee, and none of
     the caller's other pending work is discarded.
 
-    A report may also carry `networks` (D-8), which is forwarded to
+    A report may also carry `networks`, which is forwarded to
     `agent_registry.record_network_facts` inside this same transaction — after
     the validation pre-pass, so a report rejected for a bad `state` refreshes no
     scope either. See the comment at the forward for why the gate is the key's
@@ -288,7 +288,7 @@ async def ingest_readiness(db: Session, agent: Agent, payload: dict[str, Any]) -
         elif (row.state, row.reason, row.remediation, row.missing) != values:
             changed = True
         row.state, row.reason, row.remediation, row.missing, row.updated_at = (*values, now)
-    # D-8: `networks` is the one optional field this frame gained, and it exists
+    # `networks` is the one optional field this frame gained, and it exists
     # only to refresh `agent_networks` *mid-session* — `hello.networks` is sent
     # at connect, so a subnet that appeared on the agent host would otherwise
     # not become discoverable until the next reconnect. The facts keep living in
@@ -313,7 +313,7 @@ async def ingest_readiness(db: Session, agent: Agent, payload: dict[str, Any]) -
     # publish below fans out — that message carries readiness rows only, and
     # scope consumers already have `agent_networks.generation`.
     #
-    # The zero-configuration bootstrap (Task 24) needs no separate call here:
+    # The zero-configuration bootstrap needs no separate call here:
     # `record_network_facts` is the funnel both report paths pass through, so it
     # fires the trigger itself and this path gets it for free. See that
     # function's docstring for why it fires on the report's *presence* — this
@@ -324,8 +324,8 @@ async def ingest_readiness(db: Session, agent: Agent, payload: dict[str, Any]) -
         scope_cancellation = record_network_facts(db, agent, report.networks)
     db.commit()
     if scope_cancellation:
-        # D-16, and the ordering `agent_discovery`'s cancellation section makes
-        # a rule for every trigger: the doomed dispatches were closed above,
+        # The ordering `agent_discovery`'s cancellation section makes a rule
+        # for every trigger: the doomed dispatches were closed above,
         # inside the transaction, and the agent is told to abandon them only
         # once that transaction is durable. Published from here rather than
         # from `record_network_facts` because a `discovery.cancel` sent before

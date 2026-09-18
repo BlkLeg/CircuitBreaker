@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# REL-07 fault-metric identity for this stream.
+# Fault-metric identity for this stream.
 _COMPONENT = "ws_telemetry"
 # RFC 6455 1011 "internal error" — the server cannot fulfil the stream contract.
 _WS_INTERNAL_ERROR = 1011
@@ -129,9 +129,9 @@ async def _redis_listener(ws: WebSocket, channels: set[str], stop_event: asyncio
             if msg and msg["type"] == "message":
                 # Decoding the publisher's payload and writing to this client's
                 # socket are separate failures with opposite correct responses.
-                # They used to share one handler that broke the loop for both,
-                # so a single malformed message from any publisher silently
-                # ended telemetry for a connected client until it reconnected.
+                # Sharing one handler that breaks the loop for both lets a
+                # single malformed message from any publisher silently end
+                # telemetry for a connected client until it reconnects.
                 try:
                     payload = json.dumps({"type": "telemetry", **json.loads(msg["data"])})
                 except Exception as exc:
@@ -155,7 +155,7 @@ async def _redis_listener(ws: WebSocket, channels: set[str], stop_event: asyncio
     except Exception as exc:
         # The subscription itself is gone; this socket can never carry another
         # telemetry frame, so close it explicitly rather than leave it open and
-        # silent behind the keep-alive ping (REL-07).
+        # silent behind the keep-alive ping.
         record_stream_fault(
             f"{_COMPONENT}.subscribe", exc, logger=logger, context={"channels": len(channels)}
         )
@@ -281,9 +281,9 @@ async def telemetry_stream(websocket: WebSocket) -> None:
                         # because the merge destroys the answer.
                         added = new_channels - subscribed_channels
                         subscribed_channels.update(new_channels)
-                        # `_MAX_SUBSCRIPTIONS` used to bound only the slice
-                        # taken from *this* frame, while every frame was merged
-                        # into one accumulating set — so a client could send
+                        # `_MAX_SUBSCRIPTIONS` must bound the accumulated set,
+                        # not just the slice taken from *this* frame: every
+                        # frame merges into one set, so a client could send
                         # frame after frame of fresh entity ids and hold an
                         # unbounded channel set on a single authenticated
                         # socket, making the server pay an O(n) Redis
@@ -300,7 +300,7 @@ async def telemetry_stream(websocket: WebSocket) -> None:
                             )
                             await websocket.close(code=1008)
                             break
-                        # B25's other half: capping the set stops it growing,
+                        # the other half: capping the set stops it growing,
                         # but a client that resends the *same* ids still made
                         # the server cancel the listener, UNSUBSCRIBE every
                         # channel, close the pubsub and issue a fresh N-channel

@@ -21,13 +21,11 @@ import (
 	"circuitbreaker.dev/cb-agent/internal/link"
 )
 
-// runUninstall is the `cb-agent uninstall` entry point (spec §4.7): it
-// requires root (disabling a systemd unit and removing root-owned files
-// under /etc and /usr/local/bin isn't possible otherwise), tells the server
-// so the agent's row flips to revoked (see notifyUninstallBestEffort), then
-// actually disables/removes/reloads — unlike this function's pre-Task-29 form,
-// which only ever printed the systemctl/rm commands for an operator to run by
-// hand.
+// runUninstall is the `cb-agent uninstall` entry point: it requires root
+// (disabling a systemd unit and removing root-owned files under /etc and
+// /usr/local/bin is not possible otherwise), tells the server so the agent's
+// row flips to revoked (see notifyUninstallBestEffort), then actually
+// disables, removes and reloads.
 //
 // Removal happens whether or not the server was reached; only the exit status
 // and the printed line distinguish the outcomes. That order — notify first,
@@ -96,10 +94,9 @@ var errNoLocalAgent = errors.New("no enrolled agent on this host")
 // sees, where it goes, and whether it fails the command.
 //
 // Split out as a pure function because it is the part with the actual contract
-// in it: the old code had two branches, printed "Notified the server (agent
-// record marked revoked)" on a nil error that was returned unconditionally, and
-// let a failed notify exit 0. Three outcomes, and only one of them leaves the
-// operator with something to do.
+// in it. There are three outcomes and only one of them leaves the operator
+// with something to do, so a failed notify must never report success or
+// exit 0.
 func uninstallNotifyReport(err error) (line string, toStderr bool, failed bool) {
 	switch {
 	case err == nil:
@@ -116,8 +113,8 @@ func uninstallNotifyReport(err error) (line string, toStderr bool, failed bool) 
 
 // notifyUninstallBestEffort tells the server this agent is going away, and
 // returns nil only when the server confirmed it (see link.Uninstall for what
-// that confirmation is and why an unconfirmed one used to be indistinguishable
-// from success).
+// that confirmation is, and why an unconfirmed one is otherwise
+// indistinguishable from success).
 //
 // Best-effort still describes the *caller*: runUninstall removes files whatever
 // happens here, because an unreachable or already-decommissioned server must
@@ -134,12 +131,11 @@ func notifyUninstallBestEffort() error {
 	if err != nil {
 		return err
 	}
-	// LoadDeviceKey, not LoadOrCreateDeviceKey. The load-or-create form turned
-	// a missing identity into a *newly minted* one, opened a Noise session with
-	// a static key the server has never seen, and got the connection closed at
-	// `resolve_agent_for_handshake` — after which the old unconditional `return
-	// nil` reported success. Uninstall is the one command that must never
-	// create an identity, and a missing one is not a failure either: there is
+	// LoadDeviceKey, not LoadOrCreateDeviceKey. The load-or-create form turns a
+	// missing identity into a newly minted one, opens a Noise session with a
+	// static key the server has never seen, and gets closed at
+	// `resolve_agent_for_handshake`. Uninstall is the one command that must
+	// never create an identity, and a missing one is not a failure: there is
 	// simply nothing here to tell the server about.
 	key, ok, err := enroll.LoadDeviceKey(config.StateDir())
 	if err != nil {
@@ -198,47 +194,32 @@ func requireRoot(euid int) error {
 }
 
 // uninstallUnitName is the systemd unit `cb-agent uninstall` disables and
-// whose reload it triggers — the same unit name the install script
-// (plans/2026-07-27-cb-agent-slice1.md Task 17) registers at
-// defaultUninstallPaths.unitFile.
+// whose reload it triggers — the same unit name the install script registers
+// at defaultUninstallPaths.unitFile.
 const uninstallUnitName = "cb-agent"
 
 // uninstallPaths is the on-disk footprint `cb-agent uninstall` removes.
 //
-// unitFile/binary mirror the install script's own write targets (spec
-// §"Files on disk": "/etc/systemd/system/cb-agent.service" the unit,
-// "/usr/local/bin/cb-agent" the binary). There is no separate backup file
-// to track anymore: under the two-level symlink layout
-// (specs/2026-08-05-cb-agent-self-update-fix-design.md), every versioned
-// binary self-update ever installs lives under {stateDir}/versions/, which
-// stateDir's own wholesale removal below already covers — unlike the old
-// scheme's single <binary>+".previous" backup, sitting outside stateDir and
-// needing its own explicit removal entry here.
+// unitFile/binary mirror the install script's own write targets. There is no
+// separate backup file to track: under the two-level symlink layout every
+// versioned binary a self-update installs lives under {stateDir}/versions/,
+// which stateDir's wholesale removal below already covers.
 //
 // configFile ("/etc/circuit-breaker/agent.toml") and configDir
-// ("/etc/circuit-breaker", its parent) are deliberately two separate
-// entries, NOT "remove configDir wholesale" as an earlier version of this
-// type did: /etc/circuit-breaker is co-owned by the main CircuitBreaker
-// server, not agent-exclusive — packaging/postinstall.sh (the server's own
-// installer) creates that directory and writes config.toml and
-// circuit-breaker.env there, the latter holding a freshly generated
-// CB_VAULT_KEY, CB_DB_URL, and NATS_AUTH_TOKEN; the server reads
-// config.toml at runtime (apps/backend/src/app/core/config_toml.py), and
-// the server's own uninstall.sh requires an interactive confirmation before
-// ever touching that directory. On a host where cb-agent monitors the
-// CircuitBreaker server itself, blindly removing configDir would destroy
-// the server's config and leave its vault permanently undecryptable — see
-// performUninstall's handling of configDir for how this is enforced (only
-// configFile is ever removed directly; configDir is removed only if
-// agent.toml's removal left it empty).
+// ("/etc/circuit-breaker", its parent) are deliberately two separate entries,
+// NOT "remove configDir wholesale": /etc/circuit-breaker is co-owned by the
+// CircuitBreaker server, not agent-exclusive. The server's own installer
+// creates that directory and writes config.toml and circuit-breaker.env there,
+// the latter holding a generated CB_VAULT_KEY, CB_DB_URL and NATS_AUTH_TOKEN.
+// On a host where cb-agent monitors the CircuitBreaker server itself, blindly
+// removing configDir would destroy the server's config and leave its vault
+// permanently undecryptable. Only configFile is ever removed directly;
+// configDir goes only if agent.toml's removal left it empty.
 //
-// stateDir is exactly config.StateDir(), the same directory Task 30's
-// auditStateDir treats as this agent's identity/grant/status footprint
-// (device.key, grants.json, status.json all live directly under it, plus
-// spool/) — removing it wholesale means this list never needs to be kept
-// in sync file-by-file with sensitiveStateFiles as that set grows. Unlike
-// configDir, stateDir is exclusively cb-agent's own — nothing else is ever
-// expected to write there — so removing it wholesale remains correct.
+// stateDir is exactly config.StateDir(), this agent's identity/grant/status
+// footprint (device.key, grants.json, status.json, plus spool/). Removing it
+// wholesale means this list never needs keeping in sync file-by-file as that
+// set grows, and unlike configDir it is exclusively cb-agent's own.
 type uninstallPaths struct {
 	unitFile   string
 	binary     string
@@ -261,10 +242,9 @@ var defaultUninstallPaths = uninstallPaths{
 }
 
 // resolveUninstallPaths returns the on-disk footprint `cb-agent uninstall`
-// removes. binary is always the fixed installedBinaryPath — NOT
-// os.Executable()'s result, unlike before the self-update fix (see
-// specs/2026-08-05-cb-agent-self-update-fix-design.md). Under the
-// two-level symlink layout, os.Executable() resolves straight through to
+// removes. binary is always the fixed installedBinaryPath, never
+// os.Executable()'s result: under the two-level symlink layout
+// os.Executable() resolves straight through to
 // whatever {stateDir}/versions/<v>/cb-agent the running process happens to
 // be, not the stable /usr/local/bin/cb-agent entry point — using it here
 // would leave that root-owned top-level symlink behind after an
@@ -318,31 +298,25 @@ type uninstallResult struct {
 	ReloadErr      error
 }
 
-// performUninstall disables the systemd unit, removes every path in paths
-// that exists, and reloads systemd, in that order — order matters:
-// disable-before-remove stops systemd from restarting the service mid-
-// removal (e.g. an active unit's Restart=on-failure racing the unit-file
-// deletion), and daemon-reload runs last so systemd's unit cache is
-// refreshed only once the unit file is actually gone.
+// performUninstall disables the systemd unit, removes every path in paths that
+// exists, and reloads systemd, in that order. Order matters:
+// disable-before-remove stops systemd restarting the service mid-removal, and
+// daemon-reload runs last so the unit cache is refreshed only once the unit
+// file is gone.
 //
-// Each of the three phases is independent and best-effort with respect to
-// the others: a failed disable (unit never installed, systemd absent
-// entirely in a container, ...) must not block file removal, and a failed
-// removal of one path must not block the others or the final daemon-reload.
+// Each phase is independent and best-effort: a failed disable (unit never
+// installed, systemd absent in a container) must not block file removal, and a
+// failed removal of one path must not block the others or the daemon-reload.
 // Every outcome is recorded on the returned uninstallResult rather than
-// stopping early, so the caller can report a complete, truthful summary.
+// stopping early, so the caller can report a truthful summary.
 //
-// paths.configDir (/etc/circuit-breaker) is handled separately from every
-// other path in the list, and deliberately never passed through
-// os.RemoveAll: it is co-owned by the main CircuitBreaker server (see
-// uninstallPaths' doc comment), so only paths.configFile (this agent's own
-// agent.toml) is removed directly. configDir itself is removed with a
-// non-recursive os.Remove only once agent.toml's removal has left it empty
-// — on a co-located host where the server's own config.toml/
-// circuit-breaker.env are still present, that remove is skipped entirely,
-// silently, and is not reported as an error: an operator uninstalling
-// cb-agent from a host that also runs the CircuitBreaker server must never
-// see this as a failure, and must never have the server's files touched.
+// paths.configDir is handled separately and never passed through os.RemoveAll,
+// because it is co-owned by the CircuitBreaker server (see uninstallPaths).
+// Only paths.configFile is removed directly; configDir is removed with a
+// non-recursive os.Remove once agent.toml's removal left it empty. On a
+// co-located host where the server's own files are still present that remove
+// is skipped silently and is not an error — uninstalling cb-agent must never
+// look like a failure there, and must never touch the server's files.
 func performUninstall(paths uninstallPaths, systemctl systemctlRunner) uninstallResult {
 	var result uninstallResult
 

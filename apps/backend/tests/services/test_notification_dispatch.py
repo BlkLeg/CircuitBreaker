@@ -1,4 +1,4 @@
-"""Notification worker credential handling (INC-06).
+"""Notification worker credential handling.
 
 The worker runs as its own process (``workers/main.py``), which — unlike the
 API — never initialized the vault. Encrypting sink secrets without fixing that

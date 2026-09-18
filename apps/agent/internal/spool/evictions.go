@@ -19,27 +19,25 @@ import (
 // permanently lost history must outlive both.
 const evictedFilename = "queue.evicted"
 
-// EvictionStats is the permanent record of observations this spool destroyed
-// to stay inside its byte cap.
+// EvictionStats is the permanent record of observations this spool destroyed to
+// stay inside its byte cap.
 //
-// The policy itself is unchanged and deliberate — when the disk buffer fills
-// during a long outage, recent observations matter more than old ones, so the
-// oldest go. What this type exists for is that the policy used to run
-// *silently*: no counter, no log line, no event, and the only externally
-// visible symptom was that the reported spool depth stopped rising. An
-// operator watching the documented signal could not tell a drained backlog
-// from a destroyed one.
+// The policy itself is deliberate — when the disk buffer fills during a long
+// outage, recent observations matter more than old ones, so the oldest go. This
+// type exists so the policy does not run silently: with no counter, no log line
+// and no event, the only visible symptom is the reported spool depth ceasing to
+// rise, and an operator cannot tell a drained backlog from a destroyed one.
 //
-// A bare count would not be enough either. The trust-relevant fact is which
-// *window* of history is gone, so the two timestamps are widened from the
-// dropped frames' own Frame.TS — the instant each observation describes — and
-// never from wall-clock now. LastEvictedAt is the one wall-clock field, and it
-// answers a different question: when the destruction last happened.
+// A bare count is not enough either. The trust-relevant fact is which window of
+// history is gone, so the two timestamps are widened from the dropped frames'
+// own Frame.TS — the instant each observation describes — never from wall-clock
+// now. LastEvictedAt is the one wall-clock field, answering when the
+// destruction last happened.
 //
-// Cumulative and never reset by the agent. A counter the producer can zero is
-// a counter an operator cannot trust; the only thing that clears it is
-// deleting the state directory, and the server treats a decrease as exactly
-// that (see agent_registry.record_spool_evictions).
+// Cumulative and never reset by the agent: a counter the producer can zero is a
+// counter an operator cannot trust. Only deleting the state directory clears
+// it, and the server treats a decrease as exactly that (see
+// agent_registry.record_spool_evictions).
 type EvictionStats struct {
 	Frames          int64     `json:"frames"`
 	Bytes           int64     `json:"bytes"`
@@ -55,7 +53,7 @@ type EvictionStats struct {
 	// A code and not the sentence, because it is control flow. Branching on
 	// the operator-facing prose would mean a reword silently reclassified
 	// every already-persisted record and handed an operator the opposite
-	// remedy. Empty in a record written before this field existed, which the
+	// remedy. Empty in a record predating this field, which the
 	// status output reads as "unknown" and answers by listing both.
 	LastDestroyedCause string `json:"last_destroyed_cause,omitempty"`
 	// LastDestroyedReason is the human detail behind LastDestroyedCause: the
@@ -94,26 +92,20 @@ func (e *EvictionStats) widen(ts time.Time) {
 
 // destroyedReportInterval bounds how often RecordDestroyed writes a log line.
 //
-// The line only. The condition driving these losses is by nature sustained —
-// a full disk stays full — so an unthrottled line per sample would be a log
-// storm layered on top of a storage failure, and the first loss in a window
-// always reports immediately, so an isolated failure is never silent.
+// The line only. The condition driving these losses is by nature sustained — a
+// full disk stays full — so an unthrottled line per sample would be a log storm
+// layered on a storage failure. The first loss in a window always reports
+// immediately, so an isolated failure is never silent.
 //
-// The record itself is written through on every call. Batching that too was a
-// real defect: the argument for it was that `EvictionStats` reads the
-// in-memory record, so hello, heartbeat and the status file are always
-// current — which is true, and irrelevant. What it missed is the restart. A
-// full disk usually ends with an operator freeing it and restarting the
-// agent, and a persist batched behind a one-minute window loses up to a
-// minute of losses *outright* at that point, not late. The permanent record
-// then goes down, and the server reads any decrease as the state directory
-// having been recreated and writes an audit event saying so — a confidently
-// wrong claim about data loss, on top of real data loss, which is the exact
-// failure this whole mechanism exists to end.
+// The record itself must be written through on every call, never batched.
+// Batching loses up to a window's worth of losses outright across a restart —
+// and a full disk usually ends with an operator freeing it and restarting. The
+// permanent record would then go down, and the server reads any decrease as the
+// state directory having been recreated, writing an audit event that says so: a
+// confidently wrong claim about data loss, on top of real data loss.
 //
-// The cost of write-through is one failing write syscall per destroyed
-// observation on a disk that is already refusing writes. That is a cheap
-// price for a counter that is true across a restart.
+// The cost is one failing write syscall per destroyed observation on a disk
+// already refusing writes — cheap for a counter that survives a restart.
 const destroyedReportInterval = time.Minute
 
 // RecordDestroyed folds one observation this spool could not buffer at all

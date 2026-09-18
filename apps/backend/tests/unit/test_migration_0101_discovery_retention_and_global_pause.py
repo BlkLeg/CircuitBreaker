@@ -62,7 +62,7 @@ _ON_DELETE = {
 #:   deleted by something that meant to take its children too.
 #: * `scan_jobs.profile_id` — NO ACTION, and unreachable by the purge, which
 #:   deletes no `discovery_profiles` row at all. A profile is the subnet's
-#:   identity and cadence, not history (D-1).
+#:   identity and cadence, not history.
 _INBOUND_FKS_TO_PURGED_TABLES = {
     ("hardware", "source_scan_result_id", "scan_results"): "SET NULL",
     ("scan_results", "scan_job_id", "scan_jobs"): "NO ACTION",
@@ -233,7 +233,7 @@ def test_upgrading_twice_is_a_no_op(db_session):
 
 
 def test_a_fresh_bootstrap_carries_the_provenance_ondelete(db_session):
-    """D-2: `0001_init` rebuilds from `Base.metadata`, so what it copies *badly*
+    """`0001_init` rebuilds from `Base.metadata`, so what it copies *badly*
     is the only definition a fresh install ever gets.
 
     This edge is copied faithfully — `scan_results` is not an excluded table and

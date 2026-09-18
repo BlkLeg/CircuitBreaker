@@ -1,8 +1,7 @@
-// Link-level tests for the update-dispatch boundary (§8.3/§8.6 of
-// docs/design/2026-09-16-agent-deployment-connection-plan.md): the inbound
-// `update` arm is enqueue-only, refusals surface as explicit failed
-// statuses, and the UpdateStatusFrames drain arm neither stalls heartbeats
-// nor breaks sequence ownership.
+// Link-level tests for the update-dispatch boundary: the inbound `update` arm
+// is enqueue-only, refusals surface as explicit failed statuses, and the
+// UpdateStatusFrames drain arm neither stalls heartbeats nor breaks sequence
+// ownership.
 package link
 
 import (
@@ -80,11 +79,11 @@ func sendUpdateInstruction(t *testing.T, srvPriv, srvPub [32]byte, version strin
 	return srv, responder
 }
 
-// §8.6's wire contract: an instruction the enqueue boundary refuses — queue
-// full, worker stopping, malformed payload — must reach the server as an
-// explicit update.status(failed) carrying the instruction's own version and
-// the refusal reason. A silent drop would leave the server waiting on a
-// status that never arrives; that behavior is exactly what this test forbids.
+// The wire contract: an instruction the enqueue boundary refuses — queue full,
+// worker stopping, malformed payload — must reach the server as an explicit
+// update.status(failed) carrying the instruction's own version and the refusal
+// reason. A silent drop leaves the server waiting on a status that never
+// arrives, which is what this test forbids.
 func TestRun_RefusedUpdateInstructionReportsExplicitFailedStatus(t *testing.T) {
 	serverPriv, serverPub := generateTestKeypair(t)
 
@@ -163,7 +162,7 @@ func TestRun_RefusedUpdateInstructionReportsExplicitFailedStatus(t *testing.T) {
 		Key:    key, AgentVersion: "0.1.0-test",
 		OnUpdate: func(json.RawMessage) error {
 			// The daemon's queue-full refusal, verbatim: the message is the
-			// whole contract, and §8.6 pins its wording.
+			// whole contract, and the wire format pins its wording.
 			return errors.New("update already in progress")
 		},
 	}
@@ -182,12 +181,12 @@ func TestRun_RefusedUpdateInstructionReportsExplicitFailedStatus(t *testing.T) {
 	}
 }
 
-// §3.2/§5: heartbeats keep leaving on schedule while update statuses drain,
-// and every frame the server observes — heartbeat or update.status — carries
-// a strictly increasing sequence number. That monotonicity is the
-// single-writer proof: the drain arm runs on the same event-loop goroutine
-// that stamps seq for heartbeats, so a second writer (a worker touching the
-// socket directly) would show up here as a duplicate, a gap or a regression.
+// Heartbeats keep leaving on schedule while update statuses drain, and every
+// frame the server observes — heartbeat or update.status — carries a strictly
+// increasing sequence number. That monotonicity is the single-writer proof: the
+// drain arm runs on the same event-loop goroutine that stamps seq for
+// heartbeats, so a second writer touching the socket directly would show up
+// here as a duplicate or a gap.
 func TestRun_UpdateStatusFramesDrainWithoutStallingHeartbeatsOrSequenceOrder(t *testing.T) {
 	originalInterval := heartbeatInterval
 	heartbeatInterval = 100 * time.Millisecond
@@ -290,7 +289,7 @@ func TestRun_UpdateStatusFramesDrainWithoutStallingHeartbeatsOrSequenceOrder(t *
 			case statusC <- UpdateStatusEvent{Version: "0.2.0", Phase: "started"}:
 			default:
 				// Never expected — the drain arm keeps pace — but a worker
-				// must not block the test on a full buffer either (§8.7).
+				// must not block the test on a full buffer either.
 			}
 			time.Sleep(25 * time.Millisecond)
 		}
@@ -326,12 +325,11 @@ func TestRun_UpdateStatusFramesDrainWithoutStallingHeartbeatsOrSequenceOrder(t *
 	}
 }
 
-// TestRunOnce_ReadDeadlineFiresAfterUpdateEnqueued is the disconnect-while-
-// updating half of §5: after the TypeUpdate arm has handed the instruction
-// off (enqueue-only, returns immediately), a silent peer must still trip the
-// steady-state read deadline. Pre-refactor the update body itself occupied
-// the event loop and starved this path; post-refactor the deadline is what
-// ends the connection while the daemon's worker keeps running.
+// TestRunOnce_ReadDeadlineFiresAfterUpdateEnqueued pins the
+// disconnect-while-updating half of the contract: after the TypeUpdate arm has
+// handed the instruction off (enqueue-only, returns immediately), a silent peer
+// must still trip the steady-state read deadline. An update body that occupied
+// the event loop instead would starve this path.
 func TestRunOnce_ReadDeadlineFiresAfterUpdateEnqueued(t *testing.T) {
 	shrinkReadTimeout(t, 400*time.Millisecond)
 
@@ -421,10 +419,10 @@ func TestRunOnce_ReadDeadlineFiresAfterUpdateEnqueued(t *testing.T) {
 	}
 }
 
-// TestRun_ReconnectDoesNotReplayUpdateInstruction covers §5's reconnect
-// rule from the link side: a drop after the instruction was enqueued must
-// not cause the agent to invent a second OnUpdate call. The server owns
-// re-issue; the agent only acts on frames it actually receives.
+// TestRun_ReconnectDoesNotReplayUpdateInstruction covers the reconnect rule
+// from the link side: a drop after the instruction was enqueued must not cause
+// the agent to invent a second OnUpdate call. The server owns re-issue; the
+// agent only acts on frames it actually receives.
 func TestRun_ReconnectDoesNotReplayUpdateInstruction(t *testing.T) {
 	serverPriv, serverPub := generateTestKeypair(t)
 	var (

@@ -1,8 +1,8 @@
-"""REL-19: every skip/xfail marker is registered, owned and dated, and an
+"""Every skip/xfail marker is registered, owned and dated, and an
 unexpected warning fails the run.
 
 RC-08 forbids "an unexplained skip, xfail, warning, scan suppression, or unmet
-gate" at sign-off, and REL-19's acceptance is that the register and the test
+gate" at sign-off, and the acceptance is that the register and the test
 reports "reconcile exactly". Reconciling exactly is the part a document cannot
 do on its own: the security suppressions manifest learned this the hard way —
 its test asserted against the date the manifest was written, so every
@@ -10,7 +10,7 @@ suppression expired and the file stayed green for three days while the security
 gate went red (see test_security_suppressions.py). This file uses today's date
 for the same reason.
 
-Two halves, matching the two clauses of REL-19.
+Two halves, matching the two clauses of the rule.
 
 Half one, the register. ``specs/1.0.0/release-control/skip-register.csv`` holds
 one row per distinct marker, and the four failures below are the ones that
@@ -248,7 +248,7 @@ def _key(row: dict[str, str]) -> tuple[str, str, str]:
 
 def test_the_register_exists_and_is_not_empty():
     """A register nobody wrote reads exactly like a repository with no skips."""
-    assert REGISTER.exists(), f"REL-19 register missing: {REGISTER.relative_to(REPO_ROOT)}"
+    assert REGISTER.exists(), f"skip register missing: {REGISTER.relative_to(REPO_ROOT)}"
     rows = _register_rows()
     assert rows, "skip-register.csv has a header and no rows"
     assert set(_REQUIRED_FIELDS).issubset(rows[0].keys()), (
@@ -270,7 +270,7 @@ def test_every_marker_in_the_tree_has_a_register_row():
     assert not unregistered, (
         f"{len(unregistered)} skip/xfail marker(s) have no row in "
         f"{REGISTER.relative_to(REPO_ROOT)}:\n{detail}\n"
-        "REL-19 requires every one to carry a reason, an owner, a tracking item "
+        "Every one must carry a reason, an owner, a tracking item "
         "and an expiry. Add the row — or delete the marker, which is the better "
         "fix when the thing it excused is fixed."
     )
@@ -441,7 +441,7 @@ def _filterwarnings_block() -> list[tuple[list[str], str]]:
 def test_the_root_suite_declares_warnings_as_errors():
     entries = _filterwarnings_block()
     assert entries, (
-        f"{PYTEST_INI.name} declares no filterwarnings. REL-19 requires "
+        f"{PYTEST_INI.name} declares no filterwarnings. The rule requires "
         "unexpected warnings to fail the run."
     )
     assert entries[0][1] == "error", (
@@ -455,7 +455,7 @@ def test_no_ignore_is_anonymous_or_unbounded():
 
     A bare `ignore`, or an `ignore` for a whole category, hides our warnings
     along with the third-party one being tolerated — which is precisely the
-    outcome REL-08 and REL-19 exist to prevent. An ignore with no owner and no
+    outcome the skip register exists to prevent. An ignore with no owner and no
     stated way out is a permanent one.
     """
     owner_map = OWNER_MAP.read_text(encoding="utf-8")
@@ -480,7 +480,7 @@ def test_a_warning_actually_fails_a_root_run(tmp_path: Path):
     """The static checks above pin the text; this one pins the behaviour.
 
     Without `filterwarnings = error` in pytest.ini this module passes with a
-    warning printed in the summary, which is the state REL-19 rejects.
+    warning printed in the summary, which is the state the rule rejects.
     """
     module = tmp_path / "test_rel19_warning_policy.py"
     module.write_text(

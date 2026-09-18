@@ -175,9 +175,9 @@ export default function IntegrationsSection({
               setDockerScanning(true);
               try {
                 await syncDocker();
-                // Queued is all this call establishes. It used to claim the scan
-                // had "started" and then discard the run ID, which left the
-                // operator with no way to learn what happened (plan 03).
+                // Queued is all this call establishes. Claiming the scan had
+                // "started" and discarding the run ID leaves the operator with
+                // no way to learn what happened.
                 toast.info('Sync queued. See Discovery → Docker for the result.');
               } catch (err) {
                 toast.error(

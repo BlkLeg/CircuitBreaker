@@ -2,7 +2,7 @@
 
 Answers "what can discovery do right now?" as a small, explicit set of
 capabilities, each in exactly one state. Shared verbatim by the scan runner,
-the readiness API, and (Phase 3) the in-app Readiness panel.
+the readiness API, and the in-app Readiness panel.
 """
 
 import ipaddress

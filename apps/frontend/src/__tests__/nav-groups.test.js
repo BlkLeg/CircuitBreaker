@@ -84,7 +84,7 @@ describe('taxonomy placement', () => {
     expect(item.groupId).toBe('inventory');
   });
 
-  it('reserves /admin/tokens under govern for INC-14', () => {
+  it('reserves /admin/tokens under govern for access tokens', () => {
     expect(groupOf('/admin/tokens')).toBe('govern');
   });
 

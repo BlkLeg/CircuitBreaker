@@ -1,4 +1,4 @@
-"""Schema-level guarantees for the ACME DNS-01 columns (INC-07).
+"""Schema-level guarantees for the ACME DNS-01 columns.
 
 Three things this migration has to get right, none of which the ORM test suite would catch —
 it builds its schema from ``Base.metadata`` and never replays a migration:

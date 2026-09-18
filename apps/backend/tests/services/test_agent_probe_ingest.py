@@ -447,7 +447,7 @@ async def test_execution_error_records_an_execution_event_and_a_live_refresh(db_
     channel, raw = published[0]
     assert channel == f"monitor:{monitor.id}"
     payload = json.loads(raw)
-    # D-13: `ws_monitors._redis_listener` splats the payload into the outbound
+    # `ws_monitors._redis_listener` splats the payload into the outbound
     # frame, so a `status` key here would clobber the UP/DOWN pill.
     assert "status" not in payload
     assert payload["monitor_id"] == monitor.id
@@ -456,7 +456,7 @@ async def test_execution_error_records_an_execution_event_and_a_live_refresh(db_
 
 
 async def test_rejected_result_takes_the_same_shared_execution_path(db_session, factories):
-    """`rejected` is an execution condition too (§4): the agent refused the
+    """`rejected` is an execution condition too: the agent refused the
     assignment, which says nothing about the target. It must produce the same
     event and live refresh as `execution_error`, while the run keeps the agent's
     own word for audit."""
@@ -529,7 +529,7 @@ async def test_repeated_agent_execution_errors_record_only_one_event(db_session,
 async def test_cancelled_result_is_run_audit_only_and_records_no_execution_event(
     db_session, factories
 ):
-    """A cancellation is something the server asked for (§4, Task 14). It closes
+    """A cancellation is something the server asked for. It closes
     the lease and says nothing about the vantage, so it deliberately does not
     become an execution condition, an event, or a live refresh."""
     from app.services.monitoring import result_service

@@ -112,10 +112,10 @@ export const authApi = {
 };
 
 /**
- * What a locked-out user is told, on both surfaces that tell them (INC-08).
+ * What a locked-out user is told, on both surfaces that tell them.
  *
  * Exported from one module because the two surfaces saying it differently is the failure
- * mode that produced INC-02 and INC-03. It is deliberately shorter than the API's own 410
+ * mode this exists to prevent. It is deliberately shorter than the API's own 410
  * detail: the modal and the page both put a "Reset With Vault Key" button underneath it,
  * so repeating the instruction in prose would be telling the reader to find something
  * they are looking at.

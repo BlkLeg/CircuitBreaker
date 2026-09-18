@@ -3,7 +3,7 @@ import { ACCEPTANCE_CAVEAT, describeDeliveryResult } from '../lib/notificationDe
 
 /**
  * Plan 05's central rule: configuration saved, endpoint accepted, and message
- * read by a person are three different events. The UI previously collapsed all
+ * read by a person are three different events. Collapsing all
  * three into "Test delivered", which is the claim these tests exist to prevent.
  */
 describe('describeDeliveryResult', () => {

@@ -75,7 +75,7 @@ export default function MonitorsListTab() {
   const q = params.get('q') || '';
   const sort = SORT_VALUES.includes(params.get('sort')) ? params.get('sort') : 'worst';
 
-  // Slice 3 §7's "Create monitor from this agent" deep link
+  // The "Create monitor from this agent" deep link
   // (/monitors?new=1&host=...&probe_agent_id=...). It preselects the target
   // and the vantage and nothing else — type, interval and alert policy stay
   // the operator's, which is what separates this from the review queue's
@@ -173,7 +173,7 @@ export default function MonitorsListTab() {
 
   // Fold live pushes onto the fetched rows: status, last check, and both series.
   //
-  // D-13: an execution-condition refresh carries no `status` key at all, because
+  // An execution-condition refresh carries no `status` key at all, because
   // the vantage becoming unavailable is not a target transition. So `status`,
   // `last_polled_at`, `recent_checks` and `latency_series` are only touched when
   // the push actually carries a target status — otherwise a probe going offline

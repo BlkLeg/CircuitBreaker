@@ -39,7 +39,7 @@ function formatMetric(key, value) {
   return Number(value).toFixed(2);
 }
 
-// Task 16 / D-12: byte size for the spool catch-up indicator. Base-1024, one
+// Byte size for the spool catch-up indicator. Base-1024, one
 // decimal — the spool's cap is expressed in MiB (internal/spool's
 // DefaultCapBytes is 64 << 20), so a base-1000 rendering would never line up
 // with it.
@@ -627,7 +627,7 @@ function refusalReasonText(reason) {
 }
 
 /**
- * The permanent-loss banner (plan Phase 3).
+ * The permanent-loss banner.
  *
  * Two independent losses, reported together because an operator's question is
  * "is any of this host's history missing", but never merged into one number:
@@ -731,7 +731,7 @@ function SpoolLossBanner({ spool }) {
 SpoolLossBanner.propTypes = { spool: PropTypes.object };
 
 /**
- * The at-most-once delivery warning (plan Phase 5).
+ * The at-most-once delivery warning.
  *
  * A current agent asks the server to acknowledge data frames, and only
  * discards a buffered observation once the server has actually stored (or
@@ -799,7 +799,7 @@ ReadinessBanners.propTypes = { faults: PropTypes.array.isRequired };
 /**
  * What this host collects and how often.
  *
- * Spec §7 puts these on the Telemetry tab rather than on Overview: they are a
+ * The spec puts these on the Telemetry tab rather than on Overview: they are a
  * form, and Overview is a reading. The key list and every fallback value come
  * from the fetched capability registry, so a collector the server adds shows
  * up here with no frontend change.

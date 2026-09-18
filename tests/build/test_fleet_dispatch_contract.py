@@ -87,11 +87,11 @@ def test_fleet_scripts_record_failures_rather_than_swallowing_them():
             )
 
 
-# ── Phase 3: the row and the arguments have to agree ───────────────────────
+# ── The row and the arguments have to agree ────────────────────────────────
 
 
 def test_dispatch_reads_the_row_mode_from_the_matrix():
-    """Phase 3 gave matrix.yaml a `mode`, and the dispatcher has to honour it.
+    """matrix.yaml rows carry a `mode`, and the dispatcher has to honour it.
 
     Running the install-only journey for a row that publishes an upgrade
     guarantee would be a green result standing in for an observation nobody
@@ -130,7 +130,7 @@ def test_dispatch_keeps_the_two_versions_in_separate_directories():
 
 
 def test_dispatch_uses_one_definition_of_the_matrix_reader():
-    """P1. provision.sh carried its own awk copy until Phase 3 needed a second
+    """provision.sh must not carry its own awk copy: a second
     reader; two parsers for the file that defines what the project claims works
     is exactly the duplication the principle exists to prevent."""
     provision = (REPO_ROOT / "scripts" / "ci" / "fleet" / "provision.sh").read_text(encoding="utf-8")

@@ -21,7 +21,7 @@ from app.services.stream_faults import record_stream_fault
 
 logger = logging.getLogger(__name__)
 
-# REL-07 fault-metric identity for the OPNsense background poller.
+# Fault-metric identity for the OPNsense background poller.
 _COMPONENT = "opnsense_monitor"
 
 _ARP_POLL_INTERVAL = 60  # seconds
@@ -81,7 +81,7 @@ async def _run_monitor_loop(settings_dict: dict) -> None:
             # `logger.exception` every 10s for as long as the fault lasts is a
             # traceback every 10 seconds, forever: throttled and counted now, so
             # a stuck monitor is a rising number rather than a wall of identical
-            # stacks nobody can read past (REL-07). The loop still retries —
+            # stacks nobody can read past. The loop still retries —
             # this task must not die, it is the only OPNsense poller.
             record_stream_fault(
                 _COMPONENT, exc, logger=logger, context={"loop": "opnsense_monitor"}

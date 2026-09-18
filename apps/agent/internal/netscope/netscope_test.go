@@ -131,7 +131,7 @@ func TestEvaluate_IPv4MappedIPv6IsEvaluatedAsIPv4(t *testing.T) {
 }
 
 func TestEvaluate_DirectlyConnectedRequirementRejectsRoutedTargetWithoutOverride(t *testing.T) {
-	// §3's agent-side extra rule. The scope here is the server's answer, not one this host
+	// the agent-side extra rule. The scope here is the server's answer, not one this host
 	// derived: 10.40.0.0/16 is in the allow list but is neither directly connected nor named
 	// by an administrator, which is what a hostile route advertisement would produce.
 	routed := Scope{
@@ -179,7 +179,7 @@ func TestDerive_VersionMatchesTheBackendDigest(t *testing.T) {
 	}
 }
 
-// --- Prefix-shaped questions (Slice 4, D-15) ---------------------------------
+// --- Prefix-shaped questions ---------------------------------
 //
 // NetworkInScope's decisions are pinned by the shared corpus. What the corpus
 // cannot express is the two answers that have no backend counterpart, and the
@@ -194,7 +194,7 @@ func TestNetworkIsDirectlyConnected_SeparatesDerivedFromApproved(t *testing.T) {
 	if !NetworkIsDirectlyConnected(scope, "10.0.0.0/25") {
 		t.Error("a prefix inside the attached /24 must read as directly connected")
 	}
-	// In scope, but only because an administrator approved the route — §7 requires the agent to
+	// In scope, but only because an administrator approved the route — the agent must
 	// be able to tell the two apart at execution time.
 	if NetworkIsDirectlyConnected(scope, "172.16.5.0/24") {
 		t.Error("a centrally approved routed network is not directly connected")
@@ -243,7 +243,7 @@ func TestAddressCount_HandlesADualStackTargetSet(t *testing.T) {
 	}
 }
 
-// TestNetworkIsApproved_IsTheOtherHalfOfTheAttachmentQuestion pins the exemption Slice 4's
+// TestNetworkIsApproved_IsTheOtherHalfOfTheAttachmentQuestion pins the exemption the
 // request validator depends on: an administrator-added routed network is on no segment this host
 // is attached to, so a target inside it can only be authorized by this half.
 func TestNetworkIsApproved_IsTheOtherHalfOfTheAttachmentQuestion(t *testing.T) {

@@ -72,7 +72,7 @@ class Hardware(Base):
     )
     # v0.1.4-cortex: discovery lineage.
     #
-    # SET NULL, not the NO ACTION this shipped with (Slice 4 Fix A1, migration
+    # SET NULL, not the NO ACTION this shipped with (the design Fix A1, migration
     # `0101_discovery_retention_and_global_pause`). This is a *provenance*
     # pointer: it records which scan result a device was approved from, and
     # every reader already treats it as optional. Under NO ACTION it silently

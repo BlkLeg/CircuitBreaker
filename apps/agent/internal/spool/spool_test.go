@@ -400,11 +400,10 @@ func TestSpool_PeekDoesNotConsumeUntilCommit(t *testing.T) {
 	wantSeqs(t, after.Peek(3, DefaultCapBytes), 3)
 }
 
-// TestSpool_CommitPreservesFIFOAfterPartialFailure is the direct regression
-// for the old tail-requeue bug: a burst that fails partway through committed
-// only its successes, and the uncommitted remainder stays at the *head* in
-// its original order rather than being re-appended to the tail (where cap
-// eviction would drop its neighbours first).
+// TestSpool_CommitPreservesFIFOAfterPartialFailure pins that a burst failing
+// partway through commits only its successes, and that the uncommitted
+// remainder stays at the *head* in its original order rather than being
+// re-appended to the tail, where cap eviction would drop its neighbours first.
 func TestSpool_CommitPreservesFIFOAfterPartialFailure(t *testing.T) {
 	s, err := Open(t.TempDir(), DefaultCapBytes)
 	if err != nil {

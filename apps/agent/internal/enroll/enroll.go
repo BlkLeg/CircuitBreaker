@@ -79,7 +79,7 @@ func clearEnrollToken(path string) {
 // refusal outcomes — an operator explicitly declining or revoking this
 // device, as opposed to any of the ordinary transient failures above (a dial
 // error, a stalled handshake, a closed connection). Exported, unlike the
-// generic errors.New this package used to return here, so a caller retrying
+// a generic errors.New, so a caller retrying
 // Run (cmd/cb-agent's retryEnroll) can tell "the operator said no" apart from
 // "the network is having a bad day" with errors.Is and answer each
 // differently — see retryEnroll's doc comment.

@@ -76,7 +76,7 @@ def _start_server_key_rotation_committed(
     return state
 
 
-# ── Task 28: server-key rotation with an overlap window, end to end ────────
+# ── server-key rotation with an overlap window, end to end ────────
 # Service-layer proofs of the same behavior (with an injectable/advanceable
 # clock, no real wait at all) live in tests/test_agent_crypto.py's
 # "server-key rotation" section; these prove the live /link wiring on top.

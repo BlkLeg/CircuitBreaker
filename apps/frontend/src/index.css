@@ -1,4 +1,4 @@
-/* INC-12: audit hash-chain integrity, above the audit log table. */
+/* Audit hash-chain integrity, above the audit log table. */
 .audit-chain-panel {
   display: flex;
   flex-direction: column;
@@ -49,7 +49,7 @@
   opacity: 0.75;
 }
 
-/* INC-10: blast radius, alongside VulnerabilityPanel in the detail drawers. */
+/* Blast radius, alongside VulnerabilityPanel in the detail drawers. */
 .blast-radius-panel {
   border-top: 1px solid var(--color-border);
   padding-top: 10px;

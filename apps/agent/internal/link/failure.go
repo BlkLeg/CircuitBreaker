@@ -14,14 +14,12 @@ import (
 
 // failureClass is what the reconnect ladder is chosen from.
 //
-// The distinction this draws is the whole reason a server restart used to cost
-// twenty minutes. The old loop had one exponential progression and fed every
-// failure into it, so "the service you were just talking to is restarting and
-// will be back in thirty seconds" and "this host has been off the network for
-// an hour" were answered with the same escalating wait. Since the ladder only
-// ever grew, whichever rung it happened to be standing on when the server
-// returned *was* the recovery time — 36 seconds if you were lucky, five minutes
-// if you were not.
+// Drawing this distinction is what keeps a server restart from costing twenty
+// minutes. Feeding every failure into one exponential progression answers "the
+// service you were just talking to is restarting" and "this host has been off
+// the network for an hour" with the same escalating wait, and since such a
+// ladder only ever grows, whichever rung it is standing on when the server
+// returns becomes the recovery time.
 type failureClass int
 
 const (

@@ -20,13 +20,13 @@ from app.schemas.docs import DocCreate, DocUpdate, EntityDocAttach
 # here and both ends move with it in the same interpreter, which is the
 # property tests/api/test_docs_import_export_limits.py pins by moving one of
 # them and watching both ends follow. api/docs.py must not restate any of them
-# as a literal. Two copies that happen to agree is how R10 happened: B05
+# as a literal. Two copies that happen to agree is how the contract happened: the contract
 # tightened the import side and left export_docs_zip untouched, so an install
 # with more than 500 docs produced an archive its own importer answered with
 # 413 — a backup that only turns out to be unrestorable at restore time.
 #
 # Raising any of these raises the ceiling on what a hostile upload can make the
-# API process allocate (see B05: a 10 MB deflate bomb peaked at 142 MB before
+# API process allocate (see the contract: a 10 MB deflate bomb peaked at 142 MB before
 # these existed). Lowering any of them makes some existing install's export
 # un-reimportable. Either way, both ends move together because there is only
 # one definition to move.
@@ -150,12 +150,12 @@ def export_docs_zip(db: Session, ids: list[int] | None = None) -> bytes:
 
     The four ceilings this measures against are the *same objects* api/docs.py
     measures an upload against (see the block at the top of this module), so
-    the two ends of the docs archive cannot drift apart the way R10 describes:
+    the two ends of the docs archive cannot drift apart the way the contract describes:
     there is one definition, read at call time by both.
 
     What this deliberately does NOT do is refuse to build an over-ceiling
-    archive. An earlier pass at R10 raised on one, and that took docs export
-    away from precisely the installs R10 is about: the only caller in the
+    archive. An earlier pass at the contract raised on one, and that took docs export
+    away from precisely the installs the contract is about: the only caller in the
     product is `docsApi.exportAll()` (apps/frontend/src/api/client.jsx), which
     passes no `ids` and has no subset-export UI behind it, and it asks for the
     response as a Blob — so a 413's JSON `detail` is never parsed and the
@@ -169,7 +169,7 @@ def export_docs_zip(db: Session, ids: list[int] | None = None) -> bytes:
     So the archive is always produced, and an over-ceiling one carries
     IMPORT_WARNING_MEMBER naming every ceiling it breaks. That puts the warning
     in the artifact the operator still has at restore time, which is the moment
-    R10 is actually about. The residual — an archive this endpoint produced can
+    the contract is actually about. The residual — an archive this endpoint produced can
     still be one this API's own importer refuses — stays open, and closing it
     needs a chunked export plus a subset-export UI on the frontend, not a
     refusal here.
@@ -194,7 +194,7 @@ def export_docs_zip(db: Session, ids: list[int] | None = None) -> bytes:
             # body is exactly the ZipInfo.file_size the importer weighs against
             # MAX_IMPORT_MD_BYTES; len(doc.body_md) would count *characters*,
             # and a single multi-byte character is enough to make the two ends
-            # disagree about the same doc — the same class of drift R10 is,
+            # disagree about the same doc — the same class of drift the contract is,
             # one layer down. The name is built once here too, so the warning
             # below names the member the operator will actually see.
             # body_md is NOT NULL in the schema; the `or ""` is belt and braces

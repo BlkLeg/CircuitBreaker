@@ -176,7 +176,7 @@ export function useTelemetryStream({ entityIds = [], entities = [] } = {}) {
         return;
       }
 
-      // Task 18: `capability.readiness` is broadcast on the same
+      // `capability.readiness` is broadcast on the same
       // telemetry:agent:{id} channel as the samples but is a *different*
       // shape, so it gets its own namespaced slot. Storing it under the bare
       // `key` would overwrite the latest sample and blank AgentDetailPage's

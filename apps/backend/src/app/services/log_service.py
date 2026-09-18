@@ -205,7 +205,7 @@ def write_log(
             entity_name=entity_name,
             diff=diff_str,
             severity=severity,
-            # Phase 6.5 and 7
+            # And 7
             session_id=session_id,
             role_at_time=role_at_time,
         )

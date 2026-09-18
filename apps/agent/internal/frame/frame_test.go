@@ -174,8 +174,8 @@ func TestIsDataFrame_ControlAndHeartbeatTypesReturnFalse(t *testing.T) {
 	// prove nothing. What it cannot do on its own is notice an omission: a
 	// slice that adds a control frame and forgets this literal leaves the new
 	// type's spool-ineligibility completely unasserted, and the suite stays
-	// green. That is how TypeDiscoveryCancel (Slice 4) and
-	// TypeCapabilityReadiness (Slice 2) both came to be missing here. So the
+	// green. That is how TypeDiscoveryCancel and
+	// TypeCapabilityReadiness both came to be missing here. So the
 	// literal stays the expectation and this makes forgetting it fail loudly.
 	named := make(map[string]bool, len(controlTypes))
 	for _, typ := range controlTypes {
@@ -190,14 +190,14 @@ func TestIsDataFrame_ControlAndHeartbeatTypesReturnFalse(t *testing.T) {
 
 // TestIsDataFrame_KnownAndUnknownDataTypesReturnTrue verifies the classifier
 // is a deny-list, not an allow-list: today's real data-frame constants
-// (Slice 2+ payloads not yet produced anywhere) and a made-up type neither
+// and a made-up type neither
 // this package nor any slice has ever defined both classify as data frames.
 // That's the point — the mechanism must activate automatically for whatever
 // data frame type a future slice introduces, without a code change here.
 func TestIsDataFrame_KnownAndUnknownDataTypesReturnTrue(t *testing.T) {
 	dataTypes := []string{
 		TypeTelemetryHost, TypeProbeResult, TypeDiscoveryFinding, TypeCapabilityViolation, TypeLog,
-		"test.fakedata", // fake, test-only type — never a real Slice 1-4 payload
+		"test.fakedata", // fake, test-only type — never a real payload
 	}
 	for _, typ := range dataTypes {
 		if !IsDataFrame(typ) {

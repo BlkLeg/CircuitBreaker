@@ -36,7 +36,7 @@ def test_verify_fleet_calls_dispatch_not_an_inlined_body():
 
 
 def test_both_fleet_targets_can_reach_every_matrix_row():
-    """Slice 2 added the deb rows. A target that hardcodes one row id makes the
+    """A target that hardcodes one row id makes the
     others unreachable without editing the Makefile, which is how a matrix grows
     rows nobody runs."""
     matrix = (REPO_ROOT / "scripts" / "ci" / "fleet" / "matrix.yaml").read_text(encoding="utf-8")
@@ -64,7 +64,7 @@ def test_verify_fleet_is_documented_in_help():
     )
 
 
-# ── Phase 3: the upgrade row's entry point ─────────────────────────────────
+# ── The upgrade row's entry point ──────────────────────────────────────────
 
 
 def test_verify_fleet_upgrade_target_exists():

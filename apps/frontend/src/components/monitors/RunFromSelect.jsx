@@ -30,14 +30,14 @@ export function reasonText(reason) {
 }
 
 // Re-exported for this module's tests, which read the label a vantage row
-// renders. The implementation is `lib/agentLabel`: this file used to carry its
-// own `agent?.name || \`Agent ${agent?.agent_id}\``, which ignored `hostname`
-// and capitalised the fallback — so the dropdown said "Agent 8" where the
-// refusal beneath it said "branch-office-01". That divergence is the one
-// `agentLabel`'s own docstring warns about.
+// renders. The implementation must stay `lib/agentLabel`: a local
+// `agent?.name || \`Agent ${agent?.agent_id}\`` ignores `hostname` and
+// capitalises the fallback, so the dropdown says "Agent 8" where the refusal
+// beneath it says "branch-office-01" — the divergence `agentLabel`'s own
+// docstring warns about.
 export { agentDisplayName };
 
-/** "branch-office — online · ready · in scope" — §7's online/readiness/scope indicators. */
+/** "branch-office — online · ready · in scope" — the online/readiness/scope indicators. */
 export function agentOptionLabel(agent) {
   const indicators = [
     agent.online ? 'online' : 'offline',
@@ -48,7 +48,7 @@ export function agentOptionLabel(agent) {
 }
 
 /**
- * Everything §7 wants warned about for the *currently selected* vantage.
+ * Everything worth warning about for the *currently selected* vantage.
  * Exported so the rules are unit-testable without a network round trip.
  */
 export function warningsFor(agent, host) {
@@ -94,10 +94,10 @@ const UNUSABLE_PRESELECTION_REASONS = new Set([
 ]);
 
 /**
- * RunFromSelect — §7's "Run from" vantage picker.
+ * RunFromSelect — the "Run from" vantage picker.
  *
  * Deliberately **not** `disabled={!!initial}` the way the check-type select is:
- * §7/§8 make reassignment (and return-to-server) an explicit user action, which
+ * Reassignment (and return-to-server) is an explicit user action, which
  * has to be reachable from the edit form.
  *
  * The list shows eligible agents plus whichever agent is currently assigned,

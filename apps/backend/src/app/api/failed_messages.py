@@ -1,6 +1,6 @@
-"""Operator surface over parked JetStream work (route F14).
+"""Operator surface over parked JetStream work.
 
-Route §1's objective is "0 silent poison-message loops: every JetStream
+the objective is "0 silent poison-message loops: every JetStream
 max-deliver exhaustion produces an operator-visible record". The table alone
 does not satisfy that — a row nobody can reach is the same silent failure with a
 tidier schema. These three routes are the "visible" half.

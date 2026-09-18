@@ -347,7 +347,7 @@ def validate_exceptions(
 def validate_release_blockers(rows: list[dict[str, str]], *, blockers_path: Path) -> int:
     """Assert every declared release-blocker id is a real ledger row.
 
-    The §6 release checklist used to require "no `not_evidenced` blocker rows".
+    The release checklist requires no `not_evidenced` blocker rows.
     The ledger has no blocker or severity column, and `not_evidenced` is an
     `invalidation_state` rather than a `status`, so that condition named nothing
     this file could answer -- and 115 of 145 rows satisfy the literal reading

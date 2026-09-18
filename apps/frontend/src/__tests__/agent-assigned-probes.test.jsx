@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import AgentDetailPage from '../pages/AgentDetailPage';
 
-// Slice 3 Task 21. Same discipline as agent-detail-page.test.jsx: every default
+// Same discipline as agent-detail-page.test.jsx: every default
 // implementation lives in this hoisted object and is re-applied in beforeEach,
 // because vi.clearAllMocks() clears call records but leaves implementations
 // installed — a mockResolvedValue set by one test would otherwise become the
@@ -47,7 +47,7 @@ const apiDefaults = vi.hoisted(() => {
         enabled: true,
         // Target state and execution condition side by side. The agent is
         // offline, so the last known target state is still `up` — that is the
-        // whole point of §7's separation.
+        // whole point of the separation.
         status: 'up',
         probe_execution_status: 'unavailable',
         probe_execution_reason: 'agent_offline',
@@ -180,7 +180,7 @@ vi.mock('../api/agents', () => ({
   revokeAgent: vi.fn(apiDefaults.revokeAgent),
   triggerAgentUpdate: vi.fn(apiDefaults.triggerAgentUpdate),
   listProbeEligibleAgents: vi.fn(apiDefaults.listProbeEligibleAgents),
-  // Slice 4 Task 27: AgentDetailPage now also loads GET /agents/{id}/discovery
+  // AgentDetailPage now also loads GET /agents/{id}/discovery
   // for the Discovery scope section. Plain functions rather than vi.fn(): these
   // tests assert nothing about discovery, and a stub with no implementation
   // would throw inside the page's loader.
@@ -216,7 +216,7 @@ function renderDetail() {
 }
 
 /**
- * Task 14: the probes section is a tab, so it is only in the DOM once its tab
+ * The probes section is a tab, so it is only in the DOM once its tab
  * is selected. Selecting it is part of asking for the section.
  */
 async function probesSection() {
@@ -265,7 +265,7 @@ describe('Agent Detail — assigned probes', () => {
     expect(within(row).getByText('10.0.0.1')).toBeInTheDocument();
     expect(within(row).getByText('60s')).toBeInTheDocument();
     // Target state is the last known one, untouched by the execution
-    // condition beside it — the load-bearing rule of §7.
+    // condition beside it — the load-bearing rule.
     expect(within(row).getByText('up')).toBeInTheDocument();
     expect(within(row).getByText(/Probe unavailable — agent offline/)).toBeInTheDocument();
 
@@ -285,7 +285,7 @@ describe('Agent Detail — assigned probes', () => {
   });
 
   it('keeps the disabled-probing wording exactly as written', async () => {
-    // Task 18 moved this sentence into a Banner. It is the operator's only
+    // This sentence lives in a Banner. It is the operator's only
     // explanation of why assignments are listed but nothing is running, so
     // the assertion is byte for byte: a later tidy-up fails here rather than
     // drifting.

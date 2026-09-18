@@ -1,4 +1,4 @@
-"""Discovery-dispatch cancellation (Slice 4, D-14 / D-16): the three triggers on
+"""Discovery-dispatch cancellation: the three triggers on
 this router -- turning the local_discovery grant off, revoking the agent, and a
 grant-scope edit that moves the dispatch's snapshot -- that must retire an in-
 flight dispatch, and the security property that a late finding is refused once
@@ -19,7 +19,7 @@ from tests.api.agent_fakes import (
 )
 
 # ---------------------------------------------------------------------------
-# Discovery-dispatch cancellation (Slice 4, D-14 / D-16)
+# Discovery-dispatch cancellation
 # ---------------------------------------------------------------------------
 #
 # Three of D-14's five triggers live on this router: turning the

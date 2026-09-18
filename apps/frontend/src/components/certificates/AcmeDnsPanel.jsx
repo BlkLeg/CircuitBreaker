@@ -5,7 +5,7 @@ import { settingsApi } from '../../api/client';
 import { useToast } from '../common/Toast';
 
 /**
- * DNS-01 provider credentials for Let's Encrypt (INC-07).
+ * DNS-01 provider credentials for Let's Encrypt.
  *
  * It lives on the Certificates page rather than under Settings because that is where an
  * operator goes to get a certificate. The alternative — the challenge chosen here and the

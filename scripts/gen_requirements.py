@@ -29,6 +29,11 @@ PACKAGE_MARKERS: dict[str, str] = {
     "pywin32": '; platform_system == "Windows"',
 }
 
+HEADER = (
+    "# Generated from poetry.lock — do not edit manually.\n"
+    "# Regenerate: python3 scripts/gen_requirements.py\n"
+)
+
 
 def parse_lock(lock_path: Path) -> list[tuple[str, str]]:
     content = lock_path.read_text()
@@ -45,24 +50,28 @@ def parse_lock(lock_path: Path) -> list[tuple[str, str]]:
     return sorted(packages, key=lambda x: x[0].lower())
 
 
+def render(lock_path: Path) -> str:
+    """Return the exact text requirements.txt should hold for this lock.
+
+    Split out of main() so a repo-policy test can regenerate in memory and
+    compare against the committed file without writing to the tree.
+    """
+    lines = [
+        f"{name}=={version}{PACKAGE_MARKERS.get(name.lower(), '')}"
+        for name, version in parse_lock(lock_path)
+    ]
+    return HEADER + "\n".join(lines) + "\n"
+
+
 def main() -> None:
     if not LOCK_FILE.exists():
         print(f"ERROR: {LOCK_FILE} not found. Run `poetry lock` first.", file=sys.stderr)
         sys.exit(1)
 
-    packages = parse_lock(LOCK_FILE)
-    lines = [
-        f"{name}=={version}{PACKAGE_MARKERS.get(name.lower(), '')}"
-        for name, version in packages
-    ]
-
-    OUT_FILE.write_text(
-        "# Generated from poetry.lock — do not edit manually.\n"
-        "# Regenerate: python3 scripts/gen_requirements.py\n"
-        + "\n".join(lines)
-        + "\n"
-    )
-    print(f"✅ Wrote {len(lines)} runtime packages → {OUT_FILE.relative_to(REPO_ROOT)}")
+    text = render(LOCK_FILE)
+    OUT_FILE.write_text(text)
+    count = len(text.splitlines()) - len(HEADER.splitlines())
+    print(f"✅ Wrote {count} runtime packages → {OUT_FILE.relative_to(REPO_ROOT)}")
 
 
 if __name__ == "__main__":

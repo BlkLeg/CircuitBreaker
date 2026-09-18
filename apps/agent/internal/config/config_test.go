@@ -53,7 +53,7 @@ func TestStateDir_HonorsEnvOverride(t *testing.T) {
 	}
 }
 
-// ── ServerKeyRotation persistence (Task 28) ────────────────────────────────
+// ── ServerKeyRotation persistence ────────────────────────────────
 
 func TestLoadServerKeyRotation_ReturnsNilWhenNeverPersisted(t *testing.T) {
 	dir := t.TempDir()
@@ -141,7 +141,7 @@ func hexFill(n int) string {
 	return string(out)
 }
 
-// ── TLSPinRotation persistence (Task 2) ────────────────────────────────────
+// ── TLSPinRotation persistence ────────────────────────────────────
 
 func TestTLSPinRotation_RoundTrip(t *testing.T) {
 	dir := t.TempDir()

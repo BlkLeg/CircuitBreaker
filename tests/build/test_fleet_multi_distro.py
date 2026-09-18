@@ -1,14 +1,14 @@
 # tests/build/test_fleet_multi_distro.py
 """One tier script, many distros — the P1 claim, checked rather than asserted.
 
-Design §7.1: "The `runner` field carries the whole difference ... and
+The `runner` field carries the whole difference, and
 `tier3-artifact.sh` is unchanged by it — which is the property that makes a PVE
-backend a drop-in later rather than a rewrite." §7.2 repeats it: the script is
+makes a backend a drop-in later rather than a rewrite: the script is
 "identical across all of them (P1)".
 
-Phase 2 satisfied that by having exactly one row. Every install, query and
+One row satisfies that trivially. Every install, query and
 downgrade was a bare `dnf`/`rpm` call, and the script was identical across rows
-the way a sentence is grammatical in a language with one sentence in it. Slice 2
+the way a sentence is grammatical in a language with one sentence in it. A second
 added the deb family, which is the first time the claim costs anything.
 
 The property these tests pin is not "no package manager is ever named" -- the
@@ -169,7 +169,7 @@ def test_provisioning_does_not_hardcode_a_distro_account():
 
 
 def test_provisioning_verifies_the_units_the_fixture_names():
-    """Slice 1 hardcoded `postgresql && valkey`, which is Fedora's spelling.
+    """Hardcoding `postgresql && valkey` bakes in Fedora's spelling.
     Debian's redis unit is redis-server, so the same literal would have failed a
     healthy Debian guest for a service that was running."""
     text = PROVISION.read_text(encoding="utf-8")

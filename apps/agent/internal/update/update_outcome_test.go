@@ -1,6 +1,6 @@
-// Tests for the durable pending-outcome record (§3.3 of
-// docs/design/2026-09-16-agent-deployment-connection-plan.md) and for the
-// context-aware download cancellation (§3.1/§8.5).
+// Tests for the durable pending-outcome record:
+// and for the
+// context-aware download cancellation.
 package update
 
 import (
@@ -17,7 +17,7 @@ import (
 	"circuitbreaker.dev/cb-agent/internal/tlsdial"
 )
 
-// The whole lifecycle §3.3 requires: write the outcome before the live send,
+// The whole required lifecycle: write the outcome before the live send,
 // read it back in the next process, clear it only after that send succeeded.
 func TestPendingOutcomeRoundTrip(t *testing.T) {
 	dir := t.TempDir()
@@ -84,7 +84,7 @@ func TestPendingOutcomeAndRollbackReportAreSeparateRecords(t *testing.T) {
 	}
 }
 
-// §5's "Download cancellation interrupts a stalled HTTP response": a context
+// the "Download cancellation interrupts a stalled HTTP response": a context
 // cancelled mid-body must abort the copy immediately, not after
 // downloadTimeout. This is the property that keeps daemon shutdown bounded —
 // the whole point of threading ctx into Download.
@@ -139,7 +139,7 @@ func TestDownloadContextCancellationInterruptsStalledResponse(t *testing.T) {
 }
 
 // TestDownloadSignatureContextCancellationInterruptsStalledResponse is the
-// §8.5 twin for the .sig fetch: DownloadSignature shares downloadTo with
+// The same rule for the .sig fetch: DownloadSignature shares downloadTo with
 // Download, and a SIGTERM mid-signature must not wait out downloadTimeout.
 func TestDownloadSignatureContextCancellationInterruptsStalledResponse(t *testing.T) {
 	release := make(chan struct{})

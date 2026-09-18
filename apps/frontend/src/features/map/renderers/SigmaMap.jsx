@@ -50,11 +50,11 @@ function applyLayout(graph, layoutId) {
 /**
  * Sigma renderer for the map.
  *
- * Draws the document it is given — it does not fetch. It used to request
- * `format: 'sigma'`, a format the backend never implemented, and hand the
- * ordinary topology payload to `Graph.import`, which rejects it outright; the
- * error was caught and logged, so the canvas simply came up empty. Taking the
- * canonical nodes and edges fixes that and makes both renderers show the same
+ * Draws the document it is given — it must not fetch. Requesting
+ * `format: 'sigma'` asks for a format the backend never implemented and hands
+ * the ordinary topology payload to `Graph.import`, which rejects it outright;
+ * the error is caught and logged, so the canvas simply comes up empty. Taking
+ * the canonical nodes and edges keeps both renderers showing the same
  * active map, filters and saved positions.
  */
 export default function SigmaMap({ nodes, edges }) {

@@ -1,9 +1,9 @@
-"""The shared agent network-scope evaluator (Slice 3 §3, D-1).
+"""The shared agent network-scope evaluator (the design, the contract).
 
 Turns what an agent reported about its own interfaces (`agent_networks.facts`)
 plus the administrator's `remote_probe` grant config into a versioned effective
 scope, and answers "may this agent reach that destination?". Remote probing
-(Slice 3) and local discovery (Slice 4) both consume it: two subtly different
+ and local discovery both consume it: two subtly different
 CIDR or special-use rule sets would mean an agent could be told one thing at
 assignment time and enforce another at connect time, which is exactly the gap
 independent enforcement exists to close. `apps/agent/internal/netscope` is the
@@ -83,7 +83,7 @@ _BLOCKED_NETWORKS: tuple[IPNetwork, ...] = (
     ipaddress.IPv6Network("fd00:ec2::254/128"),
 )
 
-# Interfaces whose networks are not "directly connected" in §3's sense: a loopback
+# Interfaces whose networks are not "directly connected" inthe sense: a loopback
 # has no peers and a point-to-point tunnel carries a route, not a shared segment.
 _EXCLUDED_INTERFACE_FLAGS = frozenset({"loopback", "pointtopoint"})
 
@@ -129,7 +129,7 @@ def normalize_scope_cidr(value: object, *, field: str = "cidr") -> str:
 
     Raises ValueError, which `schemas/agents.py::_validate_capability_map` already
     turns into a 422 at both approve and capabilities-update. `/0` is refused
-    outright per §3 — a default route is not a scope, and accepting it as a
+    outright by the contract — a default route is not a scope, and accepting it as a
     convenient shortcut would make every other rule here advisory.
     """
     if not isinstance(value, str):
@@ -253,7 +253,7 @@ def evaluate(
 def network_in_scope(scope: EffectiveScope, cidr: str) -> Decision:
     """Decide whether every address in *cidr* is permitted under *scope*.
 
-    `evaluate` answers about one address; Slice 4 hands an agent a whole prefix,
+    `evaluate` answers about one address; the design hands an agent a whole prefix,
     so the containment question has to be first-class. Enumerating the prefix and
     calling `evaluate` per address is not an implementation — a /16 is 65 536
     calls — and a second copy of the rules on the discovery side is exactly the
@@ -327,7 +327,7 @@ def hostname_is_approved(scope: EffectiveScope, host: str) -> bool:
     """Whether *host* matches an `additional_hostnames` entry.
 
     Approval names a routed use case an administrator signed off on; it is consulted
-    alongside the agent's directly-connected requirement (§3), never instead of
+    alongside the agent's directly-connected requirement, never instead of
     `evaluate` — an approved name whose addresses fall outside scope is still refused,
     or whoever controls that name's DNS would control the agent's scope.
     """

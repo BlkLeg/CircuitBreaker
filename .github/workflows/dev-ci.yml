@@ -91,32 +91,19 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     # Docker is required, not optional: tests/conftest.py boots a TimescaleDB
-    # testcontainer and sets CB_DB_URL from it BEFORE any app module is
-    # imported, so there is no sqlite-only mode to fall back to. GitHub-hosted
-    # Ubuntu runners ship with Docker already running.
+    # testcontainer and sets CB_DB_URL from it before any app module is
+    # imported, so there is no sqlite-only fallback.
     #
-    # Added 2026-08-09 (F-9). Until then no workflow ran backend pytest at all
-    # — the whole 2146-test suite was enforced locally only, so nothing found
-    # during user testing could be kept fixed. The blocker was the coverage
-    # gate in apps/backend/pyproject.toml, which demanded 60% against a real
-    # 55.42%; it is now ratcheted to the measured number, so this job's exit
-    # code means what it says.
+    # The 35+ minute docker e2e suite (apps/agent/e2e) is too slow for the PR
+    # path; .github/workflows/e2e.yml runs it nightly and per release tag.
     #
-    # The 35+ minute docker e2e suite (apps/agent/e2e) is not run here: it is
-    # too slow for the PR path. It is no longer unrun, though — AGT-01 requires
-    # it against every RC and on a schedule, so .github/workflows/e2e.yml runs
-    # it nightly and on every release tag. It does not gate publication; the
-    # header of e2e.yml says why.
-    #
-    # REL-20: sharded, because ~2900 tests behind a testcontainer is the long
-    # pole of the whole workflow. The split is by file and by blake2b of the
-    # path (tests/build/backend_shard.py), so a given test file is in the same
-    # shard on every run, on every machine and under any hash seed — "shard 3
-    # failed" names a reproducible set of tests. The coverage ratchet is not
-    # enforced per shard, because a quarter of the suite cannot reach a
-    # whole-suite threshold; the `backend-coverage` job below combines the four
-    # data files and applies the gate to the total, so the number being
-    # enforced is still the one in apps/backend/pyproject.toml.
+    # REL-20: sharded by file and by blake2b of the path
+    # (tests/build/backend_shard.py), so a file lands in the same shard on
+    # every run and under any hash seed — "shard 3 failed" names a
+    # reproducible set. The coverage ratchet is NOT enforced per shard (a
+    # quarter of the suite cannot reach a whole-suite threshold); the
+    # `backend-coverage` job below combines the four data files and gates the
+    # total.
     strategy:
       # A red shard must not cancel its siblings: cancelling them destroys
       # exactly the evidence needed to tell a shard-local failure from a
@@ -302,24 +289,15 @@ jobs:
           retention-days: 14
 
   # ── Fresh-install migrations ─────────────────────────────────────────────────
-  # Nothing in this repo ran `alembic upgrade head` against an empty database.
-  # Both pytest conftests build their schema with Base.metadata.create_all(),
-  # and tests/integration/conftest.py sets CB_AUTO_MIGRATE=false on top, so the
-  # path every real install takes was exercised only on a user's machine. That
-  # shipped a v0.4.0 whose backend could not start: 0001_init bootstraps a fresh
-  # schema straight from live app.db.models, and 0105_backup_age_recipient then
-  # re-added a column that bootstrap had already created.
+  # `alembic upgrade head` against a genuinely empty database — the path every
+  # real install takes, and the only place it is exercised. Both pytest
+  # conftests build their schema with Base.metadata.create_all() instead.
   #
-  # Separate from backend-tests rather than folded into it, for two reasons that
-  # are both about the database. That job shards apps/backend/tests only —
-  # tests/build/backend_shard.py enumerates that directory, so tests/integration
-  # is invisible to it — and it takes its database from a testcontainer that the
-  # session fixture has already populated with create_all(). This check needs
-  # one it can create, drop, and start genuinely empty.
-  #
-  # Artifact Smoke does not cover this either. It installs the candidate .deb on
-  # a clean host and asserts version, shipped files and broker resolution, but
-  # never starts the service, so no migration runs there.
+  # Kept separate from backend-tests because that job shards
+  # apps/backend/tests only (tests/integration is invisible to
+  # backend_shard.py) and inherits a testcontainer already populated by
+  # create_all(). This needs a database it can create, drop and start empty.
+  # Artifact Smoke never starts the service, so no migration runs there.
   fresh-install-migrations:
     name: Fresh-install migrations
     runs-on: ubuntu-24.04
@@ -371,16 +349,13 @@ jobs:
             echo "CB_TEST_SEED=${CB_TEST_SEED}"
           } | tee artifacts/run-manifest.txt
 
-      # Invoked the way `make test-backend` invokes it: from apps/backend, with
-      # the path passed explicitly. pytest takes its rootdir from the argument,
-      # so /pytest.ini governs this run — which is where `filterwarnings = error`
-      # lives, and why the backend's own --cov-fail-under does not apply to a
-      # two-test file.
+      # Invoked as `make test-backend` does: from apps/backend with the path
+      # passed explicitly, so pytest takes its rootdir from the argument and
+      # /pytest.ini governs the run (where `filterwarnings = error` lives).
       #
-      # No frontend build and no Redis or NATS: the fixture talks to PostgreSQL
-      # and runs alembic in a subprocess. CB_ALLOW_DEGRADED_DEPENDENCIES matches
-      # the Makefile so importing app.main at collection time does not demand a
-      # broker this job has no reason to run.
+      # No frontend build, Redis or NATS: the fixture only needs PostgreSQL.
+      # CB_ALLOW_DEGRADED_DEPENDENCIES matches the Makefile so importing
+      # app.main at collection time does not demand a broker.
       - name: Fresh-install migration chain
         shell: bash
         env:
@@ -452,16 +427,12 @@ jobs:
             echo "CB_TEST_SEED=${CB_TEST_SEED}"
           } | tee artifacts/run-manifest.txt
 
-      # REL-15: coverage is enforced and retained, not just produced. The
-      # thresholds live in vitest.config.ts so a local run fails identically;
-      # only the reporter, the seed and the log destination are added here.
+      # REL-15: thresholds live in vitest.config.ts so a local run fails
+      # identically; only the reporter, seed and log destination are added.
       #
-      # Not sharded, deliberately. Vitest's own --shard is deterministic, but
-      # the v8 coverage thresholds in vitest.config.ts apply per run, so a
-      # sharded run would need --merge-reports to keep the REL-15 gate honest —
-      # more machinery than a suite this size is worth. Determinism is what
-      # REL-20 asks for and is already true: sequence.shuffle is off, so the
-      # file order is the sorted one, and the seed below is recorded with it.
+      # Not sharded: the v8 coverage thresholds apply per run, so sharding
+      # would need --merge-reports to keep the gate honest. Order is already
+      # deterministic (sequence.shuffle is off) and the seed is recorded.
       - name: Frontend tests with coverage
         shell: bash
         run: |
@@ -482,14 +453,10 @@ jobs:
           retention-days: 14
 
       # -race is mandatory: the agent's daemon-startup ordering guarantees are
-      # only observable under the race detector (see apps/agent/Makefile). The
-      # command stays `make test` so the Makefile remains the one place that
-      # decides how the agent is tested; the extra flags arrive through GOFLAGS,
-      # scoped to this step so `go vet` below does not inherit them.
-      #
-      # -shuffle=off is go test's default and is stated anyway: REL-20 asks for
-      # a deterministic order, and a default that is never written down is a
-      # default that changes without anyone noticing.
+      # only observable under the race detector. The command stays `make test`
+      # so the Makefile remains the one place deciding how the agent is tested;
+      # flags arrive via GOFLAGS, scoped so `go vet` does not inherit them.
+      # -shuffle=off is the default, stated so it cannot drift unnoticed.
       - name: Agent tests
         shell: bash
         env:
@@ -682,32 +649,21 @@ jobs:
           docker run --rm --entrypoint sh "circuitbreaker:${CB_VERSION}" \
             -c 'test -s /opt/circuitbreaker/agent-binaries/manifest.json && ls /opt/circuitbreaker/agent-binaries'
 
-      # Everything below this line is the smoke test the job was named after and
-      # did not contain. Until now it built the image and asserted that one file
-      # existed inside it, which a `COPY` of an empty tree would also satisfy:
-      # the container was never started, so a broken entrypoint, a failed
-      # migration, a supervisord program that dies on boot, an nginx config that
-      # does not parse, or a frontend stage that produced no bundle all shipped
-      # as green. Each of those has a different symptom and none of them are
-      # visible from the outside of an unstarted image.
+      # The image must be STARTED, not just built: a broken entrypoint, failed
+      # migration, dying supervisord program, unparseable nginx config or empty
+      # frontend bundle are all invisible from outside an unstarted image.
       #
-      # This runs the image through docker-compose.yml rather than a hand-written
-      # `docker run`, because that file is what users are given and what
-      # install.sh uses. read_only, the tmpfs set, cap_drop/cap_add and the
-      # healthcheck are all part of what has to work; a bespoke `docker run` here
-      # would test an arrangement nobody deploys and would keep passing after
-      # compose stopped working.
+      # Through docker-compose.yml rather than a hand-written `docker run`,
+      # because that file is what users get and what install.sh uses —
+      # read_only, the tmpfs set, cap_drop/cap_add and the healthcheck are all
+      # part of what has to work.
 
-      # Ephemeral, per-run, never stored: the four values the compose file guards
-      # with ${VAR:?} and refuses to start without. token_hex for the three
-      # opaque ones, and a real Fernet key for the vault — urlsafe base64 of 32
-      # bytes, the same shape Fernet.generate_key() produces in
-      # services/vault_service.py, because the vault rejects anything else at
-      # startup and "container never became live" is a poor way to learn that.
+      # Ephemeral, per-run, never stored: the four values compose guards with
+      # ${VAR:?}. token_hex for the three opaque ones; the vault needs a real
+      # Fernet key (urlsafe base64 of 32 bytes) or it rejects it at startup.
       #
       # ::add-mask:: is registered before the values are written anywhere, so a
-      # later step that dumps the environment or a compose error that echoes a
-      # variable is redacted in the log rather than after the fact.
+      # later step dumping the environment is redacted rather than leaked.
       - name: Mint ephemeral secrets for the smoke run
         env:
           CB_VERSION: ${{ steps.ver.outputs.version }}
@@ -768,14 +724,11 @@ jobs:
           echo "::error::container never reported live within 300s"
           exit 1
 
-      # Separate from /livez and with its own budget, because they fail for
-      # different reasons and the distinction is the diagnosis: live-but-never-
-      # ready is a dependency that did not come up — embedded Postgres, NATS,
-      # Redis or a migration that did not finish — while never-live is the
-      # application process itself. Dockerfile.mono deliberately healthchecks
-      # only /livez so a slow dependency cannot become a restart loop; that is
-      # the right call for the runtime and the wrong one for a gate, which is
-      # why readiness is asserted here instead.
+      # Separate from /livez with its own budget: live-but-never-ready is a
+      # dependency that did not come up, never-live is the process itself, and
+      # the distinction is the diagnosis. Dockerfile.mono healthchecks only
+      # /livez so a slow dependency cannot cause a restart loop — right for the
+      # runtime, wrong for a gate, so readiness is asserted here.
       - name: Wait for /readyz
         run: |
           set -euo pipefail
@@ -792,19 +745,13 @@ jobs:
           cat /tmp/readyz.json 2>/dev/null || echo "(no response body)"
           exit 1
 
-      # The frontend half, in two parts, because the mono image does not serve
-      # the SPA over HTTP at all.
+      # The mono image does not serve the SPA over HTTP at all: nginx.mono.conf's
+      # :8080 block proxies only the health endpoints and the ACME challenge,
+      # and its `location /` is `return 301 https://$host$uri`. The SPA lives in
+      # the :8443 block. So probe HTTP for the redirect and HTTPS for the app.
       #
-      # nginx.mono.conf's :8080 block proxies only the four health endpoints and
-      # the ACME challenge; its `location /` is `return 301 https://$host$uri`.
-      # The SPA lives in the :8443 block, which is the one with
-      # `root /app/frontend/dist` and the try_files fallback. Asserting 200 on
-      # http://…:18080/ therefore failed against a perfectly healthy container —
-      # the first run of this job caught it, which is the job working.
-      #
-      # The redirect is asserted rather than followed. It is a security control:
-      # anything that is not a health probe must be pushed to TLS, and a silent
-      # -L here would turn its removal into a passing test.
+      # The redirect is asserted, never followed — pushing non-health traffic to
+      # TLS is a security control, and a silent -L would let its removal pass.
       - name: Assert plain HTTP redirects to TLS
         run: |
           set -euo pipefail
@@ -845,19 +792,14 @@ jobs:
             supervisorctl -c /etc/supervisor/conf.d/supervisord.conf status \
             | tee /tmp/supervisor-status.txt || true
 
-          # Not a count. The first version of this step asserted exactly 13,
-          # because supervisord.mono.conf has 13 [program:] sections — but
-          # worker-monitor-poll carries numprocs=2 and a process_name template,
-          # so supervisorctl reports 14 processes and the job failed against a
-          # container in which everything was running. Any hardcoded total is
-          # wrong again the next time a program or a numprocs changes.
+          # Assert state, never a process count: `numprocs` means the number of
+          # processes does not match the number of [program:] sections, and any
+          # hardcoded total breaks the next time either changes.
           #
-          # Reading the state column is also stricter than grepping for FATAL:
-          # a state this job never thought of — STOPPED, or a STARTING that
-          # never settles — fails here too instead of passing unnoticed.
-          #
-          # Retried, because /readyz answering does not mean every worker has
-          # finished starting; a process still in STARTING is not yet a fault.
+          # Reading the state column is stricter than grepping for FATAL — an
+          # unanticipated STOPPED, or a STARTING that never settles, fails here
+          # too. Retried, because /readyz answering does not mean every worker
+          # has finished starting.
           all_running=""
           for attempt in $(seq 1 6); do
             docker compose -f docker-compose.yml exec -T circuitbreaker \
@@ -962,14 +904,11 @@ jobs:
     # unexplainable screenshot diffs.
     container:
       image: mcr.microsoft.com/playwright:v1.62.1-noble
-    # Steps in a container run as root, but the runner mounts its own home at
-    # /github/home and hands it to the job as $HOME — owned by the image's
-    # `pwuser`, not by root. Firefox refuses to start in that situation
-    # ("Running Nightly as root in a regular user's session is not supported"),
-    # which is why all 15 firefox specs failed to launch a browser at all while
-    # chromium, webkit and mobile-chrome passed. /root is root's own directory,
-    # so the ownership check succeeds. This is the workaround Playwright itself
-    # prints in the failure message. Nothing in this job needs $HOME to persist.
+    # Steps in a container run as root, but the runner mounts $HOME at
+    # /github/home owned by the image's `pwuser`. Firefox refuses to start in
+    # that situation ("Running Nightly as root in a regular user's session is
+    # not supported"); /root is root's own directory, so the check succeeds.
+    # Nothing in this job needs $HOME to persist.
     env:
       HOME: /root
     # REL-20: Playwright's --shard is deterministic by construction — it sorts
@@ -1047,19 +986,14 @@ jobs:
           retention-days: 14
 
   # ── Browser E2E aggregate ────────────────────────────────────────────────────
-  # The check-run name branch protection can actually require.
+  # The stable check-run name branch protection can require.
   #
-  # `browser-e2e` is a matrix, so it produces no check named `Browser E2E` — it
-  # produces `Browser E2E (shard 1/2)` and `(shard 2/2)`. Requiring the bare
-  # name, which .github/branch-protection.md did, requires a check that is never
-  # reported: the rule matches nothing and contributes nothing. Requiring the
-  # two shard names instead works, but couples the branch settings to the shard
-  # count — changing `shard: [1, 2]` to `[1, 2, 3]` silently stops enforcing the
-  # third, because a required check that no longer exists blocks merges while a
-  # new one nobody required does not.
-  #
-  # This job is the stable name in front of that. It has no steps worth running;
-  # its value is entirely in `needs` and in the assertion below.
+  # A matrix produces `Browser E2E (shard 1/2)` and `(shard 2/2)`, never a bare
+  # `Browser E2E`. Requiring the shard names instead would couple the branch
+  # settings to the shard count: adding a third silently stops enforcing it,
+  # because a required check that no longer exists blocks merges while a new one
+  # nobody required does not. This job's value is entirely in `needs` and the
+  # assertion below.
   browser-e2e-gate:
     name: Browser E2E
     needs: browser-e2e

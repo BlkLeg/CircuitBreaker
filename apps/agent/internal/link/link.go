@@ -31,60 +31,41 @@ import (
 var heartbeatInterval = 20 * time.Second
 
 // readTimeout is how long an established connection may go without a single
-// inbound frame before the agent treats the link as down. It exists because
-// a severed network is not always a closed socket: `docker network
-// disconnect`, a firewall DROP rule and a stale NAT entry all produce a
-// black hole in which no FIN or RST ever arrives, the local send buffer
-// keeps accepting writes, and `conn.WriteMessage` keeps returning nil into a
-// void. Without a read deadline the agent believed such a link was healthy
-// indefinitely — runOnce's select loop kept writing frames that would never
-// be delivered, `live` stayed true so Run routed data frames straight into
-// the dead socket instead of the spool, and an entire outage's samples were
-// lost rather than queued. A silent peer is now a disconnect, which is what
-// hands the outage to the spool.
+// inbound frame before the agent treats the link as down. A severed network is
+// not always a closed socket — `docker network disconnect`, a firewall DROP
+// rule and a stale NAT entry all produce a black hole where no FIN or RST ever
+// arrives and `conn.WriteMessage` keeps returning nil — so a silent peer must
+// count as a disconnect, which is what hands the outage to the spool.
 //
-// 60s is three missed server pings, and is deliberately the same number as
-// the backend's own _LINK_DEAD_SECONDS (ws_agents.py) — the two sides
-// declare each other dead on the same schedule. It is safe to be this strict
-// because the backend sends an application `ping` every 20s
-// (_LINK_PING_INTERVAL_SECONDS) whether or not the agent is saying anything,
-// so a healthy connection is never idle for a whole minute; the deadline is
-// refreshed per read (see runOnce's reader goroutine), so any inbound frame
-// — ping, hello.ack, capabilities.set, transport.rekey — keeps it alive.
-//
-// A var, not a const, so tests can shrink it; production never changes it.
+// Must stay equal to the backend's _LINK_DEAD_SECONDS (ws_agents.py) so both
+// sides declare each other dead on the same schedule. Safe to be this strict
+// because the backend pings every 20s regardless; the deadline is refreshed
+// per read. A var, not a const, so tests can shrink it.
 var readTimeout = 3 * heartbeatInterval
 
-// handshakeTimeout bounds the one read in dialAndHandshake that waits for
-// the server's Noise handshake response. Same defect as readTimeout, one
-// step earlier: a partition landing between the TCP connect and that
-// response left the read blocked forever, and because dialAndHandshake's
-// ctx reaches the dialer but not gorilla's blocking ReadMessage, nothing
-// recovered from it — not reconnect backoff, not ctx cancellation, not
-// shutdown. Run's entire retry loop would sit in that one call. Mirrors the
-// server's own _HANDSHAKE_TIMEOUT_SECONDS. A var so tests can shrink it.
+// handshakeTimeout bounds the one read in dialAndHandshake that waits for the
+// server's Noise handshake response. dialAndHandshake's ctx reaches the dialer
+// but not gorilla's blocking ReadMessage, so without this deadline a partition
+// landing between the TCP connect and that response parks Run's entire retry
+// loop in one call — unrecoverable by backoff, cancellation or shutdown.
+// Mirrors the server's _HANDSHAKE_TIMEOUT_SECONDS. A var so tests can shrink it.
 var handshakeTimeout = 10 * time.Second
 
-// errReadTimeout is what a tripped readTimeout surfaces as. It is a
-// sentinel rather than the raw network error because gorilla replaces
-// timeout errors with its own unexported *netError, which does not unwrap
-// to os.ErrDeadlineExceeded — so without this there is no reliable way for
-// a caller (or a test) to tell "the peer went silent" apart from any other
-// dropped connection.
+// errReadTimeout is what a tripped readTimeout surfaces as. It is a sentinel
+// rather than the raw network error because gorilla replaces timeout errors
+// with its own unexported *netError, which does not unwrap to
+// os.ErrDeadlineExceeded — so there is otherwise no reliable way to tell "the
+// peer went silent" apart from any other dropped connection.
 var errReadTimeout = errors.New("link: no frame from server within the read deadline")
 
-// The paced catch-up budget for spooled data frames (D-5). runOnce drains at
-// most drainFramesPerTick frames — and at most drainBytesPerTick of them —
-// once every drainTickInterval, from the head of the spool, while the
-// connection is up and accepted. That is <=40 frames/s and <=2.5 MiB/s: a
-// one-hour outage at the default 30s cadence (120 samples) clears in ~3s, a
-// 24-hour outage (2,880 samples) in ~72s, and a completely full 64 MiB spool
-// in under three minutes — bounded, which is the property draining on
-// connect or draining until empty does not have (a fleet reconnecting after
-// a backend outage would otherwise deliver up to 64 MiB per agent at once).
+// The paced catch-up budget for spooled data frames. runOnce drains at most
+// drainFramesPerTick frames — and at most drainBytesPerTick of them — once
+// every drainTickInterval, oldest first, while the connection is up and
+// accepted. Being bounded is the point: draining on connect or until empty
+// would let a reconnecting fleet deliver up to 64 MiB per agent at once. At
+// <=40 frames/s a 24-hour backlog still clears in ~72s.
 //
-// Vars, not consts, so tests can shrink the interval; production never
-// changes them.
+// Vars, not consts, so tests can shrink the interval.
 var (
 	drainTickInterval        = 100 * time.Millisecond
 	drainFramesPerTick       = 4
@@ -92,40 +73,27 @@ var (
 )
 
 // helloAckTimeout bounds the wait between a completed Noise handshake and an
-// accepted hello.ack.
-//
-// Without it that wait inherits readTimeout — sixty seconds — because the
-// handshake deadline is cleared once Noise completes and the reader re-arms at
-// the steady-state value. A server that accepts the socket and then stalls
-// warming a cold connection pool, which is exactly what a server does in the
-// seconds after a restart, therefore cost a full minute *and* advanced the
-// backoff, since a run that never reached hello.ack looks identical to one that
-// failed outright.
+// accepted hello.ack. Without it that wait inherits readTimeout's sixty
+// seconds, because the handshake deadline is cleared once Noise completes, so
+// a server stalling on a cold connection pool — what a server does in the
+// seconds after a restart — costs a full minute and advances the backoff.
 //
 // 15s rather than the 10s handshake budget: once TLS and Noise are done,
-// hello.ack is a handful of queries in one session, and the extra headroom
-// costs nothing against a ladder that now retries in 250ms. A var, not a const,
-// so tests can shrink it.
+// hello.ack is a handful of queries. A var so tests can shrink it.
 var helloAckTimeout = 15 * time.Second
 
-// rekeyIntervalEnvOverride is a narrowly-scoped, test-only escape hatch: if
-// set to a positive integer number of seconds, it replaces the production
-// 15-minute rekeyInterval below. It exists solely so the Docker E2E harness
-// (apps/agent/e2e) can exercise a real Noise rekey cycle without waiting out
-// 15 real minutes. No production deployment path (the install script,
-// systemd unit, or any documented config) ever sets this variable, and when
-// it is unset — as in every real deployment — rekeyInterval is byte-for-byte
-// the same 15*time.Minute production default it has always been (see
-// resolveRekeyInterval's unit test, TestResolveRekeyInterval_UnsetIsInert).
-// Global Constraints mandates the 15-minute production default; this
-// override changes nothing about that default, it only lets a test ask for
-// something shorter.
+// rekeyIntervalEnvOverride is a test-only escape hatch: set to a positive
+// integer number of seconds, it replaces the production 15-minute
+// rekeyInterval, so the Docker E2E harness can exercise a real Noise rekey
+// cycle without waiting out 15 real minutes. No production deployment path —
+// install script, systemd unit, documented config — sets it, and unset it
+// leaves the 15-minute default untouched, which is what production requires.
 const rekeyIntervalEnvOverride = "CB_AGENT_TEST_REKEY_INTERVAL_SECONDS"
 
-// resolveRekeyInterval reads rekeyIntervalEnvOverride and returns the
-// interval rekeyInterval should start at. Split out from the var
-// initializer purely so a unit test can call it directly (via t.Setenv)
-// without depending on process-startup timing.
+// resolveRekeyInterval reads rekeyIntervalEnvOverride and returns the interval
+// rekeyInterval should start at. Split out from the var initializer so a unit
+// test can call it directly (via t.Setenv) without depending on process-startup
+// timing.
 func resolveRekeyInterval() time.Duration {
 	if v := os.Getenv(rekeyIntervalEnvOverride); v != "" {
 		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
@@ -135,13 +103,11 @@ func resolveRekeyInterval() time.Duration {
 	return 15 * time.Minute
 }
 
-// rekeyInterval is how often each side rotates its *own* outbound Noise
-// cipher (spec §3.5). The two directions are independent: the agent times its
-// agent->server cipher here, the server times its server->agent cipher in
-// ws_agents.py's link_stream, and neither waits on the other. A var, not a
-// const, so tests can shrink it (either directly, in-process, or — for the
-// Docker E2E harness, which runs the compiled binary as a separate process —
-// via rekeyIntervalEnvOverride) — production stays at 15 minutes.
+// rekeyInterval is how often each side rotates its *own* outbound Noise cipher.
+// The two directions are independent: the agent times its agent->server cipher
+// here, the server times its server->agent cipher in ws_agents.py's
+// link_stream, and neither waits on the other. A var so tests can shrink it,
+// in-process or via rekeyIntervalEnvOverride; production stays at 15 minutes.
 var rekeyInterval = resolveRekeyInterval()
 
 // rekeyDirectionOutbound is the only `transport.rekey` direction either side
@@ -152,17 +118,13 @@ var rekeyInterval = resolveRekeyInterval()
 // rather than guessed at.
 const rekeyDirectionOutbound = "outbound"
 
-// UpdateStatusEvent is one self-update transition (`update.status`, Task 24)
-// queued by the daemon's update worker for the event loop to transmit:
-// Version is the update target, Phase is one of "started"/"succeeded"/
-// "failed"/"rolled_back", and ErrMsg is only meaningful alongside "failed"
-// ("" otherwise).
+// UpdateStatusEvent is one self-update transition (`update.status`) queued by
+// the daemon's update worker for the event loop to transmit. ErrMsg is only
+// meaningful alongside phase "failed".
 //
-// It is a channel value rather than a callback so the producer stays
-// decoupled from the connection that sends it: the worker cannot know
-// which runOnce iteration — or even which connection — will drain it, and a
-// callback would hand it a websocket writer it is forbidden to touch (see
-// Options.UpdateStatusFrames for the single-writer rule).
+// A channel value rather than a callback, so the producer stays decoupled from
+// the connection that sends it: a callback would hand the worker a websocket
+// writer it is forbidden to touch (see Options.UpdateStatusFrames).
 type UpdateStatusEvent struct {
 	Version string
 	Phase   string
@@ -174,71 +136,49 @@ type Options struct {
 	Key               *enroll.DeviceKey
 	AgentVersion      string
 	OnCapabilitiesSet func(json.RawMessage) error
-	// OnProbeAssign and OnProbeCancel receive one server -> agent
-	// `probe.assign` / `probe.cancel` payload each (Slice 3 §4), raw. Both are
-	// called from runOnce's inbound switch, which shares this connection's one
-	// goroutine with the websocket writer, the heartbeat ticker, the rekey
-	// ticker and the spool-drain ticker — so both handlers must validate and
-	// enqueue only. A handler that performed the probe inline would stall
-	// heartbeats (20s interval) past the server's 60s dead-link deadline and
-	// tear down the very link the result has to travel back over.
-	// internal/collect/probe's Runtime.Assign/Runtime.Cancel are that
-	// enqueue-only implementation; the returned error is logged and never
-	// ends the connection, since a refused assignment is reported to the
-	// server as a `probe.result` by the runtime itself.
+	// Every On* handler below is called from runOnce's inbound switch, which
+	// shares this connection's one goroutine with the websocket writer and the
+	// heartbeat, rekey and spool-drain tickers. They must therefore validate and
+	// enqueue only: work performed inline stalls heartbeats past the server's
+	// 60s dead-link deadline and tears down the very link the result has to
+	// travel back over. A returned error is logged and never ends the
+	// connection, because each runtime reports its own refusal to the server.
+
+	// OnProbeAssign and OnProbeCancel receive one raw server -> agent
+	// `probe.assign` / `probe.cancel` payload each.
+	// internal/collect/probe's Runtime.Assign/Runtime.Cancel are the
+	// enqueue-only implementation; a refused assignment comes back to the
+	// server as a `probe.result` from the runtime itself.
 	OnProbeAssign func(json.RawMessage) error
 	OnProbeCancel func(json.RawMessage) error
 	// OnDiscoveryRequest and OnDiscoveryCancel are the same contract for the
-	// server -> agent `discovery.request` / `discovery.cancel` payloads (Slice
-	// 4 §4), and it is the same contract for the same reason: they are called
-	// from runOnce's inbound switch, on the one goroutine this connection
-	// shares with the websocket writer and the heartbeat, rekey and
-	// spool-drain tickers. A handler that scanned inline would stall
-	// heartbeats past the server's 60s dead-link deadline and tear down the
-	// link every finding has to travel back over — so both must validate and
-	// enqueue only. internal/collect/discover's Runtime.Request/Runtime.Cancel
-	// are that enqueue-only implementation; the returned error is logged and
-	// never ends the connection, since a refused dispatch is reported to the
-	// server as a terminal `discovery.finding` summary by the runtime itself,
-	// and that summary is what closes the scan job.
+	// `discovery.request` / `discovery.cancel` payloads.
+	// internal/collect/discover's Runtime.Request/Runtime.Cancel are the
+	// enqueue-only implementation; a refused dispatch comes back as a terminal
+	// `discovery.finding` summary, and that summary is what closes the scan job.
 	OnDiscoveryRequest func(json.RawMessage) error
 	OnDiscoveryCancel  func(json.RawMessage) error
-	// OnUpdate accepts one `update` instruction: it validates the payload and
-	// enqueues it for the daemon's serialized update worker, then returns —
-	// immediately. It is called from runOnce's inbound switch, on the one
-	// goroutine this connection shares with the websocket writer and the
-	// heartbeat, rekey and spool-drain tickers, so it must not perform the
-	// update inline (docs/design/2026-09-16-agent-deployment-connection-plan.md
-	// §1/§3.1): a download takes up to downloadTimeout — two minutes — and
-	// would starve heartbeats past the server's 60s dead-link deadline and
-	// stop the reader from consuming the socket, tearing down the very link
-	// the update's own status has to travel over.
+	// OnUpdate validates one `update` instruction and enqueues it for the
+	// daemon's serialized update worker. Inline execution is especially
+	// forbidden here: a download takes up to downloadTimeout — two minutes —
+	// and would also stop the reader consuming the socket.
 	//
 	// A non-nil return means the instruction was not accepted — malformed
-	// payload, queue full because an update is already queued or running
-	// ("update already in progress"), or the worker shutting down — and
-	// runOnce reports that to the server as an explicit failed `update.status`
-	// so a refused instruction is never silently dropped (§8.6).
+	// payload, queue full because an update is already queued or running, or
+	// the worker shutting down — and runOnce reports that to the server as an
+	// explicit failed `update.status` so a refusal is never silently dropped.
 	OnUpdate func(payload json.RawMessage) error
-	// UpdateStatusFrames carries the update worker's `update.status`
-	// reports to whatever runOnce is currently serving. The worker — a
-	// process-lifetime goroutine in cmd/cb-agent — sends; the connection's
-	// event loop is the sole receiver and the sole websocket writer, which
-	// is what keeps gorilla's one-writer invariant and sequence-number
-	// ownership intact (§3.1): the worker cannot write frames, and cannot
-	// know which connection will.
+	// UpdateStatusFrames carries the update worker's `update.status` reports to
+	// whatever runOnce is currently serving. The worker sends; the event loop is
+	// the sole receiver and sole websocket writer, which is what keeps gorilla's
+	// one-writer invariant and sequence-number ownership intact.
 	//
-	// Delivery is best-effort by design. Events are drained only while a
-	// runOnce is serving a connection, and nothing waits for the server to
-	// have handled them; terminal outcomes do not depend on this channel for
-	// durability — the worker persists a pending-outcome record for the next
-	// process to replay (§3.3, see internal/update's WritePendingOutcome), so
-	// a lost event costs promptness, never correctness. The daemon buffers it
-	// (cmd/cb-agent's updateStatusQueueDepth) so one update's
-	// started+terminal pair always fits without the worker ever blocking on a
-	// connection that stopped draining. A nil channel never selects, which is
-	// what the spool-less one-shot Uninstall connection and this package's
-	// tests rely on.
+	// Delivery is best-effort by design — durability comes from the worker
+	// persisting a pending-outcome record for the next process to replay
+	// (internal/update's WritePendingOutcome), so a lost event costs promptness,
+	// never correctness. The daemon's buffer (updateStatusQueueDepth) fits one
+	// update's started+terminal pair so the worker never blocks. A nil channel
+	// never selects, which the one-shot Uninstall connection relies on.
 	UpdateStatusFrames <-chan UpdateStatusEvent
 	OnConnected        func()
 	// OnRejected fires whenever an explicit hello.ack rejection arrives
@@ -257,10 +197,9 @@ type Options struct {
 	// fires) for an update outcome a *previous* process couldn't report live:
 	// a rollback (internal/update's WriteRollbackReport), or a succeeded
 	// update whose live send was lost to a connection drop immediately before
-	// re-exec (internal/update's WritePendingOutcome — see §3.3). phase is
-	// whichever terminal phase that record carries, "rolled_back" or
-	// "succeeded". ok is false when there is nothing pending, the
-	// overwhelmingly common case.
+	// re-exec (internal/update's WritePendingOutcome). phase is whichever
+	// terminal phase that record carries, "rolled_back" or "succeeded". ok is
+	// false when there is nothing pending, the overwhelmingly common case.
 	ReportPendingUpdateOutcome func() (version, phase string, ok bool)
 	// ClearPendingUpdateOutcome is called after ReportPendingUpdateOutcome's
 	// report has actually been sent (sendUpdateStatus returned no error), so
@@ -270,39 +209,27 @@ type Options struct {
 	ClearPendingUpdateOutcome func()
 
 	// Spool durably buffers outbound *data* frames (never heartbeat/control
-	// traffic — frame.IsDataFrame draws that line). Every data frame a
-	// producer hands this link is fsync'd here *before* it can reach a
-	// socket, and is drained back out by runOnce's paced catch-up burst — at
-	// most drainFramesPerTick frames per drainTickInterval, oldest first —
-	// leaving the spool only when the server acknowledges it (see
-	// dataFrameSender in outbound.go).
+	// traffic — frame.IsDataFrame draws that line). Every data frame is fsync'd
+	// here before it can reach a socket and leaves only when the server
+	// acknowledges it (see dataFrameSender in outbound.go).
 	//
-	// Nil disables spooling entirely — e.g. Uninstall's one-shot connection
-	// has no ongoing data-frame flow to buffer — and every drain path is
-	// nil-safe for exactly that case. A nil spool also means no durability
-	// guarantee at all: the daemon always configures one.
+	// Nil disables spooling and every drain path is nil-safe for that case, but it
+	// also means no durability guarantee at all: the daemon always configures one.
 	Spool *spool.Spool
 
-	// DataFrames is where a producer outside this package — the host
-	// telemetry collector, and the probe and discovery collectors — sends
-	// outbound data frames for this link to transmit.
+	// DataFrames is where producers outside this package — the host telemetry,
+	// probe and discovery collectors — send outbound data frames to transmit.
 	//
-	// With a Spool configured, Run consumes this channel on its own
-	// goroutine and enqueues everything it receives; runOnce never reads it,
-	// and the drain ticker is the sole outbound data path. Without one,
-	// runOnce reads it directly and sends live (sendLive), which is the
-	// degenerate case Uninstall's one-shot connection and this package's
-	// spool-less tests take.
+	// With a Spool configured, Run consumes this channel on its own goroutine and
+	// enqueues everything; runOnce never reads it and the drain ticker is the sole
+	// outbound path. Without one, runOnce reads it and sends live (sendLive).
 	//
-	// runOnce assigns V/Seq before sending, same as it does for
-	// heartbeat/rekey frames (spooled frames included: a resend is
-	// re-stamped with this connection's seq). TS is *not* assigned there —
-	// an observation's timestamp is fixed at enqueue, before the frame can
-	// touch a network, so a sample recovered from an hours-old backlog keeps
-	// the instant it was taken.
+	// runOnce assigns V/Seq before sending, so a resend is re-stamped with this
+	// connection's seq. TS is deliberately not assigned there — an observation's
+	// timestamp is fixed at enqueue, so a sample recovered from an hours-old
+	// backlog keeps the instant it was taken.
 	//
-	// A nil channel simply never selects, which is what the one-shot
-	// Uninstall connection and this package's non-data-frame tests rely on.
+	// A nil channel never selects, which the one-shot Uninstall connection relies on.
 	DataFrames <-chan frame.Frame
 	// ControlFrames carries ephemeral producer control reports such as
 	// capability.readiness. They are sent only while connected and never spooled.
@@ -314,15 +241,14 @@ type Options struct {
 	// into e.g. status.Writer.SetSpoolStats. May be nil.
 	OnSpoolStats func(depth int, bytes int64)
 
-	// StateDir is where a Task 28 `key.rotate` (kind="server") frame's
-	// successor server public key is durably persisted (see
-	// config.SaveServerKeyRotation) and where an in-progress rotation
-	// advertised on some earlier connection is read back from before dialing
-	// (see serverKeyCandidates). Empty disables persistence entirely —
-	// candidates then reduce to just opts.Config.ServerStaticPK, and an
-	// inbound key.rotate frame is logged and otherwise ignored — which
-	// matches every caller in this package's test suite that predates Task 28
-	// and never sets this field. cmd/cb-agent/main.go passes config.StateDir().
+	// StateDir is where a `key.rotate` (kind="server") frame's successor server
+	// public key is durably persisted (see config.SaveServerKeyRotation) and
+	// where an in-progress rotation advertised on an earlier connection is read
+	// back from before dialing (see serverKeyCandidates). Empty disables
+	// persistence entirely — candidates reduce to just
+	// opts.Config.ServerStaticPK and an inbound key.rotate frame is logged and
+	// ignored — which is what this package's tests rely on.
+	// cmd/cb-agent/main.go passes config.StateDir().
 	StateDir string
 }
 
@@ -366,23 +292,17 @@ func Run(ctx context.Context, opts Options) error {
 		opts.OnDisconnected = func(error) {}
 	}
 	// Every data frame is durably spooled *before* it can reach a socket, and
-	// leaves the spool only when the server acknowledges it. There is no
-	// second, "live" route past the disk any more.
+	// leaves the spool only when the server acknowledges it. There must be no
+	// second, "live" route past the disk: `conn.WriteMessage` returning nil
+	// means the local kernel took the bytes, not that the server read them, so
+	// anything handed straight to a socket is lost outright if that socket
+	// turns out to be black-holed.
 	//
-	// The old routing goroutine had one: while a connection was up it handed
-	// frames straight to runOnce, and only spooled the ones it could not hand
-	// over within 10ms. That looked like an optimisation and was a data-loss
-	// bug — `conn.WriteMessage` returning nil means the local kernel took the
-	// bytes, not that the server read them, so every sample collected during
-	// the up-to-60s window before a black-holed socket is noticed went into
-	// the void with nothing left on disk to re-send.
-	//
-	// The cost is one drain tick — at most 100ms — of added latency on a 30s
-	// telemetry cadence. During a real backlog the newest sample now queues
-	// *behind* the backlog instead of jumping it, which is more honest, not
-	// less: the old order landed a fresh sample in the middle of an
-	// hours-long hole, so the chart read current while the history was
-	// missing.
+	// The cost is one drain tick — at most 100ms — on a 30s telemetry cadence,
+	// and during a backlog the newest sample queues behind it rather than
+	// jumping it. That ordering is the honest one: a fresh sample landing in
+	// the middle of an hours-long hole reads as current while the history is
+	// still missing.
 	originalData := opts.DataFrames
 	if originalData != nil && opts.Spool != nil {
 		// runOnce's DataFrames arm never selects on a nil channel, which is
@@ -404,27 +324,19 @@ func Run(ctx context.Context, opts Options) error {
 					}
 					stamped := stampObserved(f)
 					if err := opts.Spool.Enqueue(stamped); err != nil {
-						// The observation is gone. Every data frame now
-						// reaches the wire through the spool, so a spool
-						// that refuses the write — a full disk, a
-						// read-only /var, a state directory that vanished
-						// — is the end of it, where before this change a
-						// live send might still have carried it.
+						// The observation is gone: the spool is the only
+						// route to the wire, so a refused write — full
+						// disk, read-only /var, a vanished state directory
+						// — is the end of it.
 						//
-						// It is not sent live as a fallback, and that is a
-						// decision rather than an omission: a live send
-						// would jump the whole backlog and would be
-						// committed the moment the socket took it, which
-						// are exactly the two properties this phase
-						// removed. Reintroducing both on a rare failure
-						// path would make the delivery guarantee
+						// Deliberately not sent live as a fallback. A live
+						// send would jump the backlog and commit the moment
+						// the socket took it, making the delivery guarantee
 						// conditional on a state nothing else can observe.
-						//
-						// So it is counted instead, into the same
-						// permanent record cap eviction writes to, which
-						// the fleet view and the Telemetry tab already
-						// read. A loss that is real but invisible is the
-						// one outcome this whole effort forbids.
+						// It is counted instead, into the same permanent
+						// record eviction writes to, which the fleet view
+						// and the Telemetry tab already read. A loss that
+						// is real but invisible is what this design forbids.
 						log.Printf("link: spooling outbound data frame: %v", err)
 						// The error, not just "write failed": this string is
 						// what `cb-agent status` prints back as the cause,
@@ -482,23 +394,20 @@ func Run(ctx context.Context, opts Options) error {
 }
 
 // serverKeyCandidates returns the ordered list of server static public keys
-// (hex) this connection attempt should be willing to open a Noise IK
-// handshake against: cfg.ServerStaticPK first (the fast path for the
-// overwhelmingly common no-rotation-in-progress case), then — if a Task 28
-// server-key rotation was ever advertised to this agent over some earlier
-// connection (see the frame.TypeKeyRotate case in runOnce's frame switch) and
-// durably persisted via config.SaveServerKeyRotation — its successor key too.
-// Mirrors the server's own accept-either-key-during-the-overlap-window
-// behavior (agent_crypto.complete_ik_handshake), just from the initiator's
-// side: Noise IK's initiator has to fix one `rs` per handshake attempt, so
-// where the server tries multiple *private* keys against one inbound message,
-// the agent instead retries the handshake itself against each candidate
-// *public* key in turn (see the dial loop in runOnce).
+// (hex) this connection attempt should be willing to open a Noise IK handshake
+// against: cfg.ServerStaticPK first (the fast path when no rotation is in
+// progress), then the successor key if a server-key rotation was advertised on
+// an earlier connection and persisted via config.SaveServerKeyRotation.
 //
-// stateDir == "" (Options.StateDir left unset — every pre-Task-28 caller in
-// this package's test suite) skips the persisted-rotation lookup entirely
-// and returns just cfg.ServerStaticPK, unchanged from this function's
-// absence.
+// Mirrors the server's accept-either-key-during-the-overlap-window behavior
+// (agent_crypto.complete_ik_handshake) from the initiator's side. Noise IK's
+// initiator has to fix one `rs` per handshake attempt, so where the server
+// tries multiple *private* keys against one inbound message, the agent retries
+// the handshake against each candidate *public* key in turn (see runOnce's dial
+// loop).
+//
+// stateDir == "" skips the persisted-rotation lookup and returns just
+// cfg.ServerStaticPK.
 func serverKeyCandidates(cfg *config.Config, stateDir string) []string {
 	candidates := []string{cfg.ServerStaticPK}
 	if stateDir == "" {
@@ -515,45 +424,14 @@ func serverKeyCandidates(cfg *config.Config, stateDir string) []string {
 	return candidates
 }
 
-// dialWithTrust dials u under cfg's currently resolved TLS trust policy.
-//
-// It does not itself promote a successor trust policy: TLS success alone
-// does not prove the peer is the *right* server, only that it presented a
-// certificate this policy accepts. Promotion clears the persisted rotation
-// permanently, so it must wait for the Noise IK handshake to actually
-// authenticate the peer — see dialAndHandshake, the only caller, which
-// invokes the returned promote func after that handshake succeeds and
-// discards it (never calling it) if the handshake fails. The matched
-// candidate is still resolved here, at TLS time, because that is the only
-// point with access to the negotiated certificate.
-//
-// When the first dial fails, it consults the persisted rotation and, only
-// when successorRetryTrust says a cross-mode cutover was actually
-// advertised, retries once under that policy — see successorRetryTrust's
-// doc comment for why the retry is symmetric and why it cannot be triggered
-// by an attacker merely causing dials to fail. opts.StateDir == "" skips
-// the retry entirely rather than falling back to LoadTLSPinRotation's own
-// process-relative default path: every other stateDir-gated lookup in this
-// package (ResolveTrust, serverKeyCandidates, handleTLSPinRotate) guards
-// that case explicitly, and a retry is exactly the path where reading a
-// file an attacker could plant in the process's working directory would
-// matter most.
-//
-// On failure — no retry warranted, or the retry also failing — the returned
-// error is always the *original* current-policy dial's error, since that is
-// what actually describes what the operator has to fix; a doomed retry's own
-// failure would only be noise on top of it.
 // peerLeafCertificate returns the leaf certificate the server presented on
 // conn, or nil for a plain ws:// connection with no TLS to inspect.
 //
-// Read from the connection rather than from the dial's *http.Response, and
-// that distinction is load-bearing. gorilla builds that response by reading
-// the handshake reply off the socket itself instead of going through
-// net/http's transport, so `resp.TLS` is nil however the dial was made —
-// including over wss. Keying promotion on it meant the promote closure was
-// never built at all: every dial reported an empty tls_pin_kind, no agent
-// ever promoted an advertised successor, and the whole slice 4.1 mechanism
-// was inert past the point of persisting the frame.
+// Read from the connection, never from the dial's *http.Response, and that
+// distinction is load-bearing: gorilla builds that response by reading the
+// handshake reply off the socket itself rather than going through net/http's
+// transport, so `resp.TLS` is nil however the dial was made — including over
+// wss. Keying promotion on it silently disables promotion entirely.
 func peerLeafCertificate(conn *websocket.Conn) *x509.Certificate {
 	tlsConn, ok := conn.NetConn().(*tls.Conn)
 	if !ok {
@@ -566,6 +444,25 @@ func peerLeafCertificate(conn *websocket.Conn) *x509.Certificate {
 	return state.PeerCertificates[0]
 }
 
+// dialWithTrust dials u under cfg's currently resolved TLS trust policy and
+// returns a promote func the caller invokes only after the peer is
+// authenticated.
+//
+// It must not promote a successor trust policy itself: TLS success proves only
+// that the peer presented an acceptable certificate, not that it is the right
+// server, and PromoteTrust permanently clears the persisted rotation. The
+// matched candidate is still resolved here because TLS time is the only point
+// with access to the negotiated certificate.
+//
+// When the first dial fails it retries once under the persisted rotation, but
+// only when successorRetryTrust says a cross-mode cutover was advertised — see
+// its doc for why that cannot be triggered by an attacker merely causing dials
+// to fail. StateDir == "" skips the retry rather than falling back to
+// LoadTLSPinRotation's process-relative path, since a retry is where reading an
+// attacker-planted file would matter most.
+//
+// On failure the returned error is always the original current-policy dial's,
+// since that is what describes what the operator has to fix.
 func dialWithTrust(ctx context.Context, opts Options, u string) (*websocket.Conn, func() (string, error), error) {
 	trust := ResolveTrust(opts.Config, opts.StateDir)
 	conn, _, dialErr := tlsdial.NewDialer(trust).DialContext(ctx, u, nil)
@@ -603,27 +500,17 @@ func dialWithTrust(ctx context.Context, opts Options, u string) (*websocket.Conn
 
 // dialAndHandshake dials u and completes the Noise IK handshake against
 // remotePKHex, returning the live connection, initiator session, and the
-// tls_pin_kind the dial matched (see dialWithTrust) on success.
+// tls_pin_kind the dial matched.
 //
-// Promotion is deliberately deferred to the very end, after the Noise
-// handshake has succeeded: TLS success alone only means the peer presented
-// an acceptable certificate, not that it is the right server, and
-// PromoteTrust permanently clears the persisted successor. Promoting on TLS
-// success and then failing the handshake would destroy the only record of
-// the successor policy while leaving the agent unauthenticated against
-// whatever presented that certificate — and since the update-binary
-// download is pinned too, there would be no remote path back. The promote
-// func dialWithTrust returns is therefore only ever invoked here, after
-// ReadHandshakeMessage below has returned successfully; every earlier
-// failure path returns without calling it, leaving the persisted rotation
-// exactly as it was.
+// It is the only caller of dialWithTrust's promote func, and invokes it only
+// after ReadHandshakeMessage succeeds — promoting on TLS success and then
+// failing the handshake would destroy the only record of the successor policy
+// while leaving the agent unauthenticated against whatever presented that
+// certificate, with the pinned update download leaving no remote path back.
 //
-// A handshake failure (ReadHandshakeMessage returning an error — the signal
-// that remotePKHex was the wrong server key: the derived shared secret
-// doesn't match, so msg2's AEAD payload fails to decrypt/verify) closes conn
-// itself before returning, so runOnce's candidate loop can simply try the
-// next key with no leaked socket. A dial failure never reaches that point at
-// all — there's nothing to close.
+// A handshake failure means remotePKHex was the wrong server key, so msg2's
+// AEAD payload fails to verify. It closes conn before returning, letting
+// runOnce's candidate loop try the next key with no leaked socket.
 func dialAndHandshake(
 	ctx context.Context, opts Options, u string, remotePKHex string,
 ) (*websocket.Conn, *noiseconn.Session, string, error) {
@@ -702,11 +589,9 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 	u.Scheme = strings.Replace(u.Scheme, "http", "ws", 1)
 	u.Path = "/api/v1/agents/link"
 
-	// Task 28: try every currently-trusted server key in turn (current key
-	// first) rather than only ever cfg.ServerStaticPK — see
-	// serverKeyCandidates' doc comment. The common case (no rotation ever
-	// advertised) is exactly one candidate and behaves identically to before
-	// this loop existed.
+	// Try every currently-trusted server key in turn (current key first)
+	// rather than only cfg.ServerStaticPK — see serverKeyCandidates. With no
+	// rotation advertised this is exactly one candidate.
 	var conn *websocket.Conn
 	var session *noiseconn.Session
 	var tlsPinKind string
@@ -757,9 +642,9 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 	}
 
 	helloPayload := hostinfo.Collect(opts.AgentVersion, opts.Config.ServerURL)
-	// The at-connect backlog snapshot (D-12). The heartbeat below reports
-	// the same numbers live, which is what lets a server-side catch-up
-	// indicator clear without waiting for a reconnect.
+	// The at-connect backlog snapshot. The heartbeat below reports the same
+	// numbers live, which is what lets a server-side catch-up indicator clear
+	// without waiting for a reconnect.
 	helloPayload.SpoolDepth, _ = spoolStats()
 	// What this agent has permanently destroyed while it was away. Reported
 	// at connect as well as on every heartbeat because eviction happens
@@ -897,10 +782,9 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 	}()
 
 	// sendHeartbeat emits the 20s liveness frame, carrying the live spool
-	// backlog (D-12). The payload used to be a hardcoded `{}`; it now always
-	// carries both keys, zeros included, because the backend reserves an
-	// empty payload to mean "this agent predates spool reporting" and keeps
-	// its columns NULL for it. See frame.HeartbeatPayload.
+	// backlog. The payload must always carry both keys, zeros included: the
+	// backend reserves an empty payload to mean "this agent predates spool
+	// reporting" and keeps its columns NULL for it. See frame.HeartbeatPayload.
 	sendHeartbeat := func() error {
 		depth, bytes := spoolStats()
 		evictedFrames, evictedBytes, evictedOldest, evictedNewest := spoolEvictions()
@@ -971,13 +855,13 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 		return nil
 	}
 
-	// sendUpdateStatus encodes and sends one `update.status` frame (Task 24)
-	// over this connection. Called from this goroutine only — the TypeUpdate
-	// refusal arm, the UpdateStatusFrames drain arm, and the pending-outcome
-	// report on the first accepted hello.ack — which is the entire one-writer
-	// story: the update worker never touches the socket, it queues
-	// UpdateStatusEvent values and this loop writes them (§3.1). The
-	// sequence number is assigned here for the same reason.
+	// sendUpdateStatus encodes and sends one `update.status` frame over this
+	// connection. Called from this goroutine only — the TypeUpdate refusal arm,
+	// the UpdateStatusFrames drain arm, and the pending-outcome report on the
+	// first accepted hello.ack — which is the whole one-writer story: the update
+	// worker never touches the socket, it queues UpdateStatusEvent values and
+	// this loop writes them. The sequence number is assigned here for the same
+	// reason.
 	sendUpdateStatus := func(version, phase, errMsg string) error {
 		payload, err := json.Marshal(frame.UpdateStatusPayload{
 			Version: version, Phase: phase, Error: errMsg,
@@ -1003,24 +887,18 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 		return nil
 	}
 
-	// sender wires the spool into this connection's outbound data-frame
-	// flow (never heartbeat/control traffic — see Options.Spool/DataFrames
-	// and dataFrameSender's doc comment). The daemon sets both opts.Spool
-	// and opts.OnSpoolStats; callers that leave them nil — Uninstall's
-	// one-shot connection, and this package's tests — get "spooling
-	// disabled", which newDataFrameSender and every drain path handle
-	// explicitly.
+	// sender wires the spool into this connection's outbound data-frame flow
+	// (never heartbeat/control traffic). Callers that leave opts.Spool and
+	// opts.OnSpoolStats nil — Uninstall's one-shot connection, and this
+	// package's tests — get spooling disabled, which every drain path handles.
 	//
-	// It returns the sequence number it assigned and the encoded size it put
-	// on the wire, which is what the in-flight window is tracked in: an ack
-	// names a seq, and the byte cap needs to know what each frame cost.
+	// It returns the sequence number it assigned and the encoded wire size,
+	// which is what the in-flight window is tracked in.
 	//
-	// TS is *not* stamped here. An observation's timestamp is fixed at
-	// enqueue (see Run's spooling goroutine and stampObserved), before the
-	// frame can touch a network, so a sample recovered from an hours-old
-	// backlog keeps the instant it was taken rather than the instant the link
-	// came back. sendLive still stamps, because the nil-spool path it serves
-	// has no enqueue to do it.
+	// TS is deliberately not stamped here: an observation's timestamp is fixed
+	// at enqueue, so a sample recovered from an hours-old backlog keeps the
+	// instant it was taken. sendLive still stamps, because the nil-spool path
+	// it serves has no enqueue to do it.
 	sendDataFrame := func(f frame.Frame) (uint64, int64, error) {
 		seq++
 		f.V = frame.FrameVersion
@@ -1086,17 +964,15 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 				return outcome, err
 			}
 		case evt := <-opts.UpdateStatusFrames:
-			// The update worker's status reports cross onto the wire here, on
-			// the event-loop goroutine, so the one-writer rule and sequence
-			// ownership hold (§3.1). Not gated on connectedFired, deliberately:
-			// hello is always the first frame on every connection, so a status
-			// frame drained in the pre-ack window still reaches the server
-			// *after* its hello and is dispatched against a bound session —
-			// and the alternative, consuming it only to drop it until
-			// acceptance, would lose terminal reports far more often than the
-			// microseconds of head start it costs. A send error is deferred, not
-			// fatal: terminal outcomes are already durable (§3.3), so the
-			// connection itself — not this event — decides when runOnce ends.
+			// The update worker's status reports cross onto the wire here, on the
+			// event-loop goroutine, so the one-writer rule and sequence ownership
+			// hold. Deliberately not gated on connectedFired: hello is always the
+			// first frame on every connection, so a status frame drained in the
+			// pre-ack window still reaches the server after its hello and is
+			// dispatched against a bound session. Dropping it until acceptance would
+			// lose terminal reports far more often than the head start costs. A send
+			// error is deferred, not fatal — terminal outcomes are already durable,
+			// so the connection decides when runOnce ends.
 			if err := sendUpdateStatus(evt.Version, evt.Phase, evt.ErrMsg); err != nil {
 				log.Printf("link: send update.status(%s, %s): %v — deferred", evt.Version, evt.Phase, err)
 			}
@@ -1133,8 +1009,8 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 					// on a socket the server has already said no to. It carries
 					// its own ladder (refusedDelay): "approve me" is worth
 					// asking about often, "you are revoked" is not. A reason we
-					// do not recognise falls through to the old behaviour and
-					// waits for the server to close.
+					// do not recognise falls through to waiting for the
+					// server to close.
 					if refusal := refusalError(ack.Reason); refusal != nil {
 						outcome.class = classRefused
 						outcome.refusal = refusal
@@ -1177,15 +1053,12 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 							"is lost. Upgrade the server to make delivery at-least-once into the database.")
 					}
 					opts.OnConnected()
-					// Task 24/§3.3: report an update outcome a previous
-					// process couldn't send live — a rollback, or a succeeded
-					// update whose pre-re-exec send was lost — now that this
-					// connection actually has an accepted hello.ack. Only
-					// cleared on a successful send; a failed send (e.g. this
-					// connection drops immediately after) leaves it for the
-					// next reconnect to retry. Nil-guarded (rather than
-					// relying solely on Run's defaulting) since some tests
-					// call runOnce directly without going through Run.
+					// Report an update outcome a previous process couldn't send live — a
+					// rollback, or a succeeded update whose pre-re-exec send was lost — now
+					// that this connection has an accepted hello.ack. Only cleared on a
+					// successful send; a failed send leaves it for the next reconnect to
+					// retry. Nil-guarded rather than relying on Run's defaulting, since some
+					// tests call runOnce directly.
 					if opts.ReportPendingUpdateOutcome != nil {
 						if version, phase, ok := opts.ReportPendingUpdateOutcome(); ok {
 							if err := sendUpdateStatus(version, phase, ""); err != nil {
@@ -1256,18 +1129,15 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 					}
 				}
 			case frame.TypeUpdate:
-				// Enqueue-only (§3.1/§8.3): opts.OnUpdate validates the payload
-				// and queues it for the daemon's serialized update worker, and
-				// this arm returns to the select loop immediately so heartbeats,
-				// the reader and the drain tickers keep running through the
-				// whole two-minute download window. A refusal — malformed
-				// payload, queue full because an update is already queued or
-				// running, worker shutting down — is reported as an explicit
-				// failed status so the server is never left waiting on an
-				// instruction that was dropped (§8.6). The instruction's own
-				// version is echoed back when the payload carries one; "" when
-				// it is too malformed to name one, which the server logs and
-				// drops exactly like any other malformed update.status.
+				// Enqueue-only: opts.OnUpdate validates the payload and queues it for
+				// the daemon's serialized update worker, and this arm returns to the
+				// select loop immediately so heartbeats, the reader and the drain
+				// tickers keep running through the whole two-minute download window. A
+				// refusal — malformed payload, queue full, worker shutting down — is
+				// reported as an explicit failed status so the server is never left
+				// waiting on an instruction that was dropped. The instruction's version
+				// is echoed back when the payload carries one; "" when it is too
+				// malformed to name one.
 				if err := opts.OnUpdate(f.Payload); err != nil {
 					log.Printf("link: update instruction refused: %v", err)
 					_ = sendUpdateStatus(instructionVersion(f.Payload), "failed", err.Error())
@@ -1292,11 +1162,11 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 // instructionVersion extracts the `version` field from a raw `update`
 // instruction payload, "" when the payload is too malformed to carry one.
 // Used only to echo a refused instruction's target version back in the
-// failed status runOnce reports when opts.OnUpdate rejects it (§8.6), so
-// the server's timeline names the update that was refused rather than an
-// empty string whenever the payload is well-formed enough to have one. It
-// is deliberately not the validation — opts.OnUpdate owns that, and a
-// payload whose version this cannot read is one OnUpdate refuses anyway.
+// failed status runOnce reports when opts.OnUpdate rejects it, so the
+// server's timeline names the update that was refused rather than an empty
+// string whenever the payload is well-formed enough to have one. It is
+// deliberately not the validation — opts.OnUpdate owns that, and a payload
+// whose version this cannot read is one OnUpdate refuses anyway.
 func instructionVersion(payload json.RawMessage) string {
 	var instr struct {
 		Version string `json:"version"`
@@ -1307,19 +1177,15 @@ func instructionVersion(payload json.RawMessage) string {
 	return instr.Version
 }
 
-// handleKeyRotate processes one inbound `key.rotate` frame (Task 28's
-// server -> agent direction, kind="server" — see
-// frame.KeyRotatePayload's doc comment; kind="device" is Task 27's own
-// direction/mechanism and is not something the server ever sends, so it's
-// logged and ignored here rather than acted on). Durably persists the
+// handleKeyRotate processes one inbound `key.rotate` frame in the server ->
+// agent direction (kind="server"; kind="device" is the agent's own direction,
+// never sent by the server, so it is logged and ignored). Persists the
 // successor server public key via config.SaveServerKeyRotation so
 // serverKeyCandidates picks it up on every future connection attempt,
-// including across a restart — from that point on this agent trusts EITHER
-// the config file's current ServerStaticPK or this successor key, exactly
-// mirroring the server's own accept-either-key-during-the-overlap-window
-// behavior. Malformed payloads and persistence failures are logged, never
-// fatal to the connection — the same tolerance-of-bad-control-frames stance
-// capabilities.set/update already take in the switch above.
+// including across a restart: from then on the agent trusts either the config
+// file's ServerStaticPK or this successor, mirroring the server's own overlap
+// window. Malformed payloads and persistence failures are logged, never fatal
+// — the same stance capabilities.set/update take above.
 func handleKeyRotate(opts Options, payload json.RawMessage) {
 	var rotate frame.KeyRotatePayload
 	if err := json.Unmarshal(payload, &rotate); err != nil {
@@ -1441,23 +1307,13 @@ const uninstallFrameSeq = 1
 // uninstall notification — and then waits for the server to acknowledge
 // handling it before closing.
 //
-// The wait is the point. This function used to write the frame, write a
-// WebSocket close immediately after, and return nil, which reported only that
-// the local kernel had taken the bytes. Against the real server that was
-// reliably wrong: uvicorn completes the close handshake the moment it arrives,
-// so `ws_agents.link_stream`'s next send (the hello.ack, which follows a chunk
-// of database work) failed and the handler exited before its receive loop ever
-// ran. The uninstall frame was never read, the agent was never revoked, and
-// `cb-agent uninstall` said "Notified the server (agent record marked
-// revoked)" every single time. Reproduced end to end 2026-09-08, and confirmed
-// by the inverse: hold the socket open and the same run revokes the agent.
-//
-// So the hello asks for delivery acknowledgement and this returns nil only
-// once a `data.ack` watermark has reached uninstallFrameSeq. That is a real
-// proof rather than a hopeful one: `uninstall` is not in the server's
-// `CAPABILITY_FOR_TYPE`, so it has no gate that could "terminally handle" it
-// by refusing it, and `dispatch_frame` commits `_handle_uninstall`'s revoke
-// before the watermark is allowed to move.
+// The wait is the point, and removing it silently breaks uninstall. Writing
+// the frame and closing immediately reports only that the local kernel took
+// the bytes: uvicorn completes the close handshake the moment it arrives, so
+// `ws_agents.link_stream`'s next send (the hello.ack, which follows a chunk
+// of database work) fails and the handler exits before its receive loop ever
+// runs. The uninstall frame is never read and the agent is never revoked,
+// while `cb-agent uninstall` still reports success.
 func Uninstall(ctx context.Context, opts Options) error {
 	remotePub, err := hex.DecodeString(opts.Config.ServerStaticPK)
 	if err != nil || len(remotePub) != 32 {

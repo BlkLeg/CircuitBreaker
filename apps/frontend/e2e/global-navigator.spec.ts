@@ -9,18 +9,15 @@ import {
 } from './fixtures/api';
 
 /**
- * Plan 01's browser evidence for the unified navigator: one overlay from both
- * open mechanisms, durable entity URLs, settings deep links, role filtering,
- * theme reactivity, and the recovery paths (Retry after a failed asset search,
- * a modal handoff that closes the navigator first).
+ * Browser evidence for the unified navigator: one overlay from both open
+ * mechanisms, durable entity URLs, settings deep links, role filtering, theme
+ * reactivity, and the recovery paths.
  *
- * Two fixtures matter throughout:
- *  - waitForRouteSettled before any keyboard interaction: /map is the heavy
- *    route this suite's own wedge history comes from, and pressing Ctrl+K into
+ * Two rules throughout:
+ *  - waitForRouteSettled before any keyboard interaction — pressing Ctrl+K into
  *    a page whose chunk is still loading proves nothing about the product.
- *  - every result row is scoped to the dialog: the map page has its own
- *    Storage/Network filter buttons, and an unscoped row locator resolves to
- *    both — a strict-mode failure at best, the wrong button at worst.
+ *  - scope every result row to the dialog — the map page has its own
+ *    Storage/Network filter buttons, and an unscoped locator resolves to both.
  */
 
 const HARDWARE = {
@@ -272,9 +269,20 @@ test.describe('global navigator', () => {
     const profile = page.getByRole('dialog', { name: 'Profile' });
     await expect(profile).toBeVisible();
     await expect(page.getByRole('dialog', { name: 'Navigate' })).toHaveCount(0);
-    expect(
-      await page.evaluate(() => document.querySelector('.modal')?.contains(document.activeElement))
-    ).toBe(true);
+    // Polled, not read once. The dialog takes focus from an effect, and WebKit
+    // applies that a tick later than Chromium does — a single `page.evaluate`
+    // right after the dialog becomes visible reads `document.body` there and
+    // reports a focus trap that is in fact working. Everything else in this
+    // test is a web-first assertion that retries; this was the one snapshot.
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(
+            () => document.querySelector('.modal')?.contains(document.activeElement) ?? false
+          ),
+        { message: 'the Profile dialog never took focus' }
+      )
+      .toBe(true);
 
     // The dialog owns Escape while it is open; the navigator is gone, not
     // merely hidden behind the modal.
@@ -435,13 +443,11 @@ test.describe('global navigator', () => {
   test('the open overlay tracks every theme switch with fresh tokens and kept focus', async ({
     page,
   }) => {
-    // The plan's "update while the overlay is open" cannot be driven through
-    // the header here by design: the navigator's inset-0 backdrop and U2's
-    // focus trap make every header control pointer- and keyboard-unreachable
-    // while the dialog is open (an outside click closes the navigator first).
-    // The equivalent, honest evidence is below: under each theme change the
-    // overlay re-derives its tokens, keeps focus where the user left it, and
-    // never shows stale colors from the previous theme.
+    // A theme change cannot be driven through the header while the overlay is
+    // open: the inset-0 backdrop and focus trap make every header control
+    // unreachable, and an outside click closes the navigator first. So the
+    // change is applied directly and the overlay asserted to re-derive its
+    // tokens, keep focus, and never show stale colors.
     const errors = collectConsoleErrors(page);
     // Mutable settings so the app's own save/reload cycle observes the PUTs.
     const settingsState: Record<string, unknown> = {

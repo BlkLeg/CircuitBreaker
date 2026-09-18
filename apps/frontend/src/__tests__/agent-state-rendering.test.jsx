@@ -41,7 +41,7 @@ const BASE = {
   spool_depth: 0,
   // With no report time the row reads the backlog as unknown rather than as
   // drained, which is a different row from the healthy one these cases are
-  // about. Phase 4's own cases live in fleet-row.test.jsx.
+  // about. The freshness cases live in fleet-row.test.jsx.
   spool_reported_at: RECENT(),
 };
 
@@ -192,7 +192,7 @@ describe('the fleet row', () => {
   });
 });
 
-describe('permanently destroyed history in a fleet row (plan Phase 3)', () => {
+describe('permanently destroyed history in a fleet row', () => {
   it('renders a critical loss chip carrying the reason and the remedy', () => {
     renderRow({
       ...BASE,
@@ -235,7 +235,7 @@ describe('permanently destroyed history in a fleet row (plan Phase 3)', () => {
   });
 
   it('names both causes rather than blaming the size cap for every loss', () => {
-    // Phase 5: the same counter now records observations the agent could not
+    // The same counter now records observations the agent could not
     // buffer at all — a full disk, a read-only state directory — because
     // every data frame is spooled before it can reach a socket. Telling an
     // operator whose disk is read-only to raise a size cap is a remedy that

@@ -184,9 +184,8 @@ function OOBEWizardPage({ onCompleted }) {
   }
 
   // Everything the seven step components read. Assembled here rather than
-  // memoised: the steps used to be part of this component's own render, so
-  // they already re-rendered on every state change and a stable identity
-  // would buy nothing.
+  // memoised: the steps re-render on every state change regardless, so a
+  // stable identity would buy nothing.
 
   return (
     <OOBEContext.Provider value={wizard}>

@@ -51,7 +51,7 @@ def _max_concurrent_scans(settings: object) -> int:
 def _schedule_queued_scan_jobs(db: Session) -> None:
     """Hand as much of the queued backlog to the scan executor as the ceiling allows.
 
-    A job parked in `waiting_for_agent` is deliberately excluded (D-5). That row
+    A job parked in `waiting_for_agent` is deliberately excluded. That row
     is owned by `agent_discovery_reconcile`, which retries it when its agent is
     back and expires it as `agent_unavailable` when the agent never returns;
     handing it back to `dispatch_discovery_job` while the agent is still away
@@ -59,7 +59,7 @@ def _schedule_queued_scan_jobs(db: Session) -> None:
     `dispatch_deadline_at = now + DISPATCH_DEADLINE_S` over the deadline that
     was about to expire it. This drain runs whenever *any* job anywhere
     finishes, so without the guard an unrelated scan completing resets a parked
-    job's clock and D-5's expiry can never arrive.
+    job's clock andthe expiry can never arrive.
     `agent_discovery_reconcile._drain_queued_jobs` documents and guards the same
     treadmill; the two paths now agree. (Making `_release_to_waiting` preserve
     an existing deadline instead of re-stamping it would fix it from the other
@@ -101,7 +101,7 @@ async def _run_profile_job_async(profile_id: int) -> None:
     server scanner and an agent. Both halves matter: a job created without
     `scan_agent_id` could not be routed anywhere even by a correct router, and a
     cron that called `run_scan_job` directly would run an agent-targeted profile
-    from the server's vantage point — which plan §3 forbids, because it silently
+    from the server's vantage point — which the contract forbids, because it silently
     changes what the scan can see.
 
     `enabled` and the three pause scopes are both re-read here, at fire time, and
@@ -131,7 +131,7 @@ async def _run_profile_job_async(profile_id: int) -> None:
         # agree until somebody edits one of them.
         if profile_scheduling_held(db, profile):
             logger.info("Discovery: profile %s is paused; skipping this scheduled run", profile_id)
-            # Returned *before* `last_run` is stamped: that field is what §6
+            # Returned *before* `last_run` is stamped: that field is what the contract
             # renders as "last scanned", and a hold that touched it would report
             # a scan the operator forbade as one that happened.
             return
@@ -207,12 +207,12 @@ def _purge_old_scan_results_impl() -> None:
 
     * a **spooled agent finding** is written when it finally arrives, so a
       dispatch created outside the window routinely owns a result created inside
-      it (plan §4's outbound spool is the whole point of the replay key);
+      it (the outbound spool is the whole point of the replay key);
     * a `scan_log` was never purged by anything at all, so *every* job that ever
       logged a line was undeletable.
 
     The third is `hardware.source_scan_result_id` (Fix A1), an *inbound* edge
-    from outside discovery entirely that the Task 26 audit missed: every approval
+    from outside discovery entirely that the the design audit missed: every approval
     path writes it, so once any expiring result had been merged into inventory
     the DELETE below could not run at all. Migration
     `0101_discovery_retention_and_global_pause` makes it `ON DELETE SET NULL` —
@@ -228,7 +228,7 @@ def _purge_old_scan_results_impl() -> None:
     still inside the window — that is the existing behaviour and the only thing
     that bounds the review queue of a long-lived profile.
 
-    Nothing here reaches the `agents` row (D-1). `scan_jobs.scan_agent_id` and
+    Nothing here reaches the `agents` row. `scan_jobs.scan_agent_id` and
     `scan_results.discovery_agent_id` cascade *from* the agent, never towards it:
     only an explicit, 409-guarded operator delete removes a vantage point, and
     revocation retains provenance.

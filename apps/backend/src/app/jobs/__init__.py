@@ -1,7 +1,7 @@
-"""Scheduled jobs extracted from the lifespan (route F9).
+"""Scheduled jobs extracted from the lifespan.
 
 `main.py` registers 29 jobs, ten of which were closures defined inline in the
-lifespan. Those ten are the ones F9 is about: a closure nested in a 2,500-line
+lifespan. A closure nested in a 2,500-line
 startup function cannot be imported, so it cannot be unit tested, and the only
 way to exercise its error handling is to boot the application.
 

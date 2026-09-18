@@ -20,31 +20,24 @@ _HW_CLIENT_CACHE_MAX = 64
 
 # ── Cross-thread ownership of the cached clients ────────────────────────────
 #
-# poll_hardware is synchronous, but nothing calls it on the event loop any more:
-# the collector dispatches it with asyncio.to_thread, and since 745a99b9 so does
-# the manual "poll now" endpoint. Any admin can therefore fire N concurrent polls
-# at one hardware row and land N worker threads in this function at once, all
-# resolving to the same cache key.
+# poll_hardware is synchronous but runs on worker threads (the collector and the
+# manual "poll now" endpoint both use asyncio.to_thread), so N concurrent polls
+# of one hardware row land N threads here on the same cache key.
 #
-# A cached client is an ILOClient, and an ILOClient owns a requests.Session.
-# requests.Session is explicitly not thread-safe — concurrent requests interleave
-# writes to the cookie jar, to redirect/auth state and to urllib3's pool
-# bookkeeping. The failure mode is not an exception a caller can see; it is a
-# response assembled from two devices' bytes, or a connection pool that never
-# gives a connection back. So: one thread inside a given client at a time.
+# A cached client owns a requests.Session, which is explicitly NOT thread-safe:
+# concurrent requests interleave writes to the cookie jar, redirect/auth state
+# and urllib3's pool bookkeeping. The failure is not a visible exception — it is
+# a response assembled from two devices' bytes, or a pool that never returns a
+# connection. So: one thread inside a given client at a time.
 #
 # The lock therefore lives ON the cache entry, welded to the client it protects,
-# and is never reassigned. A maintainer must not "flatten" this back into a
-# plain client cache plus a parallel `_hw_client_locks` dict keyed the same way.
-# That was the first attempt at this fix and it did not hold: the two dicts
-# drift. Eviction cleared the lock dict wholesale, while a client insert
-# repopulated only the cache, so a key could end up cached with no registered
-# lock — and the next caller minted a fresh lock, acquired it uncontended, read
-# the cache and was handed the very client another thread was still polling
-# with. Two threads, one Session, which is the entire defect (R8). With the lock
-# bound to the entry that owns the client, "I hold the lock that came with this
-# client" *is* the statement "nobody else has this client", and no eviction, no
-# failed build and no timed-out wait can prise the two apart.
+# and is never reassigned. Do NOT flatten this into a client cache plus a
+# parallel lock dict keyed the same way: the two drift. Eviction clears one
+# wholesale while an insert repopulates only the other, so a key ends up cached
+# with no registered lock, and the next caller mints a fresh one, acquires it
+# uncontended and is handed the client another thread is still polling with.
+# Bound to the entry, holding the lock that came with the client IS the statement
+# that nobody else has it.
 _hw_cache_guard = threading.Lock()
 
 
@@ -67,24 +60,18 @@ class _PooledClient:
 
 _hw_client_cache: dict[tuple[str, str, str], _PooledClient] = {}
 
-# How long a poll waits for a busy client before giving up on the pool and
-# building a private one. Short on purpose: a manual poll that timed out leaves
-# its worker thread running — asyncio cannot interrupt a blocking socket read —
-# so a wedged client can stay checked out for the device's whole timeout (~20s
-# for iLO: two Redfish GETs at 10s each). Waiting that out would make one stuck
-# BMC serialise every later poll of the same host into its own timeout, which is
-# the event-loop stall B07 removed, rebuilt one lock down.
+# How long a poll waits for a busy client before giving up and building a
+# private one. Short on purpose: a timed-out poll leaves its worker thread
+# running (asyncio cannot interrupt a blocking socket read), so a wedged client
+# stays checked out for the device's whole timeout (~20s for iLO). Waiting that
+# out makes one stuck BMC serialise every later poll of the same host.
 #
-# The trade is real and is not free: every wait that runs out costs one extra
-# TLS + basic-auth Redfish connection to a device that tolerates only a handful
-# of them, and costs the caller two seconds of a blocked executor thread first.
-# Several hardware rows aimed at one BMC, all slower than this bound, will
-# therefore open one private session per row per collector cycle. That is the
-# deliberate choice: a bounded burst of sockets against one slow BMC, rather
-# than an unbounded queue of worker threads or — the thing this whole section
-# exists to prevent — two threads sharing one Session. Raising this constant
-# trades sockets back for latency; lowering it does the reverse. Do not "fix"
-# the amplification by removing the bound.
+# The trade is not free: each expired wait costs an extra TLS + basic-auth
+# Redfish connection to a device that tolerates few of them, so several rows
+# aimed at one slow BMC open one private session per row per cycle. That is
+# deliberate — a bounded burst of sockets, rather than an unbounded queue of
+# worker threads or two threads sharing one Session. Raising this trades sockets
+# for latency; lowering it does the reverse. Do NOT remove the bound.
 _CLIENT_BUSY_WAIT_S = 2.0
 
 
@@ -307,7 +294,7 @@ async def _async_cache_and_publish(hardware_id: int, result: dict, ttl: int | No
     except Exception as exc:
         # Fires once per polled device per cycle. Throttled and counted so a
         # Redis outage shows up as a number instead of as "the live telemetry
-        # panel is blank and nothing in the log says why" (REL-07).
+        # panel is blank and nothing in the log says why".
         record_stream_fault(
             "integration_dispatch.publish",
             exc,

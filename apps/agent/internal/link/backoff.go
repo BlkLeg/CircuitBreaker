@@ -33,14 +33,12 @@ func backoffBaseDuration(attempt int) time.Duration {
 
 // The coming-back ladder: a short climb, then a permanent hold.
 //
-// It holds rather than escalating because escalation only ever made sense as a
-// guess about *why* the peer was silent. Once the failure is classified, the
-// guess is unnecessary: a host that is answering — a restart, a warming worker,
-// a graceful close — will answer again shortly, and the only question is how
-// long we are willing to wait to find out. Fifteen seconds against a server
-// measured to be ready ~20-35s after a restart means the first or second poll
-// of the hold catches it, every time, instead of the old ladder's coin flip
-// between 36 seconds and twenty minutes.
+// It holds rather than escalating because escalation only makes sense as a
+// guess about why the peer is silent. Once the failure is classified the guess
+// is unnecessary: a host that is answering — a restart, a warming worker, a
+// graceful close — will answer again shortly, and the only question is how long
+// we wait to find out. Fifteen seconds against a server measured ready ~20-35s
+// after a restart means the first or second poll of the hold catches it.
 var fastBackoffSteps = []time.Duration{
 	250 * time.Millisecond,
 	500 * time.Millisecond,
@@ -114,21 +112,17 @@ type runOutcome struct {
 // backoffState tracks the reconnect-attempt counter across Run's retry loop,
 // per failure class.
 //
-// The counter used to reset only after a run stayed up for 30 seconds past its
-// hello.ack. That window was meant to stop a flapping link from being rewarded
-// with a fast retry, but it punished every honest reconnect too: an agent that
-// reconnected and then lost the link again at 29 seconds resumed the ladder
-// wherever the previous outage had left it, which is how a link that flapped
-// through an outage ended up pinned at five and six minute waits with the
-// server sitting there answering.
-//
-// So: reset on any accepted hello.ack, and guard the flapping case directly by
-// counting consecutive sub-flapWindow sessions instead. Three in a row and the
-// ladder is forced slow — a floor that a healthy agent never touches.
+// The counter resets on any accepted hello.ack. Requiring the run to also stay
+// up for a stability window instead punishes honest reconnects: an agent that
+// reconnects and loses the link again just inside the window resumes the ladder
+// where the previous outage left it, which pins a flapping link at five- and
+// six-minute waits while the server sits there answering. The flapping case is
+// guarded directly instead, by counting consecutive sub-flapWindow sessions —
+// three in a row forces the slow ladder, a floor a healthy agent never touches.
 //
 // The zero value is ready to use, starting at attempt 0 on the coming-back
-// ladder: the first thing a freshly started agent does is dial a server it has
-// every reason to expect is there.
+// ladder: a freshly started agent dials a server it has every reason to expect
+// is there.
 type backoffState struct {
 	attempt   int
 	class     failureClass

@@ -33,7 +33,7 @@ func StateDir() string {
 	return "/var/lib/cb-agent"
 }
 
-// ServerKeyRotation is the successor server identity public key a Task 28
+// ServerKeyRotation is the successor server identity public key a the design
 // server-key rotation advertised to this agent over an authenticated `/link`
 // connection (a `key.rotate` frame with kind="server" — see
 // internal/frame.KeyRotatePayload and internal/link's handling of it).

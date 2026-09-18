@@ -32,7 +32,7 @@ def test_poll_one_runs_collector():
     assert up is True and msg == "ok"
     # The tuple carries execution outcome and collector details so the shape
     # matches what a remote vantage reports; a server collector never errors
-    # out at the execution level and has nowhere to persist details (D-8).
+    # out at the execution level and has nowhere to persist details.
     assert outcome == result_service.OUTCOME_COMPLETED
     assert details is None
 

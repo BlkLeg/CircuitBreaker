@@ -1,5 +1,5 @@
-"""Generates install-agent.sh and the two curl command forms shown in-app
-(spec §2.3). No secret is embedded — only the server's public identity."""
+"""Generates install-agent.sh and the two curl command forms shown in-app. No secret is embedded —
+only the server's public identity."""
 
 from __future__ import annotations
 
@@ -473,7 +473,7 @@ def _script_download_arg(server_url: str, endpoint_id: str | None) -> str:
     ever sees — so without `?endpoint=<id>` on this URL the route takes its
     "absent" branch and re-derives the address from `forwarded_base_url`,
     which is the derivation the endpoint feature exists to eliminate (design
-    §1.1). It also breaks the published `script_sha256`, since that digest is
+    the contract). It also breaks the published `script_sha256`, since that digest is
     computed over the endpoint variant while the download would be the
     fallback one.
 
@@ -493,7 +493,7 @@ def build_install_command(
     endpoint_id: str | None = None,
     enroll_token: str | None = None,
 ) -> InstallCommandResponse:
-    # Task 28: once a server-key rotation has begun, a freshly generated
+    # Once a server-key rotation has begun, a freshly generated
     # install prefers the successor identity key over the current one — it's
     # the key this install will still be valid under once the current key is
     # retired at the end of the overlap window (agent_crypto.

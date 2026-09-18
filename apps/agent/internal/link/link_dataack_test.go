@@ -55,18 +55,16 @@ func TestHelloAsksForAcknowledgedDelivery(t *testing.T) {
 	}
 }
 
-// TestRun_SpoolHeadDoesNotAdvanceWithoutAnAck is the headline regression, and
-// the one the whole phase exists for.
+// TestRun_SpoolHeadDoesNotAdvanceWithoutAnAck pins the core of acknowledged
+// delivery: the spool head must not advance on a successful write alone.
 //
 // The server here negotiates acknowledged delivery and then acknowledges
-// nothing — the shape of a restart mid-drain, or of a black-holed socket in
-// the up-to-60s window before the read deadline notices. Every frame reaches
-// the wire and `conn.WriteMessage` returns nil for every one of them.
-//
-// Under the old commit-on-write drain that was enough to destroy them: the
-// spool head advanced and the frames were gone. Now the connection dies with
-// the entire backlog still on disk, in its original order, ready to be
-// re-sent.
+// nothing — the shape of a restart mid-drain, or of a black-holed socket in the
+// window before the read deadline notices. Every frame reaches the wire and
+// `conn.WriteMessage` returns nil for every one of them, which under
+// commit-on-write is enough to destroy them. The connection must instead die
+// with the entire backlog still on disk, in its original order, ready to
+// re-send.
 func TestRun_SpoolHeadDoesNotAdvanceWithoutAnAck(t *testing.T) {
 	originalTick := drainTickInterval
 	drainTickInterval = 5 * time.Millisecond
@@ -164,16 +162,14 @@ func TestRun_AcknowledgedFramesLeaveTheSpool(t *testing.T) {
 	}
 }
 
-// TestRun_DataFramesAreSpooledBeforeTheyAreSent is the direct regression for
-// the black-holed `sendLive`.
+// TestRun_DataFramesAreSpooledBeforeTheyAreSent pins that a frame produced
+// while the link is up is fsync'd before it can reach the socket, and is
+// discarded only once the server acknowledges it.
 //
-// A frame produced while the link is up used to be handed straight to the
-// socket and never written to disk at all, so a socket that accepted bytes
-// the server never read destroyed the observation with nothing left to
-// re-send. Now every data frame is fsync'd first and is only discarded when
-// the server acknowledges it — so with a server that reads but never
-// acknowledges, a live-produced frame reaches the wire *and* is still on
-// disk afterwards.
+// Handing it straight to the socket instead means a socket that accepts bytes
+// the server never reads destroys the observation with nothing left to re-send.
+// So against a server that reads but never acknowledges, a live-produced frame
+// must reach the wire and still be on disk afterwards.
 func TestRun_DataFramesAreSpooledBeforeTheyAreSent(t *testing.T) {
 	originalTick := drainTickInterval
 	drainTickInterval = 5 * time.Millisecond

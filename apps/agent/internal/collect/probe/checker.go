@@ -8,7 +8,7 @@ import (
 	"circuitbreaker.dev/cb-agent/internal/netscope"
 )
 
-// The four check types a monitor can be assigned to an agent (§5). They are the wire values the
+// The four check types a monitor can be assigned to an agent. They are the wire values the
 // backend puts in probe.assign.check_type and the keys of the checker registry below, so they
 // are constants in one place rather than string literals in five.
 const (
@@ -30,7 +30,7 @@ const (
 // that could not perform its probe at all returns a non-zero error instead, which the runtime
 // turns into an `execution_error` outcome preserving the monitor's last known state. Returning
 // Outcome{Up: false} for "I could not run" would invert monitor state on every misconfigured
-// host — the exact mistake §5 calls out for ICMP.
+// host — the exact mistake called out for ICMP.
 type Outcome struct {
 	Up      bool
 	Samples []frame.ProbeSample
@@ -42,7 +42,7 @@ type Outcome struct {
 //
 // It is a local interface rather than collect.Collector for the reason given on Outcome. cfg is
 // the monitor's complete validated configuration exactly as the server sent it, raw: it carries
-// HTTP credentials when the monitor has them (D-10), so it is passed through untyped and each
+// HTTP credentials when the monitor has them, so it is passed through untyped and each
 // checker decodes only the keys it needs. Nothing may log it, persist it or echo it back.
 //
 // A checker must honor ctx: the runtime derives one per run carrying both the assignment's

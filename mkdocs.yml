@@ -26,6 +26,7 @@ nav:
   - Features:
       - Hardware: hardware.md
       - Hardware Telemetry: telemetry.md
+      - Metric Alert Rules: metric-alerts.md
       - Compute: compute.md
       - Storage: storage.md
       - Networks: networks.md
@@ -48,6 +49,7 @@ nav:
       - cb CLI Tool: cb-cli.md
       - Sizing Profiles: operations/sizing-profiles.md
       - Appliance & Availability: operations/appliance-and-availability.md
+      - Parked Messages: operations/parked-messages.md
       - Visual Test Baselines: testing-visual-baselines.md
       - Backup & Restore: backup-restore.md
       - TLS Certificates: tls-certificates.md

@@ -1,4 +1,4 @@
-"""Park, list, requeue and discard poisoned JetStream work (route F14).
+"""Park, list, requeue and discard poisoned JetStream work.
 
 The service deliberately does **not** publish to NATS. Republishing is async and
 this module is called from sync `Session` contexts — the workers park from

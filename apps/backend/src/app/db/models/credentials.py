@@ -84,7 +84,7 @@ class Certificate(Base):
     __tablename__ = "certificates"
 
     __table_args__ = (
-        # INC-22: the "at most one active certificate" rule, enforced by Postgres
+        # The "at most one active certificate" rule, enforced by Postgres
         # rather than by application code. Declared here *and* in the migration so
         # `create_all` (the test schema) and the migrated schema agree.
         Index(
@@ -104,13 +104,13 @@ class Certificate(Base):
     key_pem: Mapped[str] = mapped_column(Text, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     auto_renew: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    # INC-22: which certificate is written to $CB_DATA_DIR/tls and served by nginx.
+    # Which certificate is written to $CB_DATA_DIR/tls and served by nginx.
     # At most one row may hold this; the partial unique index above is the constraint,
     # not application code — two active certificates is a state with no answer.
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="0"
     )
-    # INC-07: how this certificate was issued, so the unattended renewal can make the same
+    # How this certificate was issued, so the unattended renewal can make the same
     # choice months later. Null for anything ACME did not issue — a stored "http-01" on a
     # self-signed row would read as if ACME applied to it.
     acme_challenge: Mapped[str | None] = mapped_column(String(16))

@@ -203,7 +203,7 @@ def test_record_event_persists_detail(db_session, factories):
 
 def test_propose_hardware_match_by_machine_id_hash_beats_mac_and_hostname(db_session, factories):
     """Descending-confidence match order per spec §3.3: machine_id_hash -> MAC
-    -> hostname. `Hardware.machine_id_hash` (Task 16) lets this resolve the
+    -> hostname. `Hardware.machine_id_hash` lets this resolve the
     strongest signal first even when a weaker MAC/hostname match also exists."""
     from app.db.models import Hardware
 
@@ -378,7 +378,7 @@ async def test_refresh_presence_heartbeat_throttles_postgres_write(
     assert agent.last_seen_at == original_last_seen  # throttled — no write within 60s
 
 
-# ── Task 12: bulk presence / bulk grants (fleet REST endpoint) ──────────────
+# ── bulk presence / bulk grants (fleet REST endpoint) ──────────────
 
 
 @pytest.mark.asyncio

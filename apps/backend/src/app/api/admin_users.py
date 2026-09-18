@@ -1,4 +1,4 @@
-"""Phase 6.5: Admin user management — CRUD, invites, masquerade, unlock, audit."""
+"""Admin user management — CRUD, invites, masquerade, unlock, audit."""
 
 import logging
 import secrets

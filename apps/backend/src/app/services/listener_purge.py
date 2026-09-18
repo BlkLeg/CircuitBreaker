@@ -2,7 +2,7 @@
 
 `listener_events` is the only discovery table fed directly by unauthenticated
 LAN traffic: every mDNS advertisement and every SSDP datagram that clears the
-listener's admission gate becomes a row, and until B13 nothing ever deleted one.
+listener's admission gate becomes a row, and until the contract nothing ever deleted one.
 A quiet home network writes a few thousand rows a week and a noisy one writes
 orders of magnitude more, so the table was an unbounded, attacker-influenced
 consumer of the same volume the database itself lives on.
@@ -22,7 +22,7 @@ NOT YET WIRED. `main.py` registers `purge_old_scan_results` (03:00),
 here, so on this tree `listener_events` still grows without bound and this
 module is dead code that happens to be tested. Whoever adds the registration
 should keep it off 03:30, which already carries three other jobs. Until then the
-retention half of B13 is open, and no test in `tests/test_listener_hardening.py`
+retention half of the contract is open, and no test in `tests/test_listener_hardening.py`
 claims otherwise — see
 `test_the_zero_argument_scheduler_entrypoint_actually_purges`.
 

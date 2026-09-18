@@ -1,7 +1,7 @@
 /**
  * SigmaMap is a renderer: it draws the document it is given.
  *
- * It previously fetched its own topology with `format: 'sigma'` — a format the
+ * Fetching its own topology with `format: 'sigma'` asks for a format the
  * backend never implemented — so `Graph.import` rejected the ordinary payload
  * with "serialized node is missing its key", the catch swallowed it, and the
  * canvas came up empty. These tests hold the boundary: no request, and the

@@ -2,7 +2,7 @@
 
 Degrades gracefully when the helper isn't installed: callers should catch
 HelperUnavailable and treat the relevant capability as needs-helper-action,
-matching Phase 1's existing readiness states — never crash on a missing
+matching the existing readiness states — never crash on a missing
 helper.
 """
 

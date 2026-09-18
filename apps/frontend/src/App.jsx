@@ -47,9 +47,9 @@ export function DiscoveryHistoryRedirect() {
 
 // Heavy pages lazy-loaded so their chunks are only downloaded when first
 // visited. `lazyRoute` is `React.lazy` plus the per-chunk fetch record route
-// §4.2 asks for and a single retry on a failed import — see lib/lazyRoute.js
+// 2 asks for and a single retry on a failed import — see lib/lazyRoute.js
 // for why both live in one wrapper. Do not reintroduce a bare `React.lazy`
-// here: a route without a chunk record is a hole in §4.4's decision tree, and
+// here: a route without a chunk record is a hole in the route-diagnostics decision tree, and
 // tests/build has a check that fails the build for one.
 const DocsPage = lazyRoute('DocsPage', () => import('./pages/DocsPage'));
 const SettingsPage = lazyRoute('SettingsPage', () => import('./pages/SettingsPage'));
@@ -353,7 +353,7 @@ export function AppInner() {
 // Mounted once, inside the router context but above the route tree, so
 // hooks/useNavigationTiming.js observes every navigation regardless of which
 // page is showing — deliberately not folded into AppInner alongside
-// useDiscoveryStream(), which route §4 H3 already suspects of a re-render
+// useDiscoveryStream(), which is already suspected of a re-render
 // storm; this renders nothing, so it adds no re-render surface there.
 function NavigationTimingWatcher() {
   useNavigationTiming();

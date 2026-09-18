@@ -1,4 +1,4 @@
-"""Fast static ratchets for Phase 1 production promises."""
+"""Fast static ratchets for the production promises."""
 
 from __future__ import annotations
 

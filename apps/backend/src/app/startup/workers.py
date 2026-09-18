@@ -48,7 +48,7 @@ class BackgroundTasks:
 
 async def start_background_tasks(topology_mode: topology.TopologyMode) -> BackgroundTasks:
     """Start every background loop this process owns and return their handles."""
-    # ── Phase 4: Always-On Listener (mDNS + SSDP) ─────────────────────────
+    # ── Always-On Listener (mDNS + SSDP) ─────────────────────────────────────
     from app.services.listener_service import listener_service
 
     with get_session_context() as listener_db:
@@ -109,7 +109,7 @@ async def start_background_tasks(topology_mode: topology.TopologyMode) -> Backgr
             ", ".join(topology.INPROCESS_WORKER_FUNCTIONS),
         )
 
-    # ── Phase 9: Update check (non-blocking, daily) ─────────────────────
+    # ── Update check (non-blocking, daily) ─────────────────────────────────
     # Appended to _worker_tasks so shutdown cancels it. Deliberately outside
     # the inprocess worker conditional: knowing the build is stale is not
     # a worker concern.
@@ -120,7 +120,7 @@ async def start_background_tasks(topology_mode: topology.TopologyMode) -> Backgr
     except Exception:
         pass  # Never let update check affect startup
 
-    # ── Phase 10: Discovery readiness logging ──────────────────────────
+    # ── Discovery readiness logging ──────────────────────────────────────
     # Make degraded discovery (missing nmap, no raw sockets, no ARP, etc.)
     # visible at boot instead of only being discovered at scan time.
     try:
@@ -130,7 +130,7 @@ async def start_background_tasks(topology_mode: topology.TopologyMode) -> Backgr
     except Exception:
         _logger.warning("Discovery readiness logging failed at startup", exc_info=True)
 
-    # ── Phase 11: reconcile the discovery review queue ─────────────────────
+    # ── reconcile the discovery review queue ─────────────────────────────────
     # Reclassify stale new observations, enrich known devices, and consolidate
     # pending duplicates from older builds. The paginated pass is idempotent;
     # unknown devices remain reviewable. Threaded because it owns a synchronous
@@ -140,7 +140,7 @@ async def start_background_tasks(topology_mode: topology.TopologyMode) -> Backgr
     except Exception:
         _logger.warning("Discovery enrichment backfill failed at startup", exc_info=True)
 
-    # ── Task 1c: event-loop lag sampler (observability phase 2) ────────────
+    # ── event-loop lag sampler (observability phase 2) ────────────────────────
     # A 100ms sleep loop is free, so this runs by default. Appended to
     # _worker_tasks so the cancel-and-gather shutdown below stops it the same
     # way it stops the update-check loop — return_exceptions=True there means

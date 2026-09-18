@@ -286,7 +286,7 @@ async def test_manifest_install_mode_is_unknown_when_unset(
 
 
 def test_cb_backup_invokes_the_snapshot_cli_and_nothing_else() -> None:
-    """INC-15: `cb backup` built its own archive — database.sql, manifest.txt, no vault key —
+    """`cb backup` built its own archive — database.sql, manifest.txt, no vault key —
     which `deploy/scripts/restore.sh` structurally rejected. There must be one builder."""
     cb_src = (Path(__file__).resolve().parents[4] / "cb").read_text(encoding="utf-8")
     start = cb_src.index("cmd_backup()")

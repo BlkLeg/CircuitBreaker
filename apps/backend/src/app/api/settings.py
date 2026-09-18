@@ -113,7 +113,7 @@ def patch_acme_dns(
     db: Session = Depends(get_db),
     user: Any = require_role("admin"),
 ) -> Any:
-    """Configure the DNS-01 provider used for Let's Encrypt issuance (INC-07).
+    """Configure the DNS-01 provider used for Let's Encrypt issuance.
 
     Admin-only, unlike the settings read: the value being written is a credential that can
     publish records in the install's DNS zone.

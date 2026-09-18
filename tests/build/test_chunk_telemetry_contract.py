@@ -1,7 +1,7 @@
 """Every lazily-loaded chunk must be instrumented.
 
-Route §4.2 lists per-chunk fetch telemetry as instrumentation the navigation
-investigation depends on, and §4.4's decision tree branches on it directly: its
+Per-chunk fetch telemetry is instrumentation the navigation
+investigation depends on, and the decision tree branches on it directly: its
 first YES branch is "chunk fetch pending/failed at wedge time → H1 CONFIRMED".
 While the app used bare `React.lazy`, no such record existed anywhere, so H1
 could only ever be reached by eliminating the other branches — which is why a
@@ -57,7 +57,7 @@ def test_react_lazy_is_only_called_through_the_instrumented_wrapper() -> None:
     assert not offenders, (
         "bare React.lazy() call sites, which produce no chunk-fetch record: "
         f"{offenders}. Use `lazyRoute(name, () => import(...))` from "
-        "src/lib/lazyRoute.js so §4.4's decision tree can distinguish a stalled "
+        "src/lib/lazyRoute.js so the decision tree can distinguish a stalled "
         "chunk (H1) from a blocked main thread (H4)."
     )
 

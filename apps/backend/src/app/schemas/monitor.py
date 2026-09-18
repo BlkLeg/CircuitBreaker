@@ -72,7 +72,7 @@ class _MonitorBase(BaseModel):
     enabled: bool = True
     target_type: TargetType | None = None
     target_id: int | None = None
-    # Slice 3 §7: the vantage. NULL is server execution — today's behaviour and
+    # The vantage. NULL is server execution — today's behaviour and
     # the only value any pre-Slice-3 monitor has.
     probe_agent_id: int | None = None
 
@@ -99,7 +99,7 @@ class MonitorUpdate(BaseModel):
     enabled: bool | None = None
     target_type: TargetType | None = None
     target_id: int | None = None
-    # Slice 3 §7: the vantage. NULL is server execution. Only meaningful when
+    # The vantage. NULL is server execution. Only meaningful when
     # the caller actually sets it — `exclude_unset` is what tells a reassignment
     # apart from a rename that happens to echo the field back.
     probe_agent_id: int | None = None
@@ -113,7 +113,7 @@ class ProbeAgentRef(BaseModel):
 
 
 class _ProbeVantageRead(BaseModel):
-    """The server-derived half of §7's probe block.
+    """The server-derived half ofthe probe block.
 
     Read-only on purpose: `probe_agent_id` is the one writable field, and
     `MonitorUpdate` deliberately does not accept any of these back. A frontend
@@ -182,7 +182,7 @@ class MonitorCheckPoint(BaseModel):
 
 
 class MonitorWindowCoverage(BaseModel):
-    """How much of an uptime window the vantage actually observed (D-12).
+    """How much of an uptime window the vantage actually observed.
 
     A vantage that cannot run a check writes no `avail` sample at all, so an
     unobserved stretch shrinks the uptime denominator instead of showing as
@@ -255,16 +255,16 @@ class TargetMonitorSummary(_ProbeVantageRead):
     last_polled_at: datetime | None = None
 
 
-# ── Slice 3 §7: probe runs and per-agent assignments ─────────────────────────
+# ── probe runs and per-agent assignments ─────────────────────────────────────
 # These describe monitor execution, not the agent itself, which is why they live
 # beside the monitor schemas even though `api/agents.py` serves two of them.
 
 
 class MonitorProbeRunRead(BaseModel):
-    """One row of §7's bounded execution history.
+    """One row ofthe bounded execution history.
 
     `result_metadata` is deliberately absent: it is the audit record behind a
-    check (D-8) and the only place per-sample `error_reason` and `details` are
+    check and the only place per-sample `error_reason` and `details` are
     kept, none of which the history table renders.
     """
 
@@ -303,7 +303,7 @@ class AgentProbeAssignment(BaseModel):
 
 
 class AgentProbesRead(BaseModel):
-    """§7's Assigned Probes section: the assignments plus the concurrency the
+    """the Assigned Probes section: the assignments plus the concurrency the
     agent is using against the limit its `remote_probe` grant configures."""
 
     agent_id: int
@@ -313,7 +313,7 @@ class AgentProbesRead(BaseModel):
 
 
 class EligibleProbeAgent(BaseModel):
-    """One candidate vantage for a monitor, with everything §7's "Run from"
+    """One candidate vantage for a monitor, with everythingthe "Run from"
     selector shows: liveness, grant, readiness, concurrency and whether this
     particular destination is inside the agent's derived scope.
 

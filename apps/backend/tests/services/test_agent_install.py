@@ -218,7 +218,7 @@ def test_build_install_command_fails_closed_without_pin(monkeypatch, db_session)
         agent_install.build_install_command(db_session, "https://cb.example.com")
 
 
-# ── Task 28: install scripts reflect the successor key after activation ────
+# ── install scripts reflect the successor key after activation ────
 
 
 def _add_letsencrypt_cert(db_session) -> None:
@@ -375,16 +375,11 @@ def test_letsencrypt_needs_no_pin_even_with_an_unreadable_file(tmp_path, monkeyp
 
 
 # ── The binary download is verified, not just fetched ────────────────────────
-# build_install_command hands out `curl -fsSLk` for the *script* under
-# self-signed TLS, but the script's own binary download went out as plain
-# `curl -fsSL` against that same self-signed certificate -- so on the default
-# deployment it failed verification outright (curl exit 60), and the obvious
-# repair (`-k`) would have made it succeed while verifying nothing. The script
-# already carries the SPKI pin, and curl enforces --pinnedpubkey even when
-# --insecure is in force, so both fetches pin instead.
-#
-# The release gate never caught this because it reads the script's *text*; the
-# sh-level test below actually runs the fetch.
+# Under self-signed TLS a plain `curl -fsSL` for the binary fails verification,
+# and the obvious repair (`-k`) would succeed while verifying nothing. The script
+# carries an SPKI pin and curl enforces --pinnedpubkey even with --insecure, so
+# BOTH fetches pin. The sh-level test below runs the fetch rather than reading
+# the script's text, which is why it catches this.
 
 _SELF_SIGNED = dict(
     server_url="https://cb.example.com",
@@ -636,13 +631,11 @@ def test_unit_keeps_the_filesystem_sandbox_self_update_depends_on():
 
 # ── Unprivileged ICMP ────────────────────────────────────────────────────────
 #
-# The agent's ICMP prober opens datagram ICMP (`icmp.ListenPacket("udp4", ...)`)
-# and holds no CAP_NET_RAW, so it can only send an echo request when the
-# cb-agent group falls inside net.ipv4.ping_group_range. The installer used to
-# check only whether *a* line for that sysctl existed in /etc/sysctl.conf, and
-# skip if one did — so a host with a narrower range already set (the kernel
-# default `1 0` disables the feature entirely) silently got an agent whose ICMP
-# probes could never succeed.
+# The agent's ICMP prober opens datagram ICMP and holds no CAP_NET_RAW, so it
+# can only send an echo request when the cb-agent group falls inside
+# net.ipv4.ping_group_range. Checking merely that a line for that sysctl exists
+# is not enough: a narrower range already set (the kernel default `1 0` disables
+# it entirely) leaves ICMP probes that can never succeed.
 
 
 def _run_icmp_block(tmp_path, *, current_range: str, gid: str = "997"):
@@ -736,7 +729,7 @@ def _run_preflight(tmp_path, *, reachable: bool, tls_pin: str = "c" * 44):
     `(returncode, stderr, curl_argv, user_created)`.
 
     `user_created` is the assertion that matters. The preflight exists so that
-    a wrong `CB_SERVER_URL` "costs nothing" (design §7): it must fail before
+    a wrong `CB_SERVER_URL` "costs nothing": it must fail before
     the script has touched the host. A stub `useradd` that records being called
     is the only thing that can prove that, and asserting on the script's text
     cannot.
@@ -894,14 +887,12 @@ async def test_absent_endpoint_falls_back_to_the_browsed_host(
 
 
 # ── The emitted command must carry the choice, not just honour it ────────────
-# Resolving an endpoint server-side is only half the fix. The command the
-# operator pastes is what the *target machine* runs, and that machine's curl is
-# what `/install-agent.sh` sees. Without `?endpoint=<id>` on that download URL
-# the route takes its `endpoint is None` branch and re-derives the address from
-# `forwarded_base_url` — the very derivation §1.1 exists to eliminate — so the
-# declared endpoint only lands when the proxy chain happens to reproduce it,
-# and `script_sha256` (computed over the endpoint variant) no longer matches
-# the fallback variant that was actually downloaded.
+# Resolving an endpoint server-side is only half the fix: the command the
+# operator pastes is what the TARGET machine runs, and its curl is what
+# `/install-agent.sh` sees. Without `?endpoint=<id>` on that URL the route
+# re-derives the address from `forwarded_base_url` — the derivation §1.1 exists
+# to eliminate — so the declared endpoint lands only if the proxy chain happens
+# to reproduce it, and `script_sha256` no longer matches what was downloaded.
 
 
 def _download_url(command: str) -> str:
@@ -1158,13 +1149,12 @@ def test_a_token_with_shell_metacharacters_survives_verbatim_and_runs_nothing(
 # ---------------------------------------------------------------------------
 # Staging the binary download somewhere that is not, by default, /tmp.
 #
-# Found deploying an agent to a second machine: /tmp is routinely a small
-# tmpfs, and systemd's PrivateTmp= gives this unit a RAM-backed one of its own.
-# A full /tmp failed the install with whatever curl happened to say, which
-# names neither the filesystem nor the fix. The installer now tries the agent's
-# own directory first — real disk, same filesystem as the install target — and
-# falls through a list of alternatives, refusing only when none of them can
-# hold the download and saying what each had.
+# /tmp is routinely a small tmpfs, and systemd's PrivateTmp= gives this unit a
+# RAM-backed one of its own, so a full /tmp fails the install with whatever curl
+# happens to say — naming neither the filesystem nor the fix. The installer tries
+# the agent's own directory first (real disk, same filesystem as the target) and
+# falls through alternatives, refusing only when none can hold the download and
+# saying what each had.
 
 
 def _run_stage_block(

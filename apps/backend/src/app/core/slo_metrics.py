@@ -57,7 +57,7 @@ _LATENCY_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.
 
 _UNMATCHED_ROUTE = "unmatched"
 
-#: Task 1c (observability phase 2): buckets small enough to distinguish a
+#: the design (observability phase 2): buckets small enough to distinguish a
 #: healthy loop (sub-millisecond) from one that is starting to starve, since
 #: this histogram exists specifically to answer "how blocked does it get",
 #: not just "is it blocked".
@@ -125,7 +125,7 @@ event_loop_lag_seconds_hist = Histogram(
     registry=REGISTRY,
 )
 
-# ── Connection-pool saturation (route §5: "DB pool utilization + pool_timeout
+# ── Connection-pool saturation (the contract: "DB pool utilization + pool_timeout
 # events") ─────────────────────────────────────────────────────────────────
 # These live here rather than in `app.api.metrics` because the timeout counter
 # has to survive across scrapes, and splitting a pool's utilization gauges from

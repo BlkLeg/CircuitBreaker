@@ -85,7 +85,7 @@ describe('dock membership', () => {
   });
 
   // dock_order is admin-writable with no path allowlist. NAV_MAP is a plain object, so a
-  // stored prototype key used to resolve to a truthy function and throw on item.path —
+  // a stored prototype key resolves to a truthy function and throws on item.path —
   // and the dock renders outside the inner ErrorBoundary, so that took the whole app down.
   it.each([['constructor'], ['toString'], ['valueOf'], ['__proto__'], ['hasOwnProperty']])(
     'ignores a stored %s instead of crashing the app',
@@ -98,7 +98,7 @@ describe('dock membership', () => {
 });
 
 describe('dock migration, as rendered', () => {
-  // Spec §9 asks that a stored legacy dock_hidden_items produce the same visible dock as
+  // The spec asks that a stored legacy dock_hidden_items produce the same visible dock as
   // before. resolveDockPaths is unit-tested above; this is the only test that renders it.
   it('paints a legacy install the dock it already had, minus what it had hidden', async () => {
     await renderDock({ role: 'admin' }, { dock_hidden_items: ['/storage'] });

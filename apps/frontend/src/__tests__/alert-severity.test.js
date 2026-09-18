@@ -5,7 +5,7 @@ import {
   alertSeverityLabel,
 } from '../lib/alertSeverity.js';
 
-// The route field is a floor, not an exact match (INC-03). Every surface that
+// The route field is a floor, not an exact match. Every surface that
 // shows or offers it reads from here, so the wording cannot drift back to
 // implying an exact match on one screen and a threshold on another.
 describe('alert severity thresholds', () => {

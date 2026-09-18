@@ -465,7 +465,7 @@ async def test_receive_frame_then_dispatch_frame_pipeline(db_session, factories,
     refresh.assert_called_once()
 
 
-# ── key.rotate, kind="device" (Task 27) ─────────────────────────────────────
+# ── key.rotate, kind="device" ─────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -758,7 +758,7 @@ async def test_probe_result_without_the_grant_records_a_capability_violation(db_
 @pytest.mark.asyncio
 async def test_probe_result_dispatch_commits_exactly_once(db_session, factories):
     """Samples, state, the transition event and the run's completion have to
-    become durable together (§6): a reader must never be able to observe a
+    become durable together: a reader must never be able to observe a
     monitor that went DOWN while the run that says why is still open.
 
     Only commits that actually carry pending work are counted. `dispatch_frame`
@@ -1062,7 +1062,7 @@ async def test_self_audited_discovery_rejection_is_not_recorded_twice(
     assert len(_events_of_type(db_session, agent, "protocol_violation")) == 1
 
 
-# ── capability.violation: the agent's own scope-disagreement reports (§7) ─────
+# ── capability.violation: the agent's own scope-disagreement reports ─────
 
 
 def _capability_violation_payload(**overrides) -> dict:
@@ -1246,7 +1246,7 @@ async def test_hundred_capability_violations_in_one_minute_write_at_most_one_row
     assert "leaked-evidence-value" not in serialized
 
 
-# ── Phase 3: this server also destroys data, and now counts it ──────────────
+# ── this server also destroys data, and now counts it ──────────────
 
 
 @pytest.mark.asyncio

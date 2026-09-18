@@ -69,7 +69,7 @@ async def test_pausing_a_subnet_stops_its_cron_and_deletes_nothing(
     assert db_session.get(DiscoveryProfile, profile.id) is not None
     assert profile.id not in _scheduled_profile_ids()
 
-    # Pause is not disable (D-14): nothing is cancelled and nothing is told to stop.
+    # Pause is not disable: nothing is cancelled and nothing is told to stop.
     db_session.refresh(job)
     assert job.status == "running"
     assert _cancels(cancel_frames) == []
@@ -176,7 +176,7 @@ async def test_pausing_the_fleet_stops_every_agent_cron_and_deletes_nothing(
 
     assert _stored_global_pause(db_session) is True
     assert profile.id not in _scheduled_profile_ids()
-    # Pause is not disable (D-14): the subnet keeps its row, its cadence and its
+    # Pause is not disable: the subnet keeps its row, its cadence and its
     # in-flight dispatch, and nothing is told to stop.
     db_session.refresh(profile)
     assert profile.enabled == 1

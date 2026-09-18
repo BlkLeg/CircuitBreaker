@@ -314,7 +314,7 @@ async def test_an_unusable_accelerator_collector_does_not_deny(db_session, facto
     assert decision.ok, decision
 
 
-# ── Tenancy (D-17) ────────────────────────────────────────────────────────────
+# ── Tenancy ────────────────────────────────────────────────────────────
 
 
 async def test_mismatched_tenant_is_ineligible(db_session, factories, presence):

@@ -1,4 +1,4 @@
-"""Phase 4 repo-policy ratchets (route findings F4, F3).
+"""Supply-chain repo-policy ratchets.
 
 These are Tier 0 gates: they read source text, never run the app, and they
 exist because each finding they cover is a *class* of defect that came back
@@ -248,7 +248,7 @@ def test_the_mono_image_signs_its_agent_binaries_too() -> None:
     """H2. The ratchet above proved the *native* build reaches the signer and
     stopped there, so the mono image — the primary shipping artifact, and the
     one most installs actually run — built every agent binary with no embedded
-    key and no `.sig` beside it. Slice 4.2 had no effect there at all.
+    key and no `.sig` beside it.
 
     That is this suite's own recorded failure mode: it was written to catch "a
     signer that is defined but never invoked", and it missed a whole build path

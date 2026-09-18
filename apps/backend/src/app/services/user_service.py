@@ -1,4 +1,4 @@
-"""Phase 6.5: User management — sessions, invites, lockout."""
+"""User management — sessions, invites, lockout."""
 
 import hashlib
 import logging

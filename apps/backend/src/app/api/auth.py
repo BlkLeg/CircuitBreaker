@@ -71,7 +71,7 @@ router = APIRouter(tags=["auth"])
 users_router = fastapi_users.get_users_router(UserRead, UserUpdate)
 
 
-# Phase 6.5: Self-service sessions and password (mounted at /api/v1/users)
+# Self-service sessions and password (mounted at /api/v1/users)
 user_me_router = APIRouter(tags=["users"])
 
 
@@ -129,11 +129,11 @@ def accept_invite_endpoint(
     # therefore *unkillable* — logout, admin reset-password and admin
     # revoke-sessions all miss it, and the admin UI reports "0 sessions revoked"
     # while the token keeps authenticating until session_timeout_hours elapses
-    # on its own (B28).
+    # on its own.
     #
     # This call belongs here rather than in auth_service because this endpoint
     # mints its own token instead of going through `auth_service.login`. That is
-    # exactly how the accept-invite half of B28 survived a first round of
+    # exactly how the accept-invite half of the contract survived a first round of
     # fixing: the recording was added to the service layer, the endpoint kept
     # its own `_make_token`, and the regression test called the service
     # directly so it never noticed. Invites are the normal way a second user
@@ -189,7 +189,7 @@ class ResetPasswordRequest(BaseModel):
         return self
 
 
-# INC-08. "Temporarily disabled" told a locked-out user nothing they could act on, and
+# "Temporarily disabled" told a locked-out user nothing they could act on, and
 # "temporarily" promised a return that is not planned. Both paths named here are real:
 # POST /admin/users/{id}/reset-password issues a one-time password and forces a change at
 # the next login, and Reset With Vault Key is on the login page for the case where no
@@ -431,7 +431,7 @@ def force_change_password(
 class CreateAPITokenRequest(BaseModel):
     label: str | None = None
     expires_at: str | None = None  # ISO datetime or None for no expiry
-    # B4 / INC-04: omitted means "the same access I have", NOT [] — an empty
+    # B4 / the contract: omitted means "the same access I have", NOT [] — an empty
     # list stored here is exactly what made every UI-created token 403.
     scopes: list[str] | None = None
 
@@ -943,7 +943,7 @@ def delete_me(
 
 
 # ---------------------------------------------------------------------------
-# Phase 6.5: Self-service sessions and password
+# Self-service sessions and password
 # ---------------------------------------------------------------------------
 
 

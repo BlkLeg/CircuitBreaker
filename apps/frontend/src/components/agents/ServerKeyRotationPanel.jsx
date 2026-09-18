@@ -23,7 +23,7 @@ function remaining(iso) {
 }
 
 /**
- * Rotation of the key that authenticates the entire agent fleet (INC-13).
+ * Rotation of the key that authenticates the entire agent fleet.
  *
  * Copy discipline, per db/models.py:432-450: the server knows only which key
  * each agent's HANDSHAKES have used, never whether the agent holds the

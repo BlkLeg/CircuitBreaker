@@ -7,9 +7,9 @@ import { FONT_OPTIONS, FONT_SIZE_OPTIONS } from '../lib/fonts';
  *
  * The faces themselves are self-hosted and declared in `styles/fonts.css`, so
  * selecting a font is a pure style change — no <link> injection, no request to
- * a third party. It used to inject a fonts.googleapis.com stylesheet, which
- * meant an air-gapped install silently fell back to system fonts and every
- * page load disclosed the viewer to Google.
+ * a third party. Injecting a fonts.googleapis.com stylesheet instead would
+ * leave an air-gapped install silently falling back to system fonts, and would
+ * disclose the viewer to Google on every page load.
  *
  * Wired in SettingsContext so it re-runs whenever settings.ui_font or
  * settings.ui_font_size changes.

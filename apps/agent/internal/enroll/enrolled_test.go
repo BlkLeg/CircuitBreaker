@@ -42,7 +42,7 @@ func TestMarkEnrolled_RoundTripsThroughIsEnrolledAndClearEnrolled(t *testing.T) 
 }
 
 func TestClearEnrolled_IsSilentWhenThereIsNoMarker(t *testing.T) {
-	// Phase 6 clears this unconditionally on an unknown-device refusal; that
+	// Enrollment clears this unconditionally on an unknown-device refusal; that
 	// path must not error just because enrollment never happened yet.
 	if err := ClearEnrolled(t.TempDir()); err != nil {
 		t.Fatalf("ClearEnrolled() on an absent marker error = %v, want nil", err)

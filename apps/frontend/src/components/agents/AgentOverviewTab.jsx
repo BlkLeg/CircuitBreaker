@@ -49,7 +49,7 @@ export default function AgentOverviewTab({
     (key) => normalizeCapability(agent.capabilities?.[key]).enabled
   ).length;
   // `AgentDiscoveryRead` (schemas/discovery.py) carries `scope[]` and
-  // `limits.scope_mode`. This card previously read `subnets` and `config.mode`,
+  // `limits.scope_mode`. Reading `subnets` and `config.mode` instead
   // which that payload has never had, so it rendered "0" and "—" for every
   // agent whatever its real scope was.
   //

@@ -40,7 +40,7 @@ func loadScopeCorpus(t *testing.T) []corpusEntry {
 	return entries
 }
 
-// TestScopeCorpus_MatchesEveryCase is the gate on §3's "enforce scope independently": two
+// TestScopeCorpus_MatchesEveryCase is the gate on the "enforce scope independently": two
 // evaluators are a safety property only while they agree, so a rule that exists on one side
 // only surfaces here as a decision mismatch rather than as a hole nobody notices.
 func TestScopeCorpus_MatchesEveryCase(t *testing.T) {
@@ -49,7 +49,7 @@ func TestScopeCorpus_MatchesEveryCase(t *testing.T) {
 			scope := Derive(entry.Facts, entry.Config)
 
 			// A corpus entry names either a single destination (host) or a whole target
-			// prefix (cidr). Slice 4 dispatches prefixes rather than addresses, so
+			// prefix (cidr). the design dispatches prefixes rather than addresses, so
 			// NetworkInScope has to sit under the same cross-language gate as Evaluate —
 			// otherwise the one rule set both languages agree on covers only half of what
 			// actually authorizes work.

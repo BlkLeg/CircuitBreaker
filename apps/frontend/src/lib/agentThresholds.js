@@ -2,7 +2,7 @@
  * When a host metric stops being background and becomes news.
  *
  * These values drive two things and must stay one list: which tiles flash
- * (spec §5.5) and which tabs raise an indicator (spec §5.3). A metric that
+ * and which tabs raise an indicator. A metric that
  * flashed without raising an indicator would be invisible from another tab,
  * which is the failure the indicators exist to prevent.
  */

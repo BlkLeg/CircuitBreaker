@@ -24,7 +24,7 @@ import { canEdit, isAdmin } from '../utils/rbac';
  *      the query string, so an entity id attached to it would vanish.
  *
  * `deepLink` records whether the destination page can actually open ONE of
- * these (Task 9 wires the pages that can). It is false for misc_item: MiscPage
+ * these. It is false for misc_item: MiscPage
  * hands EntityTable an onEdit and no onRowClick (MiscPage.jsx:219-233), and no
  * misc detail component exists — so a misc result lands on the list rather than
  * carrying an id nothing will read. Advertising selection a page cannot perform

@@ -161,7 +161,7 @@ class MonitorItem(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
-    # Slice 3 §1: the vantage. NULL is server execution — today's behaviour and
+    # The vantage. NULL is server execution — today's behaviour and
     # the only value any pre-Slice-3 monitor has. RESTRICT, unlike every other
     # agents FK in this module, because unassigning a monitor is a decision the
     # user makes explicitly; deleting the agent must fail with 409 instead of
@@ -188,7 +188,7 @@ class MonitorItem(Base):
     __table_args__ = (
         Index("ix_monitor_items_due", "enabled", "next_due_at"),
         # Serves both the per-vantage assignment listings and the scheduler's
-        # oversampled fair-share claim (D-2), whose ORDER BY would otherwise
+        # oversampled fair-share claim, whose ORDER BY would otherwise
         # degrade to a full sort over every due row.
         Index("ix_monitor_items_probe_due", "probe_agent_id", "enabled", "next_due_at"),
     )
@@ -216,14 +216,14 @@ class MonitorEvent(Base):
 
 
 class MonitorProbeRun(Base):
-    """One remote check handed to an agent — the durable lease behind it (§1).
+    """One remote check handed to an agent — the durable lease behind it.
 
     A run exists from the moment the scheduler decides an agent-assigned monitor
     is due until a `probe.result` lands, the deadline passes, or it is cancelled.
     It is the audit record for a check the server did not perform itself, and the
     only place `CheckResult.details` and per-sample `error_reason` are persisted:
-    `telemetry_timeseries` deliberately keeps neither for server-executed checks
-    (D-8), and adding them there would mean altering a compressed hypertable for
+    `telemetry_timeseries` deliberately keeps neither for server-executed checks, and adding them
+    there would mean altering a compressed hypertable for
     metadata monitor state does not depend on.
 
     Retention is seven days; long-term availability stays in
@@ -234,7 +234,7 @@ class MonitorProbeRun(Base):
 
     # Deliberately a plain single-column PK: this is not a hypertable, and the
     # composite `(id, <time>)` shape the Timescale tables use is what made
-    # SQLAlchemy decline to emit a sequence in the 0001 bootstrap (F-7).
+    # SQLAlchemy decline to emit a sequence in the 0001 bootstrap.
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     # Opaque random 128-bit token. It is the only identifier that travels to the
     # agent, so a leaked or guessed monitor id cannot be used to post a result.

@@ -14,7 +14,7 @@ import { getEntries, clearEntries } from '../lib/diagnosticsBuffer';
  * after the navigation has mounted and closed. A real captured wedge run held
  * `longTasks: [{duration: 123}, {duration: 122}], longTaskTotalMs: 0`.
  *
- * That is not a cosmetic inconsistency. Route §4.4's decision tree branches on
+ * That is not a cosmetic inconsistency. The decision tree branches on
  * "chunk resolved, mount never ran, longtask >1s present → H4", so a total that
  * reads 0 while long tasks exist sends the investigation down the wrong branch —
  * which is the one thing an instrument must never do.

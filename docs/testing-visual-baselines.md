@@ -2,10 +2,23 @@
 
 **Requirement:** REL-18 — reviewed desktop and mobile baselines with deterministic fixtures.
 
-**Status: generated and committed** (2026-08-19, 18 baselines: 9 surfaces × desktop/mobile).
-They were produced in the CI Playwright container, reviewed image by image, and verified to
-reproduce on two consecutive runs before being committed. The Browser E2E job in
-`.github/workflows/ci.yml` runs them on every PR.
+**Status: generated and committed** (2026-08-19, refreshed in full 2026-09-18; 18 baselines:
+9 surfaces × desktop/mobile). They were produced in the CI Playwright container, reviewed image
+by image, and verified to reproduce on two consecutive runs before being committed. The Browser
+E2E job in `.github/workflows/ci.yml` runs them on every PR.
+
+### Refresh all 18, not only the red ones
+
+The 2026-09-18 refresh followed six surfaces going red on the header gaining its `Navigate`
+button and several pages gaining a tab strip. The other twelve were stale by the same header
+change and stayed green only because a header is about 5.5k pixels — under the 1% `maxDiffPixelRatio`
+in `playwright.config.ts`. That is the failure mode to watch for here: tolerance silently absorbing
+real drift until the budget is spent, at which point an unrelated one-line change is what finally
+turns a surface red and gets blamed for it.
+
+So a refresh uses `--update-snapshots=all`. Plain `--update-snapshots` rewrites only the baselines
+that failed, which keeps every under-tolerance baseline stale and leaves the next author with the
+same trap.
 
 ## Why baselines cannot be made on a developer machine
 
@@ -60,7 +73,7 @@ Run from the repository root, on any machine with Docker:
 docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
   -v "$(pwd):/work" -w /work/apps/frontend \
   mcr.microsoft.com/playwright:v1.62.1-noble \
-  sh -c "npx playwright test --project=visual-desktop --project=visual-mobile --update-snapshots"
+  sh -c "npx playwright test --project=visual-desktop --project=visual-mobile --update-snapshots=all"
 ```
 
 `--user` matters: without it the container writes the PNGs, `dist/` and `test-results/` as root,
@@ -94,7 +107,7 @@ Run it twice. A baseline that passes once may still be capturing something that 
 
 ## Updating later
 
-When a UI change is intentional, re-run with `--update-snapshots`, review the diff in the PR, and
+When a UI change is intentional, re-run with `--update-snapshots=all`, review the diff in the PR, and
 commit. Never update baselines in the same commit as the change that altered them without saying so
 in the message — the diff is the review.
 

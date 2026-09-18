@@ -143,7 +143,7 @@ def build_agent_binaries(version: str, work_dir: Path) -> Path:
             "VERSION": version,
             "DIST": str(agent_dist / version),
             "PYTHON": sys.executable,
-            # Slice 4.2 (F3): the ldflag that embeds the verifying key in the
+            # The ldflag that embeds the verifying key in the
             # built binaries. os.environ already carries it, but naming it
             # here keeps the two halves of the signing contract — the private
             # key gen_manifest.py reads and the public key build-all embeds —
@@ -409,7 +409,7 @@ Full documentation
 def _write_build_info(share_dir: Path, version: str, target_os: str, target_arch: str) -> None:
     """Record where and on what this package was built, inside the package.
 
-    ADR 0005 Phase 3, F8. A PyInstaller bundle inherits the glibc floor of its
+    A PyInstaller bundle inherits the glibc floor of its
     build host: built on Fedora 44 it demands GLIBC_2.38 and will not run on
     Debian 12, while the release job builds on ubuntu-22.04 whose 2.35 floor
     every supported distro clears. So a locally built package and the released

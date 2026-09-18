@@ -1,10 +1,10 @@
 /**
  * The three certificate types the API accepts, and how each is named on screen.
  *
- * INC-07: creation used to branch on whether a PEM was pasted rather than on the requested
- * type, so a self-signed certificate could be stored — and rendered — as "Let's Encrypt".
+ * Creation must branch on the requested type, never on whether a PEM was pasted: otherwise
+ * a self-signed certificate can be stored — and rendered — as "Let's Encrypt".
  * One table of names, shared by the page and the detail drawer, keeps the two surfaces from
- * drifting apart again.
+ * drifting apart.
  */
 const CERTIFICATE_TYPE_LABELS = new Map([
   ['selfsigned', 'Self-Signed'],

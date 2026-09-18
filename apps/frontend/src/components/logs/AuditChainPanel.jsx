@@ -6,7 +6,7 @@ import HighRiskConfirmDialog from '../common/HighRiskConfirmDialog';
 import { useToast } from '../common/Toast';
 
 /**
- * Hash-chain integrity for the audit log (INC-12).
+ * Hash-chain integrity for the audit log.
  *
  * Intact is deliberately one quiet line: an operator should be able to glance
  * past it. Broken is escalated, because a break means entries were altered or

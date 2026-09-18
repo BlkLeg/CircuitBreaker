@@ -37,7 +37,7 @@ that packager.
   unverified "latest" download disappears rather than gaining a fourth variant.
 * Wants=, not Requires=. Since the bounded-connect fix, a missing broker
   degrades rather than hangs, and CB_NATS_URL exists so the broker can live on
-  another host entirely — §7.4's multi-host agents depend on that staying
+  another host entirely — multi-host agents depend on that staying
   first-class.
 """
 
@@ -292,7 +292,7 @@ def test_a_separate_subpackage_provides_the_vendored_broker():
 
 def test_the_app_unit_wants_the_broker_rather_than_requiring_it():
     """Requires= would make every install run its own broker and turn the
-    clustered topology in §7.4 into a special case."""
+    clustered topology into a special case."""
     text = UNIT.read_text(encoding="utf-8")
     assert "Requires=circuit-breaker-nats" not in text, (
         "a missing broker degrades since the bounded-connect fix; Requires= "

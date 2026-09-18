@@ -1,11 +1,11 @@
 /**
  * Fixed-capacity, memory-bounded ring buffer for browser-side diagnostics.
  *
- * Route §4.2 correlates a browser navigation to the server-side work it
+ * 2 correlates a browser navigation to the server-side work it
  * caused: nav-ID → request-IDs issued during that navigation → server logs →
- * DB slow queries. Task 1 built the server half (`X-Request-ID`, event-loop
+ * DB slow queries. The server half is `X-Request-ID`, event-loop
  * lag, slow-query logging). This buffer is the browser half — it holds the
- * last CAPACITY 'request' and 'nav' records so Task 8's wedge diagnostics can
+ * last CAPACITY 'request' and 'nav' records so the wedge diagnostics can
  * read them back via `window.__cbDiagnostics`.
  *
  * This is instrumentation, not a feature: every public function must never
@@ -15,14 +15,14 @@
  * terms). Failure inside this module can never break a page render or an
  * HTTP call.
  *
- * Two separate rings, not one shared one (review fix, Task 2): requests
+ * Two separate rings, not one shared one: requests
  * vastly outnumber navs, and a nav can legitimately stay open for a long
  * time — that's the wedge signal. Sharing one 200-slot buffer meant a busy
  * page (background polling, SSE-driven lists) could push 200 *request*
  * entries while a single slow or wedged navigation was still open, evicting
  * its slot before `useNavigationTiming` ever closed it — the entry then
  * vanished from `getEntries()` entirely, showing neither `pending: true` nor
- * a closed record, in exactly the slow-navigation case Task 8 most needs
+ * a closed record, in exactly the slow-navigation case that most needs
  * evidence for. Giving navs their own ring removes request volume as a
  * threat to that evidence.
  */
@@ -90,7 +90,7 @@ const navRing = createRing(CAPACITY);
 
 // Route-chunk fetches get their own ring for the same reason navs do: there are
 // at most ~25 of them in the app's whole lifetime (one per lazy route, plus
-// retries), and they are the single most load-bearing record in §4.4's decision
+// retries), and they are the single most load-bearing record in the decision
 // tree — its first YES branch is "chunk fetch pending/failed at wedge time".
 // Sharing a ring with requests would let ordinary polling evict the one record
 // that separates H1 from H4.
@@ -221,8 +221,8 @@ function nextChunkId() {
 /**
  * Opens one lazy-route chunk fetch with `pending: true` and an `id`.
  *
- * Route §4.2 asks for exactly this ("wrap `React.lazy` in a helper that records
- * fetch start/settle per chunk") because §4.4 cannot otherwise be walked: its
+ * 2 asks for exactly this ("wrap `React.lazy` in a helper that records
+ * fetch start/settle per chunk") because that tree cannot otherwise be walked: its
  * first YES branch, and the whole of hypothesis H1, turn on whether the chunk
  * for the incoming route was still in flight when the page wedged. A `pending`
  * chunk entry sitting beside a `pending` nav entry is what confirms H1; a
@@ -311,7 +311,7 @@ export function exportJson() {
 }
 
 // ── Automation accessor ─────────────────────────────────────────────────────
-// Task 8's Playwright spec reads this buffer via `page.evaluate(...)` to
+// The Playwright spec reads this buffer via `page.evaluate(...)` to
 // diagnose a captured wedge, so it has to be reachable from the page. Only
 // the two read functions are exposed — automation reads, it never writes, so
 // `recordRequest` / `recordNav` / `closeNav` / `clearEntries` are

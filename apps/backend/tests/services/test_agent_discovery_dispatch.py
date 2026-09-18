@@ -13,7 +13,7 @@ things differ, each because discovery differs, and each is pinned below:
   duplicated token an integrity error, and both are raced on two real
   connections here because the sequential version of either assertion passes
   against a read-modify-write.
-* **An offline agent parks the job rather than failing it** (D-5), and it must
+* **An offline agent parks the job rather than failing it**, and it must
   give the claim back while it waits: `discovery_scheduler._running_scan_count`
   counts `status == "running"`, so a job left running while it waits for an
   agent starves every other scan for the whole deadline.
@@ -370,7 +370,7 @@ async def test_claiming_mints_a_dispatch_and_publishes_exactly_one_request(
 async def test_the_dispatched_scope_version_is_written_and_shipped_together(
     db_session, factories, online, published
 ):
-    """D-16. The job's snapshot and the agent's copy are the same string, or
+    """The job's snapshot and the agent's copy are the same string, or
     ingest — which judges a finding against `job.scope_version` — is judging it
     against a scope the agent was never told about."""
     agent = _agent(db_session, factories)
@@ -466,7 +466,7 @@ async def test_an_undeliverable_request_closes_the_job_as_dispatch_failed(
     assert job.error_reason == agent_discovery.ERROR_DISPATCH_FAILED
 
 
-# ── D-5: an offline agent parks the job and holds no slot ─────────────────────
+# ── an offline agent parks the job and holds no slot ─────────────────────
 
 
 def test_the_dispatch_deadline_is_named_and_defaults_to_fifteen_minutes() -> None:
@@ -966,7 +966,7 @@ async def test_a_job_naming_more_targets_than_one_request_can_carry_claims_no_le
     db_session, factories, online, published
 ):
     """`DiscoveryRequestPayload.targets` is capped at `MAX_DISCOVERY_TARGETS`
-    (plan §4) and `_discovery_request_frame` validates against that model — but
+    and `_discovery_request_frame` validates against that model — but
     it runs after `_claim` has committed, so an over-cardinality job used to take
     a lease and then die on a pydantic error with the row left `running` and a
     dispatch token nobody would ever close. `target_cidr` is an editable column,

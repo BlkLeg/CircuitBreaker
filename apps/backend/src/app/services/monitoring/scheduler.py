@@ -6,7 +6,7 @@ post-downtime burst spreads out), and returns the claimed rows. This makes
 double-enqueue impossible and is safe across concurrent schedulers, though
 normally only one runs (advisory lock).
 
-Two vantages exist (Slice 3 §2): `probe_agent_id IS NULL` is server execution,
+Two vantages exist: `probe_agent_id IS NULL` is server execution,
 published to `MONITOR_POLL_ITEM` exactly as before; a non-NULL `probe_agent_id`
 means one named agent runs the check, which needs a durable run row first and
 is published to `MONITOR_PROBE_REMOTE` carrying nothing but that run's id.
@@ -32,34 +32,28 @@ from app.core.subjects import MONITOR_POLL_ITEM, MONITOR_PROBE_REMOTE
 logger = logging.getLogger(__name__)
 
 # ── The run deadline ─────────────────────────────────────────────────────────
-# How long an agent has to return a result before the run is expired. §4's
-# `probe.assign` example shows scheduled_at + 20s, but that is only what the
-# *default* ICMP check costs; it is an example, not a constant.
+# How long an agent has to return a result before the run is expired. Derived
+# from the monitor's own configuration, never fixed.
 #
-# A fixed deadline is a silent-failure generator. `internal/collect/probe`'s
-# runtime.go runs every check under `context.WithDeadline(ctx, DeadlineAt)`, so
-# a deadline shorter than the configured budget aborts the check mid-flight and
-# reports `outcome="execution_error"` — and by design an execution error never
-# moves monitor state. An ICMP monitor with `packet_count=20` (allowed by
-# `schemas/monitor.py`'s `le=20`, and offered by MonitorForm.jsx) needs
-# 20 x 1.5 s = 30 s to observe 100% packet loss; at 20 s it would report
-# `probe_execution_status='unavailable'` forever while the byte-identical
-# server-executed monitor reports DOWN. §6's parity requirement is exactly what
-# that breaks.
+# A fixed deadline is a silent-failure generator: the agent runs every check
+# under `context.WithDeadline(ctx, DeadlineAt)`, so a deadline shorter than the
+# configured budget aborts mid-flight and reports `outcome="execution_error"` —
+# and an execution error never moves monitor state. An ICMP monitor with
+# `packet_count=20` needs 30s to observe 100% packet loss; at 20s it would report
+# `unavailable` forever while the identical server-executed monitor reports DOWN,
+# breakingthe parity requirement.
 #
-# So the deadline is derived from the monitor's own configuration, using the
-# collector-side defaults from the parity contract. Stored configs are sparse —
-# `_MonitorBase._validate_config` persists `model_dump(exclude_unset=True)` —
-# so every value has to come through `params.get(key, default)` here too.
+# Stored configs are sparse (`model_dump(exclude_unset=True)`), so every value
+# comes through `params.get(key, default)` using the collector-side defaults.
 #
 # The three knobs are the operator escape hatch:
-#   * headroom covers the dispatch hop, the runtime's pre-dial scope resolve
-#     (`resolveTimeout = 5s`) and clock skew, and is always added on top;
-#   * the floor keeps a cheap check from getting an unreasonably tight window
-#     and preserves the historical 20 s for every default-configured monitor;
-#   * the ceiling bounds how long any single check may occupy a run — a
-#     pathological config (the `ports` list has no length bound) must not leave
-#     a monitor un-reconciled for hours.
+#   * headroom covers the dispatch hop, the runtime's pre-dial scope resolve and
+#     clock skew, and is always added on top;
+#   * the floor keeps a cheap check from an unreasonably tight window and
+#     preserves 20s for every default-configured monitor;
+#   * the ceiling bounds how long one check may occupy a run — the `ports` list
+#     has no length bound, and a pathological config must not leave a monitor
+#     un-reconciled for hours.
 _PROBE_DEADLINE_HEADROOM_S = float(os.getenv("CB_MONITOR_PROBE_DEADLINE_HEADROOM_S", "10"))
 _PROBE_DEADLINE_MIN_S = float(os.getenv("CB_MONITOR_PROBE_DEADLINE_MIN_S", "20"))
 _PROBE_BUDGET_MAX_S = float(os.getenv("CB_MONITOR_PROBE_BUDGET_MAX_S", "600"))
@@ -134,20 +128,18 @@ def probe_deadline_seconds(check_type: str, params: dict | None) -> float:
     return max(budget + _PROBE_DEADLINE_HEADROOM_S, _PROBE_DEADLINE_MIN_S)
 
 
-# D-2. PostgreSQL rejects `FOR UPDATE is not allowed with window functions`, so
-# the per-vantage ranking cannot sit at the same query level as the claim: the
-# lock has to happen first and the ranking second. That inverts the two limits —
-# the global cap would apply *before* the rank, letting a single agent with a
-# 400-monitor backlog consume the whole locked set and starve every other
-# vantage, which is the exact thing §2's fair-sharing rule exists to prevent.
-# Oversampling the lock restores fairness; rows locked but not claimed are
-# released at commit and cost nothing. `:oversample` is the fairness knob.
+# PostgreSQL rejects `FOR UPDATE is not allowed with window functions`, so
+# the lock must happen first and the per-vantage ranking second. That inverts the
+# two limits — the global cap would apply BEFORE the rank, letting one agent with
+# a 400-monitor backlog consume the whole locked set and starve every other
+# vantage. Oversampling the lock restores fairness; rows locked but not claimed
+# are released at commit and cost nothing. `:oversample` is the fairness knob.
 #
-# The final ORDER BY is round-robin (rn first, then due time), so when the global
-# cap does bite it takes the most-overdue check from every vantage before taking
-# any vantage's second one.
+# The final ORDER BY is round-robin (rn, then due time), so when the global cap
+# bites it takes the most-overdue check from every vantage before any vantage's
+# second.
 #
-# This relies on ix_monitor_items_probe_due; without it the oversampled ORDER BY
+# Relies on ix_monitor_items_probe_due; without it the oversampled ORDER BY
 # degrades to a full sort over every due row.
 _CLAIM_SQL = text(
     """
@@ -216,7 +208,7 @@ _MARK_QUEUED_SQL = text(
     """
 )
 
-# D-6: skipping costs one interval; queuing would build a backlog behind exactly
+# Skipping costs one interval; queuing would build a backlog behind exactly
 # the agent that is already slow. next_due_at is deliberately left where the
 # claim put it.
 _MARK_IN_FLIGHT_SQL = text(
@@ -229,7 +221,7 @@ _MARK_IN_FLIGHT_SQL = text(
     """
 )
 
-# §8: a NATS publication failure is a dispatch failure, not a target failure —
+# A NATS publication failure is a dispatch failure, not a target failure —
 # no avail sample, no retry counter, just "try again soon". Jittered so a broker
 # blip does not re-converge every assigned monitor onto one tick.
 _DISPATCH_FAILED_SQL = text(
@@ -349,7 +341,7 @@ async def enqueue_due(
             continue
         # Only the run id travels over NATS: the dispatcher loads the host,
         # config and any credentials from the database immediately before
-        # encrypted delivery to the agent (§2).
+        # encrypted delivery to the agent.
         if await publish(MONITOR_PROBE_REMOTE, {"run_id": run_id}):
             enqueued += 1
         else:

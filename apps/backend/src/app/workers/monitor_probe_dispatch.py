@@ -1,12 +1,12 @@
-"""Remote-probe dispatch worker: `mon.probe.remote` -> `probe.assign` (Slice 3 §2).
+"""Remote-probe dispatch worker: `mon.probe.remote` -> `probe.assign`.
 
 The scheduler puts nothing but a `run_id` on NATS. Everything the agent needs —
 the host, the monitor's complete validated configuration, and any HTTP
 credentials it carries — is loaded here, immediately before encrypted delivery
-over the live /link socket (D-10), so no credential ever sits in a JetStream
+over the live /link socket, so no credential ever sits in a JetStream
 message.
 
-Its own durable on its own stream (D-3): a blocked agent must not be able to
+Its own durable on its own stream: a blocked agent must not be able to
 delay server-executed checks, and JetStream forbids two work-queue consumers
 with overlapping subject filters anyway.
 
@@ -42,7 +42,7 @@ _FETCH_BATCH = int(os.getenv("CB_MONITOR_PROBE_FETCH", "50"))
 _JS_STREAM = "MONITOR_PROBE"
 _JS_DURABLE = "monitor_probe_dispatchers"
 
-# §8 vocabulary: a control frame that could not be published is a dispatch
+# Vocabulary: a control frame that could not be published is a dispatch
 # failure, not a target failure and not an agent-side execution error.
 _DISPATCH_FAILED = "dispatch_failed"
 # A run whose lease has no end. Nothing but a caller bug produces one, and it is
@@ -111,7 +111,7 @@ async def dispatch_run(db: Session, run_id: str) -> bool:
             "monitor_id": monitor.id,
             "check_type": monitor.check_type,
             "host": monitor.host,
-            # The complete stored configuration, credentials included (D-10).
+            # The complete stored configuration, credentials included.
             # The agent holds it in memory for the life of the run only.
             "config": dict(monitor.params or {}),
             # `.isoformat()`, never the raw datetime: publish_agent_control_frame
@@ -154,7 +154,7 @@ def _close_unavailable(
     """Retire the run and record why the vantage could not run the check.
 
     No `avail` sample and no retry-counter change: an unavailable vantage is not
-    a down target (§2, D-12). `next_due_at` is left where the scheduler put it,
+    a down target. `next_due_at` is left where the scheduler put it,
     so the monitor simply tries again on its normal interval.
 
     `outcome` stays NULL deliberately. It records what the *agent* reported, and

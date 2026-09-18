@@ -441,7 +441,7 @@ describe('permanently destroyed history', () => {
 
   it('coexists with the backlog state rather than replacing it', () => {
     // They are different facts with different futures — the backlog drains and
-    // the loss does not — and an agent in trouble normally has both. Phase 4
+    // the loss does not — and an agent in trouble normally has both. Freshness
     // adds a third (the reading is stale); none of them may overwrite another.
     const held = codes(deriveAgentStates({ ...base, spoolDepth: 5000, spoolEvictedFrames: 12 }));
     expect(held).toContain('spool_evicted');
@@ -464,7 +464,7 @@ describe('permanently destroyed history', () => {
   });
 });
 
-describe('a backlog reading that is no longer current (plan Phase 4)', () => {
+describe('a backlog reading that is no longer current', () => {
   const base = { status: 'active', online: true, lastSeenAt: iso(5), now: NOW };
 
   it('says the backlog is unknown, carrying the last known value and when', () => {

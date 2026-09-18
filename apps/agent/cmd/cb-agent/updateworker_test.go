@@ -1,5 +1,5 @@
-// Tests for the serialized update worker (§8.2/§8.6/§8.7 and the §8.9
-// regression test): heartbeats must keep flowing while an update blocks its
+// Tests for the serialized update worker: heartbeats must keep flowing while
+// an update blocks its
 // own goroutine, a second instruction during a live update must be refused,
 // cancellation must stop the worker without stranding a goroutine, and the
 // outcome/rollback durability contracts must hold on both the succeeded and
@@ -33,7 +33,7 @@ import (
 
 // workerTestResponder is the Noise responder side of a fake link server —
 // duplicated from internal/link's test helpers per that package's own note
-// (Task 11: no shared Go test-utility package yet).
+// (no shared Go test-utility package yet).
 type workerTestResponder struct {
 	hs   *noise.HandshakeState
 	send *noise.CipherState
@@ -118,14 +118,14 @@ func updateInstructionPayload(version string) json.RawMessage {
 	return raw
 }
 
-// The §8.9 regression test, in the form the daemon can actually exercise:
-// the update worker's execute goroutine is deliberately blocked, and the
+// Heartbeats must survive a blocked update, in the form the daemon can
+// actually exercise: the update worker's execute goroutine is blocked, and the
 // link must keep serving traffic the whole time. Pings are the probe — the
 // link answers each inbound `ping` with an immediate heartbeat, so a
 // heartbeat arriving while execute is blocked proves both that inbound
 // frames are still being read and dispatched and that the event loop is
-// still writing. Pre-refactor this test cannot exist: the update *was* the
-// event loop, and nothing answered while it ran.
+// still writing. An update that ran on the event loop itself would answer
+// nothing while it ran.
 func TestUpdateWorker_HeartbeatsContinueWhileUpdateBlocks(t *testing.T) {
 	serverPriv, serverPub := workerTestKeypair(t)
 
@@ -307,7 +307,7 @@ func TestUpdateWorker_HeartbeatsContinueWhileUpdateBlocks(t *testing.T) {
 	cancel()
 }
 
-// §8.6: a second instruction arriving while one is queued or running is
+// a second instruction arriving while one is queued or running is
 // refused with the exact wire-contract message — never queued behind the
 // first, never dropped silently.
 func TestUpdateWorker_SecondInstructionRefusedWhileExecuting(t *testing.T) {
@@ -360,7 +360,7 @@ func TestUpdateWorker_SecondInstructionRefusedWhileExecuting(t *testing.T) {
 		return worker.enqueue(updateInstructionPayload("0.11.0")) == nil
 	}, 3*time.Second, "the worker never accepted work again after its job finished")
 
-	// A canceled worker refuses new work outright (§3.1).
+	// A canceled worker refuses new work outright.
 	cancel()
 	waitFor(t, func() bool {
 		err := worker.enqueue(updateInstructionPayload("0.12.0"))
@@ -368,7 +368,7 @@ func TestUpdateWorker_SecondInstructionRefusedWhileExecuting(t *testing.T) {
 	}, 3*time.Second, "enqueue() after cancellation still returns a running-worker error, want a stopping-worker error")
 }
 
-// §8.7: cancellation stops the worker and no goroutine stays blocked — not
+// cancellation stops the worker and no goroutine stays blocked — not
 // on the job queue, and not on a status channel whose consumer (the link's
 // event loop) is already gone.
 func TestUpdateWorker_CancelStopsBlockedExecuteWithoutStrandingAGoroutine(t *testing.T) {
@@ -423,7 +423,7 @@ func TestUpdateWorker_CancelStopsBlockedExecuteWithoutStrandingAGoroutine(t *tes
 	}
 }
 
-// §3.3/§8.4 on the success path: the pending outcome is durably recorded
+// the pending outcome is durably recorded
 // before the succeeded status is handed to the link, and re-exec happens
 // after — so a drop in the exact pre-reexec window leaves a record the next
 // process reports. Drives the real executeUpdate against a fake update
@@ -517,7 +517,7 @@ func TestUpdateWorker_ExecutePersistsOutcomeBeforeSucceededAndReexec(t *testing.
 	cancel()
 }
 
-// §5: a failed download/verify/swap never reports success, leaves no
+// a failed download/verify/swap never reports success, leaves no
 // misleading pending outcome, and never re-execs.
 func TestUpdateWorker_FailedUpdateLeavesNoPendingOutcomeAndNoExec(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

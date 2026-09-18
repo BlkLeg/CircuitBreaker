@@ -190,7 +190,7 @@ describe('a navigation that never mounts', () => {
 
     // ChurningPage (the outgoing page, still mounted while /target's mount
     // is blocked) is actively mutating its own DOM via setInterval. Under
-    // the old MutationObserver-based design, any of those mutations would
+    // a MutationObserver-based design, any of those mutations would
     // have closed the pending nav early. The mount-effect design has
     // nothing left that could react to them, but this test guards the
     // property directly either way.
@@ -248,7 +248,7 @@ describe('eviction safety (Finding 2 regression)', () => {
  * the *previous* path is still there, still subscribed to the router, and
  * still re-rendering every time the location changes.
  *
- * That instance must not close the incoming navigation. It used to: the close
+ * That instance must not close the incoming navigation. The close
  * effect was keyed on `[location.pathname]`, so the location moving was enough
  * to re-fire it on the surviving outgoing instance and stamp `pending: false`
  * on a route that had not rendered and never would. A wedge then read back as
@@ -302,7 +302,7 @@ describe('a navigation held behind an outgoing exit animation', () => {
     // reports it as a completed navigation.
     // ChurningPage adds a list item every 5ms for as long as it stays mounted,
     // so waiting for it to grow is a wait for the outgoing subtree to have
-    // re-rendered under the new location — the condition that used to produce
+    // re-rendered under the new location — the condition that produces
     // the false close. Polling on the app's own signal beats a fixed sleep.
     const outgoingItems = () => document.querySelectorAll('li').length;
     const before = outgoingItems();

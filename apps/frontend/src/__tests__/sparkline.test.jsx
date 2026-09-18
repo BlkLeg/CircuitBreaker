@@ -5,7 +5,7 @@ import Sparkline from '../components/agents/Sparkline';
 import { SPARKLINE_HEIGHT_PX, SPARKLINE_WIDTH_PX } from '../lib/constants';
 
 /**
- * Design §5 names three cases for this component — zero, one and N points —
+ * The spec names three cases for this component — zero, one and N points —
  * plus the head-value append. They are not edge cases padded onto a happy path:
  * an agent that just enrolled has no series at all, an agent one tick old has
  * exactly one sample, and a flat series (an idle box pinned at the same 3%) is
@@ -111,7 +111,7 @@ describe('Sparkline point counts', () => {
 });
 
 describe('Sparkline head-value append', () => {
-  // Series/head coherence (design §3): useFleetMetrics appends the current head
+  // Series/head coherence: useFleetMetrics appends the current head
   // value as the series' final point, because the 120s series lags the 30s head
   // by up to a tick and a row reading "81%" beside a line ending at 74% is a
   // contradiction the operator has to resolve themselves. These two tests pin

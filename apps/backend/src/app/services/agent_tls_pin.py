@@ -1,4 +1,4 @@
-"""Slice 4.1: the TLS trust rotation state machine (route finding F4).
+"""The TLS trust rotation state machine.
 
 An agent's `tls_pin` is loaded once from agent.toml and never rewritten, and
 it gates all four of the agent's dial paths — enrollment, the /link socket,
@@ -190,7 +190,7 @@ def convergence_counts(db: Session, state: TLSPinRotationState) -> tuple[int, in
         pinned = agent.tls_pin_successor_pinned_at
         fresh = pinned is not None and pinned >= state.started_at
         # The fingerprint is what makes this a claim about *this* rotation
-        # (H5). Readiness used to be a bare boolean — "I hold some successor" —
+        # Readiness must not be a bare boolean — "I hold some successor" —
         # so an agent carrying one from an abandoned rotation was credited on
         # its next heartbeat for a policy it had never received. The gate opened
         # and the cutover stranded it. An agent predating the field reports
@@ -209,7 +209,7 @@ def activation_block_reason(db: Session, cert: Certificate) -> str | None:
     The convergence counts alone are not a sufficient gate. They are only
     meaningful *while a rotation is running*, so an operator who activates a
     new certificate without starting one at all — the likeliest way to hit
-    F4, since it needs no knowledge of this mechanism to do — would sail
+    since it needs no knowledge of this mechanism to do — would sail
     through a gate keyed on them and brick the fleet. The rotation is also
     per-policy: rotating to certificate A and then activating certificate B
     passes a count-only check while stranding everyone.

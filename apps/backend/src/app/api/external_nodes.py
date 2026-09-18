@@ -215,7 +215,7 @@ def list_services(node_id: int, db: Session = Depends(get_db)) -> Any:
 
 # A network link is addressed by its own id, not by the node it hangs off, so it
 # cannot live under this module's "/external-nodes/{node_id}" prefix. Mounted in
-# main.py at the /api/v1 root alongside `router` — INC-05 was this router being
+# main.py at the /api/v1 root alongside `router` — the contract was this router being
 # defined and never mounted, which made unlinking impossible in the product.
 
 relations_router = APIRouter(tags=["external-nodes"])

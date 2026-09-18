@@ -52,7 +52,7 @@ _REPORTED_INTERFACES = [
 
 
 def _agent(factories, **grant):
-    """An agent eligible to run the profiles these tests save (§3).
+    """An agent eligible to run the profiles these tests save.
 
     Creation-time validation refuses an agent-targeted profile whose agent could
     not run it, so even a test that only cares where `scan_agent_id` is persisted
@@ -254,7 +254,7 @@ def test_create_registers_the_profile_with_the_scheduler(db_session, factories, 
     assert f"discovery_profile_{profile.id}" in discovery_jobs()
 
 
-# ── Creation-time validation of an agent-targeted profile (§3, §7) ────────────
+# ── Creation-time validation of an agent-targeted profile ────────────
 #
 # Plan §3 requires the same preconditions at profile save and at job creation, and
 # §7 names four checkpoints in all. These are the first: a profile that names an
@@ -507,7 +507,7 @@ def test_an_update_that_names_ports_is_validated(db_session, factories):
     assert _rejection(exc_info)["reason"] == discovery_admission.REASON_PORT_NOT_GRANTED
 
 
-# ── The scan-type vocabulary is judged against the merged profile (§3, D-6) ───
+# ── The scan-type vocabulary is judged against the merged profile ───
 #
 # `scan_types` and `scan_agent_id` are two halves of one decision: which types are
 # legal is entirely a function of where the profile executes. A PATCH names either

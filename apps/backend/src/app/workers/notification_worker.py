@@ -35,7 +35,7 @@ _JS_CONSUMER_DURABLE = "notification_dispatch"
 #: Matches the monitor-poll and telemetry-ingest consumers. Without it this
 #: worker naked on every handler exception forever, so one poison alert
 #: nak-looped until CB_EVENTS aged it out 24h later with no operator record —
-#: F14 verbatim, on the one consumer slice 3.3 did not reach.
+#: The same budget, on the one consumer the earlier pass did not reach.
 _MAX_DELIVER = 5
 _JS_SUBJECT_FILTER = "alert.>"
 _JS_BATCH_SIZE = 5
@@ -45,7 +45,7 @@ _JS_FETCH_TIMEOUT_S = 1.0
 def _init_vault() -> None:
     """Load the vault key into this process.
 
-    Sink credentials are stored Fernet-encrypted (INC-06), and the workers run
+    Sink credentials are stored Fernet-encrypted, and the workers run
     as their own process — ``workers/main.py`` never initializes the vault the
     way ``main.py``'s lifespan does. Without this every dispatch would fail to
     decrypt and no alert would ever be delivered.
@@ -80,7 +80,7 @@ async def notify_slack(
 async def notify_email(
     provider_config: dict[str, Any], title: str, message: str, severity: str
 ) -> None:
-    """Deliver an alert over the globally configured SMTP server (INC-02).
+    """Deliver an alert over the globally configured SMTP server.
 
     An email sink carries the recipient and nothing else. Connection details and
     credentials come from ``AppSettings`` — the same source the sink's *Test*

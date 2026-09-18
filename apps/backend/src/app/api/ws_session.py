@@ -1,6 +1,6 @@
 """The one WebSocket session-token check, shared by the stream endpoints.
 
-Route F10 describes this as "WS auth duplication" and points at `ws_monitors`
+WS auth duplication: see `ws_monitors`
 doing a "raw `jwt.decode`". Measured against the code, that framing is backwards
 and the correction matters for what this module is allowed to do.
 

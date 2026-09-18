@@ -69,7 +69,7 @@ func TestDiscoverReadiness_ReportsEveryNameInDiscoverNamesOrder(t *testing.T) {
 	}
 }
 
-// TestDiscoverReadiness_ICMPIsUnavailableWithAnActionableRemediation pins plan §6's "whether ICMP
+// TestDiscoverReadiness_ICMPIsUnavailableWithAnActionableRemediation pins the plan's "whether ICMP
 // datagram probing is usable". The row names one method, and that method cannot run at all, so it
 // is unavailable rather than degraded — an operator who sees "degraded" cannot tell a working
 // sweep from a TCP-only one. It must never become the argument for handing the agent CAP_NET_RAW,
@@ -119,7 +119,7 @@ func TestDiscoverReadiness_ClosesTheProbeSocket(t *testing.T) {
 	}
 }
 
-// TestDiscoverReadiness_NeighborCacheUnavailability pins plan §6's "neighbor-cache availability".
+// TestDiscoverReadiness_NeighborCacheUnavailability pins the plan's "neighbor-cache availability".
 // The unsupported-platform sentinel gets no remediation: the agent only ships Linux binaries and
 // there is nothing an operator could paste into a shell. Every other failure is something on this
 // host blocking the netlink socket, which is actionable, so that one carries an instruction.

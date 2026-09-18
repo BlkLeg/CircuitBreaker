@@ -31,7 +31,7 @@ _DEVICE_TIMEOUT_ENV = "CB_TELEMETRY_DEVICE_TIMEOUT_SECONDS"
 _DEFAULT_DEVICE_TIMEOUT_SECONDS = 20
 _MIN_DEVICE_TIMEOUT_SECONDS = 5
 
-# Cap on ids accepted by GET /telemetry/batch (H5). The map's fallback poll
+# Cap on ids accepted by GET /telemetry/batch. The map's fallback poll
 # chunks its due-node set to this size, so raising it changes both sides of
 # one contract; keep it a named constant rather than a literal in two places.
 _TELEMETRY_BATCH_MAX_IDS = 50
@@ -190,7 +190,7 @@ async def get_telemetry_batch(
     db: Annotated[Session, Depends(get_db)],
     _user_id: int = Depends(require_auth_always),
 ) -> dict[int, TelemetryResponse]:
-    """One request for N nodes' telemetry (H5).
+    """One request for N nodes' telemetry.
 
     Mounted twice like every other route on this router (main.py), so this
     path is chosen to be unreachable as `/{hardware_id}/telemetry` under

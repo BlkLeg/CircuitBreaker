@@ -15,7 +15,7 @@ set -euo pipefail
 PACKAGE="${1:?usage: tier3-artifact.sh <candidate-package> [previous-package]}"
 # Optional. Present => this row runs the upgrade and rollback contract, which is
 # what backs the Tier 1 guarantee's second half (ADR 0005 §8). Absent => the
-# install-and-boot contract Phase 2 shipped, unchanged.
+# install-and-boot contract, unchanged.
 PREVIOUS="${2:-}"
 EVIDENCE=/tmp/cb-tier3-evidence
 # 8080, not 8000: 8000 is the dev port -- what `make dev` binds and what the Vite
@@ -68,8 +68,8 @@ capture() {
 
 # ── the package manager, chosen by what we were handed ──────────────────────
 #
-# Slice 2. The design's P1 says tier3-artifact.sh is "identical across every row"
-# and Phase 2 satisfied that by only ever having one row: every install, query
+# The design's P1 says tier3-artifact.sh is "identical across every row", which
+# one row satisfies trivially: every install, query
 # and downgrade below was a bare dnf/rpm call. Identical-because-unshared is not
 # the property P1 wants.
 #
@@ -130,7 +130,7 @@ pkg::list_contents() {
 }
 
 # ── reusable steps ──────────────────────────────────────────────────────────
-# Phase 2 ran these once, top to bottom. Phase 3 runs the boot-and-exercise set
+# These ran once, top to bottom. The matrix now runs the boot-and-exercise set
 # three times against three different states of the same host -- the previous
 # version, the upgraded version, and the rolled-back version -- so they are
 # functions now. The assertions themselves are unchanged; what changed is that
@@ -148,7 +148,7 @@ t3::install_set() {
 }
 
 # ── whose artifact is this? ────────────────────────────────────────────────
-# ADR 0005 Phase 3, F8. Requiring an explicit CB_CANDIDATE stopped the tier
+# Requiring an explicit CB_CANDIDATE stops the tier
 # testing whatever happened to be lying in dist/, but an explicitly named
 # *locally built* package is still not the artifact a user installs. A
 # PyInstaller bundle inherits its build host's glibc floor: built on Fedora 44 it
@@ -219,7 +219,7 @@ t3::assert_installed_paths() {
 }
 
 t3::assert_rollback_tooling_is_shipped() {
-    # ADR 0005 Phase 3. The compatibility policy defines rollback as restoring the
+    # The compatibility policy defines rollback as restoring the
     # pre-upgrade backup and the upgrade docs name the script that does it; before
     # this phase neither the script nor a wrapper that knows this layout was in
     # nfpm.yaml's contents, so the documented recovery could not be performed on a
@@ -268,7 +268,7 @@ t3::assert_version_matches() {
 }
 
 t3::record_cb_cli() {
-    # Phase 1 makes the documented operator CLI part of the package contract.
+    # The documented operator CLI is part of the package contract.
     [ -x /usr/local/bin/cb ] || fail "package did not install executable /usr/local/bin/cb"
     /usr/local/bin/cb --help > "$EVIDENCE/cb-help.txt" 2>&1
 
@@ -410,7 +410,7 @@ t3::exercise_scheduled_monitor() {
 # real derivative, or opened one again. A promise about an artifact is only
 # evidenced by producing the artifact and taking it back.
 #
-# This runs on the install rows, not the upgrade ones, for two reasons. §6's gate
+# This runs on the install rows, not the upgrade ones, for two reasons. The gate
 # says "restores it into a fresh install", which is exactly what an install row
 # is; and a restore in the middle of the upgrade row would replace the database
 # the rollback assertions are about, so the two contracts would be reading each
@@ -606,7 +606,7 @@ t3::collect() {
     capture "$EVIDENCE/package-contents-$label.txt" pkg::list_contents
 }
 
-# ── install and boot: the Phase 2 contract, run against whichever version
+# ── install and boot: the package contract, run against whichever version
 #    this row starts from ─────────────────────────────────────────────────────
 if [ -n "$PREVIOUS" ]; then
     START_DIR=/opt/cb-tier3/previous
@@ -640,8 +640,8 @@ t3::exercise_api "$START_LABEL"
 t3::exercise_scheduled_monitor "$START_LABEL"
 
 if [ -z "$PREVIOUS" ]; then
-    # Phase 2's contract ends here, and the row that carries it is unchanged.
-    # Phase 1 adds one assertion after it: B3's encrypted off-host backup, taken
+    # The package contract ends here. One assertion follows it: an encrypted
+    # off-host backup, taken
     # and restored on the fresh install this row already has standing.
     t3::exercise_encrypted_snapshot_roundtrip
     t3::assert_rollback_tooling_is_shipped
@@ -681,7 +681,7 @@ t3::install_set candidate /opt/cb-tier3
 t3::assert_candidate_provenance candidate
 
 section "Assert the upgrade took a pre-upgrade backup"
-# preinstall.sh's gate (ADR 0005 Phase 3). Before it existed, `dnf upgrade`
+# preinstall.sh's gate. Without it, `dnf upgrade`
 # migrated the schema and wrote nothing, while the compatibility policy told the
 # operator to roll back by restoring a pre-upgrade backup that was never taken.
 BACKUP="$(t3::latest_backup)"
@@ -768,7 +768,7 @@ section "Roll back: restore the pre-upgrade backup"
 # CB_ASSUME_YES because this runs over ssh with no TTY. restore.sh prompts
 # before it drops anything, and an unanswered prompt correctly aborts -- so
 # without consent given in advance the row stops at the banner and evidences
-# nothing about the rollback. Phase 3, F11.
+# nothing about the rollback.
 CB_ASSUME_YES=1 /usr/local/bin/circuit-breaker-rollback "$BACKUP" 2>&1 | tee "$EVIDENCE/rollback.log"
 
 section "Wait for the rolled-back service to become ready"

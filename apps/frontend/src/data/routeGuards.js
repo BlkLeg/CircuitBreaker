@@ -6,7 +6,7 @@
  *
  * This is deliberately NOT part of navigation.js. Hiding a menu entry is presentation;
  * refusing a route is authorization, and the two must not be edited by the same reasoning
- * — see specs/2026-08-24-reachability-authorization-design.md §2.1. The dependency runs
+ * The dependency runs
  * one way: navigation reads this file, never the reverse. That is what makes it impossible
  * for a menu entry to be more permissive than the route it points at.
  *

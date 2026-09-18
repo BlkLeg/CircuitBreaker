@@ -1,9 +1,8 @@
 """Short-lived bearer tokens that enroll an agent with no human present.
 
 The attended flow — a human comparing a device fingerprint and pressing approve
-— is unchanged and remains the default. This is opt-in, and §5 of
-`docs/design/2026-09-05-agent-reachability-design.md` states its cost plainly: a
-multi-use token in a launch template is a credential that will enroll anything
+— is unchanged and remains the default. This is opt-in, and its cost is plain:
+a multi-use token in a launch template is a credential that will enroll anything
 presenting it, for its whole TTL. The attended design has the stronger property
 that no bearer secret exists at all.
 
@@ -39,7 +38,7 @@ _TOKEN_BYTES = 32
 
 #: An hour rather than minutes: the realistic path is a human pasting the value
 #: into a launch template or a secrets store, not a script consuming it
-#: immediately (design §4).
+#: immediately.
 DEFAULT_TTL_SECONDS = 3600
 MAX_TTL_SECONDS = 24 * 3600
 
@@ -164,7 +163,7 @@ def consume_token(db: Session, token: str) -> ConsumedToken | None:
 
     Returns None for **every** failure — unknown, spent, revoked, expired. The
     caller must not be able to distinguish them, and neither can it from here:
-    the token path is not an oracle for live tokens (design §4).
+    the token path is not an oracle for live tokens.
     """
     row = db.execute(
         text(

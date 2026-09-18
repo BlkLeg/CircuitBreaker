@@ -77,7 +77,7 @@ class _OAuthScrubFilter(logging.Filter):
 
 logging.getLogger("uvicorn.access").addFilter(_OAuthScrubFilter())
 install_global_log_redaction()
-# Task 1b (observability phase 2): attaches record.request_id to every log
+# Attaches record.request_id to every log
 # record on the same logger set redaction runs on. A parallel installer, not
 # a change to install_global_log_redaction — redaction keeps running exactly
 # as before, this adds a filter alongside it rather than replacing one.
@@ -288,7 +288,7 @@ app.add_middleware(TenantMiddleware)
 # actually experienced — including the time spent in every middleware above,
 # and responses they produce themselves (a rate-limit 429, a readiness 503).
 app.add_middleware(HttpMetricsMiddleware)
-# Task 1a (observability phase 2): correlates a browser navigation with the
+# Correlates a browser navigation with the
 # server work it caused. Added last of all, so it is now the true outermost
 # layer — including outside HttpMetricsMiddleware — because the request ID
 # must exist before anything else runs: a request ID minted inside the
@@ -297,8 +297,8 @@ app.add_middleware(HttpMetricsMiddleware)
 app.add_middleware(RequestIdMiddleware)
 # Added after RequestIdMiddleware, so this — not that — is now the outermost
 # layer. It has to be: it rewrites scope["client"] and scope["scheme"] from the
-# forwarded headers (the job uvicorn's own ProxyHeadersMiddleware used to do,
-# now disabled at every launch site), and everything that reads request.client
+# forwarded headers (the job uvicorn's own ProxyHeadersMiddleware does, and
+# which is disabled at every launch site), and everything that reads request.client
 # for an audit record must run inside it. It records the pre-rewrite socket
 # peer, which is the fact core.forwarded needs and uvicorn's version destroyed.
 # See middleware/proxy_headers.py for the full account.

@@ -61,34 +61,23 @@ def pytest_configure(config):
     # shape and fail/cancel. Tests don't need it either way.
     os.environ["CB_AUTO_MIGRATE"] = "false"
 
-    # Upload root must live outside the working tree. Settings.uploads_dir
-    # defaults to the RELATIVE path "data/uploads", which resolves against the
-    # backend CWD, so every profile-photo test used to deposit real PNGs into
-    # apps/backend/data/uploads/profiles/. That residue makes `git status`
-    # useless as a review signal and has already prompted an agent to start
-    # deleting tracked files to "clean up". Redirect to a per-run temp dir here,
-    # before any app module is imported: uploads_dir is read at import time into
-    # module-level constants (auth_service._PROFILES_DIR, main._uploads_dir,
-    # api/assets._UPLOADS_DIR, ...), so a fixture-time monkeypatch would be too
-    # late to catch them.
+    # Upload root must live outside the working tree: Settings.uploads_dir
+    # defaults to the RELATIVE "data/uploads", which resolves against the backend
+    # CWD and deposits real files in the tree. Redirected here, before any app
+    # module is imported, because uploads_dir is read at import time into
+    # module-level constants and a fixture-time monkeypatch would be too late.
     global _UPLOADS_TMPDIR
     _UPLOADS_TMPDIR = tempfile.mkdtemp(prefix="cb-test-uploads-")
     os.environ["UPLOADS_DIR"] = _UPLOADS_TMPDIR
 
-    # Same problem as UPLOADS_DIR, one directory up, and worse in consequence
-    # (B37). `vault_service._data_dir()` is `CB_DATA_DIR or Path.cwd()/"data"`,
-    # and the suite's cwd is apps/backend -- so a run with CB_DATA_DIR unset
-    # generated a REAL Fernet key and wrote it to apps/backend/data/.env in the
-    # working tree. It is gitignored, so it never showed up in `git status`; it
-    # just sat there, 0600, indistinguishable from a developer's own key, and a
-    # later run would load it instead of generating a fresh one.
-    #
-    # The same variable now also decides where a snapshot stages its work
-    # (services/backup/snapshot._staging_root, default /var/lib/circuitbreaker)
-    # and where certificates and the CVE database land, so leaving it unset
-    # points several code paths at real system locations. One redirect covers
-    # all of them, and it has to happen here rather than in a fixture because
-    # these are read at import time into module-level constants.
+    # Same problem as UPLOADS_DIR and worse: `vault_service._data_dir()` is
+    # `CB_DATA_DIR or Path.cwd()/"data"`, so an unset CB_DATA_DIR writes a REAL
+    # Fernet key into the tree — gitignored, so invisible to `git status`, and a
+    # later run loads it instead of generating a fresh one. The same variable
+    # also decides where snapshots stage and where certificates and the CVE
+    # database land, so leaving it unset points several paths at real system
+    # locations. Set here, not in a fixture, because these are read at import
+    # time into module-level constants.
     global _DATA_TMPDIR
     _DATA_TMPDIR = tempfile.mkdtemp(prefix="cb-test-data-")
     os.environ["CB_DATA_DIR"] = _DATA_TMPDIR
@@ -371,16 +360,27 @@ def ws_client(db_session):
 
     original_nats_connect = nats_client.connect
     old_data_dir = os.environ.get("CB_DATA_DIR")
+    old_topology = os.environ.get("CB_TOPOLOGY_MODE")
     with tempfile.TemporaryDirectory() as tmp_data_dir:
-        # All three pieces of shared/global state this fixture mutates —
-        # dependency override, NATS stub, CB_DATA_DIR — are set and torn down
-        # inside one try/finally so a mid-test exception (anywhere in the
-        # `with TestClient(app)` block below) can never leak any of them onto
-        # subsequent tests in the session.
+        # All four pieces of shared/global state this fixture mutates —
+        # dependency override, NATS stub, CB_DATA_DIR, CB_TOPOLOGY_MODE — are
+        # set and torn down inside one try/finally so a mid-test exception
+        # (anywhere in the `with TestClient(app)` block below) can never leak
+        # any of them onto subsequent tests in the session.
         try:
             app.dependency_overrides[get_db] = override_get_db
             nats_client.connect = AsyncMock(return_value=None)
             os.environ["CB_DATA_DIR"] = tmp_data_dir
+            # `api`, not the default `mono`: this is the one fixture that runs
+            # the real lifespan, and `mono` starts the notification, discovery,
+            # telemetry-ingest and integration loops in-process. There is no NATS
+            # broker here and the stub above only neuters `nats_client.connect`,
+            # so those loops spin and shutdown then owes them
+            # `shutdown_scheduler`'s 10s budget plus a 5s drain — most of this
+            # test's 30s timeout, paid for workers no test here uses.
+            #
+            # `api` leaves every route and the API-process scheduler intact.
+            os.environ["CB_TOPOLOGY_MODE"] = "api"
             # NB: agent rows a ws test commits outside the savepoint are
             # reaped by the db_session fixture, not here — see the comment on
             # _reap_agents_committed_outside_the_test for why the cleanup
@@ -394,6 +394,10 @@ def ws_client(db_session):
                 os.environ.pop("CB_DATA_DIR", None)
             else:
                 os.environ["CB_DATA_DIR"] = old_data_dir
+            if old_topology is None:
+                os.environ.pop("CB_TOPOLOGY_MODE", None)
+            else:
+                os.environ["CB_TOPOLOGY_MODE"] = old_topology
 
 
 # ── Model factories ───────────────────────────────────────────────────────────

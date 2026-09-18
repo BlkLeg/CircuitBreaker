@@ -1,8 +1,8 @@
-"""`probe.result` ingest — the one surface a remote agent can move monitor state from (§4).
+"""`probe.result` ingest — the one surface a remote agent can move monitor state from.
 
 Everything else an agent sends is additive telemetry: a bad host sample makes a
 graph wrong. A bad probe result makes a monitor go DOWN, fires an alert, and
-rewrites uptime. So the acceptance rules in §4 are enforced here as security
+rewrites uptime. So the acceptance rules in the contract are enforced here as security
 invariants, in a fixed order, and each one is pinned by a named test in
 `tests/services/test_agent_probe_ingest.py`:
 
@@ -30,18 +30,18 @@ Every outcome that touches the monitor reaches the shared result service
 (`services/monitoring/result_service.py`, Global Constraints' one result path) —
 `completed` on its state-machine branch, `execution_error` and `rejected` on its
 execution branch. The latter two say nothing about the target and deliberately
-never write an `avail` sample or touch the retry counter (§6, D-12) even when the
+never write an `avail` sample or touch the retry counter even when the
 payload claims to carry one, but they are not silent either: the service is what
-closes the run, records §6's one-event-per-change-of-reason `execution` event,
-and publishes D-13's live refresh (which carries no `status` key). Recording the
+closes the run, recordsthe one-event-per-change-of-reason `execution` event,
+and publishesthe live refresh (which carries no `status` key). Recording the
 condition inline here instead would leave the monitor's history empty for the
 whole outage and push nothing.
 
 `cancelled` is the exception, and only because it is not an execution condition
-at all: the server asked for the stop (§4, Task 14), so the lease closes as audit
+at all: the server asked for the stop, so the lease closes as audit
 and the monitor is left entirely alone.
 
-Secrets travel outbound only (D-10). §4 forbids credentials, authorization
+Secrets travel outbound only. the contract forbids credentials, authorization
 headers and response bodies coming back, the agent is built not to echo them,
 and this module does not take its word for it: the monitor's own secret config
 values, plus anything under a secret-shaped key, are redacted out of `details`
@@ -73,23 +73,23 @@ from app.services.monitoring.collectors import Sample
 
 _logger = logging.getLogger(__name__)
 
-# §4's stated limits. Both are enforced on the raw payload before validation.
+# The stated limits. Both are enforced on the raw payload before validation.
 MAX_DETAILS_BYTES = 64 << 10
 MAX_MSG_CHARS = 2000
-# §4 also requires samples to satisfy a size limit and names no number. The
+# Also requires samples to satisfy a size limit and names no number. The
 # widest collector in the parity contract is ICMP with six samples, so this is
 # two orders of magnitude of headroom over any legitimate result and still a
 # bound — an unbounded list is the one part of the payload the 64 KiB `details`
 # cap does not already cover.
 MAX_SAMPLES = 64
-# §4: "It arrives before `deadline_at + 30 seconds`."
+# "It arrives before `deadline_at + 30 seconds`."
 LATE_RESULT_GRACE = timedelta(seconds=30)
 
 OUTCOME_COMPLETED = "completed"
 OUTCOME_EXECUTION_ERROR = "execution_error"
 OUTCOME_CANCELLED = "cancelled"
 OUTCOME_REJECTED = "rejected"
-# The closed vocabulary from §4. Anything else is a protocol violation rather
+# The closed vocabulary from the contract Anything else is a protocol violation rather
 # than a silently-ignored result, because "unknown outcome" must never be
 # mistaken for "the target is fine".
 OUTCOMES = frozenset(
@@ -124,7 +124,7 @@ _ERROR_FOR_OUTCOME = {
 # conditions and both go through the shared result service's execution branch,
 # which is what writes the run, the `monitor_events` row and the live refresh.
 _EXECUTION_CONDITION_OUTCOMES = frozenset({OUTCOME_EXECUTION_ERROR, OUTCOME_REJECTED})
-# A cancellation is something the server asked for (§4, Task 14), so it closes
+# A cancellation is something the server asked for, so it closes
 # the run without claiming the vantage is broken.
 RUN_STATUS_CANCELLED = "cancelled"
 
@@ -328,10 +328,10 @@ async def ingest_probe_result(
     # Both branches go through the one result path (Global Constraints).
     # `execution_error`/`rejected` are inert with respect to the target — no
     # avail sample, no retry increment, no transition, and `probe_last_result_at`
-    # deliberately untouched so D-4's staleness rule still sees a monitor that is
+    # deliberately untouched sothe staleness rule still sees a monitor that is
     # producing no real results — but they are *not* invisible: the service is
-    # where the run closes, where §6's "one execution event per change of reason"
-    # is enforced, and where D-13's status-less live refresh is published.
+    # where the run closes, wherethe "one execution event per change of reason"
+    # is enforced, and wherethe status-less live refresh is published.
     # Writing the probe columns here instead would leave the monitor's history
     # empty for the whole outage and push nothing to `monitor:{id}`.
     persisted = result_service.persist_results(db, [record])

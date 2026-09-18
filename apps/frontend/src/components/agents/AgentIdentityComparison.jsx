@@ -5,7 +5,7 @@ import PropTypes from 'prop-types';
  * The identity half of an approval, shared by every path that can approve an
  * agent.
  *
- * Design §2.2: approval is reachable two ways now — inline in AddAgentPanel's
+ * Approval is reachable two ways now — inline in AddAgentPanel's
  * guided flow, and via Review on a pinned pending row (which opens
  * AgentApprovalModal). The fingerprint comparison is the control that stops an
  * operator approving an impostor, and `duplicate_machine_id` is the signal that

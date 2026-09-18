@@ -63,7 +63,7 @@ export default function DbStatusPanel() {
 
   const isPostgres = health?.dialect === 'postgresql';
   // One derivation for both the header and the Engine row so they cannot drift.
-  // Both used to render anything non-postgresql as 'SQLite', which has not been a
+  // Neither may render anything non-postgresql as 'SQLite', which has not been a
   // supported application database since v0.2.0 — and because `health` is null
   // until the fetch resolves, the header claimed 'SQLite' on every first paint.
   // An unexpected dialect should name itself instead of being mislabelled.

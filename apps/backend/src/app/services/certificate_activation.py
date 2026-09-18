@@ -1,6 +1,6 @@
 """Write the active certificate to disk and reload the TLS server.
 
-INC-22. `nginx.mono.conf:81-82` serves $CB_DATA_DIR/tls/{fullchain,privkey}.pem. Those files
+the contract. `nginx.mono.conf:81-82` serves $CB_DATA_DIR/tls/{fullchain,privkey}.pem. Those files
 were written once by `docker/entrypoint-mono.sh` at first boot, only when absent, and never
 again. `certificate_service.py` never wrote there at all — so creating, importing, renewing
 or auto-renewing a certificate changed a database row and nothing else.
@@ -40,7 +40,7 @@ class ActivationBlocked(Exception):
     gate began life in the admin route, which left the scheduled renewal path
     — the one that runs with no operator present — activating a freshly
     generated self-signed keypair, and therefore a new pin, straight past it.
-    That is F4 with nobody watching, so the check belongs at the choke point
+    That is a trust rotation with nobody watching, so the check belongs at the choke point
     every caller already goes through.
     """
 

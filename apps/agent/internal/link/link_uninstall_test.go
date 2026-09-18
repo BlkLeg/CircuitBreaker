@@ -17,13 +17,11 @@ import (
 	"circuitbreaker.dev/cb-agent/internal/frame"
 )
 
-// TestDrainPending_ReadsMultipleQueuedMessagesNotJustTheFirst is a focused
-// regression test for the bug fixed alongside Uninstall's close-handshake: a
-// single ReadMessage() call only ever drained the *first* of however many
-// messages the peer had queued before the deadline. drainPending must keep
-// reading until nothing more arrives (an error, here the deadline), so every
-// message already sitting in the local receive buffer is consumed — not just
-// one — before the caller closes the connection.
+// TestDrainPending_ReadsMultipleQueuedMessagesNotJustTheFirst pins that
+// drainPending keeps reading until nothing more arrives (an error, here the
+// deadline), so every message already sitting in the local receive buffer is
+// consumed before the caller closes the connection. A single ReadMessage()
+// call drains only the first of however many the peer had queued.
 func TestDrainPending_ReadsMultipleQueuedMessagesNotJustTheFirst(t *testing.T) {
 	const queuedMessages = 3
 

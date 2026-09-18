@@ -1,4 +1,4 @@
-"""The DISCOVERY JetStream consumer — which deliberately runs no scan (B44).
+"""The DISCOVERY JetStream consumer — which deliberately runs no scan.
 
 Nothing in this tree publishes to `discovery.jobs`. Outside this module's own
 tests the subject is named in this file and in no other, in any language: the
@@ -27,11 +27,11 @@ forever.
 
 Retiring the worker outright — the supervisord program, the `--type=discovery`
 entry in `workers/main.py`, the `topology.py` row, the native-release module
-list — is the rest of B44 and touches files outside this one. Until that
+list — is the rest of the contract and touches files outside this one. Until that
 happens `run_worker` must keep running and keep touching the heartbeat file, or
 supervisord's `startsecs=5` turns the exit into a crash loop. The stream
 declaration also stays: a deployment that already has a DISCOVERY stream should
-keep the B15 limits on it rather than have them quietly stop being applied.
+keep the the contract limits on it rather than have them quietly stop being applied.
 """
 
 import asyncio
@@ -117,7 +117,7 @@ async def _update_stream_limits(js: Any, cfg: dict[str, Any]) -> None:
     """Retro-fit `cfg`'s limits onto a DISCOVERY stream that already exists.
 
     Delegates to `workers.stream_limits.update_stream_limits`. This used to be a
-    byte-identical copy of the TELEMETRY worker's version, and when R12 was fixed
+    byte-identical copy of the TELEMETRY worker's version, and when the contract was fixed
     there this copy was left behind — so a clustered NATS kept silently demoting
     the R3 DISCOVERY stream to R1 while the TELEMETRY one was safe, and the
     report said the regression was closed. Two copies of this is the defect; the

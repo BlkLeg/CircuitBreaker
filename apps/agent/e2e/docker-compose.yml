@@ -1,12 +1,10 @@
 name: cb-agent-e2e
 
-# Network topology (Task 31; probe-net added by Slice 3 Task 22; the second
-# agent, the second fixture subnet and the late subnet added by Slice 4
-# Task 31): cb-agent gets its OWN network namespace on dedicated Docker
-# bridge networks, not `network_mode: service:circuitbreaker` (the old,
-# pre-Task-31 setup, which had the agent share the server's network
-# namespace entirely — no real network boundary at all, and a direct
-# conflict with the "no inbound route" requirement below).
+# Network topology: cb-agent gets its OWN network namespace on dedicated
+# Docker bridge networks, never `network_mode: service:circuitbreaker`, which
+# would have the agent share the server's namespace entirely — no real network
+# boundary, and a direct conflict with the "no inbound route" requirement
+# below.
 #
 # Six networks, and which service is on which is the whole point:
 #
@@ -31,37 +29,30 @@ name: cb-agent-e2e
 #
 # Neither cb-agent nor cb-agent-2 publishes or exposes any port at all:
 # nothing outside this compose project, and nothing else on any of these
-# networks either, has any route INTO an agent container. This is the
-# realistic "no extra setup, outbound-only HTTPS/WSS, never listen on a
-# remote-subnet port" shape the whole feature guarantees (see
-# test_agent_e2e.py's
-# test_agent_full_lifecycle_enroll_through_revoke_and_reconnect step
-# 11/isolation probe for the connectivity-probe proof).
+# networks, has a route INTO an agent container. This is the realistic "no
+# extra setup, outbound-only HTTPS/WSS, never listen on a remote-subnet port"
+# shape the whole feature guarantees.
 #
-# probe-net exists because Slice 3 §9 step 1 — "place a target where the
-# backend cannot reach it but an agent can" — is not expressible otherwise.
-# Before it, circuitbreaker sat on both `default` and `agent-net`, so every
-# address cb-agent could reach the backend could reach too, and a remote
-# probe was indistinguishable from a server-executed check. Docker's
-# inter-bridge isolation rules drop forwarding between two different bridge
+# probe-net exists so a target can sit where the backend cannot reach it but
+# an agent can. With circuitbreaker on both `default` and `agent-net`, every
+# address cb-agent could reach the backend could reach too, and a remote probe
+# would be indistinguishable from a server-executed check. Docker's
+# inter-bridge isolation drops forwarding between two different bridge
 # networks, so circuitbreaker has no route to 10.77.0.0/24 at all —
 # test_remote_probe_assignment_execution_and_unavailability asserts exactly
-# that before it asserts anything else, because every later assertion in
-# that test is worthless if the backend could have run the checks itself.
-# Slice 4's discovery gate rests on the same property and re-proves it the
-# same way, for late-net and probe-net-2 as well.
+# that before anything else, because every later assertion in that test is
+# worthless if the backend could have run the checks itself. The discovery
+# gate rests on the same property, for late-net and probe-net-2 as well.
 #
-# Every subnet here is pinned rather than auto-allocated so the monitors and
-# discovery assertions under test can name a literal address or CIDR:
-# Docker's default pools are 172.17-172.31/16 and 192.168.0.0/16, so no
-# 10.x/24 below can collide with an auto-assigned network, and being RFC1918
-# they all land inside an agent's automatically derived `direct_private`
-# scope with no operator scope edit — which is what Slice 3 §9 step 11 and
-# Slice 4 §8 step 3 both require.
+# Every subnet is pinned rather than auto-allocated so the monitors and
+# discovery assertions can name a literal address or CIDR: Docker's default
+# pools are 172.17-172.31/16 and 192.168.0.0/16, so no 10.x/24 below can
+# collide with an auto-assigned network, and being RFC1918 they all land
+# inside an agent's automatically derived `direct_private` scope with no
+# operator scope edit.
 networks:
   default: {}
-  # Pinned to a /24 by Slice 4 D-12, having previously been an unpinned
-  # bridge. Docker's default pool hands an unpinned bridge a /16 — 65 534
+  # Pinned to a /24. Docker's default pool hands an unpinned bridge a /16 — 65 534
   # addresses, which on its own exceeds the local_discovery grant's
   # max_addresses_per_job (1024), so the agent's own directly connected
   # subnet could never be dispatched as a discovery target and the
@@ -85,8 +76,7 @@ networks:
   # approved and running. hostinfo.Collect() runs once per link connection
   # (internal/link/link.go), so the new subnet reaches the server on the
   # agent's next `hello` — no CIDR is ever typed anywhere, the subnet simply
-  # appears, which is precisely the zero-configuration trigger Slice 4 §8
-  # step 3 is about.
+  # appears, which is precisely the zero-configuration trigger under test.
   late-net:
     driver: bridge
     ipam:
@@ -112,8 +102,8 @@ networks:
 
 # The fixture-target image, shared by probe-target, probe-target-new,
 # probe-target-2 and late-target. One alpine container answers every check
-# type the slices support — ICMP (the kernel), TCP + HTTP (busybox httpd on 8080) and DNS
-# (dnsmasq on 53) — and, for Slice 4, presents exactly the kind of open-port
+# type the agent supports — ICMP (the kernel), TCP + HTTP (busybox httpd on 8080) and DNS
+# (dnsmasq on 53) — and, for discovery, presents exactly the kind of open-port
 # surface the unprivileged connect-scan collector is expected to find.
 #
 # Defined once as a YAML anchor rather than three times so all three fixtures
@@ -150,7 +140,7 @@ services:
       - CB_VAULT_KEY=${CB_VAULT_KEY}
       - CB_JWT_SECRET=${CB_JWT_SECRET}
       - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN}
-      # Test-only rekey-interval override (Task 31 step 8) — read only if
+      # Test-only rekey-interval override — read only if
       # set; absent from every non-e2e deployment, so this changes nothing
       # about REKEY_INTERVAL_SECONDS's production 15-minute default anywhere
       # else. See app/core/agent_crypto.py's _resolve_rekey_interval_seconds.
@@ -164,7 +154,7 @@ services:
       # so any request landing there fails to decrypt agent_server_private_key
       # (or any other vault-encrypted value) with cryptography.fernet.InvalidToken.
       # Single-worker sidesteps it here; a real fix needs cross-process vault
-      # key sync and is out of scope for this slice.
+      # key sync and is out of scope here.
       - ./supervisord-e2e.conf:/etc/supervisor/conf.d/supervisord.conf:ro
     # Base compose sets read_only: true (root filesystem is otherwise
     # immutable, with specific tmpfs mounts for the paths that need to be
@@ -206,7 +196,7 @@ services:
       context: ..
       dockerfile: e2e/Dockerfile
       args:
-        # Slice 4.2 (F3). Empty for every scenario but the signature-refusal
+        # Signature verification. Empty for every scenario but the signature-refusal
         # one, which sets CB_AGENT_SIGNING_PUBKEY in its environment to a
         # keypair it generates at runtime — no signing material is committed.
         # An empty key builds a warn-mode agent, which is what the other
@@ -237,7 +227,7 @@ services:
       - ./agent-etc:/etc/circuit-breaker
     environment:
       - CB_AGENT_TEST_REKEY_INTERVAL_SECONDS=${CB_AGENT_TEST_REKEY_INTERVAL_SECONDS:-}
-      # Slice 4.2 (F3): refuse an update whose signature does not verify,
+      # Signature verification: refuse an update whose signature does not verify,
       # rather than warning. Unset for every other scenario, so they keep the
       # warn-mode behaviour this release ships with.
       - CB_AGENT_UPDATE_ENFORCE_SIGNATURE=${CB_AGENT_UPDATE_ENFORCE_SIGNATURE:-}
@@ -268,8 +258,8 @@ services:
       - agent-net
       - probe-net
 
-  # The remote-probe target (§9 step 1): reachable from cb-agent, unreachable
-  # from circuitbreaker. Answers all four check types the slice supports — see
+  # The remote-probe target: reachable from cb-agent, unreachable
+  # from circuitbreaker. Answers all four check types the agent supports — see
   # the shared *fixture-target-build anchor above, which is also what makes
   # this the same image as probe-target-2 and late-target. `--no-resolv` +
   # `--no-hosts` make dnsmasq answer from `--address=` alone, so the check
@@ -294,8 +284,8 @@ services:
       probe-net:
         ipv4_address: 10.77.0.10
 
-  # The subnet that shows up LATE (Slice 4 §8 step 3's zero-configuration
-  # trigger). Identical image and behaviour to probe-target; the only thing
+  # The subnet that shows up LATE, the zero-configuration trigger.
+  # Identical image and behaviour to probe-target; the only thing
   # that matters about it is WHEN it exists.
   #
   # `docker compose up -d late-target` is issued from inside a test, after
@@ -325,7 +315,7 @@ services:
         ipv4_address: 10.66.0.10
 
   # A second host on the subnet the agent ALREADY knows, and the other half of
-  # plan §8 step 11 from late-target's. late-target answers "a whole new subnet
+  # the recurring-scan case. late-target answers "a whole new subnet
   # showed up"; this answers "a new device showed up on a subnet that has
   # already been scanned once" — which is the case the recurring scan has to
   # distinguish from the unchanged hosts whose Hardware `last_seen` it merely
@@ -350,13 +340,13 @@ services:
       probe-net:
         ipv4_address: 10.77.0.20
 
-  # The SECOND agent (Slice 4 §8 step 10: "add a second isolated agent/subnet
-  # and verify its findings and provenance remain distinct").
+  # The SECOND agent: an isolated agent and subnet whose findings and
+  # provenance must remain distinct from the first's.
   #
   # A separate compose service rather than a `--scale`d replica of cb-agent
   # because the whole point is that it is isolated: its own outbound network,
   # its own fixture subnet, and — see the volume note below — its own state.
-  # It enrolls through exactly the same Slice 1 path as the first agent
+  # It enrolls through exactly the same path as the first agent
   # (`compose run --rm cb-agent-2 enroll`), reads exactly the same agent.toml,
   # and receives exactly the same default capability grants. Nothing about
   # this container is configured to make it "the second agent"; the only
@@ -378,12 +368,12 @@ services:
       # status.json. Sharing cb-agent-state would make these two containers
       # one agent wearing two hats: the second would present the first's
       # certificate, the server would see a single agent_id reconnecting, and
-      # every "these findings came from a different agent" assertion in
-      # Task 33 would be vacuous.
+      # every "these findings came from a different agent" assertion
+      # would be vacuous.
       - cb-agent-2-state:/var/lib/cb-agent
       # The SAME agent.toml, deliberately. server_url, server_static_pk and
       # tls_pin are installation-wide facts, not per-agent ones — a second
-      # agent requiring a hand-edited config would contradict the slice's
+      # agent requiring a hand-edited config would contradict the
       # zero-configuration claim before discovery even started.
       # The directory, not the file, and read-write. A `:ro` mount of
       # agent.toml itself made `cb-agent uninstall`'s own removal of that file

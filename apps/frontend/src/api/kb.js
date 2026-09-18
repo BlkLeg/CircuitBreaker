@@ -1,6 +1,6 @@
 import client from './client.jsx';
 
-// Knowledge-base lookup tables that feed discovery naming (INC-11).
+// Knowledge-base lookup tables that feed discovery naming.
 // Both tables are admin-only (`require_role("admin")` on every route in
 // app/api/kb.py) and paginate server-side at limit <= 500.
 

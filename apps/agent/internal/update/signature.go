@@ -15,11 +15,10 @@ import (
 //	-ldflags "-X circuitbreaker.dev/cb-agent/internal/update.SigningPublicKey=<base64>"
 //
 // and is deliberately not configurable at runtime, not delivered by the
-// server, and not read from disk. That is the entire point of route finding
-// F3: integrity was previously a SHA-256 the *server* supplied, so a
-// compromised server could serve any binary along with a matching digest and
-// every agent would install it. A key the server can influence would
-// reproduce exactly that.
+// server, and not read from disk. That is the entire point: a SHA-256 the
+// *server* supplies is not integrity on its own, because a compromised server
+// can serve any binary along with a matching digest and every agent would
+// install it. A key the server can influence reproduces exactly that hole.
 //
 // Empty is legitimate and common. `make build-from-source` cross-compiles
 // agent binaries locally (scripts/build_native_release.py), and a

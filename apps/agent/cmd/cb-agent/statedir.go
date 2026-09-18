@@ -17,15 +17,14 @@ import (
 // sensitiveStateFiles are the file classes auditStateDir enforces mode 0600
 // on, at every daemon startup — device.key (agent identity), grants.json
 // (cached capability grant, internal/capability), and status.json (runtime
-// status, internal/status — mode was set at creation in Task 20; this is
-// the startup-time audit/enforcement pass that closes the gap for a file
-// that drifts wider after creation).
+// status, internal/status). Mode is set at creation; this is the
+// startup-time enforcement pass that closes the gap for a file that drifts
+// wider afterwards.
 var sensitiveStateFiles = []string{"device.key", "grants.json", "status.json"}
 
-// auditStateDir enforces the dedicated-user file-permission model
-// (specs/2026-07-26-cb-agent-design.md §4.1: a dedicated `cb-agent` user,
-// device.key "mode 0600, owned by `cb-agent`") at every daemon startup, not
-// only at the moment each file happens to be created.
+// auditStateDir enforces the dedicated-user file-permission model — a
+// dedicated `cb-agent` user, device.key mode 0600 owned by it — at every
+// daemon startup, not only when each file happens to be created.
 //
 // ORDERING INVARIANT: this must run before every daemon-loop state write —
 // grants.json (internal/capability), status.json (internal/status), and
@@ -55,7 +54,7 @@ var sensitiveStateFiles = []string{"device.key", "grants.json", "status.json"}
 //
 // A missing stateDir, or a missing individual sensitive file, is not an
 // error — a fresh install has no grants.json until the first
-// capabilities.set frame ever arrives (spec §4.2), and every caller that
+// capabilities.set frame ever arrives, and every caller that
 // needs the directory or a particular file to exist creates it before this
 // function ever runs in the real startup sequence.
 func auditStateDir(stateDir string, expectedUID, expectedGID int) error {
@@ -100,8 +99,8 @@ func checkOwnership(path string, info os.FileInfo, expectedUID, expectedGID int)
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
 		// Not a platform where ownership is statable this way — this daemon
-		// targets "linux amd64/arm64" only (spec §"Runtime & packaging"),
-		// so in practice this never triggers outside a non-Unix test build.
+		// targets linux amd64/arm64 only, so in practice this never
+		// triggers outside a non-Unix test build.
 		return nil
 	}
 	if int(stat.Uid) != expectedUID || int(stat.Gid) != expectedGID {

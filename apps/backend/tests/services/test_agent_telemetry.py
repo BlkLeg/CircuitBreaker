@@ -2,7 +2,7 @@
 Hardware live projection, and capability readiness.
 
 Note on `AgentHostSample.projection_attempts`: the column and the
-`ix_agent_host_samples_projection` index are **gone** (Task 8 / D-3). Projection
+`ix_agent_host_samples_projection` index are **gone**. Projection
 happens in the same transaction as the insert, so a persisted-but-unprojected
 row cannot exist and nothing ever counted attempts; the index supported a scan
 no query performs. `projected_at` stays and is asserted throughout this file.
@@ -35,7 +35,7 @@ from app.db.models import (
 from app.schemas.agent_frame import TYPE_CAPABILITY_READINESS, AgentFrame
 from app.services import agent_link, agent_telemetry
 
-# The wire corpus is the schema of record for `telemetry.host` (Task 3), so the
+# The wire corpus is the schema of record for `telemetry.host`, so the
 # payload every test here builds on is *read from it* rather than hand-rolled —
 # a collector-side field rename can then never pass the backend suite silently.
 _CORPUS_PATH = Path(__file__).resolve().parents[4] / "fixtures" / "agent_frame_corpus.json"
@@ -165,7 +165,7 @@ def _violations_for(db, agent) -> list[AgentEvent]:
     )
 
 
-# ── D-9: capability.readiness ingestion is all-or-nothing ────────────────────
+# ── capability.readiness ingestion is all-or-nothing ────────────────────
 
 
 @pytest.mark.asyncio
@@ -840,7 +840,7 @@ async def test_uptime_float_persists_into_bigint_column(db_session, factories):
 @pytest.mark.asyncio
 async def test_ingest_still_succeeds_after_column_drop(db_session, factories):
     """`projection_attempts` is gone from the model *and* nothing on the ingest
-    path still tries to write it (D-3, Task 8)."""
+    path still tries to write it."""
     assert "projection_attempts" not in AgentHostSample.__table__.c
 
     hardware = factories.hardware()
@@ -855,7 +855,7 @@ async def test_ingest_still_succeeds_after_column_drop(db_session, factories):
     assert db_session.execute(select(HardwareLiveMetric)).scalar_one().agent_id == agent.id
 
 
-# ── Task 5: the live projection speaks platform key names ────────────────────
+# ── the live projection speaks platform key names ────────────────────
 #
 # `agent_summary_to_platform` + `live_metric_fields` (app/services/
 # telemetry_normalize.py) are the single mapping from a normalized platform

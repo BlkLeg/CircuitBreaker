@@ -7,16 +7,13 @@ import {
   stubApi,
 } from './fixtures/api';
 
-// docs/evidence/known_bugs-v1.0.0-rc.1.md item 1: the URL advances but the route never
-// renders until a manual reload. Open from rc.1 through 2026-09-06 (high severity,
-// and explicitly "not reproducible in jsdom"), fixed in 04ee269f; this spec is the
-// regression guard.
+// Regression guard for known_bugs item 1: the URL advances but the route never
+// renders until a manual reload.
 //
-// The bug report narrowed it to two candidates and asked for one piece of data
-// from a running instance: is the new page's markup in the DOM but invisible
-// (a wedged framer-motion exit animation), or absent entirely (a route that
-// never mounted)? The two assertions below are exactly that diagnostic, so a
-// recurrence names its own cause instead of needing a live instance again.
+// The two assertions below are a diagnostic, not just a pass/fail — they
+// distinguish markup present but invisible (a wedged framer-motion exit) from
+// markup absent entirely (a route that never mounted), so a recurrence names
+// its own cause.
 //
 // Only non-redirecting routes: '/' -> /map and '/networks' -> /ipam are
 // <Navigate> redirects (App.jsx:145,150), so asserting their own URL fails.
@@ -54,12 +51,10 @@ test.describe('client-side navigation completes without a reload', () => {
         'route never mounted — the fix is in AnimatePresence/Suspense'
       ).toBeVisible({ timeout: 10_000 });
 
-      // Measure the element that actually animates. `.page-content` is a
-      // static wrapper and is always opacity 1 (App.jsx:127), so asserting on
-      // it can never detect a wedged transition — the framer-motion div inside
-      // it is what fades 0 -> 1 (App.jsx:135-141). Polled, because the fade
-      // takes 150ms and a single read right after mount legitimately sees a
-      // value below 0.9.
+      // Measure the element that animates: `.page-content` is a static
+      // wrapper always at opacity 1, so asserting on it can never detect a
+      // wedged transition. Polled, because a single read right after mount
+      // legitimately sees a value below 0.9 during the 150ms fade.
       await expect
         .poll(
           async () =>
@@ -99,36 +94,27 @@ test.describe('client-side navigation completes without a reload', () => {
     await expectNoErrorBoundary(page, 'after clicking the hardware nav link');
   });
   /**
-   * The regression test for known_bugs item 1, and the one that would have
-   * caught it.
+   * The regression test for known_bugs item 1. Three conditions must hold at
+   * once or the wedge does not appear, which is why the cheaper tests above
+   * never caught it:
    *
-   * Everything above this navigates a cheap page under no load, and every
-   * assertion in it passed for the whole eight months item 1 was open. Three
-   * conditions have to hold at once before the wedge appears, and the suite
-   * recreated none of them:
+   * 1. Navigate away from `/map` with the topology actually rendered — every
+   *    recorded wedge left `/map`, and a `/map` still on "Loading maps…" does
+   *    not reproduce it. Hence `stubApi` seeding a real `maps` row.
+   * 2. Real router navigation. `history.pushState` plus a synthetic `popstate`
+   *    moves the URL without going through `navigate()`, which is the path
+   *    that wraps the update in `React.startTransition` — the thing that
+   *    breaks. A dock `<NavLink>` click goes through it.
+   * 3. CPU contention: the transition has to be interrupted to be lost.
    *
-   * 1. **Navigate away from `/map`, with the topology actually rendered.**
-   *    Every wedge ever recorded — 16/40 under throttle here, 15/40 against a
-   *    real backend — was a navigation leaving `/map`. The 2026-08-18 attempt
-   *    that "could not reproduce" was leaving a `/map` still showing "Loading
-   *    maps…", which is why `stubApi` seeds a real `maps` row.
-   * 2. **Real router navigation.** `history.pushState` + a synthetic
-   *    `popstate` moves the URL without going through `navigate()`, which is
-   *    the code path that wraps the update in `React.startTransition` — the
-   *    thing that actually breaks. A dock `<NavLink>` click goes through it.
-   * 3. **CPU contention.** The transition has to be interrupted to be lost.
+   * Unlike `nav-wedge.spec.ts`, which measures a rate, this asserts a rate of
+   * zero — any single wedge fails it.
    *
-   * Held at 6x throttle the wedge rate is ~40% per navigation, so the run
-   * below misses a full regression with probability 0.6^12 — about 0.2%. It
-   * is not statistical in the way `nav-wedge.spec.ts` is: that spec measures a
-   * rate, this one asserts a rate of zero, and any single wedge fails it.
-   *
-   * Desktop Chromium only, and gated on the project name rather than on
-   * `browserName`: the CPU throttle needs CDP, which rules out firefox and
-   * webkit, and the `mobile-chrome` project reports `browserName: 'chromium'`
-   * while rendering a viewport with no desktop dock to click. That is not a
-   * coverage gap — the defect is in React's scheduler, not in any browser's,
-   * and it reproduces on every engine once the CPU is contended.
+   * Desktop Chromium only, gated on project name rather than `browserName`:
+   * the throttle needs CDP (ruling out firefox and webkit) and
+   * `mobile-chrome` reports `browserName: 'chromium'` with no desktop dock to
+   * click. Not a coverage gap — the defect is in React's scheduler, and it
+   * reproduces on every engine once the CPU is contended.
    */
   test('navigating away from the topology does not wedge under CPU load', async ({
     page,
@@ -181,11 +167,9 @@ test.describe('client-side navigation completes without a reload', () => {
         await expect.poll(renderedRoute, { timeout: 8_000 }).toBe(target);
       } catch {
         wedged.push(`${from} -> ${target} (URL is ${new URL(page.url()).pathname})`);
-        // Stop at the first one. The wedge is permanent — no later navigation
-        // recovers from it, so continuing would only append hops made from an
-        // already-broken page. Reloading to carry on is what `nav-wedge.spec.ts`
-        // does, because it is measuring a rate; this test asserts that the rate
-        // is zero, and one is enough to say so.
+        // Stop at the first one: the wedge is permanent, so later hops would
+        // be made from an already-broken page. This test asserts a rate of
+        // zero, and one is enough to say so.
         break;
       }
     }

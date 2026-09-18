@@ -23,7 +23,7 @@ import (
 
 // TestRun_DataFramesFlowThroughLiveConnection drives a full Run() connection
 // — real Noise handshake, real encrypted WS frames — and pushes fake data
-// frames (fakeDataFrameType — no real Slice 1 data frame type exists to test
+// frames (fakeDataFrameType — no real data frame type exists yet to test
 // with) through Options.DataFrames while heartbeats keep ticking on their own
 // schedule. It verifies, through the actually-wired path (not just a direct
 // dataFrameSender call):
@@ -529,12 +529,11 @@ func waitFor(t *testing.T, budget time.Duration, desc string, cond func() bool) 
 	t.Fatalf("timed out after %s waiting for %s", budget, desc)
 }
 
-// TestRun_CatchUpDrainsBacklogWithinBound is the core of D-5: a backlog
-// accumulated during an outage drains on its own, paced, with *no live
-// production at all*. Under the old 1:4 interleave this hung forever — a
-// drain only happened as a side effect of a successful live send, so a
-// disabled or failing collector meant the backlog sat until cap eviction
-// discarded it.
+// TestRun_CatchUpDrainsBacklogWithinBound pins that a backlog accumulated
+// during an outage drains on its own, paced, with no live production at all.
+// If a drain only happened as a side effect of a successful live send, a
+// disabled or failing collector would leave the backlog sitting until cap
+// eviction discarded it.
 func TestRun_CatchUpDrainsBacklogWithinBound(t *testing.T) {
 	originalTick := drainTickInterval
 	drainTickInterval = 5 * time.Millisecond
@@ -657,11 +656,11 @@ func freezeDrain(t *testing.T) {
 	t.Cleanup(func() { drainTickInterval = original })
 }
 
-// TestHelloCarriesSpoolDepthAtConnect pins the at-connect half of D-12: the
-// `hello` frame reports how many frames were still spooled when the
-// connection came up. internal/hostinfo stays spool-agnostic (the spool is
-// owned by the link, not by host collection), so internal/link is what
-// stamps HelloPayload.SpoolDepth from Options.Spool.
+// TestHelloCarriesSpoolDepthAtConnect pins the at-connect half of spool
+// reporting: the `hello` frame reports how many frames were still spooled when
+// the connection came up. internal/hostinfo stays spool-agnostic (the spool is
+// owned by the link, not by host collection), so internal/link is what stamps
+// HelloPayload.SpoolDepth from Options.Spool.
 func TestHelloCarriesSpoolDepthAtConnect(t *testing.T) {
 	freezeDrain(t)
 
@@ -697,10 +696,10 @@ func TestHelloCarriesSpoolDepthAtConnect(t *testing.T) {
 	}
 }
 
-// TestHeartbeatCarriesSpoolStats pins the live half of D-12: every heartbeat
-// carries the current spool depth and size, which is what lets the Agent
-// Detail catch-up indicator both appear *and* clear while a single
-// connection stays up. The payload used to be a hardcoded `{}`.
+// TestHeartbeatCarriesSpoolStats pins the live half of spool reporting: every
+// heartbeat carries the current spool depth and size, which is what lets the
+// Agent Detail catch-up indicator both appear and clear while a single
+// connection stays up.
 func TestHeartbeatCarriesSpoolStats(t *testing.T) {
 	freezeDrain(t)
 	originalHeartbeat := heartbeatInterval
@@ -749,7 +748,7 @@ func TestHeartbeatCarriesSpoolStats(t *testing.T) {
 	}
 
 	// The wire bytes themselves must carry both keys explicitly, even at
-	// zero — D-12: an empty `{}` heartbeat is reserved to mean "this agent
+	// zero: an empty `{}` heartbeat is reserved to mean "this agent
 	// predates spool reporting", which is what lets the backend keep its
 	// columns NULL for such an agent instead of writing a fake 0.
 	var keys map[string]json.RawMessage

@@ -1,4 +1,4 @@
-"""Repo-policy checks on the Phase 2 baseline harness and wedge instrument.
+"""Repo-policy checks on the baseline harness and wedge instrument.
 
 These exist because the harness's own output is the only place its mistakes
 show, and a mistake there looks exactly like a quiet result. Three of the checks
@@ -44,7 +44,7 @@ def _baseline_job() -> dict[str, Any]:
 
 
 def test_workload_tiers_match_the_route_contract() -> None:
-    """The tier shapes are route §5's workload matrix, not a paraphrase of it."""
+    """The tier shapes are the documented workload matrix, not a paraphrase of it."""
     from scripts.loadgen.config import TIERS
 
     assert TIERS == {
@@ -181,7 +181,7 @@ def test_nightly_workflow_is_non_blocking_scheduled_and_retained() -> None:
 
 
 def test_nightly_workflow_runs_every_tier_including_c() -> None:
-    """Both defensible §5 targets are Tier C claims.
+    """Both defensible targets are Tier C claims.
 
     Topology load is specified "at 500 entities" and monitor lag "at Tier C", so
     a nightly job that runs only A and B archives `applicable: false` for both,
@@ -266,7 +266,7 @@ def test_nav_wedge_classifies_every_wedge_into_a_decision_tree_branch() -> None:
 
     The measured branches are materially different defects — a location update
     that never reached `useLocation`, a route that never mounted, and an exit
-    animation that never finished — and §4.4 sends each somewhere different. A
+    animation that never finished — and the decision tree sends each somewhere different. A
     run that reports only a rate makes the investigation start over.
 
     This also guards the classification itself: a revision that treated "no nav

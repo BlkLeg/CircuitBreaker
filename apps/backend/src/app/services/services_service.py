@@ -290,7 +290,7 @@ def create_service(db: Session, payload: ServiceCreate) -> dict:
     resolved_env_id = resolve_environment_id(db, payload.environment_id, payload.environment)
     ports_json = _ports_to_json(payload.ports)
     slug = payload.slug or re.sub(r"[^a-z0-9]+", "-", payload.name.lower()).strip("-")
-    # CB-REL-002: auto-populate hardware_id from compute_unit when compute-bound
+    # CB-the contract: auto-populate hardware_id from compute_unit when compute-bound
     effective_hardware_id = payload.hardware_id
     if payload.compute_id and not effective_hardware_id:
         from app.db.models import ComputeUnit as _CU
@@ -372,7 +372,7 @@ def update_service(db: Session, service_id: int, payload: ServiceUpdate) -> dict
         data["environment_id"] = resolve_environment_id(db, env_id, env_str)
         if env_str is not None:
             data["environment"] = env_str
-    # CB-REL-002: auto-populate hardware_id from compute_unit when compute-bound
+    # CB-the contract: auto-populate hardware_id from compute_unit when compute-bound
     effective_compute = data.get("compute_id", svc.compute_id)
     if effective_compute and "hardware_id" not in data:
         from app.db.models import ComputeUnit as _CU

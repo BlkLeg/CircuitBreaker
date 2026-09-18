@@ -72,11 +72,11 @@ export const SETTINGS_TABS = [
 /**
  * The settings half of the navigation registry.
  *
- * SettingsPage used to own the non-admin policy privately (`['integrations']`,
- * inline at SettingsPage.jsx:54) while the former palette guessed at it with a
- * canEdit check and its own hardcoded `?section=` list. The two disagreed:
- * the palette offered an editor eight settings deep-links, seven of which the
- * page would refuse to render. One exported policy, two consumers.
+ * The non-admin policy must live here, not privately in SettingsPage with the
+ * palette guessing at it through a canEdit check and its own hardcoded
+ * `?section=` list. Two copies disagree: the palette offers an editor eight
+ * settings deep-links, seven of which the page refuses to render. One exported
+ * policy, two consumers.
  *
  * SettingsNav reads this file. Data never imports a rendered component.
  */

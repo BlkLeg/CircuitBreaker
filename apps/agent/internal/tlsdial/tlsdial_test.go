@@ -403,7 +403,7 @@ func TestNewDialer_DialsThroughHTTPSProxy(t *testing.T) {
 // NewDialer must never hand back websocket.DefaultDialer. It is a package-level
 // global shared by every caller in the process, so configuring the returned
 // value — as the keepalive does — would reach into unrelated call sites. The
-// unpinned branch used to return it directly.
+// unpinned branch must not return it directly.
 func TestNewDialer_NeverReturnsTheSharedDefaultDialer(t *testing.T) {
 	for _, trust := range []Trust{{Mode: "public"}, {Mode: "pinned", Pins: []string{"AAAA"}}} {
 		d := NewDialer(trust)

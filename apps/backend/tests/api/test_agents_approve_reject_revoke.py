@@ -51,7 +51,7 @@ async def test_approve_with_omitted_capabilities_grants_the_full_normal_preset(
 async def test_approve_rejects_invalid_host_telemetry_config_with_422(
     client, factories, auth_headers
 ):
-    """Task 14: `ApproveRequest` validates capability config the same way
+    """`ApproveRequest` validates capability config the same way
     `CapabilitiesUpdateRequest` does, so a bad cadence is a 422 — not the 500
     the un-validated approve body used to produce via a bare `ValueError`."""
     agent = factories.agent(status="pending")
@@ -100,7 +100,7 @@ async def test_capabilities_update_rejects_malformed_remote_probe_scope_with_422
 async def test_capability_defaults_endpoint_matches_what_an_omitted_approve_grants(
     client, factories, auth_headers
 ):
-    """Structural lock (Task 14): the frontend's approval preset is fetched from
+    """Structural lock: the frontend's approval preset is fetched from
     this endpoint, so it can never drift from what the server actually grants."""
     defaults = await client.get("/api/v1/agents/capability-defaults", headers=auth_headers)
     assert defaults.status_code == 200

@@ -118,7 +118,7 @@ def scan_subnet_safe(cidr: str, max_workers: int = 100) -> list[dict]:
     """
     network = ipaddress.IPv4Network(cidr, strict=False)
 
-    # Size-check the network before expanding it.  This is B06's defect one layer
+    # Size-check the network before expanding it.  This isthe defect one layer
     # down: the comprehension below was unconditional, so the only thing standing
     # between this function and a /8 was whatever the caller happened to validate.
     # That is not a guarantee this function can rely on — it is a plain module-level
@@ -145,7 +145,7 @@ def scan_subnet_safe(cidr: str, max_workers: int = 100) -> list[dict]:
             f"(max {_MAX_SCAN_ADDRESSES} addresses). Use a smaller range (e.g. /24)."
         )
 
-    # Phase 1: parallel ICMP ping sweep, one bounded batch at a time.  The results
+    # Parallel ICMP ping sweep, one bounded batch at a time.  The results
     # kept across batches are only the addresses that answered, which is bounded by
     # what is actually on the wire rather than by the size of the range.
     alive: list[str] = []
@@ -154,7 +154,7 @@ def scan_subnet_safe(cidr: str, max_workers: int = 100) -> list[dict]:
             alive.extend(ip for ip, up in zip(batch, ex.map(_ping_host, batch), strict=False) if up)
     alive_ips = set(alive)
 
-    # Phase 2: TCP probe all alive hosts (and hosts skipped by ping as fallback).
+    # TCP probe all alive hosts (and hosts skipped by ping as fallback).
     # If ping found nothing (firewall blocks ICMP), probe all hosts via TCP — the
     # range is re-walked lazily rather than kept from phase 1, for the same reason.
     if alive:

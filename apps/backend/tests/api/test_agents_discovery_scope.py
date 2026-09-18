@@ -19,7 +19,7 @@ from tests.api.agent_fakes import (
 )
 
 # ---------------------------------------------------------------------------
-# GET /agents/{id}/discovery — the Agent Detail scope section (§6 / Task 26)
+# GET /agents/{id}/discovery — the Agent Detail scope section
 # ---------------------------------------------------------------------------
 #
 # `GET /agents/{id}/probes`' twin, and deliberately shaped like it: it is what

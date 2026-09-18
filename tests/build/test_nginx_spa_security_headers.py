@@ -338,7 +338,7 @@ def test_the_warming_up_503_still_advertises_retry_after():
 
     Not parametrized over CONFIGS: only the mono image has a warming-up
     location at all, so three of the four would contribute a skip -- and a
-    skip in this tree owes REL-19 a row in the skip register. Iterating finds
+    skip in this tree owes a row in the skip register. Iterating finds
     the blocks wherever they are and asserts nothing about a config that has
     none.
     """

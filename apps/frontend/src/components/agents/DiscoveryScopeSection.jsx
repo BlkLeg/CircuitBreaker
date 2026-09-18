@@ -48,7 +48,7 @@ function boundsError(patch) {
   return null;
 }
 
-// Plan §6's "visibly different provenance". The distinction is operational, not
+// Visibly different provenance. The distinction is operational, not
 // cosmetic, and it decides which control the row gets: an automatic subnet
 // appears and disappears with the interface and can only be *excluded*, while an
 // override is something an administrator typed that nothing but another edit
@@ -94,8 +94,8 @@ const formatTimestamp = (value) => (value ? new Date(value).toLocaleString() : '
  * would tell an operator the agent is sweeping ground it will in fact refuse. */
 const isIncludable = (cidr) => ineligibleReason(cidr) === null;
 
-// Slice 3 §7: "Offer 'Create monitor from this agent' actions for devices found
-// in Slice 4. These preselect the agent vantage and target while leaving
+// "Offer 'Create monitor from this agent' actions for devices found
+// These preselect the agent vantage and target while leaving
 // monitor type, interval, and alert policy under user control."
 //
 // Only an ACCEPTED finding can be monitored: `target_type`/`target_id` have to
@@ -169,7 +169,7 @@ CadenceInput.propTypes = {
 };
 
 /**
- * Plan §6's "Discovery scope" section on Agent Detail.
+ * The "Discovery scope" section on Agent Detail.
  *
  * Extracted rather than inlined for the reason `AssignedProbesSection` was:
  * AgentDetailPage is far past the 150-line component budget, and this is a
@@ -201,7 +201,7 @@ export default function DiscoveryScopeSection({
   // server (or the operator) refused.
   const [editorRevision, setEditorRevision] = useState(0);
   // The devices this agent's own scans found. Fetched here rather than lifted
-  // into AgentDetailPage because this section already owns the whole Slice 4
+  // into AgentDetailPage because this section already owns the whole discovery
   // agent surface, and the page is well past its component budget.
   const [devices, setDevices] = useState([]);
 
@@ -242,7 +242,7 @@ export default function DiscoveryScopeSection({
     { ...PROVENANCE.excluded, rows: scope.filter((e) => e.provenance === 'excluded') },
   ];
 
-  // Plan §6: the allow list is not the reachable set. `effective` is
+  // The allow list is not the reachable set. `effective` is
   // `agent_scope.network_in_scope`'s own verdict, with the exclusions, the
   // prefix ceiling and the special-use blocklist already subtracted, so
   // rendering the allow list alone would claim ground the evaluator refuses.
@@ -289,7 +289,7 @@ export default function DiscoveryScopeSection({
    * the grant allows in a single job, is **saved on confirmation**: the
    * capability endpoint accepts them, and it is the evaluator that will later
    * refuse every scan with `prefix_too_wide` / `address_limit_exceeded`. That is
-   * exactly the scope §6 wants confirmed rather than silently stored.
+   * exactly the scope that must be confirmed rather than silently stored.
    */
   const scopeConcerns = (patch) => {
     const added = (patch.additional_cidrs ?? []).filter(
@@ -366,7 +366,7 @@ export default function DiscoveryScopeSection({
   };
 
   /**
-   * Plan §6 / M14's per-subnet hold, from the row that displays the state.
+   * The per-subnet hold, from the row that displays the state.
    *
    * Both endpoints answer with the `DiscoveryProfileOut` they changed, so the
    * row is updated from that answer rather than by re-reading the whole scope:

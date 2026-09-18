@@ -505,7 +505,7 @@ def include_all_routers(app: FastAPI) -> None:
         dependencies=[Depends(require_auth)],
     )
 
-    # Parked JetStream work (route F14). `require_auth` here and `require_role("admin")`
+    # Parked JetStream work. `require_auth` here and `require_role("admin")`
     # on each route: the rows carry raw payloads from the producing system, so the
     # per-route admin gate is the security boundary, not the mount.
     app.include_router(

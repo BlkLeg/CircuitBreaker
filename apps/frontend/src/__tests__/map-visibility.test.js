@@ -22,13 +22,13 @@ describe('isNodeHidden', () => {
   });
 
   it('keeps a tag-excluded node hidden even when its role matches', () => {
-    // Regression: the role effect used to blanket-rewrite `hidden` for hardware,
+    // Regression: the role effect must not blanket-rewrite `hidden` for hardware,
     // unhiding nodes the tag filter had excluded.
     expect(isNodeHidden(hw(['nas'], 'server'), { tag: 'switch', hwRole: 'server' })).toBe(true);
   });
 
   it('keeps a role-excluded node hidden even when its tags match', () => {
-    // Regression: the tag effect used to blanket-rewrite `hidden` for every node,
+    // Regression: the tag effect must not blanket-rewrite `hidden` for every node,
     // unhiding hardware the role filter had excluded.
     expect(isNodeHidden(hw(['nas'], 'server'), { tag: 'nas', hwRole: 'switch' })).toBe(true);
   });

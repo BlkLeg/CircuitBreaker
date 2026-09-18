@@ -100,7 +100,7 @@ def test_claim_advances_next_due_beyond_now(db_session):
     assert claim_due_items(db_session, batch=100) == []
 
 
-# ── Fair-share claiming (D-2) ────────────────────────────────────────────────
+# ── Fair-share claiming ────────────────────────────────────────────────
 
 
 def test_claim_returns_probe_agent_id(db_session, factories):
@@ -186,7 +186,7 @@ async def test_agent_route_creates_a_queued_run_and_publishes_only_the_run_id(
 
     subject, payload = published[0]
     assert subject == MONITOR_PROBE_REMOTE
-    # §2: NATS carries the run id and nothing else — no host, no config, no
+    # NATS carries the run id and nothing else — no host, no config, no
     # credentials. The dispatcher loads all of that from the database.
     assert list(payload) == ["run_id"]
 

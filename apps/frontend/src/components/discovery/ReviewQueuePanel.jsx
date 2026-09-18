@@ -116,10 +116,9 @@ Toggle.propTypes = { checked: PropTypes.bool.isRequired, onChange: PropTypes.fun
 
 // ── State pill ────────────────────────────────────────────────────────────────
 
-// Three states, because the backend has always produced three. This used to
-// special-case `conflict` and render everything else as amber "New", so a row
-// the matcher had already tied to a device on the map was indistinguishable
-// from a host nobody had ever seen.
+// Three states, because the backend produces three. Special-casing `conflict`
+// and rendering everything else as amber "New" makes a row the matcher already
+// tied to a device on the map indistinguishable from a host nobody has seen.
 const STATE_PILLS = {
   conflict: {
     label: 'Conflict',

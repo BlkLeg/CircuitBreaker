@@ -4,7 +4,7 @@ import client from '../api/client';
 import { getEntries, clearEntries } from '../lib/diagnosticsBuffer';
 
 /**
- * Task 1 shipped the server half of Route §4.2's correlation path: an
+ * The server half of the correlation path is an
  * `X-Request-ID` middleware that echoes back any inbound ID matching
  * `[A-Za-z0-9_.-]{1,64}` unchanged, and logs/slow-query warnings keyed on it.
  * This is the browser half — the axios client mints that ID, times the
@@ -229,7 +229,7 @@ describe('429 handling (H5 / _noRateLimitRetry)', () => {
 
     expect(attempts).toBe(1);
 
-    // The opt-out still records exactly one diagnostics entry — Task 2's
+    // The opt-out still records exactly one diagnostics entry — the
     // one-entry-per-logical-request guarantee holds for this path too.
     const entries = getEntries();
     expect(entries).toHaveLength(1);

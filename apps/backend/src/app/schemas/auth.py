@@ -87,7 +87,7 @@ class UserProfile(BaseModel):
     language: str = "en"
     profile_photo_url: str | None = None
     mfa_enabled: bool = False
-    role: str | None = None  # Phase 6.5: admin | editor | viewer
+    role: str | None = None  # admin | editor | viewer
     scopes: list[str] = []
 
 
@@ -105,7 +105,7 @@ class BootstrapStatusResponse(BaseModel):
     setup_token_expires_at: str | None = None
     #: Absolute path of the generated 0600 token file, so the OOBE wizard can
     #: show a command that works on this deployment (CB_DATA_DIR differs between
-    #: a native install and the container). Never the token itself — see SEC-09.
+    #: a native install and the container). Never the token itself — see the contract.
     #: None once bootstrap is done, or when the operator supplied CB_SETUP_TOKEN
     #: and no file was written.
     setup_token_path: str | None = None

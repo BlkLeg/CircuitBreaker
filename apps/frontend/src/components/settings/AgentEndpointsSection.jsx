@@ -30,7 +30,7 @@ const S = {
   usage: { fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 },
 };
 
-// Spec §6 item 4. `undefined` counts mean the read has not resolved; only a
+// `undefined` counts mean the read has not resolved; only a
 // resolved read with no agents justifies saying none came through, because
 // "no agents have enrolled" is a claim about the address, not about the fetch.
 function usageLabel(usage, url) {

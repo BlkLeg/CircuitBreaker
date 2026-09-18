@@ -20,7 +20,7 @@ def register_discovery_profile_crons(scheduler: "BaseScheduler", db: "Session") 
     """Give every discovery profile that is due one a cron, at process start.
 
     Which profiles those are is `discovery_admission.profiles_due_for_scheduling`'s
-    answer and nothing else's. That function is where Slice 4 plan §3/§6's three
+    answer and nothing else's. That function is where the three
     pause scopes are read — the fleet-wide `app_settings.agent_discovery_paused`,
     the per-agent `local_discovery.auto_discovery_paused` grant key, and the
     per-subnet `discovery_profiles.paused_at` — so **there is exactly one place
@@ -63,7 +63,7 @@ def register_discovery_profile_crons(scheduler: "BaseScheduler", db: "Session") 
 
 
 def run_discovery_enrichment_backfill() -> None:
-    """Owns the session for Phase 11's `backfill_pending_matched` call."""
+    """Owns the session for the `backfill_pending_matched` call."""
     from app.db.session import SessionLocal
     from app.services.discovery_enrich import backfill_pending_matched
 

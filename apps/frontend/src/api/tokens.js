@@ -1,6 +1,6 @@
 import client from './client.jsx';
 
-// INC-14: API token administration. All routes are require_role("admin").
+// API token administration. All routes are require_role("admin").
 
 export const listTokens = (scope = 'mine') => client.get('/auth/api-tokens', { params: { scope } });
 

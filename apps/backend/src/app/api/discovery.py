@@ -86,7 +86,7 @@ router = APIRouter(tags=["discovery"], dependencies=[require_scope("read", "*")]
 
 
 def _execution_location_http_error(exc: AgentExecutionLocationError) -> HTTPException:
-    """The one 422 an agent-targeted request is refused with (Task 19).
+    """The one 422 an agent-targeted request is refused with.
 
     Byte-for-byte the body `discovery_profiles_service._validate_execution_location`
     already returns on profile save, so a frontend switches on a single closed
@@ -242,7 +242,7 @@ def get_discovery_status(db: Session = Depends(get_db)) -> DiscoveryStatusOut:
     return _compute_discovery_status(db)
 
 
-# --- The "Scan from" selector (plan §6, Task 26) ---
+# --- The "Scan from" selector ---
 
 # The one collector `discovery_eligibility` actually gates on. Read from that
 # module rather than spelled out, so a build that starts requiring a second one
@@ -267,7 +267,7 @@ def _max_concurrent_hosts(config: dict[str, Any]) -> int:
 def _agent_job_counts(db: Session, agent_ids: list[int]) -> dict[int, int]:
     """Jobs each agent currently owes an answer for.
 
-    `queued` is counted alongside `running` because D-5 parks an unreachable
+    `queued` is counted alongside `running` becausethe contract parks an unreachable
     agent's job as `queued`/`waiting_for_agent`: it is work outstanding against
     that vantage point, and an operator picking an agent needs to see it.
     """
@@ -320,13 +320,13 @@ async def get_eligible_discovery_agents(
     ),
     _user: User = require_role("viewer"),
 ) -> Any:
-    """Plan §6: every candidate vantage, and for each one why it cannot be chosen.
+    """Every candidate vantage, and for each one why it cannot be chosen.
 
     Rendered for the whole **active** fleet whether or not each agent is
-    eligible, exactly as `GET /agents/probe-eligible` does — §7's selector shows
+    eligible, exactly as `GET /agents/probe-eligible` does —the selector shows
     why an agent is unusable instead of hiding it, and an agent missing from a
     dropdown is the one failure an operator cannot debug. Pending, rejected and
-    revoked agents are not candidates at all (§7: they can never scan), so they
+    revoked agents are not candidates at all (the contract: they can never scan), so they
     are not listed; the fleet page is where an unapproved agent is dealt with.
 
     `cidr` is optional, unlike the destination `GET /agents/probe-eligible`
@@ -419,7 +419,7 @@ async def update_profile(
     user: User = require_role("admin"),
     db: Session = Depends(get_db),
 ):
-    """`async def` for D-14's sake, not for concurrency: disabling a profile
+    """`async def` forthe sake, not for concurrency: disabling a profile
     cancels its in-flight agent dispatches, and the service publishes those
     `discovery.cancel` frames through `agent_discovery.schedule_discovery_cancels`
     — which needs a running event loop to schedule onto. A `def` route runs in
@@ -444,13 +444,13 @@ def delete_profile(
 def _set_profile_pause(
     db: Session, profile_id: int, actor: str, *, paused: bool
 ) -> DiscoveryProfile:
-    """M14's per-subnet hold, written directly onto the row.
+    """the per-subnet hold, written directly onto the row.
 
     Not routed through `discovery_profiles_service.update_profile`, deliberately.
     That function is the closed field list for the *configuration* of a profile —
     it re-validates the execution location, re-normalizes the CIDR, re-derives
     the scan types and, on the `enabled` transition, cancels everything the
-    profile has in flight (D-14). A pause changes none of those: it is a
+    profile has in flight. A pause changes none of those: it is a
     scheduling decision that deletes nothing, cancels nothing and must not be
     expressible through a request schema, or an API client could park an
     arbitrary timestamp on the column.
@@ -458,7 +458,7 @@ def _set_profile_pause(
     `reload_discovery_jobs` is what applies it to the live schedule — that
     function removes every discovery job it owns and re-registers from
     `discovery_admission.profiles_due_for_scheduling`, which is where the three
-    pause scopes are read (Task 25). Without the reload the column would be
+    pause scopes are read. Without the reload the column would be
     correct while `next_scheduled` kept advertising runs that
     `discovery_admission.profile_scheduling_held` would then refuse at fire time —
     a hold the operator could not see they had.
@@ -497,7 +497,7 @@ def _set_profile_pause(
 def pause_profile(
     profile_id: int, user: User = require_role("admin"), db: Session = Depends(get_db)
 ):
-    """Hold one subnet's automatic discovery (plan §6). Deletes nothing."""
+    """Hold one subnet's automatic discovery. Deletes nothing."""
     return _set_profile_pause(db, profile_id, _get_actor(db, user.id), paused=True)
 
 
@@ -509,7 +509,7 @@ def resume_profile(
 
 
 class GlobalDiscoveryPauseOut(BaseModel):
-    """The fleet-wide hold's state (Fix A2 / Task 26's M14).
+    """The fleet-wide hold's state (Fix A2 / the the contract).
 
     One field, because the global scope *is* one boolean — unlike the per-subnet
     scope, whose state is the profile row, and the per-agent scope, whose state
@@ -530,7 +530,7 @@ def _set_global_pause(db: Session, actor: str, *, paused: bool) -> GlobalDiscove
     mean an operator holding an agent fleet silently stopped scanning the
     networks the server can see itself.
 
-    No precedence over the other two scopes, in either direction (Task 25):
+    No precedence over the other two scopes, in either direction:
     resuming globally does not resume a paused subnet or a paused agent, and
     pausing globally does not mark them. Each hold is released by the route that
     set it, or an operator would resume the wrong one and see nothing change.
@@ -571,7 +571,7 @@ def _set_global_pause(db: Session, actor: str, *, paused: bool) -> GlobalDiscove
 def pause_agent_discovery_globally(
     user: User = require_role("admin"), db: Session = Depends(get_db)
 ):
-    """Hold every agent's automatic discovery (plan §6). Deletes nothing."""
+    """Hold every agent's automatic discovery. Deletes nothing."""
     return _set_global_pause(db, _get_actor(db, user.id), paused=True)
 
 
@@ -616,11 +616,11 @@ async def run_profile_scan(
             triggered_by=_get_actor(db, user_id),
             # Manual "Run now" is the other half of the cron path in
             # `discovery_scheduler._run_profile_job_async`, and it copies the
-            # execution location the same way and for the same reason: D-6 makes
+            # execution location the same way and for the same reason: the contract makes
             # `["agent_connect"]` the only legal scan-type list on an agent
             # profile, so a run that dropped the agent would be refused by
             # `validate_scan_types` outright, and one that somehow got past it
-            # would scan from the server's vantage point — which plan §3 forbids
+            # would scan from the server's vantage point — which the contract forbids
             # because it silently changes what the scan can see. Copied onto the
             # job rather than read back off the profile later, so repointing a
             # profile cannot rewrite the attribution of scans that already ran.
@@ -682,13 +682,13 @@ async def run_adhoc_scan(
                 target_cidr=target_cidr,
                 vlan_ids=payload.vlan_ids,
                 scan_types=payload.scan_types,
-                nmap_arguments=payload.nmap_arguments,  # B12: thread through
+                nmap_arguments=payload.nmap_arguments,  # thread through
                 label=payload.label,
                 triggered_by=_get_actor(db, user_id),
-                # Task 19: the ad-hoc form is the second place an operator names
+                # The ad-hoc form is the second place an operator names
                 # an execution location, and `AdHocScanRequest` has carried
                 # `scan_agent_id` since the schema landed. Dropping it here left
-                # an eligible agent unreachable by hand: D-6 forbids server scan
+                # an eligible agent unreachable by hand: the contract forbids server scan
                 # types on an agent and forbids an empty list, so the only list
                 # the request can carry is `["agent_connect"]`, which
                 # `validate_scan_types` refuses outright without an agent.
@@ -711,7 +711,7 @@ async def run_adhoc_scan(
     except AgentExecutionLocationError as exc:
         # Ordered ahead of the generic arm below because it is a `ValueError`
         # subclass, and it is the one refusal whose message an operator can act
-        # on: Task 19 requires the machine-readable `reason`, and the opaque
+        # on: the design requires the machine-readable `reason`, and the opaque
         # "Invalid scan request parameters." would leave the UI nothing to
         # render. Same body as profile save — one reason vocabulary, not two.
         _logger.info("Ad-hoc scan refused at its agent: %s", exc)
@@ -832,12 +832,12 @@ def _close_cancelled_job(db: Session, job: ScanJob) -> agent_discovery.JobCancel
     else close this row first?" has exactly one answer for the caller to act on.
     """
     if job.scan_agent_id is not None:
-        # D-14: an agent job also holds a dispatch lease, and closing the job
+        # An agent job also holds a dispatch lease, and closing the job
         # without closing the lease leaves the agent sweeping a subnet whose
         # findings the ingest path will refuse. The lease is retired inside this
         # transaction and the `discovery.cancel` published only after it commits,
         # so an agent is never told to abandon work a rollback would reinstate.
-        # No `reason` is passed: an operator cancelling a job is not one of D-4's
+        # No `reason` is passed: an operator cancelling a job is not one ofthe
         # error outcomes, and the status alone says what happened.
         return agent_discovery.cancel_job_dispatch(db, job)
     return agent_discovery.JobCancelOutcome(
@@ -1509,7 +1509,7 @@ def docker_networks(db: Session = Depends(get_db)):
     ]
 
 
-# ── Phase 4: Always-On Listener ──────────────────────────────────────────────
+# ── Always-On Listener ──────────────────────────────────────────────────────────
 
 
 @router.get("/listener/status")
