@@ -1,4 +1,4 @@
-"""REL-20: deterministic shard assignment for the backend test suite.
+"""Deterministic shard assignment for the backend test suite.
 
 The backend suite is the long pole in every workflow — ~2900 tests behind a
 TimescaleDB testcontainer — so CI runs it in parallel shards. "Deterministic"

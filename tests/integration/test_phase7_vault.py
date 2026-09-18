@@ -1,4 +1,4 @@
-"""Phase 7 Vault Encryption Tests.
+"""Vault encryption tests.
 
 Covers:
 - CredentialVault lazy-init: raises RuntimeError before reinitialize(), no ephemeral key

@@ -1,6 +1,6 @@
-"""Phase 3.1 boundary ratchets: counts that may only ever go down.
+"""Boundary ratchets: counts that may only ever go down.
 
-Route §6 lists these as T0 gates. Each freezes a measured number; new code that
+These are T0 gates. Each freezes a measured number; new code that
 adds a violation fails the build, and a change that removes one is expected to
 lower the constant in the same commit. The failure messages say so explicitly,
 because a contributor meeting one of these for the first time needs to know that

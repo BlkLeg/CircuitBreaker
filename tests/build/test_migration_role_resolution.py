@@ -1,7 +1,7 @@
 """Migrations must not hardcode the database role, and must not poison the
 transaction when a role-level statement fails.
 
-Tier 3 (ADR 0005 Phase 2) reached this after CB_DATA_DIR and UPLOADS_DIR were
+Tier 3 (ADR 0005) reached this after CB_DATA_DIR and UPLOADS_DIR were
 fixed. `0040_rls_policies` runs `ALTER ROLE breaker SET row_security = off`; the
 packaged install connects as `circuitbreaker`, because
 `packaging/postinstall.sh` generates that credential while `deploy/setup.sh`

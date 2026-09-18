@@ -31,7 +31,7 @@ const proxmoxNode = {
   },
 };
 
-describe('map/Sidebar CPU row (F-1)', () => {
+describe('map/Sidebar CPU row', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });

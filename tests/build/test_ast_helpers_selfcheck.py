@@ -1,6 +1,6 @@
 """The ratchet helpers must count what they claim to count.
 
-A ratchet is only as trustworthy as its counter, and Phase 2 spent a whole
+A ratchet is only as trustworthy as its counter, and a whole
 verification pass on instruments that reported clean numbers they had no way
 to measure. These fixtures are deliberately adversarial: a docstring-only
 handler is not any less silent, a deferred import is not a top-level one, and

@@ -8,7 +8,7 @@ install.sh path, where deploy/setup.sh's run_upgrade does the work. The package
 path had no preinstall hook at all and did not ship restore.sh, so
 `dnf upgrade circuit-breaker` migrated the schema with nothing to go back to and
 no tool to go back with -- a documented recovery procedure that could not be
-performed. ADR 0005 Phase 3 is what found it, because it is the first thing in
+performed. ADR 0005's upgrade row is what found it, because it is the first thing in
 this project's history to upgrade a packaged install and then look.
 
 Where these tests can run the scriptlets they do, rather than grepping them.

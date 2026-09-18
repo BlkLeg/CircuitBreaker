@@ -1,4 +1,4 @@
-"""Phase 2 tests — DuckDB analytics client."""
+"""DuckDB analytics client tests."""
 
 from unittest.mock import patch
 

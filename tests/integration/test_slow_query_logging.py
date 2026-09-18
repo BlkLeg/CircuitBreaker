@@ -1,4 +1,4 @@
-"""Task 1d fix: slow-query timing state must not survive a failing statement.
+"""Slow-query timing state must not survive a failing statement.
 
 The original design stashed a start-time stack under a key in
 ``Connection.info``. SQLAlchemy documents ``info`` as living on the physical

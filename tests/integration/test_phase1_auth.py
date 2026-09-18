@@ -1,4 +1,4 @@
-"""Phase 1 tests: FastAPI-Users auth, rate-limit profiles, legacy token, bootstrap."""
+"""FastAPI-Users auth, rate-limit profiles, legacy token, bootstrap."""
 
 from .conftest import _read_setup_token
 

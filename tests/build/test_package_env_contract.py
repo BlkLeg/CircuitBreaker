@@ -1,6 +1,6 @@
 """The packaged service must be able to write to the directory it was given.
 
-Found by Tier 3's first real run (Phase 2, F1). The rpm installed cleanly, the
+Found by Tier 3's first real run. The rpm installed cleanly, the
 binary reported the right version, and then the service crash-looped:
 
     OSError: [Errno 30] Read-only file system: '/data'
@@ -155,7 +155,7 @@ def test_every_path_the_package_pins_is_writable_or_shipped():
 #
 # Everything above closes the *path* class: a setting whose default is only
 # correct when something else sets the working directory. Tier 3's first run of
-# the Phase 3 tree found the class one door down, and it failed the same way --
+# the tree found the class one door down, and it failed the same way --
 # install clean, right version, then a crash loop:
 #
 #     CRITI [app.main] STARTUP FAILED: CB_EGRESS_PROXY_URL is required in

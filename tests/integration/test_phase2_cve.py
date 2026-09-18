@@ -1,4 +1,4 @@
-"""Phase 2 tests — CVE service, API endpoints, and migration.
+"""CVE service, API endpoints, and migration.
 
 Two product contracts shape the arrangement here:
 

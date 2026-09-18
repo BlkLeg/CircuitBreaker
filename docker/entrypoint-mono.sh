@@ -72,7 +72,7 @@ fi
 PG_BIN="/usr/lib/postgresql/15/bin"
 
 ensure_data_dirs() {
-  # acme-challenge / letsencrypt / tmp are certbot's (INC-07). Without letsencrypt/
+  # acme-challenge / letsencrypt / tmp are certbot's. Without letsencrypt/
   # certbot falls back to /etc/letsencrypt, which a non-root process cannot create --
   # the original defect reappearing one directory over. Without tmp/, the credentials
   # TemporaryDirectory issuance writes into has nowhere to live.
