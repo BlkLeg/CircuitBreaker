@@ -67,10 +67,20 @@ jobs:
       # every test that asserts against a push stream died on
       # `ModuleNotFoundError: No module named 'websockets'` — 11 of 12, after
       # each had already built and run its containers.
+      #
+      # cryptography is the third instance of the same omission.
+      # test_tampered_agent_binary_is_refused signs and re-signs an agent binary
+      # with Ed25519 (test_agent_e2e.py:5974,6028) to prove the daemon refuses
+      # one whose signature does not match, so without it that test dies on
+      # `ModuleNotFoundError: No module named 'cryptography'` — after building
+      # its containers and enrolling an agent, which is what makes it read as a
+      # product failure rather than a missing dependency. A test whose subject
+      # is signature verification cannot be evidence of anything while the
+      # library that makes the signature is absent.
       - name: Install test deps
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-timeout httpx websockets
+          pip install pytest pytest-timeout httpx websockets cryptography
 
       # BLOCKING-2/6: GOV-12 untracked apps/agent/e2e/.env and replaced it
       # with .env.example, but nothing recreated it. Every test in the suite
