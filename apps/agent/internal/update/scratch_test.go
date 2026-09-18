@@ -105,9 +105,9 @@ func TestScratchDirNamesEveryCandidateWhenNoneHasRoom(t *testing.T) {
 	}
 }
 
-// Staging in a persistent directory means nothing else ever cleans it: a crash
-// between download and swap used to leave its debris in /tmp, where the OS
-// eventually swept it. Here the agent has to sweep its own.
+// Staging in a persistent directory means nothing else ever cleans it. A crash
+// between download and swap leaves debris that no OS /tmp sweep will collect,
+// so the agent has to sweep its own.
 func TestStaleStagedDownloadsAreSweptAway(t *testing.T) {
 	state, _ := isolateScratch(t)
 	staging := filepath.Join(state, scratchDirName)

@@ -28,28 +28,22 @@ type Instruction struct {
 
 const markerFilename = "update_pending"
 
-// markerPhase distinguishes the two states a still-present rollback marker
-// can be in when read back after an unplanned restart. Before this
-// distinction existed, a marker's mere presence was treated as proof that
-// the marker's recorded backup was *this* update's actual prior version —
-// true only because, pre-Task-25, the marker was written after Swap
-// succeeded. the design correctly moved WriteMarker to run before Swap (so a
-// crash between the two leaves a recoverable "nothing happened yet" state
-// instead of an unguarded replaced binary), but that reordering broke the
-// old proof: a marker written just before a crash, with Swap never having
-// run, would otherwise be indistinguishable from one written after a real
-// Swap — and watchForRollback would "roll back" current to whatever stale
-// version directory happens to be lying around from some earlier,
-// already-confirmed update. Two versions back. Silently.
+// markerPhase distinguishes the two states a still-present rollback marker can
+// be in when read back after an unplanned restart.
 //
-//   - phasePendingSwap: WriteMarker has run but Swap has not (yet) durably
-//     completed for this marker's version. current is untouched and no
-//     prevVersionDir has been recorded yet — there is nothing to roll back
-//     to.
+// A marker's mere presence is NOT proof that its recorded backup is this
+// update's actual prior version. WriteMarker runs before Swap, so a crash
+// between the two leaves a marker whose Swap never ran; treating that as
+// swapped would roll `current` back to whatever stale version directory is
+// lying around from an earlier, already-confirmed update — two versions back,
+// silently.
+//
+//   - phasePendingSwap: WriteMarker has run but Swap has not durably completed
+//     for this marker's version. current is untouched and no prevVersionDir is
+//     recorded — there is nothing to roll back to.
 //   - phasePendingConfirm: Swap completed and MarkSwapped recorded
-//     prevVersionDir — that directory is now guaranteed to be *this*
-//     update's actual prior version, so a rollback (if the update never
-//     confirms) is safe and meaningful.
+//     prevVersionDir, which is then guaranteed to be this update's actual prior
+//     version, so a rollback is safe and meaningful.
 type markerPhase string
 
 const (
@@ -59,23 +53,19 @@ const (
 
 // pendingOutcomeFilename persists a terminal update outcome — today
 // "succeeded" — that a process is about to report live but could lose to a
-// connection drop at exactly the wrong moment. The succeeded
-// report is written to the socket immediately before syscall.Exec replaces
-// this process image, and a successful local WebSocket write is not an
-// acknowledgement from the server: the bytes can die in a socket buffer or
-// a partition while the process that could retry them is gone. So the
-// outcome is durably recorded *before* the live send, and the process the
-// re-exec lands in reports it after its first accepted hello.ack and clears
-// it only once that send actually succeeded — the same lifecycle the
-// rollback report below has always had, which is why this deliberately
-// mirrors it rather than inventing a second acknowledgement protocol.
+// connection drop at exactly the wrong moment. The succeeded report is written
+// to the socket immediately before syscall.Exec replaces this process image,
+// and a successful local WebSocket write is not an acknowledgement from the
+// server: the bytes can die in a socket buffer or a partition while the process
+// that could retry them is gone. So the outcome is recorded durably before the
+// live send, and the process the re-exec lands in reports it after its first
+// accepted hello.ack and clears it only once that send succeeded.
 //
 // A distinct file from rollbackReportFilename, never merged into it: the
-// rollback report is written by the *new* process after it decides to roll
-// back, and read by the *old* process the rollback re-execs into — a build
-// that predates this file. Changing that file's format would hand that old
-// reader a phase-suffixed string it would report as a version. The new
-// outcome file is only ever written and read by builds that know it.
+// rollback report is written by the new process after it decides to roll back,
+// and read by the old process the rollback re-execs into — a build that
+// predates this file. Changing that format would hand that old reader a
+// phase-suffixed string it would report as a version.
 const pendingOutcomeFilename = "update_outcome"
 
 // rollbackReportFilename persists the version a rollback restored *away*
@@ -459,17 +449,15 @@ func resolveSymlinkAbs(linkPath string) (string, error) {
 
 // Swap fsyncs newBinaryPath (see fsyncFile), moves it into
 // {stateDir}/versions/<version>/cb-agent (immutable once written), then
-// atomically re-points {stateDir}/current to that new version directory —
-// so self-update never touches anything outside stateDir, which is already
-// writable by the unprivileged cb-agent user running this process (see
+// atomically re-points {stateDir}/current at that new version directory.
+// Self-update therefore never touches anything outside stateDir, which the
+// unprivileged cb-agent user running this process can already write — unlike a
+// root-owned /usr/local/bin/cb-agent, which it could never rename in place.
 //
-// old in-place rename at a root-owned /usr/local/bin/cb-agent, which that
-// user could never actually perform). Returns the version directory
-// current pointed to *before* the swap, so a later Rollback knows where to
-// point back to; empty if current did not exist yet (never happens against
-// a real install, whose install script always creates it — see
-// agent_install.py — but tolerated so tests can exercise a first-ever swap
-// without seeding one).
+// Returns the version directory current pointed to before the swap, so a later
+// Rollback knows where to point back to; empty if current did not exist yet,
+// which never happens against a real install but is tolerated so tests can
+// exercise a first-ever swap without seeding one.
 func Swap(newBinaryPath, version, stateDir string) (prevVersionDir string, err error) {
 	// version ultimately comes from a server-controlled update instruction
 	// (internal/update.Instruction) and is used directly as a path
@@ -589,18 +577,16 @@ func Rollback(currentLink, prevVersionDir string) error {
 }
 
 // WriteMarker durably records that targetVersion is pending confirmation via
-// atomicWriteFile — a torn write here would be worse than useless, since the
-// whole point of the marker is that it's trustworthy after an unplanned
-// restart. Callers (cmd/cb-agent/main.go's onUpdate) must call this *before*
-// executing the binary swap it guards, not after: if a crash lands between
-// WriteMarker and Swap, the marker still correctly names the version that
-// was *about to be* installed, and ReadMarker on restart finds a
-// consistent, recoverable state (Swap never ran, so current is untouched —
-// there's nothing to roll back).
+// atomicWriteFile — a torn write would be worse than useless, since the whole
+// point of the marker is that it is trustworthy after an unplanned restart.
 //
-// The marker written here starts in phasePendingSwap with no previous
-// version recorded yet (Swap hasn't run, so there's nothing to record) —
-// see MarkSwapped, which callers must invoke once Swap actually succeeds.
+// Callers must invoke this BEFORE the binary swap it guards, never after: if a
+// crash lands between WriteMarker and Swap, the marker still correctly names
+// the version that was about to be installed, and ReadMarker finds a
+// recoverable state (Swap never ran, so current is untouched).
+//
+// The marker starts in phasePendingSwap with no previous version recorded —
+// see MarkSwapped, which callers must invoke once Swap succeeds.
 func WriteMarker(stateDir, targetVersion string) error {
 	return writeMarkerPhase(stateDir, phasePendingSwap, targetVersion, "", time.Time{})
 }
@@ -707,24 +693,13 @@ func readMarker(stateDir string) (m marker, present bool, err error) {
 // deadline, and reports the version it rolled back away from ("" when it did
 // nothing).
 //
-// This exists because the in-process rollback window (cmd/cb-agent's
-// watchForRollback) cannot cover the failure it matters most for. That
-// goroutine is spawned only after runDaemon's unconditional enroll.Run
-// succeeds, and an enrollment failure is fatal — so an update that leaves the
-// agent unable to reach the server at all kills the process long before the
-// window elapses, and does so again on every restart. Evaluating a durable
-// deadline from disk, before any network call, is what makes a crash-looping
-// agent converge on a rollback instead of looping forever on a broken build.
-//
-// The two watchForRollback rules that still apply here apply for the same
-// reasons: an unswapped marker has nothing to roll back (current was never
-// re-pointed, and its recorded prevVersionDir, if any, belongs to some earlier
-// already-confirmed update), and a failed Rollback still clears the marker so
-// the same doomed attempt is not re-armed on every subsequent start.
-//
-// A marker with no deadline is deliberately inert rather than expired: it was
-// written by an older agent build, its update may well be healthy and
-// in-flight, and watchForRollback remains its judge.
+// The in-process rollback window (cmd/cb-agent's watchForRollback) cannot cover
+// the failure this matters most for: that goroutine is spawned only after
+// runDaemon's unconditional enroll.Run succeeds, and an enrollment failure is
+// fatal — so an update that leaves the agent unable to reach the server at all
+// kills the process long before the window elapses, and again on every restart.
+// Evaluating a durable deadline from disk, before any network call, is what
+// makes a crash-looping agent converge on a rollback.
 func RollbackIfExpired(stateDir, currentLink string, now time.Time) (rolledBackFrom string, err error) {
 	m, present, err := readMarker(stateDir)
 	if err != nil || !present {

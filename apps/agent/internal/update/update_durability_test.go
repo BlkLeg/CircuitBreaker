@@ -10,8 +10,7 @@ import (
 )
 
 // TestSwap_NewVersionAlwaysInstalledAt0755 covers the "fixed 0755, no mode
-// preservation" property that replaces the old preserveModeAndOwnership
-// step: every version
+// preservation" property: every version
 // directory and binary is created directly by cb-agent, as cb-agent, at a
 // fixed mode — there is no "restore the original owner/mode" step because
 // nothing is ever renamed over an existing root-owned file anymore.

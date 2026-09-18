@@ -58,28 +58,23 @@ type Spool struct {
 	// head is the consumed prefix: entries[:head] have been delivered and
 	// are pending compaction, entries[head:] are the live backlog.
 	head int
-	// origin is the absolute position of entries[head] — how many frames
-	// have left the live backlog since this Spool was opened, whether by
-	// Commit or by cap eviction.
+	// origin is the absolute position of entries[head] — how many frames have left
+	// the live backlog since this Spool was opened, whether by Commit or by cap
+	// eviction.
 	//
-	// It exists because positional bookkeeping is not safe for a caller that
-	// holds frames across a round trip. `Commit(n)` and a head-relative peek
-	// both describe "the first n live frames", and the drop-oldest policy in
-	// Enqueue advances head underneath them — from another goroutine, since
-	// the producer enqueues while the link drains. For a caller that commits
-	// immediately after writing (drainCommitOnWrite) the window is a few
-	// microseconds wide; for one that commits only when the *server*
-	// acknowledges, it is a whole ack round trip, and the frames at the head
-	// are precisely the ones in flight. An eviction in that window made
-	// Commit discard that many never-sent frames on top of the ones eviction
-	// had already destroyed — a silent, uncounted loss of roughly twice the
-	// evicted amount.
+	// Positional bookkeeping is not safe for a caller that holds frames across a
+	// round trip. `Commit(n)` and a head-relative peek both describe "the first n
+	// live frames", and Enqueue's drop-oldest policy advances head underneath them
+	// from another goroutine. For a caller that commits only when the server
+	// acknowledges, that window is a whole ack round trip and the frames at the
+	// head are precisely the ones in flight — an eviction there makes Commit
+	// discard that many never-sent frames on top of the ones eviction already
+	// destroyed.
 	//
 	// Positions are stable across both eviction and commit, so PeekAt and
-	// CommitThrough let such a caller name exactly the frames it means. They
-	// are per-Spool-instance and deliberately not persisted: the only caller
-	// that needs them holds them for the life of one connection, which cannot
-	// outlive the process.
+	// CommitThrough let such a caller name exactly the frames it means. They are
+	// per-Spool-instance and deliberately not persisted: the only caller that needs
+	// them holds them for the life of one connection.
 	origin int64
 	// bytes is the encoded size (including newlines) of entries[head:],
 	// maintained incrementally on load/enqueue/commit/compact so SizeBytes
@@ -497,23 +492,18 @@ func (s *Spool) peekLocked(skip, maxFrames int, maxBytes int64) []frame.Frame {
 }
 
 // commit discards the first n undelivered frames. n is clamped to what is
-// available, so committing more than was peeked (or committing an empty
-// spool) is a no-op rather than an error. Nothing is discarded before this
-// call, which is what makes a crash mid-burst re-send rather than lose.
+// available, so committing more than was peeked, or committing an empty spool,
+// is a no-op rather than an error. Nothing is discarded before this call, which
+// is what makes a crash mid-burst re-send rather than lose.
 //
-// Unexported on purpose. Counting frames from the head is only safe for a
-// caller that can be certain the head has not moved since it chose n — and
-// with a producer enqueueing from another goroutine into a spool that evicts
-// oldest-first, no caller holding frames across a send can be. Exactly that
-// mistake made an eviction between a send and its acknowledgement discard
-// never-sent frames, silently, on top of the ones eviction had already
-// destroyed. Leaving an exported method here documented as unusable would be
-// an invitation to make it again; CommitThrough names frames by position and
-// cannot be fooled.
+// Unexported on purpose, and it must stay that way. Counting frames from the
+// head is only safe for a caller certain the head has not moved since it chose
+// n, and with a producer enqueueing from another goroutine into a spool that
+// evicts oldest-first, no caller holding frames across a send can be.
+// CommitThrough names frames by position and cannot be fooled.
 //
-// It survives as the primitive CommitThrough is expressed in, and as the
-// direct handle this package's own tests reach for when the head demonstrably
-// has not moved.
+// It survives as the primitive CommitThrough is expressed in, and as the handle
+// this package's own tests reach for when the head demonstrably has not moved.
 func (s *Spool) commit(n int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

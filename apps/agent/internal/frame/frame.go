@@ -227,25 +227,17 @@ type HelloPayload struct {
 	Networks         []NetworkFacts `json:"networks,omitempty"`
 
 	// SpoolEvicted* is the at-connect snapshot of what the outbound spool has
-	// *permanently destroyed* to stay inside its byte cap — see
-	// spool.EvictionStats. It rides hello as well as heartbeat because the
-	// loss happens overwhelmingly while the agent is disconnected, so the
-	// reconnect is the first moment the server can be told about it at all;
-	// waiting for the first heartbeat would leave a 20s window in which the
-	// server knows the agent is back but not that history is missing.
+	// permanently destroyed to stay inside its byte cap (see spool.EvictionStats).
+	// It rides hello as well as heartbeat because the loss happens overwhelmingly
+	// while the agent is disconnected, so the reconnect is the first moment the
+	// server can be told at all; waiting for the first heartbeat leaves a 20s
+	// window in which the server knows the agent is back but not that history is
+	// missing.
 	//
-	// These four carry no `omitempty`, unlike every field above them, and
-	// that break with the surrounding style is deliberate — the same rule
-	// HeartbeatPayload's doc comment sets out below. An explicit 0 ("this
-	// agent reports eviction state and has destroyed nothing") must stay
-	// distinguishable from an absent key ("this agent predates the field"),
-	// and the server gates persistence on the key's presence. With
-	// `omitempty` a healthy agent and an old build would send the same bytes
-	// and the server could only ever guess.
-	//
-	// The timestamps are pointers so an agent that has evicted nothing sends
-	// an explicit `null` rather than a fabricated year-1 instant that would
-	// persist as a real datetime server-side.
+	// These four carry no `omitempty` — see HeartbeatPayload below for why that
+	// break with the surrounding style is load-bearing. The timestamps are pointers
+	// so an agent that has evicted nothing sends an explicit `null` rather than a
+	// year-1 instant the server would persist as a real datetime.
 	SpoolEvictedFrames   int64      `json:"spool_evicted_frames"`
 	SpoolEvictedBytes    int64      `json:"spool_evicted_bytes"`
 	SpoolEvictedOldestTS *time.Time `json:"spool_evicted_oldest_ts"`
@@ -371,77 +363,63 @@ type CapabilityReadinessPayload struct {
 	Networks  []NetworkFacts `json:"networks"`
 }
 
-// HeartbeatPayload is the agent -> server `heartbeat` payload,
-// mirroring apps/backend/src/app/schemas/agent_frame.py's HeartbeatPayload.
-// It reports the live outbound-spool backlog so the server — and the Agent
-// Detail catch-up indicator — can see a drain in progress and see it finish,
-// without waiting for a reconnect to refresh hello's at-connect snapshot.
+// HeartbeatPayload is the agent -> server `heartbeat` payload, mirroring
+// apps/backend/src/app/schemas/agent_frame.py's HeartbeatPayload. It reports
+// the live outbound-spool backlog so the server — and the Agent Detail catch-up
+// indicator — can see a drain in progress and see it finish, without waiting
+// for a reconnect to refresh hello's snapshot.
 //
-// Additive by design: an older server ignores the unknown keys, and an older
-// agent sends `{}`, which still validates on the server side (both fields
-// are optional-with-default there).
+// Additive by design: an older server ignores unknown keys, and an older agent
+// sends `{}`, which still validates server-side.
 //
-// Neither field carries `omitempty`, and that is load-bearing rather than an
-// oversight. A current agent must emit `{"spool_depth":0,"spool_bytes":0}`
-// once its backlog clears, or the server's columns stay pinned at the last
-// non-zero value and the indicator never clears. With `omitempty`, an empty
-// spool and an agent that predates this struct would both send `{}` — making
-// "clear the indicator" and "never invent a 0 for an old agent" mutually
-// exclusive. The empty payload is therefore reserved to mean exactly one
-// thing: this agent does not report spool state.
+// NO FIELD HERE MAY TAKE `omitempty`, and the same goes for the SpoolEvicted*
+// fields on hello. A current agent must emit an explicit 0 once its backlog
+// clears, or the server's columns stay pinned at the last non-zero value and
+// the indicator never clears. With `omitempty` an empty spool and an agent that
+// predates these fields both send `{}`, making "clear the indicator" and "never
+// invent a 0 for an old agent" mutually exclusive. The empty payload is
+// reserved to mean exactly one thing: this agent does not report spool state.
 //
-// HelloPayload.SpoolDepth keeps its `omitempty` for the opposite reason:
-// hello is the at-connect snapshot, and the heartbeat is what clears the
-// indicator.
+// HelloPayload.SpoolDepth keeps its `omitempty` for the opposite reason: hello
+// is the at-connect snapshot, and the heartbeat is what clears the indicator.
 type HeartbeatPayload struct {
 	SpoolDepth int   `json:"spool_depth"`
 	SpoolBytes int64 `json:"spool_bytes"`
 
-	// SpoolEvicted* reports what the spool has permanently destroyed to stay
-	// inside its byte cap, cumulatively for the life of the agent's state
-	// directory (see spool.EvictionStats).
+	// SpoolEvicted* reports what the spool has permanently destroyed to stay inside
+	// its byte cap, cumulatively for the life of the agent's state directory (see
+	// spool.EvictionStats).
 	//
-	// It rides the heartbeat rather than `capability.violation` or a
-	// readiness row, and the reasoning belongs next to the field because it
-	// is the kind of decision that gets re-litigated:
+	// It rides the heartbeat rather than `capability.violation` or a readiness row,
+	// and that choice gets re-litigated often enough to record:
 	//
-	//   - The heartbeat already carries spool state, and the server already
-	//     gates persistence of it on key *presence*, so there is nothing new
-	//     to invent on either side.
-	//   - It re-asserts every 20s, so a heartbeat lost to a dropped
-	//     connection self-heals on the next one. A one-shot event frame would
-	//     need its own retry to be trustworthy, and the whole point of this
-	//     field is that the loss record is trustworthy.
-	//   - `capability.violation` has a closed vocabulary about scope refusals
-	//     the agent made on the server's behalf. Eviction is not a refusal
-	//     and not about scope; putting it there would corrupt a vocabulary
-	//     the server validates against.
-	//   - `capability.readiness` is about a collector's *ability to run*.
-	//     The collector ran fine — the buffer under it overflowed.
+	//   - The heartbeat already carries spool state and the server already gates
+	//     persistence on key presence, so nothing new is needed on either side.
+	//   - It re-asserts every 20s, so a heartbeat lost to a dropped connection
+	//     self-heals. A one-shot event frame would need its own retry to be
+	//     trustworthy, and trustworthiness is the whole point of the field.
+	//   - `capability.violation` has a closed vocabulary about scope refusals.
+	//     Eviction is not a refusal and not about scope.
+	//   - `capability.readiness` is about a collector's ability to run. The
+	//     collector ran fine — the buffer under it overflowed.
 	//
-	// No `omitempty`, for the same reason SpoolDepth/SpoolBytes carry none:
-	// an explicit 0 must stay distinguishable from "this agent predates the
-	// field". Pointer timestamps so "nothing evicted" is an explicit `null`
-	// rather than a year-1 instant the server would store as real.
+	// No `omitempty`, and pointer timestamps, for the reasons given above.
 	SpoolEvictedFrames   int64      `json:"spool_evicted_frames"`
 	SpoolEvictedBytes    int64      `json:"spool_evicted_bytes"`
 	SpoolEvictedOldestTS *time.Time `json:"spool_evicted_oldest_ts"`
 	SpoolEvictedNewestTS *time.Time `json:"spool_evicted_newest_ts"`
 
 	// TLSPinSuccessorReady repeats hello's field of the same name on every
-	// heartbeat, and that repetition is the point rather than redundancy.
+	// heartbeat, and the repetition is the point.
 	//
-	// hello is sent once per connection, so an agent holding a live socket
-	// when a `tls.pin.rotate` arrives has no way to say it applied the
-	// policy until it next reconnects — which may be days. The server's
-	// certificate-activation gate waits on exactly that signal, so without
-	// this the operator watches `unconverged` sit at the fleet size while
-	// every agent is in fact ready, and the only way through is to force.
+	// hello is sent once per connection, so an agent holding a live socket when a
+	// `tls.pin.rotate` arrives cannot say it applied the policy until it next
+	// reconnects, which may be days. The server's certificate-activation gate waits
+	// on exactly that signal, so without this the operator watches `unconverged`
+	// sit at the fleet size while every agent is in fact ready.
 	//
 	// Repeating rather than acking once is deliberate: an ack is one frame
 	// that can be lost with nothing to retry it, whereas this re-asserts the
-	// truth every heartbeat interval, which is the same durability
-	// reasoning behind resending the rotation frame on every hello.ack.
 	TLSPinSuccessorReady bool `json:"tls_pin_successor_ready"`
 
 	// TLSPinSuccessorFingerprint repeats hello's field of the same name, for
