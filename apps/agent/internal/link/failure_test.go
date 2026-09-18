@@ -13,8 +13,7 @@ import (
 
 // The table is the design. Each row is a failure the agent actually sees in the
 // field, and the class decides whether recovery takes a quarter of a second or
-// walks up to five minutes — which, before this existed, was the difference
-// between a 36-second reconnect and a twenty-minute one for the same restart.
+// walks up to five minutes.
 func TestClassifyFailure(t *testing.T) {
 	cases := []struct {
 		name            string

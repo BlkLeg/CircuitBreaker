@@ -66,10 +66,9 @@ func TestFastBackoff_ClimbsThenHoldsForever(t *testing.T) {
 	}
 }
 
-// The regression this whole change exists for: a server restart used to walk
-// the exponential ladder into the minutes, so recovery was decided by which
-// rung the agent happened to be standing on. On the coming-back ladder the
-// worst case is the hold.
+// A server restart must not walk the exponential ladder into the minutes,
+// leaving recovery decided by whichever rung the agent happened to be standing
+// on. On the coming-back ladder the worst case is the hold.
 func TestBackoffState_ComingBackNeverExceedsTheHold(t *testing.T) {
 	var b backoffState
 	for i := 0; i < 40; i++ {

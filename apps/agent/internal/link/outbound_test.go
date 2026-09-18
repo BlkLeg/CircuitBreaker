@@ -14,12 +14,10 @@ import (
 	"circuitbreaker.dev/cb-agent/internal/spool"
 )
 
-// fakeDataFrameType is a made-up frame type used only in these tests, since
-// no real Slice 2+ data frame type is produced anywhere in Slice 1 (Global
-// Constraints: do not spool telemetry/probe/discovery frames — those payload
-// types belong to Slices 2-4). It is not registered anywhere as a control
-// type, so frame.IsDataFrame classifies it as a data frame exactly like a
-// real future payload type would, without any code change.
+// fakeDataFrameType is a made-up frame type used only in these tests, since no
+// real data frame type is produced yet. It is not registered anywhere as a
+// control type, so frame.IsDataFrame classifies it as a data frame exactly like
+// a real future payload type would, without any code change.
 const fakeDataFrameType = "test.fakedata"
 
 func fakeDataFrame(seq uint64) frame.Frame {
@@ -222,12 +220,10 @@ func TestDataFrameSender_SendLive_PanicsOnNonDataFrame(t *testing.T) {
 	}
 }
 
-// TestDataFrameSender_LiveSendNoLongerDrains replaces the old
-// TestDataFrameSender_DrainRatio_OneDrainPerFourLiveSends: catch-up is no
-// longer a side effect of live production (D-5). A live send that succeeds
-// does exactly one thing — send — so a backlog sitting in the spool is
-// untouched by live traffic and is instead flushed by runOnce's paced
-// drainTicker arm.
+// TestDataFrameSender_LiveSendNoLongerDrains pins that catch-up is not a side
+// effect of live production. A live send that succeeds does exactly one thing
+// — send — so a backlog sitting in the spool is untouched by live traffic and
+// is flushed instead by runOnce's paced drainTicker arm.
 func TestDataFrameSender_LiveSendNoLongerDrains(t *testing.T) {
 	sp := newTestSpool(t, spool.DefaultCapBytes)
 	for i := uint64(100); i < 110; i++ {
@@ -760,22 +756,16 @@ func TestDataFrameSender_ReportsSpoolStats(t *testing.T) {
 	}
 }
 
-// TestDataFrameSender_CapEvictionNeverCommitsAnUnsentFrame is the C1
-// regression, and the one case where commit-on-ack is strictly more dangerous
-// than commit-on-write unless the spool is asked by position.
+// TestDataFrameSender_CapEvictionNeverCommitsAnUnsentFrame pins the rule that a
+// frame may leave the spool only by being acknowledged or by being counted in
+// the eviction record. Nothing else may make one disappear.
 //
-// Under commit-on-ack the frames at the head of the backlog *are* the
-// in-flight window, and the producer keeps enqueueing into the same spool from
-// another goroutine. At the cap — the state the spool exists for, after a long
-// outage — an enqueue evicts from that head. A count-based `Commit(k)` cannot
-// tell the head moved: it discards k frames from the *new* head, of which the
-// evicted ones' worth were never sent, never acknowledged, and never recorded
-// as destroyed. A cap-full reconnect therefore lost roughly twice what
-// eviction reported, and half of it silently.
-//
-// The invariant asserted here is absolute: a frame may leave this spool only
-// by being acknowledged or by being counted in the eviction record. Nothing
-// else may make one disappear.
+// This is the case where commit-on-ack is strictly more dangerous than
+// commit-on-write unless the spool is asked by position: the frames at the head
+// of the backlog are the in-flight window, and at the cap a producer enqueue
+// evicts from that head. A count-based Commit(k) cannot tell the head moved, so
+// it discards k frames from the new head — of which the evicted ones were never
+// sent, never acknowledged and never recorded as destroyed.
 func TestDataFrameSender_CapEvictionNeverCommitsAnUnsentFrame(t *testing.T) {
 	const (
 		held  = 4
@@ -911,23 +901,15 @@ func TestDataFrameSender_EvictedInflightFramesStopHoldingTheWindowOpen(t *testin
 	}
 }
 
-// TestDataFrameSender_AckStallSurvivesContinuousCapEviction is the N1
-// regression: a stall detector that cap eviction can switch off is not a stall
-// detector.
+// TestDataFrameSender_AckStallSurvivesContinuousCapEviction pins that cap
+// eviction cannot switch the stall detector off.
 //
-// At the cap — the state the spool exists for — every producer enqueue evicts
-// from the head, and under commit-on-ack the head *is* the in-flight window.
-// So `dropEvicted` runs on essentially every drain tick, and for one commit it
-// restarted the 45s deadline each time it pruned anything. A server that read
-// the socket and answered pings (so the 60s read deadline kept being
-// refreshed) but acknowledged nothing therefore held the agent forever, while
-// the spool destroyed observation after observation to make room for frames
-// that were never going to be delivered either. That is the exact fault
-// ackStallTimeout was introduced to diagnose separately from silence.
-//
-// The deadline is now derived from the oldest surviving entry's own send time,
-// so eviction moves it forward by exactly how much older the destroyed frames
-// were and no further.
+// At the cap every producer enqueue evicts from the head, and the head is the
+// in-flight window, so dropEvicted runs on essentially every drain tick. If
+// pruning restarted the 45s deadline, a server that read the socket and answered
+// pings but acknowledged nothing would hold the agent forever while the spool
+// destroyed observation after observation — the exact fault ackStallTimeout
+// exists to diagnose separately from silence.
 func TestDataFrameSender_AckStallSurvivesContinuousCapEviction(t *testing.T) {
 	original := ackStallTimeout
 	ackStallTimeout = 60 * time.Millisecond
@@ -982,22 +964,15 @@ func TestDataFrameSender_AckStallSurvivesContinuousCapEviction(t *testing.T) {
 		6*ackStallTimeout, sp.EvictionStats().Frames, len(sender.inflight))
 }
 
-// TestDataFrameSender_AckStallClockIgnoresEvictionEntirely is the C1
-// regression, and it is the deterministic half of the rule the previous
-// attempt got wrong.
+// TestDataFrameSender_AckStallClockIgnoresEvictionEntirely pins that the stall
+// clock measures the unacknowledged stretch, not the frames in it: destroying
+// the window and refilling it must leave the deadline exactly where it was.
 //
-// That attempt derived the deadline from the oldest *surviving* in-flight
-// entry's own send time. It is not evadable by a slow producer, but it is
-// wholly evadable by a normal one: an entry leaves the window only by
-// acknowledgement (never, in this fault) or by eviction, and eviction walks
-// the whole 64-entry window in 64 enqueues. Churn the window inside the
-// deadline — about 1.5 frames/s at the cap, which a handful of probes plus
-// discovery clears easily — and no surviving entry is ever old enough to trip
-// anything, however long the server refuses to acknowledge.
-//
-// The clock measures the stretch, not the frames in it: eviction is not
-// progress, so destroying the window and refilling it must leave the deadline
-// exactly where it was.
+// Deriving the deadline from the oldest surviving entry's send time instead is
+// evadable by an ordinary producer — an entry leaves the window only by
+// acknowledgement (never, in this fault) or eviction, and eviction walks the
+// whole 64-entry window in 64 enqueues. Churn it inside the deadline, about 1.5
+// frames/s at the cap, and no surviving entry is ever old enough to trip.
 func TestDataFrameSender_AckStallClockIgnoresEvictionEntirely(t *testing.T) {
 	const held = 8
 	fixture, capBytes := numberedFixture(t, held*3, held)
@@ -1174,23 +1149,15 @@ func TestDataFrameSender_AckStallClockRestartsOnlyOnRealProgress(t *testing.T) {
 	}
 }
 
-// TestDataFrameSender_AckStallFiresWhenEvictionOutrunsTheDrainBudget is the
-// fourth instance of one bug, and the one the corrected clock did not close
-// by itself.
+// TestDataFrameSender_AckStallFiresWhenEvictionOutrunsTheDrainBudget pins that
+// the detector must not depend on frames being outstanding at the instant of
+// the check. The unacknowledged stretch is the entire condition.
 //
-// The drain is paced — drainFramesPerTick frames per tick, deliberately, so
-// catch-up cannot monopolise the link — and the producer is not. A producer
-// at the cap that evicts at least that many frames between ticks destroys the
-// entire in-flight window every tick, and drainBurst prunes the destroyed
-// entries *before* it checks for a stall and refills *after*. So the window
-// was empty at every check, an emptiness guard in front of the check returned
-// nil every time, and a never-acknowledging server was held indefinitely with
-// the stall clock sitting correct and unread.
-//
-// Rate is the wrong thing for the detector to depend on, which is what all
-// three previous versions of it got wrong in their own way. The unacknowledged
-// stretch is the entire condition; whether frames happen to be outstanding at
-// the instant of the check is not part of it.
+// The drain is paced and the producer is not, so a producer at the cap evicting
+// more than a tick's budget between ticks destroys the whole in-flight window
+// every tick. drainBurst prunes destroyed entries before it checks for a stall
+// and refills after, so an emptiness guard in front of the check would see an
+// empty window every time and hold a never-acknowledging server indefinitely.
 func TestDataFrameSender_AckStallFiresWhenEvictionOutrunsTheDrainBudget(t *testing.T) {
 	original := ackStallTimeout
 	ackStallTimeout = 60 * time.Millisecond

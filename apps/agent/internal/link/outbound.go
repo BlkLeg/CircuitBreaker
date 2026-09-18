@@ -11,44 +11,34 @@ import (
 
 // The in-flight window: how much may be on the wire, unacknowledged, at once.
 //
-// The paced drain budget is drainFramesPerTick frames per drainTickInterval —
-// 4 per 100ms, i.e. 40 frames/s — so 64 frames covers ~1.6s of round trip
-// before ack latency, rather than the budget, becomes the throughput limit.
-// That preserves the catch-up timings docs/agent.md promises (a one-hour
-// outage in ~3s, 24 hours in ~72s, a completely full 64 MiB spool in under
-// three minutes) for any RTT under ~1.6s, which is every homelab and most
-// things worse than one.
-//
-// It bounds the other direction too: a connection that dies with a full
+// At a drain budget of 40 frames/s, 64 frames covers ~1.6s of round trip before
+// ack latency rather than the budget becomes the throughput limit, which
+// preserves the catch-up timings docs/agent.md promises for any RTT under
+// ~1.6s. It bounds the other direction too: a connection that dies with a full
 // window re-sends at most 64 frames the server may already hold, and the
-// backend dedupes those on (agent_id, sample_id, collected_at).
+// backend dedupes those on (agent_id, sample_id, collected_at). 4 MiB is the
+// same bound in bytes, so 64 unusually fat frames cannot put an unbounded
+// amount in flight.
 //
-// 4 MiB is the same bound expressed in bytes, so 64 unusually fat frames
-// cannot put an unbounded amount of memory (or socket buffer) in flight.
-//
-// Both are thresholds rather than hard ceilings: spool.PeekAt always
-// returns its first frame regardless of the byte budget, so that one frame
-// larger than a whole tick's budget cannot wedge the queue forever. The
-// window can therefore overshoot maxInflightBytes by at most one frame, which
-// is the deliberate trade — a bounded overshoot beats a backlog that can
-// never drain.
+// Both are thresholds, not hard ceilings: spool.PeekAt always returns its first
+// frame regardless of the byte budget, so one frame larger than a tick's budget
+// cannot wedge the queue forever. The window can overshoot maxInflightBytes by
+// at most one frame — a bounded overshoot beats a backlog that never drains.
 const (
 	maxInflightFrames       = 64
 	maxInflightBytes  int64 = 4 << 20
 )
 
 // ackStallTimeout is how long the agent will keep frames in flight with no
-// acknowledgement advancing the watermark before it gives up on the
-// connection.
+// acknowledgement advancing the watermark before it gives up on the connection.
 //
-// 45s sits deliberately below the 60s readTimeout: a server that is reading
-// the socket — so the read deadline keeps being refreshed by its pings — but
-// is not acknowledging anything is a different fault from a silent peer, and
-// diagnosing it as itself rather than as silence is the whole point of a
-// distinct error. Reaching it ends the connection with nothing committed, so
-// every frame in flight is still at the spool head for the next one.
+// 45s sits deliberately below the 60s readTimeout: a server that is reading the
+// socket but acknowledging nothing is a different fault from a silent peer, and
+// diagnosing it as itself is the point of a distinct error. Reaching it ends
+// the connection with nothing committed, so every frame in flight is still at
+// the spool head for the next one.
 //
-// A var, not a const, so tests can shrink it; production never changes it.
+// A var, not a const, so tests can shrink it.
 var ackStallTimeout = 45 * time.Second
 
 // inflightFrame is one data frame written to the socket and not yet
@@ -67,41 +57,30 @@ type inflightFrame struct {
 	pos int64
 }
 
-// dataFrameSender owns this connection's outbound flow for *data* frames
-// only (spec §4.4; internal/spool's package doc: control frames must never
-// be enqueued).
+// dataFrameSender owns this connection's outbound flow for *data* frames only
+// (control frames must never be enqueued — see internal/spool's package doc).
 //
-// Its contract is peek -> send -> await ack -> commit. A data frame is
-// fsync'd to the spool by Run's enqueue goroutine *before* it can reach a
-// socket, drainBurst hands a bounded window of the backlog to the wire
-// without consuming it, and only onDataAck — driven by a `data.ack` frame
-// the server sends once it has terminally handled those sequence numbers —
-// discards them.
+// Its contract is peek -> send -> await ack -> commit, and that ordering is
+// what makes the delivery guarantee real. A frame is fsync'd to the spool
+// before it can reach a socket, drainBurst hands a bounded window to the wire
+// without consuming it, and only onDataAck — driven by a `data.ack` the server
+// sends once it has terminally handled those sequence numbers — discards them.
+// Committing on a successful conn.WriteMessage instead would mean committing on
+// "the local kernel accepted the bytes", which a server restarting mid-drain or
+// a black-holed socket turns into silent loss.
 //
-// That ordering is the entire fix. The previous implementation advanced the
-// spool head the instant conn.WriteMessage returned nil and called those
-// frames delivered, but a successful write only means the local kernel
-// accepted the bytes: a server restarting mid-drain, or the up-to-60s window
-// before a black-holed socket is noticed, destroyed everything written into
-// it. The documented guarantee was at-least-once; the real one was
-// at-least-once onto a socket, which is not a guarantee about data at all.
+// Two paths deliberately do not wait for an ack:
 //
-// Two paths remain that do not wait for an ack, both deliberate:
+//   - Negotiation failure. A server that does not answer hello with `data_ack`
+//     cannot ack anything, so drainBurst falls back to commit-on-write,
+//     degraded but functional, and logs that once per connection.
+//   - sendLive, which exists only for the degenerate `Spool == nil` case. It
+//     carries no durability guarantee; the daemon always configures a spool.
 //
-//   - Negotiation failure. A server that does not answer hello with
-//     `data_ack` cannot ack anything, so drainBurst falls back to
-//     commit-on-write — today's behaviour, degraded but functional, and the
-//     agent says so in its log once per connection.
-//   - sendLive, which exists only for the degenerate `Spool == nil` case
-//     (Uninstall's one-shot connection, and tests that build link.Options
-//     without a spool). It carries no durability guarantee whatsoever; the
-//     daemon always configures a spool.
-//
-// Heartbeat and control frames never go through this type at all — link.go's
+// Heartbeat and control frames never go through this type — link.go's
 // sendHeartbeat/sendRekey write directly to the connection. sendLive's
-// panic-on-non-data-frame guard exists as a defense against this package's
-// own wiring regressing, not because a heartbeat is expected to reach it in
-// normal operation.
+// panic-on-non-data-frame guard defends against this package's own wiring
+// regressing, not against a heartbeat arriving in normal operation.
 type dataFrameSender struct {
 	spool *spool.Spool // nil disables spooling entirely (e.g. Uninstall's one-shot connection)
 	// send encodes, encrypts and writes one frame over the live connection,
@@ -122,21 +101,18 @@ type dataFrameSender struct {
 	inflight      []inflightFrame
 	inflightBytes int64
 	// unackedSince starts the current unacknowledged stretch: the moment this
-	// connection last had frames in flight with no acknowledgement having
-	// released any of them since. Zero when there is no such stretch.
+	// connection last had frames in flight with no acknowledgement having released
+	// any of them since. Zero when there is no such stretch.
 	//
-	// It measures the *stretch*, deliberately, and not any particular frame's
-	// wait. Only two things touch it: it starts when the window goes from
-	// empty to in-flight with no stretch already running, and it restarts
-	// when an ack actually releases something, which is the only progress
-	// there is. Cap eviction is not progress and moves it not at all — the
-	// frames it destroys were never delivered either, and a deadline that
-	// eviction can push forward is a deadline that stops existing at the cap,
-	// where every producer enqueue evicts from the head. Two commits got this
-	// wrong in two different ways: one restarted the clock on eviction, and
-	// one measured from the oldest *surviving* frame's send time, which a
-	// producer above roughly 1.5 frames/s evades simply by replacing the
-	// whole window inside the deadline.
+	// It measures the stretch, deliberately, not any particular frame's wait. Only
+	// two things may touch it: it starts when the window goes from empty to
+	// in-flight with no stretch running, and it restarts when an ack actually
+	// releases something, which is the only progress there is. Cap eviction must
+	// not move it — the frames it destroys were never delivered either, and a
+	// deadline eviction can push forward stops existing at the cap, where every
+	// producer enqueue evicts from the head. Measuring from the oldest surviving
+	// frame's send time fails the same way: a producer above ~1.5 frames/s evades
+	// it by replacing the whole window inside the deadline.
 	unackedSince time.Time
 }
 
@@ -190,18 +166,16 @@ func stampObserved(f frame.Frame) frame.Frame {
 	return f
 }
 
-// sendLive sends one live data frame, with no durability guarantee at all:
-// it is committed the moment the socket accepts it, and a socket that accepts
+// sendLive sends one live data frame, with no durability guarantee at all: it
+// is committed the moment the socket accepts it, and a socket that accepts
 // bytes the server never reads loses them.
 //
-// It survives only for the degenerate `Spool == nil` case — Uninstall's
-// one-shot connection, and this package's tests that build link.Options
-// without a spool. The daemon always configures a spool, and Run routes every
-// data frame through it (fsync first, ack later) rather than here.
+// It exists only for the degenerate `Spool == nil` case — Uninstall's one-shot
+// connection, and tests that build link.Options without a spool. The daemon
+// always configures a spool, and Run routes every data frame through it.
 //
-// With a spool configured it keeps its original fallback behaviour — enqueue
-// on send failure — so a caller that drives runOnce directly still cannot
-// lose a frame to a returned error.
+// With a spool configured it still enqueues on send failure, so a caller that
+// drives runOnce directly cannot lose a frame to a returned error.
 func (d *dataFrameSender) sendLive(f frame.Frame) error {
 	assertDataFrame(f)
 	f = stampObserved(f)
@@ -223,14 +197,13 @@ func (d *dataFrameSender) sendLive(f frame.Frame) error {
 // flight still waiting to be acknowledged.
 //
 // The second clause is tested explicitly rather than inferred from the first.
-// An unacknowledged frame is normally still in the spool, so Len() > 0 usually
-// covers it — but cap eviction can destroy an in-flight frame, and then the
-// window is non-empty while the backlog is not. Leaning on the usual case
-// would skip the tick that prunes those entries and the ack-stall check with
-// it, which is how a window closed by frames that no longer exist would stay
-// closed. Nil-safe: a nil spool is the normal case for several callers
-// (Uninstall's one-shot connection, and this package's non-spool tests), and
-// runOnce's drain ticker fires against all of them.
+// An unacknowledged frame is normally still in the spool, but cap eviction can
+// destroy an in-flight frame, leaving the window non-empty while the backlog is
+// not. Leaning on Len() > 0 would skip the tick that prunes those entries and
+// the ack-stall check with it, leaving a window closed by frames that no longer
+// exist closed forever. Nil-safe: a nil spool is the normal case for several
+// callers (Uninstall's one-shot connection, and this package's non-spool
+// tests), and runOnce's drain ticker fires against all of them.
 func (d *dataFrameSender) hasBacklog() bool {
 	if d.spool == nil {
 		return false
