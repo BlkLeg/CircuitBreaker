@@ -32,7 +32,24 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 75
     steps:
+      # A `schedule` event only ever fires on the default branch, so the
+      # nightly checked out `main` — which trails the integration branch by
+      # hundreds of commits. It was re-testing frozen code every night and
+      # reporting defects that `dev` had already fixed: the enrollment failure
+      # that opened every red run since 2026-09-11
+      # (`dial wss://circuitbreaker:8443: connection refused`) passes on `dev`,
+      # where `8672705a` and `d0ee8396` fixed the peer-certificate read and the
+      # forwarded-header port. The harness had moved too — 16 tests on `dev`
+      # against 12 on `main`.
+      #
+      # Thirty-five minutes a night against code nobody is working on is not a
+      # gate, it is noise that trains everyone to ignore this job. Only the
+      # scheduled run is redirected; tag pushes, `workflow_dispatch` and
+      # `workflow_call` keep testing the ref that triggered them, which for the
+      # per-RC half of AGT-01 is the release tag and must stay that way.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}
 
       - uses: actions/setup-python@v6
         with:
@@ -103,6 +120,11 @@ jobs:
         env:
           CB_E2E_SEED: "20260826"
           PYTHONHASHSEED: "0"
+          # Each test tears its own stack down (`_down()` in a `finally`), so a
+          # workflow step cannot collect container logs afterwards — there is
+          # nothing left to collect. `_dump_compose_logs` writes them here
+          # instead, from inside `_down()` while the containers still exist.
+          CB_E2E_DIAGNOSTICS_DIR: ${{ github.workspace }}/diagnostics
         run: |
           cd apps/agent/e2e
           python -m pytest test_agent_e2e.py -v \
@@ -110,15 +132,22 @@ jobs:
             --timeout=3600 \
             2>&1 | tee "${GITHUB_WORKSPACE}/diagnostics/composed-journey.log"
 
-      - name: Collect container diagnostics
+      # Whatever is still standing — normally nothing, because the suite cleans
+      # up after itself. The per-container logs that actually explain a failure
+      # come from CB_E2E_DIAGNOSTICS_DIR above; this step is only the backstop
+      # for a run killed before any `_down()` ran, and it no longer pretends to
+      # be the primary source. Until 2026-09-18 it *was* the primary source and
+      # collected nothing: eight consecutive red nightlies uploaded a
+      # `containers.txt` holding one header line and no logs at all.
+      - name: Collect surviving container diagnostics
         if: always()
         run: |
           mkdir -p diagnostics
           docker ps -a > diagnostics/containers.txt 2>&1 || true
           docker version > diagnostics/docker-version.txt 2>&1 || true
           for c in $(docker ps -aq); do
-            docker logs "$c" > "diagnostics/${c}.log" 2>&1 || true
-            docker inspect "$c" > "diagnostics/${c}.json" 2>&1 || true
+            docker logs "$c" > "diagnostics/surviving-${c}.log" 2>&1 || true
+            docker inspect "$c" > "diagnostics/surviving-${c}.json" 2>&1 || true
           done
 
       - name: Upload diagnostics

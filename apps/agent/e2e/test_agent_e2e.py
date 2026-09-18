@@ -422,7 +422,50 @@ def _up_server(env: dict | None = None) -> None:
     )
 
 
+# Where _dump_compose_logs writes. Overridable so CI can point it at the
+# directory the workflow already uploads as the `composed-agent-e2e` artifact.
+_DIAGNOSTICS_DIR = Path(os.getenv("CB_E2E_DIAGNOSTICS_DIR") or (E2E_DIR / "diagnostics"))
+
+
+def _dump_compose_logs(env: dict | None = None) -> None:
+    """Persist every container's log before `_down()` destroys the stack.
+
+    The workflow has a "Collect container diagnostics" step that runs
+    `docker ps -aq` and `docker logs` after pytest exits. It has never
+    collected anything: every test ends with `_down()` in a `finally`, so by
+    the time that step runs there are no containers left and the uploaded
+    `containers.txt` is a bare header. That is why eight consecutive nightly
+    failures produced no server-side evidence — the assertion text in the log
+    is a 500's JSON body, and the traceback that explains it lived in a
+    container that had already been removed.
+
+    Logs are dumped unconditionally rather than only on failure: `_down()` is
+    reached identically either way, a passing run's logs cost a few hundred
+    kilobytes, and "only on failure" needs the test outcome, which this
+    function (called from each test's own `finally`, not from a fixture)
+    cannot see. `PYTEST_CURRENT_TEST` names the file so a 16-test run does not
+    overwrite itself.
+    """
+    current = os.getenv("PYTEST_CURRENT_TEST", "unknown")
+    # "path::test_name (call)" -> "test_name"
+    name = current.split("::")[-1].split(" ")[0] or "unknown"
+    try:
+        _DIAGNOSTICS_DIR.mkdir(parents=True, exist_ok=True)
+        logs = subprocess.run(
+            [*COMPOSE, "logs", "--no-color", "--timestamps"],
+            cwd=E2E_DIR,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        (_DIAGNOSTICS_DIR / f"compose-logs-{name}.log").write_text(logs.stdout + logs.stderr)
+    except Exception as exc:  # noqa: BLE001 — diagnostics must never fail a test
+        print(f"[e2e] could not capture compose logs for {name}: {exc}")
+
+
 def _down(env: dict | None = None) -> None:
+    _dump_compose_logs(env)
     subprocess.run([*COMPOSE, "down", "-v"], cwd=E2E_DIR, env=env)
     # See _E2E_DATA_DIR's comment: `down -v` alone leaves this bind-mounted
     # directory (and its Postgres data / OOBE marker / vault key) in place,
