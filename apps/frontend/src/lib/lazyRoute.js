@@ -4,30 +4,17 @@ import { recordChunk, closeChunk } from './diagnosticsBuffer';
 /**
  * `React.lazy` with chunk-load telemetry and a single retry.
  *
- * Route §4.2 lists this as instrumentation the navigation investigation needs:
- * "wrap `React.lazy` in a helper that records fetch start/settle per chunk and
- * converts a rejected import into a retry-once-then-ErrorBoundary path". Both
- * halves matter, for different reasons.
+ * The telemetry makes the wedge decision tree walkable: a `pending` chunk entry
+ * beside a `pending` nav entry is the positive observation that confirms a chunk
+ * fetch was in flight, rather than inferring it by eliminating other branches.
  *
- * **The telemetry** is what makes §4.4's decision tree walkable. Its first YES
- * branch is "chunk fetch pending/failed at wedge time → H1 CONFIRMED", and
- * until this existed there was no record of a chunk fetch anywhere — a wedge
- * could be attributed to H1 only by eliminating the other branches, which is an
- * inference, not evidence. A `pending` chunk entry beside a `pending` nav entry
- * is the positive observation H1 actually requires.
+ * The retry is a real fix. Every route is lazy behind one shared `Suspense`, so
+ * a single failed chunk fetch takes the whole route tree to the ErrorBoundary.
+ * Deliberately ONE retry: a chunk that fails twice is failing for a reason
+ * retrying will not fix, and looping would replace a visible error with a hang.
  *
- * **The retry** is a real fix, not scaffolding. All 25 routes are lazy behind
- * one shared `Suspense`, so a single failed chunk fetch — a dropped connection
- * mid-navigation, a proxy hiccup — takes the whole route tree to the
- * ErrorBoundary and the user has to reload. One retry covers the transient case
- * that causes most of them. It is deliberately *one*: a chunk that fails twice
- * is failing for a reason retrying will not fix (an asset genuinely missing
- * after a redeploy), and looping there would replace a visible error with a
- * hang.
- *
- * Nothing here may change what the caller gets back on success: this returns a
- * `React.lazy` component exactly as `React.lazy(importer)` would, so a route
- * using it is indistinguishable from one that does not.
+ * Nothing here may change what the caller gets on success — this returns exactly
+ * what `React.lazy(importer)` would.
  *
  * @param {string} chunkName Route/component name for the diagnostics record.
  *   Never a URL — chunk URLs carry build hashes and, on some hosts, query

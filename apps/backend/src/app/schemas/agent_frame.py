@@ -126,21 +126,18 @@ class HelloPayload(BaseModel):
     # What the agent's outbound spool has *permanently destroyed* to stay
     # inside its byte cap, cumulatively for the life of its state directory.
     #
-    # Optional-with-default like every field around them, so an agent that
-    # predates the group still validates. That default is exactly why callers
-    # must gate persistence on ``"spool_evicted_frames" in
-    # payload.model_fields_set`` and never on truthiness: the Go side carries
-    # no ``omitempty``, so a current agent always sends the keys — an explicit
-    # ``0`` meaning "reports eviction state and has destroyed nothing" — while
-    # an older agent omits them entirely and must leave the columns NULL
-    # ("never reported"). Fabricating a 0 for the older agent would claim it
-    # had confirmed no data loss, which is the opposite of what it said.
+    # Optional-with-default so an agent predating the group still validates —
+    # which is exactly why callers must gate persistence on
+    # ``"spool_evicted_frames" in payload.model_fields_set`` and NEVER on
+    # truthiness. The Go side has no ``omitempty``, so a current agent always
+    # sends the keys (an explicit ``0`` = "reports eviction state, destroyed
+    # nothing") while an older agent omits them and must leave the columns NULL.
+    # Fabricating a 0 would claim it had confirmed no data loss.
     #
-    # The two timestamps bound the window of observations that is gone, taken
-    # from the destroyed frames' own ``ts`` values. They are ``| None``
-    # because an agent that has evicted nothing sends an explicit ``null``
-    # rather than a year-1 instant that would persist as a real claim about
-    # when an observation was taken.
+    # The timestamps bound the window of observations that is gone, from the
+    # destroyed frames' own ``ts``. ``| None`` because an agent that evicted
+    # nothing sends an explicit ``null``, not a year-1 instant that would persist
+    # as a real claim.
     spool_evicted_frames: int = 0
     spool_evicted_bytes: int = 0
     spool_evicted_oldest_ts: datetime | None = None
@@ -163,14 +160,12 @@ class HelloPayload(BaseModel):
     tls_pin_successor_fingerprint: str | None = None
     # Whether this agent is asking the server to acknowledge data frames.
     #
-    # ``False`` by default, and the Go side carries ``omitempty``, so absent
-    # and false are deliberately the same fact here — "this agent does not
-    # support acknowledged delivery" — which is exactly the safe default for
-    # an agent predating the mechanism. That is the opposite convention from
-    # the ``spool_evicted_*`` group above, and the difference is not an
-    # inconsistency to harmonise away: those need presence to separate
-    # "confirmed nothing was destroyed" from "cannot report", a distinction
-    # this flag simply does not have.
+    # ``False`` by default, and the Go side carries ``omitempty``, so absent and
+    # false are deliberately the same fact — "does not support acknowledged
+    # delivery" — the safe default for an agent predating the mechanism. The
+    # opposite convention from the ``spool_evicted_*`` group above, and NOT an
+    # inconsistency to harmonise: those need presence to separate "confirmed
+    # nothing destroyed" from "cannot report", a distinction this flag lacks.
     ack_data: bool = False
 
 
@@ -275,21 +270,18 @@ class HeartbeatPayload(BaseModel):
     # What the agent's outbound spool has *permanently destroyed* to stay
     # inside its byte cap, cumulatively for the life of its state directory.
     #
-    # Optional-with-default like every field around them, so an agent that
-    # predates the group still validates. That default is exactly why callers
-    # must gate persistence on ``"spool_evicted_frames" in
-    # payload.model_fields_set`` and never on truthiness: the Go side carries
-    # no ``omitempty``, so a current agent always sends the keys — an explicit
-    # ``0`` meaning "reports eviction state and has destroyed nothing" — while
-    # an older agent omits them entirely and must leave the columns NULL
-    # ("never reported"). Fabricating a 0 for the older agent would claim it
-    # had confirmed no data loss, which is the opposite of what it said.
+    # Optional-with-default so an agent predating the group still validates —
+    # which is exactly why callers must gate persistence on
+    # ``"spool_evicted_frames" in payload.model_fields_set`` and NEVER on
+    # truthiness. The Go side has no ``omitempty``, so a current agent always
+    # sends the keys (an explicit ``0`` = "reports eviction state, destroyed
+    # nothing") while an older agent omits them and must leave the columns NULL.
+    # Fabricating a 0 would claim it had confirmed no data loss.
     #
-    # The two timestamps bound the window of observations that is gone, taken
-    # from the destroyed frames' own ``ts`` values. They are ``| None``
-    # because an agent that has evicted nothing sends an explicit ``null``
-    # rather than a year-1 instant that would persist as a real claim about
-    # when an observation was taken.
+    # The timestamps bound the window of observations that is gone, from the
+    # destroyed frames' own ``ts``. ``| None`` because an agent that evicted
+    # nothing sends an explicit ``null``, not a year-1 instant that would persist
+    # as a real claim.
     spool_evicted_frames: int = 0
     spool_evicted_bytes: int = 0
     spool_evicted_oldest_ts: datetime | None = None
@@ -629,11 +621,10 @@ REASON_NOT_DIRECTLY_CONNECTED = "not_directly_connected"
 # `probe.Runtime.emitCapabilityViolation` sends (probe/runtime.go:606-619).
 #
 # Two of the evaluator's reasons are deliberately absent. `in_scope` is an
-# acceptance and can never describe a refusal. `unresolved_hostname` is a name
-# that resolved to nothing: the destination was never judged, so the agent
-# reports it as an execution error and explicitly does *not* emit a capability
-# violation for it (probe/runtime.go:511-518) — accepting it here would let the
-# misleading row that comment exists to prevent be written by some other sender.
+# acceptance and can never describe a refusal. `unresolved_hostname` means the
+# destination was never judged, so the agent reports an execution error and does
+# NOT emit a capability violation — accepting it here would let some other sender
+# write the misleading row that rule exists to prevent.
 CAPABILITY_VIOLATION_REASONS = frozenset(
     {
         REASON_SPECIAL_USE,

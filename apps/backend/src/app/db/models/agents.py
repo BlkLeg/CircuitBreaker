@@ -68,24 +68,15 @@ class Agent(Base):
     pending_device_pk_expiry: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # Task 28: which of the server's two overlapping identity keys (see
-    # app.core.agent_crypto.ServerKeyRotationState) this agent's most recent
-    # successful `/link` Noise handshake actually authenticated against.
+    # Which of the server's two overlapping identity keys this agent's most
+    # recent `/link` handshake authenticated against.
     #
-    # These two columns are rollout-*timing* only, not the pin itself — the
-    # actual per-agent pin (the successor server public key this specific
-    # device now durably trusts, alongside its config file's original one) is
-    # persisted agent-side, in apps/agent/internal/config's
-    # ServerKeyRotation/SaveServerKeyRotation (see internal/link.go's
-    # handleKeyRotate), not here: the server has no visibility into whether a
-    # given agent's local state directory actually holds the successor key,
-    # only into which key its handshakes have used so far. Set by
-    # agent_registry.record_server_key_pin, called from ws_agents.py right
-    # after a handshake completes against whichever key it matched. Purely
-    # observational (nothing about handshake acceptance depends on these),
-    # but lets an admin's rotation status view answer "how much of the fleet
-    # has already switched to authenticating with the successor key" rather
-    # than only knowing the rotation's global timing.
+    # Rollout TIMING only, not the pin itself: the per-agent pin lives agent-side
+    # in internal/config's ServerKeyRotation, and the server cannot see whether a
+    # given agent's state directory holds the successor key — only which key its
+    # handshakes have used. Purely observational; nothing about handshake
+    # acceptance depends on these. They let a rotation status view answer how
+    # much of the fleet has switched.
     server_pk_current_pinned_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -133,44 +124,34 @@ class Agent(Base):
     revoke_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     connected_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # Live outbound-spool backlog as last reported by the agent (D-12): the
-    # `hello` frame stamps the at-connect depth, and every 20s `heartbeat`
-    # refreshes both numbers thereafter, which is what lets the Agent Detail
-    # catch-up indicator clear mid-connection instead of waiting for a
-    # reconnect.
+    # Live outbound-spool backlog as last reported by the agent (D-12): `hello`
+    # stamps the at-connect depth and every 20s `heartbeat` refreshes it, which
+    # is what lets the catch-up indicator clear mid-connection.
     #
-    # NULL means "never reported" — an agent whose build predates
-    # HeartbeatPayload — and is deliberately distinct from 0, which means
-    # "reported, and the spool is empty". Nothing may backfill these to 0:
-    # the agent's heartbeat payload carries no `omitempty`, so an explicit
-    # 0 is exactly what a current agent sends once its backlog drains, and
-    # `agent_registry.record_spool_stats`'s callers gate on field *presence*
-    # to keep the two apart.
+    # NULL means "never reported" (an agent predating HeartbeatPayload) and is
+    # deliberately distinct from 0, "reported, and the spool is empty". Nothing
+    # may backfill these to 0: the heartbeat payload has no `omitempty`, so an
+    # explicit 0 is what a current agent sends once drained, and callers gate on
+    # field PRESENCE to keep the two apart.
     spool_depth: Mapped[int | None] = mapped_column(Integer, nullable=True)
     spool_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     spool_reported_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # What the agent's spool has *permanently destroyed* to stay inside its
-    # byte cap, cumulatively for the life of its state directory, reported on
-    # `hello` and refreshed on every `heartbeat` (migration 0110).
+    # What the agent's spool has PERMANENTLY destroyed to stay inside its byte
+    # cap, cumulative for the life of its state directory.
     #
-    # Distinct from the three columns above in the way that matters most: a
-    # backlog drains and these do not. `spool_depth` merely stopping its rise
-    # was the *only* symptom of eviction before these existed, and it reads
-    # identically to a healthy drain — which is how a homelab could lose days
-    # of history and never be told.
+    # Distinct from the columns above in the way that matters: a backlog drains
+    # and these do not. Without them the only symptom of eviction is
+    # `spool_depth` ceasing to rise, which reads identically to a healthy drain.
     #
     # `_oldest_at`/`_newest_at` bound the window of observations that is gone,
-    # taken from the destroyed frames' own timestamps rather than from when
-    # the eviction ran: "which history is missing" is the operator's question,
-    # not "when did the buffer overflow".
+    # taken from the destroyed frames' own timestamps rather than from when the
+    # eviction ran: the operator's question is which history is missing.
     #
-    # NULL means "never reported" — an agent predating the fields — and stays
-    # distinct from 0 ("reported, and nothing has been destroyed"). Nothing
-    # may backfill these; see `agent_registry.record_spool_evictions`, which
-    # gates on wire-key presence, and treats a *decrease* as a state-directory
-    # reset rather than quietly taking the max.
+    # NULL means "never reported", distinct from 0. Nothing may backfill these;
+    # `record_spool_evictions` gates on wire-key presence and treats a DECREASE
+    # as a state-directory reset rather than taking the max.
     spool_evicted_frames: Mapped[int | None] = mapped_column(Integer, nullable=True)
     spool_evicted_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     spool_evicted_oldest_at: Mapped[datetime | None] = mapped_column(
@@ -182,16 +163,13 @@ class Agent(Base):
     spool_evicted_reported_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # Data frames *this server* refused from this agent and dropped on the
-    # floor — the capability gate in `agent_link.dispatch_frame`, and the
-    # `Invalid*` catches in its telemetry/probe/discovery handlers.
+    # Data frames this server refused and dropped — the capability gate in
+    # `dispatch_frame` and the `Invalid*` catches in its handlers.
     #
-    # It exists because the matching audit rows are rate-limited to one a
-    # minute through `agent_telemetry.recordable_violation`, so the event
-    # trail undercounts by design. That throttle is correct — thousands of
-    # identical rows bury the trail — but it means an operator reading events
-    # cannot tell nine refusals from nine thousand. This counter is not
-    # throttled, so they can. NULL = nothing has ever been refused.
+    # It exists because the matching audit rows are rate-limited to one a minute,
+    # so the event trail undercounts by design. That throttle is correct, but it
+    # means an operator cannot tell nine refusals from nine thousand. This
+    # counter is not throttled. NULL = nothing has ever been refused.
     refused_frames: Mapped[int | None] = mapped_column(Integer, nullable=True)
     refused_frames_last_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

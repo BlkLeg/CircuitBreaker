@@ -35,22 +35,14 @@ _logger = logging.getLogger(__name__)
 
 def register_scheduled_jobs(scheduler: "SingleOwnerScheduler") -> None:
     """Add every startup-registered job to `scheduler`, before it is started."""
-    # Daily purge of old scan results — and the *only* registration of it.
-    # `core.scheduler.reload_discovery_jobs` used to register the same callable
-    # on the same 03:00 trigger under a second id, `discovery_purge` (B43), so
-    # every discovery-profile write left two jobs running one purge.
-    # `SingleOwnerScheduler` keys its advisory lock on the job id, so two ids
-    # meant two locks and the copies did not exclude each other; what kept the
-    # DELETE from actually running twice at once was the callable's own inner
-    # `run_with_advisory_lock("discovery_purge")`, which is not a guarantee the
-    # scheduler makes and not one a reader of this call site can see. The visible
-    # cost was two `background_job_runs_total{outcome="ran"}` samples a night for
-    # one purge; the latent cost was that deleting that inner lock — a reasonable
-    # cleanup, since `SingleOwnerScheduler` is meant to make it redundant — turned
-    # a duplicate registration into a concurrent double purge.
+    # Daily purge of old scan results, and the ONLY registration of it.
+    # `SingleOwnerScheduler` keys its advisory lock on the job id, so registering
+    # the same callable under a second id gives two locks that do not exclude
+    # each other — a duplicate registration becomes a concurrent double purge the
+    # moment the callable's own inner advisory lock is cleaned up as redundant.
     #
-    # `misfire_grace_time` matches the other nightly crons; see the
-    # `daily_db_snapshot` registration below for what it does and does not cover.
+    # `misfire_grace_time` matches the other nightly crons; see
+    # `daily_db_snapshot` below for what it does and does not cover.
     scheduler.add_job(
         discovery_service.purge_old_scan_results,
         trigger=CronTrigger(hour=3, minute=0),
@@ -90,15 +82,13 @@ def register_scheduled_jobs(scheduler: "SingleOwnerScheduler") -> None:
     )
 
     # listener_events is the only discovery table fed directly by unauthenticated
-    # LAN traffic: every mDNS advertisement and every SSDP datagram that clears
-    # the rate gate appends a row, and nothing removed them. The listener's own
-    # admission control bounds the rate, not the total, so on a noisy network the
-    # table grows without limit on the same volume that holds pgdata (B13).
+    # LAN traffic: every advertisement clearing the rate gate appends a row. The
+    # listener's admission control bounds the RATE, not the total, so on a noisy
+    # network the table grows without limit on the volume that holds pgdata.
     #
-    # 03:30 keeps it clear of its neighbours, which matter because
-    # SingleOwnerScheduler takes an advisory lock keyed on the job id and a purge
-    # that overlaps another purge just queues behind it: scan results run at
-    # 03:00, audit logs at 03:15, probe runs at 03:20.
+    # 03:30 keeps it clear of its neighbours (scan results 03:00, audit logs
+    # 03:15, probe runs 03:20): each takes an advisory lock keyed on job id, so
+    # an overlapping purge just queues behind.
     from app.services.listener_purge import purge_old_listener_events
 
     scheduler.add_job(
@@ -240,35 +230,27 @@ def register_scheduled_jobs(scheduler: "SingleOwnerScheduler") -> None:
         replace_existing=True,
     )
 
-    # Daily full-state snapshot at 02:00 — the tarball that carries the vault
-    # key, the uploads and the config, and the only artifact `cb restore`
-    # accepts. Registered here rather than in `core.scheduler.reload_discovery_jobs`,
-    # which runs only when an administrator writes a discovery profile and first
-    # removes every job it registered: a snapshot job added there exists only in
-    # the stretch between a profile write and the next restart. Nothing surfaces
-    # the gap, because `latest_backup_info()` reports the `pg_backup` artifact
-    # scheduled just above — the absence is discovered at restore time, which is
-    # the one moment it cannot be repaired.
+    # Daily full-state snapshot at 02:00 — the tarball carrying the vault key,
+    # uploads and config, and the only artifact `cb restore` accepts. Registered
+    # HERE, never in `reload_discovery_jobs`, which runs only on a discovery-
+    # profile write and first removes every job it registered: a snapshot added
+    # there would exist only between a profile write and the next restart, and
+    # `latest_backup_info()` would keep reporting the `pg_backup` artifact above,
+    # so the absence surfaces at restore time.
     #
-    # What `misfire_grace_time` buys, precisely, because the first version of
-    # this comment got it wrong (R11): it covers a *running* process whose
-    # scheduler wakeup lands late — a stalled event loop, a saturated thread
-    # pool, a host that was suspended and resumed. APScheduler's default grace
-    # is one second, so without it a two-second hiccup at 02:00 drops the
-    # night's snapshot and leaves nothing but a log line. It does **not** cover a
-    # restart. The scheduler above is constructed fresh on every boot and keeps
-    # its jobs in APScheduler's default in-memory store, so a process that was
-    # down at 02:00 holds no record that 02:00 happened; misfire grace forgives a
-    # fire time the scheduler is holding, and there is none to forgive.
+    # `misfire_grace_time` covers a RUNNING process whose scheduler wakeup lands
+    # late — a stalled loop, a saturated thread pool, a suspended host.
+    # APScheduler's default grace is one second, so a two-second hiccup would
+    # otherwise drop the night's snapshot. It does NOT cover a restart: the
+    # scheduler is constructed fresh each boot with an in-memory job store, so a
+    # process down at 02:00 holds no fire time to forgive.
     #
-    # Making the restart claim true would take a persistent job store, and that
-    # is not a parameter change here: `SingleOwnerScheduler.add_job` hands
-    # APScheduler a `functools.wraps` closure, and a persistent store serialises
-    # a job by `__module__:__qualname__` — which `wraps` has already rewritten to
-    # name the *unwrapped* function. Every job would come back from the store
-    # without its advisory lock, and SRV-02 would be silently gone. If a boot-time
-    # catch-up is ever wanted, it belongs in an explicit "was last night's
-    # snapshot taken?" check, not in this parameter.
+    # Making it cover a restart needs a persistent job store, which is not a
+    # parameter change: `add_job` hands APScheduler a `functools.wraps` closure,
+    # and a persistent store serialises by `__module__:__qualname__` — which
+    # `wraps` has rewritten to name the unwrapped function, so every job would
+    # return without its advisory lock. A boot-time catch-up belongs in an
+    # explicit "was last night's snapshot taken?" check instead.
     from app.core.scheduler import run_scheduled_snapshot
 
     scheduler.add_job(

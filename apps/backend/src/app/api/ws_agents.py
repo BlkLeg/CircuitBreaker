@@ -74,18 +74,15 @@ _AGENT_EVENT_CHANNEL = "cb:agents:events"
 # RFC 6455 1011 "internal error" — the server cannot fulfil the stream contract.
 _WS_INTERNAL_ERROR = 1011
 
-# Slice 3 D-16: an agent's assigned monitors become due again the moment it
-# reconnects — but jittered, never all at `now()`. An agent with 300 assignments
-# waking up at exactly the same instant gets a whole per-vantage batch claimed on
-# the very next scheduler tick and dispatched into a bounded queue, turning a
-# healthy reconnect into a burst of capacity-exhausted execution errors. The
-# window is `least(interval_secs, 30)` so a fast monitor is not delayed past its
-# own interval; the idiom is the one `services/monitoring/scheduler.py` already
-# uses for its post-downtime spread.
+# D-16: an agent's assigned monitors become due again on reconnect — jittered,
+# never all at `now()`. 300 assignments waking at one instant get claimed on the
+# next scheduler tick and dispatched into a bounded queue, turning a healthy
+# reconnect into a burst of capacity-exhausted errors. The window is
+# `least(interval_secs, 30)` so a fast monitor is not delayed past its own
+# interval.
 #
-# Runs inside the same `with SessionLocal() as db:` block that records the
-# "connected" event, so a connection that fails before that commit leaves the
-# schedule untouched.
+# Runs inside the same session block that records the "connected" event, so a
+# connection failing before that commit leaves the schedule untouched.
 _REMOTE_PROBE_RECONNECT_SQL = text(
     """
     UPDATE monitor_items
@@ -273,31 +270,22 @@ async def enroll_stream(websocket: WebSocket) -> None:
                 agent = existing
                 newly_created = False
             else:
-                # Task 21: concurrent-pending-enrollment cap. Only guards the
-                # genuinely-new-row path — a device_pk already pending (the
-                # branch above) is reusing an existing row, not adding to the
-                # count, so it's never blocked by this check.
+                # Concurrent-pending-enrollment cap. Guards only the
+                # genuinely-new-row path: a device_pk already pending reuses an
+                # existing row and adds nothing to the count.
                 #
-                # The count-then-insert-then-commit sequence below is wrapped in
-                # a cross-worker Redis lock (fix round, Important #1): two
-                # /enroll connections on different workers could otherwise both
-                # read `count_pending_agents` before either committed, both see
-                # a count under the cap, and both insert — overshooting it. The
-                # lock is held until *after* `db.commit()` further down, not
-                # just past the count check, since the race is only actually
-                # closed once the new row is durably visible to the next
-                # session's count query — see acquire_pending_enrollment_lock's
-                # docstring for why this is a lock, not a Redis gauge.
+                # Count-then-insert-then-commit is wrapped in a cross-worker
+                # Redis lock — two /enroll connections on different workers could
+                # otherwise both read the count before either committed and both
+                # insert, overshooting the cap. The lock is held until AFTER
+                # `db.commit()`, not just past the count check: the race closes
+                # only once the new row is durably visible to the next session's
+                # count query.
                 #
-                # Everything from here through db.commit() below runs inside
-                # this try, whose finally always releases the lock (fix round
-                # 2): create_pending_agent's db.flush() — e.g. a same-device_pk
-                # race that slips past the `existing is None` check above,
-                # since that read happens before this lock is even acquired —
-                # or db.commit() itself can raise, and without the finally the
-                # lock would otherwise sit held for its full TTL on every such
-                # failure, wrongly rejecting unrelated new enrollments in the
-                # meantime.
+                # Everything through that commit runs inside this try, whose
+                # finally always releases the lock — a flush or commit can raise,
+                # and a lock left held for its full TTL would wrongly reject
+                # unrelated enrollments in the meantime.
                 pending_lock_token = await agent_registry.acquire_pending_enrollment_lock()
                 if pending_lock_token is None:
                     await websocket.close(code=1013)
@@ -333,16 +321,11 @@ async def enroll_stream(websocket: WebSocket) -> None:
         code = await agent_enrollment.mint_pairing_code(agent_id)
 
     if newly_created:
-        # Immediate push to every live /api/agents/stream viewer (the
-        # add-agent panel), mirroring the connected/disconnected broadcasts
-        # elsewhere in this module — without this, a brand-new pending
-        # enrollment is invisible to the UI until its next 30s poll. Only
-        # fired for a genuinely new row: a device retrying the /enroll
-        # handshake while its prior enrollment is still pending (the
-        # `existing.status == "pending"` branch above) reuses that same
-        # already-announced row, so re-broadcasting here would be a
-        # duplicate "new agent" event for something the UI already knows
-        # about.
+        # Immediate push to every live /api/agents/stream viewer; without it a
+        # new pending enrollment is invisible to the UI until its next 30s poll.
+        # Only for a genuinely new row: a device retrying the handshake while its
+        # prior enrollment is still pending reuses that already-announced row, so
+        # re-broadcasting would duplicate a "new agent" event.
         await agent_registry.broadcast_presence(agent_id, "enrolled")
 
     await websocket.send_bytes(
@@ -849,57 +832,36 @@ async def link_stream(websocket: WebSocket) -> None:
 
     worker = socket.gethostname()
     await agent_registry.mark_presence_connected(agent_id, worker=worker)
-    # Distinct from the presence "worker" label above: register_agent_connection
-    # records this *connection's* ownership of agent_id's live socket, which
-    # is what a later worker's control-frame publish (Task 9) resolves
-    # against to route delivery here. See agent_registry.WORKER_ID's docstring
-    # for why the "worker" label and this aren't the same identifier.
+    # Distinct from the presence "worker" label above: this records the
+    # CONNECTION's ownership of agent_id's live socket, which a later worker's
+    # control-frame publish resolves against to route delivery here.
     #
-    # The registered value is `connection_id`, not the bare process-wide
-    # WORKER_ID: cb-agent uninstall's one-shot notifier (internal/link/
-    # link.go's `Uninstall`) deliberately opens a *second* /link connection
-    # for an agent whose persistent daemon connection is often still live
-    # (runUninstall notifies before it stops the service). On a single
-    # worker process both connections would share the identical WORKER_ID,
-    # so a bare-WORKER_ID compare-and-delete on disconnect (deregister_
-    # agent_connection) couldn't tell them apart — the short-lived second
-    # connection's teardown would evict the first, still-live connection's
-    # entry. Suffixing WORKER_ID with a per-connection id keeps WORKER_ID's
-    # cross-worker meaning (still a prefix, for operator traceability) while
-    # making ownership unique per socket, not per process.
+    # The registered value is `connection_id`, never the bare process-wide
+    # WORKER_ID: `cb-agent uninstall` opens a SECOND /link connection while the
+    # daemon's is often still live, and on one worker both would share a
+    # WORKER_ID — so a compare-and-delete on disconnect could not tell them
+    # apart and the short-lived connection's teardown would evict the live one.
+    # The suffix keeps WORKER_ID's cross-worker meaning as a prefix while making
+    # ownership unique per socket.
     connection_id = f"{agent_registry.WORKER_ID}:{uuid.uuid4().hex[:12]}"
     await agent_registry.register_agent_connection(agent_id, worker_id=connection_id)
     await agent_registry.broadcast_presence(agent_id, "connected")
     outbound_seq = _OutboundSeq()
-    # A genuine `hello.ack` — accepted, this agent's id, the complete current
-    # grant set, and server_time (HelloAckPayload, Task 1) — must go out
-    # first: the real Go agent (apps/agent/internal/link/link.go) only fires
-    # OnConnected (resets reconnect backoff, gates link success — Task 4)
-    # from its `case frame.TypeHelloAck` branch when `Accepted` is true.
-    # Before this, /link never sent a `hello.ack` frame at all, so that
-    # gating logic could never actually fire in production. Task 1's
-    # HelloAckPayload doc comment ("the server re-sends the authoritative
-    # set on every hello.ack") is why the full grants dict rides along here
-    # too, not just capabilities.set below — this is the durable-delivery
-    # half of Task 11: a missed capabilities.set push (Task 9's cross-worker
-    # delivery) is corrected the moment the agent's next reconnect completes
-    # this same hello.ack exchange, independent of push success/failure.
+    # A genuine `hello.ack` — accepted, agent id, the complete current grant set
+    # and server_time — must go out FIRST: the Go agent only fires OnConnected
+    # (which resets reconnect backoff and gates link success) from its
+    # `TypeHelloAck` branch when `Accepted` is true. The full grants dict rides
+    # along because the server re-sends the authoritative set on every
+    # hello.ack — so a missed capabilities.set push is corrected on the agent's
+    # next reconnect, independent of push success.
     #
-    # The capabilities.set frame right after is left in place alongside it,
-    # not replaced by it: today's Go agent only ever applies grants via its
-    # `OnCapabilitiesSet` callback (fired on `case frame.TypeCapabilitiesSet`
-    # — see link.go), never by reading HelloAckPayload.Capabilities off the
-    # hello.ack itself, so it's still needed for the grants to actually take
-    # effect on connect.
+    # The capabilities.set frame after it is NOT redundant: the agent applies
+    # grants only via its `OnCapabilitiesSet` callback, never by reading
+    # HelloAckPayload.Capabilities, so it is what makes them take effect.
     #
-    # Every send in this phase goes through _send_hello_phase_frame rather
-    # than websocket.send_bytes directly: an agent can drop between its hello
-    # and this answer, and before that helper existed the resulting
-    # ClientDisconnected escaped link_stream as an unhandled ASGI exception —
-    # a full traceback per occurrence, from any client that closed at the
-    # right moment. See the helper's docstring for why that is not merely
-    # noise: it is the entire trace `cb-agent uninstall` left behind while it
-    # was silently failing.
+    # Every send here goes through _send_hello_phase_frame, never send_bytes: an
+    # agent can drop between its hello and this answer, and the resulting
+    # ClientDisconnected would otherwise escape as an unhandled ASGI exception.
     delivered = await _send_hello_phase_frame(
         websocket,
         _ack_bytes(
@@ -984,16 +946,12 @@ async def link_stream(websocket: WebSocket) -> None:
         _run_control_frame_listener(agent_id, control_queue, worker_id=connection_id)
     )
 
-    # last_heartbeat_at is the WS-level read deadline's clock — deliberately
-    # *not* "last time any frame arrived". It only ever advances on a valid
-    # inbound `heartbeat` frame (below), so a run of other traffic (a
-    # transport.rekey announcement, a log frame, a stray malformed frame)
-    # can never mask a stalled agent heartbeat and keep a hung connection
-    # alive: _LINK_DEAD_SECONDS is measured from the last real heartbeat,
-    # not the last byte. Redis presence freshness (agent_registry's TTL key)
-    # already tracks the same thing independently, via
-    # agent_link._handle_heartbeat -> refresh_presence_heartbeat; this is
-    # the WS-connection-teardown mirror of that same rule.
+    # The read deadline's clock, deliberately NOT "last time any frame arrived":
+    # it advances only on a valid inbound `heartbeat`, so other traffic (a rekey
+    # announcement, a log frame, a stray malformed frame) can never mask a
+    # stalled heartbeat and keep a hung connection alive. Redis presence
+    # freshness tracks the same rule independently; this is its
+    # connection-teardown mirror.
     last_heartbeat_at = utcnow()
     last_rekey_at = utcnow()
     last_ping_sent_at = utcnow()
@@ -1008,17 +966,15 @@ async def link_stream(websocket: WebSocket) -> None:
     # The delivery watermark for this connection (see `_send_data_ack`).
     #
     # `handled_seq` is the highest sequence number every frame up to which has
-    # been terminally handled. No gap tracking is needed for that claim to
-    # hold: frames arrive in order on one socket and are handled one at a
-    # time, and the two paths that would otherwise skip a sequence number are
-    # both accounted for below — a decodable rejection advances the watermark
-    # explicitly, and an undecryptable or malformed frame freezes it.
+    # been terminally handled. No gap tracking is needed: frames arrive in order
+    # on one socket and are handled one at a time, and the two paths that would
+    # skip a number are both covered — a decodable rejection advances the
+    # watermark explicitly, an undecryptable or malformed frame freezes it.
     #
-    # `ack_frozen` is that freeze. Once this server has seen a frame whose
-    # sequence number it cannot trust, it stops acknowledging anything for the
-    # rest of the connection: the agent then commits nothing more and re-sends
-    # everything on reconnect. Harsh, correct, and rare — a decrypt failure
-    # means the ciphers are desynced and the link is doomed regardless.
+    # `ack_frozen` is that freeze: once a frame's sequence number cannot be
+    # trusted, nothing is acknowledged for the rest of the connection, so the
+    # agent commits nothing more and re-sends everything on reconnect. Harsh and
+    # rare — a decrypt failure means the ciphers are desynced anyway.
     handled_seq: int | None = None
     acked_seq: int | None = None
     frames_since_ack = 0
@@ -1168,18 +1124,14 @@ async def link_stream(websocket: WebSocket) -> None:
                     fresh = agent_registry.get_agent(db, agent_id)
                     if fresh is None or fresh.status != "active":
                         # Owed acknowledgements go out before the connection
-                        # does. This break is the one an `uninstall` frame
-                        # triggers *on itself*: `_handle_uninstall` revokes the
-                        # agent, so the very next poll finds it ineligible —
-                        # and with a coalesced ack still inside its window,
-                        # breaking here dropped the watermark for the frame
-                        # that had just been committed. `cb-agent uninstall`
-                        # then reported "the server did NOT confirm this
-                        # uninstall" for an uninstall the server had already
-                        # performed, which is the same lie as before inverted.
-                        # True of every status flip, not just this one: frames
-                        # already handled were handled, and an agent that can
-                        # no longer reconnect has no second chance to hear so.
+                        # does. An `uninstall` frame triggers this break on
+                        # itself — `_handle_uninstall` revokes the agent, so the
+                        # next poll finds it ineligible — and with a coalesced
+                        # ack still inside its window, breaking without flushing
+                        # drops the watermark for the frame just committed.
+                        # True of every status flip: frames already handled were
+                        # handled, and an agent that cannot reconnect has no
+                        # second chance to hear so.
                         await flush_data_ack(force=True)
                         break
                 pending = await agent_update.pop_pending_update(agent_id)
@@ -1216,21 +1168,15 @@ async def link_stream(websocket: WebSocket) -> None:
             try:
                 pt = responder.decrypt(ct)
             except Exception as exc:
-                # Deliberately still not fatal to the connection — an
-                # adversarial or momentarily-desynced peer must not be able
-                # to kill the link over one bad frame — but this used to be
-                # a completely silent drop (Task 31's E2E investigation
-                # flagged it as "the single most under-instrumented point in
-                # the entire path", capable of swallowing a real frame, e.g.
-                # an uninstall notification, with zero trace). Logged, not
-                # recorded as a protocol_violation AgentEvent: that audit
-                # trail is for receive_frame's decoded-but-invalid
-                # rejections, and an undecryptable frame never gets that far.
-                # Rate-limited and counted rather than logged raw: a desynced
-                # or hostile peer can drive this branch as fast as it can write
-                # frames, and an unthrottled WARNING per frame is a log storm
-                # (REL-07). The metric keeps the drop visible when the log line
-                # is being suppressed.
+                # Deliberately not fatal to the connection: an adversarial or
+                # momentarily-desynced peer must not be able to kill the link
+                # over one bad frame. Logged rather than recorded as a
+                # protocol_violation AgentEvent — that audit trail is for
+                # receive_frame's decoded-but-invalid rejections, and an
+                # undecryptable frame never gets that far. Rate-limited and
+                # counted, because a hostile peer can drive this branch as fast
+                # as it can write frames; the metric keeps the drop visible while
+                # the log line is suppressed.
                 record_stream_fault(
                     f"{_COMPONENT_LINK}.decrypt",
                     exc,

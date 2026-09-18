@@ -84,49 +84,24 @@ _DEDUP_WINDOW = timedelta(seconds=60)
 
 
 # ── Listener admission gates (B13) ───────────────────────────────────────────
-# SSDP and mDNS are both unauthenticated multicast: any host on the LAN can emit
-# as many advertisements a second as its NIC allows, and every one of them used
-# to become a session checkout, a SELECT, an INSERT and a COMMIT. The dedup
-# window above was the only brake, and it is keyed on `(ip_address,
-# service_type)` — fields the sender chooses. On SSDP `service_type` is read
-# straight out of the packet's own ST:/NT: header; on mDNS *both* halves come out
-# of the advertisement, `ip_address` included, because it is
-# `socket.inet_ntoa(info.addresses[0])`, an A record the advertiser wrote.
-# Varying one field per packet defeated the dedup completely, so the brake has to
-# live here, before the database is touched at all — and it has to cover both
-# listeners. Gating only SSDP leaves the identical write amplification open on
-# the other half of the same service.
+# Unauthenticated multicast: any LAN host can emit unlimited advertisements, and
+# the dedup window is keyed on fields the sender chooses, so admission has to be
+# gated before the database is touched — on both listeners, not just SSDP.
 #
-# Three buckets, consulted in this order and for these reasons:
+# Three buckets, in order:
+#   - per-key, so one advertiser cannot crowd out the LAN. SSDP keys on the
+#     source address ONLY; a header value is the sender's to vary. mDNS has no
+#     peer address, so its key is sender-chosen and the two buckets behind it are
+#     what make that acceptable.
+#   - new-key, charged on first sight, so rotating identities cannot mint a fresh
+#     full burst per packet. The burst is sized past a full /24 so a startup
+#     M-SEARCH answered by every device is not mistaken for churn.
+#   - process-wide, bounding total DB load however keys are chosen.
 #
-# * a per-key bucket, so one chatty or hostile advertiser cannot crowd out the
-#   rest of the LAN. For SSDP the key is the source address ONLY — never a header
-#   value, a header value is the attacker's to vary, which is the whole defect.
-#   For mDNS there is no source address to be had (zeroconf hands the callback an
-#   instance name, not a peer), so the key is the advertised identity and is
-#   attacker-chosen by construction; the two buckets behind it are what make that
-#   acceptable.
-# * a new-key bucket, charged the first time a key is seen and only then. Without
-#   it the per-key tier denies nothing at all under the attack it exists for: the
-#   map is LRU-bounded and an unseen key is handed a full burst, so an attacker
-#   rotating more addresses than the map tracks got a brand-new bucket on every
-#   single packet and the whole two-tier design collapsed to one tier. Rotating
-#   identities now costs a token from a bucket that refills slowly, while a LAN
-#   full of already-known devices never touches it. The burst is sized past a
-#   full /24 so a startup M-SEARCH answered by every device on the segment is
-#   never mistaken for churn.
-# * a process-wide bucket behind both, because this is the one that bounds total
-#   database load no matter how the keys are chosen.
-#
-# The per-key bucket is charged first on purpose: a packet a later bucket rejects
-# has still recorded its key, so the LRU eviction below sees the real key churn
-# instead of being bypassed by an earlier gate short-circuiting.
-#
-# All three refill lazily on read — no timer, no background task — and the
-# per-key maps are LRU-bounded, because a gate keyed on attacker-supplied data is
-# a dict the attacker writes into and must not become the memory sink it exists
-# to prevent. Ordinary LAN chatter is a few packets a second, well under every
-# rate here.
+# Per-key is charged first so LRU eviction sees real key churn rather than being
+# bypassed by an earlier gate short-circuiting. All refill lazily on read, and
+# the per-key maps are LRU-bounded: a gate keyed on attacker-supplied data is a
+# dict the attacker writes into.
 _SSDP_RATE_PER_SECOND = 5.0
 _SSDP_RATE_BURST = 10.0
 _SSDP_RATE_MAX_TRACKED = 2048
@@ -266,30 +241,24 @@ def _admit_mdns_advertisement(key: str, *, now: float | None = None) -> bool:
 
 
 # ── Text safety for the Postgres-bound row (B34) ─────────────────────────────
-# Postgres cannot store U+0000 in a `text` column and jsonb cannot even parse an
-# escaped one, so a single NUL anywhere in this row is not a data-quality
-# wrinkle — it is a failed INSERT. Every field below is attacker-supplied: SSDP
-# headers come from `data.decode(errors="replace")`, which preserves U+0000
-# because U+0000 is perfectly valid UTF-8, and `str.strip()` does not remove it;
-# mDNS TXT records legitimately carry binary bytes with no attacker at all.
+# Postgres cannot store U+0000 in a `text` column and jsonb cannot parse an
+# escaped one, so a single NUL here is a failed INSERT, not a data-quality
+# wrinkle. Every field is sender-supplied: `decode(errors="replace")` preserves
+# U+0000 (it is valid UTF-8) and `strip()` does not remove it, and mDNS TXT
+# records legitimately carry binary bytes.
 #
-# Before B34 the accidental double `json.dumps` escaped the NUL into six literal
-# characters and the row landed. Assigning the dict straight to the JSONB column
-# is the correct fix for the column, but it removes that accident — so the scrub
-# has to be explicit, and it has to sit here, on the single path both listeners
-# share. Without it one crafted datagram drops its row, suppresses the NATS
-# publish and drives `discovery_listener.record/database` at ERROR for as long as
-# the sender keeps sending: an unauthenticated LAN host with its hand on the
-# operator's only "the listener's database is broken" signal, and on the
-# `circuitbreaker_stream_faults_total{fault="database"}` counter behind it.
-# Scrubbing only `properties` is not enough — `usn` becomes `name`, a text column
-# of its own, and psycopg2 rejects the NUL there first.
+# The scrub sits on the single path both listeners share. Without it one crafted
+# datagram drops its row, suppresses the NATS publish and drives the database
+# fault counter at ERROR for as long as the sender keeps sending — handing an
+# unauthenticated LAN host the operator's only "the listener is broken" signal.
+# Scrubbing `properties` alone is not enough: `usn` becomes `name`, a text column
+# psycopg2 rejects the NUL in first.
 #
-# The length caps are the second half of the same argument. An SSDP datagram is
-# bounded by the 4096-byte read; an mDNS TXT set is not, and none of these
-# columns has a declared length. Truncation is right here because these rows are
-# a recency signal, not a record: a shortened SERVER string is still a usable
-# hint, an unbounded one is a write amplifier.
+# The length caps are the same argument. An SSDP datagram is bounded by the
+# 4096-byte read; an mDNS TXT set is not, and none of these columns has a
+# declared length. These rows are a recency signal, not a record, so a shortened
+# SERVER string is still a usable hint and an unbounded one is a write
+# amplifier.
 _MAX_TEXT_LEN = 512
 _MAX_PROPERTIES = 64
 _MAX_PROPERTY_KEY_LEN = 128
@@ -340,24 +309,17 @@ def _scrub_properties(properties: dict | None) -> dict | None:
 
 # ── Off the loop, but bounded (B13) ──────────────────────────────────────────
 # `_persist_event` is synchronous SQLAlchemy and must not run on the API event
-# loop. Handing it to `asyncio.to_thread` uncapped is its own defect, though:
-# before the move the DB block held no `await`, so the loop serialised it to
-# exactly one `SessionLocal()` at a time, and afterwards nothing did — mDNS
-# callbacks are dispatched fire-and-forget through
-# `asyncio.run_coroutine_threadsafe`, so a burst of advertisements could check
-# out one session per default-executor slot, up to `min(32, cpu + 4)` of them,
-# from a background listener. `db/session.py` gives the pgbouncer deployment
-# `pool_size=5, max_overflow=5` with a `pool_timeout=5` chosen deliberately to
-# fail fast, so that burst does not queue behind live HTTP requests, it fails
-# them — and only in that deployment, which is the worst shape a bug can have.
+# loop — but an uncapped `asyncio.to_thread` is its own defect. mDNS callbacks
+# are dispatched fire-and-forget, so a burst can check out one session per
+# default-executor slot, up to `min(32, cpu + 4)`. The pgbouncer deployment runs
+# `pool_size=5, max_overflow=5` with a fail-fast `pool_timeout=5`, so that burst
+# does not queue behind live HTTP requests, it fails them.
 #
-# Two workers on a pool of our own, not the shared default executor: bounded, and
-# not competing with the SSE session validation in `api/events.py` or the nmap
-# scans in `discovery_probes.py` that also live on the default one. The
-# `contextvars.copy_context()` is not decoration — it is what `asyncio.to_thread`
-# does internally, and `db/session.py`'s `_set_tenant_on_checkout` reads the
-# `current_tenant_id` ContextVar on every checkout, so a plain
-# `run_in_executor` would hand the worker a bare context and lose the tenant.
+# Hence two workers on a pool of our own: bounded, and not competing with the SSE
+# session validation or the nmap scans that live on the default executor. The
+# `contextvars.copy_context()` is required, not decoration — `_set_tenant_on_
+# checkout` reads the `current_tenant_id` ContextVar on every checkout, and a
+# plain `run_in_executor` would hand the worker a bare context.
 _PERSIST_MAX_WORKERS = 2
 # A backlog cap on top of the worker cap: with the database slow rather than
 # down, the admission gate still lets 50 events a second in and every one of them
@@ -549,19 +511,18 @@ class ListenerService:
             self.mdns_active = False
 
     async def _handle_mdns_service(self, zc: "Zeroconf", type_: str, name: str) -> None:
-        # B13, second half. The gate belongs here — ahead of `get_service_info`,
-        # which is a network round trip of its own on an executor thread, and
-        # ahead of `_record_event`, which this path used to reach with no
-        # admission control whatsoever while SSDP had two buckets in front of it.
-        # The key is the advertised instance identity because zeroconf gives the
-        # callback nothing else: `add_service`/`update_service` receive a type
-        # and a name, not a peer address. Do not "improve" this by keying on
-        # `info.addresses[0]` once the info is fetched — that is an A record
-        # inside the advertisement, the same attacker-chosen field that made the
-        # dedup window useless in the first place, and using it here would move
-        # the defect rather than close it. The new-key and process-wide buckets
-        # behind this one are what bound an advertiser that simply invents a new
-        # instance name per packet.
+        # The gate belongs HERE, ahead of `get_service_info` (a network round
+        # trip on an executor thread) and ahead of `_record_event`. The key is
+        # the advertised instance identity because zeroconf gives the callback
+        # nothing else — `add_service`/`update_service` receive a type and a
+        # name, not a peer address.
+        #
+        # Do NOT "improve" this by keying on `info.addresses[0]` once the info is
+        # fetched: that is an A record inside the advertisement, the same
+        # sender-chosen field that makes the dedup window useless, so it would
+        # move the defect rather than close it. The new-key and process-wide
+        # buckets behind this one bound an advertiser that invents a new instance
+        # name per packet.
         if not _admit_mdns_advertisement(f"{type_}\x1f{name}"):
             record_stream_fault(
                 f"{_COMPONENT}.mdns_flood",

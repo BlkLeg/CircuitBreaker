@@ -427,18 +427,15 @@ def _is_user_accessible(db: Session, user_id: int) -> bool:
 #: Routes that may act as the admin sentinel while the app is unbootstrapped.
 #:
 #: Before the first admin exists there is nobody to authenticate, so first-run
-#: has to run as *something*. It used to run as an admin on every route, which
-#: meant anyone who could reach the port during the setup window could rewrite
-#: settings and OAuth providers — and so hand themselves the operator's account
-#: at the moment it was created. The setup token (SEC-09) guarded only the
-#: account creation itself, not the configuration around it.
+#: must act as something — but NOT as an admin on every route: that lets anyone
+#: reaching the port during the setup window rewrite settings and OAuth providers
+#: and hand themselves the operator's account as it is created. The setup token
+#: guards account creation, not the configuration around it.
 #:
-#: This is the surface the OOBE wizard actually touches before it flips
-#: `auth_enabled`: the bootstrap endpoints (themselves setup-token gated), the
-#: auth routes, the settings read that renders the wizard, and the OAuth write
-#: the provider step performs before an account can exist. Everything else —
-#: inventory, monitors, agents, admin, uploads, docs — answers 401 until an
-#: admin exists, which is what it would have done anyway had auth been on.
+#: This is the surface the OOBE wizard touches before it flips `auth_enabled`:
+#: the setup-token-gated bootstrap endpoints, the auth routes, the settings read
+#: that renders the wizard, and the OAuth write the provider step performs.
+#: Everything else answers 401 until an admin exists.
 #:
 #: `(prefix, methods)`; `methods` of None means any method.
 _PRE_BOOTSTRAP_SETUP_SURFACE: tuple[tuple[str, frozenset[str] | None], ...] = (
@@ -598,15 +595,13 @@ def resolve_optional_user_id_sync(db: Session, request: HTTPConnection) -> int |
             if uid_int == 0:
                 # A service-account JWT is live only while its APIToken row is.
                 # `_is_user_accessible` returns True unconditionally for the
-                # sentinel, so without this the JWT authenticated on signature
-                # alone: revoking the row, or rotating it, left the credential
-                # working until its own `exp` — a year by default.
+                # sentinel, so without this the JWT would authenticate on
+                # signature alone and survive revocation until its own `exp`.
                 #
                 # The scan verifies rather than looks up, because the salt is
-                # per-token random. It costs the same scan opaque tokens already
-                # pay, and only on a cache miss: `_session_cache` holds the
-                # answer for 10s and `invalidate_token_cache()` runs on revoke
-                # and rotate, so a withdrawal is visible within that window.
+                # per-token random. Same cost opaque tokens already pay, and only
+                # on a cache miss: `_session_cache` holds the answer 10s and
+                # `invalidate_token_cache()` runs on revoke and rotate.
                 if not service_account_token_is_live(db, raw_token):
                     return None
                 token_scopes = _normalise_token_scopes(payload.get("scopes"))
@@ -637,18 +632,17 @@ def resolve_optional_user_id_sync(db: Session, request: HTTPConnection) -> int |
         if _is_user_accessible(db, uid):
             token_scopes = _normalise_token_scopes(api_token_row.scopes)
             if token_scopes == ():
-                # D9 back-compat, and INC-04's fix for existing rows.
-                # APIToken.scopes is `mapped_column(JSONB, default=list)`, so every
-                # token created through the UI before scopes were settable stored
-                # [] — not NULL. Treating that as "no scopes granted" is what makes
-                # those tokens 403 on every require_scope route today. None means
-                # "unscoped: fall through to the creating user's own permissions",
-                # which is what they have always effectively had.
+                # APIToken.scopes is `mapped_column(JSONB, default=list)`, so
+                # tokens created before scopes were settable stored [], not NULL.
+                # Treating that as "no scopes granted" 403s them on every
+                # require_scope route; None means "unscoped: fall through to the
+                # creating user's own permissions", which is what they have
+                # always effectively had.
                 #
-                # Deliberately NOT done inside _normalise_token_scopes: the
-                # `uid == 0` service-account branch above calls it too, and a
-                # service account has no real creator — inheriting there would
-                # promote an empty-scoped service account to superuser.
+                # Deliberately NOT inside _normalise_token_scopes: the `uid == 0`
+                # service-account branch calls it too, and a service account has
+                # no real creator — inheriting there would promote an
+                # empty-scoped service account to superuser.
                 token_scopes = None
             touch_api_token_last_used(api_token_row)
             _session_cache_set(token_hash, uid, token_scopes)
