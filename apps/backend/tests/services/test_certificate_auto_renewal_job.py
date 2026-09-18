@@ -1,7 +1,7 @@
 """The nightly renewal job, now that renewal raises.
 
 `renew_certificate` used to swallow every failure and return the unchanged certificate, so
-the job could not fail. It raises now (INC-07), which makes two properties load-bearing that
+the job could not fail. It raises now, which makes two properties load-bearing that
 nothing had ever tested:
 
   * one certificate's failure must not abandon the rest of the fleet — the loop is the only

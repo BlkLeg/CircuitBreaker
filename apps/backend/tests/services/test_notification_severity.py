@@ -1,4 +1,4 @@
-"""Route severity is a floor, not an exact match (INC-03).
+"""Route severity is a floor, not an exact match.
 
 The UI has always labelled the field "Minimum Severity" with a "Severity
 Threshold" column; the dispatcher compared it for equality, so a route set to

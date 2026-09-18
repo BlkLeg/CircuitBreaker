@@ -122,7 +122,7 @@ async def test_a_capabilities_write_that_leaves_the_hold_alone_does_not_rebuild_
 async def test_deleting_an_agent_a_discovery_profile_names_returns_409(
     client, factories, auth_headers, db_session
 ):
-    """D-1: `discovery_profiles.scan_agent_id` is `ON DELETE RESTRICT`, so
+    """`discovery_profiles.scan_agent_id` is `ON DELETE RESTRICT`, so
     without a pre-check the delete surfaces as an unhandled `IntegrityError` and
     a 500 — and the operator learns nothing about which profiles are in the way.
     Repointing or deleting them is a decision they make explicitly."""
@@ -193,7 +193,7 @@ async def test_agent_discovery_reports_the_fleet_wide_hold_separately(
     client, factories, viewer_headers, db_session
 ):
     """M14's three pause scopes have no precedence between them: each holds on
-    its own and none releases either of the others (Task 25). So the section
+    its own and none releases either of the others. So the section
     reports them as two independent fields — an operator who resumed the agent
     and saw nothing start needs to be told the fleet is still held, not shown one
     derived boolean that flipped back on its own.

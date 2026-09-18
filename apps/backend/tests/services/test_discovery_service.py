@@ -314,7 +314,7 @@ def test_scan_import_keeps_a_supplied_network_id(db_session, factories) -> None:
 # Three properties of the drain that `_scan_finalize` and `finalize_agent_job`
 # run when a job gives its concurrency slot back:
 #
-# * a job parked in `waiting_for_agent` (D-5) must NOT be handed to the
+# * a job parked in `waiting_for_agent` must NOT be handed to the
 #   dispatcher — `_release_to_waiting` re-stamps `dispatch_deadline_at`, so any
 #   unrelated scan finishing would push a parked job's deadline forward and it
 #   would never reach its `agent_unavailable` expiry.
@@ -610,7 +610,7 @@ async def test_finalizing_in_an_executor_thread_still_drains_the_backlog(
     )
 
 
-# ── Task 25: the recurring pass, and whose hostname may rename a device ───────
+# ── the recurring pass, and whose hostname may rename a device ───────
 #
 # `_auto_merge_known_devices` makes a recurring cadence bearable: a profile that
 # rescans the same subnet must refresh `last_seen` on known devices rather than

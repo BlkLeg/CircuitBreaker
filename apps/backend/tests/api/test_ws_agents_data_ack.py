@@ -1,4 +1,4 @@
-"""The server half of acknowledged delivery (plan Phase 5).
+"""The server half of acknowledged delivery.
 
 Every test here drives a real /link WebSocket — real Noise handshake, real
 encrypted frames — because the property under test is not "does the ack

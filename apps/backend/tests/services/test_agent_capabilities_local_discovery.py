@@ -72,7 +72,7 @@ def test_defaults_match_the_plan_document() -> None:
     ],
 )
 def test_numeric_bounds_are_enforced(key, accepted, rejected) -> None:
-    """Server-side hard ceilings on top of the configurable values (plan §1).
+    """Server-side hard ceilings on top of the configurable values.
 
     Oversized requests are *rejected*, not silently truncated: an operator who
     typed 100 000 addresses must find out here rather than discover later that

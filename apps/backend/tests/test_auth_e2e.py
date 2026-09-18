@@ -99,7 +99,7 @@ class TestForgotPassword:
 
     @pytest.mark.asyncio
     async def test_the_410_names_the_supported_recovery_path(self, client):
-        """INC-08. "Temporarily disabled" told a locked-out user nothing they could act
+        """The phrase "temporarily disabled" tells a locked-out user nothing they could act
         on, and the word "temporarily" promised a return that is not planned for 1.0.0.
         The two paths named here are real: POST /admin/users/{id}/reset-password issues a
         one-time password and forces a change at next login, and Reset With Vault Key is

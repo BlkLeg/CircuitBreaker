@@ -218,7 +218,7 @@ def test_build_install_command_fails_closed_without_pin(monkeypatch, db_session)
         agent_install.build_install_command(db_session, "https://cb.example.com")
 
 
-# ── Task 28: install scripts reflect the successor key after activation ────
+# ── install scripts reflect the successor key after activation ────
 
 
 def _add_letsencrypt_cert(db_session) -> None:
@@ -729,7 +729,7 @@ def _run_preflight(tmp_path, *, reachable: bool, tls_pin: str = "c" * 44):
     `(returncode, stderr, curl_argv, user_created)`.
 
     `user_created` is the assertion that matters. The preflight exists so that
-    a wrong `CB_SERVER_URL` "costs nothing" (design §7): it must fail before
+    a wrong `CB_SERVER_URL` "costs nothing": it must fail before
     the script has touched the host. A stub `useradd` that records being called
     is the only thing that can prove that, and asserting on the script's text
     cannot.

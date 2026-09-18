@@ -22,7 +22,7 @@ from tests.discovery.helpers import (
 )
 
 # ---------------------------------------------------------------------------
-# Creation-time validation of an agent-targeted profile or scan (Slice 4, §3/§7)
+# Creation-time validation of an agent-targeted profile or scan
 # ---------------------------------------------------------------------------
 #
 # The same preconditions apply at profile save and at job creation. Every refusal
@@ -292,7 +292,7 @@ def test_a_server_scan_job_is_not_validated_against_any_agent(db_session, nmap_e
 
 
 # ---------------------------------------------------------------------------
-# Reaching the agent through the API (Slice 4, §3 / Task 19 / Task 20)
+# Reaching the agent through the API
 # ---------------------------------------------------------------------------
 #
 # The two entry points a human can reach — "Run now" and the ad-hoc scan form —

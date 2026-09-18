@@ -4,7 +4,7 @@ Five events retire an in-flight run: a monitor is paused, deleted or reassigned,
 the agent's `remote_probe` grant is turned off, or the agent is revoked. All
 five share one implementation in `monitor_service`, and all five are
 authoritative in the database *first* — the frame that tells the agent to stop
-is best effort (§4), so every test here checks the run row, not just the wire.
+is best effort, so every test here checks the run row, not just the wire.
 
 The run row is the part that has to be right: `uq_monitor_probe_runs_active` is
 a partial unique index over `(monitor_id) WHERE status IN ('queued',
@@ -308,7 +308,7 @@ async def test_revoking_an_agent_cancels_runs_and_preserves_assignments(
 async def test_cancellation_is_best_effort_and_a_failed_publish_still_expires_the_run(
     db_session, factories, monkeypatch
 ):
-    """§4: "Cancellation is best-effort; the backend remains authoritative."
+    """The claim "cancellation is best-effort; the backend remains authoritative."
 
     Redis being down means the agent never hears about it — and must not mean
     the monitor is wedged behind a run nobody will ever close.

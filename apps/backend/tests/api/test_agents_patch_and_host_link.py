@@ -1,6 +1,6 @@
 """PATCH /agents/{id}: renaming an agent, and editing its hardware (host) link
 after approval -- relinking, unlinking, and the host_link_changed audit trail
-(Task 19).
+.
 
 Split out of the former tests/api/test_agents_api.py.
 """
@@ -27,7 +27,7 @@ async def test_patch_renames_agent(client, factories, auth_headers):
     assert resp.json()["name"] == "renamed"
 
 
-# ── Task 19: host-link editing after approval ──────────────────────────────
+# ── host-link editing after approval ──────────────────────────────
 
 
 @pytest.mark.asyncio

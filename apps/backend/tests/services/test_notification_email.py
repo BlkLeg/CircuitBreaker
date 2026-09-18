@@ -1,4 +1,4 @@
-"""Email notification sink delivery (INC-02).
+"""Email notification sink delivery.
 
 The finding this file exists for: ``notify_email`` read ``smtp_host`` / ``smtp_port``
 / ``user`` / ``pass`` out of the sink's ``provider_config``, but the sink form has

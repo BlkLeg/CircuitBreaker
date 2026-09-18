@@ -671,7 +671,7 @@ async def test_a_failing_bootstrap_never_escapes_its_task(monkeypatch):
     await discovery_bootstrap._bootstrap_in_session(1)
 
 
-# ── Task 25: the recurring cadence, and the three pause scopes ────────────────
+# ── the recurring cadence, and the three pause scopes ────────────────
 #
 # Plan §3 step 5 gives an automatic profile a six-hourly cron, and plan §3's
 # closing paragraph says "the central UI can pause automatic discovery globally,
@@ -781,7 +781,7 @@ async def test_the_system_profiles_cadence_is_what_the_discovery_status_reports(
     db_session, factories, running_scheduler
 ):
     """End to end onto the field the UI renders: the derived six-hourly cron
-    (D-7) becomes an APScheduler fire time, and `next_scheduled` is it."""
+    becomes an APScheduler fire time, and `next_scheduled` is it."""
     from app.api.discovery import _compute_discovery_status
 
     agent = _agent(db_session, factories)
@@ -852,7 +852,7 @@ async def test_a_global_pause_holds_the_agents_profile_and_not_the_servers(
 
 
 async def test_a_per_agent_pause_stops_only_that_agents_profiles(db_session, factories):
-    """`local_discovery.auto_discovery_paused` (Task 3). One agent held, the
+    """`local_discovery.auto_discovery_paused`. One agent held, the
     fleet beside it untouched."""
     from app.core.scheduler import reload_discovery_jobs
 
@@ -872,7 +872,7 @@ async def test_a_per_agent_pause_stops_only_that_agents_profiles(db_session, fac
 
 
 async def test_a_per_subnet_pause_stops_only_that_subnet(db_session, factories):
-    """`discovery_profiles.paused_at` (Task 4). The agent's other segment keeps
+    """`discovery_profiles.paused_at`. The agent's other segment keeps
     its cadence, which is the whole reason the column is per profile."""
     from app.core.scheduler import reload_discovery_jobs
     from app.core.time import utcnow

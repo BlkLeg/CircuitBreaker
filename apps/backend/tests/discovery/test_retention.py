@@ -6,7 +6,7 @@ Split out of the former tests/test_discovery.py.
 from tests.discovery.helpers import _AGENT_SUBNET, _eligible_agent
 
 # ---------------------------------------------------------------------------
-# The retention purge against agent-sourced history (Task 26)
+# The retention purge against agent-sourced history
 # ---------------------------------------------------------------------------
 #
 # Slice 4 hangs three new foreign keys off the rows this daily cron deletes:

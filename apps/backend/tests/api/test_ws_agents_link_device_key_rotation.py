@@ -38,7 +38,7 @@ from tests.helpers.agent_noise_client import TestNoiseInitiator
 pytestmark = pytest.mark.usefixtures("agent_redis_default")
 
 
-# ── Task 27: device-key rotation, end-to-end over the real /link socket ────
+# ── device-key rotation, end-to-end over the real /link socket ────
 
 
 def _new_device_keypair() -> tuple[bytes, str]:

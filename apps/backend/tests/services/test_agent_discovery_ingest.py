@@ -68,7 +68,7 @@ def _agent(db_session, factories, *, config=None, facts=None, tenant=None, statu
 
 
 def _job(db_session, agent, **kwargs):  # type: ignore[no-untyped-def]
-    """A job in the state the dispatcher (Task 20) leaves it in."""
+    """A job in the state the dispatcher leaves it in."""
     defaults = {
         "scan_agent_id": agent.id,
         "dispatch_id": secrets.token_hex(16),
@@ -293,7 +293,7 @@ async def test_finding_outside_the_jobs_targets_is_rejected_and_audited(
 async def test_finding_is_judged_against_the_scope_snapshotted_on_the_job(
     db_session, factories, emitted
 ):
-    """D-16. The agent's live scope is not the authority here: a sender that
+    """The agent's live scope is not the authority here: a sender that
     could move its own scope between dispatch and ingest — by reporting a new
     interface — would otherwise widen what it is allowed to report about. The
     job carries the version that was in force when the request was built, and a
@@ -593,7 +593,7 @@ async def test_banner_is_carried_through_as_untrusted_text(db_session, factories
 async def test_result_tenant_comes_from_the_job_and_never_from_the_payload(
     db_session, factories, emitted
 ):
-    """D-17. Asserting only that a payload-supplied tenant was ignored would
+    """Asserting only that a payload-supplied tenant was ignored would
     pass against a NULL and prove nothing, so the non-NULL assertion is the
     point of the test."""
     agent = _agent(db_session, factories)
@@ -932,7 +932,7 @@ async def test_a_terminal_summary_finalizes_the_job(db_session, factories, emitt
 
 
 async def test_a_summary_never_clobbers_the_incremental_counters(db_session, factories, emitted):
-    """D-10. `_scan_finalize` writes `hosts_*` absolutely from a finished
+    """`_scan_finalize` writes `hosts_*` absolutely from a finished
     batch's stats dict; the agent path has no batch and increments them per
     accepted finding, so a shared finalizer would overwrite every count with a
     dict this path never assembles. The summary's own `hosts_found` is the
@@ -1262,7 +1262,7 @@ async def test_a_host_finding_spooled_before_a_cancel_is_refused_but_never_audit
 async def test_a_finding_refused_with_audited_still_increments_the_refusal_counter(
     db_session, factories, emitted
 ):
-    """The ordering guard for `_handle_discovery_finding` (plan Phase 3).
+    """The ordering guard for `_handle_discovery_finding`.
 
     `agent_link` calls `record_refused_frame` *before* the `if exc.audited:
     return` early return, and the two lines are one move apart. Moving the
@@ -1310,7 +1310,7 @@ async def test_host_finding_without_an_address_is_rejected(db_session, factories
     assert _results(db_session, job) == []
 
 
-# ── Log hygiene (plan §7) ─────────────────────────────────────────────────────
+# ── Log hygiene ─────────────────────────────────────────────────────
 
 
 async def test_a_crlf_hostname_never_forges_a_second_log_record(
@@ -1344,7 +1344,7 @@ async def test_a_crlf_hostname_never_forges_a_second_log_record(
 async def test_rejection_reasons_carry_an_address_and_a_code_and_nothing_else(
     db_session, factories, emitted, caplog
 ):
-    """Plan §7: `banner`, `hostname` and `evidence` never appear in a reason
+    """`banner`, `hostname` and `evidence` never appear in a reason
     string, a log line or an `agent_events` detail. An operator reading the
     audit trail must not be reading attacker-authored text."""
     agent = _agent(db_session, factories)
@@ -1437,7 +1437,7 @@ async def test_a_schema_rejection_never_echoes_the_offending_untrusted_value(
     assert leak in str(excinfo.value.__cause__)
 
 
-# ── What ingest deliberately does not do (D-5, plan §5) ───────────────────────
+# ── What ingest deliberately does not do ───────────────────────
 
 
 def test_ingest_reaches_neither_the_reconciler_nor_auto_merge() -> None:

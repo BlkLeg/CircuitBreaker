@@ -1,4 +1,4 @@
-"""Vault key rotation must carry notification sink secrets with it (INC-06).
+"""Vault key rotation must carry notification sink secrets with it.
 
 ``rotate_vault_key`` re-encrypts an explicit list of locations. A secret stored
 somewhere not on that list survives rotation as ciphertext nobody can read

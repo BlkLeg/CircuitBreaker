@@ -154,7 +154,7 @@ def test_two_mints_never_produce_the_same_token(db_session, factories):
 def test_a_token_outside_its_declared_bounds_is_refused(
     db_session, factories, ttl_seconds, max_uses
 ):
-    """TTL and max_uses are what bound a token's blast radius (design §5), so
+    """TTL and max_uses are what bound a token's blast radius, so
     both are validated at the only place a token can be created."""
     from app.services import agent_enrollment_tokens as tokens
 
@@ -271,7 +271,7 @@ def test_a_multi_use_token_is_spent_exactly_max_uses_times(db_session, factories
 
 @pytest.mark.parametrize("case", ["unknown", "expired", "revoked", "spent"])
 def test_every_failure_mode_is_the_same_answer(db_session, factories, case):
-    """Not an oracle (design §4): a caller must not be able to tell an unknown
+    """Not an oracle: a caller must not be able to tell an unknown
     token from a spent, revoked or expired one — that difference is exactly
     what would let someone probe for live tokens."""
     from app.services import agent_enrollment_tokens as tokens
@@ -345,7 +345,7 @@ def test_revoking_an_unknown_token_is_none_not_an_error(db_session):
     assert tokens.revoke_token(db_session, 999_999) is None
 
 
-# ── The one genuine race (design §4, §10) ────────────────────────────────────
+# ── The one genuine race ────────────────────────────────────
 
 
 def test_concurrent_boots_cannot_over_consume_a_token(setup_db):

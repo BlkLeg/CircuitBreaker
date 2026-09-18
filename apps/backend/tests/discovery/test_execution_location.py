@@ -17,7 +17,7 @@ from tests.discovery.helpers import (
 )
 
 # ---------------------------------------------------------------------------
-# Execution location on the profile API (Slice 4, D-7)
+# Execution location on the profile API
 # ---------------------------------------------------------------------------
 
 
@@ -83,7 +83,7 @@ async def test_update_profile_ignores_managed_by_in_the_body(client, auth_header
 
 
 # ---------------------------------------------------------------------------
-# Execution location on the read schemas (Slice 4, §6 / Task 26)
+# Execution location on the read schemas
 # ---------------------------------------------------------------------------
 #
 # `DiscoveryProfileOut` and `ScanJobOut` are the only shapes the Discovery page

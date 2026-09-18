@@ -164,7 +164,7 @@ async def test_source_is_always_monitor(db_session, factories):
 
 
 async def test_details_are_never_written_to_telemetry_timeseries(db_session, factories):
-    """D-8: `details` and per-sample `error_reason` live only in
+    """`details` and per-sample `error_reason` live only in
     `monitor_probe_runs.result_metadata`. The hypertable keeps neither."""
     item = _monitor(factories, check_type="dns")
     agent = factories.agent(status="active")
@@ -244,7 +244,7 @@ def _execution_record(item, **kwargs):
     """An execution error: the vantage failed, which says nothing about the target.
 
     It deliberately carries an `avail` sample so the assertions below prove the
-    branch drops it rather than merely never receiving one (§6).
+    branch drops it rather than merely never receiving one.
     """
     defaults = {
         "outcome": result_service.OUTCOME_EXECUTION_ERROR,

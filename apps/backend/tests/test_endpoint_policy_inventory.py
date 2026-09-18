@@ -518,7 +518,7 @@ def test_full_endpoint_inventory_matches_runtime_routes():
 
 
 # (METHOD, path) -> why this write needs no role gate. Follows the exemption shape of
-# `_UNMOUNTED_ROUTERS` (INC-05) and `UNLISTED_ROUTES` (INC-21): a reason is mandatory,
+# `_UNMOUNTED_ROUTERS` and `UNLISTED_ROUTES`: a reason is mandatory,
 # and a stale entry fails its own test.
 _SELF_SERVICE = (
     "self-service: the acting user is the only subject, so a role gate would lock a "

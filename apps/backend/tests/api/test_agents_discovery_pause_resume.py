@@ -1,5 +1,5 @@
 """Per-agent discovery pause / resume, and deletion against a live discovery-
-profile assignment (Task 26). The pause is a distinct hold from a capability
+profile assignment. The pause is a distinct hold from a capability
 disable -- it stops scheduling without cancelling in-flight work.
 
 Split out of the former tests/api/test_agents_api.py.
@@ -17,7 +17,7 @@ from tests.api.agent_fakes import (
 )
 
 # ---------------------------------------------------------------------------
-# Per-agent pause / resume, and deletion against a live assignment (Task 26)
+# Per-agent pause / resume, and deletion against a live assignment
 # ---------------------------------------------------------------------------
 
 

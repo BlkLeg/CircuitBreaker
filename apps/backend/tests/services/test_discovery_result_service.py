@@ -1,4 +1,4 @@
-"""The one row-building and hardware-classification path for a discovery result (§5, D-9).
+"""The one row-building and hardware-classification path for a discovery result.
 
 `_scan_import` drives it once per row of a finished batch; Slice 4's agent
 ingest drives it once per incremental finding. Everything asserted here is
@@ -232,7 +232,7 @@ def test_agent_conflict_is_classified_and_recorded(db_session, factories) -> Non
 
 def test_agent_row_imports_idempotently_through_the_review_queue(db_session, factories) -> None:  # type: ignore[no-untyped-def]
     """An agent-provenance row is an ordinary review-queue row: accepting it
-    twice must upsert one Hardware, not two (plan §5.7)."""
+    twice must upsert one Hardware, not two."""
     from app.schemas.discovery import BatchImportItem, BatchImportRequest
     from app.services.discovery_import_service import batch_import
 

@@ -19,7 +19,7 @@ from tests.discovery.helpers import (
 )
 
 # ---------------------------------------------------------------------------
-# Cancellation on every path (Slice 4, D-14 / D-16)
+# Cancellation on every path
 # ---------------------------------------------------------------------------
 #
 # Five events retire an in-flight discovery dispatch: the job is cancelled, its
@@ -411,7 +411,7 @@ def test_disabling_a_profile_off_the_event_loop_still_closes_its_jobs(db_session
     assert job.error_reason == agent_discovery.ERROR_PROFILE_DISABLED
 
 
-# ── A scope change under a live dispatch (D-16) ───────────────────────────────
+# ── A scope change under a live dispatch ───────────────────────────────
 
 
 def _scope_version(db_session, agent):
@@ -420,7 +420,7 @@ def _scope_version(db_session, agent):
     The signal a caller has that the report changed anything, and deliberately
     not `record_network_facts`' return value: that is the *cancellation* the
     report produced, and it is empty both when nothing changed and when a real
-    change touched no job worth cancelling (D-16). `generation` is the version
+    change touched no job worth cancelling. `generation` is the version
     the scheduler, the UI and the audit trail all cite, so it is the one the
     tests below cite too.
     """
@@ -538,7 +538,7 @@ async def test_an_unchanged_network_report_cancels_nothing(db_session, factories
 async def test_a_job_still_waiting_for_its_agent_survives_a_scope_change_it_fits(
     db_session, factories, cancel_frames
 ):
-    """A parked job (D-5) holds no lease and no version snapshot, so a scope that
+    """A parked job holds no lease and no version snapshot, so a scope that
     moved without dropping its target must leave it alone — cancelling it would
     fail a scan that is still perfectly authorized."""
     agent = _eligible_agent(factories)

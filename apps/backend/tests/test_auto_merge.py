@@ -7,7 +7,7 @@ Verifies the four cases:
   3. Known device, MAC changed → stays pending (user review)
   4. New device (no match) → stays pending (user review)
 
-Also verifies prober dedup (Task 5):
+Also verifies prober dedup:
   5. Second prober run with the same devices must not create additional pending rows.
 """
 
@@ -159,7 +159,7 @@ def test_hostname_updated_on_known_device(db_session):
     assert hw.hostname == "new-hostname"
 
 
-# ── Task 5: prober dedup — second run must not create duplicate pending rows ──
+# ── prober dedup — second run must not create duplicate pending rows ──
 
 # 14 fake devices matching the "32 runs × 14 devices = 448 rows" scenario
 _PROBER_DEVICES = [

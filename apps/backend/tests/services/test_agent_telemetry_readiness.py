@@ -1,4 +1,4 @@
-"""Task 13 / D-8: `capability.readiness` refreshes the agent's directly
+"""`capability.readiness` refreshes the agent's directly
 connected networks mid-session.
 
 `hello.networks` is sent once, at connect. Without a mid-session refresh a
@@ -259,7 +259,7 @@ async def test_an_explicit_empty_networks_list_replaces_the_last_report(db_sessi
     assert (row.generation, row.facts) == (2, [])
 
 
-# ── The cancellation the refreshed scope produces (D-16) ──────────────────────
+# ── The cancellation the refreshed scope produces ──────────────────────
 # A readiness report that moves the scope retires the dispatches the new scope
 # no longer authorizes. `agent_discovery`'s cancellation section states the rule
 # every trigger obeys: the rows are closed inside the caller's transaction, and
@@ -350,7 +350,7 @@ async def _drain_the_loop() -> None:
 async def test_a_readiness_commit_that_fails_publishes_no_discovery_cancel(
     db_session, factories, cancel_frames
 ):
-    """Nothing is published from inside the transaction (D-16).
+    """Nothing is published from inside the transaction.
 
     A cancel published before the commit that closes its job is a cancel the
     rollback un-does: the agent abandons the sweep, the server still shows the

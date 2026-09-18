@@ -1,4 +1,4 @@
-"""The shared agent network-scope evaluator (Task 3, design §3).
+"""The shared agent network-scope evaluator.
 
 Slice 4's discovery imports this module unchanged, so these tests pin the rules
 themselves rather than one caller's use of them: what a `direct_private` grant
@@ -194,7 +194,7 @@ def test_empty_effective_scope_denies_every_destination() -> None:
 
 
 def test_normalize_remote_probe_config_rejects_default_routes() -> None:
-    """§3: `0.0.0.0/0` and `::/0` are rejected in v1 rather than treated as
+    """`0.0.0.0/0` and `::/0` are rejected in v1 rather than treated as
     convenient shortcuts. Task 5's capability normalizer delegates here."""
     for default_route in ("0.0.0.0/0", "::/0"):
         with pytest.raises(ValueError, match="whole address space"):
@@ -289,7 +289,7 @@ def test_scope_version_changes_only_when_effective_scope_changes() -> None:
     )
 
 
-# --- Whole-prefix containment (Slice 4, D-15) ---------------------------------
+# --- Whole-prefix containment ---------------------------------
 #
 # `evaluate` answers about one address. Slice 4 dispatches a *prefix* to an
 # agent, so "is every address in this CIDR permitted" has to be a first-class

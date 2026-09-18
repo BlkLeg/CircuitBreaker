@@ -1,4 +1,4 @@
-"""Connection-pool saturation metrics (route §5).
+"""Connection-pool saturation metrics.
 
 Route §5 lists "DB pool utilization + `pool_timeout` events" among the things
 measured at every tier, and the Phase 2 load generator has a `db_pool` block in

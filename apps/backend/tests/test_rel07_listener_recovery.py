@@ -406,7 +406,7 @@ async def test_result_processed_event_is_emitted_from_a_threadpool_caller(monkey
 
 async def test_result_processed_event_is_not_abandoned_when_no_loop_exists(monkeypatch, caplog):
     """With nothing to schedule on, the coroutine must be closed rather than
-    left for the garbage collector to report as never awaited (REL-08)."""
+    left for the garbage collector to report as never awaited."""
     import warnings
 
     from app.services import discovery_merge, discovery_scheduler

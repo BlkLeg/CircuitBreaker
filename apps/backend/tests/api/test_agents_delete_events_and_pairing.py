@@ -25,7 +25,7 @@ async def test_delete_requires_admin_not_viewer(client, factories, viewer_header
 async def test_deleting_an_agent_with_assigned_monitors_returns_409(
     client, factories, auth_headers
 ):
-    """`monitor_items.probe_agent_id` is RESTRICT (Task 6), so without this
+    """`monitor_items.probe_agent_id` is RESTRICT, so without this
     pre-check the delete surfaces as an unhandled IntegrityError and a 500.
     §8: agent deletion is blocked while assignments remain — unassigning is a
     decision the operator makes explicitly, never a side effect of a delete."""

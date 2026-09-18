@@ -1,4 +1,4 @@
-"""The bulk presence REST endpoint (Task 12): online/offline state read from
+"""The bulk presence REST endpoint: online/offline state read from
 Redis, capability-grant rendering (including legacy shapes and the contract
 shared with agent-detail), linked-hardware summaries, and the single-
 mget/single-query contracts a large fleet depends on.
@@ -40,7 +40,7 @@ def _redis_with_presence(presence_by_key: dict[str, dict]):
     return redis_client
 
 
-# ── Task 12: bulk presence REST endpoint ────────────────────────────────────
+# ── bulk presence REST endpoint ────────────────────────────────────
 
 
 @pytest.mark.asyncio

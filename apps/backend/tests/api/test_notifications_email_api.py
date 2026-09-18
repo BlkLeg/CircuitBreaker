@@ -1,4 +1,4 @@
-"""Email sink HTTP boundary (INC-02).
+"""Email sink HTTP boundary.
 
 The *Test* button and real dispatch used to take different paths — the button
 sent through the global SMTP settings while ``notify_email`` read SMTP fields

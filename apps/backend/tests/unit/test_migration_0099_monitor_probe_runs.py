@@ -1,4 +1,4 @@
-"""Schema-level guarantees for the remote-probe tables (Task 6, §1).
+"""Schema-level guarantees for the remote-probe tables.
 
 Two things have to be true for a remote vantage to be storable at all: the
 `monitor_items.probe_*` columns and their `(probe_agent_id, enabled,

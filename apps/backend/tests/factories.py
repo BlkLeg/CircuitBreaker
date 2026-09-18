@@ -214,7 +214,7 @@ class Factories:
         return event
 
     def agent_network(self, agent, facts=None, **kwargs):
-        """The agent's one current `hello.networks` report (D-1).
+        """The agent's one current `hello.networks` report.
 
         `facts` must already be in the normalized form
         `agent_registry.record_network_facts` writes — sorted interfaces, each

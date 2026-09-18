@@ -8,7 +8,7 @@ import pytest
 
 from tests.api.agent_fakes import REMOTE_PROBE_DEFAULT_CONFIG
 
-# ── Slice 3 §7: assigned probes and the eligible-agent listing ───────────────
+# ── assigned probes and the eligible-agent listing ───────────────
 
 
 class _FakePresenceRedis:

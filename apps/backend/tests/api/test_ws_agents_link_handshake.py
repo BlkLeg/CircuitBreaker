@@ -37,7 +37,7 @@ pytestmark = pytest.mark.usefixtures("agent_redis_default")
 
 def test_link_sends_hello_ack_then_capabilities_set_on_connect(db_session, ws_client):
     """The real Go agent (`internal/link/link.go`) only fires `OnConnected` —
-    which resets reconnect backoff and gates link success (Task 4) — on an
+    which resets reconnect backoff and gates link success — on an
     accepted `hello.ack` frame; it never applies capabilities from anything
     else at connect time. So `/link` must send a genuine `hello.ack` first
     (accepted, this agent's id, and — per the durable-delivery guarantee
@@ -195,7 +195,7 @@ def test_link_hello_metadata_updates_across_reconnects(db_session, ws_client):
 
 
 def test_link_version_changed_fires_only_on_reconnect_at_target_version(db_session, ws_client):
-    """Task 24: `version_changed` must never fire at update-request time (that
+    """`version_changed` must never fire at update-request time (that
     transition is `update_queued`, recorded by api/agents.py:post_update) —
     only once a later `/link` reconnect's hello reports the agent actually
     running `pending_update_version`. A reconnect that reports some *other*

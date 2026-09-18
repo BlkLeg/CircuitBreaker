@@ -1,4 +1,4 @@
-"""Schema-level guarantees for the agent spool-state columns (Task 16, D-12).
+"""Schema-level guarantees for the agent spool-state columns.
 
 `agents.spool_depth` / `spool_bytes` / `spool_reported_at` are what the Agent
 Detail catch-up indicator reads, and they are the only user-visible evidence

@@ -1,5 +1,5 @@
 """
-Test migration 0093: agents.pending_device_pk / pending_device_pk_expiry columns (Task 27).
+Test migration 0093: agents.pending_device_pk / pending_device_pk_expiry columns.
 
 Tests verify:
 1. Migration file exists and is loadable

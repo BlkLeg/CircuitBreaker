@@ -74,7 +74,7 @@ async def test_bounds_are_enforced_at_the_edge(
 async def test_the_default_ttl_and_max_uses_are_the_safe_ones(
     client, auth_headers, configured_endpoint
 ):
-    """Omitting both must not widen a token: one use, one hour (design §5)."""
+    """Omitting both must not widen a token: one use, one hour."""
     resp = await client.post(
         "/api/v1/agents/enrollment-tokens",
         json={"label": "defaults", "endpoint_id": "pub1"},
