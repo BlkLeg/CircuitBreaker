@@ -8,44 +8,102 @@ Apply the following settings via GitHub Settings > Branch protection rules:
 
 ### Pull Request Requirements
 - **Require a pull request before merging**: ✓ Enabled
-  - Minimum 1 approving review required
-  - Require review from Code Owners: ✓ Enabled
-  - Dismiss stale pull request approvals when new commits are pushed: ✓ Enabled
+- **Required approving reviews: 0** — deliberately, and this is the one setting
+  here that documents an absence rather than a control.
+
+  GitHub does not let an author approve their own pull request. This project has
+  exactly one codeowner (EXC-002), so any non-zero approval count, and any
+  Code Owner review requirement, is unsatisfiable by the only person able to
+  satisfy it: every pull request would sit unmergeable forever. The two ways out
+  are to require the review and grant the sole maintainer a bypass, or to not
+  require it. A bypass was rejected on 2026-09-17: it reports the branch as
+  review-protected while the only merges that happen are bypass events, which is
+  a setting that looks enforced and is not — the precise condition GOV-15 exists
+  to detect.
+
+  What stands in for the second pair of eyes is EXC-002's own compensating
+  control, now actually enforced rather than merely described: 22 required status
+  checks that a single reviewer cannot wave through, including the endpoint
+  policy gate, the release-control ledger validator, and ten security scanners.
+
+  Revisit this the moment a second maintainer joins — that is also the condition
+  under which EXC-002 closes.
+- **Dismiss stale pull request approvals when new commits are pushed**: not
+  applicable while the approval count is 0.
 
 ### Status Checks
 - **Require status checks to pass before merging**: ✓ Enabled
-  - Required status checks. GitHub matches these on the check-run **name** — the
-    string after `name:` in the job — not on the job id. The previous list named
-    `test`, `lint` and `trivy-scan`; the first two were lowercase job ids that
-    match nothing, and no job called `trivy-scan` has ever existed.
+  - GitHub matches these on the check-run **name** — the string after `name:` in
+    the job — not on the job id. The list below was verified on 2026-09-17 by
+    enumerating every workflow with a `pull_request` trigger for `main` or `dev`
+    and reading the `name:` of each job it defines. Three earlier revisions of
+    this file named checks that no workflow reported (`test`, `lint`,
+    `trivy-scan`, then `Browser E2E`), and a required check that is never
+    reported leaves every pull request pending forever — including the one that
+    would correct the list. Re-verify after adding, renaming or path-filtering
+    any job.
+
+  **From `ci.yml` (main) and `dev-ci.yml` (dev) — 8 checks**
     - `Lint` — Tier 0 static gates: repo-policy suite, ruff, mypy, eslint, and the
-      release-control ledger validator (`ci.yml`, `dev-ci.yml`)
+      release-control ledger validator
     - `Security Gate` — `scripts/security_scan.sh --gate`, fails on HIGH/CRIT
     - `Backend tests (shard 1/4)` … `(shard 4/4)` — the sharded backend suite
-    - `Backend coverage gate` — the combined-shard coverage ratchet, which the
-      previous list omitted entirely
-    - `Trivy Filesystem Scan` and `Trivy Config / IaC Scan` (`security.yml`) — the
-      two jobs `trivy-scan` was presumably meant to name
+    - `Backend coverage gate` — the combined-shard coverage ratchet
     - `Fresh-install migrations`
+    - `Test` — frontend vitest and the Go agent suite
     - `Browser E2E` — the **aggregate** job (`browser-e2e-gate`), not the shards.
       The Playwright job is a matrix, so it reports `Browser E2E (shard 1/2)` and
       `(shard 2/2)` and never a check called `Browser E2E`: naming the bare string
-      here required a check that is never reported, which matches nothing and
-      enforces nothing. Naming the two shards instead would work until the shard
-      count changes, at which point the new shard is unrequired and silently
-      optional. `browser-e2e-gate` is `name: Browser E2E`, needs both shards, and
-      runs under `if: always()` so that a failed shard cannot skip it — a skipped
-      required check counts as satisfied, so the aggregate had to be written to
-      fail rather than to vanish. Until 2026-09-17 this suite ran on `main` only;
-      `dev-ci.yml` now runs the same matrix, so this check exists on both branches.
+      here required a check that is never reported. Naming the two shards instead
+      would work until the shard count changes, at which point the new shard is
+      unrequired and silently optional. `browser-e2e-gate` is `name: Browser E2E`,
+      needs both shards, and runs under `if: always()` so that a failed shard
+      cannot skip it — a skipped required check counts as satisfied, so the
+      aggregate had to be written to fail rather than to vanish. Until 2026-09-17
+      this suite ran on `main` only; `dev-ci.yml` now runs the same matrix.
+
+  **From `security.yml` (both branches) — 10 checks**
+    - `Security Suppression Metadata`
+    - `Trivy Filesystem Scan`
+    - `Trivy Config / IaC Scan`
+    - `Semgrep (SAST)`
+    - `Bandit (Python SAST)`
+    - `Gitleaks (Secret Scanning)`
+    - `Checkov (GitHub Actions / IaC)`
+    - `Python Dependency Audit`
+    - `Frontend Dependency Audit`
+    - `Go Vulnerability Scan`
+
+    None of the ten is `continue-on-error`, so each already fails its run — they
+    were simply never required. Two of them are also SEC-18's named scanners, so
+    requiring them is what makes that row's acceptance load-bearing rather than
+    advisory.
+
+  **From `codeql.yml` (both branches) — 2 checks**
+    - `Analyze (Python)`
+    - `Analyze (JavaScript / TypeScript)`
+
+  **Deliberately NOT required**
+    - `Build docs (strict)` and `Link check` (`docs.yml`). These are blocking
+      jobs and would otherwise belong above, but `docs.yml` is **path-filtered**
+      to `docs/**`, `mkdocs.yml`, `README.md`, `SECURITY.md`, `CONTRIBUTING.md`,
+      `.lycheeignore` and its own file. A required check is only satisfied by
+      being reported, and a code-only pull request never triggers this workflow,
+      so requiring either one would hang every backend or frontend change
+      indefinitely. Path-filtered workflows cannot be required checks; this is
+      the same failure mode as a misnamed check, reached by a different route.
+    - `Build Native (amd64)` and `Build Docker (smoke test)` are `dev-ci.yml`
+      only, so they cannot be required on `main`. The second builds the mono
+      image and then starts it through `docker-compose.yml` — `/livez`,
+      `/readyz`, the served frontend, every supervisord program, restart count
+      and SIGTERM shutdown. `main`'s equivalent coverage is `release.yml` at tag
+      time, which builds the image per-architecture and calls
+      `artifact-smoke.yml` for the packages. They are **not** currently required
+      on `dev` either: one identical required set on both branches is one list to
+      re-verify instead of two that drift apart, which is the failure this file
+      keeps having. Adding them to the `dev` ruleset alone is a safe follow-up.
+
   - **Require branches to be up to date before merging**: ✓ Enabled
-  - Checks that exist on **one** branch only, and so cannot be required on both:
-    - `Build Native (amd64)` and `Build Docker (smoke test)` are `dev-ci.yml` only.
-      The second builds the mono image and then actually starts it through
-      `docker-compose.yml` — `/livez`, `/readyz`, the served frontend, every
-      supervisord program, restart count and SIGTERM shutdown. `main`'s
-      equivalent coverage is `release.yml` at tag time, which builds the image
-      per-architecture and calls `artifact-smoke.yml` for the packages.
 
 ### Administration
 - **Enforce all above rules for administrators**: ✓ Enabled
@@ -58,12 +116,23 @@ Apply the following settings via GitHub Settings > Branch protection rules:
 ### SEC-07 Public Route Review Gate
 - `.github/CODEOWNERS` maps the checked-in public endpoint allowlist and route-inventory gate to
   `security-owner`.
-- With Code Owner review required, any pull request that adds or changes a reviewed public endpoint
-  policy entry requires explicit security-owner approval before merge.
+- **This gate is not currently enforced by review, and SEC-07 should not be read
+  as if it were.** Its stated mechanism is Code Owner approval, which a
+  single-codeowner repository cannot produce (see Pull Request Requirements
+  above). Until a second maintainer exists, a change to the public endpoint
+  policy merges without a second person's approval.
+- What does still gate it automatically: the endpoint policy / route-inventory
+  check runs inside `Lint` (Tier 0), which is a required status check, so an
+  unclassified or silently-changed public route fails the pull request even
+  though no human is required to look at it. That is a materially weaker control
+  than the one SEC-07 describes — it catches *undeclared* changes, not
+  *ill-advised declared* ones — and the difference is the open half of SEC-07.
 
 ---
 
-**Note**: These rules prevent direct pushes to `main` and `dev`. All changes must go through pull requests with at least one approval and passing security/quality checks.
+**Note**: These rules prevent direct pushes to `main` and `dev`. All changes must
+go through pull requests with passing security/quality checks — and, while this
+project has one maintainer, with no approving review (see above).
 
 **This file is documentation, not configuration.** Nothing in the repository
 applies or verifies it — the live settings are server-side, and the two were out
