@@ -792,19 +792,42 @@ jobs:
           cat /tmp/readyz.json 2>/dev/null || echo "(no response body)"
           exit 1
 
-      # The frontend half. The backend can be live and ready in an image whose
-      # Alpine builder stage produced no bundle, and nothing else in this
-      # workflow would notice: nginx serves the SPA, so a 200 with HTML here is
-      # the assertion that the build stage and the nginx config agree about
-      # where the files are.
-      - name: Assert nginx serves the frontend
+      # The frontend half, in two parts, because the mono image does not serve
+      # the SPA over HTTP at all.
+      #
+      # nginx.mono.conf's :8080 block proxies only the four health endpoints and
+      # the ACME challenge; its `location /` is `return 301 https://$host$uri`.
+      # The SPA lives in the :8443 block, which is the one with
+      # `root /app/frontend/dist` and the try_files fallback. Asserting 200 on
+      # http://…:18080/ therefore failed against a perfectly healthy container —
+      # the first run of this job caught it, which is the job working.
+      #
+      # The redirect is asserted rather than followed. It is a security control:
+      # anything that is not a health probe must be pushed to TLS, and a silent
+      # -L here would turn its removal into a passing test.
+      - name: Assert plain HTTP redirects to TLS
         run: |
           set -euo pipefail
-          code="$(curl -s -o /tmp/index.html -w '%{http_code}' --max-time 10 http://127.0.0.1:18080/)"
-          [ "${code}" = "200" ] || { echo "::error::GET / returned HTTP ${code}, expected 200"; exit 1; }
+          code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:18080/)"
+          [ "${code}" = "301" ] \
+            || { echo "::error::GET / over HTTP returned ${code}, expected a 301 to HTTPS"; exit 1; }
+          echo "HTTP -> HTTPS redirect in place"
+
+      # -k because entrypoint-mono.sh generates a self-signed certificate on
+      # first boot when /data/tls is empty, which is exactly the state a fresh
+      # container is in. The assertion is about nginx and the frontend bundle,
+      # not about the trust chain.
+      #
+      # A 200 alone is not enough: an image whose Alpine builder stage produced
+      # no bundle would still answer, so the SPA shell is what is checked.
+      - name: Assert nginx serves the frontend over TLS
+        run: |
+          set -euo pipefail
+          code="$(curl -sk -o /tmp/index.html -w '%{http_code}' --max-time 10 https://127.0.0.1:18443/)"
+          [ "${code}" = "200" ] || { echo "::error::GET / over HTTPS returned HTTP ${code}, expected 200"; exit 1; }
           grep -qi '<div id="root"' /tmp/index.html \
             || { echo "::error::GET / returned 200 but not the SPA shell"; head -c 400 /tmp/index.html; exit 1; }
-          echo "frontend served"
+          echo "frontend served over TLS"
 
       # supervisord is the only thing that knows whether the other twelve
       # processes are alive. Every program in supervisord.mono.conf is

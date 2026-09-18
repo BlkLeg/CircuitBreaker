@@ -20,6 +20,11 @@ set -euo pipefail
 
 CONTAINER_NAME="${CB_MONO_E2E_CONTAINER:-cb-mono-e2e}"
 HTTP_PORT="${CB_MONO_E2E_PORT:-18999}"
+# The SPA is served only from the :8443 block in nginx.mono.conf, so a run that
+# publishes 8080 alone can never reach the frontend. The old script published
+# exactly that and then asserted 200 on http://…/ — an assertion the mono image
+# has never been able to satisfy.
+HTTPS_PORT="${CB_MONO_E2E_HTTPS_PORT:-18998}"
 DATA_DIR="${CB_MONO_E2E_DATA:-}"
 # Default matches `make docker-build`, which tags $(DOCKER_REGISTRY):$(cat VERSION).
 # It was `…:mono-latest`, a tag that has never been built or published — the
@@ -69,7 +74,7 @@ umask 077
 } > "$ENV_FILE"
 
 echo "[E2E] Using image: $IMAGE"
-echo "[E2E] Port: $HTTP_PORT  Data: $DATA_DIR  Container: $CONTAINER_NAME"
+echo "[E2E] Ports: ${HTTP_PORT} (http) ${HTTPS_PORT} (https)  Data: $DATA_DIR  Container: $CONTAINER_NAME"
 
 if [[ "${BUILD_MONO:-0}" == "1" ]]; then
   # `make docker-build`, not `make docker-mono`: the latter is not a target and
@@ -90,6 +95,7 @@ fi
 echo "[E2E] Starting container..."
 docker run -d --name "$CONTAINER_NAME" \
   -p "${HTTP_PORT}:8080" \
+  -p "${HTTPS_PORT}:8443" \
   -v "${DATA_DIR}:/data" \
   --env-file "$ENV_FILE" \
   "$IMAGE"
@@ -148,11 +154,25 @@ while true; do
   sleep 3
 done
 
-echo "[E2E] Checking frontend (/)..."
-status=$(curl -s -o /tmp/cb-mono-index.html -w "%{http_code}" --max-time 10 \
+# Asserted, not followed. The :8080 block proxies only the health endpoints and
+# the ACME challenge; everything else is `return 301 https://$host$request_uri`,
+# which is a security control. Using curl -L here would keep this test passing
+# if that redirect were ever removed.
+echo "[E2E] Checking the HTTP -> HTTPS redirect..."
+status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
   "http://127.0.0.1:${HTTP_PORT}/")
+if [[ "$status" != "301" ]]; then
+  dump_logs_and_fail "GET / over HTTP returned $status (expected a 301 to HTTPS)"
+fi
+
+# -k: entrypoint-mono.sh writes a self-signed certificate on first boot when
+# /data/tls is empty, which is the state every fresh run is in. This asserts
+# nginx and the bundle, not the trust chain.
+echo "[E2E] Checking frontend (https /)..."
+status=$(curl -sk -o /tmp/cb-mono-index.html -w "%{http_code}" --max-time 10 \
+  "https://127.0.0.1:${HTTPS_PORT}/")
 if [[ "$status" != "200" ]]; then
-  dump_logs_and_fail "Frontend returned HTTP $status (expected 200)"
+  dump_logs_and_fail "Frontend returned HTTP $status over TLS (expected 200)"
 fi
 # A 200 that is not the SPA shell means the Alpine builder stage produced no
 # bundle and nginx is serving something else — a case the status code alone
