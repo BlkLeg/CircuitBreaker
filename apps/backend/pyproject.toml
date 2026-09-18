@@ -58,12 +58,16 @@ dependencies = [
     "apscheduler>=3.10",
     "dnspython>=2.6",
     "httpx>=0.27",
-    # anyio 4.15.0+ deprecates anyio.abc.BlockingPortal; starlette 1.6.0's
-    # TestClient still references that alias at import time. With
+    # Floor: 4.14.2 is the fixed release for CVE-2026-63374 (IDNA 2003 host
+    # encoding in TLSStream), CVE-2026-64847 and CVE-2026-63349. CI installs
+    # from this file, not requirements.txt, so the floor — not the lock — is
+    # what keeps a vulnerable anyio out of the environment tests run in.
+    # Ceiling: anyio 4.15.0+ deprecates anyio.abc.BlockingPortal; starlette
+    # 1.6.0's TestClient still references that alias at import time. With
     # filterwarnings=error that becomes a collection failure across the
-    # backend/integration suites (CI installs via pip, not poetry.lock).
+    # backend/integration suites.
     # Remove the upper bound when starlette stops using anyio.abc.BlockingPortal.
-    "anyio>=4.0,<4.15",
+    "anyio>=4.14.2,<4.15",
     "fastapi-users[sqlalchemy]>=13.0.0",
     "nats-py>=2.9.0",
     "zeroconf>=0.149.16",
