@@ -118,7 +118,7 @@ func TestMain(m *testing.M) {
 // through tlsdial.NewTransport(trust) rather than http.Get/
 // http.DefaultClient — actually dials through HTTPS_PROXY end to end, for
 // the pin != "" (pinned/self-signed) branch, which is the one that
-// previously bypassed HTTPS_PROXY entirely (Task 13's fix covered enroll/
+// previously bypassed HTTPS_PROXY entirely (the fix covered enroll/
 // link, not the update downloader). The pin == "" branch shares
 // tlsdial.NewTransport's identical Proxy wiring and is covered generically
 // by tlsdial_test.go; a self-signed test server can't exercise it here

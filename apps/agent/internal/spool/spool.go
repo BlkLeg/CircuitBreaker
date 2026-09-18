@@ -32,7 +32,7 @@ const (
 )
 
 // Spool is a bounded, oldest-dropped, append-only queue for *data* frames
-// only — control frames must never be enqueued (spec §4.4). Persisted as
+// only — control frames must never be enqueued. Persisted as
 // newline-delimited JSON so an unclean shutdown still recovers every line
 // that was fully written before the crash; a torn final line is dropped and
 // rewritten away by load() before anything is appended after it.

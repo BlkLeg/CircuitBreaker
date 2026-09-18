@@ -2,12 +2,12 @@
 //
 // It turns this host's directly connected networks plus the server-issued `remote_probe` grant
 // config into a versioned effective scope, and answers "may this agent reach that destination?".
-// §3 requires the backend and the agent to enforce scope independently — which is a safety
+// The backend and the agent must enforce scope independently — which is a safety
 // property only while both enforce the *same* scope, so every decision here is pinned against
 // fixtures/agent_scope_corpus.json, the corpus the backend evaluator is driven through too.
 //
 // The package deliberately depends on nothing but the standard library: internal/capability
-// embeds Config in its `remote_probe` grant config and Slice 4's local discovery imports it too,
+// embeds Config in its `remote_probe` grant config and the local discovery imports it too,
 // so a dependency on internal/frame, internal/link or internal/collect would either be an import
 // cycle or a reason for somebody to grow a second rule set instead.
 //
@@ -46,7 +46,7 @@ const (
 
 	ReasonPrefixTooWide = "prefix_too_wide"
 
-	// ReasonNotDirectlyConnected has no backend counterpart on purpose: it is §3's agent-side
+	// ReasonNotDirectlyConnected has no backend counterpart on purpose: it is the agent-side
 	// extra rule, which the backend cannot express because only the agent knows which of the
 	// networks it was authorized for it is actually attached to right now.
 	ReasonNotDirectlyConnected = "not_directly_connected"
@@ -93,7 +93,7 @@ var blockedNetworks = []netip.Prefix{
 }
 
 // excludedInterfaceFlags names the interfaces whose networks are not "directly connected" in
-// §3's sense: a loopback has no peers and a point-to-point tunnel carries a route, not a shared
+// the sense: a loopback has no peers and a point-to-point tunnel carries a route, not a shared
 // segment. Down interfaces are *not* filtered — hostinfo reports only up ones, and an absent
 // flags list is an older report rather than a down link.
 var excludedInterfaceFlags = map[string]bool{"loopback": true, "pointtopoint": true}
@@ -121,7 +121,7 @@ type Config struct {
 // Scope is what one agent may reach, and the version of that answer.
 //
 // Networks is the allow list (directly connected plus centrally approved); DirectNetworks and
-// ApprovedNetworks are the two halves that produced it, kept apart because §3's agent-side rule
+// ApprovedNetworks are the two halves that produced it, kept apart because the agent-side rule
 // needs to tell them apart — a destination that is in Networks but in neither half was
 // authorized by something this host cannot corroborate.
 //
@@ -280,7 +280,7 @@ func NetworkInScope(scope Scope, cidr string) Decision {
 // NetworkIsDirectlyConnected reports whether cidr is contained in a network this host is
 // actually attached to right now.
 //
-// §7 requires the agent to re-check that an automatically-scoped target is still directly
+// The agent must re-check that an automatically-scoped target is still directly
 // connected at execution time, not merely at the moment the server derived scope. That is a
 // question only the agent can answer, so it is deliberately *not* folded into NetworkInScope:
 // doing so would make the two evaluators disagree by design and the shared corpus meaningless.
@@ -300,8 +300,8 @@ func NetworkIsDirectlyConnected(scope Scope, cidr string) bool {
 // NetworkIsApproved reports whether cidr is contained in a network an administrator explicitly
 // added to the grant, rather than one this host derived from its own interfaces.
 //
-// It is the other half of the question NetworkIsDirectlyConnected asks, and it exists because §3
-// scopes the directly-connected requirement to *automatically* derived targets: plan §2 lets an
+// It is the other half of the question NetworkIsDirectlyConnected asks, and it exists because the
+// directly-connected requirement is scoped to *automatically* derived targets: an
 // administrator approve a routed subnet on purpose, and such a subnet is by definition not on a
 // segment this host is attached to. Requiring both would make the override unusable.
 //
@@ -448,7 +448,7 @@ func evaluateAddress(scope Scope, address netip.Addr) Decision {
 	if len(networks) == 0 {
 		return Decision{Reason: ReasonEmptyScope, Address: text}
 	}
-	// §3's agent-side rule: the allow list is not enough on its own. A destination is reachable
+	// the agent-side rule: the allow list is not enough on its own. A destination is reachable
 	// only where this host is actually attached to it, or where an administrator named it
 	// explicitly — so a network that entered the server's allow list some other way (a route
 	// advertisement seen when the facts were last reported, say) cannot widen the default grant.

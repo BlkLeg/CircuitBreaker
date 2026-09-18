@@ -41,7 +41,7 @@ func TestIdentityReadiness(t *testing.T) {
 // precisely (OS in particular must equal runtime.GOOS exactly, never a distro identifier — see
 // hostinfo.go's package doc); the machine-id/os-release-derived OSVersion/MAC values are
 // environment-dependent so only structural invariants are checked (field wiring is correct;
-// nothing panics; the result decodes to the Task 1 schema).
+// nothing panics; the result decodes to the the design schema).
 func TestCollect(t *testing.T) {
 	got := Collect("1.2.3", "")
 
@@ -70,10 +70,10 @@ func TestCollect(t *testing.T) {
 	if got.SpoolDepth != 0 {
 		t.Errorf("Collect().SpoolDepth = %d, want 0 — hostinfo is deliberately spool-agnostic; "+
 			"internal/link owns Options.Spool and stamps the real at-connect depth onto the "+
-			"payload after calling Collect (D-12)", got.SpoolDepth)
+			"payload after calling Collect", got.SpoolDepth)
 	}
 
-	// Sanity: the result must actually satisfy the Task 1 schema type, not just structurally
+	// Sanity: the result must actually satisfy the the design schema type, not just structurally
 	// resemble it.
 	var _ frame.HelloPayload = got
 }

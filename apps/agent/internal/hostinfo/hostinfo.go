@@ -1,5 +1,5 @@
 // Package hostinfo collects the real host metadata carried in every `hello` frame — enrollment
-// and every link reconnect alike (specs/2026-07-26-cb-agent-design.md §3.4, §4.3, §4.6). It is
+// and every link reconnect alike. It is
 // schema-agnostic collection only: nothing here validates or sequences hello frames (see
 // internal/enroll and internal/link for that).
 //
@@ -28,7 +28,7 @@ import (
 // SpoolDepth is left at its zero value here by design: the outbound spool is owned by
 // internal/link (Options.Spool), not by host collection, so this collector has no access to it
 // and would only be guessing. internal/link's runOnce stamps the real at-connect depth onto the
-// returned payload immediately after calling Collect (D-12), and reports it live thereafter on
+// returned payload immediately after calling Collect, and reports it live thereafter on
 // every heartbeat (frame.HeartbeatPayload) — the heartbeat, not the hello, is what lets the
 // server see a backlog drain to zero without waiting for a reconnect. Callers other than
 // internal/link get a zero here and should not read it.
@@ -53,8 +53,8 @@ func Collect(agentVersion string, serverURL string) frame.HelloPayload {
 }
 
 // identityReadiness reports the one readiness signal cheaply available at this stage: whether a
-// stable machine identity could be derived. Task 20's real collector readiness (host.docker,
-// host.hwmon, ...) supersedes this once those collectors exist (spec §4.3).
+// stable machine identity could be derived. the real collector readiness (host.docker,
+// host.hwmon, ...) supersedes this once those collectors exist.
 func identityReadiness(machineIDHash string) []frame.Readiness {
 	if machineIDHash == "" {
 		return []frame.Readiness{{

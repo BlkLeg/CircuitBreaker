@@ -1,6 +1,6 @@
 // Package tlsdial builds a *websocket.Dialer (and *http.Transport) that
 // honors agent.toml's TLS trust policy — the agent-side counterpart of
-// agent_install.py's SPKI pinning (Task 17). Self-signed certs generated for
+// agent_install.py's SPKI pinning. Self-signed certs generated for
 // LAN appliances commonly carry only a legacy CN (no SAN), which Go's
 // standard chain verifier rejects outright regardless of trust, so pinning
 // bypasses chain/hostname verification entirely in favor of an exact SPKI

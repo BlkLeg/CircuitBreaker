@@ -2,7 +2,7 @@
 
 // Package status persists the daemon's runtime state to
 // <state-dir>/status.json, the source of truth `cb-agent status` reads from
-// (specs/2026-07-26-cb-agent-design.md §4.7: "link state, grants, collector
+//
 // readiness, spool depth"). Before this package existed, `cb-agent status`
 // had no daemon state to read and instead called
 // enroll.LoadOrCreateDeviceKey — generating a device identity as a side

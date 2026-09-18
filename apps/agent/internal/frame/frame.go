@@ -14,7 +14,7 @@ import (
 const FrameVersion = 1
 
 // Frame is the wire envelope for every agent<->server message, nested inside
-// the Noise-encrypted channel. v1 — see specs/2026-07-26-cb-agent-design.md §3.4.
+// the Noise-encrypted channel. v1.
 type Frame struct {
 	V       int             `json:"v"`
 	Type    string          `json:"type"`
@@ -53,7 +53,7 @@ const (
 	// TypeUpdateStatus reports one self-update transition point the server
 	// can't otherwise observe (download-start, swap-success, failure,
 	// rollback — queue-time is already server-side). Additive-only
-	// protocol-v1 addition (Task 24), mirroring
+	// protocol-v1 addition, mirroring
 	// apps/backend/src/app/schemas/agent_frame.py's TYPE_UPDATE_STATUS.
 	TypeUpdateStatus = "update.status"
 )
@@ -127,13 +127,13 @@ var allFrameTypes = []string{
 // controlFrameTypes are the frame types that must never reach the outbound
 // spool (internal/spool): link-protocol control traffic, plus the heartbeat
 // liveness signal, none of which is host data the spool exists to buffer
-// through an outage (spec §4.4). This is deliberately a deny-list rather than
+// through an outage. This is deliberately a deny-list rather than
 // an allow-list of known data types: every type not named here — including
-// telemetry/probe/discovery/log payloads Slice 2+ has not introduced yet —
+// telemetry/probe/discovery/log payloads not introduced yet —
 // classifies as a data frame, so internal/link's spool wiring needs no code
 // change to pick up a future slice's new data frame type (Global
 // Constraints: "wire the mechanism ... so it activates automatically once
-// Slice 2+ introduces data frames").
+// data frames are introduced").
 var controlFrameTypes = map[string]bool{
 	TypeHello:               true,
 	TypeHeartbeat:           true,
@@ -174,7 +174,7 @@ func IsDataFrame(typ string) bool {
 // conformance_test.go pins their wire shape against apps/backend/src/app/schemas/agent_frame.py.
 
 // Readiness reports one collector's ability to run, carried in HelloPayload.Readiness and in
-// CapabilityReadinessPayload.Readiness — see specs/2026-07-26-cb-agent-design.md §4.3.
+// CapabilityReadinessPayload.Readiness.
 //
 // State is exactly one of ready | degraded | unavailable | disabled. That set is closed:
 // apps/backend/src/app/services/agent_telemetry.py's ingest_readiness is authoritative and rejects
@@ -193,7 +193,7 @@ type CapabilityGrant struct {
 }
 
 // NetworkFacts is one of the agent host's directly connected networks, carried in
-// HelloPayload.Networks (D-1). Addrs are CIDR strings taken straight from the interface's own
+// HelloPayload.Networks. Addrs are CIDR strings taken straight from the interface's own
 // addresses ("10.0.0.5/24", "fd00::1/64"), i.e. the host address *with* its prefix length —
 // that prefix is what makes the network "directly connected" and is the only input the slice-3
 // scope evaluator needs. Flags carries net.Flags' own vocabulary ("up", "broadcast",
@@ -208,8 +208,8 @@ type NetworkFacts struct {
 	Addrs []string `json:"addrs,omitempty"`
 }
 
-// HelloPayload is the agent -> server `hello` payload's structured shape
-// (specs/2026-07-26-cb-agent-design.md §3.4, §4.3, §4.6). Every field is optional so an
+// HelloPayload is the agent -> server `hello` payload's structured shape.
+// Every field is optional so an
 // old-shaped hello — including today's empty `{}` payload — still decodes: absent fields take
 // their Go zero value rather than failing decode.
 type HelloPayload struct {
@@ -307,8 +307,7 @@ type HelloPayload struct {
 }
 
 // HelloAckPayload is the server -> agent `hello.ack` payload's structured shape for the
-// post-enrollment link-establishment handshake (specs/2026-07-26-cb-agent-design.md §4.2: the
-// server "re-sends the authoritative set on every hello.ack"). The enrollment socket
+// post-enrollment link-establishment handshake. The enrollment socket
 // (WS /api/agents/enroll) also emits `hello.ack` frames for pairing-code/status messages with a
 // different, untyped payload shape (see ws_agents.py's `_ack_bytes`); this struct models only
 // the link ack. All fields are optional/zero-valued when absent.
@@ -358,7 +357,7 @@ type DataAckPayload struct {
 // CapabilityReadinessPayload is the agent -> server `capability.readiness` payload.
 //
 // Networks is the same shape as HelloPayload.Networks and exists so an agent can refresh its
-// directly connected networks *mid-session* (Slice 4 D-8). Hello carries them only at connect,
+// directly connected networks *mid-session*. Hello carries them only at connect,
 // so without this a subnet that appeared on this host would not become discoverable until the
 // next reconnect — which may be days.
 //
@@ -372,7 +371,7 @@ type CapabilityReadinessPayload struct {
 	Networks  []NetworkFacts `json:"networks"`
 }
 
-// HeartbeatPayload is the agent -> server `heartbeat` payload (D-12),
+// HeartbeatPayload is the agent -> server `heartbeat` payload,
 // mirroring apps/backend/src/app/schemas/agent_frame.py's HeartbeatPayload.
 // It reports the live outbound-spool backlog so the server — and the Agent
 // Detail catch-up indicator — can see a drain in progress and see it finish,
@@ -497,7 +496,7 @@ type TransportRekeyPayload struct {
 }
 
 // UpdateStatusPayload is the agent -> server `update.status` payload's
-// structured shape (Task 24), mirroring
+// structured shape, mirroring
 // apps/backend/src/app/schemas/agent_frame.py's UpdateStatusPayload. Phase is
 // one of "started"/"succeeded"/"failed"/"rolled_back"; Error is only ever set
 // alongside "failed".
@@ -528,12 +527,12 @@ type TLSPinRotatePayload struct {
 	Expiry       time.Time `json:"expiry"`
 }
 
-// ProbeAssignPayload is the server -> agent `probe.assign` payload (§4): exactly one remote check,
+// ProbeAssignPayload is the server -> agent `probe.assign` payload: exactly one remote check,
 // fully specified, mirroring apps/backend/src/app/schemas/agent_frame.py's ProbeAssignPayload.
 //
 // RunID is the server-minted 32-hex token that is the *only* identifier a result may be posted
 // against — a leaked monitor id buys nothing. Config is the monitor's complete validated
-// configuration and therefore carries HTTP credentials when the monitor has them (D-10), which is
+// configuration and therefore carries HTTP credentials when the monitor has them, which is
 // why it is left as raw JSON rather than a typed struct: this package must not become somewhere
 // a secret can accidentally be logged, compared or persisted. The runtime holds it for the life
 // of the run and nothing else.
@@ -550,7 +549,7 @@ type ProbeAssignPayload struct {
 	DeadlineAt  time.Time       `json:"deadline_at"`
 }
 
-// ProbeCancelPayload is the server -> agent `probe.cancel` payload (§4), sent when a monitor is
+// ProbeCancelPayload is the server -> agent `probe.cancel` payload, sent when a monitor is
 // paused, deleted, reassigned, has its capability disabled, or the agent is revoked. Reason is
 // advisory: cancellation is best-effort and the backend stays authoritative, rejecting any result
 // that arrives for a run it has already closed.
@@ -563,14 +562,14 @@ type ProbeCancelPayload struct {
 // apps/backend/src/app/services/monitoring/collectors.Sample so a remote result reaches the
 // shared result service in the same shape a server-executed one does. ErrorReason is the
 // collectors' own per-sample annotation ("http_error", "dns_error"); it is audit metadata
-// persisted only in monitor_probe_runs.result_metadata (D-8), never in telemetry_timeseries.
+// persisted only in monitor_probe_runs.result_metadata, never in telemetry_timeseries.
 type ProbeSample struct {
 	Metric      string  `json:"metric"`
 	Value       float64 `json:"value"`
 	ErrorReason string  `json:"error_reason,omitempty"`
 }
 
-// ProbeResultPayload is the agent -> server `probe.result` payload (§4), mirroring
+// ProbeResultPayload is the agent -> server `probe.result` payload, mirroring
 // apps/backend/src/app/schemas/agent_frame.py's ProbeResultPayload.
 //
 // Outcome is closed: "completed" (a real target result, feed the state machine),
@@ -597,7 +596,7 @@ type ProbeResultPayload struct {
 	Details    map[string]any `json:"details,omitempty"`
 }
 
-// Slice 4 plan §4's bounds. Declared alongside the structs rather than left to the collector so
+// the wire bounds. Declared alongside the structs rather than left to the collector so
 // the encoder and the server's pydantic models are reading the same numbers — a bound only one
 // side knows about is one the other has no reason to respect.
 const (
@@ -626,7 +625,7 @@ const (
 	DiscoveryOutcomeRejected       = "rejected"
 )
 
-// DiscoveryRequestPayload is the server -> agent `discovery.request` payload (plan §4), mirroring
+// DiscoveryRequestPayload is the server -> agent `discovery.request` payload, mirroring
 // apps/backend/src/app/schemas/agent_frame.py's DiscoveryRequestPayload.
 //
 // One bounded, one-shot scan. Every limit here is *also* checked by the agent against its own
@@ -634,7 +633,7 @@ const (
 // independent checks on purpose, so a backend bug cannot widen what an agent will actually scan.
 //
 // ScopeVersion is the netscope.Scope.Version in force when the request was built. The agent
-// re-derives its own and refuses a mismatch: plan §2 requires an active request to be cancelled
+// re-derives its own and refuses a mismatch: an active request must be cancelled
 // when scope changes incompatibly, and a version is what makes that decidable without shipping
 // the whole CIDR list on every dispatch.
 type DiscoveryRequestPayload struct {
@@ -649,7 +648,7 @@ type DiscoveryRequestPayload struct {
 	DeadlineAt         time.Time `json:"deadline_at"`
 }
 
-// DiscoveryCancelPayload is the server -> agent `discovery.cancel` payload (plan §4), sent when
+// DiscoveryCancelPayload is the server -> agent `discovery.cancel` payload, sent when
 // the job is cancelled, its profile disabled, scope changed incompatibly, the capability
 // disabled, or the agent revoked. Reason is advisory: cancellation is best-effort and the
 // backend stays authoritative, rejecting any finding that arrives for a dispatch it has already
@@ -669,7 +668,7 @@ type DiscoveryOpenPort struct {
 	Banner   string `json:"banner,omitempty"`
 }
 
-// DiscoveryFindingPayload is the agent -> server `discovery.finding` payload (plan §4), mirroring
+// DiscoveryFindingPayload is the agent -> server `discovery.finding` payload, mirroring
 // apps/backend/src/app/schemas/agent_frame.py's DiscoveryFindingPayload.
 //
 // Kind is closed: "host" describes one discovered address, "summary" is the dispatch's single

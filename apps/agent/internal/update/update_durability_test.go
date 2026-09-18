@@ -11,7 +11,7 @@ import (
 
 // TestSwap_NewVersionAlwaysInstalledAt0755 covers the "fixed 0755, no mode
 // preservation" property that replaces the old preserveModeAndOwnership
-// step (specs/2026-08-05-cb-agent-self-update-fix-design.md): every version
+// step: every version
 // directory and binary is created directly by cb-agent, as cb-agent, at a
 // fixed mode — there is no "restore the original owner/mode" step because
 // nothing is ever renamed over an existing root-owned file anymore.
@@ -281,7 +281,7 @@ func TestMoveFile_CrossDeviceCopyFallbackSyncsDestination(t *testing.T) {
 }
 
 // TestPruneVersions_KeepsCurrentAndNamedVersionRemovesRest covers the
-// retention rule Section 5 of specs/2026-08-05-cb-agent-self-update-fix-
+// retention rule Section 5 of
 // design.md specifies: after an update confirms, only current's target and
 // the version just confirmed-away-from survive.
 func TestPruneVersions_KeepsCurrentAndNamedVersionRemovesRest(t *testing.T) {

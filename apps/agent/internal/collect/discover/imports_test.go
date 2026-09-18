@@ -17,13 +17,13 @@ import (
 //
 // The allowlist is by *symbol* rather than by import path because probe is a single Go package:
 // probe.ListenUnprivilegedICMP and probe.httpChecker live behind the same import, so forbidding
-// the import would also forbid the ICMP socket Task 10 deliberately reuses.
+// the import would also forbid the ICMP socket the probe half deliberately reuses.
 //
 // Every entry is a *host seam* — a question about this machine that both collectors have to ask
 // and must not answer two different ways — and nothing else may be added without being one:
 //
 //   - EchoSession, ListenUnprivilegedICMP: the unprivileged datagram-ICMP socket the sweep and
-//     probe's ICMP check both open (Task 10).
+//     probe's ICMP check both open.
 //   - SystemNameservers: /etc/resolv.conf. A second parser here could report discovery.dns ready
 //     on a host where probe.dns is degraded, about one file.
 //   - ICMPReadinessRemediation: the sysctl instruction for that same socket. Two wordings for one
@@ -42,17 +42,17 @@ var probeAllowed = map[string]bool{
 
 // forbiddenImports are the packages that would let discovery speak an application protocol.
 //
-// Plan §7: discovery follows no HTTP redirect and makes no application-level authenticated
+// The contract: discovery follows no HTTP redirect and makes no application-level authenticated
 // request. net/http does both by default — probe/http.go:297-303 installs a CheckRedirect that
 // follows up to httpMaxRedirects hops, and http.Client carries an Authorization header or a
 // cookie jar straight through them. Banner capture is a raw net.Conn read that writes nothing, so
 // there is no legitimate reason for an HTTP client to appear in this package, and an import guard
 // is the only assertion that keeps holding after the next contributor adds a collector.
 var forbiddenImports = map[string]string{
-	"net/http": "banner capture is a raw net.Conn read; plan §7 forbids following redirects or " +
+	"net/http": "banner capture is a raw net.Conn read; following redirects is forbidden: " +
 		"making authenticated application-level requests",
 	"golang.org/x/net/http2": "same reason as net/http",
-	"os/exec": "plan §1 excludes bundling or invoking an external scanner; the neighbor cache is " +
+	"os/exec": "bundling or invoking an external scanner is excluded; the neighbor cache is " +
 		"read over netlink, not by shelling out to `ip neigh`",
 }
 

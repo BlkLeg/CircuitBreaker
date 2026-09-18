@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// MethodReverseDNS is the discovery.request method that selects the PTR lookup (plan §4).
+// MethodReverseDNS is the discovery.request method that selects the PTR lookup.
 const MethodReverseDNS = "reverse_dns"
 
 const (
@@ -24,7 +24,7 @@ const (
 	MaxHostnameLen = 253
 )
 
-// ReverseDNS resolves the PTR name of a responsive address (plan §1).
+// ReverseDNS resolves the PTR name of a responsive address.
 //
 // The resolver is injected so tests never reach one: a PTR answer is whatever the runner's
 // network decided to say, and the answers this file most needs to test are ones no cooperating

@@ -446,7 +446,7 @@ func TestDiscoveryRuntime_SecondRequestForALiveDispatchIsRefused(t *testing.T) {
 	}
 }
 
-// TestDiscoveryRuntime_CancelStopsWorkAndStillSummarizes pins plan §4: cancellation is
+// TestDiscoveryRuntime_CancelStopsWorkAndStillSummarizes pins the contract: cancellation is
 // best-effort at the protocol level but the dispatch still has to close itself out, or the
 // backend waits out the whole dispatch deadline for a job that stopped minutes ago.
 func TestDiscoveryRuntime_CancelStopsWorkAndStillSummarizes(t *testing.T) {
@@ -529,7 +529,7 @@ func TestDiscoveryRuntime_RejectedRequestEmitsOnlyASummary(t *testing.T) {
 		{
 			// And the real validator, which is what makes the row above more than a tautology: a
 			// stub can only report a code someone typed into this file, so nothing here otherwise
-			// proves the runtime and the validator name the same refusal. D-16's stale dispatch is
+			// proves the runtime and the validator name the same refusal. the stale dispatch is
 			// the case that matters most — the request was built against an authorization this
 			// agent no longer holds.
 			name:     "the real validator refuses a scope version the agent no longer holds",
@@ -615,7 +615,7 @@ func TestDiscoveryRuntime_RejectedRequestEmitsOnlyASummary(t *testing.T) {
 }
 
 // TestDiscoveryRuntime_FreshRuntimeRefusesUntilAGrantEnablesIt pins the fail-closed default plan
-// §7 rests on: construction is not authorization. This Runtime holds a working validator and a
+// the rule rests on: construction is not authorization. This Runtime holds a working validator and a
 // real derived scope — every ingredient of an approval except the approval — and it still scans
 // nothing, because the only thing allowed to say "granted" is a capabilities.set grant arriving
 // through Configure.
@@ -643,7 +643,7 @@ func TestDiscoveryRuntime_FreshRuntimeRefusesUntilAGrantEnablesIt(t *testing.T) 
 		t.Errorf("outcome = %q, want %q", refusal.Outcome, frame.DiscoveryOutcomeRejected)
 	}
 	// capability_disabled, and specifically not validation_unavailable: the two are different
-	// failures that the backend maps to different D-4 error_reasons — "this agent was never
+	// failures that the backend maps to different error_reasons — "this agent was never
 	// granted local_discovery" is an authorization answer an operator can act on, while "this
 	// agent has no validator" is a build or wiring fault. Collapsing them would hide the second
 	// behind the first for every ungranted request.
@@ -681,7 +681,7 @@ func TestDiscoveryRuntime_FreshRuntimeRefusesUntilAGrantEnablesIt(t *testing.T) 
 	}
 }
 
-// TestDiscoveryRuntime_DisableRefusesAndStopsWork pins plan §7's "capability disable stops
+// TestDiscoveryRuntime_DisableRefusesAndStopsWork pins the plan's "capability disable stops
 // current and future discovery": an in-flight dispatch closes out as cancelled and the next
 // request is refused with a reason the backend can act on.
 func TestDiscoveryRuntime_DisableRefusesAndStopsWork(t *testing.T) {
@@ -763,10 +763,10 @@ func TestDiscoveryRuntime_ExpiredRequestIsAnExecutionErrorNotASilentDrop(t *test
 // arrival and *ran out of time mid-sweep* leaves that check untouched, and the only signal is the
 // error Liveness.Sweep returns — whose sole source is ctx.Err(). Discarding it reports
 // outcome="completed" for a scan that covered a fraction of its targets: the backend finalizes the
-// job as a clean success, the operator sees a /24 with four hosts in it, and Task 5's
+// job as a clean success, the operator sees a /24 with four hosts in it, and the
 // execution_error arm of the closed outcome vocabulary is unreachable by construction.
 //
-// The counts are retained rather than zeroed, per D-4's spirit: the hosts observed before the
+// The counts are retained rather than zeroed, by design's spirit: the hosts observed before the
 // deadline were still observed, and the job keeps them and is reviewable. What changes is the
 // outcome, which is what tells an operator the coverage is partial.
 func TestDiscoveryRuntime_DeadlineReachedMidSweepIsAnExecutionErrorWithPartialFindings(t *testing.T) {
@@ -894,7 +894,7 @@ func TestDiscoveryRuntime_CancellationOutranksAnExpiredDeadline(t *testing.T) {
 	}
 }
 
-// TestDiscoveryRuntime_NeighborCacheFailureDegradesRatherThanFailing pins plan §1's four-method
+// TestDiscoveryRuntime_NeighborCacheFailureDegradesRatherThanFailing pins the plan's four-method
 // design: the cache is one source of evidence, and a kernel that will not give one up must not
 // cost the operator the ICMP and TCP results.
 func TestDiscoveryRuntime_NeighborCacheFailureDegradesRatherThanFailing(t *testing.T) {

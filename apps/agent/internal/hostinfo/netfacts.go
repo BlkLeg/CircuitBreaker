@@ -17,7 +17,7 @@ type netFactsCollector struct {
 }
 
 // Networks reports the real host's directly connected networks, for the `hello` frame at connect
-// and for `capability.readiness` thereafter (Slice 4 D-8). It is exported so the readiness path
+// and for `capability.readiness` thereafter. It is exported so the readiness path
 // has the same enumerator hello uses rather than a second one that could disagree with it about
 // the same machine.
 //
@@ -51,8 +51,8 @@ func (c netFactsCollector) addrs(iface net.Interface) ([]net.Addr, error) {
 // means the question could not be asked; `[]frame.NetworkFacts{}` means it was asked and this host
 // genuinely has nothing directly connected. Hello can conflate them — `networks` carries
 // `omitempty` there — but capability.readiness cannot: its `networks` field has no omitempty
-// precisely so an agent that lost every interface can send `[]` and replace the server's copy
-// (D-8), and coercing an unreadable interface list into that same `[]` would wipe a working
+// precisely so an agent that lost every interface can send `[]` and replace the server's copy, and
+// coercing an unreadable interface list into that same `[]` would wipe a working
 // scope every time /sys/class/net blinked.
 func (c netFactsCollector) collect() []frame.NetworkFacts {
 	ifaces, err := c.interfaces()
@@ -113,7 +113,7 @@ func usableAddrs(addrs []net.Addr) []string {
 
 // interfaceFlags is net's own flag vocabulary in net.Flags.String()'s order, restated here so
 // NetworkFacts.Flags is a list of names rather than a "|"-joined string a consumer would have to
-// split. Keep the names byte-identical to net's: the backend and Slice 4 match on them.
+// split. Keep the names byte-identical to net's: the backend and the design match on them.
 var interfaceFlags = []struct {
 	flag net.Flags
 	name string

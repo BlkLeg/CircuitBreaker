@@ -22,7 +22,7 @@ import (
 	"circuitbreaker.dev/cb-agent/internal/netscope"
 )
 
-// httpMaxResponseBytes is §5's bounded inspection window. Keyword and JSON-path assertions see
+// httpMaxResponseBytes is the bounded inspection window. Keyword and JSON-path assertions see
 // the first mebibyte of the body and nothing more: the agent runs on somebody's NAS with a
 // monitor pointed at whatever an administrator typed, so an unbounded ReadAll is a
 // remote-triggerable OOM rather than a thoroughness feature.
@@ -62,7 +62,7 @@ var errHTTPTooManyRedirects = errors.New("probe: too many redirects")
 // its last known state.
 //
 // Its message is built here rather than borrowed from the wrapping *url.Error, whose Error()
-// includes the request URL — which D-10 says may carry credentials in its userinfo or query.
+// includes the request URL, which may carry credentials in its userinfo or query.
 type httpScopeRefusal struct{ msg string }
 
 func (e *httpScopeRefusal) Error() string { return e.msg }
@@ -110,7 +110,7 @@ func (c httpConfig) method() string {
 }
 
 // httpChecker mirrors app.services.monitoring.collectors.web::collect_http and adds the three
-// things §5 requires that the backend collector does not do: every resolved address and every
+// things required here that the backend collector does not do: every resolved address and every
 // redirect hop is validated against the agent's own scope before a connection is opened, the
 // response body is inspected under a hard bound, and nothing derived from the request — headers,
 // body, credentials, or the URL itself — can reach the result or a log line.
@@ -146,7 +146,7 @@ func (c *httpChecker) Check(ctx context.Context, host string, cfg json.RawMessag
 	var conf httpConfig
 	if len(cfg) > 0 {
 		// The decoder error is deliberately dropped: it quotes the offending input, and the
-		// input is the monitor's config — which carries the password (D-10).
+		// input is the monitor's config — which carries the password.
 		if err := json.Unmarshal(cfg, &conf); err != nil {
 			return Outcome{}, errors.New("probe: the monitor's http configuration could not be decoded")
 		}
@@ -672,7 +672,7 @@ func httpRefusalMessage(what, host string, decision netscope.Decision) string {
 //
 // It is a classification rather than the Go error's own text for two reasons. The message travels
 // into probe.result and the monitor's history, and a Go transport error stringifies to
-// `Get "https://user:secret@host/": ...` — the URL D-10 says may carry credentials. And the
+// `Get "https://user:secret@host/": ...` — a URL that may carry credentials. And the
 // backend's names come from httpx's exception hierarchy, so a `*url.Error` on the wire would make
 // the same failure read differently depending on which vantage ran it.
 func httpExceptionName(err error) string {

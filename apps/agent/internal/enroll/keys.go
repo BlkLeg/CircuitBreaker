@@ -92,7 +92,7 @@ func (k *DeviceKey) Fingerprint() string {
 
 // FingerprintGrouped renders Fingerprint() as eight 4-char groups joined by
 // "-", the display form shown on stdout and compared against the approval
-// screen (spec §2.1).
+// screen.
 func (k *DeviceKey) FingerprintGrouped() string {
 	fp := k.Fingerprint()
 	groups := make([]string, 0, 8)

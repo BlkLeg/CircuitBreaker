@@ -136,7 +136,7 @@ func refuseDial(t *testing.T) func(context.Context, string, string) (net.Conn, e
 	}
 }
 
-// TestBannerLimitsMatchThePlanAndTheWireContract pins the two numbers plan §1 names for banner
+// TestBannerLimitsMatchThePlanAndTheWireContract pins the two documented banner limits for
 // capture, and pins them at the seam a regression would actually pass through.
 //
 // The constants are asserted against their literal values because those values are the contract:
@@ -150,10 +150,10 @@ func refuseDial(t *testing.T) func(context.Context, string, string) (net.Conn, e
 // every real capture wrong.
 func TestBannerLimitsMatchThePlanAndTheWireContract(t *testing.T) {
 	if MaxBannerBytes != 512 {
-		t.Errorf("MaxBannerBytes = %d, want plan §1's 512", MaxBannerBytes)
+		t.Errorf("MaxBannerBytes = %d, want 512", MaxBannerBytes)
 	}
 	if DefaultBannerTimeout != 2*time.Second {
-		t.Errorf("DefaultBannerTimeout = %s, want plan §1's 2s", DefaultBannerTimeout)
+		t.Errorf("DefaultBannerTimeout = %s, want 2s", DefaultBannerTimeout)
 	}
 
 	// The byte limit may never exceed the rune limit the frame contract enforces on the encoded
@@ -253,7 +253,7 @@ func TestBannerCaptureStopsOnContextCancellation(t *testing.T) {
 	done := make(chan string, 1)
 	go func() {
 		// A budget far longer than any job would allow: cancellation, not the deadline, has to be
-		// what ends this read. Plan §7 requires discovery to stop quickly on cancellation or a
+		// what ends this read. The contract requires discovery to stop quickly on cancellation or a
 		// grant change, and the whole banner budget is longer than one host timeout.
 		done <- newTestBanner(30*time.Second).Capture(ctx, addr, port, Options{TCPPorts: []int{port}})
 	}()
@@ -505,7 +505,7 @@ func TestBannerCaptureDoesNotSpeakHTTPOrFollowARedirect(t *testing.T) {
 	var mu sync.Mutex
 	var requests []*http.Request
 
-	// Plan §7: no HTTP redirect is followed and no application-level authenticated request is
+	// The contract: no HTTP redirect is followed and no application-level authenticated request is
 	// made. A handler that is never entered proves both at once — there is no first request to
 	// redirect and no header to carry a credential.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

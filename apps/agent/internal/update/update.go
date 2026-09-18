@@ -33,7 +33,7 @@ const markerFilename = "update_pending"
 // distinction existed, a marker's mere presence was treated as proof that
 // the marker's recorded backup was *this* update's actual prior version —
 // true only because, pre-Task-25, the marker was written after Swap
-// succeeded. Task 25 correctly moved WriteMarker to run before Swap (so a
+// succeeded. the design correctly moved WriteMarker to run before Swap (so a
 // crash between the two leaves a recoverable "nothing happened yet" state
 // instead of an unguarded replaced binary), but that reordering broke the
 // old proof: a marker written just before a crash, with Swap never having
@@ -59,8 +59,7 @@ const (
 
 // pendingOutcomeFilename persists a terminal update outcome — today
 // "succeeded" — that a process is about to report live but could lose to a
-// connection drop at exactly the wrong moment (§3.3 of
-// docs/design/2026-09-16-agent-deployment-connection-plan.md). The succeeded
+// connection drop at exactly the wrong moment. The succeeded
 // report is written to the socket immediately before syscall.Exec replaces
 // this process image, and a successful local WebSocket write is not an
 // acknowledgement from the server: the bytes can die in a socket buffer or
@@ -407,8 +406,7 @@ func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
 // CurrentLinkPath returns the path of the "current" symlink under stateDir
 // that Swap/Rollback re-point — the middle link in the two-level indirection
 // /usr/local/bin/cb-agent -> {stateDir}/current ->
-// {stateDir}/versions/<version>/cb-agent (see
-// specs/2026-08-05-cb-agent-self-update-fix-design.md). Exported so
+// {stateDir}/versions/<version>/cb-agent. Exported so
 // cmd/cb-agent/main.go builds the same path without duplicating the
 // "current" literal.
 func CurrentLinkPath(stateDir string) string {
@@ -464,7 +462,7 @@ func resolveSymlinkAbs(linkPath string) (string, error) {
 // atomically re-points {stateDir}/current to that new version directory —
 // so self-update never touches anything outside stateDir, which is already
 // writable by the unprivileged cb-agent user running this process (see
-// specs/2026-08-05-cb-agent-self-update-fix-design.md — this replaces the
+//
 // old in-place rename at a root-owned /usr/local/bin/cb-agent, which that
 // user could never actually perform). Returns the version directory
 // current pointed to *before* the swap, so a later Rollback knows where to
