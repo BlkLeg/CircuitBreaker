@@ -40,7 +40,7 @@ _logger = logging.getLogger(__name__)
 _STREAM_NAME = "TELEMETRY"
 _SUBJECT_FILTER = "telemetry.ingest.>"
 _CONSUMER_DURABLE = "telemetry_ingest"
-#: Delivery budget before a message is parked (route F14). See the matching
+#: Delivery budget before a message is parked. See the matching
 #: constant in monitor_poll_worker — the two consumers deliberately share a
 #: policy so an operator does not have to remember which stream forgives more.
 _MAX_DELIVER = 5
@@ -90,7 +90,7 @@ async def _update_stream_limits(js: Any, cfg: dict[str, Any]) -> None:
     whole argument — why the body is built from the server's stored config, why
     retention is not sent, and why the dedupe window is clamped. It is shared
     with the DISCOVERY worker because this logic existed twice, only one copy was
-    fixed for R12, and nothing made the divergence visible.
+    fixed for the contract, and nothing made the divergence visible.
     """
     await update_stream_limits(js, cfg)
 
@@ -283,7 +283,7 @@ async def run_ingest_loop(stop_event: asyncio.Event) -> None:
             # NAK so NATS redelivers after the ack-wait period — but only while
             # the message still has a delivery budget. Once it is spent the
             # payload is parked and the message terminated, so one unprocessable
-            # sample cannot stall ingest forever (F14).
+            # sample cannot stall ingest forever.
             for msg in msgs:
                 await handle_failed_delivery(
                     msg,

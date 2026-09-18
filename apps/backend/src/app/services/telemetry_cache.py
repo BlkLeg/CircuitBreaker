@@ -18,7 +18,7 @@ from app.services.stream_faults import FAULT_DECODE, record_stream_fault
 
 _logger = logging.getLogger(__name__)
 
-# REL-07 fault-metric identity. Every function here runs once per monitored
+# Fault-metric identity. Every function here runs once per monitored
 # entity per poll, so an unthrottled WARNING per failure is a log storm the
 # moment Redis goes away — which is exactly when the log needs to stay readable.
 _COMPONENT = "telemetry_cache"

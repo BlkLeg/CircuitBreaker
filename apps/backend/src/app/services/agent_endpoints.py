@@ -81,7 +81,7 @@ def find_endpoint(db: Session, endpoint_id: str) -> dict[str, str] | None:
     """The endpoint with this id, or None when it does not exist.
 
     None is what makes the caller 404 rather than silently substituting a
-    different address — see the design's §7 note on why falling back here would
+    different address — see the design's note on why falling back here would
     reintroduce the defect this work exists to fix.
     """
     for endpoint in list_endpoints(db):

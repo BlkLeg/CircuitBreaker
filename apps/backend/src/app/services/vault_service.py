@@ -385,7 +385,7 @@ def rotate_vault_key(db: Session) -> None:
                 )
         return rotated
 
-    # Re-encrypt AppSettings.acme_dns_config (DNS-01 provider credential, INC-07).
+    # Re-encrypt AppSettings.acme_dns_config (DNS-01 provider credential, the contract).
     # Same ``<key>_enc`` convention as a notification sink — see services/acme_secrets.py.
     # Omitting this is how a key rotation silently orphans the credential, and the install
     # finds out at the next renewal instead of at the rotation.

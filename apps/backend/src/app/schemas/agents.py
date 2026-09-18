@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, computed_field, field_validator
 
-# The one capability registry (Task 14 / D-14). Imported at module scope: it is
+# The one capability registry. Imported at module scope: it is
 # dependency-free (typing/stdlib only), so the schema layer does not pull in a
 # DB-touching service and there is no cycle to work around.
 from app.services.agent_capabilities import normalize_grant
@@ -20,8 +20,8 @@ class CapabilityGrant(BaseModel):
 # `CapabilitiesUpdateRequest.capabilities`: every REST *request* keeps
 # accepting a bare boolean or an `{enabled, config}` object per capability,
 # indefinitely. It is never emitted on a response — every response carrying
-# grants uses `CapabilityGrant` with server-normalized config (Task 15,
-# **D-11**). The agent wire protocol is separate and unaffected:
+# grants uses `CapabilityGrant` with server-normalized config (the design,
+# **the contract**). The agent wire protocol is separate and unaffected:
 # `api/ws_agents._wire_grants` still downgrades to booleans for
 # `capability_schema < 2`.
 CapabilityValue = bool | CapabilityGrant
@@ -102,7 +102,7 @@ class AgentRead(AgentSummary):
     # agent that enrolled before the server recorded it, or one running a build
     # that does not report it — deliberately distinct from "dialed nothing".
     enrolled_via_endpoint: str | None = None
-    # Last-reported outbound-spool backlog (Task 16, D-12). NULL means the
+    # Last-reported outbound-spool backlog. NULL means the
     # agent has never reported one — a build predating `HeartbeatPayload` —
     # which is deliberately distinct from 0 ("reported, and drained").
     spool_depth: int | None = None
@@ -169,12 +169,12 @@ class AgentLatestSample(BaseModel):
 
 class AgentPresenceRead(BaseModel):
     """One fleet table row's worth of presence + grant + hardware data —
-    the bulk lookup Task 12 adds so `AgentsPage` (Task 14) can render the
+    the bulk lookup the design adds so `AgentsPage` can render the
     whole fleet from a single request instead of one per-agent call.
 
     `capabilities` is the canonical `{name: {enabled, config}}` shape,
-    unconditionally and with no `?capability_shape` escape hatch (Task 15,
-    **D-11**) — byte-identical to `AgentRead.capabilities` for the same grant
+    unconditionally and with no `?capability_shape` escape hatch (the design,
+    **the contract**) — byte-identical to `AgentRead.capabilities` for the same grant
     rows, both projected by `agent_registry._structured_grant`. Consumers must
     read `.enabled`; the object itself is always truthy.
     """
@@ -291,13 +291,13 @@ class PairingLookupResponse(BaseModel):
 class ApproveRequest(BaseModel):
     hardware_id: int | None = None
     # Explicit record of which host-link path the approver took
-    # (`AgentApprovalModal`, Task 18) — "accept" the proposed match, "select"
+    # (`AgentApprovalModal`, the design) — "accept" the proposed match, "select"
     # a different existing Hardware row, "create" one from reported facts
     # (frontend creates it via POST /hardware first, then approves with the
     # resulting id), or leave the agent "unlinked". Purely descriptive for
     # the approval event's audit detail; `hardware_id` above is what
     # actually drives linkage. Optional/omittable so existing untyped
-    # callers (and tests predating Task 18) keep working.
+    # callers (and tests predating the design) keep working.
     host_link_action: Literal["accept", "select", "create", "unlinked"] | None = None
     capabilities: dict[str, CapabilityValue] | None = None
 
@@ -370,7 +370,7 @@ class ServerKeyPendingAgent(BaseModel):
 
 
 class ServerKeyRotationStatus(BaseModel):
-    """Task 28: the server's identity-key rotation state, as surfaced to
+    """the server's identity-key rotation state, as surfaced to
     admins. Never carries key material — fingerprints only, same convention
     as `app.core.agent_crypto.server_fingerprint`."""
 
@@ -401,7 +401,7 @@ class TLSPinPendingAgent(BaseModel):
 
 
 class TLSPinRotationStatus(BaseModel):
-    """Slice 4.1: the TLS trust rotation's state, as surfaced to admins.
+    """the TLS trust rotation's state, as surfaced to admins.
 
     `successor_pin_fingerprint` is a truncated digest of the successor pin,
     never the pin itself — matching `ServerKeyRotationStatus`'s convention
@@ -442,7 +442,7 @@ class EnrollmentTokenCreate(BaseModel):
     The bounds are declared here *and* in `agent_enrollment_tokens.mint_token`.
     The schema gives the API a 422 naming the field; the service gives every
     other caller — the CLI, a future importer — the same limits. They are what
-    bound a token's blast radius (design §5), so neither layer is decoration.
+    bound a token's blast radius, so neither layer is decoration.
     """
 
     label: str = Field(min_length=1, max_length=120)

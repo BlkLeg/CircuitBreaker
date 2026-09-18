@@ -196,7 +196,7 @@ def get_pending_agents(
 def get_capability_defaults(
     _user: Annotated[User, require_role("viewer")],
 ) -> Any:
-    """The server capability registry's approval defaults (Task 14 / D-14).
+    """The server capability registry's approval defaults.
 
     The single source the approval modal and the agent-detail capability editor
     read their preset and config fallbacks from, so a frontend constant can
@@ -293,7 +293,7 @@ def post_enrollment_token(
 
     The plaintext is in this response and nowhere else, ever — the row stores
     only its SHA-256. The attended flow is unchanged and remains the default;
-    this is opt-in, and design §5 states its cost.
+    this is opt-in, and the contract states its cost.
 
     Declared before "/{agent_id}" so "enrollment-tokens" is not parsed as an
     agent id, same as "/pending", "/install-command" and "/endpoint-usage".
@@ -504,7 +504,7 @@ def get_server_key_rotation_status(
     db: Annotated[Session, Depends(get_db)],
     _user: Annotated[User, require_role("admin")],
 ) -> Any:
-    """Task 28: current/successor server identity key fingerprints and
+    """current/successor server identity key fingerprints and
     overlap timing — never key material itself, same as `/install-command`
     above never embeds a private key."""
     return _rotation_status(agent_crypto.load_server_key_rotation_state(db), db)
@@ -516,7 +516,7 @@ async def post_server_key_rotate(
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, require_role("admin")],
 ) -> Any:
-    """Task 28: start a server-key rotation (fresh successor keypair, 7-day
+    """start a server-key rotation (fresh successor keypair, 7-day
     overlap by default). Rejects with 409 while a prior rotation's overlap is
     still active — the server has exactly one rotation in flight at a time
     (see `agent_crypto.start_server_key_rotation`'s docstring).
@@ -626,7 +626,7 @@ def get_tls_pin_rotation_status(
     db: Annotated[Session, Depends(get_db)],
     _user: Annotated[User, require_role("admin")],
 ) -> Any:
-    """Slice 4.1: the advertised successor TLS trust policy and how much of
+    """the advertised successor TLS trust policy and how much of
     the fleet has confirmed it. Never returns the pin itself."""
     return _tls_pin_status(db, agent_tls_pin.load_tls_pin_rotation_state(db))
 
@@ -638,7 +638,7 @@ async def post_tls_pin_rotate(
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, require_role("admin")],
 ) -> Any:
-    """Slice 4.1: advertise a staged certificate's trust policy as the
+    """advertise a staged certificate's trust policy as the
     successor, so the fleet accepts either leaf across the cutover.
 
     Start this *before* activating the certificate. Activation is gated on
@@ -680,7 +680,7 @@ def get_tls_pin_pending_agents(
     db: Annotated[Session, Depends(get_db)],
     _user: Annotated[User, require_role("admin")],
 ) -> Any:
-    """Slice 4.1: the active agents that have not confirmed the successor
+    """the active agents that have not confirmed the successor
     policy — the ones activating the certificate would strand. Capped like
     the other fleet drill-downs; a longer list is a rollout problem."""
     state = agent_tls_pin.load_tls_pin_rotation_state(db)
@@ -800,7 +800,7 @@ async def get_agents_presence(
     ids: Annotated[list[int] | None, Query()] = None,
 ) -> Any:
     """Bulk online/offline + grants + linked-hardware summary, one request for
-    the whole fleet (or an explicit `ids` list) — what `AgentsPage` (Task 14)
+    the whole fleet (or an explicit `ids` list) — what `AgentsPage`
     needs to render its table without an N+1 per-agent call.
 
     Declared before "/{agent_id}" so "presence" isn't parsed as an agent id,
@@ -983,11 +983,11 @@ def get_agents_metrics_series(
     ]
 
 
-# ── Slice 3 §7: probe vantages ───────────────────────────────────────────────
+# ── probe vantages ───────────────────────────────────────────────────────────
 
 
 def _active_run_counts(db: Session, agent_ids: list[int]) -> dict[int, int]:
-    """Runs each agent currently holds — §2's concurrency, measured server-side.
+    """Runs each agent currently holds —the concurrency, measured server-side.
 
     The two statuses here are exactly the ones `uq_monitor_probe_runs_active`
     covers, so this counts leases the agent is still expected to answer for
@@ -1036,7 +1036,7 @@ async def get_probe_eligible_agents(
     target_type: Annotated[str | None, Query()] = None,
     target_id: Annotated[int | None, Query()] = None,
 ) -> Any:
-    """§7's eligible-agent listing: every active agent, judged against one
+    """the eligible-agent listing: every active agent, judged against one
     destination.
 
     Scope compatibility is a property of the *pair*, not of the agent, so a
@@ -1047,7 +1047,7 @@ async def get_probe_eligible_agents(
     Declared before "/{agent_id}" so "probe-eligible" isn't parsed as an agent
     id, same as "/pending", "/capability-defaults" and "/presence" above.
 
-    Every row is rendered whether or not it is eligible: §7's selector shows why
+    Every row is rendered whether or not it is eligible:the selector shows why
     an agent cannot be chosen, and the reason is `probe_eligibility`'s
     machine-readable vocabulary — the same string the check-now 409 returns.
     """
@@ -1133,12 +1133,12 @@ def get_agent_probes(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, require_scope("read", "*")],
 ) -> Any:
-    """§7's Assigned Probes section: what this vantage is responsible for.
+    """the Assigned Probes section: what this vantage is responsible for.
 
     Target state (`status`) and execution condition (`probe_execution_*`) are
     returned side by side and never folded into one another — the UP/DOWN pill
     shows target state only, and a monitor whose agent is offline keeps its last
-    known target state (§2, D-12).
+    known target state.
 
     This is a monitor read, so it carries the same `read` scope and tenant rule
     as `/monitors` — a scoped token without `read` cannot enumerate a vantage's
@@ -1185,7 +1185,7 @@ def get_agent_probes(
     )
 
 
-# ── §6's "Discovery scope" section (Task 26) ─────────────────────────────────
+# ──the "Discovery scope" section ─────────────────────────────────
 
 #: How much job history the section shows. A bounded page, not the whole record:
 #: `DiscoveryHistoryPage` is where an operator goes for that, and this list
@@ -1193,7 +1193,7 @@ def get_agent_probes(
 _RECENT_DISCOVERY_JOBS = 20
 
 #: The statuses that mean an agent still owes an answer. `queued` counts because
-#: D-5 parks an unreachable agent's job there with `waiting_for_agent` — it is
+#: the contract parks an unreachable agent's job there with `waiting_for_agent` — it is
 #: outstanding work against this vantage point, not a finished one.
 _OPEN_JOB_STATUSES = ("queued", "running")
 
@@ -1203,7 +1203,7 @@ _PROVENANCE_EXCLUDED = "excluded"
 
 
 def _discovery_scope_entries(scope: agent_scope.EffectiveScope) -> list[DiscoveryScopeEntry]:
-    """Plan §6's scope table: every CIDR once, with its origin and its verdict.
+    """the scope table: every CIDR once, with its origin and its verdict.
 
     Order is automatic, then override, then exclusion, because that is the order
     an operator reasons about them in — what the agent found, what an
@@ -1276,7 +1276,7 @@ def _discovery_limits(config: dict[str, Any]) -> DiscoveryLimits:
 
 
 def _discovery_readiness_rows(db: Session, agent_id: int) -> list[DiscoveryReadinessRow]:
-    """Every D-8 collector, whether or not it has ever reported.
+    """Every the contract collector, whether or not it has ever reported.
 
     A missing row is rendered with `state = None` rather than omitted: it is what
     makes a job refuse with `readiness_unknown`, and an operator who cannot see
@@ -1310,7 +1310,7 @@ def _discovery_readiness_rows(db: Session, agent_id: int) -> list[DiscoveryReadi
 
 
 async def _agent_discovery_read(db: Session, agent_id: int) -> AgentDiscoveryRead:
-    """§6's Discovery scope section: what this vantage point is discovering.
+    """the Discovery scope section: what this vantage point is discovering.
 
     `GET /{agent_id}/probes`' counterpart, loaded by the same page in the same
     way. It answers one question — what is being discovered from here, and if
@@ -1319,7 +1319,7 @@ async def _agent_discovery_read(db: Session, agent_id: int) -> AgentDiscoveryRea
     three more round trips that could each disagree with the others.
 
     The verdict is asked with no targets and `require_online=False`: this is a
-    question about the *agent*, and D-5 makes reachability a scheduling condition
+    question about the *agent*, andthe contract makes reachability a scheduling condition
     (an offline agent's job parks as `waiting_for_agent`) rather than a
     configuration error. `online` is reported separately so the page can say so.
     """
@@ -1392,7 +1392,7 @@ def _discovery_pause_flag(db: Session, agent_id: int) -> bool:
     """The agent's `auto_discovery_paused` hold as the scheduler reads it.
 
     `is True` and not truthiness, matching `discovery_admission.paused_agent_ids`:
-    the normalizer stores a real boolean (Task 3), and agreeing with the reader
+    the normalizer stores a real boolean, and agreeing with the reader
     that actually withholds the crons is what makes a "did this change?"
     comparison here mean the same thing as "does the schedule change?".
 
@@ -1409,7 +1409,7 @@ def _discovery_pause_flag(db: Session, agent_id: int) -> bool:
 async def _set_agent_discovery_pause(
     db: Session, agent_id: int, *, paused: bool, actor_user_id: int
 ) -> AgentDiscoveryRead:
-    """M14's per-agent hold, written where Task 3 put it: the grant config.
+    """the per-agent hold, written where the design put it: the grant config.
 
     A grant write rather than a column of its own because that is already the
     per-agent settings store the UI edits, the registry normalizes and
@@ -1418,7 +1418,7 @@ async def _set_agent_discovery_pause(
 
     Three things this is deliberately **not**:
 
-    * It is not a capability disable. D-14 retires every in-flight dispatch the
+    * It is not a capability disable. the contract retires every in-flight dispatch the
       moment `local_discovery` goes off; a pause cancels nothing, which is why
       `put_capabilities`' cancellation arms are not reached from here.
     * It does not touch `enabled`, which is read off the stored grant and written
@@ -1432,7 +1432,7 @@ async def _set_agent_discovery_pause(
 
     `reload_discovery_jobs` is what applies it — that function rebuilds the whole
     discovery schedule from `profiles_due_for_scheduling`, which is where all
-    three pause scopes are read (Task 25).
+    three pause scopes are read.
     """
     grants = agent_registry.structured_grants_dict(db, agent_id)
     enabled = bool((grants.get(discovery_eligibility.CAPABILITY) or {}).get("enabled"))
@@ -1468,7 +1468,7 @@ async def pause_agent_discovery(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, require_role("admin")],
 ) -> Any:
-    """Hold this agent's automatic discovery (plan §6). Deletes and cancels nothing."""
+    """Hold this agent's automatic discovery. Deletes and cancels nothing."""
     if agent_registry.get_agent(db, agent_id) is None:
         raise HTTPException(status_code=404, detail="Agent not found")
     return await _set_agent_discovery_pause(db, agent_id, paused=True, actor_user_id=user.id)
@@ -1526,7 +1526,7 @@ def get_agent_telemetry(
             for r in readiness
         ],
         "capability": grant,
-        # The agent's last-reported outbound-spool backlog (Task 16, D-12).
+        # The agent's last-reported outbound-spool backlog.
         # It rides this endpoint rather than one of its own because the Agent
         # Detail page already polls it every 30s, so the catch-up indicator is
         # live with no second poll. `None` means the agent has never reported
@@ -1710,7 +1710,7 @@ def patch_agent(
         raise HTTPException(status_code=404, detail="Agent not found")
 
     fields = payload.model_dump(exclude_unset=True)
-    # hardware_id (Task 19: host-link editing after approval) is handled
+    # hardware_id (the design: host-link editing after approval) is handled
     # separately from a plain setattr, same as approve_agent's own
     # hardware_id param — it needs FK validation (a plain setattr would
     # otherwise surface an unhandled IntegrityError for a bogus id) and an
@@ -1743,7 +1743,7 @@ async def post_pairing_lookup(
         raise HTTPException(status_code=429, detail="Too many incorrect pairing codes")
 
     # consume, not resolve — the code has done its job once it identifies the
-    # pending agent; single-use per spec §2.4.
+    # pending agent; single-use per the contract.
     agent_id = await agent_enrollment.consume_pairing_code(payload.code)
     if agent_id is None:
         await agent_enrollment.record_pairing_miss(ip)
@@ -1801,7 +1801,7 @@ async def post_reject(
     agent = agent_registry.reject_agent(db, agent_id, actor_user_id=user.id)
     db.commit()
     await agent_registry.broadcast_presence(agent_id, "rejected")
-    # Immediate cross-worker disconnect (Task 9's delivery path, Task 10's
+    # Immediate cross-worker disconnect (the delivery path, the
     # trigger): a rejected agent is never expected to hold a live /link
     # socket in practice (enroll_stream only ever leaves a device pending or
     # active), but publishing here is harmless and cheap on the off chance
@@ -1827,7 +1827,7 @@ async def post_revoke(
     if not payload.reason or len(payload.reason.strip()) < 3:
         raise HTTPException(status_code=422, detail="A revoke reason is required")
     agent = agent_registry.revoke_agent(db, agent_id, actor_user_id=user.id, reason=payload.reason)
-    # §8: a revoked agent's runs are cancelled and its assignments are kept as
+    # A revoked agent's runs are cancelled and its assignments are kept as
     # unavailable. The agent-initiated path (agent_link._handle_uninstall) does
     # exactly the same thing through the same helper — the two must not diverge,
     # since either one leaves the same runs holding the same partial unique
@@ -1835,10 +1835,10 @@ async def post_revoke(
     cancellation = monitor_service.cancel_agent_probe_runs(
         db, agent_id, reason=monitor_service.CANCEL_AGENT_REVOKED
     )
-    # Slice 4 D-14, and the same argument one slice later: a revoked agent's
+    # The same argument as the probe half above: a revoked agent's
     # discovery dispatches are closed here, in this transaction, because from the
     # moment the status flips `dispatch_frame`'s grant gate drops the agent's own
-    # terminal summary and nothing else would ever close them. D-4 has no
+    # terminal summary and nothing else would ever close them. the contract has no
     # `agent_revoked`; `agent_unavailable` is what a job whose executor no longer
     # exists failed for, and it is what `discovery_eligibility`'s `agent_inactive`
     # already maps onto at dispatch time.
@@ -1870,7 +1870,7 @@ async def post_revoke(
     # report on.
     await monitor_service.publish_probe_cancels(cancellation)
     await agent_discovery.publish_discovery_cancels(discovery_cancellation)
-    # Immediate cross-worker disconnect (Task 9's delivery path, Task 10's
+    # Immediate cross-worker disconnect (the delivery path, the
     # trigger): if the agent is connected right now, whichever worker holds
     # its /link socket picks this up via
     # agent_registry.claim_agent_control_frames and closes the connection
@@ -1895,7 +1895,7 @@ async def put_capabilities(
     if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
     was_granted = agent_registry.grants_dict(db, agent_id).get(probe_eligibility.CAPABILITY, False)
-    # D-16's second scope trigger. Read *before* the write, because the version
+    # the second scope trigger. Read *before* the write, because the version
     # is derived from the grant's `scope_mode`/`excluded_cidrs`/`additional_cidrs`
     # as well as from what the agent reported, and after the write there is
     # nothing left to compare against.
@@ -1903,7 +1903,7 @@ async def put_capabilities(
         agent_discovery.CAPABILITY, False
     )
     # Phase D. `auto_discovery_paused` is an ordinary client-settable key of the
-    # `local_discovery` grant (Task 3), so this route is a *second* writer of the
+    # `local_discovery` grant, so this route is a *second* writer of the
     # same hold `POST /{id}/discovery/pause` writes — and a hold has to be
     # effective when it is written, whichever route wrote it. The flag is read
     # once per `reload_discovery_jobs`, by
@@ -1917,7 +1917,7 @@ async def put_capabilities(
     # the stored one, so afterwards there is nothing left to compare against.
     was_discovery_paused = _discovery_pause_flag(db, agent_id)
     agent_registry.set_capability_grants(db, agent_id, payload.capabilities, actor_user_id=user.id)
-    # §8's capability-disable row, and it has to happen *here* rather than being
+    # The capability-disable row has to happen *here* rather than being
     # left to the result path: from the moment the grant is off,
     # agent_link.dispatch_frame's gate (a bare grants_dict lookup) drops any
     # probe.result as a capability_violation, so a still-open run would never be
@@ -1930,10 +1930,10 @@ async def put_capabilities(
         cancellation = monitor_service.cancel_agent_probe_runs(
             db, agent_id, reason=monitor_service.CANCEL_CAPABILITY_DISABLED
         )
-    # Slice 4 D-14/D-16, and for the same reason the probe half above sits here:
+    # The same reason the probe half above sits here:
     # once `local_discovery` is off, `dispatch_frame`'s gate drops the agent's own
     # terminal summary as a `capability_violation`, so a dispatch nobody closed
-    # stays open until Task 23's pass expires it. A grant that is still on but
+    # stays open until the pass expires it. A grant that is still on but
     # whose scope moved is the other half of the same edit —
     # `cancel_scope_changed_dispatches` re-derives the version and retires only
     # the dispatches whose snapshot no longer matches, so an unrelated setting
@@ -1960,7 +1960,7 @@ async def put_capabilities(
         reload_discovery_jobs(db)
     await monitor_service.publish_probe_cancels(cancellation)
     await agent_discovery.publish_discovery_cancels(discovery_cancellation)
-    # Immediate cross-worker push (Task 9) on top of the DB write above: if the
+    # Immediate cross-worker push on top of the DB write above: if the
     # agent is connected right now, whichever worker holds its /link socket
     # picks this up via agent_registry.claim_agent_control_frames and applies
     # it without waiting on anything poll-based. The authoritative grants
@@ -1996,7 +1996,7 @@ def delete_agent(
     agent = agent_registry.get_agent(db, agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
-    # §8: deletion is blocked while assignments remain. `monitor_items.
+    # Deletion is blocked while assignments remain. `monitor_items.
     # probe_agent_id` is the one agents FK declared RESTRICT rather than
     # CASCADE, so without this pre-check the delete would surface as an
     # unhandled IntegrityError and a 500 — and the operator would learn nothing
@@ -2010,8 +2010,8 @@ def delete_agent(
             status_code=409,
             detail=f"{assigned} monitor(s) are still assigned to this agent",
         )
-    # D-1's other live assignment. `discovery_profiles.scan_agent_id` is the one
-    # Slice 4 FK declared RESTRICT — a profile names where its scans *will* run,
+    # the other live assignment. `discovery_profiles.scan_agent_id` is the one
+    # FK declared RESTRICT — a profile names where its scans *will* run,
     # so deleting the vantage point out from under it would leave a profile that
     # can never execute. `scan_jobs.scan_agent_id` and
     # `scan_results.discovery_agent_id` are CASCADE and deliberately not counted
@@ -2096,7 +2096,7 @@ async def post_update(
         arch=agent.arch or "amd64",
         os_name=agent.os or "linux",
     )
-    # Immediate cross-worker push (Task 9), same reasoning as put_capabilities
+    # Immediate cross-worker push, same reasoning as put_capabilities
     # above: request_update above already queues the pending update in Redis,
     # which link_stream's existing _LINK_POLL_SECONDS poll (agent_update.
     # pop_pending_update) picks up as the recovery fallback if this publish is
@@ -2114,12 +2114,12 @@ async def post_update(
             },
         },
     )
-    # Task 24: `update_queued` marks queue-time only — the fleet-visible
+    # `update_queued` marks queue-time only — the fleet-visible
     # `version_changed` event doesn't fire until the new binary actually
     # reconnects and its hello reports this exact version (see
     # agent_registry.update_hello_metadata). `pending_update_version` is what
     # that later check compares against, and is also how a subsequent
-    # `update.status` frame (started/succeeded/failed/rolled_back — Task 24,
+    # `update.status` frame (started/succeeded/failed/rolled_back — the design,
     # agent_link._handle_update_status) knows which in-flight attempt it's
     # reporting on.
     agent.pending_update_version = version
@@ -2149,7 +2149,7 @@ binary_router = APIRouter(tags=["agents-binary"])
 # version does not exist", would never run.
 @binary_router.get("/binary/{version}/{os_name}/{arch}.sig")
 def get_binary_signature(version: str, os_name: str, arch: str) -> FileResponse:
-    """Slice 4.2: the detached Ed25519 signature over the binary below.
+    """the detached Ed25519 signature over the binary below.
 
     Unauthenticated, like the binary route beside it, and for a stronger
     reason: the signature *is* the integrity mechanism. Route auth would add

@@ -35,7 +35,7 @@ _MAX_PARALLEL = int(os.getenv("CB_MONITOR_POLL_PARALLEL", "50"))
 _FETCH_BATCH = int(os.getenv("CB_MONITOR_POLL_FETCH", "50"))
 _JS_STREAM = "MONITOR_POLL"
 _JS_DURABLE = "monitor_pollers"
-#: Delivery budget before a message is parked (route F14). Five attempts across
+#: Delivery budget before a message is parked. Five attempts across
 #: the ack-wait window is long enough to ride out a transient database or NATS
 #: blip, and short enough that a genuinely poisoned message stops blocking its
 #: batch within minutes rather than never.
@@ -46,7 +46,7 @@ _sema = asyncio.Semaphore(_MAX_PARALLEL)
 # the sample row, the target verdict, the message, the execution outcome, and
 # the collector's free-form details. The last two are carried rather than
 # dropped so the shape matches what a remote vantage reports; on this path
-# `details` has nowhere to land (D-8) and the outcome is always `completed`,
+# `details` has nowhere to land and the outcome is always `completed`,
 # because a server-side collector crash is a down datum, not an execution error.
 PollOutcome = tuple[SampleRow, bool, str, str, dict | None]
 
@@ -84,13 +84,13 @@ async def poll_one(item: dict) -> PollOutcome:
 
 
 async def process_batch(items: list[dict], db_factory: Callable[[], Any]) -> int:
-    """Poll a claimed batch, then hand it to the one shared result path (§6).
+    """Poll a claimed batch, then hand it to the one shared result path.
 
     Everything after the collectors — the Proxmox override, samples, the state
     machine, events, alerts and the live push — lives in
     `services/monitoring/result_service.py`, which the remote `probe.result`
     ingest path calls with the identical record shape. This function is
-    deliberately thin: a second copy of that logic here is exactly the drift §6
+    deliberately thin: a second copy of that logic here is exactly the drift the contract
     exists to prevent.
     """
     outcomes = await asyncio.gather(*(poll_one(i) for i in items))

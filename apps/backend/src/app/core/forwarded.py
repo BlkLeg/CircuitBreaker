@@ -2,7 +2,7 @@
 
 `X-Forwarded-*` headers are client-supplied strings. They are only evidence
 when the socket peer is a reverse proxy we run, because anything else can set
-them freely. SEC-13 established that model for `X-Forwarded-For` and the rate
+them freely. the contract established that model for `X-Forwarded-For` and the rate
 limiter, but the rest of the codebase read `X-Forwarded-Proto` and
 `X-Forwarded-Host` straight off the request from any peer — so the same header
 was authoritative in one module and forgeable in the next.

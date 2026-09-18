@@ -757,10 +757,10 @@ def approve_agent(db: Session, actor: Any, agent_id: int) -> AgentSummary:
     if agent.status == "active":
         raise AdminError(f"Agent {agent_id} is already active.", EXIT_USAGE)
     # No `_audit` call beside this one. `agent_registry.approve_agent` routes
-    # the approval through `record_event`, which since slice 4.3 (F17) writes
+    # the approval through `record_event`, which writes
     # the hash-chained audit entry for *every* surface — so auditing here too
     # would put two rows in the chain for one decision. The `via="cli"`
-    # provenance this used to add is threaded into that single entry instead.
+    # provenance is threaded into that single entry instead.
     approved = agent_registry.approve_agent(db, agent_id, approving_user_id=actor.id, via="cli")
     db.commit()
     return _agent_summary(approved)

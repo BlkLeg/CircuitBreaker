@@ -31,7 +31,6 @@ class LogEntry(BaseModel):
     diff: str | None = None
     severity: str | None = None
 
-    # Phase 7
     role_at_time: str | None = None
     previous_hash: str | None = None
     log_hash: str | None = None

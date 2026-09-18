@@ -35,11 +35,11 @@ from app.services.monitoring.state import PENDING
 logger = logging.getLogger(__name__)
 
 
-# ── Remote-probe cancellation (Slice 3 §4, §8) ────────────────────────────────
+# ── Remote-probe cancellation ────────────────────────────────
 # Five events retire an in-flight run: a monitor is paused, deleted or
 # reassigned, an agent's `remote_probe` grant is turned off, or the agent is
 # revoked. All five go through the two functions below, and all five close the
-# run in the database *before* trying to tell the agent — §4 makes the frame
+# run in the database *before* trying to tell the agent — the contract makes the frame
 # best-effort and the backend authoritative, so a result for a closed run is
 # refused on arrival whether or not the cancel was ever delivered.
 #
@@ -99,7 +99,7 @@ def _publish_soon(what: str, factory: Callable[[], Coroutine[Any, Any, Any]]) ->
 
     Returns False, having published nothing, when no loop is running — which is
     the case for every `def` route FastAPI hands to its threadpool. That is what
-    "best-effort" means concretely in §4: the run is already closed in the
+    "best-effort" means concretely in the contract: the run is already closed in the
     database by the time this is called, so an undelivered `probe.cancel` costs
     the agent one wasted check and costs the backend nothing at all.
 
@@ -167,7 +167,7 @@ def cancel_monitor_probe_runs(
 def cancel_agent_probe_runs(db: Session, agent_id: int, *, reason: str) -> ProbeCancellation:
     """Retire every run an agent holds and mark its assignments unavailable.
 
-    §8 is explicit that the assignments are *preserved*: a revoked or ungranted
+    the contract is explicit that the assignments are *preserved*: a revoked or ungranted
     agent's monitors become unavailable, they do not quietly fall back to server
     execution. Re-approving the agent therefore restores the vantage instead of
     requiring every monitor to be reassigned by hand.
@@ -213,7 +213,7 @@ async def publish_probe_cancels(cancellation: ProbeCancellation) -> int:
         )
         delivered += 1 if published else 0
     if cancellation.live_status:
-        # D-13: these payloads carry no `status` key, so the card's UP/DOWN pill
+        # These payloads carry no `status` key, so the card's UP/DOWN pill
         # keeps the last target state while the execution condition changes.
         await result_service.publish_results(
             result_service.PersistedResults(live_status=list(cancellation.live_status))
@@ -228,7 +228,7 @@ def schedule_probe_cancels(cancellation: ProbeCancellation) -> bool:
     return _publish_soon("probe cancellations", lambda: publish_probe_cancels(cancellation))
 
 
-# ── Assignment validation (§7, D-9) ───────────────────────────────────────────
+# ── Assignment validation ───────────────────────────────────────────
 
 
 class InvalidAssignment(ValueError):
@@ -249,12 +249,12 @@ def validate_probe_assignment(
 
     * the agent has to exist — `monitor_items.probe_agent_id` is a RESTRICT FK,
       so an unknown id would otherwise surface as an unhandled IntegrityError;
-    * D-9's tenant rule: refuse only when *both* sides carry a tenant and they
+    * the tenant rule: refuse only when *both* sides carry a tenant and they
       differ. A tenant-less standalone monitor stays legal on a tenant-scoped
       agent, because the target is still bounded by that agent's own derived
       scope.
 
-    Everything else §2 requires — liveness, readiness, scope — is a *condition*
+    Everything elsethe contract requires — liveness, readiness, scope — is a *condition*
     rather than a permanent property, and is answered at dispatch and again on
     the agent. Refusing to save on a condition would make an assignment
     impossible to prepare while its agent happens to be offline.
@@ -276,7 +276,7 @@ def validate_probe_assignment(
 def _target_tenant_id(db: Session, target_type: str | None, target_id: int | None) -> int | None:
     """The monitor's tenant, derived exactly as the dispatcher derives it.
 
-    Routed through `probe_eligibility` rather than re-deriving it here: D-9 is
+    Routed through `probe_eligibility` rather than re-deriving it here: the contract is
     application-only (`monitor_items` has no `tenant_id` and is not in
     `0040_rls_policies`), so a second table of per-target-type tenant lookups
     would be a second answer to the same question.
@@ -331,7 +331,7 @@ def _probe_agents(db: Session, items: Sequence[MonitorItem]) -> dict[int, dict]:
 
 
 def _probe_block(item: MonitorItem, probe_agents: dict[int, dict] | None = None) -> dict:
-    """§7's probe block. `probe_mode` is derived, never stored: `probe_agent_id
+    """the probe block. `probe_mode` is derived, never stored: `probe_agent_id
     IS NULL` is server execution and there is no third vantage."""
     agent_id = item.probe_agent_id
     return {
@@ -391,8 +391,8 @@ def _latest_metric_map(db: Session, item_ids: list[int], metric: str) -> dict[in
 def _avail_agg(db: Session, item_ids: list[int], hours: int) -> dict[int, tuple[float | None, int]]:
     """Mean `avail` and how many samples that mean is made of, per monitor.
 
-    The count is what makes the mean readable (D-12): an agent that could not
-    run a check writes no `avail` sample at all (§2), so an unobserved stretch
+    The count is what makes the mean readable: an agent that could not
+    run a check writes no `avail` sample at all, so an unobserved stretch
     shrinks the denominator instead of showing as downtime and the average of
     the rows that happen to exist reads 100%.
     """
@@ -424,7 +424,7 @@ def _uptime_pct_map(db: Session, item_ids: list[int], hours: int = 24) -> dict[i
 
 
 def _window_coverage(sample_count: int, interval_secs: int, hours: int) -> dict:
-    """Observed vs window minutes for one uptime window (D-12).
+    """Observed vs window minutes for one uptime window.
 
     Observation is counted in *scheduled checks*, not in minutes that happen to
     contain a sample: a landed check speaks for the interval it was scheduled
@@ -613,7 +613,7 @@ def update_monitor(db: Session, monitor_id: int, payload: MonitorUpdate) -> dict
             data.get("target_type", item.target_type),
             data.get("target_id", item.target_id),
         )
-        # §8: the old vantage may still be executing. Its run has to be retired
+        # The old vantage may still be executing. Its run has to be retired
         # before the column moves, or whatever it eventually posts would arrive
         # against a monitor that is no longer its own.
         cancellation = cancel_monitor_probe_runs(db, item.id, reason=CANCEL_MONITOR_REASSIGNED)
@@ -707,12 +707,12 @@ def get_events(db: Session, monitor_id: int, limit: int = 50) -> list[dict]:
 
 
 def get_probe_runs(db: Session, monitor_id: int, limit: int = 20) -> list[dict]:
-    """§7's bounded probe-run history for one monitor, newest first.
+    """the bounded probe-run history for one monitor, newest first.
 
     `created_at` then `id` because a run created inside the same transaction as
     another shares its timestamp, and the history table must still be stable.
-    `result_metadata` is not returned: it is the audit record behind the check
-    (D-8), not something the history table renders.
+    `result_metadata` is not returned: it is the audit record behind the check, not something the
+    history table renders.
     """
     rows = db.scalars(
         select(MonitorProbeRun)
@@ -773,7 +773,7 @@ def get_uptime(db: Session, monitor_id: int) -> dict:
     """Availability per window, each short window qualified by its coverage.
 
     `pct_*` alone cannot be read honestly: the short windows average the `avail`
-    rows that exist, and a vantage that was unavailable wrote none (D-12). Every
+    rows that exist, and a vantage that was unavailable wrote none. Every
     telemetry-backed window therefore ships `coverage_*` beside it. The
     rollup-backed windows (365d, total) do not, because `MonitorDailyStats`
     keeps no row for a wholly unobserved day and "all time" has no fixed
@@ -810,10 +810,10 @@ def get_uptime(db: Session, monitor_id: int) -> dict:
 
 @dataclass(frozen=True)
 class CheckDispatch:
-    """Whether "check now" was accepted, and if not, why (D-14).
+    """Whether "check now" was accepted, and if not, why.
 
     `found` separates "no such monitor" (404) from "this vantage cannot take the
-    check right now" (409): §2 forbids falling back to the server, so a refusal
+    check right now" (409): the contract forbids falling back to the server, so a refusal
     is the only honest answer and it has to carry `probe_eligibility`'s
     machine-readable reason rather than a 200 the operator would read as
     "queued".
@@ -831,8 +831,8 @@ async def _dispatch_probe_run(db: Session, item: MonitorItem, run_id: str) -> st
     the run it announces is *already closed*, so a lost frame costs nothing.
     Here the run is freshly **open** and this publish is the only thing that
     makes it live. A run left `queued` holds `uq_monitor_probe_runs_active`, so
-    the next tick that finds the monitor due takes D-6's `previous_run_in_flight`
-    skip and the D-5 reconciliation pass then writes a spurious `result_timeout`
+    the next tick that finds the monitor due takesthe `previous_run_in_flight`
+    skip and the the contract reconciliation pass then writes a spurious `result_timeout`
     — an operator's successful button press turning into a lost interval and a
     false "vantage timed out".
 
@@ -850,7 +850,7 @@ async def _dispatch_probe_run(db: Session, item: MonitorItem, run_id: str) -> st
     if await nats_client.js_publish(MONITOR_PROBE_REMOTE, {"run_id": run_id}):
         return None
     # Reaching into the dispatch worker on purpose: it owns the single
-    # definition of "the assignment could not be delivered" (§8), and a second
+    # definition of "the assignment could not be delivered", and a second
     # copy here would be free to drift from it.
     from app.workers import monitor_probe_dispatch
 
@@ -880,11 +880,11 @@ async def run_immediate_check(db: Session, monitor_id: int) -> CheckDispatch:
     Server monitors keep exactly today's behaviour: publish to `mon.poll.item`
     and answer 200 regardless — the poll worker owns the outcome from there.
 
-    An agent-assigned monitor is prechecked against §2's six preconditions
+    An agent-assigned monitor is prechecked againstthe six preconditions
     *before* the async hop, because a fire-and-forget publish cannot report that
     the agent is offline, and answering 200 while nothing runs is worse than a
     409. On success it opens a run exactly as the scheduler does and publishes
-    nothing but that run's id (§2), leaving the dispatcher to load the host,
+    nothing but that run's id, leaving the dispatcher to load the host,
     config and credentials immediately before encrypted delivery.
     """
     item = db.get(MonitorItem, monitor_id)
@@ -912,7 +912,7 @@ async def run_immediate_check(db: Session, monitor_id: int) -> CheckDispatch:
     undelivered = await _dispatch_probe_run(db, item, run_id)
     if undelivered is not None:
         # The run has been closed again, so this is a refusal like any other:
-        # §2's "accepted" claim has to survive the broker being down too.
+        # The "accepted" claim has to survive the broker being down too.
         return CheckDispatch(ok=False, reason=undelivered)
     return CheckDispatch(ok=True)
 
@@ -1124,7 +1124,7 @@ def set_target_paused(db: Session, target_type: str, target_id: int, paused: boo
 async def run_target_check(db: Session, target_type: str, target_id: int) -> bool:
     """Publish an immediate check for every monitor attached to an inventory entity.
 
-    Each monitor goes to its own vantage. §2 allows no automatic fallback, so an
+    Each monitor goes to its own vantage. the contract allows no automatic fallback, so an
     agent-assigned monitor gets a run and a `mon.probe.remote` publication here
     exactly as it would from the scheduler — publishing it to `mon.poll.item`
     would have the server silently execute a check the operator assigned to an
@@ -1132,7 +1132,7 @@ async def run_target_check(db: Session, target_type: str, target_id: int) -> boo
     the run with a reason if the vantage cannot take the work; this path answers
     for a whole target, so there is no single reason it could return.
 
-    Async for the same reason `run_immediate_check` is (D-14): both publishes
+    Async for the same reason `run_immediate_check` is: both publishes
     have to actually happen before the response. A `def` route runs in FastAPI's
     threadpool, where there is no event loop for `_publish_soon` to schedule on —
     it would open a run, publish nothing, and answer 200, leaving the monitor

@@ -1,6 +1,6 @@
 """Snapshot archive verification.
 
-Everything here runs before a restore touches anything. INC-15 was two backup artifacts and
+Everything here runs before a restore touches anything. the contract was two backup artifacts and
 one restore script that accepted only one of them; the first job of a restore is therefore
 to say precisely which artifact it has been handed.
 

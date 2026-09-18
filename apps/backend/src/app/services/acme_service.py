@@ -1,6 +1,6 @@
 """ACME issuance and renewal.
 
-INC-07. The previous implementation shelled out to ``certbot certonly --standalone``, which
+the contract. The previous implementation shelled out to ``certbot certonly --standalone``, which
 could not work: certbot was in neither image, ``--standalone`` binds port 80 while application
 processes run as breaker:1000, the account email was hardcoded to admin@localhost while
 docker/.env.example advertised a CB_TLS_EMAIL nothing read, and every failure returned the

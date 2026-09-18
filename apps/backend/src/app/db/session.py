@@ -75,7 +75,7 @@ def _set_tenant_on_checkout(dbapi_conn: Any, connection_record: Any, connection_
         # with `app.current_tenant` unset is a connection whose row-level
         # security policies are evaluating against an empty tenant. Classified,
         # counted and throttled instead, so the condition is measurable
-        # (REL-07). Imported lazily to keep `app.db.session` — which almost
+        # Imported lazily to keep `app.db.session` — which almost
         # every module imports — free of a service-layer import at module load.
         from app.services.stream_faults import record_stream_fault
 
@@ -88,7 +88,7 @@ def _set_tenant_on_checkout(dbapi_conn: Any, connection_record: Any, connection_
         )
 
 
-# ── Task 1d: slow-query logging (observability phase 2) ────────────────────
+# ── slow-query logging (observability phase 2) ────────────────────────────────
 # Threshold read once at import, matching every other CB_* value this module
 # reads (db_url, pool sizes) above. Set CB_SLOW_QUERY_MS=0 to disable.
 _SLOW_QUERY_THRESHOLD_MS = float(os.environ.get("CB_SLOW_QUERY_MS", "100"))
@@ -174,7 +174,7 @@ def _count_if_pool_timeout(exc: BaseException) -> None:
     `pool_timeout=5` above makes exhaustion fail fast rather than block, which
     turns a saturated pool into a burst of 500s that looks like an application
     fault unless it is counted somewhere. Both session entry points funnel their
-    failures through here so route §5's "pool_timeout events" has a single
+    failures through here so the "pool_timeout events" has a single
     source, and so the count is not silently missing from whichever of the two
     a future caller happens to use.
 

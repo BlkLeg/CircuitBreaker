@@ -1,9 +1,9 @@
 """Agent-facing WebSocket endpoints. /enroll and /link bypass session auth
-entirely — the Noise handshake IS their authentication (spec §3.5). /stream
-(added in Task 15) is session-authenticated and carries presence to the UI.
+entirely — the Noise handshake IS their authentication. /stream
+(added in the design) is session-authenticated and carries presence to the UI.
 
 No domain logic lives here beyond decode/dispatch — see agent_link.py's
-boundary note in specs/2026-07-26-cb-agent-design.md §1.2.
+boundary note in
 """
 
 from __future__ import annotations
@@ -67,14 +67,14 @@ from app.services.stream_faults import (
 
 _logger = logging.getLogger(__name__)
 
-# REL-07 fault-metric identities for the two long-lived streams in this module.
+# Fault-metric identities for the two long-lived streams in this module.
 _COMPONENT_LINK = "ws_agents.link"
 _COMPONENT_PRESENCE = "ws_agents.presence"
 _AGENT_EVENT_CHANNEL = "cb:agents:events"
 # RFC 6455 1011 "internal error" — the server cannot fulfil the stream contract.
 _WS_INTERNAL_ERROR = 1011
 
-# D-16: an agent's assigned monitors become due again on reconnect — jittered,
+# An agent's assigned monitors become due again on reconnect — jittered,
 # never all at `now()`. 300 assignments waking at one instant get claimed on the
 # next scheduler tick and dispatched into a bounded queue, turning a healthy
 # reconnect into a burst of capacity-exhausted errors. The window is
@@ -141,7 +141,7 @@ async def enroll_stream(websocket: WebSocket) -> None:
     await websocket.accept()
     client_ip = websocket.client.host if websocket.client else "unknown"
 
-    # Task 21: per-IP + global attempt-rate gate, checked before any Noise
+    # Per-IP + global attempt-rate gate, checked before any Noise
     # handshake byte is read. A bare close with no payload — this endpoint
     # has no cipher to send an encrypted error frame under yet, and even a
     # plaintext reason would leak which limit tripped to an anonymous,
@@ -166,7 +166,7 @@ async def enroll_stream(websocket: WebSocket) -> None:
         await websocket.close(code=1008)
         return
 
-    # Task 28: tries the server's current identity key first, then (only
+    # Tries the server's current identity key first, then (only
     # while a server-key rotation's overlap window is still open) its
     # successor — see agent_crypto.complete_ik_handshake's docstring.
     with SessionLocal() as db:
@@ -229,7 +229,7 @@ async def enroll_stream(websocket: WebSocket) -> None:
         # branch entirely — no pairing code, no approval screen, and no
         # concurrent-pending accounting. A token-enrolled agent is never
         # pending, so folding it into that cap would deadlock every unattended
-        # boot (design §4). The per-IP and global attempt-rate gates at the top
+        # boot. The per-IP and global attempt-rate gates at the top
         # of this handler still apply and are what bound abuse of this path.
         enroll_token = payload.get("enroll_token")
         if enroll_token:
@@ -309,7 +309,7 @@ async def enroll_stream(websocket: WebSocket) -> None:
                     enrolled_via_endpoint=payload.get("server_url"),
                 )
                 newly_created = True
-            # Task 28: which of the server's two overlapping identity keys
+            # Which of the server's two overlapping identity keys
             # this handshake actually authenticated against — see
             # agent_registry.record_server_key_pin's docstring.
             agent_registry.record_server_key_pin(db, agent, server_key_kind)
@@ -336,7 +336,8 @@ async def enroll_stream(websocket: WebSocket) -> None:
     )
 
     # Hold the connection, polling for the approval decision every 2s (fast enough that
-    # "click approve, done" in §5.2 doesn't visibly lag) and re-minting the pairing code only
+    # "click approve, done" doesn't visibly lag) and re-minting the pairing
+    # code only
     # when its 15-minute TTL actually lapses.
     _POLL_SECONDS = 2.0
     last_minted_at = utcnow()
@@ -391,9 +392,9 @@ def _key_rotate_bytes(
     responder: NoiseIKResponder, successor_pk_hex: str, expiry: datetime, seq: int
 ) -> bytes:
     """Wire-encode one server -> agent `key.rotate` (kind="server") frame —
-    Task 28's advertisement of an in-progress rotation's successor identity
+    the advertisement of an in-progress rotation's successor identity
     key. Sent unconditionally on every accepted hello.ack for as long as a
-    rotation is active (see link_stream's call site), mirroring Task 11's
+    rotation is active (see link_stream's call site), mirroring the
     "re-send the authoritative [capabilities] set on every hello.ack": this
     is the durability fallback for `agent_registry.broadcast_server_key_rotate`'s
     live push — a connection this worker didn't hold at push time, or one
@@ -558,7 +559,7 @@ async def _send_data_ack(
 
 
 def _control_frame_bytes(responder: NoiseIKResponder, claimed: dict, seq: int) -> bytes | None:
-    """Wire-encode one control-plane frame claimed via the Task 8 registry
+    """Wire-encode one control-plane frame claimed via the the design registry
     (`agent_registry.claim_agent_control_frames`) for immediate delivery down
     this /link connection.
 
@@ -593,7 +594,7 @@ async def _run_control_frame_listener(
     agent_id: int, queue: asyncio.Queue[dict], *, worker_id: str
 ) -> None:
     """Background task: claims control-plane frames published for `agent_id`
-    via the Task 8 registry (`agent_registry.claim_agent_control_frames`) and
+    via the the design registry (`agent_registry.claim_agent_control_frames`) and
     hands each to `queue` for `link_stream`'s main loop to encrypt and send.
 
     `worker_id` must be the same per-connection value `link_stream` passed to
@@ -619,9 +620,9 @@ async def _run_control_frame_listener(
     except Exception as exc:
         # This task ending is not cosmetic: it is the only path by which a
         # control frame (update, capability change, disconnect) published from
-        # another worker reaches this agent. It used to end on an unclassified
-        # WARNING and leave the /link connection up and apparently healthy,
-        # accepting heartbeats it could never answer with a control frame.
+        # another worker reaches this agent. Ending on an unclassified WARNING
+        # leaves the /link connection up and apparently healthy, accepting
+        # heartbeats it can never answer with a control frame.
         record_stream_fault(
             f"{_COMPONENT_LINK}.control",
             exc,
@@ -702,7 +703,7 @@ async def link_stream(websocket: WebSocket) -> None:
     await websocket.accept()
     client_ip = websocket.client.host if websocket.client else "unknown"
 
-    # Task 21: same attempt-rate gate as enroll_stream, before any Noise
+    # Same attempt-rate gate as enroll_stream, before any Noise
     # handshake byte is read — see its comment for the close-code rationale.
     if not await agent_enrollment.check_and_record_ws_attempt("link", client_ip):
         await websocket.close(code=1013)
@@ -718,7 +719,7 @@ async def link_stream(websocket: WebSocket) -> None:
         await websocket.close(code=1008)
         return
 
-    # Task 28: tries the server's current identity key first, then (only
+    # Tries the server's current identity key first, then (only
     # while a server-key rotation's overlap window is still open) its
     # successor — see agent_crypto.complete_ik_handshake's docstring.
     with SessionLocal() as db:
@@ -745,7 +746,7 @@ async def link_stream(websocket: WebSocket) -> None:
 
     device_pk_hex = responder.remote_static().hex()
     with SessionLocal() as db:
-        # Task 27: resolves against `agent.device_pk` OR an unexpired
+        # Resolves against `agent.device_pk` OR an unexpired
         # `agent.pending_device_pk` — see agent_crypto.device_identity_matches
         # for why a Noise IK handshake can never reject an unrecognized key on
         # its own, and resolve_agent_for_handshake's own docstring for why
@@ -761,22 +762,22 @@ async def link_stream(websocket: WebSocket) -> None:
         # see settle_device_key_rotation's docstring. A no-op when no
         # rotation is in progress (the common case).
         agent_registry.settle_device_key_rotation(db, agent, device_pk_hex)
-        # Task 28: which of the server's two overlapping identity keys this
+        # Which of the server's two overlapping identity keys this
         # handshake actually authenticated against — see
         # agent_registry.record_server_key_pin's docstring.
         agent_registry.record_server_key_pin(db, agent, server_key_kind)
-        # Task 28: read once per connection, alongside everything else this
+        # Read once per connection, alongside everything else this
         # block already reads from `db` — used below (after hello.ack /
         # capabilities.set) to decide whether to also resend the active
         # rotation's key.rotate frame, the durability fallback for
         # agent_registry.broadcast_server_key_rotate's live push.
         rotation_state = agent_crypto.load_server_key_rotation_state(db)
-        # Slice 4.1: the same read, for the same reason, for the TLS trust
+        # the same read, for the same reason, for the TLS trust
         # rotation. Read here rather than at the resend site below because
         # this is the only place in link_stream that holds an open session.
         tls_pin_state = agent_tls_pin.load_tls_pin_rotation_state(db)
         capability_schema = 1
-        # Slice 4 D-16: a hello whose `networks` moved the agent's scope closes
+        # A hello whose `networks` moved the agent's scope closes
         # the dispatches that scope no longer authorizes. `update_hello_metadata`
         # hands the closed rows back inert and this block publishes them below,
         # after `db.commit()` — every other write in this block could otherwise
@@ -799,7 +800,7 @@ async def link_stream(websocket: WebSocket) -> None:
             _logger.warning("agent %s: malformed hello payload: %s", agent_id, exc)
         else:
             capability_schema = hello_payload.capability_schema
-            # Slice 4.1: which of the two advertised TLS trust policies this
+            # which of the two advertised TLS trust policies this
             # agent's dial actually matched. An agent predating the mechanism
             # reports nothing and records nothing — see
             # agent_registry.record_tls_pin's docstring on why that is not
@@ -889,7 +890,7 @@ async def link_stream(websocket: WebSocket) -> None:
         agent_id=agent_id,
         phase="capabilities.set",
     )
-    # Task 28: resend the active rotation's key.rotate (kind="server") frame
+    # Resend the active rotation's key.rotate (kind="server") frame
     # on every accepted hello.ack, exactly like capabilities.set above —
     # the durability fallback for agent_registry.broadcast_server_key_rotate's
     # live push (see _key_rotate_bytes' docstring). A no-op the overwhelming
@@ -908,7 +909,7 @@ async def link_stream(websocket: WebSocket) -> None:
             agent_id=agent_id,
             phase="key.rotate",
         )
-    # Slice 4.1: the same durability fallback for the TLS trust rotation.
+    # the same durability fallback for the TLS trust rotation.
     # A no-op the overwhelming majority of the time.
     if delivered and tls_pin_state.rotation_active and tls_pin_state.overlap_expires_at is not None:
         delivered = await _send_hello_phase_frame(
@@ -934,7 +935,7 @@ async def link_stream(websocket: WebSocket) -> None:
         await _release_link_connection(agent_id, connection_id)
         return
 
-    # Task 9: listen for control-plane frames (capabilities.set, update,
+    # Listen for control-plane frames (capabilities.set, update,
     # disconnect, key.rotate, ping — whatever a REST/service-layer caller
     # publishes via agent_registry.publish_agent_control_frame, potentially
     # from a *different* worker process than this one) claimed for this
@@ -1076,7 +1077,7 @@ async def link_stream(websocket: WebSocket) -> None:
                 last_ping_sent_at = utcnow()
 
             # Race one persistent inbound-WS read against the control-plane
-            # queue (Task 9), bounded by the same _LINK_POLL_SECONDS cadence
+            # queue, bounded by the same _LINK_POLL_SECONDS cadence
             # the old single `wait_for(receive_bytes(), ...)` used — a claimed
             # control frame short-circuits that wait instead of waiting out
             # the rest of the poll interval, which is the "immediate" half of
@@ -1107,7 +1108,7 @@ async def link_stream(websocket: WebSocket) -> None:
                     if claimed.get("type") == TYPE_DISCONNECT:
                         # The frame telling the agent to disconnect has gone
                         # out — nothing more to do on this connection. (No
-                        # call site publishes this frame type yet — Task 10
+                        # call site publishes this frame type yet — the design
                         # is what wires revoke/reject to it — but delivery is
                         # ready the moment one does.)
                         break
@@ -1241,7 +1242,7 @@ async def link_stream(websocket: WebSocket) -> None:
                     # registry entry has to be scoped per-connection, not
                     # per-worker-process.
                     await agent_registry.refresh_agent_connection(agent_id, worker_id=connection_id)
-                    # Slice 4.1: the heartbeat is how a rotation applied on an
+                    # the heartbeat is how a rotation applied on an
                     # already-live socket reaches the convergence view. hello
                     # carries the same field, but only at connect time, and
                     # the activation gate cannot wait for a reconnect that may
@@ -1337,7 +1338,7 @@ def _extract_client_ip(websocket: WebSocket) -> str:
     """This stream's per-IP cap bucket key and rejected-handshake log identity.
 
     Reading the leftmost `X-Forwarded-For` entry off any peer let a caller
-    rotate the header for a fresh connection budget (B24). The trust rule is
+    rotate the header for a fresh connection budget. The trust rule is
     shared with every other WS stream; see `trusted_ws_client_ip` in
     ws_discovery.py for what it does and what must not be undone.
     """
@@ -1387,7 +1388,7 @@ async def _redis_agent_listener(websocket: WebSocket, stop_event: asyncio.Event)
     except Exception as exc:
         # Same reasoning as ws_discovery's listener: pub/sub is the only source
         # of presence events, so a dead subscription behind a live socket is an
-        # agent list that silently stops updating. Close explicitly (REL-07).
+        # agent list that silently stops updating. Close explicitly.
         record_stream_fault(
             f"{_COMPONENT_PRESENCE}.subscribe",
             exc,

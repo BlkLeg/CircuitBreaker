@@ -34,7 +34,7 @@ router = APIRouter(tags=["logs"])
 
 _RESERVED_ACTOR_NAMES = {"anonymous", "system", "api-token"}
 
-# REL-07 fault-metric identity for the audit-log SSE stream.
+# Fault-metric identity for the audit-log SSE stream.
 _STREAM_COMPONENT = "sse_logs"
 # Seconds between polls of the log table for the SSE stream.
 _STREAM_POLL_SECONDS = 2
@@ -378,7 +378,7 @@ async def stream_logs(
                 # database outage produced ": error" every two seconds forever
                 # and left no trace in logs or metrics. Still non-fatal (the
                 # next poll recovers once the database does), but classified,
-                # throttled and counted now (REL-07).
+                # throttled and counted now.
                 record_stream_fault(
                     f"{_STREAM_COMPONENT}.poll",
                     exc,
@@ -392,9 +392,9 @@ async def stream_logs(
                 try:
                     payload = _stream_payload(row, cache)
                 except Exception as exc:
-                    # One unserializable row used to abort the whole batch
-                    # *without* advancing `last_dt`, so the next poll re-read
-                    # the same row and failed again: the stream wedged
+                    # One unserializable row must not abort the whole batch
+                    # *without* advancing `last_dt`: the next poll would re-read
+                    # the same row and fail again, wedging the stream
                     # permanently on a single bad entry. Skip it, count it, and
                     # keep the cursor moving.
                     record_stream_fault(

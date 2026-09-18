@@ -1,7 +1,7 @@
 """Frame decode -> validate -> capability check -> dispatch. No domain logic
 lives here — telemetry lands in telemetry_service, probe results in the
 monitoring engine's result path, discovery findings in agent_discovery
-(slices 2-4). This module only transports and authenticates (spec §1.2).
+(slices 2-4). This module only transports and authenticates.
 
 `receive_frame` is the validate stage: it decodes one inbound wire frame for
 a /link session and rejects malformed bodies, unsupported protocol
@@ -118,7 +118,7 @@ Handler = Callable[[Session, Agent, AgentFrame], Awaitable[None]]
 
 
 async def _handle_heartbeat(db: Session, agent: Agent, frame: AgentFrame) -> None:
-    """Refresh presence, and record the agent's reported spool backlog (D-12).
+    """Refresh presence, and record the agent's reported spool backlog.
 
     The spool numbers ride the heartbeat rather than a frame type of their
     own because the backlog exists precisely *while* the link is up and
@@ -175,9 +175,9 @@ async def _handle_heartbeat(db: Session, agent: Agent, frame: AgentFrame) -> Non
             payload.spool_evicted_oldest_ts,
             payload.spool_evicted_newest_ts,
         )
-    # The connection-ownership registry (Task 8) is *not* refreshed here.
-    # It used to be, via agent_registry.refresh_agent_connection(agent.id)
-    # — but that call only ever has access to agent_registry's default,
+    # The connection-ownership registry is *not* refreshed here.
+    # Refreshing it via agent_registry.refresh_agent_connection(agent.id)
+    # would only ever have access to agent_registry's default,
     # process-wide WORKER_ID, whereas the registry entry itself must be
     # scoped per-connection (see ws_agents.py link_stream's `connection_id`
     # docstring for why: a second /link connection sharing one worker
@@ -195,13 +195,13 @@ async def _handle_log(db: Session, agent: Agent, frame: AgentFrame) -> None:
 async def _handle_uninstall(db: Session, agent: Agent, frame: AgentFrame) -> None:
     """Agent-initiated revoke. Must not diverge from `api/agents.py::post_revoke`.
 
-    Both paths end with the same agent revoked, so both owe the same Slice 3
-    cleanup (§8): every run this agent still holds is cancelled and its
+    Both paths end with the same agent revoked, so both owe the same the design
+    cleanup: every run this agent still holds is cancelled and its
     assignments are kept as unavailable rather than deleted. A run left open by
     either path holds `uq_monitor_probe_runs_active` for its monitor until the
     reconciliation pass expires it.
 
-    The same argument carries D-14's discovery cleanup, which this handler used
+    The same argument carriesthe discovery cleanup, which this handler used
     to skip: from the moment the status flips, `dispatch_frame`'s grant gate
     drops this agent's own terminal summary, so a dispatch left open here stays
     open until the reconciliation pass expires it — and unlike a revoked agent,
@@ -235,7 +235,7 @@ async def _handle_uninstall(db: Session, agent: Agent, frame: AgentFrame) -> Non
     cancellation = monitor_service.cancel_agent_probe_runs(
         db, agent.id, reason=monitor_service.CANCEL_AGENT_REVOKED
     )
-    # D-4 has no `agent_revoked`; `agent_unavailable` is what a job whose
+    # Has no `agent_revoked`; `agent_unavailable` is what a job whose
     # executor no longer exists failed for — the same reason and the same
     # constant `post_revoke` passes.
     discovery_cancellation = agent_discovery.cancel_agent_dispatches(
@@ -270,7 +270,7 @@ async def _handle_host_telemetry(db: Session, agent: Agent, frame: AgentFrame) -
 
 
 async def _handle_probe_result(db: Session, agent: Agent, frame: AgentFrame) -> None:
-    """The only inbound frame that can move monitor state (§4).
+    """The only inbound frame that can move monitor state.
 
     `frame.ts` is deliberately not passed through: `probe.result` is a data
     frame and therefore spools, and a spooled frame keeps its original producer
@@ -303,7 +303,7 @@ async def _handle_probe_result(db: Session, agent: Agent, frame: AgentFrame) -> 
 
 async def _handle_discovery_finding(db: Session, agent: Agent, frame: AgentFrame) -> None:
     """The only inbound frame that puts agent-authored rows in front of an
-    operator for review (plan §4, §5).
+    operator for review.
 
     `frame.ts` is deliberately not passed through, for the reason
     `_handle_probe_result` documents at length: `discovery.finding` is a data
@@ -343,17 +343,17 @@ async def _handle_discovery_finding(db: Session, agent: Agent, frame: AgentFrame
 
 # Distinguishes an agent's own refusal report from the `capability_violation`
 # row `dispatch_frame` writes when *this server* drops a frame. Both are the
-# same event type — plan §7 asks for one vocabulary — but they mean opposite
+# same event type — the contract asks for one vocabulary — but they mean opposite
 # things about who refused, and only the agent-reported one carries a scope
 # reason, so the row has to say which it is.
 _VIOLATION_REPORTED_BY_AGENT = "agent"
 
 
 async def _handle_capability_violation(db: Session, agent: Agent, frame: AgentFrame) -> None:
-    """The agent reporting that *it* refused something we asked for (plan §7).
+    """The agent reporting that *it* refused something we asked for.
 
     `probe.Runtime.emitCapabilityViolation` sends this when the scope evaluator
-    on the agent disagrees with the one that built the assignment. Before Task 17
+    on the agent disagrees with the one that built the assignment. Before the design
     the frame was declared and silently dropped, so the one signal that a backend
     bug is dispatching out-of-scope work produced no row at all and read as a
     flaky monitor instead.
@@ -381,7 +381,7 @@ async def _handle_capability_violation(db: Session, agent: Agent, frame: AgentFr
         payload = CapabilityViolationPayload.model_validate(frame.payload)
     except ValidationError:
         # The payload is not echoed. It is attacker-authored text, and this is
-        # precisely the frame type plan §7's no-untrusted-contents rule is about.
+        # precisely the frame type the no-untrusted-contents rule is about.
         _logger.warning(
             "agent %s: dropped an out-of-contract capability.violation payload", agent.id
         )
@@ -416,7 +416,7 @@ async def _handle_readiness(db: Session, agent: Agent, frame: AgentFrame) -> Non
         db.commit()
 
 
-# Task 24: maps an `update.status` frame's `phase` to the distinct
+# Maps an `update.status` frame's `phase` to the distinct
 # `agent_events` type it records — queue-time (`update_queued`) is recorded
 # separately by api/agents.py:post_update, since that transition is entirely
 # server-side and has no frame to derive from.
@@ -446,7 +446,7 @@ _UPDATE_REPLAY_SCAN_LIMIT = 64
 def _is_replayed_update_status(db: Session, agent: Agent, event_type: str, version: str) -> bool:
     """Whether one terminal `update.status` for *version* is a replay of an
     outcome this agent already recorded — the case the agent's durable
-    pending-outcome record produces (§8.4 of
+    pending-outcome record produces (the contract of
     docs/design/2026-09-16-agent-deployment-connection-plan.md): the old
     process wrote the outcome, sent it live, and re-exec'd; the new process
     replays it after its first accepted hello.ack, and the live send may
@@ -516,7 +516,7 @@ async def _handle_update_status(db: Session, agent: Agent, frame: AgentFrame) ->
         # immediately without this stale target lingering.
         agent.pending_update_version = None
 
-    # §8.4: a terminal outcome can legitimately arrive twice — sent live by
+    # A terminal outcome can legitimately arrive twice — sent live by
     # the old process and replayed by the re-exec'd one. The second arrival
     # is ignored rather than recorded, so the timeline shows one outcome per
     # attempt and no duplicate alerts; "started" is never replayed (the
@@ -541,7 +541,7 @@ async def _handle_update_status(db: Session, agent: Agent, frame: AgentFrame) ->
 
 
 async def _handle_key_rotate(db: Session, agent: Agent, frame: AgentFrame) -> None:
-    """agent -> server `key.rotate`, kind="device" (Task 27). Task 28 owns
+    """agent -> server `key.rotate`, kind="device". the design owns
     this same frame *type*'s other direction and kind — server -> agent,
     kind="server" — for the server's own static-key rotation; an agent never
     sends that kind, and this handler ignores it if one somehow arrives.
@@ -560,7 +560,7 @@ async def _handle_key_rotate(db: Session, agent: Agent, frame: AgentFrame) -> No
 
     On acceptance, commits the pending-key row before publishing the
     `key.rotate` acknowledgment (kind="device") back to the agent over the
-    Task 8/9 control-frame path: the agent's own atomic device.key swap
+    the design/9 control-frame path: the agent's own atomic device.key swap
     happens only once it has that ack in hand, so it must never be sent
     before the pending key it confirms is durably stored.
     """
@@ -624,7 +624,7 @@ def _record_protocol_violation(db: Session, agent: Agent, *, reason: str, detail
     capability_violation path above is: the first violation in a window writes a
     row and every later one only advances `repeated`. An agent that sends
     malformed frames in a loop would otherwise commit once per frame (route
-    F24), and the cost is not disk — it is that thousands of identical rows bury
+    and the cost is not disk — it is that thousands of identical rows bury
     the audit trail an operator would need to read.
 
     The log line is inside the throttle for the same reason. A flood that fills

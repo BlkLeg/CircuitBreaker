@@ -1,8 +1,8 @@
 """Parked JetStream work: messages that exhausted their delivery budget.
 
-Route F14. Both JetStream consumers `nak()` on failure with no `max_deliver`, so
+Both JetStream consumers `nak()` on failure with no `max_deliver`, so
 a message that can never succeed is redelivered forever — the "silent
-poison-message loop" route §1 sets a target of zero for. Bounding delivery alone
+poison-message loop" the contract sets a target of zero for. Bounding delivery alone
 would trade an infinite loop for a silent drop, which is worse: the operator
 still learns nothing, and now the data is gone. The bound and this table are one
 change.

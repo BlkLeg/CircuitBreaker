@@ -149,7 +149,7 @@ def create_monitor(
     try:
         return monitor_service.create_monitor(db, payload)
     except monitor_service.InvalidAssignment as exc:
-        # §7/D-9: an unknown agent or an incompatible tenant is a bad request,
+        # An unknown agent or an incompatible tenant is a bad request,
         # not a 500 from the RESTRICT FK underneath.
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -222,11 +222,11 @@ async def run_immediate_check(
     user_id: int = Depends(require_write_auth),
     db: Session = Depends(get_db),
 ) -> Any:
-    """D-14: a server monitor keeps today's 200; an agent-assigned monitor whose
+    """a server monitor keeps today's 200; an agent-assigned monitor whose
     vantage cannot take the check answers 409 with the availability reason.
 
     Async because the eligibility precheck has to complete before the response —
-    §2 forbids executing an assigned check from the server, so "accepted" is a
+    the contract forbids executing an assigned check from the server, so "accepted" is a
     claim this route must be able to stand behind.
     """
     monitor = monitor_service.get_monitor(db, monitor_id)
@@ -274,11 +274,11 @@ def get_probe_runs(
     user: Any = require_scope("read", "*"),
     db: Session = Depends(get_db),
 ) -> Any:
-    """§7's bounded execution history, newest first.
+    """the bounded execution history, newest first.
 
     Deliberately separate from `/events`: a probe run records what the *vantage*
     did, and folding execution errors into the target's transition log is
-    exactly what §7 says not to do.
+    exactly whatthe contract says not to do.
     """
     monitor = monitor_service.get_monitor(db, monitor_id)
     if not monitor or not monitor_service.reader_can_access_monitor(db, user, monitor):

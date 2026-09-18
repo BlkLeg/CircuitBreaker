@@ -74,7 +74,7 @@ _MAX_ADDRESS_CEILING = _LOCAL_DISCOVERY_BOUNDS["max_addresses_per_job"][1]
 
 # The only place a discovery request can name a TCP port set today: the `-p` spec
 # inside `nmap_arguments`, which both the profile schema and the ad-hoc scan
-# request carry. Plan §3 requires the port set to be "within configured and hard
+# request carry. the contract requires the port set to be "within configured and hard
 # limits" at creation time, and an operator who typed a port their agent may
 # never open has to find out here rather than have it silently dropped in favour
 # of the grant's own list at dispatch. The character class matches
@@ -200,7 +200,7 @@ def granted_tcp_ports(config: dict[str, Any]) -> frozenset[int]:
     return frozenset(p for p in ports if isinstance(p, int) and not isinstance(p, bool))
 
 
-# ── Central pause controls (Slice 4 plan §3/§6, Task 25) ─────────────────────
+# ── Central pause controls ──────────────────────────────────────────────────
 #
 # "The central UI can pause automatic discovery globally, per agent, or per
 # subnet." Three switches, three storage locations, and — the part that decides
@@ -210,7 +210,7 @@ def granted_tcp_ports(config: dict[str, Any]) -> frozenset[int]:
 # somebody resumed the wrong one.
 #
 # Pausing is not disabling. `DiscoveryProfile.enabled = 0` means the subnet is
-# gone (plan §3 step 6) and is what a *disappearance* writes; a pause leaves the
+# gone (the contract step 6) and is what a *disappearance* writes; a pause leaves the
 # row, its cron expression, its jobs and its results exactly where they are and
 # only withholds the APScheduler registration.
 
@@ -218,14 +218,13 @@ def granted_tcp_ports(config: dict[str, Any]) -> frozenset[int]:
 # `AppSettings.agent_discovery_paused`, named directly by its one reader
 # (`global_agent_discovery_paused`) and its one writer (`POST
 # /discovery/pause`). A `GLOBAL_DISCOVERY_PAUSE_SETTING = "agent_discovery_paused"`
-# constant used to sit here; it is gone because nothing in `src/` ever read it,
-# its stated justification (that both call sites named the scope through it) was
-# false of both, and a constant-driven `setattr` type-checks against nothing —
-# which is how the scope stayed unstorable behind six green tests until Fix A2.
+# constant deliberately does not sit here: nothing in `src/` would read it, and
+# a constant-driven `setattr` type-checks against nothing — which is how a scope
+# stays unstorable behind green tests.
 # The per-agent key below is a different kind of name: it is a JSON key inside a
 # grant blob, so no attribute lookup can ever check it for us.
 
-#: The `local_discovery` grant key Task 3 added for the per-agent scope.
+#: The `local_discovery` grant key the design added for the per-agent scope.
 AGENT_DISCOVERY_PAUSE_KEY = "auto_discovery_paused"
 
 
@@ -251,7 +250,7 @@ def paused_agent_ids(db: Session, agent_ids: Collection[int]) -> frozenset[int]:
 
     Through `bulk_structured_grants_dict` so a fleet costs one query rather than
     one per profile, and so the registry defaults are merged the same way the
-    single-agent reader merges them — an agent approved before Task 3 keeps
+    single-agent reader merges them — an agent approved before the design keeps
     `config = {}` in the database and resolves `auto_discovery_paused = False`
     at read time.
     """
@@ -263,8 +262,8 @@ def paused_agent_ids(db: Session, agent_ids: Collection[int]) -> frozenset[int]:
     held = set()
     for agent_id, capabilities in grants.items():
         config = (capabilities.get(discovery_eligibility.CAPABILITY) or {}).get("config") or {}
-        # `is True` and not truthiness: the normalizer stores a real boolean
-        # (Task 3), and a stray string would otherwise pause an agent's
+        # `is True` and not truthiness: the normalizer stores a real boolean,
+        # and a stray string would otherwise pause an agent's
         # discovery indefinitely whichever word it held.
         if config.get(AGENT_DISCOVERY_PAUSE_KEY) is True:
             held.add(agent_id)
@@ -275,7 +274,7 @@ def agent_scheduling_paused(db: Session, agent_id: int) -> bool:
     """The two scopes that hold a whole agent, for a caller that has just one.
 
     The per-subnet scope is deliberately absent: a caller with one agent id has
-    no profile to ask about yet. `discovery_bootstrap` is the caller — plan §3
+    no profile to ask about yet. `discovery_bootstrap` is the caller — the contract
     step 4's initial scan is scheduling like any other, so a paused agent gets
     its profile (nothing is deleted, and the subnet keeps its identity and its
     history) and no scan.
@@ -371,7 +370,7 @@ def _eligibility_now(
 
     `evaluate_eligibility` is `async` for exactly one reason: its `require_online`
     branch awaits agent presence in Redis. Creation-time validation passes
-    `require_online=False` (D-5 — an offline agent parks its job as
+    `require_online=False` (the contract — an offline agent parks its job as
     `waiting_for_agent`, so reachability is a scheduling condition and not a
     configuration error), so the coroutine runs to its return without ever
     suspending and one step yields the answer.
@@ -404,13 +403,13 @@ def validate_agent_execution_location(
     nmap_arguments: str | None = None,
     tenant_id: int | None = None,
 ) -> None:
-    """Refuse an agent-targeted profile or job the agent may not run (plan §3).
+    """Refuse an agent-targeted profile or job the agent may not run.
 
     `scan_agent_id is None` is the existing server discovery engine — every
-    profile and job that predates Slice 4 — and is returned on untouched.
+    profile and job that predates the design — and is returned on untouched.
 
-    This is the *configuration* checkpoint plan §7 names first, asked at both of
-    the moments plan §3 requires it: profile save and job creation.
+    This is the *configuration* checkpoint the contract names first, asked at both of
+    the moments the contract requires it: profile save and job creation.
     It runs in addition to the dispatch-time re-check and never instead of it: an
     agent's scope is derived from what it reports about its own interfaces, so it
     can change between a profile save and the job that profile eventually
@@ -435,7 +434,7 @@ def validate_agent_execution_location(
             scan_agent_id,
             targets=tuple(targets),
             # No discovery row carries a tenant yet — `ScanJob.tenant_id` is
-            # stamped from the agent when the job is routed (D-17) — and
+            # stamped from the agent when the job is routed — and
             # `evaluate_eligibility` reads `None` as a tenant-less request, which
             # is legal on a tenant-scoped agent because the target is still
             # bounded by that agent's own networks.
@@ -480,9 +479,9 @@ def job_nmap_arguments(db: Session, job: ScanJob) -> str | None:
 
 
 def _agent_tenant_id(db: Session, scan_agent_id: int | None) -> int | None:
-    """The tenant an agent-executed job inherits (D-17).
+    """The tenant an agent-executed job inherits.
 
-    `None` for a server job, which is every job that predates Slice 4 and stays
+    `None` for a server job, which is every job that predates the design and stays
     tenant-less exactly as it is today. Imported lazily for the reason
     `_granted_local_discovery_config` documents: `services/agent_discovery.py`
     imports this module.

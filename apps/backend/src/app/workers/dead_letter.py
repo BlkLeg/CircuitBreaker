@@ -1,4 +1,4 @@
-"""Bounded redelivery for JetStream consumers (route F14).
+"""Bounded redelivery for JetStream consumers.
 
 Both consumers used to `nak()` every failure with no `max_deliver`, so a message
 that can never succeed was redelivered forever and its consumer made no

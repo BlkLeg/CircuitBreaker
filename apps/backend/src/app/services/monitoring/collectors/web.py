@@ -30,13 +30,13 @@ _MAX_REDIRECTS = 20
 def _request(url: str, params: dict) -> tuple[httpx.Response, float]:
     """One HTTP request. Returns (response, latency_ms). Mocked in tests."""
 
-    # SEC-12: a monitor URL is attacker-influenced input — whoever can create a
+    # A monitor URL is attacker-influenced input — whoever can create a
     # monitor chooses the host, method, headers and body. Checking it here rather
     # than only at save time also covers rows created before this policy existed
     # and names that resolve somewhere new between save and check.
     validate_outbound_url(url, MONITOR_TARGET_POLICY)
 
-    # B27 (dial-the-validated-address pinning) is deliberately NOT applied here,
+    # Is deliberately NOT applied here,
     # and the finding stays open for this path. `pinned_request` must know
     # whether the request is going through a forward proxy — httpcore's CONNECT
     # tunnel ignores the `sni_hostname` extension the pin relies on, so pinning

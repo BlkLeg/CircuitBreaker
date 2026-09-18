@@ -42,7 +42,7 @@ from app.services.settings_service import get_or_create_settings
 
 logger = logging.getLogger(__name__)
 
-# D-4. The terminal vocabulary an agent-executed job may close with. There is
+# The terminal vocabulary an agent-executed job may close with. There is
 # deliberately no `partial`: `status` is a bare string read by the history
 # filter, the history query and the review badge, and an interrupted scan is
 # `failed` with its accepted findings kept and reviewable.
@@ -77,7 +77,7 @@ async def finalize_agent_job(
     itself. That one writes `hosts_found`/`hosts_new`/`hosts_updated`/
     `hosts_conflict` *absolutely*, from the stats dict a finished batch
     produces; the agent path has no batch, it increments those counters per
-    accepted finding as they arrive (D-10), and sharing the absolute write would
+    accepted finding as they arrive, and sharing the absolute write would
     clobber every one of them with a dict this path never assembles.
 
     Three properties make this safe to call from the `/link` read loop:
@@ -93,7 +93,7 @@ async def finalize_agent_job(
       `discovery.cancel` was ever delivered.
     * **It never merges.** `_auto_merge_known_devices` is not called here at any
       setting, because `discovery_merge._auto_merge_result` *creates* a
-      `Hardware` row with no review and plan §5 says an agent-authored row
+      `Hardware` row with no review and the contract says an agent-authored row
       reaches `discovery_import_service` only when a user accepts it. The
       `discovery_auto_merge` setting describes the server's own scan; an
       untrusted remote executor is not that.
@@ -225,7 +225,7 @@ def job_scan_agent_id(db: Session, job_id: int) -> int | None:
     One predicate, read by both routing call sites — `execute_scan_job` and
     `discovery_scheduler._run_profile_job_async`. Two copies of "is this an
     agent job" is exactly how one path comes to send an agent-targeted job to
-    the server scanner, which plan §3 forbids because it changes the vantage
+    the server scanner, which the contract forbids because it changes the vantage
     point the operator asked for without telling anyone.
     """
     return db.execute(
@@ -234,7 +234,7 @@ def job_scan_agent_id(db: Session, job_id: int) -> int | None:
 
 
 async def execute_scan_job(db: Session, job_id: int) -> None:
-    """The one branch between the server scanner and an agent (plan §3).
+    """The one branch between the server scanner and an agent.
 
     There is deliberately no fallback in either direction: an agent-targeted job
     that cannot be dispatched closes with a reason, and is never quietly re-run

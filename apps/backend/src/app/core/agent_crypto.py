@@ -3,7 +3,7 @@
 The server holds one static X25519 keypair as its stable long-term identity,
 generated on first use and persisted (encrypted) via the existing credential
 vault. Every enrolling/linking agent verifies against this same public key —
-except during a Task 28 server-key rotation's overlap window, when a
+except during a the design server-key rotation's overlap window, when a
 successor keypair is also valid (see `ServerKeyRotationState` /
 `complete_ik_handshake` below).
 
@@ -12,11 +12,11 @@ its two transport ciphers are then rekeyed in place every REKEY_INTERVAL_SECONDS
 — independently per direction — via `transport.rekey` control frames (see
 `NoiseIKResponder.rekey_send`/`rekey_recv` and ws_agents.py's link_stream).
 Long-term key rotation (`key.rotate`) is mostly a separate mechanism, owned by
-`services/agent_registry.py`'s pending-key state machine (Task 27) — but
+`services/agent_registry.py`'s pending-key state machine — but
 `device_identity_matches` below lives here rather than there because it's the
 one piece of that mechanism that's actually about the Noise layer: Noise IK's
 responder never validates the initiator's static key against a known set at
-the crypto layer (unlike the *responder's own* static key, which Task 28's
+the crypto layer (unlike the *responder's own* static key, which the
 server-key rotation genuinely does have to try two of). Any key the initiator
 holds a matching private key for completes the handshake; `remote_static()`
 below just reports back whatever key that was. Deciding whether that reported
@@ -119,11 +119,11 @@ class RekeyError(Exception):
 
 
 def _spec_rekey(state: CipherState) -> None:
-    """Apply the Noise spec §11.3 REKEY operation to *state* in place.
+    """Apply the Noise the contract REKEY operation to *state* in place.
 
     REKEY(k) is defined as the first 32 bytes of ENCRYPT(k, 2^64-1, zerolen,
     zeros[32]), and Rekey() must leave the nonce counter n untouched ("it
-    doesn't reset n" — spec §11.3), so both peers' counters stay in lockstep
+    doesn't reset n" — the contract), so both peers' counters stay in lockstep
     across a rekey.
 
     dissononce 0.34.3's own ``CipherState.rekey()`` cannot be used directly:
@@ -201,7 +201,7 @@ def server_fingerprint() -> str:
     return hashlib.sha256(pub).hexdigest()[:32]
 
 
-# ── Task 28: server-key rotation with an overlap window ────────────────────
+# ── server-key rotation with an overlap window ────────────────────────────────
 
 # Global Constraints: "Server-key overlap defaults to 7 days." Mirrors
 # agent_registry.DEVICE_KEY_ROTATION_WINDOW_SECONDS's monkeypatch-by-tests
@@ -211,7 +211,7 @@ SERVER_KEY_OVERLAP_SECONDS = 7 * 24 * 60 * 60
 
 @dataclasses.dataclass(frozen=True)
 class ServerKeyRotationState:
-    """The server's current identity keypair, plus (Task 28) an in-progress
+    """The server's current identity keypair, plus an in-progress
     rotation's successor keypair and overlap-expiry, as of one
     `load_server_key_rotation_state` call. `successor_priv`/`successor_pub`
     are `None` whenever no rotation is in progress."""
@@ -232,7 +232,7 @@ def _settle_expired_server_key_rotation(row: object, *, now: datetime) -> bool:
     """If `row` (an `AppSettings` instance) has an in-progress server-key
     rotation whose overlap window has elapsed as of `now`, promote the
     pending successor into `agent_server_private_key` and clear the rotation
-    fields, in place — Task 28's "retire the previous key ... after the
+    fields, in place — the "retire the previous key ... after the
     configured overlap elapses". Never touches the vault: both columns
     already hold vault ciphertext, so promotion is a plain string copy, not a
     decrypt/re-encrypt round trip.
@@ -241,7 +241,7 @@ def _settle_expired_server_key_rotation(row: object, *, now: datetime) -> bool:
     (no-op) otherwise — no rotation in progress, or one still inside its
     window. `row` is typed `object` rather than `AppSettings` to avoid this
     core crypto module importing the ORM models module at all; every
-    attribute access below is exactly the three columns Task 28 added to
+    attribute access below is exactly the three columns the design added to
     that model.
     """
     pending = row.agent_server_key_pending_private_key  # type: ignore[attr-defined]
@@ -264,7 +264,7 @@ def _settle_expired_server_key_rotation(row: object, *, now: datetime) -> bool:
 def load_server_key_rotation_state(
     db: Session, *, now: datetime | None = None
 ) -> ServerKeyRotationState:
-    """The server's current + (if a Task 28 rotation is in progress) successor
+    """The server's current + (if a the design rotation is in progress) successor
     identity keypairs, read fresh from `db` on every call.
 
     Deliberately NOT cached the way `get_server_static_keypair`'s
@@ -325,7 +325,7 @@ def load_server_key_rotation_state(
 def start_server_key_rotation(
     db: Session, *, overlap_seconds: int | None = None, now: datetime | None = None
 ) -> ServerKeyRotationState | None:
-    """Begin a Task 28 server-key rotation: generate a fresh successor X25519
+    """Begin a the design server-key rotation: generate a fresh successor X25519
     keypair, persist its private key (vault-encrypted, alongside the current
     one) on the same singleton `AppSettings` row `get_server_static_keypair`
     already uses, and set an overlap-expiry `overlap_seconds` (default
@@ -333,7 +333,7 @@ def start_server_key_rotation(
 
     Returns `None` — rejecting, doing nothing — if a rotation is already
     active (its overlap window hasn't elapsed yet): `api/agents.py`'s admin
-    endpoint turns that into a 409. Unlike Task 27's
+    endpoint turns that into a 409. Unlike the
     `agent_registry.start_device_key_rotation`, which lets a second call
     simply supersede an in-progress device-key rotation, the brief requires
     this one to refuse outright while a prior rotation's overlap is still in
@@ -398,7 +398,7 @@ def complete_ik_handshake(
 ) -> tuple[NoiseIKResponder, bytes, str] | None:
     """Responder side of one Noise IK handshake message, tried against every
     currently-valid server private key: the current key, and — only for as
-    long as an in-progress Task 28 rotation's overlap window hasn't elapsed —
+    long as an in-progress the design rotation's overlap window hasn't elapsed —
     its successor. Tries the current key first, so the overwhelmingly common
     no-rotation-in-progress case never pays for a second attempt.
 
@@ -453,7 +453,7 @@ def device_identity_matches(
     """True if `remote_static_hex` — a completed Noise IK handshake's
     initiator static key, as returned by `NoiseIKResponder.remote_static().hex()`
     — is a currently-valid identity given one Agent row's current device key
-    and (Task 27) its in-progress device-key rotation state, if any.
+    and its in-progress device-key rotation state, if any.
 
     Called from `agent_registry.resolve_agent_for_handshake`, which is where
     this replaces the old exact-match-only `device_pk` lookup for `/link`.

@@ -27,7 +27,7 @@ class DiscoveryProfileCreate(BaseModel):
     vlan_ids: list[int] = []
     scan_types: list[str] = ["nmap"]
     # None means the existing server discovery engine — every profile that
-    # predates Slice 4. An id dispatches the profile to that agent instead.
+    # predates the design. An id dispatches the profile to that agent instead.
     scan_agent_id: int | None = None
     nmap_arguments: str | None = Field(None, max_length=256)
     snmp_community: str | None = None  # plaintext input only; never in output
@@ -73,13 +73,13 @@ class DiscoveryProfileUpdate(BaseModel):
     def validate_schedule_cron(cls, v: str | None) -> str | None:
         return _validate_cron_expression(v)
 
-    # No `validate_scan_type_vocabulary` here, deliberately (§3, D-6). Which scan
+    # No `validate_scan_type_vocabulary` here, deliberately. Which scan
     # types are legal depends on the execution location, and a PATCH names either
     # half of that pair on its own: an unset `scan_agent_id` on this model means
     # "leave the stored agent alone", not "the server". Judging the payload
     # against itself therefore got both directions wrong — it let
     # `{"scan_types": ["nmap"]}` land on an agent-executed profile (a server-only
-    # type dispatched to an agent, which §3 forbids) and refused
+    # type dispatched to an agent, whichthe contract forbids) and refused
     # `{"scan_types": ["agent_connect"]}` on a profile that already had an agent.
     # The check belongs where the stored row is in hand:
     # `discovery_profiles_service.update_profile` runs `validate_scan_types` over
@@ -91,16 +91,16 @@ class DiscoveryProfileOut(BaseModel):
     id: int
     name: str
     cidr: str | None
-    # Where this profile executes (Task 26). `None` is the server discovery
-    # engine — every profile that predates Slice 4 — and an id is the agent the
+    # Where this profile executes. `None` is the server discovery
+    # engine — every profile that predates the design — and an id is the agent the
     # "Scan from" selector has to read back to show what is already chosen.
     scan_agent_id: int | None = None
     # `"system"` for a profile `discovery_bootstrap` owns and may re-upsert,
-    # `None` for one an operator wrote. Plan §6 asks the scope section to render
+    # `None` for one an operator wrote. the contract asks the scope section to render
     # automatic and user-created subnets with *visibly different provenance*,
     # and this is the only field that tells them apart.
     managed_by: str | None = None
-    # Per-subnet pause (plan §6, M14). Distinct from `enabled = false`, which
+    # Per-subnet pause. Distinct from `enabled = false`, which
     # means the subnet is gone; a timestamp here means an operator held it.
     paused_at: datetime | None = None
     vlan_ids: list[int] = []
@@ -154,8 +154,8 @@ class ScanJobOut(BaseModel):
     id: int
     profile_id: int | None
     # The execution location, copied onto the job at creation so historical
-    # attribution cannot change when the profile is later repointed (Task 26).
-    # Plan §6: the job card and the history row show where a scan ran, and link
+    # attribution cannot change when the profile is later repointed.
+    # The job card and the history row show where a scan ran, and link
     # the agent name to its detail page.
     scan_agent_id: int | None = None
     # `manual|prober|scheduled|listener_triggered|agent`. Carried alongside
@@ -200,7 +200,7 @@ class DiscoveryScopeEntry(BaseModel):
     """One CIDR in an agent's effective scope, with where it came from and
     whether the evaluator will actually permit it.
 
-    `provenance` is what plan §6 means by "visibly different provenance", and the
+    `provenance` is what the contract means by "visibly different provenance", and the
     distinction is operational rather than cosmetic:
 
     * `automatic` — derived from the agent's own reported interfaces. It appears
@@ -216,7 +216,7 @@ class DiscoveryScopeEntry(BaseModel):
     the allow list. `EffectiveScope.networks` is what is permitted *before*
     exclusions and the static special-use blocklist are subtracted, so rendering
     it as reachability would claim access the evaluator refuses — which is
-    exactly the difference plan §6 asks the section to show. `reason` is the
+    exactly the difference the contract asks the section to show. `reason` is the
     evaluator's own (`excluded_cidr`, `prefix_too_wide`, `special_use`, …).
     """
 
@@ -243,7 +243,7 @@ class DiscoveryLimits(BaseModel):
 
 
 class DiscoveryReadinessRow(BaseModel):
-    """One D-8 collector's reported state.
+    """One the contract collector's reported state.
 
     Rendered for every collector in the closed set, including those that have
     never reported — `state = None` is "no row", which is what makes a job refuse
@@ -270,10 +270,10 @@ class DiscoveryReadinessRow(BaseModel):
 
 
 class AgentDiscoveryRead(BaseModel):
-    """Everything §6's "Discovery scope" section on Agent Detail renders.
+    """Everythingthe "Discovery scope" section on Agent Detail renders.
 
     `AgentProbesRead`'s counterpart, and loaded by the same page the same way, so
-    Task 27's component can be cloned from `AssignedProbesSection`. It answers
+    the component can be cloned from `AssignedProbesSection`. It answers
     one question — *what is this vantage point discovering, and if nothing, why*
     — which is why the eligibility verdict, the three pause scopes and the
     readiness rows sit alongside the scope itself rather than being three more
@@ -311,7 +311,7 @@ class AgentDiscoveryRead(BaseModel):
 
 
 class EligibleDiscoveryAgent(BaseModel):
-    """One candidate vantage for a discovery scan, as plan §6's "Scan from"
+    """One candidate vantage for a discovery scan, as the "Scan from"
     selector renders it — including the ones it may not choose.
 
     `EligibleProbeAgent`'s twin, field for field where the question is the same,
@@ -343,7 +343,7 @@ class EligibleDiscoveryAgent(BaseModel):
     hostname: str | None = None
     online: bool
     granted: bool
-    # The per-agent hold (M14). Not an ineligibility: a paused agent still
+    # The per-agent hold. Not an ineligibility: a paused agent still
     # accepts a scan an operator starts by hand; what is paused is the automatic
     # cadence. The selector renders it so "nothing is happening" has an answer.
     paused: bool = False
@@ -389,9 +389,9 @@ class ScanResultOut(BaseModel):
     matched_entity_type: str | None
     matched_entity_id: int | None
     # Which agent's local-discovery scan produced this finding; None for a
-    # server-executed scan. The column has existed since Slice 4 but was not
+    # server-executed scan. The column has existed since the design but was not
     # serialized, so no caller could attribute a finding to an agent — which
-    # Slice 3 §7's "Create monitor from this agent" action needs in order to
+    # What the "Create monitor from this agent" action needs in order to
     # list the devices one agent found.
     discovery_agent_id: int | None = None
     merge_status: str

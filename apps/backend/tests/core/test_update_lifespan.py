@@ -9,7 +9,7 @@ _WORKERS = Path(__file__).resolve().parents[2] / "src/app/startup/workers.py"
 def test_startup_uses_the_loop_not_the_deleted_one_shot():
     source = _WORKERS.read_text()
     assert "run_update_check_loop" in source
-    assert "log_update_notice" not in source, "the one-shot notice was removed in Task 4"
+    assert "log_update_notice" not in source, "the one-shot notice was replaced by the loop"
 
 
 def test_the_task_is_registered_for_cancellation():
@@ -25,7 +25,11 @@ def test_the_task_is_registered_for_cancellation():
 
 
 def test_it_is_not_gated_on_in_process_workers():
-    """The check is independent of CB_RUN_INPROCESS_WORKERS."""
+    """The check is independent of CB_RUN_INPROCESS_WORKERS.
+
+    Sliced between the two section banners that bracket the update check, so
+    the assertion is about that block rather than the whole file.
+    """
     source = _WORKERS.read_text()
-    phase9 = source.split("Phase 9")[1].split("Phase 10")[0]
-    assert "CB_RUN_INPROCESS_WORKERS" not in phase9
+    section = source.split("── Update check")[1].split("── Discovery readiness")[0]
+    assert "CB_RUN_INPROCESS_WORKERS" not in section

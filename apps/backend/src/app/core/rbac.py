@@ -140,7 +140,7 @@ def require_role(*roles: str) -> params.Depends:
     - Service account (user_id=0) and is_superuser bypass all checks.
     - Locked users receive 423 Locked.
     - Insufficient role receives 403 Forbidden.
-    - A scoped token is checked against the role's scope requirement (B1/INC-14).
+    - A scoped token is checked against the role's scope requirement (B1/the contract).
     """
 
     # What a TOKEN must hold to satisfy a require_role gate for these roles.
@@ -165,7 +165,7 @@ def require_role(*roles: str) -> params.Depends:
         # A request authenticated by a scoped token is limited by that token,
         # even on role-guarded routes. Without this, scopes narrowed only the
         # two require_scope checks in the codebase and every token was a
-        # superuser everywhere else (INC-14). token_scopes is None for session
+        # superuser everywhere else. token_scopes is None for session
         # users and for legacy unscoped tokens, so this branch never runs for
         # them and their behaviour is unchanged.
         token_scopes = _request_token_scopes(request)
@@ -199,7 +199,7 @@ def require_role(*roles: str) -> params.Depends:
             raise HTTPException(status_code=403, detail="Insufficient permissions")
         return user
 
-    # What this gate actually demands, readable without running it. The SEC-06
+    # What this gate actually demands, readable without running it. The the contract
     # write gate needs to tell `require_scope("read", "*")` apart from a scope
     # that permits writing, and both compile to the same `_dep` qualname, so the
     # declaration has to travel on the object rather than in its name.

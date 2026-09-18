@@ -35,7 +35,7 @@ class User(Base):
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
     last_login: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), onupdate=_now)
-    # Phase 6.5: RBAC, invite, lockout, masquerade
+    # RBAC, invite, lockout, masquerade
     role: Mapped[str] = mapped_column(String, nullable=False, default="viewer")
     scopes: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     demo_expires: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -52,7 +52,7 @@ class User(Base):
         String, nullable=False, default="local"
     )  # "local", "github", "oidc"
     oauth_tokens: Mapped[str | None] = mapped_column(Text)  # JSON blob for oauth refresh tokens etc
-    # MFA / TOTP (Phase 7 security hardening)
+    # MFA / TOTP (the design security hardening)
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     totp_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
     backup_codes: Mapped[str | None] = mapped_column(
@@ -71,7 +71,7 @@ class User(Base):
     )
 
 
-# ── Phase 6.5: User Sessions & Invites ────────────────────────────────────────
+# ── User Sessions & Invites ────────────────────────────────────────────────────
 
 
 class UserSession(Base):

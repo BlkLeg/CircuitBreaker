@@ -1,6 +1,6 @@
-"""The one path from a raw discovery observation to a classified `ScanResult` (§5, D-9).
+"""The one path from a raw discovery observation to a classified `ScanResult`.
 
-`_scan_import` owned this inline until Slice 4. The agent path needs exactly the
+`_scan_import` owned this inline until the design. The agent path needs exactly the
 same row shape and exactly the same match/conflict verdict for a *single*
 incremental finding, and the rest of `_scan_import` cannot give it: that function
 opens its own `SessionLocal`, needs the `setup` dict `_scan_setup` builds,
@@ -57,7 +57,7 @@ from app.services.discovery_network import _match_ip_to_network, _norm_mac
 
 # The three verdicts `_scan_import` has always counted, returned instead of
 # incremented so the batch caller can keep writing `job.hosts_*` absolutely and
-# the agent caller can increment them (D-10).
+# the agent caller can increment them.
 CLASSIFICATION_NEW = "new"
 CLASSIFICATION_MATCHED = "matched"
 CLASSIFICATION_CONFLICT = "conflict"

@@ -659,7 +659,7 @@ def get_optional_user(request: HTTPConnection, db: Session = Depends(get_db)) ->
     Returns 0 (service-account sentinel) when the LegacyTokenMiddleware
     has flagged the request (CB_LEGACY_AUTH rollback).  Never raises.
 
-    Sync on purpose (F12/M3). It awaits nothing and its body is entirely
+    Sync on purpose. It awaits nothing and its body is entirely
     blocking: `resolve_optional_user_id_sync` reads AppSettings through
     `get_or_create_settings`, then does a synchronous Redis MGET, and on a cache
     miss falls through to a full `APIToken` scan with a per-row HMAC verify —

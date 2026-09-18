@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 _TICK_S = float(os.getenv("CB_MONITOR_SCHED_TICK_S", "1.0"))
 _BATCH = int(os.getenv("CB_MONITOR_SCHED_BATCH", "200"))
-# D-2 fair sharing: no vantage (the server, or any one agent) may take more
+# Fair sharing: no vantage (the server, or any one agent) may take more
 # than _PER_VANTAGE of a tick, and the claim locks _OVERSAMPLE rows so the
 # ranking has every vantage to rank before the global _BATCH cap applies.
 _PER_VANTAGE = int(os.getenv("CB_MONITOR_SCHED_PER_VANTAGE", "50"))
@@ -42,7 +42,7 @@ async def tick(
 ) -> int:
     db = db_factory()
     try:
-        # D-5: remote-probe reconciliation rides this tick rather than a worker
+        # Remote-probe reconciliation rides this tick rather than a worker
         # of its own — this is already the single active clock, under the
         # `monitor_scheduler` advisory lock, with a session open. It runs first
         # so an expired run has released the partial unique index before the

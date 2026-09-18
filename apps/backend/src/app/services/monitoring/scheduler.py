@@ -6,7 +6,7 @@ post-downtime burst spreads out), and returns the claimed rows. This makes
 double-enqueue impossible and is safe across concurrent schedulers, though
 normally only one runs (advisory lock).
 
-Two vantages exist (Slice 3 §2): `probe_agent_id IS NULL` is server execution,
+Two vantages exist: `probe_agent_id IS NULL` is server execution,
 published to `MONITOR_POLL_ITEM` exactly as before; a non-NULL `probe_agent_id`
 means one named agent runs the check, which needs a durable run row first and
 is published to `MONITOR_PROBE_REMOTE` carrying nothing but that run's id.
@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # and an execution error never moves monitor state. An ICMP monitor with
 # `packet_count=20` needs 30s to observe 100% packet loss; at 20s it would report
 # `unavailable` forever while the identical server-executed monitor reports DOWN,
-# breaking §6's parity requirement.
+# breakingthe parity requirement.
 #
 # Stored configs are sparse (`model_dump(exclude_unset=True)`), so every value
 # comes through `params.get(key, default)` using the collector-side defaults.
@@ -128,7 +128,7 @@ def probe_deadline_seconds(check_type: str, params: dict | None) -> float:
     return max(budget + _PROBE_DEADLINE_HEADROOM_S, _PROBE_DEADLINE_MIN_S)
 
 
-# D-2. PostgreSQL rejects `FOR UPDATE is not allowed with window functions`, so
+# PostgreSQL rejects `FOR UPDATE is not allowed with window functions`, so
 # the lock must happen first and the per-vantage ranking second. That inverts the
 # two limits — the global cap would apply BEFORE the rank, letting one agent with
 # a 400-monitor backlog consume the whole locked set and starve every other
@@ -208,7 +208,7 @@ _MARK_QUEUED_SQL = text(
     """
 )
 
-# D-6: skipping costs one interval; queuing would build a backlog behind exactly
+# Skipping costs one interval; queuing would build a backlog behind exactly
 # the agent that is already slow. next_due_at is deliberately left where the
 # claim put it.
 _MARK_IN_FLIGHT_SQL = text(
@@ -221,7 +221,7 @@ _MARK_IN_FLIGHT_SQL = text(
     """
 )
 
-# §8: a NATS publication failure is a dispatch failure, not a target failure —
+# A NATS publication failure is a dispatch failure, not a target failure —
 # no avail sample, no retry counter, just "try again soon". Jittered so a broker
 # blip does not re-converge every assigned monitor onto one tick.
 _DISPATCH_FAILED_SQL = text(
@@ -341,7 +341,7 @@ async def enqueue_due(
             continue
         # Only the run id travels over NATS: the dispatcher loads the host,
         # config and any credentials from the database immediately before
-        # encrypted delivery to the agent (§2).
+        # encrypted delivery to the agent.
         if await publish(MONITOR_PROBE_REMOTE, {"run_id": run_id}):
             enqueued += 1
         else:

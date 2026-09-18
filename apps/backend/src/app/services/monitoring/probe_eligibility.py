@@ -1,11 +1,11 @@
-"""May this agent run this monitor's check right now? (Slice 3 §2)
+"""May this agent run this monitor's check right now?
 
-§2 lists six preconditions for handing a check to a remote vantage — active
+the contract lists six preconditions for handing a check to a remote vantage — active
 agent, `remote_probe` granted, a live connection, compatible probe readiness, a
 target inside the grant's network scope, and no run already in flight. They are
 composed here, once, because three callers need the identical answer and must
 not drift: the remote dispatcher (`workers/monitor_probe_dispatch.py`), the
-"check now" precheck that owes the user a 409 with the reason (D-14), and the
+"check now" precheck that owes the user a 409 with the reason, and the
 assignment write that refuses to save a monitor the agent could never reach.
 
 Every denial names a machine-readable reason. It is written to
@@ -17,12 +17,12 @@ What this module deliberately does **not** do:
 
 * It never decides a target is *down*. An ineligible vantage is an execution
   condition; the target's last UP/DOWN state stands and no `avail` sample is
-  written (§2, D-12).
+  written.
 * It never resolves anything itself unless it has to. IP literals are judged
   directly and only a hostname target costs a lookup; `resolver` is injectable
   so tests do not depend on the host's DNS. The agent resolves the same name
   again immediately before connecting and applies the same rule, which is what
-  makes a rebinding resolver useless (§3).
+  makes a rebinding resolver useless.
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ REASON_PREVIOUS_RUN_IN_FLIGHT = "previous_run_in_flight"
 # The statuses that hold the partial unique index on `monitor_probe_runs`.
 _ACTIVE_RUN_STATUSES = ("queued", "dispatched")
 
-# One readiness collector per check type (§5). `agent_capability_readiness`
+# One readiness collector per check type. `agent_capability_readiness`
 # already accepts free-form collector names, so these need no schema change.
 READINESS_COLLECTORS = {
     "icmp": "probe.icmp",
@@ -144,7 +144,7 @@ async def evaluate_eligibility(
     ignore_run_id: str | None = None,
     resolver: Resolver | None = None,
 ) -> Eligibility:
-    """Answer §2's six preconditions, in §2's order, for one monitor.
+    """Answerthe six preconditions, inthe order, for one monitor.
 
     `agent_id` overrides `monitor.probe_agent_id` so an assignment write can ask
     about an agent the monitor does not have yet. `ignore_run_id` is the run the
@@ -177,7 +177,7 @@ async def evaluate_eligibility(
     if readiness is not None:
         return readiness
 
-    # D-9: refuse only when both sides carry a tenant and they differ. A
+    # Refuse only when both sides carry a tenant and they differ. A
     # tenant-less standalone monitor stays legal on a tenant-scoped agent — the
     # target is still bounded by that tenant's own directly connected networks.
     monitor_tenant = _monitor_tenant_id(db, monitor)
@@ -244,7 +244,7 @@ def _readiness_denial(db: Session, agent_id: int, check_type: str) -> Eligibilit
 
 
 # `monitor_items` carries no tenant_id and is not in 0040_rls_policies, so
-# nothing at the DB layer enforces D-9 — the monitor's tenant is whatever its
+# nothing at the DB layer enforces the contract — the monitor's tenant is whatever its
 # target entity's is, and this is the only place that derives it. `compute_units`
 # is the one target type with no column of its own (0040 lists the table but
 # skips it for exactly that reason), so it takes its host's; a compute unit is

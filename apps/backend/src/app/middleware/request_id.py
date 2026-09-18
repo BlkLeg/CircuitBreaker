@@ -30,7 +30,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
 
 #: The canonical spelling of this header — the one other modules (and, per
-#: the phase-2 route, Task 2's frontend) should reference or document,
+#: the phase-2 route, the frontend) should reference or document,
 #: e.g. in a CORS `allow_headers` list or a docstring. `_REQUEST_ID_HEADER_BYTES`
 #: below is derived from it and is what is actually read from the ASGI scope
 #: and written onto the wire, since ASGI header names are lower-cased.
@@ -158,7 +158,7 @@ def install_request_id_log_filter(logger_names: Iterable[str] | None = None) -> 
 
     Nothing rendered the attribute either. `RequestIdFormatter` wraps each
     handler's existing formatter so the ID appears without disturbing uvicorn's
-    own layout. Before this, §4.2's stated correlation path — browser nav ID to
+    own layout. Before this,the stated correlation path — browser nav ID to
     request IDs to server logs — was exactly one hand-formatted line wide, in
     db/session.py's slow-query logger.
 

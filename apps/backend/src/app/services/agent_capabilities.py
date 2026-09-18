@@ -1,4 +1,4 @@
-"""The single server-side registry of agent capabilities (Task 14, **D-14**).
+"""The single server-side registry of agent capabilities (the design, **the contract**).
 
 `CAPABILITY_DEFINITIONS` is the one place a capability's name, approval
 default, default configuration, and config normalizer are declared. It
@@ -10,7 +10,7 @@ and `AgentDetailPage.jsx`'s `HOST_DEFAULTS` — the last two of which now read
 `apps/agent/internal/capability`'s `configNormalizers`. **A new slice adds
 exactly one entry here and one there, and touches nothing else.**
 
-This module imports nothing from `app` outside `core` per **D-14**, so both the
+This module imports nothing from `app` outside `core` per **the contract**, so both the
 service layer (`services/agent_registry.py`) and the schema layer
 (`schemas/agents.py`) can import it at module scope with no cycle and without
 the schema layer pulling in a DB-touching service. `core.agent_scope` is the
@@ -110,7 +110,7 @@ def _materialized(defaults: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_remote_probe_config(config: dict[str, Any]) -> dict[str, Any]:
-    """Validate a `remote_probe` grant config (design §3).
+    """Validate a `remote_probe` grant config.
 
     Every CIDR and hostname rule is delegated to `core.agent_scope`, which is
     also what the dispatcher and the Go agent evaluate against — an
@@ -161,7 +161,7 @@ _LOCAL_DISCOVERY_DEFAULT_CONFIG: Mapping[str, Any] = MappingProxyType(
         "job_timeout_seconds": 300,
         # Server-side scheduling control, not a collector setting: it pauses the
         # automatic per-subnet profiles for this agent without deleting them or
-        # revoking the capability (plan §6). It rides the grant config because
+        # revoking the capability. It rides the grant config because
         # that is already the per-agent settings store the UI edits and the
         # registry renders; the agent receives it and has no use for it, which is
         # why the Go normalizer accepts the key and the runtime ignores it.
@@ -170,7 +170,7 @@ _LOCAL_DISCOVERY_DEFAULT_CONFIG: Mapping[str, Any] = MappingProxyType(
 )
 
 # Server-side hard ceilings, enforced *in addition* to the configurable values
-# above (Slice 4 plan §1). An oversized request is rejected rather than silently
+# above. An oversized request is rejected rather than silently
 # truncated: an operator who typed 100 000 addresses has to find out here, not
 # discover later that the agent quietly scanned 4 096 of them. The Go mirror in
 # `apps/agent/internal/capability` carries the same numbers, because an agent
@@ -184,13 +184,13 @@ _LOCAL_DISCOVERY_BOUNDS: Mapping[str, tuple[int, int]] = MappingProxyType(
         "job_timeout_seconds": (30, 1800),
     }
 )
-# Plan §1 names nine ports. The cap is generous against that and still a bound —
+# Names nine ports. The cap is generous against that and still a bound —
 # an unbounded set would be an unbounded scan of every host in the target.
 _MAX_TCP_PORTS = 32
 
 
 def _normalize_local_discovery_config(config: dict[str, Any]) -> dict[str, Any]:
-    """Validate a `local_discovery` grant config (Slice 4 plan §1).
+    """Validate a `local_discovery` grant config.
 
     The scope half is delegated to `core.agent_scope` for the same reason
     `_normalize_remote_probe_config` does it: that module is what the
@@ -253,7 +253,7 @@ def _reject_unknown_keys(capability: str) -> Callable[[dict[str, Any]], dict[str
     The allow-set is `default_config`'s own keys, which is empty today for
     `local_discovery` — so any config supplied for it is rejected rather than
     silently persisted and shipped to an agent that has no idea what to do with
-    it. Slice 4 replaces that entry with real defaults plus a real normalizer;
+    it. the design replaces that entry with real defaults plus a real normalizer;
     nothing else has to change.
     """
 
@@ -274,7 +274,7 @@ CAPABILITY_DEFINITIONS: dict[str, CapabilityDefinition] = {
         default_config=_HOST_TELEMETRY_DEFAULT_CONFIG,
         normalize=_normalize_host_telemetry_config,
     ),
-    # D-10: granted-but-idle is the design. `remote_probe` executes nothing
+    # Granted-but-idle is the design. `remote_probe` executes nothing
     # until a monitor is explicitly assigned and `local_discovery` is bounded
     # by the `direct_private` derived scope, so approving with `capabilities`
     # omitted grants all three and the approver keeps a per-capability opt-out

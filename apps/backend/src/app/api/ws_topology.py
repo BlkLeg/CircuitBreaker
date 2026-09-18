@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# REL-07 fault-metric identity for this stream. Only the paths a peer or an
+# Fault-metric identity for this stream. Only the paths a peer or an
 # outage can drive repeatedly are routed through it; the one-shot close-failure
 # handlers below stay plain DEBUG lines, because they can fire at most once per
 # connection and carry no storm risk.
@@ -203,7 +203,7 @@ def _extract_client_ip(websocket: WebSocket) -> str:
     """This stream's per-IP cap bucket key and rejected-handshake log identity.
 
     Reading the leftmost `X-Forwarded-For` entry off any peer let a caller
-    rotate the header for a fresh connection budget (B24). The trust rule is
+    rotate the header for a fresh connection budget. The trust rule is
     shared with every other WS stream; see `trusted_ws_client_ip` in
     ws_discovery.py for what it does and what must not be undone.
     """

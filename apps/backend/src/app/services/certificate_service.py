@@ -117,7 +117,7 @@ def get_certificate(db: Session, cert_id: int) -> Certificate | None:
 
 
 def _acme_issuer() -> Any:
-    """Resolve ACME issuance at call time (INC-07).
+    """Resolve ACME issuance at call time.
 
     A module-level ``issue_acme_certificate`` wins when one is bound; otherwise
     ``services/acme_service`` is imported dynamically and its ImportError surfaces. There is
@@ -266,7 +266,7 @@ def renew_certificate(db: Session, cert: Certificate) -> Certificate:
     """Renew a certificate — self-signed generates a new pair, Let's Encrypt re-issues.
 
     Both paths raise rather than returning the unchanged certificate: reporting a renewal
-    that did not happen as a 200 with the old expiry is what made INC-07 dangerous rather
+    that did not happen as a 200 with the old expiry is what made the contract dangerous rather
     than merely incomplete.
     """
     vault = get_vault()
@@ -288,7 +288,7 @@ def renew_certificate(db: Session, cert: Certificate) -> Certificate:
         # separate operation — and the code this replaced was a second, older invocation
         # that could not work: `--standalone` binds port 80 as a process that runs as
         # breaker:1000, and the account email was the hardcoded admin@localhost that
-        # INC-07 recorded as its third cause. Keeping two invocations would have left the
+        # Recorded as its third cause. Keeping two invocations would have left the
         # working path reachable only from creation.
         cert_pem, raw_key_pem, expires_at = _acme_issuer()(
             cert.domain,

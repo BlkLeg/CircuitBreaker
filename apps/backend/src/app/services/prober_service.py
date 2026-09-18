@@ -1,4 +1,4 @@
-"""ARP Prober — scheduled subnet sweep for Phase 4 Discovery Engine 2.0.
+"""ARP Prober — scheduled subnet sweep for the design Discovery Engine 2.0.
 
 Creates a ScanJob with source_type='prober' and scan_types=['arp'], then
 runs it using the existing run_scan_job() infrastructure so all progress

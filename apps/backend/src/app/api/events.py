@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# REL-07 fault-metric identity for the SSE stream.
+# Fault-metric identity for the SSE stream.
 _COMPONENT = "sse_events"
 
 _KEEPALIVE_INTERVAL = 15  # seconds between SSE keepalive comments
@@ -65,7 +65,7 @@ def decode_nats_event(msg: Any) -> dict | None:
     Returning None rather than `{}` is the point: the old code substituted an
     empty payload on a parse failure, which turned an unparseable frame into a
     well-formed event the frontend rendered as a real (empty) notification.
-    Counted so a publisher shipping bad frames is visible (REL-07).
+    Counted so a publisher shipping bad frames is visible.
     """
     try:
         decoded = json.loads(msg.data.decode())
@@ -172,7 +172,7 @@ def _nats_event_generator(queue: asyncio.Queue[Any], raw_token: str | None) -> A
                 # yielded ": error" in a tight loop with no sleep — a spin that
                 # pinned a core and filled the client's socket buffer. End the
                 # stream explicitly instead; the browser's EventSource
-                # reconnects (REL-07).
+                # reconnects.
                 record_stream_fault(f"{_COMPONENT}.nats_queue", exc, logger=logger)
                 yield ": error\n\n"
                 break
@@ -273,7 +273,7 @@ def _db_poll_generator(raw_token: str | None) -> AsyncIterator[str]:
                 # loop keeps polling — the database coming back is exactly the
                 # recovery this fallback exists for. What it must not do is
                 # hide the outage at DEBUG for hours: classified, throttled and
-                # counted (REL-07).
+                # counted.
                 record_stream_fault(
                     f"{_COMPONENT}.db_poll",
                     exc,

@@ -11,7 +11,7 @@ _logger = logging.getLogger(__name__)
 _HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 # The DNS-01 providers this build ships plugins for. Two and no more: an untested provider
-# is worse than an absent one, which is the finding (INC-16) shipped alongside this.
+# is worse than an absent one, which is the finding shipped alongside this.
 AcmeDnsProvider = Literal["cloudflare", "rfc2136"]
 
 
@@ -19,7 +19,7 @@ class AcmeDnsRead(BaseModel):
     """What the DNS-01 configuration looks like from outside.
 
     Credentials never appear here in any form, masked or otherwise — the ``*_set`` flags are
-    the whole answer to "is it configured", which is the contract INC-06 established for
+    the whole answer to "is it configured", which is the contract established for
     notification sinks. The non-secret RFC2136 fields are returned so an operator can see
     and correct what they entered.
     """
@@ -157,7 +157,7 @@ class AppSettingsRead(BaseModel):
     registration_open: bool = True
     rate_limit_profile: str = "normal"
     session_timeout_hours: int = 24
-    # Phase 6.5: User management
+    # User management
     concurrent_sessions: int = 5
     login_lockout_attempts: int = 5
     login_lockout_minutes: int = 15
@@ -204,10 +204,10 @@ class AppSettingsRead(BaseModel):
     # Privacy / Windscribe integration
     windscribe_enabled: bool = True
     windscribe_feed_refresh_hours: int = 1
-    # Phase 3: Realtime / NATS
+    # Realtime / NATS
     realtime_notifications_enabled: bool = True
     realtime_transport: str = "auto"  # "auto" | "sse" | "websocket"
-    # Phase 4: Discovery Engine 2.0
+    # Discovery Engine 2.0
     listener_enabled: bool = False
     prober_interval_minutes: int = 15
     deep_dive_max_parallel: int = 5
@@ -249,7 +249,7 @@ class AppSettingsRead(BaseModel):
     smtp_tls: bool = True
     smtp_last_test_at: str | None = None
     smtp_last_test_status: str | None = None
-    # ACME DNS-01 (INC-07). The raw columns are read from the ORM and excluded from the
+    # ACME DNS-01. The raw columns are read from the ORM and excluded from the
     # response; `acme_dns` below is what callers see, and it never carries a credential.
     acme_dns_provider: str | None = Field(default=None, exclude=True)
     acme_dns_config: dict | None = Field(default=None, exclude=True)
@@ -302,7 +302,7 @@ class AppSettingsRead(BaseModel):
 
         Reusing ``acme_secrets.redact_config`` rather than listing the fields here is the
         point: two places deciding what counts as a credential is how one of them ends up
-        wrong, which is INC-06 in miniature.
+        wrong, which is the contract in miniature.
         """
         from app.services.acme_secrets import redact_config
 
@@ -470,7 +470,7 @@ class AppSettingsUpdate(BaseModel):
     registration_open: bool | None = None
     rate_limit_profile: Literal["relaxed", "normal", "strict"] | None = None
     session_timeout_hours: int | None = None
-    # Phase 6.5: User management
+    # User management
     concurrent_sessions: int | None = None
     login_lockout_attempts: int | None = None
     login_lockout_minutes: int | None = None
@@ -518,10 +518,10 @@ class AppSettingsUpdate(BaseModel):
     # Privacy / Windscribe integration
     windscribe_enabled: bool | None = None
     windscribe_feed_refresh_hours: int | None = Field(default=None, ge=1, le=168)
-    # Phase 3: Realtime / NATS
+    # Realtime / NATS
     realtime_notifications_enabled: bool | None = None
     realtime_transport: str | None = None
-    # Phase 4: Discovery Engine 2.0
+    # Discovery Engine 2.0
     listener_enabled: bool | None = None
     prober_interval_minutes: int | None = None
     deep_dive_max_parallel: int | None = None

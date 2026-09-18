@@ -294,7 +294,7 @@ async def _async_cache_and_publish(hardware_id: int, result: dict, ttl: int | No
     except Exception as exc:
         # Fires once per polled device per cycle. Throttled and counted so a
         # Redis outage shows up as a number instead of as "the live telemetry
-        # panel is blank and nothing in the log says why" (REL-07).
+        # panel is blank and nothing in the log says why".
         record_stream_fault(
             "integration_dispatch.publish",
             exc,

@@ -33,7 +33,7 @@ from app.services.stream_faults import record_stream_fault
 
 logger = logging.getLogger(__name__)
 
-# REL-07 fault-metric identity for the discovery review fan-out.
+# Fault-metric identity for the discovery review fan-out.
 _COMPONENT = "discovery_merge"
 
 
@@ -117,7 +117,7 @@ def schedule_result_processed_event(result_id: int, status: str) -> None:
     `discovery_dispatch.schedule_discovery_scan_job` is the model: use the
     running loop when there is one, otherwise the loop `main.py`'s lifespan
     registered, and close the coroutine rather than abandon it unawaited when
-    there is neither (REL-08).
+    there is neither.
     """
     coro = _emit_result_processed_in_session(result_id, status)
 
@@ -491,7 +491,7 @@ def merge_scan_result(
                     )
                 hw.last_seen = now
                 hw.status = "online"
-                # CB-REL-001: link scan result to hardware
+                # CB-the contract: link scan result to hardware
                 hw.source_scan_result_id = result.id
                 if not hw.mac_address and norm_mac:
                     hw.mac_address = norm_mac
@@ -552,7 +552,7 @@ def merge_scan_result(
                     source="discovery",
                     discovered_at=now,
                     last_seen=now,
-                    source_scan_result_id=result.id,  # CB-REL-001
+                    source_scan_result_id=result.id,  # CB-the contract
                     created_at=datetime.fromisoformat(now) if "T" in now else datetime.now(),
                     updated_at=datetime.fromisoformat(now) if "T" in now else datetime.now(),
                 )

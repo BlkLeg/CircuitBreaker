@@ -112,11 +112,11 @@ class AppSettings(Base):
         String, nullable=False, default="/var/run/docker.sock"
     )
     docker_sync_interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
-    # Phase 2 discovery-readiness: persisted user consent for LAN discovery.
+    # Discovery-readiness: persisted user consent for LAN discovery.
     # Set only by the explicit toggle; the reconciler converges actual state
     # to this value, never the other way around.
     lan_discovery_desired: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    # Slice 4 plan §3/§6 (Task 26 / M14): the fleet-wide hold on *agent-executed*
+    # The fleet-wide hold on *agent-executed*
     # discovery, read by `discovery_admission.global_agent_discovery_paused` and
     # written by `POST /api/v1/discovery/pause`. Deliberately narrower
     # than `discovery_enabled`, which is the product's master discovery switch:
@@ -154,14 +154,14 @@ class AppSettings(Base):
     # Windscribe Integration
     windscribe_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     windscribe_feed_refresh_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    # Phase 3: Realtime / NATS settings
+    # Realtime / NATS settings
     realtime_notifications_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
     )
     realtime_transport: Mapped[str] = mapped_column(
         String, nullable=False, default="auto"
     )  # "auto" | "sse" | "websocket"
-    # Phase 4: Discovery Engine 2.0 toggles
+    # Discovery Engine 2.0 toggles
     listener_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     prober_interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
     deep_dive_max_parallel: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
@@ -204,7 +204,7 @@ class AppSettings(Base):
     )  # Fernet-encrypted
     # v0.2.0: Self-aware cluster
     self_cluster_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    # Phase 6.5: User management
+    # User management
     concurrent_sessions: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     login_lockout_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     login_lockout_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
@@ -222,13 +222,13 @@ class AppSettings(Base):
     smtp_tls: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     smtp_last_test_at: Mapped[str | None] = mapped_column(String)
     smtp_last_test_status: Mapped[str | None] = mapped_column(String)
-    # ACME DNS-01 (INC-07). One provider per install: "cloudflare" or "rfc2136".
+    # ACME DNS-01. One provider per install: "cloudflare" or "rfc2136".
     # The config blob holds the provider's non-secret fields plus its credential as an
     # ``<key>_enc`` sibling — see services/acme_secrets.py. Nullable because DNS-01 is
     # opt-in; HTTP-01 needs nothing here.
     acme_dns_provider: Mapped[str | None] = mapped_column(String(32))
     acme_dns_config: Mapped[dict | None] = mapped_column(JSONB)
-    # Phase 7: Vault encryption
+    # Vault encryption
     vault_key: Mapped[str | None] = mapped_column(
         Text
     )  # Plaintext key for DB fallback when env/file unwritable
@@ -239,7 +239,7 @@ class AppSettings(Base):
     # Hex-encoded private key, vault-encrypted at rest. Generated once on first
     # use by app.core.agent_crypto.
     agent_server_private_key: Mapped[str | None] = mapped_column(Text)
-    # Task 28: server-key rotation with an overlap window. While a rotation is
+    # Server-key rotation with an overlap window. While a rotation is
     # in progress, `agent_server_key_pending_private_key` holds the
     # successor's vault-encrypted private key (same encoding as
     # agent_server_private_key above), and `agent_server_key_rotation_
@@ -257,7 +257,7 @@ class AppSettings(Base):
     agent_server_key_rotation_overlap_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # Slice 4.1: TLS trust rotation with an overlap window. The rotated unit
+    # TLS trust rotation with an overlap window. The rotated unit
     # is a *policy*, not a digest: `agent_tls_pin_successor_mode` is
     # "self_signed" (with `agent_tls_pin_successor` holding the base64 SPKI
     # digest of the successor leaf) or "public" (with the successor column
@@ -279,7 +279,7 @@ class AppSettings(Base):
     agent_tls_pin_rotation_overlap_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # Phase 7.5: PostgreSQL backup retention
+    # PostgreSQL backup retention
     db_backup_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     # Security hardening
     scan_allowed_networks: Mapped[str] = mapped_column(

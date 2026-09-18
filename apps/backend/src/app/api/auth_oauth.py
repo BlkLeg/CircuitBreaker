@@ -33,7 +33,7 @@ _logger = logging.getLogger(__name__)
 # and password-protected in the shipped image) so that either uvicorn worker
 # can redeem one, with process memory as a Redis-down fallback.
 #
-# The dict below used to be the only store. `docker/supervisord.mono.conf`
+# The dict below must not be the only store. `docker/supervisord.mono.conf`
 # starts the API with `--workers 2`, and the provider callback and the
 # browser's follow-up /auth/exchange are two separate connections that land on
 # whichever worker the kernel picks — so roughly half of all OAuth sign-ins

@@ -139,7 +139,7 @@ def get_install_agent_script(request: Request, endpoint: str | None = None) -> R
 
         cert = agent_install._active_certificate(db)
         tls_mode, tls_pin = agent_install._tls_mode_and_pin(cert)
-        # Task 28: same successor-preferred key selection as
+        # Same successor-preferred key selection as
         # agent_install.build_install_command — see its comment.
         state = agent_crypto.load_server_key_rotation_state(db)
         server_pub = state.successor_pub if state.successor_pub is not None else state.current_pub

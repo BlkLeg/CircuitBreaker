@@ -3,7 +3,7 @@
 Wraps existing ``IntegrationConfig`` + ``Credential`` models and
 ``CredentialVault`` to provide a single-entry-point for managing
 integration configurations for the providers this product integrates with,
-which is proxmox and docker and no others. INC-16: this docstring used to end
+which is proxmox and docker and no others. the contract: this docstring used to end
 "truenas, unifi, etc." and ``VALID_PROVIDERS`` agreed with it, while neither
 had a sync path or a test branch.
 """
@@ -162,7 +162,7 @@ async def test_config(db: Session, provider: str, config_id: int) -> dict:
             result = _test_docker(cfg)
         else:
             # Unreachable for a valid provider: VALID_PROVIDERS is exactly the two branches
-            # above (INC-16). Kept as a guard, and worded as the caller's error rather than
+            # above. Kept as a guard, and worded as the caller's error rather than
             # our unfinished work, because that is now what reaching it means.
             result = {
                 "status": "error",
@@ -200,10 +200,10 @@ def _test_docker(cfg: IntegrationConfig) -> dict:
         url = f"unix://{url}"
 
     try:
-        # docker_client, not a bare DockerClient: this used to close the client
-        # only on the success path, so every failing "Test connection" left the
-        # daemon socket open. See its docstring for the constructor-side leak it
-        # also covers.
+        # docker_client, not a bare DockerClient: closing the client only on the
+        # success path leaves the daemon socket open on every failing "Test
+        # connection". See its docstring for the constructor-side leak it also
+        # covers.
         with docker_client(url, timeout=10) as client:
             info = client.info()
         server_version = info.get("ServerVersion", "unknown")

@@ -98,7 +98,7 @@ def register_scheduled_jobs(scheduler: "SingleOwnerScheduler") -> None:
         replace_existing=True,
     )
 
-    # Slice 3 §1: probe runs are audit for checks the server did not perform
+    # Probe runs are audit for checks the server did not perform
     # itself and are retained for seven days. Long-term availability stays in
     # telemetry_timeseries and the monitor rollups, so nothing here is the
     # system of record for uptime.
@@ -173,7 +173,7 @@ def register_scheduled_jobs(scheduler: "SingleOwnerScheduler") -> None:
         replace_existing=True,
     )
 
-    # Auto-reject agents left pending approval for too long (Task 22 gap:
+    # Auto-reject agents left pending approval for too long (the design gap:
     # expire_stale_pending_agents existed and was unit-tested but was never
     # actually scheduled).
     def _expire_pending_agents_job() -> None:
@@ -305,7 +305,7 @@ def register_scheduled_jobs(scheduler: "SingleOwnerScheduler") -> None:
         misfire_grace_time=300,
     )
 
-    # Discovery-readiness Phase 2 — self-healing reconciliation. Always
+    # Discovery-readiness the design — self-healing reconciliation. Always
     # scheduled; the job itself no-ops when cb-helperd isn't installed, so
     # the in-app LAN-discovery toggle applies without a restart once it is.
     from app.core.constants import DISCOVERY_RECONCILE_INTERVAL_MINUTES
@@ -320,7 +320,7 @@ def register_scheduled_jobs(scheduler: "SingleOwnerScheduler") -> None:
         misfire_grace_time=300,
     )
 
-    # Slice 4 D-5 — agent discovery job reconciliation. A *different* concern
+    # Agent discovery job reconciliation. A *different* concern
     # from the readiness reconciler above, which shares nothing with it but a
     # word: this one expires dispatch leases whose agent went silent, retries
     # jobs parked in `waiting_for_agent` when their agent reconnects, and drains
@@ -381,7 +381,7 @@ def register_scheduled_jobs(scheduler: "SingleOwnerScheduler") -> None:
             _logger.info("Docker topology sync scheduled every %d minutes.", interval_mins)
 
     # ── Proxmox telemetry polling ────────────────────────────────────────
-    # Route F9: these five were closures defined here in the lifespan, so
+    # These five were closures defined here in the lifespan, so
     # nothing could import or test them. They now live in app/jobs/proxmox.py
     # with their health writers; the bodies are unchanged.
     from app.jobs.proxmox import (
@@ -464,7 +464,7 @@ def register_scheduled_jobs(scheduler: "SingleOwnerScheduler") -> None:
                 sync_interval,
             )
 
-    # ── Phase 4: ARP Prober — scheduled subnet sweep ───────────────────────
+    # ── ARP Prober — scheduled subnet sweep ───────────────────────────────────
     with get_session_context() as phase4_db:
         phase4_settings = phase4_db.query(models.AppSettings).first()
         if phase4_settings and getattr(phase4_settings, "arp_enabled", False):

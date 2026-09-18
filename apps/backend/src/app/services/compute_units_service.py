@@ -273,7 +273,7 @@ def update_compute_unit(db: Session, cu_id: int, payload: ComputeUnitUpdate) -> 
         svc.ip_mode = result["ip_mode"]
         svc.ip_conflict = result["is_conflict"]
         svc.ip_conflict_json = result["conflict_with"]
-    # CB-REL-002: cascade hardware_id change to services on this compute unit
+    # CB-the contract: cascade hardware_id change to services on this compute unit
     new_hardware_id = cu.hardware_id
     if new_hardware_id != old_hardware_id:
         for svc in affected:

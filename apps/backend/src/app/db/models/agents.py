@@ -50,14 +50,14 @@ class Agent(Base):
     enrollment_token_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("agent_enrollment_tokens.id"), nullable=True
     )
-    # Task 24: the version a queued self-update is expected to land the agent
+    # The version a queued self-update is expected to land the agent
     # on, set by POST /{agent_id}/update and cleared once that outcome is
     # resolved — either `version_changed` fires on a reconnect whose hello
     # reports this exact version (agent_registry.update_hello_metadata), or
     # an `update.status` frame with phase failed/rolled_back arrives for it
     # (agent_link._handle_update_status). Never set directly by a hello.
     pending_update_version: Mapped[str | None] = mapped_column(String, nullable=True)
-    # Task 27: device-key rotation. Set together by
+    # Device-key rotation. Set together by
     # agent_registry.start_device_key_rotation once an authenticated `/link`
     # session's `key.rotate` (kind="device") frame is accepted; cleared
     # together either by agent_registry.settle_device_key_rotation (promotion
@@ -83,7 +83,7 @@ class Agent(Base):
     server_pk_successor_pinned_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # Slice 4.1: which TLS trust policy this agent's most recent successful
+    # which TLS trust policy this agent's most recent successful
     # dial actually matched, reported by the agent as hello's `tls_pin_kind`.
     # Rollout *timing* only, exactly like server_pk_*_pinned_at above: the
     # server cannot see whether an agent's state directory holds the
@@ -98,7 +98,7 @@ class Agent(Base):
         DateTime(timezone=True), nullable=True
     )
     # *Which* successor policy the agent says it holds, not merely that it holds
-    # one (H5). A bare boolean let an agent carrying a stale successor — from a
+    # one. A bare boolean let an agent carrying a stale successor — from a
     # rotation that was abandoned, and which nothing ever told it to drop — be
     # credited as converged on the next rotation, opening the gate on a cutover
     # that would strand it. NULL for agents predating the field, which counts as
@@ -124,7 +124,7 @@ class Agent(Base):
     revoke_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     connected_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # Live outbound-spool backlog as last reported by the agent (D-12): `hello`
+    # Live outbound-spool backlog as last reported by the agent: `hello`
     # stamps the at-connect depth and every 20s `heartbeat` refreshes it, which
     # is what lets the catch-up indicator clear mid-connection.
     #
@@ -223,7 +223,7 @@ class AgentEnrollmentToken(Base):
     SHA-256 of it, mirroring `user_service._hash_token`. `max_uses` exists
     because a single-use token breaks the case that motivates the feature: one
     token baked into a launch template, N instances booting, only the first
-    enrolling (design §3.2).
+    enrolling.
 
     Rows are revoked, never deleted, so `agents.enrollment_token_id` stays
     resolvable for the life of every agent that came through one.
@@ -327,7 +327,7 @@ class AgentCapabilityReadiness(Base):
 
 
 class AgentNetwork(Base):
-    """The agent's current directly connected networks, as reported on `hello` (D-1).
+    """The agent's current directly connected networks, as reported on `hello`.
 
     One row per agent — this is the *latest* report, not a history — holding the
     normalized `HelloPayload.networks` list (see

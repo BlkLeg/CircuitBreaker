@@ -54,13 +54,13 @@ class Log(Base):
     entity_name: Mapped[str | None] = mapped_column(String)  # denormalised name at write time
     diff: Mapped[str | None] = mapped_column(Text)  # JSON: {"before": {...}, "after": {...}}
     severity: Mapped[str | None] = mapped_column(String, default="info")  # info | warn | error
-    # Phase 6.5: session and role context
+    # session and role context
     session_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("user_sessions.id"), nullable=True
     )
     role_at_time: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    # Phase 7: Non-repudiation
+    # Non-repudiation
     previous_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     log_hash: Mapped[str | None] = mapped_column(String, unique=True, index=True, nullable=True)
 

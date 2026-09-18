@@ -1,4 +1,4 @@
-"""Normalized install/runtime diagnostics for operators (Phase 3).
+"""Normalized install/runtime diagnostics for operators.
 
 Builds bounded, redacted check dicts matching
 ``specs/install/diagnostic-result.schema.json``. Application dependency

@@ -6,7 +6,7 @@ TELEMETRY_CACHE_TTL_SECONDS = 300
 CLIENT_HASH_PBKDF2_ITERATIONS = 310_000
 CLIENT_HASH_V2_PREFIX = "v2."
 
-# ── Privacy scoring (specs/2026-07-15-windscribe-privacy-completion-design.md) ─
+# ── Privacy scoring ─
 PRIVACY_MAX_SCORE = 100
 PRIVACY_MIN_SCORE = 0
 # Network score: sum the N largest device deductions, capped at this many points
@@ -41,7 +41,7 @@ DNS_FILTERING_SAMPLE_SIZE = 3
 # windscribe_feed_refresh_hours age gate, so this can tick faster than the feed)
 PRIVACY_PERIODIC_INTERVAL_MINUTES = 15
 
-# Discovery-readiness Phase 2: self-healing reconciliation cadence.
+# Discovery-readiness the design: self-healing reconciliation cadence.
 # Normal cadence matches the existing privacy-periodic job for consistency.
 # After DISCOVERY_RECONCILE_FAILURE_THRESHOLD consecutive failures for a
 # given capability, its retry cadence drops to the backoff interval rather
@@ -62,7 +62,7 @@ API_TOKEN_LAST_USED_TOUCH_SECONDS = 300
 # last_used_at, so the write fails fast and is skipped.
 API_TOKEN_LAST_USED_LOCK_TIMEOUT_MS = 50
 
-# ── Diagnostics (install diagnosis Phase 3) ───────────────────────────────────
+# ── Diagnostics (install diagnosis the design) ───────────────────────────────────
 # Worker heartbeat files older than this are stale (warn).
 DIAGNOSTIC_WORKER_HEARTBEAT_STALE_SECONDS = 120
 # Free space on CB_DATA_DIR below this triggers a storage warn.

@@ -1,9 +1,9 @@
-"""The scan-type vocabulary and where each type may execute (Slice 4 §3, D-6).
+"""The scan-type vocabulary and where each type may execute (the design, the contract).
 
 Discovery gained an execution location before it had a vocabulary: `scan_types`
 was an unvalidated `list[str]` on every request schema and execution did bare
 membership tests. With an agent as a second executor that is no longer enough —
-plan §3 requires that server-only types (`nmap`, `arp`, `docker`, OPNsense …)
+the contract requires that server-only types (`nmap`, `arp`, `docker`, OPNsense …)
 are never dispatched to an agent, and there is no way to express that rule
 without naming the set each location can run.
 

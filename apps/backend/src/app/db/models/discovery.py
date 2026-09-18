@@ -136,9 +136,9 @@ class ProxmoxDiscoverRun(Base):
 class DiscoveryProfile(Base):
     __tablename__ = "discovery_profiles"
     __table_args__ = (
-        # Slice 4: one system-managed profile per (agent, subnet). Partial, so a
+        # One system-managed profile per (agent, subnet). Partial, so a
         # user-created profile may target the same CIDR without colliding —
-        # plan §3's "user-created profiles remain separate and are never
+        # the "user-created profiles remain separate and are never
         # overwritten". Declared here *and* in migration 0100 so `create_all`
         # (the test schema) and the migrated schema agree.
         Index(
@@ -153,7 +153,7 @@ class DiscoveryProfile(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     cidr: Mapped[str | None] = mapped_column(String, nullable=True)
-    # Slice 4 execution location. NULL means the existing server scanner, which
+    # Execution location. NULL means the existing server scanner, which
     # is every profile that predates this column. RESTRICT because this is a
     # *live assignment*, mirroring `MonitorItem.probe_agent_id`: deleting an
     # agent a profile still names is refused with a 409 rather than silently
@@ -172,7 +172,7 @@ class DiscoveryProfile(Base):
     # NULL for a user-created profile; "system" for one the discovery bootstrap
     # owns and may idempotently re-upsert.
     managed_by: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    # Per-subnet pause (plan §6). Distinct from `enabled = 0`, which means the
+    # Per-subnet pause. Distinct from `enabled = 0`, which means the
     # subnet is gone; a paused profile is one an operator chose to hold.
     paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     vlan_ids: Mapped[str | None] = mapped_column(String, nullable=True)  # JSON array of VLAN IDs
@@ -224,7 +224,7 @@ class ScanJob(Base):
     profile_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("discovery_profiles.id"), nullable=True, index=True
     )
-    # Slice 4: the execution location, copied from the profile at creation so
+    # The execution location, copied from the profile at creation so
     # historical attribution cannot change when the profile is later edited.
     # CASCADE, unlike the profile's RESTRICT: a job is finished history, and
     # `MonitorProbeRun.agent_id` settled the same question the same way.
@@ -244,7 +244,7 @@ class ScanJob(Base):
     )
     last_finding_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finding_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
-    # The `EffectiveScope.version` in force at dispatch. Plan §2 requires an
+    # The `EffectiveScope.version` in force at dispatch. the contract requires an
     # active request to be cancelled when scope changes incompatibly, and
     # comparing a digest is what makes that possible without diffing CIDR lists
     # on every readiness frame.
@@ -287,7 +287,7 @@ class ScanJob(Base):
 class ScanResult(Base):
     __tablename__ = "scan_results"
     __table_args__ = (
-        # Slice 4's idempotent-replay key. A finding spooled across an agent
+        # the idempotent-replay key. A finding spooled across an agent
         # outage arrives again on reconnect; inserting it twice would double the
         # review queue and the job counters. Partial because every row the
         # server scanner writes has a NULL `finding_id`, and a full unique index
@@ -305,7 +305,7 @@ class ScanResult(Base):
     scan_job_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("scan_jobs.id"), nullable=False, index=True
     )
-    # Slice 4 provenance. CASCADE for the same reason `ScanJob.scan_agent_id`
+    # Provenance. CASCADE for the same reason `ScanJob.scan_agent_id`
     # is: a result is finished history, and revocation — which retains
     # provenance — does not delete the agent row.
     discovery_agent_id: Mapped[int | None] = mapped_column(
@@ -323,7 +323,7 @@ class ScanResult(Base):
     finding_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Derived from the owning job, never from the finding payload. `scan_jobs`
     # already carried a tenant and this table did not, so there was nothing at
-    # result level for plan §8's tenant rule to assert against.
+    # result level for the tenant rule to assert against.
     tenant_id: Mapped[int | None] = mapped_column(
         Integer,
         ForeignKey("tenants.id", ondelete="SET NULL", name="fk_scan_results_tenant_id_tenants"),
@@ -407,7 +407,7 @@ class ScanLog(Base):
     job: Mapped["ScanJob"] = relationship("ScanJob", back_populates="logs")
 
 
-# ── Phase 4: Listener Events ──────────────────────────────────────────────────
+# ── Listener Events ──────────────────────────────────────────────────────────────
 
 
 class ListenerEvent(Base):

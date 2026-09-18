@@ -2,7 +2,7 @@
 
 This module owns all mutation of `agents` / `agent_capability_grants` /
 `agent_events`. No collector domain logic lives here — see
-specs/2026-07-26-cb-agent-design.md §1.2 on agent_link.py's boundary, which
+on agent_link.py's boundary, which
 this module sits directly behind.
 """
 
@@ -54,12 +54,12 @@ if TYPE_CHECKING:
 
 _logger = logging.getLogger(__name__)
 
-# REL-07 fault-metric identities for the two agent fan-out paths in this module.
+# Fault-metric identities for the two agent fan-out paths in this module.
 _PRESENCE_COMPONENT = "agent_presence"
 _CONTROL_COMPONENT = "agent_control"
 
 # Derived, read-only views of the one capability registry
-# (`app.services.agent_capabilities`, Task 14 / D-14) — kept only so existing
+# (`app.services.agent_capabilities`, the contract) — kept only so existing
 # importers keep working. They are snapshots taken at import time: anything
 # that must honor a monkeypatched or future registry reads
 # `CAPABILITY_DEFINITIONS` / `normalize_grant` / `default_config_for` directly,
@@ -73,20 +73,20 @@ HOST_TELEMETRY_DEFAULT_CONFIG: Mapping[str, Any] = MappingProxyType(
 )
 
 
-# Task 21: cap on agents simultaneously awaiting approval. An anonymous
+# Cap on agents simultaneously awaiting approval. An anonymous
 # /enroll flood using a fresh device keypair per connection creates a new
 # `Agent` row every time (device_pk is unique, so there's no per-device
 # reuse to fall back on), so without a ceiling nothing bounds how many
 # pending rows — and their live-held /enroll poll connections — accumulate.
 MAX_CONCURRENT_PENDING_AGENTS = 100
 
-# Task 27: default device-key rotation transition window (Global Constraints:
+# Default device-key rotation transition window (Global Constraints:
 # "Device-key transition window defaults to 15 minutes"). Tests monkeypatch
 # this module attribute the same way tests monkeypatch
 # agent_crypto.REKEY_INTERVAL_SECONDS.
 DEVICE_KEY_ROTATION_WINDOW_SECONDS = 15 * 60
 
-# Task 27 fix round 1: a device public key is a 32-byte X25519 key, i.e.
+# Fix round 1: a device public key is a 32-byte X25519 key, i.e.
 # exactly 64 lowercase hex characters. Mirrors
 # app.schemas.agent_frame.KeyRotatePayload's own validator — duplicated
 # rather than imported so this module's collision/format guard doesn't
@@ -221,7 +221,7 @@ def resolve_agent_for_handshake(db: Session, device_pk_hex: str) -> Agent | None
     initiator static key (`NoiseIKResponder.remote_static().hex()`) currently
     authenticates.
 
-    This is `get_agent_by_device_pk`, extended (Task 27) to also match an
+    This is `get_agent_by_device_pk`, extended to also match an
     in-progress device-key rotation's not-yet-expired `pending_device_pk` —
     see `agent_crypto.device_identity_matches` for why that check belongs to
     the crypto module rather than duplicating its time-window logic here.
@@ -240,7 +240,7 @@ def resolve_agent_for_handshake(db: Session, device_pk_hex: str) -> Agent | None
     # `start_device_key_rotation`'s collision check is what actually
     # prevents that duplicate from being written in the first place, this
     # read path is a defensive backstop against one somehow slipping through
-    # (Task 27 fix round 1).
+    # (the design fix round 1).
     candidate = (
         db.execute(select(Agent).where(Agent.pending_device_pk == device_pk_hex)).scalars().first()
     )
@@ -289,7 +289,7 @@ def update_hello_metadata(
     cancellation section for why no trigger may publish from inside a
     transaction.
 
-    Task 24: this is also the *only* place `version_changed` is ever
+    the design: this is also the *only* place `version_changed` is ever
     recorded — deliberately not at update-request time (see
     `api/agents.py:post_update`, which records `update_queued` instead). A
     hello reporting `agent_version` that exactly matches
@@ -326,7 +326,7 @@ def update_hello_metadata(
     if "networks" in fields_set:
         cancellation = record_network_facts(db, agent, payload.networks)
     if "spool_depth" in fields_set:
-        # The at-connect backlog snapshot (D-12). `hello` has no
+        # The at-connect backlog snapshot. `hello` has no
         # `spool_bytes` field, so the size is genuinely unknown here — None,
         # not 0 — and the heartbeat that follows within 20s fills it in.
         record_spool_stats(agent, payload.spool_depth, None)
@@ -615,7 +615,7 @@ def _normalized_network_facts(networks: list[NetworkFacts]) -> list[dict[str, An
     a plain equality test against what is already stored. The agent sorts too
     (`internal/hostinfo/netfacts.go`), but that ordering is one agent build's
     behavior, not a wire contract; the generation counter is a scope version
-    Slice 4 cancels in-flight work on, and it must not tick because an older
+    the design cancels in-flight work on, and it must not tick because an older
     or differently-ordered build enumerated the same interfaces in another
     sequence.
     """
@@ -628,8 +628,8 @@ def _normalized_network_facts(networks: list[NetworkFacts]) -> list[dict[str, An
 def record_network_facts(
     db: Session, agent: Agent, networks: list[NetworkFacts]
 ) -> DiscoveryCancellation:
-    """Store the agent's directly connected networks (D-1), closing the discovery
-    dispatches the new report no longer authorizes (Slice 4 D-14/D-16) and
+    """Store the agent's directly connected networks, closing the discovery
+    dispatches the new report no longer authorizes, and
     returning them for the caller to publish once it has committed.
 
     The cancellation is *built* here rather than at the two call sites — the
@@ -641,7 +641,7 @@ def record_network_facts(
     itself gives: the steady state is an agent re-reporting the interfaces it
     already reported, and that returns an empty (falsy) cancellation.
 
-    The zero-configuration discovery bootstrap (Slice 4 Task 24) hangs off this
+    The zero-configuration discovery bootstrap hangs off this
     same funnel, for the same reason: a subnet that appeared is a subnet that
     appeared whichever frame reported it. Two things about it differ from the
     cancellation above and both are deliberate:
@@ -687,7 +687,7 @@ def record_network_facts(
     agent that has lost every usable interface must not keep a stale,
     wider-than-reality scope.
 
-    The Go encodings differ by frame, deliberately (Slice 4 D-8). On
+    The Go encodings differ by frame, deliberately. On
     `capability.readiness` — the mid-session refresh path, which is
     `agent_telemetry.ingest_readiness` — `Networks` is tagged `json:"networks"`
     with **no** `omitempty` (`internal/frame/frame.go:236`), so an agent that
@@ -708,7 +708,7 @@ def record_network_facts(
     )
 
     changed = _store_network_facts(db, agent, networks)
-    # Task 24, and outside the `changed` gate on purpose — see the docstring.
+    # Outside the `changed` gate on purpose — see the docstring.
     # Schedules only; it must not touch this transaction.
     discovery_bootstrap.schedule_bootstrap(agent.id)
     if not changed:
@@ -778,7 +778,7 @@ def approve_agent(
     `via` names the surface the approval came from — "cli" for a headless
     change, "enrollment_token" for an unattended enrollment, absent for the UI.
     It rides on the event detail, and so into the
-    hash-chained audit entry `record_event` writes (F17), because that entry
+    hash-chained audit entry `record_event` writes, because that entry
     is now the single record of an approval from any surface: a caller that
     wrote its own alongside it would put two rows in the chain for one
     decision.
@@ -813,7 +813,7 @@ def approve_agent(
             )
         )
 
-    # host_link_action (Task 18's AgentApprovalModal: accept/select/create/
+    # host_link_action (the AgentApprovalModal: accept/select/create/
     # unlinked) is descriptive of *how* hardware_id was chosen, not required
     # for linkage itself — recorded on the event detail so the audit trail
     # distinguishes "approver accepted the proposed match" from "approver
@@ -890,7 +890,7 @@ def set_hardware_link(
 ) -> Agent:
     """Change (or clear) which `Hardware` row an already-approved agent is
     linked to — the post-approval counterpart to `approve_agent`'s
-    `hardware_id` param (Task 18 covers linkage *at* approval time; this is
+    `hardware_id` param (the design covers linkage *at* approval time; this is
     for correcting/relinking it afterwards, e.g. a mismatched proposal was
     accepted, or the underlying hardware was later retired/replaced).
 
@@ -1005,9 +1005,9 @@ def start_device_key_rotation(
         `resolve_agent_for_handshake`'s lookup on that column ambiguous.
 
     A second call while a prior pending rotation is still unexpired simply
-    supersedes it (new successor key, restarted timer) — Task 27 places no
+    supersedes it (new successor key, restarted timer) — the design places no
     "reject a second rotation while one is active" requirement on device-key
-    rotation the way Task 28 does for the server's own key.
+    rotation the way the design does for the server's own key.
     """
     if not _HEX_PK_RE.fullmatch(successor_pk):
         record_event(
@@ -1074,7 +1074,7 @@ def settle_device_key_rotation(
     check rather than repeating it.
 
     - Connected on the *pending* key: this is the rotation's first successful
-      link under the new identity (Task 27: "promote the pending identity on
+      link under the new identity (the design: "promote the pending identity on
       its first successful link"). Promotes it to `device_pk`, clears the
       pending fields, and records `key_rotated`.
     - Connected on the *current* key while a pending rotation has passed its
@@ -1131,8 +1131,8 @@ def record_server_key_pin(
     db: Session, agent: Agent, key_kind: str, *, now: datetime | None = None
 ) -> None:
     """Record that `agent`'s most recent successful `/link` Noise handshake
-    authenticated against the server's "current" or "successor" identity key
-    (Task 28) — `key_kind` is whichever of those two strings
+    authenticated against the server's "current" or "successor" identity key —
+    `key_kind` is whichever of those two strings
     `agent_crypto.complete_ik_handshake` returned for that handshake.
 
     Purely observational: nothing about handshake acceptance depends on
@@ -1195,7 +1195,7 @@ def record_tls_pin(
     if pin_kind == "successor" or successor_ready:
         agent.tls_pin_successor_pinned_at = reference
         # Recorded beside the timestamp so the gate can ask *which* successor
-        # (H5). Overwritten every report, including with None from an agent
+        # Overwritten every report, including with None from an agent
         # predating the field — a stale fingerprint left behind would be the
         # same defect one layer down.
         agent.tls_pin_successor_fingerprint = successor_fingerprint
@@ -1212,8 +1212,8 @@ async def broadcast_server_key_rotate(
     db: Session, state: agent_crypto.ServerKeyRotationState
 ) -> int:
     """Push a `key.rotate` (kind="server") control frame — the successor
-    identity key a Task 28 rotation just started — to every currently
-    connected `active` agent, over the same Task 8/9 cross-worker
+    identity key a the design rotation just started — to every currently
+    connected `active` agent, over the same the design/9 cross-worker
     control-frame delivery path (`publish_agent_control_frame`)
     `agent_link._handle_key_rotate` already uses for its own kind="device"
     ack.
@@ -1225,7 +1225,7 @@ async def broadcast_server_key_rotate(
     reconnect. A socket that never drops for the whole overlap window would
     otherwise never see this at all. `ws_agents.py`'s `link_stream`
     separately resends the same frame on every accepted hello.ack for as
-    long as the rotation stays active (mirroring Task 11's full-capability-
+    long as the rotation stays active (mirroring the full-capability-
     grant resend) as the durability fallback for whatever this broadcast
     misses — a worker down at push time, a connection that hadn't finished
     establishing yet, or a publish racing a disconnect.
@@ -1376,8 +1376,8 @@ def grants_dict(db: Session, agent_id: int) -> dict[str, bool]:
 
 
 def _structured_grant(grant: AgentCapabilityGrant) -> dict[str, Any]:
-    """One grant row -> the canonical `{enabled, config}` wire shape (Task 15,
-    **D-11**).
+    """One grant row -> the canonical `{enabled, config}` wire shape (the design,
+    **the contract**).
 
     Shared by `structured_grants_dict` and `bulk_structured_grants_dict` so
     `GET /agents/{id}` and `GET /agents/presence` can never project the same
@@ -1385,7 +1385,7 @@ def _structured_grant(grant: AgentCapabilityGrant) -> dict[str, Any]:
 
     The registry lookup goes through `default_config_for`, which is `.get`-based
     on purpose: `approve_agent` wrote an `AgentCapabilityGrant` row for any
-    string key before Task 14's 422 validator landed, and nothing cleans those
+    string key before the 422 validator landed, and nothing cleans those
     rows up, so a single legacy row naming an unregistered capability must
     render verbatim rather than turn both endpoints into 500s for the whole
     fleet.
@@ -1411,14 +1411,14 @@ def bulk_structured_grants_dict(
 ) -> dict[int, dict[str, dict[str, Any]]]:
     """`structured_grants_dict`, but for many agents in one query.
 
-    The bulk presence endpoint (Task 12) needs per-agent capability grants for
+    The bulk presence endpoint needs per-agent capability grants for
     a whole fleet without issuing one `AgentCapabilityGrant` SELECT per agent.
     Every id in `agent_ids` is present in the result (mapped to `{}` if it has
     no grant rows) so callers can index it unconditionally rather than
     special-casing a missing key.
 
     Emits the same canonical `{enabled, config}` shape as its single-agent
-    twin — never a bare boolean (Task 15, **D-11**). The bool-valued
+    twin — never a bare boolean (the design, **the contract**). The bool-valued
     `grants_dict` above stays, but only as the internal enforcement lookup in
     `services/agent_link.py`; it is not a wire shape.
     """
@@ -1433,9 +1433,9 @@ def bulk_structured_grants_dict(
 
 
 def propose_hardware_match(db: Session, agent: Agent) -> Hardware | None:
-    """Descending-confidence match: machine_id_hash -> MAC -> hostname (spec §3.3).
+    """Descending-confidence match: machine_id_hash -> MAC -> hostname.
 
-    `Hardware.machine_id_hash` (Task 16) is the strongest signal — a device's
+    `Hardware.machine_id_hash` is the strongest signal — a device's
     `/etc/machine-id` hash survives hostname renames and NIC swaps that would
     defeat the MAC/hostname branches below, so it's checked first. Falls
     through to a MAC-address match (any of the agent's reported `primary_macs`,
@@ -1455,7 +1455,7 @@ def propose_hardware_match(db: Session, agent: Agent) -> Hardware | None:
         # Normalized before comparison, which is what makes this tier fire at
         # all: the agent reports `net.HardwareAddr.String()` (lowercase) and
         # `hardware.mac_address` is canonical uppercase-colon, so the bare
-        # equality this used to be could never match.
+        # equality could never match.
         normalized = normalize_mac(mac)
         if not normalized:
             continue
@@ -1480,7 +1480,7 @@ def has_duplicate_machine_id(db: Session, agent: Agent) -> bool:
     pairing-lookup endpoint (api/agents.py `_to_read` / `post_pairing_lookup`)
     so an operator sees the same duplicate-machine warning regardless of
     which screen (fleet detail view vs. pairing-code approval flow) they use
-    to review a device — see spec §3.3's "Duplicate machine_id_hash" row.
+    to review a device — see the "Duplicate machine_id_hash" row.
     An agent with no reported machine_id_hash (old-shaped hello, or a host
     that couldn't read /etc/machine-id) can never be flagged as a duplicate;
     there is nothing to compare.
@@ -1498,7 +1498,7 @@ def has_duplicate_machine_id(db: Session, agent: Agent) -> bool:
     )
 
 
-# Slice 4.3 (F17): the agent events that also get a hash-chained audit entry.
+# The agent events that also get a hash-chained audit entry.
 #
 # These are the decisions that change who an agent is, what it may do, or
 # what code it runs — the ones ledger row AGT-16 requires be audited with
@@ -1510,7 +1510,7 @@ def has_duplicate_machine_id(db: Session, agent: Agent) -> bool:
 # every other audit write in the instance. `connected`/`disconnected`,
 # `version_changed`, `capability_violation` and `protocol_violation` are
 # agent-initiated and high-volume — `protocol_violation` needed throttling
-# under route finding F24 precisely for that reason — and routing them
+# for precisely that reason — and routing them
 # through a global lock would trade a write-amplification problem for a
 # contention one. `host_link_changed` is excluded on different grounds: it is
 # an inventory association, not a permission change.
@@ -1545,7 +1545,7 @@ def record_event(
     """Append one entry to an agent's timeline.
 
     Members of `CHAINED_EVENT_TYPES` additionally get a hash-chained audit
-    entry (F17). That is an *additional* write, never a replacement: the
+    entry. That is an *additional* write, never a replacement: the
     agent timeline UI reads `agent_events`, and moving these rows would
     break it. `log_service.write_log` owns the hashing, the advisory lock and
     the never-raises contract, so no chain machinery is duplicated here.
@@ -1615,7 +1615,7 @@ def _offline_presence() -> dict[str, Any]:
 async def bulk_presence(agent_ids: list[int]) -> dict[int, dict[str, Any]]:
     """`is_agent_online`, but for a whole fleet in one Redis round trip.
 
-    The bulk presence REST endpoint (Task 12) must not do one `EXISTS`/`GET`
+    The bulk presence REST endpoint must not do one `EXISTS`/`GET`
     per agent — this issues a single `MGET` across every agent's
     `agent:presence:{id}` key instead. Every id in `agent_ids` is present in
     the result, mapped to `{"online": bool, "connected_since": datetime |
@@ -1686,7 +1686,7 @@ async def broadcast_presence(agent_id: int, event_type: str, detail: dict | None
 
     Redis pub/sub is the cross-worker path (mirrors discovery_service.py's
     _emit_ws_event), but ws_manager.broadcast is always also attempted on
-    this worker: /stream's Redis subscribe (Task 15) happens asynchronously
+    this worker: /stream's Redis subscribe happens asynchronously
     right after connect, so a viewer whose subscribe hasn't landed yet would
     otherwise miss the event outright. Presence flips are infrequent enough
     that occasional duplicate delivery of an idempotent status message is a
@@ -1701,10 +1701,10 @@ async def broadcast_presence(agent_id: int, event_type: str, detail: dict | None
 
     message = {"agent_id": agent_id, "event_type": event_type, "detail": detail}
 
-    # Three independent fan-out paths, each best-effort. They used to fail at
-    # DEBUG with no counter, so "the agent list never updates" had no signal
-    # anywhere in logs or metrics — the transport that broke is now named in a
-    # throttled line and a per-transport counter (REL-07).
+    # Three independent fan-out paths, each best-effort. Failing at DEBUG with
+    # no counter leaves "the agent list never updates" with no signal anywhere in
+    # logs or metrics, so the transport that broke is named in a throttled line
+    # and a per-transport counter.
     try:
         r = await get_redis()
         if r is not None:
@@ -1731,7 +1731,7 @@ async def broadcast_presence(agent_id: int, event_type: str, detail: dict | None
 
 WORKER_ID = uuid.uuid4().hex
 """Identifies *this* worker process for cross-worker /link connection
-ownership and control-frame routing (Task 8).
+ownership and control-frame routing.
 
 No existing identifier in the codebase is fit for this purpose. The closest
 candidate — the `worker` string `mark_presence_connected`/
@@ -1865,10 +1865,10 @@ async def publish_agent_control_frame(agent_id: int, frame: dict) -> bool:
     This is the generic delivery primitive only: it hands `frame` off over
     `agent_id`'s dedicated Redis pub/sub channel, published by any worker
     process regardless of whether it owns the connection. It does NOT itself
-    know or care what `frame` means — Task 9 wires specific frame types
+    know or care what `frame` means — the design wires specific frame types
     (capabilities.set, update, disconnect, key-rotation, ping) through this.
     Actual delivery to the live socket depends on the owning worker running
-    `claim_agent_control_frames` for this agent (also Task 9's concern).
+    `claim_agent_control_frames` for this agent (also the concern).
 
     Never raises — a bad payload or dead Redis must not abort the caller's
     own control-plane action. Returns True once the frame has been published
@@ -1914,7 +1914,7 @@ async def claim_agent_control_frames(
     generator as an ordinary `GeneratorExit`/`CancelledError` at its current
     `await`, and the `finally` block below unsubscribes cleanly, mirroring
     `_redis_agent_listener`'s teardown in ws_agents.py. Wiring this into
-    `link_stream` itself is Task 9's job, not this primitive's.
+    `link_stream` itself is the job, not this primitive's.
     """
     from app.core.redis import get_redis
 

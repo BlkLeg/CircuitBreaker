@@ -1,7 +1,7 @@
 """Pairing-code lifecycle for agent enrollment — Redis-backed, single-use.
 
 The pairing code is a selector, not a credential: both approval routes require
-an authenticated session with a role permitted to approve agents (§2.4 of
+an authenticated session with a role permitted to approve agents (see
 specs/2026-07-26-cb-agent-design.md), so a leaked code alone buys an attacker
 nothing.
 """
@@ -100,7 +100,7 @@ async def consume_pairing_code(code: str) -> int | None:
 
 async def record_pairing_miss(ip: str) -> None:
     """Record one incorrect-pairing-code attempt against both the per-IP
-    counter and the global counter (Task 21) — the latter catches a
+    counter and the global counter — the latter catches a
     distributed guesser that rotates source IPs specifically to stay under
     the per-IP threshold."""
     from app.core.redis import get_redis

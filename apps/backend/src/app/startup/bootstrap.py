@@ -35,7 +35,7 @@ def validate_data_dir_writable() -> None:
     Broken volume permissions otherwise surface much later as a cryptic error
     from whichever feature happens to write first.
     """
-    # ── Phase 1: Filesystem write validation ───────────────────────────────
+    # ── Filesystem write validation ───────────────────────────────────────────
     # Fail fast if /data volume permissions are broken (avoids cryptic runtime errors).
     _data_dir = Path(os.environ.get("CB_DATA_DIR", "/data"))
     _test_paths = [
@@ -67,7 +67,7 @@ def apply_pending_migrations() -> None:
     already applied the migrations the upgrade is an instant no-op. Set
     CB_AUTO_MIGRATE=false when the entrypoint pre-migrates.
     """
-    # ── Phase 1b: Auto-migrate ─────────────────────────────────────────────
+    # ── Auto-migrate ─────────────────────────────────────────────────────────
     # Run pending Alembic migrations before any schema check.  Safe for both
     # single-worker dev (make dev) and multi-worker prod: if another worker
     # already applied the migrations the upgrade call is an instant no-op.
@@ -96,7 +96,7 @@ def apply_pending_migrations() -> None:
 
 def warn_on_default_client_salt() -> None:
     """Warn when the shipped public salt is still in use for client pre-hashes."""
-    # ── Phase 1b: Warn if default client hash salt is in use ──────────────
+    # ── Warn if default client hash salt is in use ──────────────────────────
     from app.core.security import _DEFAULT_SALT, get_client_salt
 
     try:
@@ -119,7 +119,7 @@ def autodetect_api_base_url() -> None:
     the frontend one.
     """
 
-    # ── Phase 1c: Auto-detect api_base_url ────────────────────────────────
+    # ── Auto-detect api_base_url ────────────────────────────────────────────
     # On native installs api_base_url is often null, causing invite emails to
     # embed the backend URL (localhost:8000) instead of the frontend URL.
     # If unset, detect the LAN IP and default to http://<ip>:8088 (native port).
@@ -154,7 +154,7 @@ def init_vault() -> None:
     Must run before any scheduler job or service that encrypts or decrypts.
     Fallback chain: env CB_VAULT_KEY, then /data/.env, then AppSettings.
     """
-    # ── Phase 7: Vault key init ────────────────────────────────────────────
+    # ── Vault key init ────────────────────────────────────────────────────────
     # Must run before any scheduler job or service that encrypts/decrypts.
     # Fallback chain: env CB_VAULT_KEY → /data/.env → AppSettings.vault_key
     try:

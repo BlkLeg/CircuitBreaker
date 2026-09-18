@@ -80,7 +80,7 @@ def _sink_to_out(sink: NotificationSink) -> SinkOut:
     """Serialise a sink for the API — never with a usable credential in it.
 
     ``GET /sinks`` is admin-only and a webhook URL is a bearer credential, so
-    ``provider_config`` is masked on the way out (INC-06) regardless.
+    ``provider_config`` is masked on the way out regardless.
     """
     return SinkOut(
         id=sink.id,
@@ -113,7 +113,7 @@ def create_sink(
         # provider_config is JSONB — hand SQLAlchemy the dict. Serialising it here
         # stored a JSON string inside the JSONB column, which every reader then
         # choked on (SinkOut wants a dict, and the worker subscripts it).
-        # Credentials inside it are encrypted first (INC-06).
+        # Credentials inside it are encrypted first.
         provider_config=encrypt_config(sink_in.provider_type, sink_in.provider_config),
         enabled=sink_in.enabled,
     )

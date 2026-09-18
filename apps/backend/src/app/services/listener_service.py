@@ -1,4 +1,4 @@
-"""Always-on mDNS and SSDP listener for Phase 4 Discovery Engine 2.0.
+"""Always-on mDNS and SSDP listener for the design Discovery Engine 2.0.
 
 Passively captures device advertisements from the local network without
 triggering active scans.  Writes each unique finding to the listener_events
@@ -33,7 +33,7 @@ from app.services.stream_faults import (
 
 _logger = logging.getLogger(__name__)
 
-# REL-07 fault-metric identity. These two listeners consume unauthenticated
+# Fault-metric identity. These two listeners consume unauthenticated
 # multicast traffic that any host on the LAN can generate at will, so every
 # per-packet failure path here is throttled and counted rather than logged raw.
 _COMPONENT = "discovery_listener"
@@ -83,7 +83,7 @@ _SSDP_M_SEARCH = (
 _DEDUP_WINDOW = timedelta(seconds=60)
 
 
-# ── Listener admission gates (B13) ───────────────────────────────────────────
+# ── Listener admission gates ───────────────────────────────────────────
 # Unauthenticated multicast: any LAN host can emit unlimited advertisements, and
 # the dedup window is keyed on fields the sender chooses, so admission has to be
 # gated before the database is touched — on both listeners, not just SSDP.
@@ -240,7 +240,7 @@ def _admit_mdns_advertisement(key: str, *, now: float | None = None) -> bool:
     )
 
 
-# ── Text safety for the Postgres-bound row (B34) ─────────────────────────────
+# ── Text safety for the Postgres-bound row ─────────────────────────────
 # Postgres cannot store U+0000 in a `text` column and jsonb cannot parse an
 # escaped one, so a single NUL here is a failed INSERT, not a data-quality
 # wrinkle. Every field is sender-supplied: `decode(errors="replace")` preserves
@@ -307,7 +307,7 @@ def _scrub_properties(properties: dict | None) -> dict | None:
     return scrubbed or None
 
 
-# ── Off the loop, but bounded (B13) ──────────────────────────────────────────
+# ── Off the loop, but bounded ──────────────────────────────────────────
 # `_persist_event` is synchronous SQLAlchemy and must not run on the API event
 # loop — but an uncapped `asyncio.to_thread` is its own defect. mDNS callbacks
 # are dispatched fire-and-forget, so a burst can check out one session per
@@ -353,7 +353,7 @@ def _persist_event(
     Synchronous SQLAlchemy: this MUST be reached through the bounded worker pool
     in `_record_event` and never awaited inline, and never through a bare
     `asyncio.to_thread` either — see the note on `_PERSIST_MAX_WORKERS` for why
-    the cap and the pool are both load-bearing. Until B13 the whole body ran on
+    the cap and the pool are both load-bearing. Without them the whole body runs on
     the API event loop, so a session checkout, a SELECT, an INSERT and a COMMIT —
     four round trips — stalled every request the process was serving, once per
     multicast packet. The shape matches `core/update_check.py` and
@@ -390,7 +390,7 @@ def _persist_event(
             # and SQLAlchemy already serializes it; handing it a `str` made
             # Postgres store a JSON *scalar string* rather than an object, so
             # every reader got a quoted blob back and `properties_json ->> 'nt'`
-            # was NULL (B34). Do not re-introduce the dumps() — and do not drop
+            # was NULL. Do not re-introduce the dumps() — and do not drop
             # the scrub above on the way past, because the dumps() is what used
             # to be escaping the NUL bytes this column cannot hold.
             properties_json=scrubbed_properties,
@@ -402,7 +402,7 @@ def _persist_event(
         # One WARNING per failed insert is a log storm here, not a log
         # line: multicast chatter on a busy LAN is hundreds of packets a
         # minute and every one of them takes this path while the database
-        # is down. Throttled and counted instead (REL-07).
+        # is down. Throttled and counted instead.
         record_stream_fault(
             f"{_COMPONENT}.record",
             exc,
@@ -458,7 +458,7 @@ class ListenerService:
         if self._zeroconf:
             # get_running_loop(), not get_event_loop(): this is inside a
             # coroutine, and get_event_loop()'s no-running-loop fallback is
-            # deprecated (REL-08).
+            # deprecated.
             await asyncio.get_running_loop().run_in_executor(None, self._zeroconf.close)
             self._zeroconf = None
         self.mdns_active = False
@@ -636,11 +636,11 @@ class ListenerService:
             except asyncio.CancelledError:
                 raise
             except OSError as exc:
-                # A read error used to be a DEBUG line and a 1s sleep, forever:
+                # A read error must not be a DEBUG line and a 1s sleep, forever:
                 # a socket closed out from under the listener (interface down,
-                # descriptor revoked) became an invisible infinite loop that
-                # reported itself as `ssdp_active = True`. Bounded now, so the
-                # task exits and the flag tells the truth (REL-07).
+                # descriptor revoked) becomes an invisible infinite loop that
+                # reports itself as `ssdp_active = True`. Bounded, so the task
+                # exits and the flag tells the truth.
                 consecutive_errors += 1
                 record_stream_fault(
                     f"{_COMPONENT}.ssdp_recv",
@@ -672,7 +672,7 @@ class ListenerService:
             except OSError as exc:
                 # Not fatal — passive NOTIFY capture still works — but it does
                 # mean discovery is slower, which is worth a counted line
-                # rather than the silent `pass` that used to be here.
+                # rather than a silent `pass`.
                 record_stream_fault(f"{_COMPONENT}.ssdp_msearch", exc, logger=_logger)
 
             await self._ssdp_recv_loop(sock)
@@ -685,9 +685,9 @@ class ListenerService:
         finally:
             self.ssdp_active = False
             if sock is not None:
-                # The socket used to be left open on every exit path, so each
-                # stop()/start() cycle leaked a descriptor and an IGMP group
-                # membership until the process died.
+                # Leaving the socket open on any exit path leaks a descriptor
+                # and an IGMP group membership on every stop()/start() cycle,
+                # until the process dies.
                 sock.close()
 
     async def _handle_ssdp_packet(self, raw: str, ip: str) -> None:
