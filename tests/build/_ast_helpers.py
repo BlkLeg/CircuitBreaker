@@ -1,4 +1,4 @@
-"""AST walkers shared by the Phase 3 boundary ratchets.
+"""AST walkers shared by the boundary ratchets.
 
 Three gates count three different things, but they must agree on what a
 "session operation", an "import", and a "silent handler" are — otherwise a

@@ -7,7 +7,7 @@
 # installs it, because a VM that boots with the package already on it is not
 # testing an install.
 #
-# Debian's half of ADR 0005 Phase 3, slice 2. It is shorter than the Fedora
+# Debian's half of the ADR 0005 matrix. It is shorter than the Fedora
 # fixture for two real reasons rather than by being less careful:
 #
 #   * Debian's postgresql package runs initdb, creates the cluster and starts

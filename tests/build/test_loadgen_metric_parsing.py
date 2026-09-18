@@ -1,6 +1,6 @@
 """The load generator's Prometheus parsing, against real exposition text.
 
-Every number in a Phase 2 baseline comes out of these two functions, and a
+Every number in a baseline comes out of these two functions, and a
 mistake in either produces a plausible wrong number rather than an error. Both
 had one: `gauge_value`'s predecessor matched by prefix and could return the
 histogram's value for the gauge, and `histogram_quantile`'s took the largest

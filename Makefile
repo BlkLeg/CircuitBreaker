@@ -193,7 +193,7 @@ build-deps: ## Install build toolchain (nfpm, appimagetool, Python 3.12, Node 20
 # build` on a modern workstation produces packages that will not run on the
 # distros in the support matrix -- the deb row failed exactly that way on Debian
 # 12. This reproduces the release job's ubuntu-22.04 / Python 3.12 environment so
-# the artifact has the floor the released one has. ADR 0005 Phase 3, F8.
+# the artifact has the floor the released one has. See ADR 0005.
 build-in-release-image: ## Build packages inside the ubuntu-22.04 image the release job uses
 	bash scripts/build-in-release-image.sh
 
@@ -309,10 +309,10 @@ nav-wedge: ## Opt-in Chromium navigation wedge-rate run (NAV_WEDGE_REPEATS defau
 lint: ## Run backend and frontend linters (fast subset for pre-commit; see comment)
 	cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/ruff check src/app
 	cd $(BACKEND_DIR) && PYTHONPATH=src $(CURDIR)/.venv/bin/mypy src/app
-# The load generator lives outside src/app and so escaped both gates entirely
-# until it was added here. It is the instrument the Phase 2 baselines are read
-# from; an untyped, unlinted measurement tool is the one place a silent mistake
-# is hardest to notice, because its output is a number nobody can check by eye.
+# The load generator lives outside src/app, so it has to be named here to be
+# gated at all. An untyped, unlinted measurement tool is the one place a silent
+# mistake is hardest to notice, because its output is a number nobody can check
+# by eye.
 	$(CURDIR)/.venv/bin/ruff check scripts/loadgen
 	MYPYPATH=$(CURDIR):$(BACKEND_DIR)/src $(CURDIR)/.venv/bin/mypy --explicit-package-bases scripts/loadgen
 	cd $(FRONTEND_DIR) && npm run lint
@@ -374,7 +374,7 @@ verify-full: verify-fast ## Tier 0 + full Tier 1 including the backend suite (me
 
 # T3. Not part of `verify` and deliberately not wired into any workflow yet: it
 # boots a VM, downloads a 556MB image on first run, and takes minutes, which is
-# not a pre-push gate. Phase 2 shipped the install row; Phase 3 adds the upgrade
+# not a pre-push gate. The matrix carries the install row and the upgrade
 # and rollback row below, and the remaining formats and architectures after it.
 #
 # CB_CANDIDATE is required rather than defaulted to a dist/ glob. The claim this

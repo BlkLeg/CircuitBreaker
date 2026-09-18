@@ -1,6 +1,6 @@
 """Stable workload and result contracts shared by the load generator and tests.
 
-The tier shapes mirror route §5's workload matrix exactly; `tests/build/
+The tier shapes mirror the documented workload matrix exactly; `tests/build/
 test_phase2_baseline_contract.py` pins them against that table so a tier cannot
 drift away from the document that defines what "Tier C" means.
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-#: Route §5 workload matrix. `browser_users` and `ws_clients` are the two halves
+#: The workload matrix. `browser_users` and `ws_clients` are the two halves
 #: of that table's "Browser users / WS clients" column: a browser user is a
 #: paced HTTP client walking the read routes, a WS client is a held stream
 #: subscription. They are separate numbers because the table separates them —
@@ -43,7 +43,7 @@ TIERS: dict[str, dict[str, Any]] = {
 
 #: How long a simulated browser user waits between passes over the read routes.
 #: The number matters: an unpaced loop measures the server at saturation, which
-#: answers "how fast can it go when hammered" and not route §5's question, which
+#: answers "how fast can it go when hammered" and not the documented question, which
 #: is what latency a Tier-C operator sees. Five seconds is roughly a person
 #: moving between pages, and it is slow enough that the two defensible targets
 #: are measured under the tier's stated load rather than under a stress test.
@@ -81,7 +81,7 @@ UNMEASURED = [
     "publish_to_websocket_latency",
 ]
 
-#: Route §5's two defensible targets. Both are Tier C claims — topology load is
+#: The two defensible targets. Both are Tier C claims — topology load is
 #: specified "at 500 entities" and monitor lag "at Tier C" — so a Tier A or B
 #: run reports them as not applicable rather than as passing. A nightly job that
 #: never runs Tier C therefore evidences neither, which is why the workflow runs
@@ -94,7 +94,7 @@ MONITOR_LAG_TARGET_TIER = "C"
 def evaluate_targets(
     tier: str, topology_p95: float | None, monitor_lag: float | None
 ) -> dict[str, dict[str, Any]]:
-    """Score the two route §5 targets for one run.
+    """Score the two documented targets for one run.
 
     Each target reports `applicable` (does this tier make the claim at all) and
     `passed`, which is `None` when the target does not apply *or* when the run

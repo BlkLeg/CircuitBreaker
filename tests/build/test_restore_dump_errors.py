@@ -26,7 +26,7 @@ stub models the real thing on the only axis that matters here: an erroring state
 fatal, and reflected in the exit status, only when `-v ON_ERROR_STOP=1` is on its
 command line. Everything else restore.sh shells out to that is not guaranteed on a
 developer machine is stubbed too, so this module carries no skip marker -- a skipped
-test pins nothing, and REL-19 rightly makes every skip a registered, dated liability.
+test pins nothing, and every skip is a registered, dated liability.
 
 The second half of the module covers the other artifact this script now takes. `install.sh
 --upgrade` writes a bare `pre-upgrade-*.sql` before it migrates, and post-1.0 downgrade is

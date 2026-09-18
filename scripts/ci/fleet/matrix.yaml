@@ -1,7 +1,7 @@
 # scripts/ci/fleet/matrix.yaml
 #
-# The single source of truth for what this project claims works (design §7.2).
-# It feeds both this tier and the support-tier table in §8, so a row here is a
+# The single source of truth for what this project claims works.
+# It feeds both this tier and the support-tier table in ADR 0005, so a row here is a
 # published promise, not a convenience.
 #
 # `runner` is the only field that varies by execution SITE. `ssh_user` and
@@ -10,7 +10,7 @@
 # tier3-artifact.sh is still one file, pushed byte-identical to every guest; it
 # branches on the artifact it is handed, not on anything set here.
 #
-# `tier` is the §8 support tier this row backs:
+# `tier` is the ADR 0005 support tier this row backs:
 #   1 = guaranteed to install, boot, upgrade and roll back
 #   2 = guaranteed to install and boot
 #   3 = guaranteed to build; installation best-effort
@@ -75,7 +75,7 @@
   image_url: "https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
   image_sha256: "28680fe5b371a5a82ebf43a31926e086a168e59949d03969c5093e7071f90b7f"
 
-# Slice 2. The second package manager, and the reason tier3-artifact.sh had to
+# The second package manager, and the reason tier3-artifact.sh had to
 # stop being a pile of bare dnf calls. Debian genericcloud rather than generic:
 # genericcloud drops the drivers for bare metal and other hypervisors, which is
 # the right image for a qemu guest and about a third smaller.

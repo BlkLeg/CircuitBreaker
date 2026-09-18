@@ -1,7 +1,7 @@
 # tests/build/test_fleet_matrix.py
 """matrix.yaml is the single source of truth for what this project claims works.
 
-Design §7.2: the matrix "feeds both the tier and the support-tier table in §8".
+The matrix feeds both the tier and ADR 0005's support-tier table.
 A row that names a tier the support table does not define, or an image without a
 checksum, is a claim nobody can check. The image checksum matters most: the
 golden image is fetched over the network into a cache outside the repo, and an
@@ -109,7 +109,7 @@ def test_every_row_names_a_cloud_init_fixture_that_exists():
 def test_every_cloud_init_fixture_declares_the_units_it_started():
     """provision.sh re-verifies the fixture from the host rather than trusting the
     guest's readiness marker, and it reads the unit list out of the guest instead
-    of hardcoding one. Slice 1 hardcoded Fedora's `postgresql && valkey`; Debian
+    of hardcoding one. Hardcoding Fedora's `postgresql && valkey` breaks Debian,
     calls its redis unit redis-server, so the same literal would have failed a
     perfectly healthy guest."""
     for fixture in sorted((MATRIX.parent / "cloud-init").glob("*.user-data")):
@@ -134,7 +134,7 @@ def test_row_ids_are_unique_and_path_safe():
 def test_every_row_declares_a_known_mode():
     """`mode` is which half of the Tier 1 guarantee a row actually exercises.
 
-    Phase 2's rows only installed and booted, and the tier field alone could not
+    Rows that only install and boot leave the tier field unable to
     say so -- a `tier: 1` row published "install, boot, upgrade and roll back"
     while proving the first two. An unrecognised mode is a row whose claim
     nobody can check, so it fails rather than defaulting to the weaker one.
@@ -148,7 +148,7 @@ def test_every_row_declares_a_known_mode():
 def test_every_tier_1_row_has_an_upgrade_row_backing_it():
     """A tier 1 claim is "install, boot, upgrade and roll back". A tier 1 row with
     no upgrade counterpart is three quarters of a promise, which is the state
-    Phase 2 shipped in and ADR 0005's in-force table exists to record."""
+    ADR 0005's in-force table exists to record."""
     rows = _rows()
     installs = {(r["distro"], r["format"], r["arch"]) for r in rows if r["tier"] == "1" and r["mode"] == "install"}
     upgrades = {(r["distro"], r["format"], r["arch"]) for r in rows if r["tier"] == "1" and r["mode"] == "upgrade"}
@@ -174,7 +174,7 @@ def test_upgrade_rows_reuse_an_install_row_platform():
 
 
 def test_phase_3_ships_the_slices_that_are_built():
-    """Slice 1 added upgrade and rollback on the Fedora row Phase 2 built; slice 2
+    """Upgrade and rollback run on the Fedora row; the deb rows
     added the deb family. arm64 and the tier 3 formats are slices 3 and 4, and a
     row added here without its fixture and its format support is a claim the tier
     cannot honour."""

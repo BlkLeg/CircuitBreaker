@@ -1,4 +1,4 @@
-"""Fixture-level install identity / cb journey tests (Phase 6)."""
+"""Fixture-level install identity / cb journey tests."""
 
 from __future__ import annotations
 

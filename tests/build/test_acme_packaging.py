@@ -11,7 +11,7 @@ that existed:
     pass it through, and never reached a native install, because the installer collects
     the same address under a different name.
 
-Everything here is a static read of the build inputs. Building the image is Task 9 Step 4's
+Everything here is a static read of the build inputs. Building the image is the image job's
 manual check; these are the assertions that keep it true afterwards.
 """
 

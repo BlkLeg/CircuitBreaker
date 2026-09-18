@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Drive a bounded HTTP + WebSocket baseline and emit one non-blocking JSON report.
 
-Route §5 stage 1: this is measurement, never a gate. It records what it saw,
+This is measurement, never a gate. It records what it saw,
 including when it saw nothing, and the caller decides what that means. Two rules
 follow from that and are worth stating because both were broken once:
 
