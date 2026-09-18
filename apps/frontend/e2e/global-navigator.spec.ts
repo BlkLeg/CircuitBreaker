@@ -272,9 +272,20 @@ test.describe('global navigator', () => {
     const profile = page.getByRole('dialog', { name: 'Profile' });
     await expect(profile).toBeVisible();
     await expect(page.getByRole('dialog', { name: 'Navigate' })).toHaveCount(0);
-    expect(
-      await page.evaluate(() => document.querySelector('.modal')?.contains(document.activeElement))
-    ).toBe(true);
+    // Polled, not read once. The dialog takes focus from an effect, and WebKit
+    // applies that a tick later than Chromium does — a single `page.evaluate`
+    // right after the dialog becomes visible reads `document.body` there and
+    // reports a focus trap that is in fact working. Everything else in this
+    // test is a web-first assertion that retries; this was the one snapshot.
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(
+            () => document.querySelector('.modal')?.contains(document.activeElement) ?? false
+          ),
+        { message: 'the Profile dialog never took focus' }
+      )
+      .toBe(true);
 
     // The dialog owns Escape while it is open; the navigator is gone, not
     // merely hidden behind the modal.

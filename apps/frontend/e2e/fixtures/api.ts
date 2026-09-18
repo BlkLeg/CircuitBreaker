@@ -516,9 +516,16 @@ export async function expectNoErrorBoundary(page: Page, context: string): Promis
  * shows up as an unexplained flake rather than a failure.
  *
  * Returns the settled wrapper so callers can assert against it directly.
+ *
+ * Selected by `[data-route-path]`, not by position. `.page-content > div`
+ * first-child is the `<UpdateBanner>` whenever an update is available and the
+ * Suspense `LoadingScreen` whenever a chunk is in flight (App.jsx:200-202) —
+ * neither of which is the route, and neither of which carries the attribute.
+ * nav-wedge.spec.ts already made this correction in its own harness; the
+ * shared fixture kept the positional selector.
  */
 export function routeWrapper(page: Page) {
-  return page.locator('.page-content > div').first();
+  return page.locator('[data-route-path]').first();
 }
 
 /**
@@ -532,13 +539,43 @@ export function routeWrapper(page: Page) {
  */
 const ROUTE_SETTLE_TIMEOUT_MS = 15_000;
 
+/**
+ * Opacity alone is not "settled": it is satisfied by the *outgoing* route.
+ *
+ * `AnimatePresence mode="wait"` (App.jsx:217) keeps the previous page mounted,
+ * at opacity 1, until its exit finishes and the incoming route's lazy chunk
+ * resolves. A helper that only reads opacity therefore returns the instant a
+ * navigation *starts*, handing the caller the page it just left. In WebKit that
+ * gap is around a second — long enough that agent-monitor-vantage.spec.ts ran
+ * `getByLabel('Host')` against the agent detail page, where three fields match
+ * that substring ("Concurrent hosts", "Host timeout (ms)", "Scan depth (TCP
+ * ports)"). A strict-mode violation is fatal rather than retried, so the test
+ * died on the outgoing page instead of waiting for the one it asked for.
+ *
+ * So settled means all three: the route element exists, it is rendering the
+ * path the address bar is on, and its enter fade has finished. The returned
+ * string names which of the three is outstanding, so a failure here says what
+ * it saw rather than only that it waited.
+ */
 export async function waitForRouteSettled(page: Page): Promise<void> {
-  const wrapper = routeWrapper(page);
-  await wrapper.waitFor({ state: 'visible' });
+  await routeWrapper(page).waitFor({ state: 'visible' });
   await expect
-    .poll(async () => Number(await wrapper.evaluate((el) => getComputedStyle(el).opacity)), {
-      timeout: ROUTE_SETTLE_TIMEOUT_MS,
-      message: 'route wrapper never reached opacity 1 — see known_bugs item 1',
-    })
-    .toBeGreaterThan(0.99);
+    .poll(
+      async () =>
+        page.evaluate(() => {
+          const el = document.querySelector('[data-route-path]');
+          if (!el) return 'no route element mounted';
+          const rendering = el.getAttribute('data-route-path');
+          if (rendering !== window.location.pathname) {
+            return `outgoing route still mounted: rendering ${rendering}, URL is ${window.location.pathname}`;
+          }
+          const opacity = Number(getComputedStyle(el).opacity);
+          return opacity > 0.99 ? 'settled' : `route enter fade at opacity ${opacity}`;
+        }),
+      {
+        timeout: ROUTE_SETTLE_TIMEOUT_MS,
+        message: 'route never settled — see known_bugs item 1',
+      }
+    )
+    .toBe('settled');
 }
