@@ -371,16 +371,36 @@ def ws_client(db_session):
 
     original_nats_connect = nats_client.connect
     old_data_dir = os.environ.get("CB_DATA_DIR")
+    old_topology = os.environ.get("CB_TOPOLOGY_MODE")
     with tempfile.TemporaryDirectory() as tmp_data_dir:
-        # All three pieces of shared/global state this fixture mutates —
-        # dependency override, NATS stub, CB_DATA_DIR — are set and torn down
-        # inside one try/finally so a mid-test exception (anywhere in the
-        # `with TestClient(app)` block below) can never leak any of them onto
-        # subsequent tests in the session.
+        # All four pieces of shared/global state this fixture mutates —
+        # dependency override, NATS stub, CB_DATA_DIR, CB_TOPOLOGY_MODE — are
+        # set and torn down inside one try/finally so a mid-test exception
+        # (anywhere in the `with TestClient(app)` block below) can never leak
+        # any of them onto subsequent tests in the session.
         try:
             app.dependency_overrides[get_db] = override_get_db
             nats_client.connect = AsyncMock(return_value=None)
             os.environ["CB_DATA_DIR"] = tmp_data_dir
+            # `api`, not the default `mono`: this fixture is the one place in
+            # the suite that runs the real lifespan, and in `mono` that starts
+            # the notification, discovery, telemetry-ingest and integration
+            # loops in-process. There is no NATS broker in the backend test
+            # job, and the stub above only neuters `nats_client.connect` — the
+            # loops still spin ("Waiting for NATS... retrying in 1s"), and
+            # shutdown then has to pay `shutdown_scheduler`'s 10s budget plus
+            # `drain_background_tasks`' 5s drain before cancelling them. That
+            # is production's shutdown contract, and it is most of this test's
+            # 30s pytest-timeout: the teardown of
+            # test_link_rejects_further_attempts_from_ip_past_per_ip_limit blew
+            # through it on a loaded runner while passing on a quiet one, which
+            # is what made the failure look like a flaky WebSocket test rather
+            # than a fixture booting four workers it never uses.
+            #
+            # `api` mode leaves the API-process scheduler and every route
+            # intact — only the worker-owned loops are not started, and those
+            # are what the agent-link tests here neither exercise nor assert on.
+            os.environ["CB_TOPOLOGY_MODE"] = "api"
             # NB: agent rows a ws test commits outside the savepoint are
             # reaped by the db_session fixture, not here — see the comment on
             # _reap_agents_committed_outside_the_test for why the cleanup
@@ -394,6 +414,10 @@ def ws_client(db_session):
                 os.environ.pop("CB_DATA_DIR", None)
             else:
                 os.environ["CB_DATA_DIR"] = old_data_dir
+            if old_topology is None:
+                os.environ.pop("CB_TOPOLOGY_MODE", None)
+            else:
+                os.environ["CB_TOPOLOGY_MODE"] = old_topology
 
 
 # ── Model factories ───────────────────────────────────────────────────────────
