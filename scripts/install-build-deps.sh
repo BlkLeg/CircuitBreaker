@@ -96,32 +96,48 @@ check_node() {
     esac
 }
 
-# ── Go 1.22 + make ───────────────────────────────────────────────────────────────
+# ── Go (floor read from apps/agent/go.mod) + make ────────────────────────────────
+# Returns true when $1 >= $2, comparing all three components. The previous check
+# compared major and minor only, so every 1.26.x satisfied a "1.26" floor —
+# including the 1.26.0 that govulncheck fails on.
+version_ge() {
+    [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]
+}
+
 check_go() {
-    # Accept any Go >= 1.22 (apps/agent/go.mod requires go 1.22)
-    local ver
+    # The floor is derived, not written here. It was hardcoded to 1.22 while
+    # apps/agent/go.mod required 1.26, so this reported "satisfies >=1.22" for a
+    # toolchain that cannot build the agent at all, and the Debian/Ubuntu branch
+    # below then installed 1.22.10 — guaranteeing that failure on exactly the
+    # fresh host this script exists to set up. Reading go.mod means the next
+    # toolchain bump cannot leave this stale again.
+    local repo_root go_floor ver
+    repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+    go_floor=$(grep -oP '^go \K[0-9]+\.[0-9]+(\.[0-9]+)?' "$repo_root/apps/agent/go.mod" | head -1)
+    if [ -z "$go_floor" ]; then
+        echo "ERROR: could not read the go directive from apps/agent/go.mod" >&2
+        exit 1
+    fi
     ver=$(go version 2>/dev/null | grep -oP 'go\K[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 || echo "0.0")
-    local major minor
-    major=$(echo "$ver" | cut -d. -f1)
-    minor=$(echo "$ver" | cut -d. -f2)
-    if [ "$major" -gt 1 ] || { [ "$major" -eq 1 ] && [ "$minor" -ge 22 ]; }; then
-        ok "go ${ver} (satisfies >=1.22)"
+    if version_ge "$ver" "$go_floor"; then
+        ok "go ${ver} (satisfies >=${go_floor})"
     else
-        log "go ${ver} found — need 1.22+, attempting install"
+        log "go ${ver} found — need ${go_floor}+, attempting install"
         local distro
         distro=$(detect_distro)
         case "$distro" in
             ubuntu|debian)
-                # Debian/Ubuntu's golang-go package is often older than 1.22
-                # depending on release, so install a pinned version straight
-                # from go.dev to reliably hit the go.mod floor.
+                # Debian/Ubuntu's golang-go package is routinely older than
+                # the go.mod floor, so install that exact version straight from
+                # go.dev rather than hoping the archive is current.
                 local goarch
                 case "$(uname -m)" in
                     x86_64)  goarch="amd64" ;;
                     aarch64) goarch="arm64" ;;
                     *)       echo "ERROR: Unsupported arch $(uname -m) for Go install" >&2; exit 1 ;;
                 esac
-                local go_pin="1.22.10"
+                # The floor itself, not a second pin that can drift from it.
+                local go_pin="$go_floor"
                 local tmpdir
                 tmpdir=$(mktemp -d)
                 curl -fsSL "https://go.dev/dl/go${go_pin}.linux-${goarch}.tar.gz" -o "$tmpdir/go.tar.gz"
