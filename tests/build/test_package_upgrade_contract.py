@@ -388,23 +388,15 @@ def test_scriptlets_are_syntactically_valid(script: Path):
 
 # ── the upgrade must not leave the service stopped and disabled ─────────────
 #
-# ADR 0005 Phase 3, F5. Slice 1 made preremove.sh a no-op when the package is
-# being replaced, which fixes upgrades *from* a version that has that fix. It
-# cannot fix an upgrade from a version already published, because rpm runs the
-# OLD package's %preun:
+# An upgrade FROM an already-published version runs that version's %preun, which
+# stops and disables with no $1 guard. rpm's order is:
 #
 #   1. new %pre   2. unpack   3. new %post (enables)   4. OLD %preun (disables)
 #
-# Verified against the artifact, not the tree: `rpm -qp --scripts` on the
-# published circuit-breaker_0.3.4_amd64.rpm shows a %preun that stops and
-# disables with no $1 guard, and every released tag through v1.0.0-rc.4 carries
-# it. postinstall.sh's try-restart runs at step 3 and cannot help -- step 4 comes
-# after it.
-#
-# %posttrans is the only scriptlet that runs after the old %preun, so that is
-# where the repair goes. It restores the state %pre recorded rather than enabling
-# unconditionally, for the same reason postinstall uses try-restart rather than
-# restart: an upgrade must not start a service the operator deliberately stopped.
+# so postinstall.sh's try-restart at step 3 cannot help. %posttrans is the only
+# scriptlet that runs after the old %preun, so the repair goes there. It restores
+# the state %pre recorded rather than enabling unconditionally: an upgrade must
+# not start a service the operator deliberately stopped.
 
 POSTTRANS = PACKAGING / "posttrans.sh"
 
@@ -590,23 +582,12 @@ def test_posttrans_clears_the_stamp(unit_state):
 
 # ── the rollback has to be able to authenticate ─────────────────────────────
 #
-# ADR 0005 Phase 3, F12. Past the confirmation prompt, the rollback reached the
-# database and could not log in:
-#
-#     Password for user circuitbreaker:
-#     psql: error: ... FATAL: password authentication failed for user "circuitbreaker"
-#
-# The asymmetry that caused it: preinstall.sh hands pg_dump the whole CB_DB_URL
-# (`"$PG_DUMP" "$DB_URL"`), and the URL carries the password, so the backup
-# authenticates. rollback.sh instead parses the URL into its parts and exports
-# CB_DB_NAME, CB_DB_OWNER and CB_DB_SUPERUSER -- every identity except the
-# credential. restore.sh has always read `PGPASSWORD="${CB_DB_PASSWORD:-}"`, and
-# its own comment says why: pg_hba is md5 for 127.0.0.1 and it connects as the
-# owner. Nothing ever set that variable on the package path.
-#
-# The default the package itself generates uses password auth
-# (postgresql://circuitbreaker:...@127.0.0.1:5432/circuitbreaker), so this failed
-# on the standard install, not an exotic one.
+# The backup and the rollback must authenticate the same way. preinstall.sh hands
+# pg_dump the whole CB_DB_URL, which carries the password; rollback.sh parses the
+# URL into parts and exports every identity EXCEPT the credential, while
+# restore.sh reads PGPASSWORD because pg_hba is md5 for 127.0.0.1. The package's
+# own generated default uses password auth, so a missing CB_DB_PASSWORD breaks
+# the standard install, not an exotic one.
 
 
 def _run_rollback(tmp_path: Path, db_url: str):
@@ -671,32 +652,20 @@ def test_a_url_with_no_password_exports_an_empty_one(tmp_path: Path):
 
 # ── deb upgrades leave the service stopped too, for a different reason ──────
 #
-# ADR 0005 Phase 3, F13. The Phase 3 write-up claimed deb needed no equivalent of
-# %posttrans, on the grounds that dpkg runs the old prerm before unpack and the
-# new postinst last, so postinstall.sh already had the final word. The ordering
-# was right and the conclusion was wrong: `try-restart` acts only on a unit that
-# is already running, and the old prerm stopped it at step 1. The
-# debian-deb-amd64-upgrade row failed with
+# deb needs its own repair, for a different reason: dpkg runs the new postinst
+# last, but `try-restart` acts only on a unit already running, and the old prerm
+# stopped it first.
 #
-#     ::error::service is not running after the upgrade
+# preinstall.sh's stamp cannot be trusted here either. Debian Policy 6.5 runs
+# `old-prerm upgrade` BEFORE `new-preinst upgrade`, so the legacy prerm has
+# already stopped and disabled the unit by the time the stamp is written: it
+# reads enabled=0 active=0 for a service that was running a moment earlier.
 #
-# with the unit correctly *enabled* -- postinstall's `systemctl enable` had
-# undone the old prerm's disable -- and not running.
-#
-# It also means preinstall.sh's stamp cannot be trusted on this path. Debian
-# Policy 6.5 runs `old-prerm upgrade` before `new-preinst upgrade`, so by the
-# time this package records the unit state, the legacy prerm has already stopped
-# and disabled it: the stamp reads enabled=0 active=0 for a service that was
-# running a moment earlier.
-#
-# So on deb the service is started unless the stamp gives the one unambiguous
-# signal that the operator stopped it on purpose -- enabled, not active -- which
-# only a prerm that no-ops on upgrade can leave behind, i.e. an upgrade from a
-# version that already carries slice 1's fix. Upgrading from a version that
-# predates it cannot distinguish "was running" from "was stopped", and restores
-# the service, which is both Debian's own convention (dh_installsystemd restarts
-# on upgrade) and the safer of the two errors: the alternative is every upgrade
-# silently ending with the product down.
+# So the service is started unless the stamp gives the one unambiguous signal
+# that the operator stopped it deliberately — enabled, not active — which only a
+# prerm that no-ops on upgrade can leave behind. Upgrading from a version that
+# predates that fix cannot distinguish "was running" from "was stopped", and
+# restores the service: Debian's own convention, and the safer error.
 
 
 def _run_postinstall(tmp_path: Path, args: list[str], *, enabled: str, active: str):

@@ -14,19 +14,16 @@ from tests.discovery.helpers import _agent_profile_row, _eligible_agent
 # Restart survival (Phase D close-out): the startup path asks the same question
 # ---------------------------------------------------------------------------
 #
-# Task 25 made `discovery_admission.profiles_due_for_scheduling` the one place
-# that decides whether a profile gets a cron, and every *runtime* writer of the
-# three holds goes through `core.scheduler.reload_discovery_jobs`, which asks it.
-# `app.main`'s startup registration is the second, easily-forgotten caller: it is
-# not reached by any API request, so a hold written through a route was applied
-# to the live scheduler and then discarded the next time the process came up.
-# A restart is the event *most likely* to follow an operator changing
-# configuration, which is what makes "correct until restart" the worst possible
-# shape for a safety control.
+# `discovery_admission.profiles_due_for_scheduling` is the one place that decides
+# whether a profile gets a cron, and every runtime writer reaches it through
+# `reload_discovery_jobs`. `app.main`'s startup registration is the second,
+# easily-forgotten caller: no API request reaches it, so a hold applied to the
+# live scheduler would be discarded on the next start. A restart is the event
+# most likely to FOLLOW a configuration change, which makes "correct until
+# restart" the worst shape for a safety control.
 #
-# These exercise `app.main`'s real startup helper against a brand-new scheduler,
-# because that is what a restart actually has: an empty scheduler and the
-# database.
+# These run `app.main`'s real startup helper against a brand-new scheduler,
+# because that is what a restart has: an empty scheduler and the database.
 
 
 def _restarted_scheduler():
@@ -122,17 +119,13 @@ def test_a_restart_does_not_reschedule_an_agent_profile_while_the_fleet_is_held(
 # ---------------------------------------------------------------------------
 #
 # APScheduler is PROCESS-LOCAL and production runs `uvicorn --workers 2`, so a
-# pause applied through an API request rebuilds the schedule of the ONE worker
-# that served the request. The other worker's already-registered cron keeps its
-# fire times until something independently rebuilds its schedule — which nothing
-# does, because `reload_discovery_jobs` is only ever reached from a request that
-# landed in that worker.
+# pause applied through an API request rebuilds only the schedule of the worker
+# that served it. The other worker's cron keeps its fire times, because nothing
+# else reaches `reload_discovery_jobs`.
 #
-# A registration-time-only gate is therefore not a hold at all on a multi-worker
-# deployment; it is a hold on one worker. It is also the exact shape that made
-# the startup defect above and the earlier per-agent-pause defect possible. So
-# the pause is re-read when the cron fires, through the same function, and the
-# scopes have one definition rather than two that agree today.
+# A registration-time-only gate is therefore a hold on one worker, not a hold. So
+# the pause is re-read when the cron fires, through the same function, giving the
+# scopes one definition rather than two that agree today.
 
 
 def _held_scopes(db_session, profile):

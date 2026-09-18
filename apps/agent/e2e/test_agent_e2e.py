@@ -174,25 +174,18 @@ AGENT_SERVER_URL = "https://circuitbreaker:8443"
 COMPOSE = ["docker", "compose", "-f", str(Path(__file__).parent / "docker-compose.yml")]
 E2E_DIR = Path(__file__).parent
 AGENT_SRC_DIR = E2E_DIR.parent
-# .env's CB_DATA_DIR=./e2e-data is interpolated into the *base* (repo-root)
-# docker-compose.yml's volumes: entry, which resolves relative paths against
-# its OWN file's directory (the repo root) — NOT against this .env file's
-# directory (see .env's own comment). So the actual bind-mounted Postgres/
-# vault/OOBE state for every run in this harness lives at
-# <repo-root>/e2e-data, not apps/agent/e2e/e2e-data. `docker compose down -v`
-# only removes named volumes (cb-agent-state) — it does NOT touch this bind
-# mount, so without explicitly removing it here, every test function in this
-# file would silently inherit the *previous* test's Postgres data, OOBE/
-# bootstrap state, and vault key across nominally-independent runs.
+# CB_DATA_DIR is resolved against the repo-root compose file's own directory,
+# so this harness's Postgres/vault/OOBE state lives at <repo-root>/e2e-data.
+# `docker compose down -v` removes named volumes only and does NOT touch a bind
+# mount, so without removing it here every test would inherit the previous
+# test's database, bootstrap state and vault key.
 REPO_ROOT = E2E_DIR.parents[2]
 _E2E_DATA_DIR = REPO_ROOT / "e2e-data"
 
 _ADMIN_EMAIL = "e2e@example.com"
 _ADMIN_PASSWORD = "E2eTest1234!"
 
-# ─────────────────────────────────────────────────────────────────────────
 # docker-compose.yml's pinned topology, in one place
-# ─────────────────────────────────────────────────────────────────────────
 #
 # Docker owns these subnets at runtime; this file owns the assertions about
 # them. Restated in ONE block rather than scattered through the tests, and
@@ -392,16 +385,11 @@ def _new_client() -> httpx.Client:
 
 
 def _up_server(env: dict | None = None) -> None:
-    # Establish the clean baseline on the way IN, not only on the way out.
-    # Every test ends with `_down()` in a `finally`, but an interrupted run —
-    # Ctrl-C, a pytest timeout, a killed CI job — never reaches it, and what it
-    # leaves behind is not inert. A surviving `cb-agent-state` volume still
-    # holds an enrolled device key, so the next `cb-agent enroll` is answered
-    # "already active" and never prints a pairing code; a surviving
-    # `agent.toml/` directory (see `_write_agent_toml`) kills the agent at
-    # config load. Both surface minutes later as an unrelated-looking timeout
-    # in whichever test happened to run first. Each test is only independent of
-    # how the previous one *ended* if it starts by saying so.
+    # Clean baseline on the way IN, not only on the way out: an interrupted run
+    # never reaches `_down()`, and what it leaves is not inert. A surviving
+    # `cb-agent-state` volume holds an enrolled device key, so the next enroll is
+    # answered "already active" and never prints a pairing code. Both failures
+    # surface minutes later as an unrelated-looking timeout.
     _down(env)
     subprocess.run(
         [*COMPOSE, "up", "-d", "--build", "circuitbreaker"],
@@ -487,14 +475,10 @@ def _clear_agent_toml() -> None:
 
 def _write_agent_toml(server_pk: str, tls_pin: str, path: Path | None = None) -> Path:
     target = path or AGENT_TOML
-    # Docker creates whatever is missing at a bind-mount source, owned by root.
-    # For the directory that is now what we want — but only if *we* create it
-    # first, from the host, as the user running the suite: a root-owned
-    # agent-etc/ (left by a container started before the first
-    # `_write_agent_toml`, e.g. an interrupted run or a stray `compose up`)
-    # makes the write below fail with a bare PermissionError, and that output
-    # goes to `_enroll_agent`'s pipe where it surfaces only as a pairing-code
-    # timeout.
+    # Docker creates a missing bind-mount source owned by root, so this has to
+    # be created first from the host as the user running the suite. A root-owned
+    # agent-etc/ makes the write below fail with a PermissionError that reaches
+    # `_enroll_agent`'s pipe and surfaces only as a pairing-code timeout.
     target.parent.mkdir(parents=True, exist_ok=True)
     # The same trap one level down, and still worth guarding: a container that
     # started when agent.toml did not exist leaves a root-owned `agent.toml/`
@@ -599,16 +583,11 @@ class _AgentStreamListener:
         # (`token_from_websocket_scope`) reads only the cb_session cookie, so
         # the same token is also sent as the first text message below — the
         # mechanism a bearer-only client actually authenticates with.
-        # Two websockets deprecations are load-bearing here, because pytest.ini's
-        # `filterwarnings = error` makes both fatal and e2e.yml pins no version:
-        #
-        #   * `ssl`, not `ssl_context` — renamed in 13.0.
-        #   * `connect()` entered as a context manager — 17.0 deprecated holding
-        #     the return value directly. This listener outlives its constructor,
-        #     so it cannot use a `with` block; an ExitStack held on the instance
-        #     is the same contract with the lifetime this class actually has,
-        #     and `close()` unwinds it. `legacy=True` would also silence it, but
-        #     that switch exists to be removed.
+        # Two websockets deprecations are fatal here (`filterwarnings = error`,
+        # and no pinned version): `ssl` not `ssl_context` (renamed in 13.0), and
+        # `connect()` entered as a context manager (17.0). This listener outlives
+        # its constructor so it cannot use a `with` block; an ExitStack on the
+        # instance is the same contract with the lifetime it actually has.
         self._stack = contextlib.ExitStack()
         self._ws = self._stack.enter_context(
             connect(
@@ -796,14 +775,11 @@ def _enroll_agent(
 
     assert proc.wait(timeout=15) == 0, "enroll process did not exit 0 after approval"
     # The pipe outlives the loop above on purpose: `enroll.Run` blocks until the
-    # server stops reporting the agent as pending (internal/enroll/enroll.go),
-    # so the process is still writing — "approved — connecting" — long after the
-    # pairing code was read and broken out on. It is only finished once the
-    # approval above has landed and `wait()` has returned, which is the earliest
-    # point this can be closed. Leaving it to the garbage collector raised
-    # `ResourceWarning: unclosed file`, which pytest.ini's `filterwarnings =
-    # error` turns into a failure attributed to whichever test happened to
-    # trigger the collection rather than to the helper that leaked it.
+    # agent stops being pending, so the process is still writing long after the
+    # pairing code was read. It can only be closed once the approval has landed
+    # and `wait()` returned. Left to the garbage collector it raises
+    # `ResourceWarning: unclosed file`, which `filterwarnings = error` turns into
+    # a failure attributed to whichever test triggered the collection.
     proc.stdout.close()
     return agent_id, stream
 
@@ -1238,9 +1214,7 @@ def _put_host_telemetry(
     return resp.json()
 
 
-# ─────────────────────────────────────────────────────────────────────────
 # Steps 1,2,3,4,5,6,9 + step 11's isolation probe/reconnect
-# ─────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.e2e
@@ -1278,15 +1252,11 @@ def test_agent_full_lifecycle_enroll_through_revoke_and_reconnect():
                 lambda: client.get(f"/api/v1/agents/{agent_id}").json().get("last_seen_at"),
                 timeout=45,
             )
-            # refresh_presence_heartbeat throttles its last_seen_at DB write
-            # to roughly once/minute, so re-checking last_seen_at itself
-            # "advanced" would mean waiting out that 60s throttle. The
-            # Redis presence key (agent_registry.mark_presence_connected/
-            # is_agent_online), by contrast, is refreshed on every single
-            # heartbeat with a 60s TTL — so continuing to observe
-            # online=True across an interval spanning more than one 20s
-            # heartbeat tick (without the key ever expiring) is direct proof
-            # heartbeats kept arriving, without waiting a full minute.
+            # last_seen_at's DB write is throttled to ~once/minute, so asserting
+            # on it means waiting out that throttle. The Redis presence key is
+            # refreshed on every heartbeat with a 60s TTL, so observing
+            # online=True across more than one 20s tick proves heartbeats kept
+            # arriving without waiting a full minute.
             def _is_online() -> bool:
                 presence = client.get("/api/v1/agents/presence", headers=headers).json()
                 return any(a["agent_id"] == agent_id and a["online"] for a in presence)
@@ -1406,9 +1376,7 @@ def _wait_until_and_return(getter, *, timeout=30, interval=1.0):
     raise TimeoutError(f"condition not met within {timeout}s (last error: {last_exc})")
 
 
-# ─────────────────────────────────────────────────────────────────────────
 # Step 10: uninstall + server audit state
-# ─────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.e2e
@@ -1451,18 +1419,14 @@ def test_agent_uninstall_marks_server_revoked_and_removes_local_files():
                 capture_output=True,
                 text=True,
             )
-            # Not asserting returncode == 0: this minimal container has no
-            # systemd, so performUninstall's `systemctl disable --now`
-            # deliberately fails here (DisableErr non-nil -> exit 1) — an
-            # artifact of the container environment, not a real failure.
-            # What matters is verified below: the server-side audit state
-            # and the actual on-disk removal, both independent of the
-            # systemd step.
+            # Not asserting returncode == 0: this container has no systemd, so
+            # `systemctl disable --now` fails here — an artifact of the
+            # environment. What matters is verified below: the server-side audit
+            # state and the on-disk removal, both independent of that step.
             #
-            # The other thing that can make this exit non-zero is an
-            # unconfirmed notify, and that one *would* be a real failure — so
-            # it is asserted directly rather than left to the exit code, which
-            # cannot distinguish the two.
+            # An unconfirmed notify also exits non-zero and WOULD be a real
+            # failure, so it is asserted directly — the exit code cannot
+            # distinguish the two.
             assert "Notified the server" in result.stdout, result.stdout + result.stderr
             assert "did NOT confirm" not in result.stderr, (
                 "the agent could not confirm the revoke with the server: " + result.stderr
@@ -1512,9 +1476,7 @@ def test_agent_uninstall_marks_server_revoked_and_removes_local_files():
         _clear_agent_toml()
 
 
-# ─────────────────────────────────────────────────────────────────────────
 # Step 8: Noise rekey with an accelerated test clock
-# ─────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.e2e
@@ -1541,33 +1503,18 @@ def test_agent_noise_rekey_interval_with_accelerated_clock():
                 timeout=20,
             )
 
-            # With a 6s interval, ~30-40s of connected time should carry at
-            # least two full rekey cycles in EACH independent direction
-            # (agent->server and server->agent — see link.go's rekeyInterval
-            # / ws_agents.py's REKEY_INTERVAL_SECONDS, both driven off this
-            # same env override here).
+            # With a 6s interval, ~30-40s of connected time carries at least two
+            # full rekey cycles in EACH direction (link.go's rekeyInterval and
+            # ws_agents.py's REKEY_INTERVAL_SECONDS, both driven off this
+            # override).
             #
-            # Both counts are read from `docker compose logs cb-agent` alone
-            # — NOT the server's own Python log. ws_agents.py's matching
-            # _logger.info call (added in the same commit as link.go's) is
-            # real and correctly gated on this same env override, but this
-            # app has no logging.basicConfig/dictConfig anywhere on the
-            # `uvicorn app.main:app` startup path actually used here, so the
-            # root logger stays at Python's default WARNING and every
-            # `_logger.info` call in this codebase (this one and pre-existing
-            # ones alike, e.g. ws_agents.py's "agent enroll: handshake
-            # failed") is silently dropped — confirmed empirically by
-            # grepping a real run's backend_api_err.log for zero hits on
-            # either. That is a pre-existing app-wide logging-configuration
-            # gap, out of scope to change here. Instead, the agent's OWN Go
-            # log (always visible — no supervisord indirection, no logging-
-            # level gate on the standard library `log` package) already
-            # proves the *server* rekeyed independently too: "applied inbound
-            # transport.rekey" only ever fires when the agent received and
-            # correctly applied a `transport.rekey` frame the SERVER sent on
-            # its own schedule (see applyInboundRekey in link.go) — a wrong/
-            # missing server-side rekey would desync the ciphers and break
-            # the connection outright, not merely fail to log.
+            # Both counts come from the agent's Go log alone, never the server's:
+            # the app configures no logging on the uvicorn startup path, so the
+            # root logger stays at WARNING and every `_logger.info` is dropped.
+            # The agent's log proves the SERVER rekeyed anyway — "applied inbound
+            # transport.rekey" only fires when the agent received and applied a
+            # frame the server sent on its own schedule, and a missing one would
+            # desync the ciphers rather than merely fail to log.
             def _rekey_counts():
                 logs = _agent_logs(rekey_env)
                 agent_rekeys = len(re.findall(r"performed outbound transport\.rekey", logs))
@@ -1600,9 +1547,7 @@ def test_agent_noise_rekey_interval_with_accelerated_clock():
         _clear_agent_toml()
 
 
-# ─────────────────────────────────────────────────────────────────────────
 # Step 7: successful update + forced rollback
-# ─────────────────────────────────────────────────────────────────────────
 
 
 def _build_test_agent_binary(version: str, dest: Path) -> Path:
@@ -1711,14 +1656,11 @@ def test_agent_update_success_and_forced_rollback():
 
         agent_id, stream = _enroll_agent(client, headers)
         try:
-            # CB_AGENT_TEST_PRE_REEXEC_DELAY_MS (see cmd/cb-agent/main.go's
-            # reExecDelayEnvOverride): on this harness's local Docker bridge
-            # network, a freshly re-exec'd daemon can reconnect and
-            # self-confirm an update in well under 100ms — faster than this
-            # test's own log-poll-then-disconnect trigger below can reliably
-            # beat without it. 1000ms gives a wide, reliable margin; it costs
-            # this test 1 extra second per re-exec (step 7a's included) and
-            # is completely inert in every real deployment (unset there).
+            # On a local bridge network a re-exec'd daemon can reconnect and
+            # self-confirm in under 100ms — faster than the log-poll-then-
+            # disconnect trigger below can reliably beat. 1000ms is a wide
+            # margin, costs one second per re-exec, and is unset in real
+            # deployments.
             reexec_delay_env = {**os.environ, "CB_AGENT_TEST_PRE_REEXEC_DELAY_MS": "1000"}
             subprocess.run(
                 [*COMPOSE, "up", "-d", "cb-agent"], check=True, cwd=E2E_DIR, env=reexec_delay_env
@@ -1821,9 +1763,7 @@ def test_agent_update_success_and_forced_rollback():
         _clear_agent_toml()
 
 
-# ─────────────────────────────────────────────────────────────────────────
 # Step 12: independent restarts, no new setup
-# ─────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.e2e
@@ -1907,10 +1847,7 @@ def test_agent_independent_restarts_recover_without_new_setup():
         _clear_agent_toml()
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# Task 20: host telemetry acceptance, bounded catch-up, live cadence change,
-# and disable
-# ─────────────────────────────────────────────────────────────────────────
+# Task 20: host telemetry acceptance, bounded catch-up, live cadence change, and disable
 
 # D-13: the daemon is driven at the real production minimum
 # (internal/capability/capability.go's 10s floor), not the 30s default, so
@@ -1918,14 +1855,11 @@ def test_agent_independent_restarts_recover_without_new_setup():
 # configuration and its default path stays covered by the Go and backend
 # suites. interval_s is restored to 30 before this test exits.
 _TELEMETRY_INTERVAL_S = 10
-# Floor on how many collection intervals the outage swallows. Six (60s)
-# rather than the minimum four because the 1h history grain is 30s buckets:
-# a 60s window contains at least one whole bucket regardless of where the
-# outage starts inside one, so "samples landed with their original
-# collected_at" is assertable on bucket boundaries. The real outage is
-# longer than this — _backend_outage also has to wait out the container's
-# own restart — which is why every assertion below is a floor, never an
-# exact count.
+# Floor on how many collection intervals the outage swallows. Six (60s) rather
+# than four because the 1h history grain is 30s buckets: a 60s window contains
+# at least one whole bucket wherever the outage starts, so "samples landed with
+# their original collected_at" is assertable on bucket boundaries. The real
+# outage is longer, so every assertion below is a floor, never an exact count.
 _MISSED_INTERVALS = 6
 _OUTAGE_SECONDS = _TELEMETRY_INTERVAL_S * _MISSED_INTERVALS
 # The slower cadence the live grant change switches to (step 4).
@@ -1940,17 +1874,12 @@ _HISTORY_BUCKET_S = 30
 # rows" is a property of the backend's (agent_id, sample_id, collected_at)
 # dedupe, and this is the end-to-end check that it actually holds.
 _MAX_SAMPLES_PER_BUCKET = 4
-# Wall-clock budget for the whole backlog to land, measured from the moment
-# the link is observably back up (not from the moment the server starts
-# answering again, which the agent's reconnect backoff — 1s doubling to a 5m
-# cap, internal/link/backoff.go — sits behind for up to a minute after an
-# outage this long). Task 13's pacing is drainFramesPerTick=4 frames per
-# drainTickInterval=100ms, bounded by drainBytesPerTick=256KiB — ~40
-# frames/s, so a 6-frame backlog drains in well under a second. Those are
-# unexported package vars in Go's internal/link and deliberately are NOT
-# read from here; 30s is a bound generous enough to survive scheduling noise
-# while still failing loudly if catch-up regressed to the old live-traffic-
-# gated 1:4 interleave.
+# Budget for the backlog to land, measured from when the link is observably
+# back up — not from when the server answers again, which the agent's reconnect
+# backoff sits behind for up to a minute. Drain pacing is ~40 frames/s, so a
+# 6-frame backlog clears in well under a second; those are unexported Go package
+# vars and deliberately NOT read from here. 30s survives scheduling noise while
+# still failing loudly if catch-up regresses to a live-traffic-gated interleave.
 _CATCHUP_BUDGET_S = 30
 
 # internal/link/backoff.go: backoffBase = 1s, doubling per attempt to a 5m cap,
@@ -2371,9 +2300,7 @@ def test_agent_host_telemetry_first_sample_catchup_and_disable():
         _clear_agent_toml()
 
 
-# ─────────────────────────────────────────────────────────────────────────
 # F-5: black-hole network partition detection
-# ─────────────────────────────────────────────────────────────────────────
 
 # internal/link's readTimeout: 3 * the 20s heartbeatInterval, matching the
 # backend's own _LINK_DEAD_SECONDS. Deliberately NOT overridden for this test.
@@ -2540,9 +2467,7 @@ def test_agent_black_hole_partition_is_detected_and_spools():
         _clear_agent_toml()
 
 
-# ─────────────────────────────────────────────────────────────────────────
 # Slice 3 §9 steps 1-6 and 9-11: remote-probe acceptance
-# ─────────────────────────────────────────────────────────────────────────
 
 # probe-net's pinned addresses moved to the topology block at the top of this
 # file when Slice 4 added a second agent, a second fixture subnet and a late
@@ -2704,14 +2629,11 @@ def test_remote_probe_assignment_execution_and_unavailability():
             _wait_until(lambda: _agent_status()["link_state"] == "accepted", timeout=30)
 
             # ---- Step 1: the backend genuinely cannot reach the target ----
-            # Asserted first because it is the premise of every later
-            # assertion. `getent` is checked too: the DNS monitor names
-            # `probe-target` as the record to look up, and
-            # probe_eligibility.evaluate_eligibility resolves any non-literal
-            # host on the SERVER before it will dispatch. The name resolving
-            # (docker-compose.yml's extra_hosts) while the address stays
-            # unroutable is what makes that monitor dispatchable without
-            # weakening the isolation this step exists to prove.
+            # Asserted first because it is the premise of every later assertion.
+            # `getent` too: `evaluate_eligibility` resolves any non-literal host
+            # on the SERVER before dispatching, so the name must resolve (via
+            # extra_hosts) while the address stays unroutable — that is what keeps
+            # the DNS monitor dispatchable without weakening the isolation.
             getent = _backend_sh(f"getent hosts {_PROBE_TARGET_NAME}")
             assert getent.returncode == 0 and getent.stdout.split()[0] == _PROBE_TARGET_IP, (
                 f"the backend cannot resolve {_PROBE_TARGET_NAME} — docker-compose.yml's "
@@ -3177,9 +3099,7 @@ def test_remote_probe_assignment_execution_and_unavailability():
         _clear_agent_toml()
 
 
-# ─────────────────────────────────────────────────────────────────────────
 # Task 31: the harness itself (D-12)
-# ─────────────────────────────────────────────────────────────────────────
 
 # Long enough for hello -> registry -> readiness ingest to land, on the same
 # order as this file's other first-signal budgets. Nothing here waits on a
@@ -3505,9 +3425,7 @@ def test_e2e_harness_topology_is_pinned_and_two_agents_stay_isolated():
         _clear_agent_toml()
 
 
-# ─────────────────────────────────────────────────────────────────────────
 # Slice 4 Task 32: zero-configuration discovery, plan §8 steps 1-7
-# ─────────────────────────────────────────────────────────────────────────
 #
 # One install command, one ordinary approval, and no CIDR typed anywhere.
 # The budgets below are wall-clock ceilings, not expectations — every one of
@@ -4367,14 +4285,10 @@ def test_agent_zero_configuration_discovery_import_and_replay():
                 _rewind_spool_head()
                 # The server's own witness that the restarted agent came back
                 # holding undelivered frames: `hello` carries the spool depth
-                # (D-12), so this is the *backend* reporting a backlog rather
-                # than the test reading the agent's disk. It says a backlog
-                # existed, not which frames were in it — the identity of the
-                # batch is what the on-disk comparison below establishes, and
-                # both halves are needed: measured against a build with the
-                # rewind removed, this wait still passes (the restart gap
-                # spools a fresh telemetry frame or two) and the comparison
-                # below is what fails.
+                # (D-12), so the BACKEND reports the backlog, not the test reading
+                # the agent's disk. It says a backlog existed, not which frames —
+                # both halves are needed, because with the rewind removed this
+                # wait still passes and only the comparison below fails.
                 _wait_until(
                     lambda: _agent_telemetry(client, agent_id)["spool"]["depth"] > 0,
                     timeout=_SPOOL_DRAIN_BUDGET_S,
@@ -4464,10 +4378,7 @@ def test_agent_zero_configuration_discovery_import_and_replay():
         _clear_agent_toml()
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# Slice 4 Task 33: cancellation, restart, a second agent, recurrence
-# (plan §8 steps 8-11)
-# ─────────────────────────────────────────────────────────────────────────
+# Slice 4 Task 33: cancellation, restart, a second agent, recurrence (plan §8 steps 8-11)
 #
 # Task 32 proves the central claim on the happy path. These two attack the four
 # ways it could be true by accident:
@@ -5673,9 +5584,7 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
         _clear_agent_toml()
 
 
-# ─────────────────────────────────────────────────────────────────────────
 # Slice 4.1 (F4): a certificate change must not strand the fleet
-# ─────────────────────────────────────────────────────────────────────────
 
 
 def _tls_pin_status(client: httpx.Client) -> dict:
@@ -5868,9 +5777,7 @@ def test_activation_is_refused_while_an_agent_cannot_confirm():
         _clear_agent_toml()
 
 
-# ─────────────────────────────────────────────────────────────────────────
 # Slice 4.2 (F3): a tampered update binary is refused
-# ─────────────────────────────────────────────────────────────────────────
 
 
 def _generate_signing_keypair() -> tuple[str, str]:
@@ -6063,13 +5970,10 @@ def test_agent_enrolls_unattended_from_a_token_and_the_token_is_spent():
         # One line with the trailing newline the installer's `printf '%s\n'`
         # writes and the agent trims.
         #
-        # Mode 0644, not the 0600 the installer sets. A bind mount carries the
-        # host's ownership, and the container runs as `cb-agent` — a different
-        # uid — so 0600 is unreadable there and the agent (correctly) refuses
-        # to guess: `enroll: read token: permission denied`. On a real host the
-        # installer writes the file as root and chowns it, which is asserted
-        # where it belongs, in test_agent_install.py's token-block tests. What
-        # this scenario is for is the enrollment, not the file mode.
+        # Mode 0644, not the installer's 0600: a bind mount carries the host's
+        # ownership and the container runs as a different uid, so 0600 is
+        # unreadable there. The real install's mode is asserted in
+        # test_agent_install.py; this scenario is about the enrollment.
         if token_file.is_dir() and not token_file.is_symlink():
             token_file.rmdir()
         token_file.write_text(f"{plaintext}\n")

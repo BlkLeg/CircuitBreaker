@@ -271,18 +271,14 @@ def test_public_endpoint_allowlist_requires_codeowner_review():
     assert matching_lines == [f"{_ENDPOINT_POLICY_REPO_PATH} @blkleg"], (
         "SEC-07 public endpoint policy must require security-owner CODEOWNERS review"
     )
-    # SEC-07's stated mechanism is Code Owner approval. GitHub does not let an
-    # author approve their own pull request, and this repository has exactly one
-    # codeowner (EXC-002), so that mechanism cannot operate here: requiring it
-    # would make every pull request permanently unmergeable. This assertion used
-    # to demand that branch-protection.md claim the review was enabled, which as
-    # of 2026-09-17 would be a documented control that provably does not run.
+    # SEC-07's mechanism is Code Owner approval, which cannot operate in a
+    # repository with one codeowner: GitHub does not let an author approve their
+    # own PR, so requiring it would make every PR unmergeable.
     #
-    # What is asserted instead is that the document states which of the two
-    # states holds, and only one of them. That keeps the test load-bearing in
-    # both directions: it fails if someone quietly drops the note explaining that
-    # the gate is unenforced, and it fails again if a second maintainer joins and
-    # review is enabled without the note being removed.
+    # So the assertion is that branch-protection.md states which of the two
+    # states holds, and only one. That fails if the note explaining the gate is
+    # unenforced is dropped, and fails again if review is enabled without the
+    # note being removed.
     review_enabled = "Require review from Code Owners: \u2713 Enabled" in branch_protection
     review_unenforced = "This gate is not currently enforced by review" in branch_protection
     assert review_enabled != review_unenforced, (
@@ -460,37 +456,20 @@ def test_full_endpoint_inventory_matches_runtime_routes():
 
     inventory = _load_inventory()
 
-    # `/assets` and `/icons` are mounted by main.py only `if _assets.exists()`,
-    # i.e. only when apps/frontend has actually been built. On a checkout where
-    # it has not, the app exposes four static surfaces while the recorded
-    # inventory holds six, and this test used to fail with a bare
-    # `assert 6 == 4` naming neither the cause nor the fix.
+    # `/assets` and `/icons` mount only `if _assets.exists()`, so a checkout with
+    # no frontend build exposes four static surfaces against the inventory's six.
+    # A missing build artifact is an environment fact, not a policy violation, so
+    # those surfaces are dropped from the comparison and named in the message.
+    # Everything the inventory protects — that no route gains or loses an auth or
+    # RBAC policy without the record changing — is still asserted in full.
     #
-    # That mattered far more than the assertion itself: this is the fiftieth
-    # test to run, `addopts` carries `-x`, and so a missing frontend build made
-    # the ENTIRE backend suite invisible behind one cryptic failure (B51). A
-    # build artifact being absent is an environment fact, not a policy
-    # violation, so the frontend-dependent surfaces are dropped from the
-    # comparison and named in the message instead. Everything the inventory
-    # exists to protect -- that no route gains or loses an auth or RBAC policy
-    # without the record changing -- is still asserted in full.
-    # `api.static_spa` registers `spa_fallback` at /{full_path:path} when the build
-    # exists and a placeholder `root` at / when it does not, so the pair swaps
-    # with the build too. The committed inventory is generated WITH a build
-    # (regenerating it without one would silently record the degraded shape as
-    # the policy of record, which is worse than the failure this exemption
-    # replaces), so both sides of the swap are dropped from the comparison.
-    #
-    # Both sides drop the whole pair, not just the half that happens to be
-    # missing. Filtering the recorded side by `absent_routes` instead made the
-    # exemption branch-dependent: the inventory records `/{full_path:path}` (it
-    # is generated with a build), so without a build `absent_routes` held that
-    # path and both sides lost one route, but WITH a build `absent_routes` held
-    # only `/` -- which the inventory never had -- so the fallback was subtracted
-    # from runtime and kept in the record, for a permanent `437 vs 436`. That is
-    # exactly the shape a real policy drift takes, on a gate whose whole job is
-    # to distinguish the two. `absent_routes` now only decides whether the
-    # message explains the swap.
+    # `api.static_spa` registers `spa_fallback` at /{full_path:path} with a build
+    # and a placeholder `root` at / without one, so that pair swaps too. BOTH
+    # sides drop the whole pair, never just the missing half: filtering the
+    # recorded side by `absent_routes` makes the exemption branch-dependent and
+    # leaves a permanent off-by-one with a build — exactly the shape real policy
+    # drift takes, on a gate whose job is to tell the two apart. `absent_routes`
+    # now only decides whether the message explains the swap.
     frontend_only_routes = {"/{full_path:path}", "/"}
     runtime_route_paths = {row["path"] for row in expected}
     absent_routes = frontend_only_routes - runtime_route_paths

@@ -25,13 +25,12 @@ from tests.discovery.helpers import (
 # Creation-time validation of an agent-targeted profile or scan (Slice 4, §3/§7)
 # ---------------------------------------------------------------------------
 #
-# Plan §3 requires the same preconditions at profile save and at job creation, and
-# §7 names four checkpoints in all. These are the first two. Every refusal is a 422
-# whose `reason` comes from `discovery_eligibility`'s closed vocabulary (or, for the
-# two limits that module deliberately leaves to its callers, from the Go collector's
-# own `internal/collect/discover` codes), so one set of strings is rendered wherever
-# the answer is given. It is validation *in addition to* the dispatch-time re-check,
-# never instead of it: a scope can change between a save and the job it produces.
+# The same preconditions apply at profile save and at job creation. Every refusal
+# is a 422 whose `reason` comes from `discovery_eligibility`'s closed vocabulary
+# (or, for the two limits it leaves to callers, the Go collector's own codes), so
+# one set of strings is rendered wherever the answer is given. This is validation
+# IN ADDITION to the dispatch-time re-check, never instead of it: a scope can
+# change between a save and the job it produces.
 
 
 @pytest.mark.asyncio
@@ -173,11 +172,9 @@ async def test_patch_disabling_a_profile_whose_agent_was_revoked_still_works(
 # The same gate on job creation
 # ---------------------------------------------------------------------------
 #
-# Driven straight through `create_scan_job` so that a refusal is read off the
-# exception rather than off a status code. Task 20 landed the router, so both
-# HTTP entry points now carry the execution location too, and the section below
-# ("Reaching the agent through the API") pins the same gate where an operator
-# actually meets it.
+# Driven straight through `create_scan_job` so a refusal is read off the
+# exception rather than a status code. The section below pins the same gate at
+# the HTTP entry points, where an operator actually meets it.
 
 
 def _create_agent_scan(db_session, agent, **overrides):
@@ -298,18 +295,16 @@ def test_a_server_scan_job_is_not_validated_against_any_agent(db_session, nmap_e
 # Reaching the agent through the API (Slice 4, §3 / Task 19 / Task 20)
 # ---------------------------------------------------------------------------
 #
-# The two entry points a human can actually reach — "Run now" on a profile and
-# the ad-hoc scan form — are the only way an agent scan is ever started by hand.
-# Both have to carry the execution location all the way into `create_scan_job`,
-# or an agent profile produces either a server-run job (plan §3 forbids the
-# fallback: it silently changes the discovery vantage point) or, because D-6
-# makes `["agent_connect"]` the only legal scan-type list on an agent, a hard
-# failure from `validate_scan_types` that the generic handler renders as a 500.
+# The two entry points a human can reach — "Run now" and the ad-hoc scan form —
+# must carry the execution location all the way into `create_scan_job`. Without
+# it an agent profile either produces a server-run job (§3 forbids that fallback:
+# it silently changes the discovery vantage point) or, since `["agent_connect"]`
+# is the only legal scan-type list on an agent, fails `validate_scan_types` as a
+# 500.
 #
-# Both endpoints must also answer a refusal with Task 19's *structured* 422 —
-# `{"reason", "detail", "message"}`, the same body `discovery_profiles_service`
-# already returns on profile save — so the frontend switches on one closed
-# vocabulary rather than two.
+# Both must answer a refusal with the structured 422
+# (`{"reason", "detail", "message"}`) that profile save already returns, so the
+# frontend switches on one closed vocabulary rather than two.
 
 _SERVER_SUBNET = "192.168.70.0/24"
 
