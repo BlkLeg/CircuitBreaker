@@ -6,13 +6,13 @@ import ResetPasswordPage from '../pages/ResetPasswordPage.jsx';
 import { PASSWORD_RECOVERY_MESSAGE } from '../api/auth';
 
 /**
- * INC-08. Self-service password reset is disabled and is not coming back for 1.0.0, so
+ * Self-service password reset is disabled and is not coming back for 1.0.0, so
  * the two surfaces that say so have to say the same thing — and it has to be something a
  * locked-out user can act on. "Temporarily disabled" was neither: it named no path and
  * promised a return.
  *
  * Both surfaces read one exported string. Two surfaces answering the same question
- * differently is the shape of INC-02 and INC-03.
+ * differently is the shape of the defect.
  */
 
 vi.mock('../api/client', () => ({ default: { post: vi.fn(), get: vi.fn() } }));

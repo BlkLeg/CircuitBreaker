@@ -4,7 +4,7 @@ import AccessTokensManager from '../components/settings/AccessTokensManager';
 import '../styles/access-tokens.css';
 
 /**
- * Admin credential operations workbench (INC-14 + plan 09).
+ * Admin credential operations workbench.
  *
  * AccessTokensManager owns inventory/issuance state. This shell supplies the
  * page chrome from the approved SOC composition without duplicating API logic.

@@ -233,7 +233,7 @@ describe('NotificationsPage', () => {
 
 describe('NotificationsPage sink editing', () => {
   // A sink as the API now serves it: the webhook URL is masked and carries a
-  // read-only set-flag alongside it (INC-06).
+  // read-only set-flag alongside it.
   const MASK = 'https://hooks.slack.com/services/•••';
   const maskedSink = {
     id: 7,

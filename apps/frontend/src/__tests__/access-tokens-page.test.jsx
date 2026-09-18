@@ -10,7 +10,7 @@ vi.mock('../components/settings/AccessTokensManager', () => ({
 }));
 
 describe('AccessTokensPage', () => {
-  it('renders the manager INC-14 already built', () => {
+  it('renders the access-token manager', () => {
     render(<AccessTokensPage />);
     expect(screen.getByTestId('access-tokens-manager')).toBeTruthy();
   });

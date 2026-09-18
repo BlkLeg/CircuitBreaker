@@ -117,7 +117,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Task 20: both live in a bodyless Panel, so they take the padding the missing
+/* Both live in a bodyless Panel, so they take the padding the missing
    body would have given them. Bodyless and not padded, because the filter bar
    sets its own dense spacing and a body would inset it into a second box. */
 .cb-panel .agents-page__filters {
@@ -357,7 +357,7 @@
 }
 
 /* Install failures render here, where the operator is already looking; the
-   toast alone scrolls away before it is read (design §4). */
+   toast alone scrolls away before it is read. */
 .add-agent__error {
   border: 1px solid color-mix(in srgb, var(--color-danger) 45%, transparent);
   border-left: 3px solid var(--color-danger);
@@ -1019,9 +1019,9 @@
   }
 }
 
-/* INC-13: server-key rotation panel. Sits between the page header and the
+/* Server-key rotation panel. Sits between the page header and the
    add-agent panel; admin-only, and absent entirely when no admin is viewing.
-   Task 20: the surface, its head and its label/value list are Panel and
+   The surface, its head and its label/value list are Panel and
    KeyValue now, so what is left here is the rotation-specific content — the
    adoption buckets and the two notes that qualify them. */
 
@@ -1056,7 +1056,7 @@
 
 /* ── Agent detail: the state surface (AGT-14) ───────────────────────────────
    The requirement asks for a distinct, unambiguous treatment per state *and*
-   for each state to carry a documented operator action. Since Task 14 those
+   for each state to carry a documented operator action. Those
    are two places rather than one block: the primary state is an
    AgentStateBanner (panels.css `.cb-banner`), and every other holding state is
    a chip in the detail header.
@@ -1098,7 +1098,7 @@
 }
 
 /* ── Detail-page live strip ─────────────────────────────────────────────────
-   Spec §5.1. This sits in DetailHeader's shared strip slot, so it is present
+   This sits in DetailHeader's shared strip slot, so it is present
    on every tab — including Discovery and Events, which carry no telemetry of
    their own. */
 
@@ -1204,7 +1204,7 @@
   }
 }
 
-/* Task 18: the discovery groups are bodyless Panels so their tables meet the
+/* The discovery groups are bodyless Panels so their tables meet the
    panel border. Their hint paragraphs are not tables, so they take the padding
    the missing body would have given them. */
 .cb-panel .agent-discovery__hint,

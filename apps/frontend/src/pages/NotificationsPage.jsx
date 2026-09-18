@@ -32,7 +32,7 @@ const PROVIDER_ICONS = {
 };
 
 // The route field is a floor, not an exact match — say so where it is set,
-// because the old dispatcher behaved the other way round (INC-03).
+// because an equality compare would behave the other way round.
 const SEVERITY_HINT =
   'A floor, not an exact match: a route set to Warning also receives Critical alerts.';
 
@@ -45,7 +45,7 @@ const SEVERITY_COLORS = {
 
 // An email sink carries the recipient and nothing else: the server, credentials,
 // and sender address all come from the global SMTP settings, which is the only
-// place they are configured (INC-02).
+// place they are configured.
 const EMAIL_HINT =
   'Required for Email provider. Email sends through the SMTP server configured in Settings → SMTP.';
 const EMAIL_HINT_NO_SMTP =

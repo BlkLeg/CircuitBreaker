@@ -124,7 +124,7 @@ export const getAgentsMetricsSeries = (params = {}) =>
     paramsSerializer: { indexes: null },
   });
 
-// INC-13: server identity-key rotation. `status` and `rotate` both return
+// Server identity-key rotation. `status` and `rotate` both return
 // ServerKeyRotationStatus — fingerprints and timing only, never key material,
 // plus a `fleet` adoption block while a rotation is active. `pending` is the
 // actionable drill-down behind those counts.

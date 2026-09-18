@@ -966,7 +966,7 @@ function LogsPage({ auditMode = false }) {
     setError(null);
     try {
       const params = { limit, offset, sort: timestampSort };
-      // INC-12: the audit view is GET /logs?category=audit. The dedicated
+      // The audit view is GET /logs?category=audit. The dedicated
       // GET /logs/audit route is a strict subset of this one — it drops
       // entity_type, level, severity and search — so it is not used.
       if (auditMode) params.category = 'audit';
