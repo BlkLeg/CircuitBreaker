@@ -12,12 +12,12 @@ import (
 
 // What `cb-agent uninstall` is allowed to tell an operator about the server.
 //
-// It used to print "Notified the server (agent record marked revoked)" on the
-// strength of link.Uninstall returning nil, which it did unconditionally. The
-// server was in fact never revoking anything (see link.Uninstall's own
-// comment), so the one line an operator had to go on was false on every run.
+// Reporting "Notified the server (agent record marked revoked)" on the
+// strength of link.Uninstall returning nil is false whenever the server never
+// actually revoked anything (see link.Uninstall's own comment), and that line
+// is all an operator has to go on.
 //
-// Now the notify has three distinguishable outcomes, and each has a different
+// The notify has three distinguishable outcomes, and each has a different
 // consequence for the operator: confirmed (nothing left to do), nothing here to
 // notify about (also nothing left to do — a second run, or a host that was
 // never enrolled), and unconfirmed (a record they have to revoke by hand). The
@@ -85,7 +85,7 @@ func TestNotifyUninstallBestEffort_MissingConfigIsNothingToNotify(t *testing.T) 
 	}
 }
 
-// The identity check is load-bearing, and it used to be the opposite of one.
+// The identity check is load-bearing: uninstall must never mint an identity.
 func TestNotifyUninstallBestEffort_MissingIdentityDoesNotMintOne(t *testing.T) {
 	stateDir := t.TempDir()
 	t.Setenv("CB_AGENT_STATE_DIR", stateDir)
@@ -105,11 +105,10 @@ func TestNotifyUninstallBestEffort_MissingIdentityDoesNotMintOne(t *testing.T) {
 	if !errors.Is(err, errNoLocalAgent) {
 		t.Fatalf("error = %v, want errNoLocalAgent", err)
 	}
-	// enroll.LoadOrCreateDeviceKey — what this used to call — would have
-	// generated a brand-new keypair here and opened a Noise session the server
-	// has never seen, which it answers by closing the connection. The old code
-	// then reported success anyway. A key file appearing during an *uninstall*
-	// is the visible symptom of that.
+	// enroll.LoadOrCreateDeviceKey would generate a brand-new keypair here and
+	// open a Noise session the server has never seen, which it answers by
+	// closing the connection. A key file appearing during an *uninstall* is the
+	// visible symptom.
 	if entries, err := os.ReadDir(stateDir); err != nil {
 		t.Fatalf("read state dir: %v", err)
 	} else if len(entries) != 0 {
