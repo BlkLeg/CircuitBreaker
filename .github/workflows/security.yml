@@ -218,7 +218,7 @@ jobs:
             -r apps/backend/requirements-pg.txt \
             --format=json --output pip-audit-results.json
       - name: Upload pip-audit results
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: pip-audit-results
@@ -240,7 +240,7 @@ jobs:
         working-directory: apps/frontend
         run: npm audit --audit-level=high --json > ../../npm-audit-results.json
       - name: Upload npm audit results
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: npm-audit-results
