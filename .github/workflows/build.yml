@@ -96,7 +96,7 @@ jobs:
         run: ls -lh dist/native/
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: packages-${{ matrix.arch }}
           path: dist/native/
