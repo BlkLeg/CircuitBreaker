@@ -195,6 +195,11 @@ describe('DiscoveryPage — the ?agent= deep link', () => {
   });
 
   it('says whose history it is showing, and can drop the filter', async () => {
+    // The banner renders on `agentFilterId`, which comes off the URL, while the
+    // name in it comes from listAgents() — a separate promise. Awaiting the
+    // banner therefore says nothing about whether the fleet has landed, so the
+    // name is awaited too; the synchronous form passed locally and failed under
+    // CI load.
     getJobs.mockResolvedValue({
       data: [
         agentJob({ id: 601, scan_agent_id: 7, target_cidr: '192.168.5.0/24' }),
@@ -205,7 +210,7 @@ describe('DiscoveryPage — the ?agent= deep link', () => {
     renderDiscoveryPage('/discovery?agent=9');
 
     const banner = await screen.findByRole('status', { name: 'Discovery history filter' });
-    expect(within(banner).getByText(/branch-agent/)).toBeInTheDocument();
+    expect(await within(banner).findByText(/branch-agent/)).toBeInTheDocument();
 
     fireEvent.click(within(banner).getByRole('button', { name: 'Show all scans' }));
 
@@ -224,7 +229,7 @@ describe('DiscoveryPage — the ?agent= deep link', () => {
     renderDiscoveryPage('/discovery?agent=9');
 
     const banner = await screen.findByRole('status', { name: 'Discovery history filter' });
-    expect(within(banner).getByText(/closet-pi-02/)).toBeInTheDocument();
+    expect(await within(banner).findByText(/closet-pi-02/)).toBeInTheDocument();
     expect(within(banner).queryByText(/agent 9/i)).not.toBeInTheDocument();
   });
 
@@ -240,7 +245,7 @@ describe('DiscoveryPage — the ?agent= deep link', () => {
     renderDiscoveryPage('/discovery?agent=9');
 
     const banner = await screen.findByRole('status', { name: 'Discovery history filter' });
-    expect(within(banner).getByText(/agent 9/)).toBeInTheDocument();
+    expect(await within(banner).findByText(/agent 9/)).toBeInTheDocument();
   });
 
   it('ignores an ?agent= value that is not an agent id', async () => {
