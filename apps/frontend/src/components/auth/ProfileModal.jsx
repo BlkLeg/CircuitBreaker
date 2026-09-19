@@ -26,6 +26,11 @@ function ProfileModal({ isOpen, onClose }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const fileRef = useRef(null);
+  // The container receives focus on open (not an input: the profile tab's
+  // first field is a disabled read-only email). Plan 01 requires the navigator
+  // handoff to transfer focus intentionally — the dialog itself is the
+  // target, mirroring AuthModal's focus-on-open.
+  const modalRef = useRef(null);
   // Sessions tab
   const [sessions, setSessions] = useState([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
@@ -104,6 +109,12 @@ function ProfileModal({ isOpen, onClose }) {
     globalThis.addEventListener('keydown', handler);
     return () => globalThis.removeEventListener('keydown', handler);
   }, [isOpen, onClose]);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const frame = requestAnimationFrame(() => modalRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [isOpen]);
 
   if (!isOpen || !user) return null;
 
@@ -308,7 +319,7 @@ function ProfileModal({ isOpen, onClose }) {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="modal" style={{ width: 400 }}>
+      <div className="modal" style={{ width: 400 }} ref={modalRef} tabIndex={-1}>
         <h3 id="profile-modal-title" style={{ marginBottom: 16, textAlign: 'center' }}>
           Profile
         </h3>

@@ -117,7 +117,7 @@ def get_certificate(db: Session, cert_id: int) -> Certificate | None:
 
 
 def _acme_issuer() -> Any:
-    """Resolve ACME issuance at call time (INC-07).
+    """Resolve ACME issuance at call time.
 
     A module-level ``issue_acme_certificate`` wins when one is bound; otherwise
     ``services/acme_service`` is imported dynamically and its ImportError surfaces. There is
@@ -228,13 +228,35 @@ def _activate_if_served(db: Session, cert: Certificate) -> None:
     """
     if not cert.is_active:
         return
-    from app.services.certificate_activation import activate_certificate
+    from app.services.certificate_activation import ActivationBlocked, activate_certificate
 
     try:
         result = activate_certificate(db, cert)
         if not result.reloaded:
             _logger.warning("Renewed %s but TLS did not reload: %s", cert.domain, result.detail)
-    except Exception as exc:  # noqa: BLE001 — the renewal succeeded; say so and keep it
+    except ActivationBlocked as exc:
+        # A self-signed renewal generates a fresh keypair, so a fresh pin.
+        # Serving it underneath agents that are still pinned to the old one
+        # breaks every dial path they have, including the update channel that
+        # would otherwise carry a fix — so the renewed bytes stay in the
+        # database and nginx keeps presenting the expiring certificate. That
+        # is recoverable (rotate, then activate); the alternative is not.
+        _logger.error(
+            "[certificate_service] Renewed %s but did not activate it: %s",
+            cert.domain,
+            exc.reason,
+        )
+        log_audit(
+            db,
+            None,
+            user_id=None,
+            action="certificate_activation_blocked",
+            resource=f"certificate:{cert.id}",
+            status="fail",
+            details=f"domain={cert.domain} reason={exc.reason}",
+            severity="error",
+        )
+    except Exception as exc:  # the renewal succeeded; say so and keep it
         _logger.error(
             "Renewed %s but could not write it to the TLS directory: %s", cert.domain, exc
         )
@@ -244,7 +266,7 @@ def renew_certificate(db: Session, cert: Certificate) -> Certificate:
     """Renew a certificate — self-signed generates a new pair, Let's Encrypt re-issues.
 
     Both paths raise rather than returning the unchanged certificate: reporting a renewal
-    that did not happen as a 200 with the old expiry is what made INC-07 dangerous rather
+    that did not happen as a 200 with the old expiry is what made the contract dangerous rather
     than merely incomplete.
     """
     vault = get_vault()
@@ -266,7 +288,7 @@ def renew_certificate(db: Session, cert: Certificate) -> Certificate:
         # separate operation — and the code this replaced was a second, older invocation
         # that could not work: `--standalone` binds port 80 as a process that runs as
         # breaker:1000, and the account email was the hardcoded admin@localhost that
-        # INC-07 recorded as its third cause. Keeping two invocations would have left the
+        # Recorded as its third cause. Keeping two invocations would have left the
         # working path reachable only from creation.
         cert_pem, raw_key_pem, expires_at = _acme_issuer()(
             cert.domain,

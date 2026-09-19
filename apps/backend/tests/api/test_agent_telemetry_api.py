@@ -25,7 +25,7 @@ _SUMMARY_KEYS = {
 }
 
 _RANGE_DURATION_S = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800, "30d": 2592000}
-# Bucket width and hard point cap per range (D-2, Task 7). Transcribed rather
+# Bucket width and hard point cap per range. Transcribed rather
 # than imported from api/agents.py so a change to the constants fails here.
 _BUCKET_SECONDS = {"1h": 30, "6h": 60, "24h": 300, "7d": 1800, "30d": 3600}
 _MAX_POINTS = {"1h": 120, "6h": 360, "24h": 288, "7d": 336, "30d": 720}
@@ -166,7 +166,7 @@ async def test_telemetry_capability_reports_the_granted_structured_shape(
 async def test_telemetry_endpoint_exposes_spool_state(client, factories, viewer_headers):
     """The catch-up indicator rides this endpoint, which the Agent Detail page
     already polls every 30s — so a draining backlog shows up without a second
-    poll (Task 16, D-12)."""
+    poll."""
     agent = factories.agent(status="active")
     reported_at = utcnow()
     agent.spool_depth = 120
@@ -181,6 +181,8 @@ async def test_telemetry_endpoint_exposes_spool_state(client, factories, viewer_
     assert spool["depth"] == 120
     assert spool["bytes"] == 240000
     assert spool["reported_at"] is not None
+    # Just reported, so the indicator may render it as live catch-up.
+    assert spool["stale"] is False
 
 
 @pytest.mark.asyncio
@@ -193,7 +195,82 @@ async def test_telemetry_spool_is_null_for_an_agent_that_never_reported(
 
     resp = await client.get(f"/api/v1/agents/{agent.id}/telemetry", headers=viewer_headers)
 
-    assert resp.json()["spool"] == {"depth": None, "bytes": None, "reported_at": None}
+    # Spelled out in full rather than key-by-key: this block is the one place
+    # the three separate spool facts (backlog, permanently destroyed history,
+    # server-side refusals) meet, and an exact match is what stops a fourth
+    # being added with a fabricated zero for an agent that has said nothing.
+    # `stale` is True because there is no reading for freshness to be a
+    # property of; the UI keys "render nothing" off `depth is None`, not off it.
+    assert resp.json()["spool"] == {
+        "depth": None,
+        "bytes": None,
+        "reported_at": None,
+        "stale": True,
+        "evicted_frames": None,
+        "evicted_bytes": None,
+        "evicted_oldest_at": None,
+        "evicted_newest_at": None,
+        "evicted_reported_at": None,
+        "refused_frames": None,
+        "refused_last_at": None,
+        "refused_last_reason": None,
+        "ack_negotiated": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_telemetry_spool_reports_the_negotiated_delivery_mode(
+    client, factories, viewer_headers
+):
+    """Whether this agent's buffered observations leave its spool when the
+    server has stored them, or merely when the socket accepted them.
+
+    Three states, and all three matter. `True` is a current agent. `False` is
+    one whose build predates the acknowledgement handshake and is therefore
+    still at-most-once on the wire — a fact an operator upgrading a fleet has
+    no other way to see, since such an agent looks perfectly healthy right up
+    until a mid-catch-up restart eats an hour of history. `None` is "has not
+    connected since this server learned to report it", which the UI must
+    render as nothing rather than as a reassuring answer.
+    """
+    modern = factories.agent(status="active")
+    modern.data_ack_negotiated = True
+    legacy = factories.agent(status="active")
+    legacy.data_ack_negotiated = False
+    unknown = factories.agent(status="active")
+    factories.session.commit()
+
+    for agent, expected in ((modern, True), (legacy, False), (unknown, None)):
+        resp = await client.get(f"/api/v1/agents/{agent.id}/telemetry", headers=viewer_headers)
+        assert resp.status_code == 200
+        assert resp.json()["spool"]["ack_negotiated"] is expected
+
+
+@pytest.mark.asyncio
+async def test_telemetry_spool_flags_a_reading_that_is_no_longer_current(
+    client, factories, viewer_headers
+):
+    """A depth the agent reported three hours ago is not the backlog now.
+
+    The tab's catch-up indicator reads as live motion — "Catching up · N
+    samples buffered" — so rendering it from a frozen number animates a
+    measurement nobody has taken. `stale` is what turns that into a last-known
+    value with its timestamp.
+    """
+    agent = factories.agent(status="active")
+    agent.spool_depth = 1195
+    agent.spool_bytes = 240000
+    agent.spool_reported_at = utcnow() - timedelta(hours=3)
+    factories.session.commit()
+
+    resp = await client.get(f"/api/v1/agents/{agent.id}/telemetry", headers=viewer_headers)
+
+    spool = resp.json()["spool"]
+    assert spool["stale"] is True
+    # The last known value still ships — withholding it would replace one
+    # wrong answer with no answer.
+    assert spool["depth"] == 1195
+    assert spool["reported_at"] is not None
 
 
 # ── history ──────────────────────────────────────────────────────────────────
@@ -225,7 +302,7 @@ async def test_history_with_no_data_returns_empty_points(client, factories, view
 async def test_history_is_bounded_for_every_range(client, factories, viewer_headers, range_name):
     """Every range stays bounded by its own cap — not by a universal 120.
 
-    Task 7 (D-2) replaced the universal cap and its decimation with per-range
+    Task 7 replaced the universal cap and its decimation with per-range
     bucket widths and per-range `LIMIT`s. The 130 samples below are spaced
     wider than the bucket width on every range except `1h`, so each one lands
     in its own bucket and all 130 survive: under the old universal cap they

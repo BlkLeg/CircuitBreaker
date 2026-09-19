@@ -98,4 +98,28 @@ describe('HeaderWidgets', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[1][0]).toContain('current=temperature_2m,weather_code');
   });
+
+  it('makes no third-party request when air-gap mode is on', async () => {
+    // CB_AIRGAP is enforced in core/egress.py, which only ever sees requests the
+    // backend makes. This widget ran in the user's browser, so an air-gapped
+    // install called open-meteo every fifteen minutes and sent it the operator's
+    // configured city while doing so.
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock;
+
+    render(
+      <HeaderWidgets
+        settings={{
+          show_header_widgets: true,
+          show_time_widget: false,
+          show_weather_widget: true,
+          weather_location: 'Phoenix, AZ',
+          airgap_mode: true,
+        }}
+      />
+    );
+
+    await waitFor(() => expect(screen.getByText(/air-gap/i)).toBeInTheDocument());
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

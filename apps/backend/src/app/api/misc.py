@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.exc import IntegrityError
@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.audit import log_audit
 from app.core.security import require_write_auth
 from app.db.session import get_db
+from app.schemas.inventory import MAX_QUERY_LENGTH, PageRequest, PageResult
 from app.schemas.misc import MiscItem, MiscItemCreate, MiscItemUpdate
 from app.services import misc_service
 
@@ -21,6 +22,22 @@ def list_misc(
     db: Session = Depends(get_db),
 ) -> Any:
     return misc_service.list_misc(db, kind=kind, tag=tag, q=q)
+
+
+@router.get("/page", response_model=PageResult[MiscItem])
+def list_misc_page(
+    db: Annotated[Session, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    sort: Annotated[Literal["id", "name", "kind", "created_at", "updated_at"], Query()] = "name",
+    direction: Annotated[Literal["asc", "desc"], Query()] = "asc",
+    kind: Annotated[str | None, Query(max_length=100)] = None,
+    tag: Annotated[str | None, Query(max_length=100)] = None,
+    q: Annotated[str | None, Query(max_length=MAX_QUERY_LENGTH)] = None,
+) -> PageResult[dict[str, Any]]:
+    """Return a bounded misc-item page for the inventory workspace."""
+    page = PageRequest(limit=limit, offset=offset, sort=sort, direction=direction)
+    return misc_service.list_misc_page(db, page, kind=kind, tag=tag, q=q)
 
 
 @router.post("", response_model=MiscItem, status_code=201)

@@ -10,10 +10,10 @@ export function groupStatusOf(monitor) {
 }
 
 /**
- * Slice 3 §7: which vantage runs the check. Deliberately *not* folded into
+ * Which vantage runs the check. Deliberately *not* folded into
  * groupStatusOf/headlineOf above — MonitorsPage imports groupStatusOf for the
  * summary counts, the group buckets and the status filter, so execution state
- * leaking into it would silently rewrite the dashboard (D-13).
+ * leaking into it would silently rewrite the dashboard.
  */
 export function probeVantageLabel(monitor) {
   if (monitor.probe_agent_id == null) return 'via Server';

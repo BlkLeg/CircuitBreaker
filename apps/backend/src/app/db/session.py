@@ -1,10 +1,12 @@
 import logging
 import os
+import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
 from sqlalchemy import MetaData, create_engine, event
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import settings
@@ -55,7 +57,7 @@ def _set_tenant_on_checkout(dbapi_conn: Any, connection_record: Any, connection_
         from app.middleware.tenant_middleware import current_tenant_id
 
         tid = current_tenant_id.get(None)
-    except Exception:  # noqa: BLE001
+    except Exception:
         tid = None
 
     try:
@@ -67,13 +69,13 @@ def _set_tenant_on_checkout(dbapi_conn: Any, connection_record: Any, connection_
                 cursor.execute("SELECT set_config('app.current_tenant', '', true)", ())
         finally:
             cursor.close()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # Runs on every pool checkout, so this cannot be an unthrottled log
         # line — but it also must not stay at DEBUG: a connection handed out
         # with `app.current_tenant` unset is a connection whose row-level
         # security policies are evaluating against an empty tenant. Classified,
         # counted and throttled instead, so the condition is measurable
-        # (REL-07). Imported lazily to keep `app.db.session` — which almost
+        # Imported lazily to keep `app.db.session` — which almost
         # every module imports — free of a service-layer import at module load.
         from app.services.stream_faults import record_stream_fault
 
@@ -84,6 +86,73 @@ def _set_tenant_on_checkout(dbapi_conn: Any, connection_record: Any, connection_
             context={"tenant_id": tid},
             level=logging.WARNING,
         )
+
+
+# ── slow-query logging (observability phase 2) ────────────────────────────────
+# Threshold read once at import, matching every other CB_* value this module
+# reads (db_url, pool sizes) above. Set CB_SLOW_QUERY_MS=0 to disable.
+_SLOW_QUERY_THRESHOLD_MS = float(os.environ.get("CB_SLOW_QUERY_MS", "100"))
+_QUERY_START_ATTR = "_cb_query_start"
+
+
+@event.listens_for(engine, "before_cursor_execute")
+def _record_query_start(
+    conn: Any, cursor: Any, statement: str, parameters: Any, context: Any, executemany: bool
+) -> None:
+    """Stash a start time on this statement's execution context.
+
+    Deliberately *not* `conn.info`: an earlier version kept a start-time
+    stack there, but `conn.info` belongs to the physical DBAPI connection,
+    which survives being returned to the pool, while SQLAlchemy only fires
+    `after_cursor_execute` when the statement succeeds — a failing statement
+    (IntegrityError, a deadlock, a statement timeout) jumps straight to
+    `_handle_dbapi_exception` and skips it entirely. Every failing statement
+    would leave an un-popped entry on that connection forever: unbounded,
+    silent, and on by default.
+
+    `context` has none of that problem: it is a fresh `ExecutionContext`
+    created for *this* statement execution alone (confirmed against a live
+    connection — a failing statement's context is simply never read again
+    and is garbage collected with it), so there is no shared, persistent
+    state to leak regardless of whether the statement succeeds.
+    """
+    if _SLOW_QUERY_THRESHOLD_MS <= 0:
+        return
+    if context is not None:
+        setattr(context, _QUERY_START_ATTR, time.perf_counter())
+
+
+@event.listens_for(engine, "after_cursor_execute")
+def _log_slow_query(
+    conn: Any, cursor: Any, statement: str, parameters: Any, context: Any, executemany: bool
+) -> None:
+    """Log any statement that exceeded CB_SLOW_QUERY_MS, at WARNING.
+
+    Logs the statement text only — never `parameters` — because parameters
+    carry user data and the log-redaction filter is a regex net over free
+    text, not a guarantee against every shape a value can take. Never fires
+    for a statement that raised (see `_record_query_start`), which is exactly
+    the statement class this listener has nothing useful to say about a
+    duration for anyway.
+    """
+    if _SLOW_QUERY_THRESHOLD_MS <= 0:
+        return
+    started = getattr(context, _QUERY_START_ATTR, None)
+    if started is None:
+        return
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    if elapsed_ms < _SLOW_QUERY_THRESHOLD_MS:
+        return
+
+    from app.middleware.request_id import request_id_var
+
+    _logger.warning(
+        "[slow_query] %.1fms (threshold %.0fms) request_id=%s statement=%s",
+        elapsed_ms,
+        _SLOW_QUERY_THRESHOLD_MS,
+        request_id_var.get() or "-",
+        statement,
+    )
 
 
 naming_convention = {
@@ -99,12 +168,33 @@ class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=naming_convention)
 
 
+def _count_if_pool_timeout(exc: BaseException) -> None:
+    """Record a pool exhaustion on the way past, then leave the exception alone.
+
+    `pool_timeout=5` above makes exhaustion fail fast rather than block, which
+    turns a saturated pool into a burst of 500s that looks like an application
+    fault unless it is counted somewhere. Both session entry points funnel their
+    failures through here so the "pool_timeout events" has a single
+    source, and so the count is not silently missing from whichever of the two
+    a future caller happens to use.
+
+    `SQLAlchemyTimeoutError` is the pool's own exhaustion error, distinct from
+    the builtin `TimeoutError` and from a statement timeout raised by the
+    server. Anything else is somebody else's failure and is not counted.
+    """
+    if isinstance(exc, SQLAlchemyTimeoutError):
+        from app.core.slo_metrics import record_db_pool_timeout
+
+        record_db_pool_timeout()
+
+
 def get_db() -> Generator[Session, None, None]:
     """FastAPI dependency: yields a database session and ensures cleanup."""
     db = SessionLocal()
     try:
         yield db
-    except Exception:
+    except Exception as exc:
+        _count_if_pool_timeout(exc)
         db.rollback()
         raise
     finally:
@@ -120,7 +210,8 @@ def get_session_context() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
         yield db
-    except Exception:
+    except Exception as exc:
+        _count_if_pool_timeout(exc)
         db.rollback()
         raise
     finally:

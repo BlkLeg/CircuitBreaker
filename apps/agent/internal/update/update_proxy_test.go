@@ -3,6 +3,7 @@ package update
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -17,6 +18,7 @@ import (
 	"testing"
 
 	"circuitbreaker.dev/cb-agent/internal/config"
+	"circuitbreaker.dev/cb-agent/internal/tlsdial"
 )
 
 // connectProxy is a minimal HTTP CONNECT proxy for tests: it accepts a
@@ -112,12 +114,11 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// TestDownload_RespectsHTTPSProxyEnv confirms Download — which now routes
-// through tlsdial.NewTransport(cfg.TLSPin) rather than http.Get/
-// http.DefaultClient — actually dials through HTTPS_PROXY end to end, for
-// the pin != "" (pinned/self-signed) branch, which is the one that
-// previously bypassed HTTPS_PROXY entirely (Task 13's fix covered enroll/
-// link, not the update downloader). The pin == "" branch shares
+// TestDownload_RespectsHTTPSProxyEnv confirms Download — which routes through
+// tlsdial.NewTransport(trust) rather than http.Get/http.DefaultClient —
+// actually dials through HTTPS_PROXY end to end, for the pin != ""
+// (pinned/self-signed) branch, which is the one at risk of bypassing the
+// proxy entirely. The pin == "" branch shares
 // tlsdial.NewTransport's identical Proxy wiring and is covered generically
 // by tlsdial_test.go; a self-signed test server can't exercise it here
 // without also faking the system trust store.
@@ -151,7 +152,8 @@ func TestDownload_RespectsHTTPSProxyEnv(t *testing.T) {
 	cfg := &config.Config{ServerURL: "https://update-test-target.example.com:" + port, TLSPin: pin}
 	instr := Instruction{Version: "0.2.0", SHA256: wantHash, Arch: "amd64", OS: "linux"}
 
-	tmpPath, err := Download(cfg, instr)
+	trust := tlsdial.Trust{Mode: tlsdial.ModeSelfSigned, Pins: []string{pin}}
+	tmpPath, err := Download(context.Background(), cfg, trust, instr)
 	if err != nil {
 		t.Fatalf("Download() error = %v", err)
 	}

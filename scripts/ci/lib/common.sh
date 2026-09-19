@@ -1,4 +1,4 @@
-# Shared helpers for the scripts/ci gate scripts (ADR 0005, Phase 1).
+# Shared helpers for the scripts/ci gate scripts (ADR 0005).
 #
 # Sourced, never executed. The rules encoded here are the ones that make
 # `make verify` worth trusting:
@@ -60,7 +60,7 @@ cb::matrix_field() {
     # Read one field of one row out of scripts/ci/fleet/matrix.yaml.
     #
     # Lives here rather than in provision.sh because dispatch.sh needs it too:
-    # Phase 3 gave rows a `mode`, and the dispatcher has to know whether the row
+    # Rows carry a `mode`, and the dispatcher has to know whether the row
     # it was handed is an upgrade row before it decides what to push. Two copies
     # of a parser for the file that defines what the project claims works is
     # exactly the duplication P1 exists to prevent.

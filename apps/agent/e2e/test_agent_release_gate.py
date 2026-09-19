@@ -1,9 +1,7 @@
 """Docker E2E: the full-system cbi-agent release gate — ONE journey, ONE stack.
 
-`plans/2026-08-04-cbi-agent-e2e-cohesion-review.md`'s "Full-System E2E Release Gate"
-section is the spec for this file: its Topology, its 17-step Journey, and its
-"Required assertions" list. `plans/2026-08-09-cbi-agent-finalization.md` item 4 is
-why it exists.
+The spec for this file is a Topology, a 17-step Journey, and a list of required
+assertions.
 
 **What this test adds that `test_agent_e2e.py` structurally cannot.** That file
 holds twelve tests and every individual capability is covered by one of them. Each
@@ -17,8 +15,8 @@ that disabling a capability mid-scan and then revoking the agent is one continuo
 act rather than two independent demonstrations. The single-stack continuity IS the
 deliverable. Everything below runs against one `_up_server()` and one `_down()`.
 
-**The central hole this was designed around — journey step 8.** Slice 3's
-`test_remote_probe_assignment_execution_and_unavailability` does create ICMP, TCP,
+**The central hole this was designed around — journey step 8.** The remote-probe
+test `test_remote_probe_assignment_execution_and_unavailability` does create ICMP, TCP,
 HTTP and DNS monitors with `probe_agent_id`, but against a **hardcoded fixture IP**
 (`_PROBE_TARGET_IP`). No test in the suite creates a monitor against a Hardware row
 that agent discovery FOUND and an operator IMPORT created. This one makes that
@@ -120,6 +118,7 @@ import httpx
 import pytest
 
 from test_agent_e2e import (
+    _clear_agent_toml,
     _AGENT_NET,
     _AGENT_NET_CIDR,
     _AGENT_NET_MOVED_IP,
@@ -214,15 +213,10 @@ from test_agent_e2e import (
     _write_agent_toml,
 )
 
-# ─────────────────────────────────────────────────────────────────────────
 # Budgets and constants this gate needs and the harness does not already have
-# ─────────────────────────────────────────────────────────────────────────
 #
-# Everything else is imported above, budgets included, precisely so that a value
-# derived once in `test_agent_e2e.py` (the discovery bootstrap window, the initial
-# scan window, the reconnect window, the spool drain window) has one definition and
-# one derivation. Only numbers with no equivalent there are defined here, and each
-# says where it comes from.
+# Everything else is imported from `test_agent_e2e.py` so each budget has one
+# definition. Only numbers with no equivalent there are defined here.
 
 # The cadence the SERVER's own approval defaults grant — `_enroll_agent` asserts
 # `host_telemetry.config.interval_s == 30` on the approve response, and nothing in
@@ -240,25 +234,17 @@ _DEFAULT_TELEMETRY_INTERVAL_S = 30
 # ceiling: a first sample that lands in 35s costs 35s.
 _FIRST_SAMPLE_BUDGET_S = _DEFAULT_TELEMETRY_INTERVAL_S * 2 + 60
 
-# How long collection continues INSIDE the WAN cut, measured from the moment the
-# agent has observably noticed the partition (`link_state == "disconnected"`), not
-# from the cut itself. Frames written before that instant go into a black hole —
-# a detached interface produces no FIN and no RST, so the writes succeed into a
-# kernel buffer that never drains (see `_cut_agent_network`'s docstring and F-5) —
-# so only samples collected AFTER detection are spooled and therefore only they can
-# be asserted to arrive. Four 30s intervals: enough that the window provably
-# contains more than one sample, so "the backlog was delivered with its original
-# collected_at" is a statement about a set rather than about one row.
+# Measured from when the agent has observably noticed the partition
+# (`link_state == "disconnected"`), not from the cut: a detached interface
+# produces no FIN or RST, so frames written before detection succeed into a
+# kernel buffer that never drains and are never spooled. Four 30s intervals, so
+# the window provably holds more than one sample.
 _WAN_SPOOL_S = _DEFAULT_TELEMETRY_INTERVAL_S * 4
 
-# Step 17's successful upgrade, end to end: the server signs and serves the pinned
-# binary, the agent downloads it over the same outbound-only link, verifies the
-# sha256, swaps it, re-execs, reconnects, completes a `hello.ack` and reports the
-# new version in `status.json`. `test_agent_update_success_and_forced_rollback`
-# allows 60s for the version flip on an otherwise idle stack; this one carries four
-# slices' worth of live work (a 30s telemetry cadence, five monitors polling every
-# 30s, a discovery schedule) on the same container, so the same path is given three
-# times that.
+# Step 17's upgrade end to end: sign, serve, download, verify sha256, swap,
+# re-exec, reconnect, `hello.ack`, report the new version. Three times the idle
+# budget of `test_agent_update_success_and_forced_rollback`, because this
+# container is also carrying telemetry, five monitors and a discovery schedule.
 _UPDATE_BUDGET_S = 180
 
 # One server-executed nmap scan of a single /32, from "run now" to a terminal job
@@ -276,7 +262,7 @@ _POST_REVOKE_SILENCE_S = _DEFAULT_TELEMETRY_INTERVAL_S * 3
 
 # `internal/frame/frame.go`'s `controlFrameTypes`, restated. The spool exists for
 # host DATA, and link-protocol control traffic plus the heartbeat liveness signal
-# must never reach its write path (spec §4.4). This is a deny-list on the Go side
+# must never reach its write path (spec the plan). This is a deny-list on the Go side
 # on purpose — every type NOT named classifies as a data frame, so a future slice's
 # data frame needs no code change — and it is restated rather than derived here for
 # the same reason `frame_test.go` keeps a hand-written literal: a list derived from
@@ -321,16 +307,11 @@ _CAPABILITY_FRAME_TYPES = {
 # has quietly changed too.
 _FORBIDDEN_AGENT_TOOLS = ("nmap", "arp-scan", "masscan", "snmpwalk", "ip", "tcpdump")
 
-# The name an operator gives the imported device. Distinct from the harness's own
-# `_OPERATOR_HARDWARE_NAME` because this journey renames for a different reason —
-# to prove the four monitors follow the Hardware ROW rather than a name or a
-# literal — and sharing the constant would make the two tests' intents look like
-# one.
-# How long a monitor may hold an in-flight probe run before the reconciliation
-# pass writes it off. The slow monitor's check timeout is 100s and
-# probe_reconcile expires a run whose deadline passed more than
-# RESULT_TIMEOUT_GRACE_S (= agent_probe.LATE_RESULT_GRACE, 30s) ago; the rest is
-# room for the reconcile tick and for scheduling noise on a loaded host.
+# Distinct from `_OPERATOR_HARDWARE_NAME`: this journey renames to prove the
+# four monitors follow the Hardware ROW rather than a name or a literal.
+# How long a monitor may hold an in-flight run before reconciliation writes it
+# off: the slow check's 100s timeout plus LATE_RESULT_GRACE (30s), plus room for
+# the reconcile tick.
 # /proc/net/tcp6 renders addresses as four little-endian 32-bit words, so ::1
 # and the v4-mapped 127.0.0.1 do not look like their textual forms.
 _LOOPBACK_V6_HEX = frozenset(
@@ -349,9 +330,7 @@ _PROBE_LEASE_EXPIRY_BUDGET_S = 240
 _GATE_HARDWARE_NAME = "release-gate-imported-device"
 
 
-# ─────────────────────────────────────────────────────────────────────────
 # Helpers with no equivalent in test_agent_e2e.py
-# ─────────────────────────────────────────────────────────────────────────
 
 
 def _agent_online(client: httpx.Client, agent_id: int) -> bool:
@@ -603,7 +582,7 @@ def _uptime(client: httpx.Client, monitor_id: int) -> dict:
 def _transitions(client: httpx.Client, monitor_id: int) -> list[dict]:
     """One monitor's target-state transitions, OLDEST FIRST.
 
-    Two transformations, both load-bearing. `execution` events are dropped: §7 is
+    Two transformations, both load-bearing. `execution` events are dropped: the plan is
     explicit that they describe the VANTAGE and never the target, and folding the
     two together would make "the agent's outage changed the target's state" look
     true. And the list is reversed, because `/monitors/{id}/events` returns newest
@@ -678,7 +657,7 @@ def _assert_spool_holds_only_data_frames(frames: list[dict]) -> None:
     assert not leaked, (
         f"control frame type(s) {leaked} are on the agent's outbound spool. The spool "
         "buffers host DATA through an outage; link-protocol control traffic and the "
-        "heartbeat liveness signal must never reach its write path (spec §4.4, "
+        "heartbeat liveness signal must never reach its write path ("
         f"internal/frame's controlFrameTypes). On disk: {sorted(t for t in spooled_types if t)}"
     )
 
@@ -706,9 +685,7 @@ def _undelivered_frames() -> list[dict]:
     return _spool_frames()[_spool_head() :]
 
 
-# ─────────────────────────────────────────────────────────────────────────
 # The gate
-# ─────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.e2e
@@ -750,31 +727,24 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
         # be listening before there is anything to listen to.
         discovery_stream = _DiscoveryStreamListener(_session_cookie())
         try:
-            # ═════════════════════════════════════════════════════════════════
             # Step 1: generate and run the one-line installer on subnet B
-            # ═════════════════════════════════════════════════════════════════
-            # `_fetch_install_material` IS step 1's integrity check: it fetches
-            # install-agent.sh, reads back the server static key, the TLS pin and
-            # the pinned agent version, downloads the binary the script names and
-            # asserts its sha256 matches the digest the script pinned — the same
-            # check a real install performs, against localhost instead of a real
-            # download host.
+            # `_fetch_install_material` IS step 1's integrity check: it reads the
+            # server key, TLS pin and pinned version out of install-agent.sh,
+            # downloads the binary the script names and asserts its sha256 matches
+            # the pinned digest — the check a real install performs.
             install_script = client.get("/install-agent.sh").text
             material = _fetch_install_material(client, headers)
             agent_toml_path = _write_agent_toml(material["server_pk"], material["tls_pin"])
             agent_toml_after_install = agent_toml_path.read_text()
             baked_version = material["baked_version"]
 
-            # ═════════════════════════════════════════════════════════════════
-            # Step 2: no interactive question, no local config edit, no scanner
-            #         install, no inbound rule
-            # ═════════════════════════════════════════════════════════════════
-            # Four separate claims, and each is asserted against a different
-            # artifact, because each could be false on its own.
+            # Step 2: no interactive question, no local config edit, no scanner install, no
+            #   inbound rule
+            # Four claims, each asserted against a different artifact because
+            # each could be false on its own.
             #
-            # (a) NO INTERACTIVE QUESTION — a property of the generated script
-            #     itself, so it is read out of the script rather than inferred from
-            #     the fact that a non-TTY run happened to succeed.
+            # (a) NO INTERACTIVE QUESTION — a property of the script itself, read
+            #     out of it rather than inferred from a non-TTY run succeeding.
             assert not re.search(r"^\s*read\s", install_script, re.MULTILINE), (
                 "install-agent.sh contains a `read` — the installer asks the operator "
                 "something, and the slice's claim is one command with no interactive "
@@ -805,15 +775,12 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     f"agent.toml contains a {forbidden_key!r} setting: "
                     f"{agent_toml_after_install!r}"
                 )
-            # ...and the file this harness writes is STRUCTURALLY the file the
-            # installer writes, key for key. `_write_agent_toml` stands in for the
-            # script's own heredoc (the harness cannot run `useradd` and rewrite
-            # /usr/local/bin inside a container it did not build), so without this
-            # the whole "no manual configuration" claim would be a claim about a
-            # convenience file rather than about the real install path. The keys are
-            # read back out of the script itself, so a settings key added to the
-            # installer and not to the harness fails here rather than diverging
-            # silently.
+            # ...and the file this harness writes is STRUCTURALLY the installer's,
+            # key for key. `_write_agent_toml` stands in for the script's heredoc,
+            # so without this the "no manual configuration" claim would be about a
+            # convenience file rather than the real install path. Keys are read back
+            # out of the script, so one added to the installer and not here fails
+            # rather than diverging silently.
             heredoc = re.search(
                 r"cat > /etc/circuit-breaker/agent\.toml <<EOF\n(.*?)\nEOF", install_script, re.DOTALL
             )
@@ -843,18 +810,12 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
             #     claims and only the pair rules out both "it listens but a firewall
             #     saves us" and "it is unreachable today by accident".
 
-            # ═════════════════════════════════════════════════════════════════
-            # Step 3: observe the pending agent live, and approve with normal
-            #         defaults
-            # ═════════════════════════════════════════════════════════════════
-            # `_enroll_agent` is exactly this and nothing more: it opens
-            # `/agents/stream` BEFORE enrolling, runs the real Go binary's `enroll`,
-            # waits for the `enrolled` event to be PUSHED for this agent id (never
-            # polling a REST list to notice it), then approves with no
-            # `capabilities` body at all — so the server applies its own
-            # CAPABILITY_DEFINITIONS defaults, which the helper asserts in full.
-            # That assertion is the "normal defaults" half of this step and is not
-            # repeated here.
+            # Step 3: observe the pending agent live, and approve with normal defaults
+            # `_enroll_agent` is exactly this step: it opens `/agents/stream`
+            # BEFORE enrolling, runs the real Go binary, waits for the `enrolled`
+            # event to be PUSHED (never polling a REST list), then approves with
+            # no `capabilities` body so the server applies its own
+            # CAPABILITY_DEFINITIONS defaults — which the helper asserts in full.
             agent_id, stream = _enroll_agent(client, headers)
             try:
                 subprocess.run([*COMPOSE, "up", "-d", _AGENT_SERVICE], check=True, cwd=E2E_DIR)
@@ -869,10 +830,8 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     "local_discovery",
                 }, granted_at_approval
 
-                # ═════════════════════════════════════════════════════════════
-                # Step 4: online presence and a host telemetry sample within the
-                #         promised interval
-                # ═════════════════════════════════════════════════════════════
+                # Step 4: online presence and a host telemetry sample within the promised
+                #   interval
                 _wait_until(
                     lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
                     timeout=30,
@@ -891,7 +850,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 assert latest["summary"]["mem_pct"] is not None, latest
                 assert latest["summary"]["uptime_s"] is not None, latest
                 assert latest["status"] in ("healthy", "degraded"), latest
-                # Collector readiness, which is Slice 2's contract and the thing
+                # Collector readiness, which is the contract and the thing
                 # remote probe and discovery both reuse: the core collector is
                 # ready, and the one that genuinely cannot run here (no Docker
                 # socket is mounted into cb-agent, and `include_docker` is false in
@@ -934,26 +893,17 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     "capability contract is that capabilities never open listeners and never "
                     f"require inbound reachability: {agent_listeners}"
                 )
-                # ...and it holds the outbound tunnel it is supposed to hold. Note
-                # what the two halves of this actually license. "No INBOUND
-                # connection" is already settled by the listener check above and
-                # needs nothing further: a TCP connection cannot be accepted into a
-                # namespace with no listening socket, so every ESTABLISHED socket
-                # here is by construction one the agent DIALLED. What is left to
-                # check is therefore where it dialled TO.
+                # The listener check above already settles "no INBOUND": a
+                # connection cannot be accepted into a namespace with no listening
+                # socket, so every ESTABLISHED socket here was DIALLED. What is
+                # left is where it dialled TO.
                 #
-                # That check is deliberately not `all(remote_port == 8443)`. The
-                # agent's own discovery is a bounded CONNECT scan (`agent_connect`),
-                # so from the moment the bootstrap sweep starts it legitimately holds
-                # short-lived outbound sockets to ports 22/53/80/443/... on hosts in
-                # its own directly connected subnets, and this read races that sweep.
-                # An `all(... == 8443)` here would be an assertion about which
-                # millisecond the sample landed in, and it would fail for a reason
-                # that has nothing to do with inbound reachability. The honest
-                # invariant — and the one a regression would actually break — is that
-                # every socket goes either to the canonical server URL or to an
-                # address inside the scope the agent was granted, and never anywhere
-                # else.
+                # Deliberately not `all(remote_port == 8443)`: the agent's own
+                # discovery is a bounded CONNECT scan, so it legitimately holds
+                # short-lived sockets to 22/53/80/443 on its own subnets, and this
+                # read races that sweep. The invariant a regression would break is
+                # that every socket goes to the canonical server URL or to an
+                # address inside the granted scope, and nowhere else.
                 established = [s for s in agent_sockets if s["state"] == "01"]
                 assert established, (
                     "cb-agent has no ESTABLISHED TCP socket at all, yet the server reports it "
@@ -978,21 +928,14 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     f"{strayed}"
                 )
 
-                # NOTHING IS REACHABLE. The backend publishes no route into the
-                # agent, so a connect attempt from its only network peer must be
-                # refused rather than merely dropped by policy. Six ports, the
-                # spread `test_agent_full_lifecycle_enroll_through_revoke_and_reconnect`
-                # uses.
+                # NOTHING IS REACHABLE: the backend publishes no route into the
+                # agent, so a connect from its only network peer must be refused.
                 #
-                # The LITERAL address, never the `cb-agent` service name that test
-                # uses. The positive control above proves the backend can reach
-                # `agent_ip` (it pings it) and that `nc` itself works (against
-                # 127.0.0.1:8443) — but neither control says anything about whether
-                # Docker's embedded DNS still answers for the name. Dialling a name
-                # that failed to resolve produces exactly the non-zero exit this loop
-                # reads as "isolated", so the whole isolation claim would survive a
-                # broken DNS entry untouched. Against `agent_ip` both halves of the
-                # negative are covered by a control that was just demonstrated.
+                # The LITERAL address, never the `cb-agent` service name. A name
+                # that failed to resolve produces exactly the non-zero exit this
+                # loop reads as "isolated", so the isolation claim would survive a
+                # broken DNS entry untouched. Against `agent_ip` both halves are
+                # covered by the control demonstrated above.
                 for port in (22, 80, 443, 2019, 8080, 9000):
                     probe = _backend_sh(f"nc -z -w 2 {agent_ip} {port}")
                     assert probe.returncode != 0, (
@@ -1024,10 +967,8 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 # either transport.
                 _assert_backend_cannot_reach(_PROBE_TARGET_IP, _PROBE_NET_CIDR)
 
-                # ═════════════════════════════════════════════════════════════
-                # Step 5: safe subnet B scope is derived, and one system profile
-                #         per directly connected subnet is created
-                # ═════════════════════════════════════════════════════════════
+                # Step 5: safe subnet B scope is derived, and one system profile per directly
+                #   connected subnet is created
                 # Nothing below types a CIDR. The only thing that puts these two
                 # networks in the server's scope is the interface facts the agent
                 # reported in `hello`, derived through the shared network-scope
@@ -1054,7 +995,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 assert view["paused"] is False and view["globally_paused"] is False, view
                 assert view["limits"]["scope_mode"] == "direct_private", view["limits"]
 
-                # D-12: one system-managed profile PER directly connected subnet,
+                # one system-managed profile PER directly connected subnet,
                 # which for a container on two networks is two — "exactly one
                 # overall" is the thing that cannot hold here and asserting it would
                 # be asserting the harness rather than the product.
@@ -1073,17 +1014,15 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 assert all(p["enabled"] and p["paused_at"] is None for p in profiles_at_bootstrap)
                 assert probe_profile["scan_types"] == [_AGENT_SCAN_TYPE], probe_profile
                 assert probe_profile["nmap_arguments"] is None, probe_profile
-                # D-7's derived six-hourly cadence with per-agent jitter. Restated
+                # the derived six-hourly cadence with per-agent jitter. Restated
                 # as the literal the server derives, so a cadence that silently
                 # became "never" fails here rather than in step 14.
                 expected_cron = f"{agent_id % 60} */6 * * *"
                 assert probe_profile["schedule_cron"] == expected_cron, probe_profile
                 assert agent_net_profile["schedule_cron"] == expected_cron, agent_net_profile
 
-                # ═════════════════════════════════════════════════════════════
-                # Step 6: automatic initial discovery, with incremental findings
-                #         in the existing job UI
-                # ═════════════════════════════════════════════════════════════
+                # Step 6: automatic initial discovery, with incremental findings in the
+                #   existing job UI
                 initial_job = _wait_until_and_return(
                     lambda: next(iter(_scan_jobs(client, profile_id=probe_profile["id"])), None),
                     timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
@@ -1106,13 +1045,11 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 assert completed["hosts_found"] >= 1, completed
 
                 # "in the existing job UI" is a claim about a stream an operator
-                # watches, not about rows that exist afterwards. `WS
-                # /api/v1/discovery/stream` is the channel the Discovery page
-                # subscribes to, and the assertion is ORDER on that one channel: a
-                # `result_added` naming the fixture arrived BEFORE the job's
-                # terminal event. A backend that buffered every finding and wrote
-                # them in one batch at the end produces the same final table and
-                # cannot produce that order.
+                # watches, not rows that exist afterwards. The assertion is ORDER on
+                # the channel the Discovery page subscribes to: a `result_added`
+                # naming the fixture arrived BEFORE the job's terminal event. A
+                # backend that batched every finding at the end produces the same
+                # final table and cannot produce that order.
                 pushed = discovery_stream.snapshot()
                 streamed = [
                     e
@@ -1140,16 +1077,12 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     (e.get("result") or {}).get("ip_address") for e in streamed
                 ], f"{_PROBE_TARGET_IP} was never pushed as an incremental result"
 
-                # ═════════════════════════════════════════════════════════════
-                # Step 7: accept a finding; one attributed Hardware record and
-                #         topology placement
-                # ═════════════════════════════════════════════════════════════
-                # Found through the ORDINARY review queue — `GET
-                # /discovery/results?status=pending`, no agent parameter, no
-                # execution-location filter, which is exactly what
-                # `src/api/discovery.js`'s `listPendingResults` asks for. Locating
-                # the row through an agent-scoped route would prove the opposite of
-                # the "no separate UI path" claim.
+                # Step 7: accept a finding; one attributed Hardware record and topology
+                #   placement
+                # Found through the ORDINARY review queue — no agent parameter, no
+                # execution-location filter, exactly what `listPendingResults` asks
+                # for. An agent-scoped route would prove the opposite of the "no
+                # separate UI path" claim.
                 queued = [r for r in _review_queue(client) if r["ip_address"] == _PROBE_TARGET_IP]
                 assert len(queued) == 1, (
                     f"expected exactly one pending review row for {_PROBE_TARGET_IP}: {queued}"
@@ -1180,7 +1113,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
 
                 assert _hardware_with_ip(client, _PROBE_TARGET_IP) == [], (
                     "a Hardware row for the fixture existed before anyone imported it — the "
-                    "scan or the finalizer auto-merged an agent finding, which plan §5 forbids"
+                    "scan or the finalizer auto-merged an agent finding, which the acceptance flow forbids"
                 )
                 nodes_before_import = _topology_nodes(client)
                 merged = client.post(
@@ -1202,7 +1135,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     f"agent's observation did not reach the inventory at all: {hardware}"
                 )
                 # The provenance the merge writes onto the row itself
-                # (`discovery_merge`, CB-REL-001): this Hardware record points back
+                # (`discovery_merge`): this Hardware record points back
                 # at the exact ScanResult the agent produced, which is what makes it
                 # an ATTRIBUTED record rather than a row that happens to carry the
                 # same address.
@@ -1213,7 +1146,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 )
 
                 # ATTRIBUTED. `scan_results.discovery_agent_id` is the provenance
-                # column plan §2 adds and it is deliberately not on the wire
+                # column the plan adds and it is deliberately not on the wire
                 # (`ScanResultOut` omits it), so this is read straight out of the
                 # backend's own database. Both halves are compared — the row's own
                 # reporter AND its job's executor — because they are written by two
@@ -1252,21 +1185,15 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 # rather than the hostname the agent happened to report.
                 _rename_hardware(client, hardware_id, _GATE_HARDWARE_NAME)
 
-                # ═════════════════════════════════════════════════════════════
-                # Step 8: ICMP, TCP, HTTP(S) and DNS monitors FROM the discovered
-                #         device, with the agent vantage
-                # ═════════════════════════════════════════════════════════════
-                # THE JOIN THIS WHOLE FILE EXISTS FOR. Every address below is read
-                # off the imported Hardware row, never from `_PROBE_TARGET_IP`:
-                # discovery found the host, an operator imported it, and the
-                # monitors are built from the row that import created. Slice 3's
-                # test creates the same four check types against a hardcoded
-                # fixture IP, which is a fine proof of the probe path and no proof
-                # at all that the discovery -> import -> monitor chain holds.
+                # Step 8: ICMP, TCP, HTTP(S) and DNS monitors FROM the discovered device, with
+                #   the agent vantage
+                # THE JOIN THIS FILE EXISTS FOR. Every address below is read off
+                # the imported Hardware row, never from `_PROBE_TARGET_IP` — a
+                # hardcoded fixture IP proves the probe path but not that the
+                # discovery -> import -> monitor chain holds.
                 #
-                # `target_type`/`target_id` link each monitor to that same row
-                # (monitor-any-inventory-entity), so the vantage, the target entity
-                # and the address all come from the one place.
+                # `target_type`/`target_id` link each monitor to that same row, so
+                # vantage, target entity and address all come from one place.
                 discovered_ip = hardware["ip_address"]
                 assert discovered_ip == _PROBE_TARGET_IP, (
                     "the imported Hardware row does not carry the fixture's address, so the "
@@ -1289,17 +1216,12 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 assert eligible["readiness"] == "ready", eligible
                 assert _PROBE_NET_CIDR in eligible["scope_networks"], eligible
 
-                # OUT-OF-SCOPE, the required assertion's own half, asserted HERE
-                # and not later. `evaluate_eligibility` short-circuits in a fixed
-                # order — agent active, then grant enabled, then online, then
-                # readiness, then scope — so the reason it names is only about
-                # SCOPE while every earlier precondition holds. This is the one
-                # moment in the journey where that is true of a grant nobody has
-                # touched: step 16 withdraws `remote_probe`, and the identical call
-                # made after that returns `capability_disabled`, which would satisfy
-                # a bare `assert reason` while proving nothing about scope at all.
-                # Same agent, same evaluator, same instant as the positive above;
-                # only the address differs.
+                # OUT-OF-SCOPE asserted HERE, not later. `evaluate_eligibility`
+                # short-circuits in a fixed order (active, granted, online, ready,
+                # scope), so the reason names SCOPE only while every earlier
+                # precondition holds. After step 16 withdraws `remote_probe` the
+                # same call returns `capability_disabled` — which satisfies a bare
+                # `assert reason` while proving nothing about scope.
                 out_of_scope = _probe_eligible_row(client, agent_id, host="8.8.8.8")
                 assert out_of_scope["granted"] is True and out_of_scope["online"] is True, (
                     "the negative below is being taken while some precondition other than "
@@ -1353,15 +1275,10 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                         **common,
                     ),
                     # The DNS monitor's RESOLVER is the discovered address; its
-                    # record name is not, and cannot be. `probe_eligibility.
-                    # evaluate_eligibility` resolves any non-literal monitor host on
-                    # the SERVER before it will dispatch (an unresolvable name is
-                    # refused as `unresolved_host`), and the only name the backend
-                    # can resolve for this host is the `extra_hosts` entry in
-                    # docker-compose.yml — not whatever PTR form Docker's embedded
-                    # DNS handed the agent. So the record is the resolvable name and
-                    # the resolver, the expectation and the target entity all come
-                    # from the imported row.
+                    # record name cannot be. `evaluate_eligibility` resolves any
+                    # non-literal host on the SERVER before dispatching, and the
+                    # only name the backend resolves here is the `extra_hosts`
+                    # entry — not the PTR form Docker handed the agent.
                     "dns": _create_monitor(
                         client,
                         name="release gate dns (discovered device)",
@@ -1387,10 +1304,8 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     )
                     assert created["status"] == "pending", (check_type, created)
 
-                # ═════════════════════════════════════════════════════════════
-                # Step 9: results enter the existing monitor state, history,
-                #         retry, uptime and alert pipeline
-                # ═════════════════════════════════════════════════════════════
+                # Step 9: results enter the existing monitor state, history, retry, uptime and
+                #   alert pipeline
                 for check_type, created in monitors.items():
                     monitor_id = created["id"]
 
@@ -1508,19 +1423,14 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     f"{retry_uptime}"
                 )
 
-                # ═════════════════════════════════════════════════════════════
-                # Required assertion: existing server-side discovery and
-                # monitoring paths still work unchanged
-                # ═════════════════════════════════════════════════════════════
-                # Not a journey step — a property the journey must not break, and
-                # the natural place to establish it is here, with an agent doing
-                # discovery and monitoring right beside the server.
+                # Required assertion: existing server-side discovery and monitoring paths
+                #   still work unchanged
+                # Not a journey step but a property the journey must not break,
+                # established here with an agent working beside the server.
                 #
                 # MONITORING: an ordinary server-executed monitor, `probe_agent_id`
-                # absent entirely (the pre-Slice-3 shape). It targets the backend's
-                # own HTTPS listener rather than anything on the remote subnet, so
-                # it stays valid across step 15's address change and depends on the
-                # agent for nothing.
+                # absent entirely. It targets the backend's own HTTPS listener, so
+                # it survives step 15's address change and needs no agent.
                 server_monitor = _create_monitor(
                     client,
                     name="release gate server-executed control",
@@ -1546,19 +1456,15 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     "server path is being dispatched to an agent"
                 )
 
-                # DISCOVERY: an ordinary operator-created, server-executed profile,
-                # scanning one address the server genuinely can reach (its own
-                # agent-net interface). nmap is present in the mono image
-                # (Dockerfile.mono), so this is the real server scanner, not a stub.
+                # DISCOVERY: an operator-created, server-executed profile scanning
+                # one address the server can reach. nmap is in the mono image, so
+                # this is the real scanner, not a stub.
                 #
-                # It has to be switched on first: `nmap_enabled` defaults to False
-                # (schemas/settings.py) and services/discovery_service.py refuses an
-                # `nmap`/`deep_dive` job without it — "Enable 'Nmap Active Scanning'
-                # in Discovery Settings", which is exactly what this does. That is
-                # the operator's own path, not a test backdoor. It is also safe to
-                # do mid-journey: the agent's own discovery runs `agent_connect`,
-                # which is not in `_requires_nmap`'s set, so nothing above or below
-                # changes behaviour because of this.
+                # `nmap_enabled` defaults to False and discovery_service refuses an
+                # `nmap`/`deep_dive` job without it, so it is switched on through
+                # the operator's own path rather than a test backdoor. Safe
+                # mid-journey: the agent's discovery uses `agent_connect`, which is
+                # not in `_requires_nmap`'s set.
                 nmap_on = client.put(
                     "/api/v1/settings", json={"nmap_enabled": True}, headers=headers
                 )
@@ -1600,22 +1506,17 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     p["id"] for p in profiles_at_bootstrap
                 }, "creating a server profile changed the agent's system-managed profiles"
 
-                # ═════════════════════════════════════════════════════════════
-                # Step 10: disconnect WAN while collecting telemetry and while an
-                #          eligible result is in flight
-                # ═════════════════════════════════════════════════════════════
-                # `_cut_agent_network`, not `_backend_outage`: step 11 requires the
-                # SERVER to report the agent unavailable, which it can only do while
-                # it is running. Only agent-net is severed, so the agent keeps its
-                # route to the fixture — which is what makes "the vantage went away"
-                # distinguishable from "the target went down", the exact distinction
-                # step 11 is about.
+                # Step 10: disconnect WAN while collecting telemetry and while an eligible
+                #   result is in flight
+                # `_cut_agent_network`, not `_backend_outage`: step 11 needs the
+                # SERVER to report the agent unavailable, which it can only do
+                # while running. Only agent-net is severed, so the agent keeps its
+                # route to the fixture — which is what distinguishes "the vantage
+                # went away" from "the target went down".
                 #
-                # The in-flight result is a real one: an HTTP check against
-                # /cgi-bin/slow, which sleeps for two minutes, dispatched
-                # immediately before the cut so the agent is genuinely mid-check
-                # when its link dies. A monitor whose check finishes in
-                # milliseconds would give this step nothing to be about.
+                # The in-flight result is real: an HTTP check against /cgi-bin/slow
+                # (two minutes), dispatched immediately before the cut so the agent
+                # is genuinely mid-check when its link dies.
                 slow_monitor = _create_monitor(
                     client,
                     name="release gate in-flight check (discovered device)",
@@ -1700,10 +1601,8 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                         "different failure than the one step 10 describes"
                     )
 
-                    # ═════════════════════════════════════════════════════════
-                    # Step 11: central status becomes offline/unavailable without
-                    #          falsely changing target state
-                    # ═════════════════════════════════════════════════════════
+                    # Step 11: central status becomes offline/unavailable without falsely
+                    #   changing target state
                     _wait_until(
                         lambda: not _agent_online(client, agent_id),
                         timeout=_PROBE_UNAVAILABLE_BUDGET_S,
@@ -1719,7 +1618,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     unavailable = _wait_until_and_return(
                         _is_unavailable, timeout=_PROBE_UNAVAILABLE_BUDGET_S
                     )
-                    # §2's vocabulary. Which of these lands depends only on whether
+                    # the vocabulary. Which of these lands depends only on whether
                     # the presence key expired before or after the next scheduler
                     # tick, so all four are legal and none of them is "the target
                     # went down".
@@ -1731,7 +1630,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     }, unavailable
                     assert unavailable["status"] == "up", unavailable
                     assert unavailable["probe_agent_id"] == agent_id, (
-                        "an unavailable vantage was silently taken away from the monitor — §2 "
+                        "an unavailable vantage was silently taken away from the monitor — the contract "
                         "keeps the assignment and never falls back to the server"
                     )
 
@@ -1745,13 +1644,13 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                         "wrote a result the agent cannot have produced"
                     )
                     assert set(_monitor_samples(client, icmp_id, "avail")) == {1.0}, (
-                        "an avail=0 sample was written while the vantage was unavailable. §2/D-12 "
+                        "an avail=0 sample was written while the vantage was unavailable. "
                         "forbid it: agent unavailability is not target downtime, and this sample "
                         "would corrupt the discovered device's uptime for the whole outage"
                     )
                     assert _uptime(client, icmp_id)["pct_24h"] == 100.0
                     # No TARGET transition either. `execution` events may be added —
-                    # one per change of reason, §6 — and they carry the target's
+                    # one per change of reason, the plan — and they carry the target's
                     # state through unchanged rather than rewriting it.
                     events_during = _monitor_events(client, icmp_id)
                     new_events = events_during[: len(events_during) - len(events_before_cut)]
@@ -1765,7 +1664,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     # a wedge rather than of a lease running its course.
                     assert len(_probe_runs(client, icmp_id)) > runs_before_cut, (
                         "the scheduler stopped opening runs for an assigned monitor whose agent "
-                        "is offline — §2 requires it to keep trying on its normal interval"
+                        "is offline — the contract requires it to keep trying on its normal interval"
                     )
                     wedged = [
                         r
@@ -1805,11 +1704,8 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
 
                 restored_at = datetime.now(timezone.utc)
 
-                # ═════════════════════════════════════════════════════════════
-                # Step 12: restore WAN — reconnect, bounded spool catch-up,
-                #          idempotency, immediate due probe recovery, and no
-                #          re-enrollment
-                # ═════════════════════════════════════════════════════════════
+                # Step 12: restore WAN — reconnect, bounded spool catch-up, idempotency,
+                #   immediate due probe recovery, and no re-enrollment
                 _wait_until(
                     lambda: _agent_status()["link_state"] == "accepted",
                     timeout=_RECONNECT_BUDGET_S,
@@ -1852,14 +1748,12 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     "it was restamped to reconnect time — which is exactly the failure "
                     "'original observation timestamp' exists to forbid"
                 )
-                # IDEMPOTENCY. Delivery out of the spool is at-least-once by
-                # construction (peek, send, then commit — internal/link/outbound.go),
-                # so "no duplicate rows" is a property of the backend's
-                # (agent_id, sample_id, collected_at) dedupe. Checking sample_id
-                # alone is the point: a redelivery that arrived with a REWRITTEN
-                # collected_at satisfies that constraint and lands as a second row
-                # under the same sample_id, which is precisely what a bucket-count
-                # check cannot see.
+                # IDEMPOTENCY. Spool delivery is at-least-once by construction
+                # (peek, send, commit), so "no duplicate rows" is a property of the
+                # backend's (agent_id, sample_id, collected_at) dedupe. Checking
+                # sample_id ALONE is the point: a redelivery with a rewritten
+                # collected_at satisfies that constraint and lands as a second row,
+                # which a bucket-count check cannot see.
                 outage_ids = [sample_id for sample_id, _ in outage_samples]
                 assert len(set(outage_ids)) == len(outage_ids), (
                     "a sample_id was persisted more than once inside the outage window — the "
@@ -1900,14 +1794,10 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 )
                 assert _uptime(client, icmp_id)["pct_24h"] == 100.0
 
-                # ═════════════════════════════════════════════════════════════
                 # Step 13: a second device appears after the first scan
-                # ═════════════════════════════════════════════════════════════
-                # `probe-target-new` starts on the subnet the agent ALREADY knows,
-                # so nothing about the topology changes — the agent's routing table
-                # is identical and only the set of hosts answering on 10.77.0.0/24
-                # is different. That is what makes this "a genuinely new device"
-                # rather than "a new subnet", which is a different case entirely.
+                # `probe-target-new` starts on a subnet the agent ALREADY knows, so
+                # the routing table is identical and only the set of answering hosts
+                # differs — "a genuinely new device", not "a new subnet".
                 routes_before_new_host = _agent_route_networks()
                 _up_fixture_target(_PROBE_TARGET_NEW_SERVICE)
                 assert _agent_route_networks() == routes_before_new_host, (
@@ -1943,22 +1833,14 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 # The device the inventory already knows comes back MATCHED, against
                 # the row the import created, and creates nothing.
                 known = rows[_PROBE_TARGET_IP]
-                # `conflict`, not `matched`, and the cause is this journey's own
-                # doing rather than a defect: step 7 renamed the imported row to
-                # _GATE_HARDWARE_NAME, so the hostname the agent reports now
-                # disagrees with the one the inventory stores, and the matcher says
-                # so. That is the established contract — `_rename_hardware`'s own
-                # docstring calls the disagreement its purpose, and
-                # test_agent_e2e.py's
-                # test_agent_discovery_reconnects_per_agent_and_requeues_only_changes
-                # pins `state == "conflict"` for exactly this sequence.
+                # `conflict`, not `matched`, and by this journey's own doing: step
+                # 7 renamed the imported row, so the hostname the agent reports
+                # disagrees with the stored one and the matcher says so.
                 #
-                # What step 13 is really about survives intact and is asserted
-                # below: the device is RECOGNISED (matched to the same Hardware
-                # row, id and all), no second row is created, and it is not
-                # reported as `new`. A conflict is a recognised device with a field
-                # to reconcile; only `new` means "the inventory has never seen
-                # this".
+                # What step 13 is about survives and is asserted below: the device
+                # is RECOGNISED (same Hardware row and id), no second row is
+                # created, and it is not `new`. A conflict is a recognised device
+                # with a field to reconcile; only `new` means never seen.
                 assert known["state"] == "conflict", (
                     "a device already in the inventory, renamed by this journey, came back as "
                     f"{known['state']!r} — expected `conflict`: {known}"
@@ -1985,7 +1867,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     "an operator is asked to look"
                 )
                 assert not _hardware_with_ip(client, _PROBE_TARGET_NEW_IP), (
-                    "the recurring sweep imported the new device by itself — plan §5 requires an "
+                    "the recurring sweep imported the new device by itself — the acceptance flow requires an "
                     "agent-authored row to reach the inventory only when a user accepts it"
                 )
                 assert recurring["hosts_new"] >= 1, recurring
@@ -1996,43 +1878,34 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     f"{recurring}"
                 )
 
-                # THE `last_seen` HALF, PINNED AS THE CURRENT CONTRACT.
-                # §8 step 13 asks for the known device's `last_seen` to be updated
-                # while only the new one enters review. On the AGENT path that does
-                # not happen today, and the reason is specific rather than
-                # incidental: `_auto_merge_known_devices` is reachable only from
-                # `_scan_finalize`, an agent job is closed by `finalize_agent_job`,
-                # and that function documents never calling it at any setting
-                # (`tests/services/test_agent_discovery_ingest.py::
-                # test_finalization_never_auto_merges_however_the_setting_is_left`
-                # pins it). So the known device is re-queued and its `last_seen` is
-                # not refreshed. Both halves are asserted as they actually are, with
-                # messages that say so: if either changes, this fails and points at
-                # the decision that changed rather than silently blessing it.
+                # steps 13 asks for the known device's `last_seen` to be
+                # updated, which the AGENT path does not do:
+                # `_auto_merge_known_devices` is reachable only from
+                # `_scan_finalize`, and an agent job is closed by
+                # `finalize_agent_job`, which never calls it at any setting. So the
+                # known device is re-queued and `last_seen` is not refreshed. Both
+                # halves are asserted as they are, with messages that say so, so a
+                # change fails here rather than being silently blessed.
                 assert known["merge_status"] == "pending", (
                     "an agent-executed recurring scan auto-updated a known unchanged device out "
-                    "of the review queue. That IS what §8 step 13 asks for, and it is NOT what "
+                    "of the review queue. That IS what step 13 asks for, and it is NOT what "
                     "`finalize_agent_job` does today. Something changed on purpose: update this "
                     f"assertion rather than reverting the change. Row: {known}"
                 )
                 assert _hardware_row(client, hardware_id)["last_seen"] == hardware_last_seen_before, (
-                    "an agent-executed scan refreshed Hardware.last_seen. §8 step 13 asks for "
+                    "an agent-executed scan refreshed Hardware.last_seen. step 13 asks for "
                     "exactly that and `finalize_agent_job` does not do it today — see the note "
                     "on `merge_status` above"
                 )
                 # No duplicate topology node came out of the second sighting either.
                 assert _topology_nodes(client).count(node_id) == 1
 
-                # ═════════════════════════════════════════════════════════════
-                # Step 14: restart agent and backend INDEPENDENTLY; presence,
-                #          profiles, schedules and grants reconcile without
-                #          duplication, with all four slices' state live at once
-                # ═════════════════════════════════════════════════════════════
-                # "Independently" is the load-bearing word: two separate restarts,
-                # each followed by its own reconciliation, and `restart` rather than
-                # `down`/`up` throughout — the Postgres data, the vault key, the
-                # agent's approval and the agent's state volume all have to survive,
-                # and a recreate would additionally undo the runtime network
+                # Step 14: restart agent and backend INDEPENDENTLY; presence, profiles,
+                #   schedules and grants reconcile without duplication, with all four slices' state live at once
+                # "Independently": two separate restarts, each with its own
+                # reconciliation, and `restart` rather than `down`/`up` — the
+                # Postgres data, vault key, approval and agent state volume all
+                # have to survive, and a recreate would undo the runtime network
                 # attachment step 15 depends on.
                 profiles_before_restart = _discovery_profiles(client, agent_id)
                 all_profiles_before_restart = _all_profiles(client)
@@ -2156,9 +2029,9 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 # ALL FOUR SLICES LIVE AT ONCE, after both restarts. This is the
                 # part no per-slice test can assert, and it is asserted as four
                 # things being simultaneously true of one running system.
-                #  1 (Slice 1) the link is up and the identity is the same one:
+                #  1 the link is up and the identity is the same one:
                 assert _agent_status()["link_state"] == "accepted"
-                #  2 (Slice 2) telemetry is flowing again, with a sample newer than
+                #  2 telemetry is flowing again, with a sample newer than
                 #    the restart:
                 restart_watermark = datetime.now(timezone.utc)
                 _wait_until(
@@ -2168,7 +2041,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     > restart_watermark,
                     timeout=_FIRST_SAMPLE_BUDGET_S,
                 )
-                #  3 (Slice 3) the agent-vantage monitors on the discovered device
+                #  3 the agent-vantage monitors on the discovered device
                 #    still hold their assignment and are producing results again:
                 assert {
                     name: _monitor(client, created["id"])["probe_agent_id"]
@@ -2182,7 +2055,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     timeout=_PROBE_RECONNECT_BUDGET_S,
                 )
                 assert _monitor(client, icmp_id)["status"] == "up"
-                #  4 (Slice 4) the imported inventory row, its topology placement and
+                #  4 the imported inventory row, its topology placement and
                 #    its provenance are untouched by any of it:
                 assert _hardware_identity(client, hardware_id) == hardware_before_restart, (
                     "the restarts changed the imported Hardware row"
@@ -2192,23 +2065,17 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     "the restarts rewrote discovery result provenance"
                 )
 
-                # ═════════════════════════════════════════════════════════════
-                # Step 15: change the agent's IP inside its subnet; identity and
-                #          provenance stay stable
-                # ═════════════════════════════════════════════════════════════
-                # The subnet is deliberately unchanged and only the host part moves.
-                # That is the shape that can actually break something: the CIDR the
-                # agent reports in every `hello` — and therefore the
-                # `normalized_cidr` half of D-7's partial unique index — is
-                # identical, so an implementation that keyed a system profile, a
-                # dispatch lease or an identity on anything address-shaped mints a
-                # second profile for 10.88.0.0/24 exactly here and nowhere else.
+                # Step 15: change the agent's IP inside its subnet; identity and provenance
+                #   stay stable
+                # Only the host part moves; the subnet is unchanged. That is the
+                # shape that breaks things: the CIDR in every `hello` — and so the
+                # `normalized_cidr` half of the partial unique index — is
+                # identical, so anything keyed on an address-shaped value mints a
+                # second profile here and nowhere else.
                 #
-                # The move is made on agent-net because that is the network
-                # `_agent_network_name` can resolve and the one an operator would
-                # see the agent move on; probe-net, the fixture subnet, is
-                # deliberately left alone so that "the agent moved" cannot be
-                # confused with "the fixtures moved".
+                # Moved on agent-net, the network `_agent_network_name` resolves.
+                # probe-net is left alone so "the agent moved" cannot be confused
+                # with "the fixtures moved".
                 identity_before_move = client.get(f"/api/v1/agents/{agent_id}").json()
                 provenance_before_move = _result_provenance()
                 profiles_before_move = _discovery_profiles(client, agent_id)
@@ -2285,33 +2152,23 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 )
                 assert _monitor(client, icmp_id)["status"] == "up"
 
-                # ═════════════════════════════════════════════════════════════
-                # Step 17 (EXECUTED HERE, BEFORE STEP 16 — see below): upgrade the
-                #          agent without losing enrollment or historical data
-                # ═════════════════════════════════════════════════════════════
-                # WHY OUT OF ORDER. Revocation is terminal by construction:
-                # `api/agents.py`'s `post_revoke` closes the socket, cancels the
-                # probe runs and closes the discovery dispatches, and
-                # `api/ws_agents.py`'s `link_stream` then refuses any agent whose
-                # status is not `active`. An update dispatched to a revoked agent
-                # could never be delivered, so step 17 after step 16 would be
-                # unrunnable rather than merely awkward. It is therefore run here,
-                # against the same live journey state, and step 16 closes the file.
+                # Step 17 (EXECUTED HERE, BEFORE STEP 16 — see below): upgrade the agent
+                #   without losing enrollment or historical data
+                # OUT OF ORDER because revocation is terminal: `post_revoke`
+                # closes the socket and `link_stream` then refuses any non-active
+                # agent, so an update dispatched after step 16 could never be
+                # delivered. Run here against live journey state; step 16 closes
+                # the file.
                 #
-                # WHAT IS NOT ASSERTED HERE, AND WHY. The forced-rollback half is
-                # deliberately not re-implemented in this gate. Two independent
-                # reasons: (1) driving it needs `CB_AGENT_TEST_PRE_REEXEC_DELAY_MS`,
-                # which is read at container-create time, so injecting it mid-journey
-                # means `up -d` recreating cb-agent — which would discard the runtime
-                # `--ip` attachment step 15 just proved and reset the agent's address
-                # underneath every later assertion; and (2) it is finalization item
-                # 1's own subject (F-8, red with two undiagnosed failure modes), and
-                # folding it in would make this gate's signal a statement about F-8
-                # rather than about whether the four slices compose. It stays owned
-                # by `test_agent_e2e.py::test_agent_update_success_and_forced_rollback`.
-                # What this block asserts instead is the property the rollback case
-                # shares and that only a full journey can pose: a version change
-                # loses neither the enrollment nor any of the four slices' history.
+                # The forced-rollback half is NOT re-implemented here: driving it
+                # needs `CB_AGENT_TEST_PRE_REEXEC_DELAY_MS`, read at
+                # container-create time, so injecting it mid-journey means
+                # recreating cb-agent — discarding the runtime `--ip` attachment
+                # step 15 just proved. It stays owned by
+                # `test_agent_e2e.py::test_agent_update_success_and_forced_rollback`.
+                # What this asserts is the property only a full journey can pose: a
+                # version change loses neither the enrollment nor any slice's
+                # history.
                 version_before_update = _agent_status()["version"]
                 assert version_before_update == "0.0.0-dev", (
                     "the running agent is not the e2e image's unversioned build, so the "
@@ -2419,36 +2276,24 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     timeout=_PROBE_RECONNECT_BUDGET_S,
                 )
 
-                # ═════════════════════════════════════════════════════════════
-                # Step 16: disable discovery DURING a scan, and THEN revoke the
-                #          agent — one continuous act; cancellation and rejection
-                #          of late frames across ALL capability handlers
-                # ═════════════════════════════════════════════════════════════
-                # THE HARD PART IS PROVING WHO ENFORCED IT. `discovery.cancel` is
-                # best-effort by design (plan §4), so on the ordinary path the agent
-                # receives it, stops, and sends nothing more — and the database then
-                # looks exactly as it would if the backend enforced nothing at all.
-                # A passing test on that path proves only that the agent is well
-                # behaved. So the cancel is taken away: the sweep is put under a
-                # depth that keeps it running for minutes, the agent's only route to
-                # the server is severed (a black hole — no FIN, no RST, nothing it
-                # can learn from a write), and the capabilities are withdrawn while
-                # it is deaf. Its own status.json is read inside the partition to
-                # prove it never heard.
+                # Step 16: disable discovery DURING a scan, and THEN revoke the agent — one
+                #   continuous act; cancellation and rejection of late frames across ALL capability handlers
+                # PROVING WHO ENFORCED IT is the hard part. `discovery.cancel` is
+                # best-effort, so on the ordinary path the agent stops on its own
+                # and the database looks exactly as it would if the backend
+                # enforced nothing. So the cancel is taken away: the sweep runs
+                # long, the agent's only route is black-holed (no FIN, no RST), and
+                # capabilities are withdrawn while it is deaf. Its status.json is
+                # read inside the partition to prove it never heard.
                 #
-                # ALL THREE capabilities are withdrawn, not just discovery, because
-                # "across all capability handlers" is a claim about
-                # `CAPABILITY_FOR_TYPE`'s three entries: the agent goes on producing
-                # a `discovery.finding`, a `telemetry.host` and a `probe.result`
-                # for grants the server has already closed, and `dispatch_frame`
-                # must audit one refusal per frame for each.
+                # ALL THREE capabilities are withdrawn because "across all
+                # capability handlers" is a claim about `CAPABILITY_FOR_TYPE`'s
+                # three entries — `dispatch_frame` must audit one refusal per frame
+                # for each.
                 #
-                # THE REVOKE COMES AFTER THE DELIVERY, INSIDE THE SAME CONTINUOUS
-                # BLOCK, and that ordering is forced rather than chosen: a revoked
-                # agent cannot open a /link connection at all (`link_stream` refuses
-                # any non-active agent), so revoking first would leave the late
-                # frames undeliverable and the per-handler rejection unobservable.
-                # Nothing is re-set-up between the two halves; it is one journey.
+                # THE REVOKE COMES AFTER DELIVERY, in the same block: a revoked
+                # agent cannot open /link at all, so revoking first would leave the
+                # late frames undeliverable and the rejection unobservable.
                 assert _agent_believes(
                     {"host_telemetry": True, "remote_probe": True, "local_discovery": True}
                 ), (
@@ -2477,32 +2322,21 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 # An in-flight probe run too, so there is a `probe.result` to be
                 # late with. The slow monitor's check outlives the partition's
                 # detection window by construction.
-                # 200, never "200 or 409". D-14 answers 409 when the vantage cannot
-                # take the check, and the slow monitor's own interval is 3600s — so
-                # a 409 here means no run will EVER be dispatched and the wait below
-                # would burn its whole budget before failing with "no dispatched
-                # run", which describes the symptom and not the cause. The agent is
-                # online, granted and ready at this point (it produced a fresh probe
-                # result a moment ago, at the end of step 17), so 200 is the only
-                # correct answer and anything else is the finding.
-                # Nothing may be in flight when check-now is issued. D-6 enforces
-                # one active run per monitor in the DATABASE
-                # (`uq_monitor_probe_runs_active`, partial on
-                # `status IN ('queued','dispatched')`), so a monitor that already
-                # has one answers 409 `previous_run_in_flight` — which is what this
-                # step hit on its first real run, and it is not the 409 the comment
-                # below is about.
+                # 200, never "200 or 409". the rule answers 409 when the vantage
+                # cannot take the check, and this monitor's interval is 3600s, so a
+                # 409 means no run is EVER dispatched and the wait below fails with
+                # "no dispatched run" — the symptom, not the cause. The agent is
+                # online, granted and ready here, so 200 is the only right answer.
                 #
-                # The run in the way is a legitimate one: step 12's reconnect makes
-                # every assigned monitor immediately due, so the slow monitor was
-                # re-dispatched then, and its own 100s timeout means it stays
-                # `dispatched` for a while. It clears when the reconciliation pass
-                # expires the lease — `coalesce(deadline_at, scheduled_at) < now -
-                # RESULT_TIMEOUT_GRACE_S` (services/monitoring/probe_reconcile.py,
-                # grace = agent_probe.LATE_RESULT_GRACE = 30s) — so the wait is the
-                # check's own 100s timeout plus that 30s plus room for the tick.
-                # Waiting is deterministic; branching on "is one already in flight"
-                # would leave whichever path did not run untested.
+                # Nothing may be in flight when check-now is issued: the rule enforces
+                # one active run per monitor in the DATABASE
+                # (`uq_monitor_probe_runs_active`), so a monitor that has one
+                # answers 409 `previous_run_in_flight`. Step 12's reconnect makes
+                # every monitor due, so the slow monitor is re-dispatched and its
+                # 100s timeout holds it `dispatched` until the reconciliation pass
+                # expires the lease (grace = LATE_RESULT_GRACE, 30s). Waiting is
+                # deterministic; branching on "is one in flight" would leave
+                # whichever path did not run untested.
                 _wait_until(
                     lambda: not [
                         r
@@ -2529,17 +2363,11 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     f"withdrawn': {in_flight_late}"
                 )
 
-                # The spool is drained to a known floor BEFORE the cut, so that
-                # `_undelivered_frames()` inside it means "the work the agent
-                # produced after the withdrawal" exactly rather than approximately.
-                # Step 10's outage, step 14's two restarts, step 15's address change
-                # and step 17's re-exec each spooled and drained a backlog through
-                # this same file; `queue.jsonl` keeps every one of those as a
-                # consumed prefix, and an undelivered straggler left over from any of
-                # them would be counted below as a late frame the withdrawal caused.
-                # (`_spool_fully_delivered` IS `queue.head == len(queue.jsonl)`, so
-                # this is the same statement as "`_undelivered_frames()` is empty" —
-                # said once, in the form the harness already derives.)
+                # Drain the spool to a known floor BEFORE the cut so
+                # `_undelivered_frames()` inside it means exactly "work produced
+                # after the withdrawal". Earlier steps each spooled and drained
+                # through this same file, and a straggler left from any of them
+                # would otherwise be counted as a late frame the withdrawal caused.
                 _wait_until(_spool_fully_delivered, timeout=_SPOOL_DRAIN_BUDGET_S)
 
                 violations_before = {
@@ -2554,7 +2382,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
 
                     cancelled_job = _scan_job(client, doomed_job_id)
                     assert cancelled_job["status"] == "cancelled", (
-                        "disabling local_discovery left the running dispatch open — D-14 "
+                        "disabling local_discovery left the running dispatch open — the contract "
                         f"requires it closed in the same transaction: {cancelled_job}"
                     )
                     assert cancelled_job["error_reason"] == "capability_disabled", cancelled_job
@@ -2613,14 +2441,10 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     late_findings = _late_findings()
                     late_addresses = sorted({f["ip_address"] for f in late_findings})
 
-                    # The findings arrive first — a connect sweep reports each dead
-                    # address as it times out — but the probe.result cannot appear
-                    # until the slow check itself finishes, and that check is slow
-                    # BY DESIGN: its target sleeps longer than the monitor's own
-                    # 100s timeout, so the run ends on that timeout and only then is
-                    # a result framed. Asserting on it the moment the findings land
-                    # races a duration the test itself chose. Same for the host
-                    # sample, whose cadence is the grant's interval.
+                    # Findings arrive first (a connect sweep reports each dead
+                    # address as it times out), but the probe.result cannot appear
+                    # until the slow check ends on its own 100s timeout. Asserting
+                    # when the findings land races a duration this test chose.
                     _wait_until(
                         lambda: _spooled_of_type(_undelivered_frames(), "probe.result")
                         and _spooled_of_type(_undelivered_frames(), "telemetry.host"),
@@ -2646,16 +2470,12 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                         "so what it spooled is not unambiguously post-withdrawal work"
                     )
 
-                    # The in-flight run's final server-side shape, snapshotted HERE
-                    # rather than at the moment of the cut. The reconciliation pass
-                    # legitimately retires a run once its lease is up (deadline_at =
-                    # scheduled_at + 20s, plus a 30s grace), and by now the
-                    # partition has lasted the read deadline plus the sweep's
-                    # ten-seconds-per-dead-address march — minutes past that. A
-                    # snapshot taken at the cut would still have been `dispatched`
-                    # and would then change for a reason that has nothing to do with
-                    # the late result, which is the only change the comparison after
-                    # the reconnect is allowed to attribute to it.
+                    # Snapshotted HERE, not at the cut. Reconciliation legitimately
+                    # retires a run once its lease is up, and the partition has
+                    # already outlasted that — so a snapshot taken at the cut would
+                    # still read `dispatched` and would then change for a reason
+                    # unrelated to the late result, which is the only change the
+                    # post-reconnect comparison may attribute to it.
                     def _slow_run() -> dict:
                         return next(
                             run
@@ -2677,17 +2497,13 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 _wait_until(_spool_fully_delivered, timeout=_SPOOL_DRAIN_BUDGET_S)
 
                 # ONE AUDITED REFUSAL PER FRAME, PER HANDLER. `dispatch_frame`
-                # writes exactly one `capability_violation` per frame it drops for a
-                # withdrawn grant, with the frame's wire type in `detail` — and it
-                # is NOT rate-limited (unlike `recordable_violation`, which guards
-                # the malformed-payload paths), so counting is meaningful. This is
-                # the distinction that matters: without a refusal per frame, "no new
-                # rows" is equally consistent with the frames never having arrived,
-                # and those two outcomes leave an identical database. Waited for
-                # rather than read once, because the agent commits a spooled frame
-                # as soon as it has written it to the wire, so the disk can be
-                # drained a moment before the server has finished refusing what came
-                # off it.
+                # writes exactly one `capability_violation` per dropped frame and
+                # is NOT rate-limited, so counting is meaningful. Without a refusal
+                # per frame, "no new rows" is equally consistent with the frames
+                # never arriving — an identical database either way. Waited for
+                # rather than read once: the agent commits a spooled frame as soon
+                # as it is on the wire, so the disk can drain a moment before the
+                # server has finished refusing it.
                 expected_refusals = {
                     "local_discovery": len(late_findings),
                     "host_telemetry": len(late_samples),
@@ -2761,39 +2577,22 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 assert _discovery_view(client, agent_id)["granted"] is False
 
                 # ---- what this harness cannot inject, stated rather than faked --
-                # The required assertion reads "server and agent independently
-                # reject out-of-scope, cross-agent, stale, malformed and oversized
-                # frames." Three of those five are driven above and below and are
-                # real end-to-end proofs:
-                #   * STALE — the late findings for a closed dispatch, just asserted;
-                #   * OUT-OF-SCOPE — asserted in step 8, on the server's own
-                #     eligibility evaluator, with `remote_probe` still granted so
-                #     that the refusal reason is about scope and not about the
-                #     withdrawal this block performs; restated below on `in_scope`,
-                #     which is computed independently of `eligible`;
-                #   * CROSS-AGENT — asserted in the closing block, on
-                #     `scan_results.discovery_agent_id` against the subnets the
-                #     reporter can physically reach.
-                # MALFORMED and OVERSIZED are NOT expressible here, and no assertion
-                # below pretends otherwise. The only frame-injection point this
-                # harness has is the agent's own spool, and the agent re-encodes only
-                # frames it produced itself; putting a malformed or oversized frame on
-                # the wire would mean minting a Noise session, which nothing in this
-                # harness can do. Both ends are pinned by named unit tests that inject
-                # bytes directly — backend:
-                #   tests/services/test_agent_discovery_ingest.py::
-                #     test_oversized_finding_is_rejected_before_the_payload_is_parsed
-                #   tests/services/test_agent_discovery_ingest.py::
-                #     test_malformed_finding_is_a_protocol_violation
-                #   tests/api/test_ws_agents_link.py::
-                #     test_malformed_heartbeat_payload_does_not_tear_down_the_link
-                #   tests/services/test_agent_telemetry.py::
-                #     test_malformed_readiness_payload_records_a_protocol_violation
-                # and agent: internal/frame's TestDecode_RejectsMalformedJSON and
-                # internal/collect/probe's TestProbeRuntime_OutOfScopeAssignment*.
-                # What IS assertable here is the negative that gives those tests
-                # their standing in a real run: across this entire journey the agent
-                # emitted nothing the server had to refuse as malformed.
+                # Of "out-of-scope, cross-agent, stale, malformed and oversized",
+                # three are proved end to end here: STALE (the late findings just
+                # asserted), OUT-OF-SCOPE (step 8, on the eligibility evaluator
+                # while `remote_probe` is still granted) and CROSS-AGENT (closing
+                # block, on `scan_results.discovery_agent_id`).
+                #
+                # MALFORMED and OVERSIZED are NOT expressible here: the only
+                # injection point is the agent's own spool, and the agent re-encodes
+                # only frames it produced, so putting bad bytes on the wire would
+                # mean minting a Noise session. Both ends are pinned by unit tests
+                # that inject bytes directly — backend
+                # tests/services/test_agent_discovery_ingest.py and
+                # tests/api/test_ws_agents_link.py; agent internal/frame and
+                # internal/collect/probe. What IS assertable here is the negative
+                # that gives those tests their standing: across this journey the
+                # agent emitted nothing the server had to refuse as malformed.
                 assert not [
                     e for e in _agent_events(client, agent_id) if e["event_type"] == "protocol_violation"
                 ], (
@@ -2802,15 +2601,11 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     "one means the agent is emitting frames its own server refuses: "
                     f"{[e for e in _agent_events(client, agent_id) if e['event_type'] == 'protocol_violation']}"
                 )
-                # OUT-OF-SCOPE is asserted in full in step 8, with `remote_probe`
-                # still granted, because that is the only place the REASON is about
-                # scope: `evaluate_eligibility` short-circuits on the first failing
-                # precondition, and `remote_probe` is withdrawn at this point in the
-                # journey, so the same call now answers `capability_disabled`. What
-                # survives the withdrawal is `in_scope`, which `get_probe_eligible_
-                # agents` computes independently of `eligible` for exactly this
-                # reason — so it is restated here, over the scope as it finally
-                # stands after an address change and an upgrade, and the reason is
+                # OUT-OF-SCOPE's reason is asserted in step 8, while `remote_probe`
+                # is still granted — `evaluate_eligibility` short-circuits, so after
+                # the withdrawal the same call answers `capability_disabled`. What
+                # survives is `in_scope`, computed independently of `eligible`, so
+                # it is restated here over the final scope. The reason is
                 # deliberately NOT asserted here rather than asserted weakly.
                 out_of_scope = _probe_eligible_row(client, agent_id, host="8.8.8.8")
                 assert out_of_scope["in_scope"] is False, (
@@ -2841,40 +2636,30 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     "(Docker's own embedded DNS resolver) are not the agent's"
                 )
 
-                # ---- ZERO INBOUND CONNECTIONS FROM CIRCUIT BREAKER TO THE REMOTE
-                # SUBNET, over the topology as it finally stands. Here rather than
-                # after the revoke for the same reason as the reads above: the
-                # positive control pings the AGENT container, and a revoked agent's
-                # container is the one thing in this stack whose liveness is no
-                # longer guaranteed. Nothing after this point starts, stops or
-                # re-attaches a container, so this IS the final topology — the
-                # revoke changes grants and sockets, never routes.
+                # ---- ZERO INBOUND CONNECTIONS TO THE REMOTE SUBNET, over the
+                # final topology. Before the revoke because the positive control
+                # pings the AGENT container, whose liveness a revoke no longer
+                # guarantees. Nothing after this starts or re-attaches a container,
+                # so this IS final — a revoke changes grants and sockets, not
+                # routes.
                 _assert_positive_controls(new_ip)
                 for address in (_PROBE_TARGET_IP, _PROBE_TARGET_NEW_IP):
                     _assert_backend_cannot_reach(address, _PROBE_NET_CIDR)
 
                 # ---- ...and THEN revoke, as the same continuous act ------------
-                # TWO capabilities are put back first, and each is watched producing
-                # something, because the post-revoke silence is only a statement
-                # about revocation if the thing that fell silent was running. An
-                # agent that had already been told to stop satisfies "nothing
-                # arrived after the revoke" trivially — and after the withdrawal
-                # above that is exactly the state `host_telemetry` AND `remote_probe`
-                # are in, so asserting a frozen probe-run count against a capability
-                # that is still disabled would prove nothing about revocation at all.
-                # A bare boolean, so `set_capability_grants` restores the stored
-                # config rather than resetting it: this is a resume, not a
-                # reconfiguration.
+                # TWO capabilities are put back first and each watched producing
+                # something: post-revoke silence only says anything about
+                # revocation if the thing that fell silent was running. After the
+                # withdrawal above both are stopped, so a frozen probe-run count
+                # would prove nothing. A bare boolean, so `set_capability_grants`
+                # restores the stored config — a resume, not a reconfiguration.
                 #
-                # `local_discovery` is deliberately NOT re-enabled. Re-granting it
-                # re-arms the bootstrap pass, and a fresh sweep starting seconds
-                # before a revoke would race every "no new result rows" assertion
-                # below for a reason that is about scheduling rather than about
-                # revocation. The discovery half of revocation is instead asserted
-                # structurally, on the dispatch columns — every one of this agent's
-                # jobs must be closed and hold no open dispatch — which is the
-                # mechanism `agent_discovery` actually reads to refuse a late
-                # finding, and which does not need a live scan to be meaningful.
+                # `local_discovery` is deliberately NOT re-enabled: re-granting it
+                # re-arms the bootstrap pass, and a fresh sweep seconds before a
+                # revoke would race every "no new result rows" assertion for
+                # scheduling reasons. The discovery half is asserted structurally
+                # instead, on the dispatch columns — the mechanism
+                # `agent_discovery` actually reads to refuse a late finding.
                 _set_capability_enabled(client, headers, agent_id, "host_telemetry", True)
                 _set_capability_enabled(client, headers, agent_id, "remote_probe", True)
                 revoke_watermark = datetime.now(timezone.utc)
@@ -2897,8 +2682,8 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     opening runs for a monitor whose vantage is unavailable — step
                     11 asserts that as correct while the agent is merely
                     partitioned, and a revoked agent is a special case of an
-                    unavailable vantage rather than a different mechanism. Slice 3
-                    §8 requires revocation to "cancel runs and preserve assignments
+                    unavailable vantage rather than a different mechanism. the design
+                    the plan requires revocation to "cancel runs and preserve assignments
                     as unavailable"; it does not require the scheduler to stop
                     noticing the monitor is due. A total would therefore measure
                     the scheduler's cadence rather than the revocation, and grows
@@ -2919,15 +2704,11 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
 
                 runs_before_revoke = _completed_runs()
 
-                # A listener connected NOW, and this is not tidiness. The presence
-                # stream `_enroll_agent` opened is dead: a websocket does not
-                # survive the server process it is connected to, and step 14
-                # restarted the backend. Its `has_event` would answer False forever,
-                # and an assertion built on it would be asserting that a socket
-                # closed twenty minutes ago received nothing. Opened BEFORE the
-                # revoke, for the same reason the original was opened before the
-                # enrollment: the claim is that the event was PUSHED, and a listener
-                # that connects afterwards could only ever poll for it.
+                # A listener connected NOW: the stream `_enroll_agent` opened did
+                # not survive step 14's backend restart, so its `has_event` would
+                # answer False forever. Opened BEFORE the revoke, because the claim
+                # is that the event was PUSHED — a listener connecting afterwards
+                # could only poll for it.
                 revoke_stream = _AgentStreamListener(token)
                 try:
                     revoke = client.post(
@@ -2944,14 +2725,12 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 assert client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "revoked"
                 # The session is GONE, asked of the server's own presence view.
                 #
-                # Not of `docker compose logs cb-agent`: that returns the whole container
-                # log since start, and this journey has already survived two partitions,
-                # three restarts and an in-place re-exec — so a predicate looking for the
-                # words "disconnect" or "reconnect" anywhere in it is true many
-                # minutes before the revoke is issued and would hold even if
-                # `post_revoke` did nothing whatsoever. Presence is a Redis key with
-                # a 60s TTL that only a heartbeat refreshes, so its disappearance is
-                # a statement about now.
+                # Not of `docker compose logs cb-agent`: that returns the whole log
+                # since start, and after two partitions, three restarts and a
+                # re-exec a search for "disconnect" is already true and would hold
+                # even if `post_revoke` did nothing. Presence is a Redis key with a
+                # 60s TTL only a heartbeat refreshes, so its disappearance is a
+                # statement about now.
                 _wait_until(lambda: not _agent_online(client, agent_id), timeout=90)
 
                 # ...and only once revocation is IN EFFECT are the counters that the
@@ -2966,20 +2745,14 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                 )
                 assert len(samples_at_revoke) > 0, samples_at_revoke
                 # COMPLETED runs, not all runs. The scheduler keeps ticking a
-                # monitor whose vantage is unavailable and keeps opening runs for
-                # it — step 11 asserts exactly that as correct behaviour while the
-                # agent is merely partitioned, and a revoked agent is a special case
-                # of an unavailable vantage, not a different mechanism. Slice 3 §8
-                # requires revocation to "cancel runs and preserve assignments as
-                # unavailable"; it does not require the scheduler to stop noticing
-                # the monitor is due. Counting every run therefore measured the
-                # scheduler's cadence rather than the revocation, and grew by one
-                # tick per monitor for a completely correct system.
+                # monitor whose vantage is unavailable and keeps opening runs — a
+                # revoked agent is a special case of an unavailable vantage, not a
+                # different mechanism. Counting every run measures the scheduler's
+                # cadence, not the revocation.
                 #
-                # What a revoked agent may never do is COMPLETE a check. Every run
-                # opened from here on has no vantage to dispatch to and must die
-                # unavailable/expired, so this count is the one that has to stand
-                # still.
+                # What a revoked agent may never do is COMPLETE a check: every run
+                # opened from here has no vantage and must die unavailable/expired,
+                # so this is the count that has to stand still.
                 runs_at_revoke = _completed_runs()
                 assert all(
                     runs_at_revoke[name] >= runs_before_revoke.get(name, 0)
@@ -3022,7 +2795,7 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                         f"late finding: {(status, dispatch_status)}"
                     )
                 # The assignments are RETAINED and reported unavailable rather than
-                # silently handed back to the server: §2 forbids an automatic
+                # silently handed back to the server: the plan forbids an automatic
                 # fallback, and a revoked vantage is the sharpest case of it.
                 for name, created in monitors.items():
                     current = _monitor(client, created["id"])
@@ -3062,14 +2835,11 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
                     for job in _agent_scan_jobs(client, agent_id)
                 } == results_at_revoke, "a discovery result was accepted from a revoked agent"
 
-                # ═════════════════════════════════════════════════════════════
-                # Closing block: the spec's required assertions, over the journey
-                #                as it finally stands
-                # ═════════════════════════════════════════════════════════════
-                # Each of these has been asserted at the moment it was created; this
-                # is the after-the-fact sweep, because "no duplicates" is a property
-                # of the END state and several of the steps above deliberately
-                # retried, reconnected, restarted and replayed to try to break it.
+                # Closing block: the spec's required assertions, over the journey as it
+                #   finally stands
+                # Each was asserted when created; this is the after-the-fact sweep,
+                # because "no duplicates" is a property of the END state and the
+                # steps above deliberately retried, restarted and replayed.
 
                 # (ZERO INBOUND CONNECTIONS FROM CIRCUIT BREAKER TO THE REMOTE
                 # SUBNET is asserted immediately before the revoke, with its
@@ -3224,4 +2994,4 @@ def test_full_system_release_gate_one_agent_one_continuous_journey():
             discovery_stream.close()
     finally:
         _down()
-        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+        _clear_agent_toml()

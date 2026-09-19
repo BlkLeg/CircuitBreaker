@@ -10,6 +10,11 @@
 /* ── Custom Properties ─────────────────────────────────────────────────── */
 :root {
   --header-height: 60px;
+  /* Breathing room between the fixed app header and the top of a page's
+     content. Named because sticky children have to cancel it: a scroll
+     container's padding does not clip, so content scrolls up *through* this
+     band and would show above anything pinned below it. */
+  --page-top-gap: 16px;
   --color-bg: #282828;
   --color-surface: #3c3836;
   --color-secondary: #3c3836;
@@ -17,6 +22,9 @@
   --color-primary: #fe8019;
   --color-primary-rgb: 254, 128, 25;
   --color-primary-hover: #d86d15;
+  /* Cold-load baseline only. theme/applyTheme.js overwrites this from the
+     active palette on every theme change; it was a fixed Gruvbox value here,
+     which is why raised panels stayed dark under every light preset. */
   --color-danger: #fb4934;
   --color-danger-hover: #cc241d;
   --color-text: #ebdbb2;
@@ -37,6 +45,20 @@
   --font-size-base: 16px;
   --radius: 6px;
   --color-grid-line: rgba(var(--color-primary-rgb), 0.1);
+
+  /* Cold-load baselines for the tokens theme/applyTheme.js resolves but no
+     stylesheet previously defined. applyTheme clears its whole token set
+     before each apply, so that a sparse custom palette stops inheriting the
+     previous theme's colours; these are what it falls back to in that case.
+     Values are gruvbox-dark's (presets.js DEFAULT_PRESET), which is what the
+     rest of this :root block already is. */
+  --color-surface-alt: #504945;
+  --accent-1: #fabd2f;
+  --accent-2: #b8bb26;
+  --accent-3: #b8bb26;
+  /* Black because the default --color-primary (#fe8019) has luminance 0.366,
+     above the 0.1791 crossover. See theme/tokens.js contrastingForeground. */
+  --color-primary-fg: #000000;
 }
 
 html {
@@ -212,7 +234,7 @@ body {
 .page-content {
   width: 100%;
   height: 100vh;
-  padding: calc(var(--header-height) + 16px) 32px 120px;
+  padding: calc(var(--header-height) + var(--page-top-gap)) 32px 120px;
   overflow-y: auto;
 }
 
@@ -574,214 +596,6 @@ body {
   }
 }
 
-/* ── Command Palette ───────────────────────────────────────────────────── */
-.palette-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 200;
-  pointer-events: all;
-  background: transparent;
-}
-
-.command-palette {
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 440px;
-  max-width: calc(100vw - 48px);
-  max-height: calc(100vh - 48px);
-  pointer-events: all;
-  background: rgba(13, 17, 23, 0.97); /* fallback: no color-mix */
-  background: color-mix(in srgb, var(--color-surface) 97%, transparent);
-  -webkit-backdrop-filter: blur(32px);
-  backdrop-filter: blur(32px);
-  border: 1px solid rgba(var(--color-primary-rgb), 0.18); /* fallback: no color-mix */
-  border-radius: 14px;
-  box-shadow:
-    0 8px 40px rgba(0, 0, 0, 0.5),
-    0 0 0 1px rgba(var(--color-primary-rgb), 0.12); /* fallback: no color-mix */
-  box-shadow:
-    0 8px 40px rgba(0, 0, 0, 0.5),
-    0 0 0 1px color-mix(in srgb, var(--color-primary) 12%, transparent);
-  overflow: hidden;
-}
-
-.palette-search-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 16px;
-  border-bottom: 1px solid rgba(var(--color-primary-rgb), 0.1); /* fallback: no color-mix */
-}
-
-.palette-input {
-  flex: 1;
-  background: transparent;
-  border: none;
-  color: var(--color-text);
-  font-size: 15px;
-  font-family: inherit;
-  outline: none;
-}
-
-.palette-input::placeholder {
-  color: var(--color-text-muted);
-}
-
-.palette-hint {
-  background: rgba(var(--color-primary-rgb), 0.08); /* fallback: no color-mix */
-  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
-  border: 1px solid rgba(var(--color-primary-rgb), 0.2); /* fallback: no color-mix */
-  border-radius: 6px;
-  color: var(--color-primary);
-  font-size: 11px;
-  font-family: inherit;
-  font-weight: 600;
-  padding: 3px 8px;
-  white-space: nowrap;
-  letter-spacing: 0.04em;
-}
-
-.palette-results {
-  max-height: min(52vh, 380px);
-  overflow-y: auto;
-  padding: 6px;
-}
-
-.palette-results::-webkit-scrollbar {
-  width: 10px;
-}
-
-.palette-results::-webkit-scrollbar-track {
-  background: var(--color-surface);
-  border-radius: 999px;
-}
-
-.palette-results::-webkit-scrollbar-thumb {
-  background: var(--color-border);
-  border-radius: 999px;
-  border: 2px solid transparent;
-}
-
-.palette-results::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--color-primary) 40%, var(--color-border));
-}
-
-.palette-empty {
-  text-align: center;
-  padding: 24px;
-  color: var(--color-text-muted);
-  font-size: 13px;
-}
-
-.palette-section-label {
-  padding: 10px 14px 4px;
-  color: var(--color-text-muted);
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.palette-section-label:first-child {
-  padding-top: 4px;
-}
-
-.palette-result-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 10px 12px;
-  border-radius: 8px;
-  border: none;
-  background: transparent;
-  color: var(--color-text);
-  font-size: 13px;
-  font-family: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.12s;
-}
-
-.palette-result-item:hover,
-.palette-result-item--active {
-  background: rgba(var(--color-primary-rgb), 0.07); /* fallback: no color-mix */
-  background: color-mix(in srgb, var(--color-primary) 7%, transparent);
-}
-
-/* Keyboard-selected item uses a slightly stronger highlight to distinguish from hover */
-.palette-result-item--active {
-  background: rgba(var(--color-primary-rgb), 0.11); /* fallback: no color-mix */
-  background: color-mix(in srgb, var(--color-primary) 11%, transparent);
-  outline: 1px solid rgba(var(--color-primary-rgb), 0.18); /* fallback: no color-mix */
-  outline-offset: -1px;
-}
-
-.palette-default-icon {
-  font-size: 16px;
-  width: 24px;
-  text-align: center;
-  flex-shrink: 0;
-}
-
-.palette-type-badge {
-  font-size: 10px;
-  font-weight: 700;
-  padding: 2px 7px;
-  border-radius: 4px;
-  letter-spacing: 0.06em;
-  flex-shrink: 0;
-  min-width: 36px;
-  text-align: center;
-}
-
-.palette-type-hardware {
-  background: #1e1b4b;
-  color: #c4b5fd;
-  border: 1px solid #3730a3;
-}
-.palette-type-compute {
-  background: #0c2233;
-  color: #67e8f9;
-  border: 1px solid #0e7490;
-}
-.palette-type-service {
-  background: #0d2b1e;
-  color: #6ee7b7;
-  border: 1px solid #065f46;
-}
-.palette-type-storage {
-  background: #2b1a08;
-  color: #fcd34d;
-  border: 1px solid #92400e;
-}
-.palette-type-network {
-  background: #0f1f40;
-  color: #93c5fd;
-  border: 1px solid #1d4ed8;
-}
-.palette-type-misc {
-  background: #1a1a1a;
-  color: #d4d4d4;
-  border: 1px solid #404040;
-}
-
-.palette-item-title {
-  font-weight: 500;
-  flex: 1;
-}
-
-.palette-item-desc {
-  color: var(--color-text-muted);
-  font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 200px;
-}
-
 /* ── Buttons ───────────────────────────────────────────────────────────── */
 .btn {
   display: inline-flex;
@@ -925,6 +739,58 @@ body {
 .entity-table tbody tr:hover {
   background: rgba(var(--color-primary-rgb), 0.05); /* fallback: no color-mix */
   background: color-mix(in srgb, var(--color-primary) 5%, transparent);
+}
+
+/* Compact sibling of .entity-table above, for tables that sit inside a panel
+   rather than filling a page: the agent Discovery and Probes tabs and the
+   monitor detail page. All three referenced this class and nothing defined it,
+   so every one of those tables rendered as a bare <table> — no cell padding,
+   no rules, headers jammed against the column beside them.
+
+   Matched to .agent-telemetry__grid rather than to .entity-table: Telemetry
+   and Discovery are two tabs of one page and must not read as two designs.
+   .entity-table's 12px/14px padding is right for a table that is the whole
+   page and too loose for one panel among several.
+
+   The tokens carry fallbacks on purpose. panels.css declares them on :root but
+   is imported by the common/ components, and MonitorDetailPage mounts none of
+   those — so on that page the fallback is what renders. */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm, 12.5px);
+}
+
+.data-table th,
+.data-table td {
+  text-align: left;
+  padding: var(--space-1, 4px) var(--panel-pad, 12px);
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: middle;
+}
+
+.data-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.data-table th {
+  color: var(--color-text-muted);
+  font-size: var(--fs-micro, 9.5px);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  white-space: nowrap;
+}
+
+/* Right-aligned and tabular so digits stack into place columns — the
+   difference between reading four numbers and comparing them. */
+.data-table th[data-numeric='true'],
+.data-table td[data-numeric='true'] {
+  text-align: right;
+}
+
+.data-table td[data-numeric='true'] {
+  font-variant-numeric: tabular-nums;
 }
 
 .action-cell {
@@ -4037,21 +3903,16 @@ body {
   width: 100%;
   height: 6rem;
 }
-.agent-telemetry__table {
-  margin-top: 1rem;
-}
-.agent-telemetry .table-scroll {
-  max-width: 100%;
-  overflow-x: auto;
-}
+/* The device tables' own rules live in agents.css beside the rest of the agent
+   pages; only the chart grid above is still styled from here. */
 
-/* ── Assigned probes (Slice 3, §7) ──────────────────────────────────────────
+/* ── Assigned probes ───────────────────────────────────────────────────────
    Shipped unstyled: the section, its two status vocabularies and the config
    fieldset all rendered as bare browser defaults. Same rem scale and token set
    as the agent-telemetry block above, since they are neighbours on the same
    page. */
 .agent-probes {
-  margin-top: 1.5rem;
+  margin-top: 0;
 }
 .agent-probes .table-scroll {
   max-width: 100%;
@@ -4072,7 +3933,7 @@ body {
   margin: 0.5rem 0;
 }
 
-/* Target state and execution condition are deliberately two cells (§7). They
+/* Target state and execution condition are deliberately two cells. They
    get two visibly different shapes — a filled pill for the target, an
    outlined tag for the vantage — so a glance never confuses one for the
    other, and so neither reads as a colour swatch alone. */
@@ -4224,12 +4085,12 @@ body {
   font-size: 0.75rem;
 }
 
-/* ── Discovery scope (Slice 4, plan §6) ─────────────────────────────────────
+/* ── Discovery scope ───────────────────────────────────────────────────────
    The Agent Detail section that owns local discovery. Same rem scale and token
    set as the agent-telemetry and agent-probes blocks above — the three are
    neighbours on one page and must not read as three designs. */
 .agent-discovery {
-  margin-top: 1.5rem;
+  margin-top: 0;
 }
 .agent-discovery .table-scroll {
   max-width: 100%;
@@ -4291,7 +4152,7 @@ body {
 }
 
 /* Provenance is encoded three ways at once — border style, leading glyph and
-   colour — because plan §6's "visibly different provenance" has to survive a
+   colour — because a visibly different provenance has to survive a
    colour-blind operator, a greyscale print and forced-colours mode, where a
    hue-only badge collapses into one indistinguishable chip. */
 .agent-discovery__provenance {

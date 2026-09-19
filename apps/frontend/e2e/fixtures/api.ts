@@ -3,10 +3,9 @@ import type { Page } from '@playwright/test';
 
 /**
  * Every /api/v1 response the app makes on boot, keyed by the tail of the URL.
- * The list was not guessed — e2e/_probe captured the actual calls across the
- * primary routes. Shapes matter: a page handed `{}` where it expects an array
- * renders its ErrorBoundary ("a.map is not a function") instead of the page,
- * which silently weakens every assertion made against it.
+ * Shapes matter: a page handed `{}` where it expects an array renders its
+ * ErrorBoundary instead of the page, silently weakening every assertion
+ * made against it.
  */
 const DEFAULTS: Record<string, unknown> = {
   // Identity and app state
@@ -50,17 +49,303 @@ const DEFAULTS: Record<string, unknown> = {
   notifications: [],
   certificates: [],
 
+  // Full MetricAlertRuleOut shape (schemas/metric_alerts.py): the panel reads
+  // assessment and open_incident_id off each row. Two rules so both a firing
+  // and a not-evaluating state are covered.
+  // /logs returns an object, not a list: LogsPage reads res.data.logs and
+  // res.data.total_count, so the catch-all's [] leaves `logs` undefined.
+  // Entries span severities to cover the chips and level labels.
+  logs: {
+    total_count: 3,
+    logs: [
+      {
+        id: 1,
+        timestamp: '2026-09-17T10:00:00Z',
+        created_at_utc: '2026-09-17T10:00:00Z',
+        action: 'hardware.update',
+        actor: 'operator@example.test',
+        actor_name: 'Operator',
+        role_at_time: 'admin',
+        entity_type: 'hardware',
+        entity_id: 12,
+        entity_name: 'nas-01',
+        severity: 'info',
+        status_code: 200,
+        ip_address: '192.0.2.10',
+        details: 'Renamed from nas-1',
+        elapsed_seconds: 0.12,
+      },
+      {
+        id: 2,
+        timestamp: '2026-09-17T09:45:00Z',
+        created_at_utc: '2026-09-17T09:45:00Z',
+        action: 'auth.login_failed',
+        actor: 'unknown',
+        actor_name: null,
+        role_at_time: null,
+        entity_type: 'user',
+        entity_id: 3,
+        entity_name: 'someone@example.test',
+        severity: 'warn',
+        status_code: 401,
+        ip_address: '198.51.100.7',
+        details: 'Invalid credentials',
+        elapsed_seconds: 0.03,
+      },
+      {
+        id: 3,
+        timestamp: '2026-09-17T09:30:00Z',
+        created_at_utc: '2026-09-17T09:30:00Z',
+        action: 'vault.rotate_failed',
+        actor: 'system',
+        actor_name: 'System',
+        role_at_time: null,
+        entity_type: 'vault',
+        entity_id: 1,
+        entity_name: 'primary',
+        severity: 'error',
+        status_code: 500,
+        ip_address: null,
+        details: 'Rotation aborted',
+        elapsed_seconds: 1.4,
+      },
+    ],
+  },
+
+  // Roles differ across rows because the role control and the lock/disable
+  // affordances are per-row, and an empty table exercises none of them.
+  'admin/users': [
+    {
+      id: 1,
+      email: 'operator@example.test',
+      display_name: 'Operator',
+      role: 'admin',
+      is_active: true,
+      last_login: '2026-09-17T09:00:00Z',
+      locked_until: null,
+      session_count: 2,
+      gravatar_hash: null,
+    },
+    {
+      id: 2,
+      email: 'viewer@example.test',
+      display_name: 'Viewer',
+      role: 'viewer',
+      is_active: true,
+      last_login: '2026-09-16T08:00:00Z',
+      locked_until: null,
+      session_count: 0,
+      gravatar_hash: null,
+    },
+    {
+      id: 3,
+      email: 'locked@example.test',
+      display_name: 'Locked Out',
+      role: 'editor',
+      is_active: false,
+      last_login: null,
+      locked_until: '2026-09-18T00:00:00Z',
+      session_count: 0,
+      gravatar_hash: null,
+    },
+  ],
+
+  // Two parked rows so the scan sees an actionable row with its buttons and a
+  // resolved one with its stamp, rather than an empty state that exercises no
+  // table markup at all.
+  'failed-messages': [
+    {
+      id: 1,
+      stream: 'CB_MONITOR',
+      subject: 'monitor.result',
+      consumer: 'monitor-poll',
+      error: 'ValueError: expected a dict, got list',
+      delivered_count: 5,
+      parked_at: '2026-09-17T10:00:00Z',
+      requeued_at: null,
+      discarded_at: null,
+    },
+    {
+      id: 2,
+      stream: 'CB_DISCOVERY',
+      subject: 'discovery.enrich',
+      consumer: 'discovery-reconciler',
+      error: 'TimeoutError: enrichment did not answer in 30s',
+      delivered_count: 5,
+      parked_at: '2026-09-17T09:00:00Z',
+      requeued_at: '2026-09-17T09:30:00Z',
+      discarded_at: null,
+    },
+  ],
+  'monitors/alert-rules': [
+    {
+      id: 1,
+      name: 'CPU hot',
+      target_type: 'hardware',
+      target_id: 30,
+      metric_key: 'cpu_pct',
+      source: null,
+      comparator: '>',
+      threshold: 90,
+      unit: '%',
+      breach_duration_s: 300,
+      recovery_threshold: 80,
+      recovery_duration_s: 300,
+      max_gap_s: 180,
+      freshness_s: 180,
+      enabled: true,
+      severity: 'critical',
+      sink_id: 2,
+      revision: 1,
+      created_at: '2026-09-17T10:00:00Z',
+      updated_at: '2026-09-17T10:00:00Z',
+      assessment: 'firing',
+      open_incident_id: 'inc-e2e-1',
+    },
+    {
+      id: 2,
+      name: 'Disk filling',
+      target_type: 'hardware',
+      target_id: 31,
+      metric_key: 'disk_pct',
+      source: null,
+      comparator: '>=',
+      threshold: 85,
+      unit: '%',
+      breach_duration_s: 300,
+      recovery_threshold: 75,
+      recovery_duration_s: 300,
+      max_gap_s: 300,
+      freshness_s: 300,
+      enabled: true,
+      severity: 'warning',
+      sink_id: 2,
+      revision: 1,
+      created_at: '2026-09-17T10:00:00Z',
+      updated_at: '2026-09-17T10:00:00Z',
+      assessment: 'unknown',
+      open_incident_id: null,
+    },
+  ],
+  // MetricDefinition per metric_catalog.py — five hardware gauges, each with
+  // its own unit, comparators and freshness/gap defaults.
+  'monitors/alert-rules/catalog': [
+    {
+      key: 'cpu_pct',
+      label: 'CPU utilization',
+      unit: '%',
+      comparators: ['>', '>=', '<', '<='],
+      target_types: ['hardware'],
+      default_freshness_s: 180,
+      default_max_gap_s: 180,
+    },
+    {
+      key: 'mem_pct',
+      label: 'Memory utilization',
+      unit: '%',
+      comparators: ['>', '>=', '<', '<='],
+      target_types: ['hardware'],
+      default_freshness_s: 180,
+      default_max_gap_s: 180,
+    },
+    {
+      key: 'disk_pct',
+      label: 'Disk utilization',
+      unit: '%',
+      comparators: ['>', '>=', '<', '<='],
+      target_types: ['hardware'],
+      default_freshness_s: 300,
+      default_max_gap_s: 300,
+    },
+    {
+      key: 'temp_c',
+      label: 'Temperature',
+      unit: '°C',
+      comparators: ['>', '>=', '<', '<='],
+      target_types: ['hardware'],
+      default_freshness_s: 180,
+      default_max_gap_s: 180,
+    },
+    {
+      key: 'power_w',
+      label: 'Power',
+      unit: 'W',
+      comparators: ['>', '>=', '<', '<='],
+      target_types: ['hardware'],
+      default_freshness_s: 180,
+      default_max_gap_s: 180,
+    },
+  ],
+  // SinkOut (schemas/notifications.py): the rules panel reads id/name/enabled
+  // to decide whether the New rule / Enable flow is possible at all.
+  'notifications/sinks': [
+    { id: 2, name: 'Slack', provider_type: 'webhook', provider_config: {}, enabled: true },
+  ],
+
   // Topology
   topologies: [],
   // NOT []: useMapTabs (hooks/useMapTabs.js:15-22) reacts to an empty list by
-  // POSTing mapsApi.create('Main') and reading `.id` off the response. The
-  // catch-all answers that POST with [], so activeMapId becomes undefined and
-  // MapPage.jsx:2997 sits on "Loading maps…" forever. Every /map assertion —
-  // the a11y scan included — was then measuring a loading placeholder rather
-  // than the topology page.
+  // POSTing mapsApi.create('Main') and reading `.id` off the response, which
+  // the catch-all answers with []. activeMapId is then undefined and MapPage
+  // sits on "Loading maps…", so every /map assertion measures a placeholder.
   maps: [{ id: 1, name: 'Main', is_default: true }],
   graph: { nodes: [], edges: [] },
   'graph/topology': { nodes: [], edges: [] },
+
+  // Intelligence. The fleet stub must be the full FleetAssessment shape, not
+  // the [] the catch-all would answer an unknown endpoint with: the hook
+  // reads data.rows and data.summary off it, and an array would crash the
+  // console into its ErrorBoundary before the a11y scan could see the page.
+  'cve/fleet': {
+    feed: { state: 'ready', reason_code: 'ready', generation: 'gen-e2e', age_seconds: 60 },
+    assessed_at: '2026-09-17T10:00:00Z',
+    summary: {
+      total_entities: 1,
+      by_state: { completed: 1 },
+      entities_with_findings: 0,
+      findings_total: 0,
+      by_severity: {},
+    },
+    rows: [
+      {
+        entity_type: 'hardware',
+        entity_id: 1,
+        name: 'nas-01',
+        state: 'completed',
+        reason_code: 'completed',
+        identity: {
+          vendor: 'acme',
+          product: 'widget',
+          version: '1.9',
+          provenance: 'inventory',
+          revision: 0,
+        },
+        finding_count: 0,
+        max_severity: null,
+        max_cvss: null,
+        completeness: 'complete',
+      },
+    ],
+    limits: {
+      identity_limit: 250,
+      identities_total: 1,
+      identities_assessed: 1,
+      identity_limit_reached: false,
+      candidate_limited_products: [],
+    },
+  },
+  'cve/entity': {
+    state: 'completed',
+    reason_code: 'completed',
+    identity: null,
+    findings: [],
+    limitations: [],
+    assessed_at: '2026-09-17T10:00:00Z',
+    completeness: 'complete',
+    total: 0,
+  },
+  'cve/status': { enabled: true, total_entries: 1, feed: { state: 'ready' } },
+  'intel/flap-incidents': [],
 };
 
 export async function stubApi(page: Page, overrides: Record<string, unknown> = {}): Promise<void> {
@@ -73,6 +358,56 @@ export async function stubApi(page: Page, overrides: Record<string, unknown> = {
   await page.routeWebSocket('**/api/v1/**', () => {
     /* accept the connection and send nothing */
   });
+
+  // EventSource is not reachable through page.route: fulfilling
+  // /api/v1/events/stream with JSON fails the connection, so `sseClient`
+  // reports disconnected and `ConnectionStatus` renders its "Reconnecting to
+  // live data..." banner after its 5s grace timer. That banner shifts the
+  // whole page and makes visual baselines flap. Substitute one that opens and
+  // stays quiet — the SSE equivalent of the WebSocket stub above.
+  await page.addInitScript(() => {
+    class QuietEventSource extends EventTarget {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSED = 2;
+      readonly CONNECTING = 0;
+      readonly OPEN = 1;
+      readonly CLOSED = 2;
+      readyState = 1;
+      onopen: ((this: unknown, ev: Event) => unknown) | null = null;
+      onerror: ((this: unknown, ev: Event) => unknown) | null = null;
+      onmessage: ((this: unknown, ev: Event) => unknown) | null = null;
+      constructor(readonly url: string) {
+        super();
+        // Asynchronous so the caller can assign onopen first.
+        queueMicrotask(() => this.onopen?.call(this, new Event('open')));
+      }
+      close() {
+        this.readyState = 2;
+      }
+    }
+    Object.defineProperty(window, 'EventSource', {
+      configurable: true,
+      writable: true,
+      value: QuietEventSource,
+    });
+  });
+
+  // Fonts are self-hosted (`public/fonts`, `styles/fonts.css`), so nothing
+  // should reach a font CDN. These routes are a backstop: if a regression
+  // reintroduces a fonts.googleapis.com <link>, they keep the suite hermetic
+  // instead of flaking on whether the round-trip beat the screenshot.
+  // `no-third-party-fonts.spec.ts` is the loud half; this is the quiet one.
+  //
+  // Fulfilled rather than aborted: an aborted request logs
+  // "Failed to load resource: net::ERR_FAILED", which the smoke and navigation
+  // specs correctly treat as a console error.
+  await page.route('https://fonts.googleapis.com/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'text/css', body: '' })
+  );
+  await page.route('https://fonts.gstatic.com/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'font/woff2', body: '' })
+  );
 
   await page.route('**/api/v1/**', async (route) => {
     const url = new URL(route.request().url());
@@ -94,11 +429,10 @@ export async function stubApi(page: Page, overrides: Record<string, unknown> = {
     });
   });
 
-  // HeaderWidgets.jsx:60,103 calls open-meteo.com directly — not through
-  // /api/v1, so the handler above never sees it. Left unstubbed the suite
-  // reaches the public internet on every page load: non-hermetic (it hangs or
-  // fails on a network-restricted runner), and it bakes the live temperature
-  // into every screenshot baseline.
+  // HeaderWidgets.jsx:60,103 calls open-meteo.com directly, not through
+  // /api/v1, so the handler above never sees it. Unstubbed, the suite reaches
+  // the public internet on every page load and bakes the live temperature into
+  // every screenshot baseline.
   await page.route('**://*.open-meteo.com/**', (route) => {
     const isGeocoding = route.request().url().includes('geocoding-api');
     return route.fulfill({
@@ -132,9 +466,8 @@ export function collectConsoleErrors(page: Page): string[] {
 
 /**
  * Noise that is not a product defect: a missing favicon in the preview server,
- * and the benign ResizeObserver loop notice browsers emit for legitimate
- * observer-driven layout. Filtered by name rather than by count, so a real
- * error is never absorbed by a threshold.
+ * and the benign ResizeObserver loop notice. Filtered by name rather than by
+ * count, so a real error is never absorbed by a threshold.
  */
 export function significantErrors(errors: string[]): string[] {
   return errors.filter((e) => !/favicon|ResizeObserver loop|Failed to load resource.*404/i.test(e));
@@ -143,11 +476,8 @@ export function significantErrors(errors: string[]): string[] {
 /**
  * Assert the page is not showing its ErrorBoundary.
  *
- * Worth its own helper because the boundary renders INSIDE `.page-content`: a
- * test that only checks `.page-content` is visible passes just as happily on a
- * crashed page as on a working one. That is how the first version of
- * navigation.spec.ts passed while /hardware was actually throwing
- * "a.map is not a function".
+ * The boundary renders INSIDE `.page-content`, so a test that only checks
+ * `.page-content` is visible passes just as happily on a crashed page.
  */
 export async function expectNoErrorBoundary(page: Page, context: string): Promise<void> {
   const text = await page.locator('.page-content').innerText();
@@ -157,41 +487,58 @@ export async function expectNoErrorBoundary(page: Page, context: string): Promis
 }
 
 /**
- * Wait for the route-enter animation to finish before measuring anything.
+ * The route element: the `motion.div` that fades 0 -> 1 on each route change.
  *
- * `.page-content` (App.jsx:127) is a static wrapper and is always opacity 1.
- * The element that actually animates is the `motion.div` inside it, which
- * fades 0 -> 1 over 150ms on every route change (App.jsx:135-141). Anything
- * that samples colour during that window sees every pixel composited toward
- * the page background: an axe scan 27ms in measured `.entity-table th` as
- * #454341 on #2f2e2d (1.37:1) when the settled values are #c8bfb0 on #504945
- * (4.85:1, passing). That is a spurious violation, and with CI retries it
- * shows up as an unexplained flake rather than a failure.
- *
- * Returns the settled wrapper so callers can assert against it directly.
+ * Selected by `[data-route-path]`, not by position. `.page-content` is a
+ * static wrapper always at opacity 1, and `.page-content > div` first-child is
+ * the `<UpdateBanner>` or the Suspense `LoadingScreen` (App.jsx:200-202) —
+ * neither of which is the route or carries the attribute.
  */
 export function routeWrapper(page: Page) {
-  return page.locator('.page-content > div').first();
+  return page.locator('[data-route-path]').first();
 }
 
 /**
- * 15s, not the 150ms the fade actually takes. The animation is rAF-driven, so
- * it does not advance while the browser is starved — and with six projects
- * running two workers each, alongside full-page screenshot capture, WebKit was
- * observed sitting at opacity 0 for more than five seconds on /map, the
- * heaviest route. A wedged AnimatePresence never resolves at all, so a longer
- * ceiling still catches the known_bugs #1 symptom this assertion exists for;
- * it only stops a slow machine from being reported as a wedge.
+ * 15s, not the 150ms the fade takes: the animation is rAF-driven and does not
+ * advance while the browser is starved, and WebKit has been seen at opacity 0
+ * for over five seconds on /map under full CI load. A wedged AnimatePresence
+ * never resolves at all, so a longer ceiling still catches that symptom and
+ * only stops a slow machine being reported as a wedge.
  */
 const ROUTE_SETTLE_TIMEOUT_MS = 15_000;
 
+/**
+ * Settled means all three: the route element exists, it renders the path the
+ * address bar is on, and its enter fade has finished.
+ *
+ * Opacity alone is satisfied by the *outgoing* route — `AnimatePresence
+ * mode="wait"` (App.jsx:217) keeps the previous page mounted at opacity 1
+ * until its exit finishes and the incoming chunk resolves, so an opacity-only
+ * check returns the instant a navigation starts and hands the caller the page
+ * it just left. Measuring mid-fade also samples colours composited toward the
+ * page background, which an axe scan reports as a contrast violation.
+ *
+ * The polled value names which of the three is outstanding.
+ */
 export async function waitForRouteSettled(page: Page): Promise<void> {
-  const wrapper = routeWrapper(page);
-  await wrapper.waitFor({ state: 'visible' });
+  await routeWrapper(page).waitFor({ state: 'visible' });
   await expect
-    .poll(async () => Number(await wrapper.evaluate((el) => getComputedStyle(el).opacity)), {
-      timeout: ROUTE_SETTLE_TIMEOUT_MS,
-      message: 'route wrapper never reached opacity 1 — see known_bugs item 1',
-    })
-    .toBeGreaterThan(0.99);
+    .poll(
+      async () =>
+        page.evaluate(() => {
+          const el = document.querySelector('[data-route-path]');
+          if (!el) return 'no route element mounted';
+          const rendering = el.getAttribute('data-route-path');
+          if (rendering !== window.location.pathname) {
+            return `outgoing route still mounted: rendering ${rendering}, URL is ${window.location.pathname}`;
+          }
+          const opacity = Number(getComputedStyle(el).opacity);
+          return opacity > 0.99 ? 'settled' : `route enter fade at opacity ${opacity}`;
+        }),
+      {
+        timeout: ROUTE_SETTLE_TIMEOUT_MS,
+        message: 'route never settled — see known_bugs item 1',
+      }
+    )
+    .toBe('settled');
 }

@@ -4,7 +4,7 @@ Self-hosted homelab visualization platform: interactive topology across hardware
 services, networks, and clusters. Users are homelabbers and self-hosters who value
 simple, local, visual, zero-lock-in tooling.
 
-**Current version: see `VERSION` (0.4.0 at time of writing).**
+**Current version: see `VERSION` (0.4.2 at time of writing).**
 Repo: https://github.com/BlkLeg/circuitbreaker · Image: `ghcr.io/blkleg/circuitbreaker`
 
 ## Layout
@@ -14,7 +14,7 @@ apps/backend/src/app/   FastAPI + SQLAlchemy + Pydantic, Python 3.12
 apps/frontend/src/      React + Vite + Tailwind, JavaScript/JSX (not TypeScript)
 apps/agent/             Go agent
 docker/                 mono image entrypoint, supervisord, nginx
-tests/                  integration/, unit/, build/ (repo-policy suites)
+tests/                  integration/, build/ (repo-policy suites), fixtures/
 specs/                  release control, owner map
 ```
 
@@ -47,14 +47,20 @@ may assume internet access.
   modules. All HTTP goes through the axios client in `src/api/client.jsx` — no inline
   `fetch`. Always render loading and error states.
 - **API**: snake_case JSON, errors as `{"detail": "..."}`, correct HTTP codes.
+- **Secrets**: never hardcode credentials, tokens, signing material, JWT secrets, or
+  vault keys — including in CI workflows, tests, examples, and fixtures. Generate
+  ephemeral values at runtime or inject them through the platform's secret store.
 - **Commits**: `feat:` / `fix:` / `chore:` / `docs:`.
 
 ## Before pushing
 
 ```bash
 make lint      # ruff + mypy + eslint
-make verify    # the pre-push gate (~3m20s)
+make verify    # the pre-push gate (~3m20s); runs with CB_VERIFY_BACKEND=off
 ```
+
+If the change touches `apps/backend/src/app`, run `make verify-full` instead —
+`make verify` skips the backend unit suite entirely.
 
 Never lower the coverage gate to make a build green.
 

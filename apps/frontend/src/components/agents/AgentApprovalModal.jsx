@@ -6,7 +6,7 @@ import { hardwareApi } from '../../api/client';
 import { useToast } from '../common/Toast';
 import AgentIdentityComparison from './AgentIdentityComparison';
 
-// Task 14: this modal owns NO capability preset. The defaults come from
+// This modal owns NO capability preset. The defaults come from
 // GET /api/v1/agents/capability-defaults, i.e. the server's single
 // CAPABILITY_DEFINITIONS registry, so the checkbox states and the config each
 // grant carries can never drift from what an approve with `capabilities`
@@ -24,7 +24,7 @@ const CAPABILITY_INFO = [
     key: 'host_telemetry',
     label: 'Host telemetry',
     description:
-      'CPU, memory, disk, network, and temperature samples every 30s (Slice 2 defaults).',
+      'CPU, memory, disk, network, and temperature samples every 30s (the shipped defaults).',
   },
   {
     key: 'local_discovery',
@@ -147,7 +147,7 @@ export default function AgentApprovalModal({ agentId, onApproved, onClose }) {
         {loading && <p>Loading…</p>}
         {!loading && agent && (
           <>
-            {/* Redesign §2.2: the fingerprint comparison and the duplicate-machine
+            {/* The fingerprint comparison and the duplicate-machine
                 alert moved into a shared component because AddAgentPanel's inline
                 approve step must render the same control — a second, hand-rolled
                 copy of an anti-impostor check is how one of them drifts. This

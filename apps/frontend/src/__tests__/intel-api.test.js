@@ -5,7 +5,12 @@ vi.mock('../api/client.jsx', () => ({
 }));
 
 import client from '../api/client.jsx';
-import { getBlastRadius, listCapacityForecasts, listResourceEfficiency } from '../api/intel';
+import {
+  getBlastRadius,
+  listCapacityForecasts,
+  listFlapIncidents,
+  listResourceEfficiency,
+} from '../api/intel';
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -22,6 +27,27 @@ describe('intel api module', () => {
 
   it('builds the blast-radius path from asset type and id', () => {
     getBlastRadius('compute_unit', 42);
-    expect(client.get).toHaveBeenCalledWith('/intel/blast-radius/compute_unit/42');
+    expect(client.get).toHaveBeenCalledWith('/intel/blast-radius/compute_unit/42', {
+      params: undefined,
+    });
+  });
+
+  it('passes the inferred-evidence scope through (plan 06)', () => {
+    getBlastRadius('compute_unit', 42, { include_inferred: true });
+    expect(client.get).toHaveBeenCalledWith('/intel/blast-radius/compute_unit/42', {
+      params: { include_inferred: true },
+    });
+  });
+
+  it('reads flap incidents, active by default', () => {
+    listFlapIncidents();
+    expect(client.get).toHaveBeenCalledWith('/intel/flap-incidents', { params: undefined });
+  });
+
+  it('passes an explicit active scope through', () => {
+    listFlapIncidents({ active: false });
+    expect(client.get).toHaveBeenCalledWith('/intel/flap-incidents', {
+      params: { active: false },
+    });
   });
 });

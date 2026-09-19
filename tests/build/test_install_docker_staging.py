@@ -18,11 +18,12 @@ Two defects in stage_docker_deploy, both observable by running it:
     revision running as root. --version now pins the ref for the assets and
     CB_TAG for the image, so the three cannot disagree.
 
-stage_docker_deploy is run for real in a sandbox: docker, curl, systemctl and
-the secret generators are stubbed, everything else -- the mkdir, the umask, the
-cp, the appends, the branch on an existing .env -- is the shipped code. Modes
-are read off the filesystem rather than matched in the source, and the fetched
-URLs are read from the stub's log.
+stage_docker_deploy is run for real in a sandbox: docker, curl, systemctl, the
+secret generators and the `install`/`sudo` pair that writes /usr/local/bin/cb
+are stubbed, everything else -- the mkdir, the umask, the cp, the appends, the
+branch on an existing .env -- is the shipped code. Modes are read off the
+filesystem rather than matched in the source, and the fetched URLs are read
+from the stub's log.
 """
 
 from __future__ import annotations
@@ -71,6 +72,14 @@ cb_generate_secret_base64() { printf 'b64secret%s' "$1"; }
 cb_generate_secret_hex() { printf 'hexsecret%s' "$1"; }
 docker() { echo "docker $*" >> "$SANDBOX_HOME/docker.log"; }
 ip() { echo "1.1.1.1 via 10.0.0.1 dev eth0 src 10.0.0.2 uid 0"; }
+# The stage installs the host `cb` into /usr/local/bin and escalates with sudo
+# when it cannot write there. Both touch the host, so both are replaced --
+# `install` succeeds, exactly as it does for the root that CI runs as, and the
+# sudo fallback is therefore never reached. Left unstubbed the sudo blocks on a
+# password prompt on any developer host that asks for one, and the suite hangs
+# forever rather than failing.
+install() { echo "install $*" >> "$SANDBOX_HOME/install.log"; }
+sudo() { echo "sudo $*" >> "$SANDBOX_HOME/sudo.log"; }
 curl() {
   local dest="" url=""
   while [[ $# -gt 0 ]]; do
@@ -113,7 +122,7 @@ def stage(
     )
     env = dict(os.environ, SANDBOX_HOME=str(home))
     result = subprocess.run(
-        ["bash", "-c", script], capture_output=True, text=True, env=env
+        ["bash", "-c", script], capture_output=True, text=True, env=env, cwd=REPO_ROOT
     )
     if check:
         assert result.returncode == 0, result.stdout + result.stderr
@@ -134,6 +143,27 @@ def home(tmp_path):
         yield tmp_path
     finally:
         os.umask(previous)
+
+
+# --------------------------------------------------------------------------
+# The sandbox must stay a sandbox.
+# --------------------------------------------------------------------------
+
+
+def test_the_host_cb_is_never_really_installed(home):
+    """The stage writes /usr/local/bin/cb; in this suite it must only be logged.
+
+    `install` and `sudo` went unstubbed until 2026-09-17, so the shipped
+    `install … || sudo install …` reached a real sudo. On a host that prompts
+    for a password that call blocks forever, and `make verify-full` never
+    finished -- a hang rather than a failure, which is the harder of the two to
+    read. Assert the attempt is recorded and that it never escalated.
+    """
+    stage(home)
+
+    install_log = (home / "install.log").read_text()
+    assert "/usr/local/bin/cb" in install_log
+    assert not (home / "sudo.log").exists(), "the stage escalated to a real sudo"
 
 
 # --------------------------------------------------------------------------
@@ -252,20 +282,15 @@ def test_a_preserved_env_warns_that_the_pin_was_not_applied(home):
 #
 #     host_ip="$(ip route get 1.1.1.1 2>/dev/null | awk '/src/ {print $7; exit}')"
 #
-# `ip route get 1.1.1.1` exits non-zero when iproute2 is not installed and on
-# any host with no route to that address -- an air-gapped LAN deployment, which
-# is squarely this product's audience. The 2>/dev/null hides the message but not
-# the status, `pipefail` promotes it past the awk that would otherwise have
-# returned a clean 0, and as a bare assignment under `set -e` that ended the
-# installer right there. Right there is *after* `docker compose up -d` returned
-# and cb-helperd was installed: the stack was up, and the operator saw the last
-# `[OK]` followed by a silent non-zero exit, with the install directory, the
-# access URLs and the useful-commands block never printed. The reasonable
-# conclusion from that screen is that the install failed, and the reasonable
-# next action is to tear down a deployment that is actually working.
+# `ip route get 1.1.1.1` exits non-zero with no iproute2 and on any host with no
+# route to that address — an air-gapped LAN, squarely this product's audience.
+# `pipefail` promotes that status past the awk, and as a bare assignment under
+# `set -e` it ends the installer AFTER the stack is already up: the operator sees
+# a last `[OK]`, a silent non-zero exit, and none of the install directory,
+# access URLs or useful-commands block. The reasonable reading of that screen is
+# that the install failed.
 #
-# The address is cosmetic; nothing downstream consumes it. Nothing in this tail
-# may abort.
+# The address is cosmetic; nothing in this tail may abort.
 
 # Stands in for a host with no route to 1.1.1.1: `ip` writes to stderr (which
 # the shipped code discards) and exits 2, exactly as iproute2 does.
@@ -327,18 +352,15 @@ def test_a_working_ip_command_still_supplies_the_real_address(home):
 # with it.
 # --------------------------------------------------------------------------
 #
-# `host_ip=$(... | ...)` above is one instance of a shape that appears more than
-# once in install.sh: a bare assignment of a *pipeline* under
-# `set -euo pipefail`. pipefail promotes the left-hand command's non-zero status
-# past the right-hand one that returned a clean 0, the assignment is its own
-# simple command, and errexit ends the installer on that line -- before the
-# `if [[ -z ... ]]; then cb_fail ...` written directly underneath for exactly
-# that case ever runs. The operator gets a silent non-zero exit instead of the
+# A bare assignment of a PIPELINE under `set -euo pipefail` appears more than
+# once in install.sh. pipefail promotes the left-hand command's non-zero status
+# past a right-hand one that returned 0, and errexit ends the script on that
+# line — before the `if [[ -z ... ]]; then cb_fail ...` written underneath for
+# exactly that case ever runs. The operator gets a silent exit instead of the
 # sentence somebody wrote to explain it.
 #
-# These two run the shipped functions with the failing command stubbed out and
-# assert on the message, not the exit status: both spellings exit non-zero, and
-# the exit status is not the thing that was lost.
+# These assert on the MESSAGE, not the exit status: both spellings exit non-zero,
+# and the status is not what was lost.
 
 
 def _run_function(
@@ -359,7 +381,7 @@ def _run_function(
     script = "\n".join([HARNESS, overrides, _extract(name), call])
     env = dict(os.environ, SANDBOX_HOME=str(home))
     return subprocess.run(
-        ["bash", "-c", script], capture_output=True, text=True, env=env
+        ["bash", "-c", script], capture_output=True, text=True, env=env, cwd=REPO_ROOT
     )
 
 

@@ -1,4 +1,4 @@
-"""The truenas/unifi cleanup actually removes the credential (INC-16).
+"""The truenas/unifi cleanup actually removes the credential.
 
 Narrowing `VALID_PROVIDERS` without this migration would be worse than leaving it alone: the
 API would stop serving those provider paths while their rows — and the encrypted credentials

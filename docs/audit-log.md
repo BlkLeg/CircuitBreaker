@@ -20,6 +20,40 @@ Common examples include:
 
 Read-only browsing actions are not logged.
 
+### Agent authorization decisions
+
+Decisions that change who an agent is, what it may do, or what code it runs are
+chained alongside the agent's own timeline. Ten actions:
+
+| Action | Recorded when |
+| --- | --- |
+| `agent_enrolled` | An agent completes enrollment |
+| `agent_approved` | An admin approves a pending agent |
+| `agent_rejected` | An admin rejects a pending agent |
+| `agent_revoked` | An agent's authorization is withdrawn |
+| `agent_capability_changed` | An agent's capability grants are edited |
+| `agent_key_rotation_started` | A device-key rotation begins |
+| `agent_key_rotated` | A device-key rotation completes |
+| `agent_key_rotation_rejected` | A rotation is refused |
+| `agent_key_rotation_expired` | A rotation's window closes unused |
+| `agent_update_queued` | A binary update is dispatched to an agent |
+
+These are written **in addition to** the agent's timeline row, never instead of
+it — the agent detail page reads the timeline, and the chain is the
+tamper-evident record beside it.
+
+Some agent events are deliberately **not** chained: `connected`,
+`disconnected`, `version_changed`, `capability_violation` and
+`protocol_violation`. They are agent-initiated and high-volume, and every
+chained write takes a *global* advisory lock (see **Chain integrity** below) —
+so chaining them would serialize every audit write in the instance behind agent
+churn. `host_link_changed` is excluded on different grounds: it records an
+inventory association, not a permission change.
+
+The set is pinned by a build-time gate
+(`tests/build/test_phase4_supply_chain_ratchets.py`), so adding an agent event
+forces a deliberate decision about whether it belongs in the chain.
+
 ---
 
 ## What Each Entry Shows

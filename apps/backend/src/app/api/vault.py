@@ -101,5 +101,5 @@ def test_vault_decryption(
         if decrypted == sentinel:
             return VaultTestResponse(ok=True, message="Vault encryption/decryption verified.")
         return VaultTestResponse(ok=False, message="Decrypted value did not match.")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return VaultTestResponse(ok=False, message=f"Vault test failed: {exc}")

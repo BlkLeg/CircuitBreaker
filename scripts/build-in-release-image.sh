@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the native packages inside the image the release job uses.
 #
-# ADR 0005 Phase 3, F8. A PyInstaller bundle inherits the glibc floor of the host
+# A PyInstaller bundle inherits the glibc floor of the host
 # that built it. `make build` on a modern workstation produces packages that run
 # only on hosts at or above that host's glibc, with no diagnostic beyond a
 # PyInstaller error naming a library the operator never chose:

@@ -128,7 +128,17 @@ def write_log(
     # Imported here rather than at module scope, like the ORM imports below:
     # app.core.audit_chain pulls in app.db.models, and this module is imported
     # by callers that must not require the database layer to be importable.
-    from app.core.audit_chain import AuditChainLockTimeout
+    #
+    # In its own try, because it cannot go in either of the obvious places. Above
+    # the main try, an ImportError escapes the handler whose whole job is to stop
+    # this function raising. Inside it, the `except AuditChainLockTimeout` clause
+    # below references a name that was never bound, and the failure becomes an
+    # UnboundLocalError raised while handling the original error.
+    try:
+        from app.core.audit_chain import AuditChainLockTimeout
+    except Exception:  # never raises, by contract
+        _logger.exception("write_log could not import the audit chain (action=%r)", action)
+        return
 
     try:
         from app.db.models import Log
@@ -162,7 +172,7 @@ def write_log(
 
             if getattr(cfg, "audit_log_hide_ip", False):
                 effective_ip = None
-        except Exception:  # noqa: BLE001
+        except Exception:
             _logger.debug("write_log: could not load settings for IP redaction", exc_info=True)
 
         _now_iso = utcnow_iso()
@@ -195,7 +205,7 @@ def write_log(
             entity_name=entity_name,
             diff=diff_str,
             severity=severity,
-            # Phase 6.5 and 7
+            # And 7
             session_id=session_id,
             role_at_time=role_at_time,
         )
@@ -224,8 +234,21 @@ def write_log(
             session.commit()
 
         if db is not None:
+            # A SAVEPOINT, so a failure here cannot poison the caller's
+            # transaction. Without one, a raise inside _do_write left the
+            # caller's session in pending-rollback state and the broad handler
+            # below swallowed the original error — so the caller's own commit()
+            # then raised PendingRollbackError. That is write_log raising into
+            # its caller through a laundered exception, which is exactly what
+            # this function's docstring promises it never does.
             with _AUDIT_CHAIN_LOCK:
-                _do_write(db)
+                nested = db.begin_nested()
+                try:
+                    _do_write(db)
+                except Exception:
+                    if nested.is_active:
+                        nested.rollback()
+                    raise
         else:
             # No caller transaction: this is a background writer (the HTTP audit
             # middleware) on a connection of its own, so it queues for the
@@ -253,7 +276,7 @@ def write_log(
         # Still announced live: the event occurred, so a realtime audit consumer
         # must see it now rather than whenever the spool is next drained.
         _publish_audit_to_redis(action, entity_type, entity_id, actor_id, severity, _now_iso)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _logger.exception("write_log failed (action=%r)", action)
 
 

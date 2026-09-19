@@ -4,14 +4,12 @@ import re
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import Select, or_, select
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.time import utcnow, utcnow_iso
 from app.db.models import (
     Category,
-    Doc,
-    EntityDoc,
     EntityTag,
     Service,
     ServiceDependency,
@@ -19,12 +17,33 @@ from app.db.models import (
     ServiceStorage,
     Tag,
 )
+from app.schemas.inventory import PageRequest, PageResult
 from app.schemas.services import ServiceCreate, ServiceUpdate
+from app.services.entity_tags import (
+    get_documents_for as _get_documents_for,
+)
+from app.services.entity_tags import (
+    get_documents_for_many,
+    get_tags_for,
+    get_tags_for_many,
+)
+from app.services.entity_tags import (
+    sync_tags as _sync_tags,
+)
 from app.services.environments_service import resolve_environment_id
+from app.services.inventory_paging import escape_ilike, page_result, paginate_rows
 from app.services.ip_reservation import _parse_ports_json, resolve_ip_conflict
 from app.services.log_service import write_log
 
 _logger = logging.getLogger(__name__)
+
+_SERVICE_SORT_COLUMNS = {
+    "id": Service.id,
+    "name": Service.name,
+    "status": Service.status,
+    "created_at": Service.created_at,
+    "updated_at": Service.updated_at,
+}
 
 
 def _resolve_category(db: Session, category_id: int | None, category_str: str | None) -> int | None:
@@ -42,61 +61,6 @@ def _resolve_category(db: Session, category_id: int | None, category_str: str | 
         db.flush()
         return cat.id
     return None
-
-
-def _sync_tags(db: Session, entity_type: str, entity_id: int, tag_names: list[str]) -> None:
-    existing = (
-        db.execute(
-            select(EntityTag).where(
-                EntityTag.entity_type == entity_type,
-                EntityTag.entity_id == entity_id,
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for et in existing:
-        db.delete(et)
-    db.flush()
-    for name in tag_names:
-        tag = db.execute(select(Tag).where(Tag.name == name)).scalar_one_or_none()
-        if tag is None:
-            tag = Tag(name=name)
-            db.add(tag)
-            db.flush()
-        db.add(EntityTag(entity_type=entity_type, entity_id=entity_id, tag_id=tag.id))
-
-
-def get_tags_for(db: Session, entity_type: str, entity_id: int) -> list[str]:
-    rows = (
-        db.execute(
-            select(EntityTag).where(
-                EntityTag.entity_type == entity_type,
-                EntityTag.entity_id == entity_id,
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return [row.tag.name for row in rows]
-
-
-def _get_documents_for(db: Session, entity_type: str, entity_id: int) -> list[dict]:
-    rows = db.execute(
-        select(Doc.id, Doc.title, Doc.category, Doc.icon)
-        .join(EntityDoc, EntityDoc.doc_id == Doc.id)
-        .where(EntityDoc.entity_type == entity_type, EntityDoc.entity_id == entity_id)
-        .order_by(Doc.updated_at.desc())
-    ).all()
-    return [
-        {
-            "id": doc_id,
-            "title": title,
-            "category": category,
-            "icon": icon,
-        }
-        for doc_id, title, category, icon in rows
-    ]
 
 
 def _backfill_ports_json(db: Session) -> None:
@@ -143,19 +107,70 @@ def _ports_to_json(ports_list: Any) -> list | None:
     return entries
 
 
-def _to_dict(db: Session, svc: Service) -> dict:
+def _to_dict(
+    db: Session,
+    svc: Service,
+    *,
+    tags: list[str] | None = None,
+    documents: list[Any] | None = None,
+) -> dict:
     d = {c.name: getattr(svc, c.name) for c in svc.__table__.columns}
     # Expose structured ports from ports_json, overriding the legacy plain-text ports field
     d["ports"] = d.get("ports_json")
-    d["tags"] = get_tags_for(db, "service", svc.id)
+    d["tags"] = tags if tags is not None else get_tags_for(db, "service", svc.id)
     d["category_name"] = svc.category_rel.name if svc.category_rel else None
     d["environment_name"] = svc.environment_rel.name if svc.environment_rel else None
     # IP conflict classification
     d["ip_mode"] = svc.ip_mode or "explicit"
     d["ip_conflict"] = bool(svc.ip_conflict)
     d["ip_conflict_with"] = svc.ip_conflict_json or []
-    d["documents"] = _get_documents_for(db, "service", svc.id)
+    d["documents"] = (
+        documents if documents is not None else _get_documents_for(db, "service", svc.id)
+    )
     return d
+
+
+def _services_filtered_statement(
+    *,
+    compute_id: int | None,
+    hardware_id: int | None,
+    category: str | None,
+    environment: str | None,
+    environment_id: int | None,
+    tag: str | None,
+    q: str | None,
+) -> Select[tuple[Service]]:
+    statement = select(Service)
+    if compute_id:
+        statement = statement.where(Service.compute_id == compute_id)
+    if hardware_id:
+        statement = statement.where(Service.hardware_id == hardware_id)
+    if category:
+        statement = statement.join(Category, Category.id == Service.category_id).where(
+            Category.name.ilike(category)
+        )
+    if environment_id is not None:
+        statement = statement.where(Service.environment_id == environment_id)
+    elif environment:
+        statement = statement.where(Service.environment == environment)
+    if q:
+        term = f"%{escape_ilike(q)}%"
+        statement = statement.where(
+            or_(
+                Service.name.ilike(term, escape="\\"),
+                Service.description.ilike(term, escape="\\"),
+            )
+        )
+    if tag:
+        statement = (
+            statement.join(
+                EntityTag,
+                (EntityTag.entity_type == "service") & (EntityTag.entity_id == Service.id),
+            )
+            .join(Tag, Tag.id == EntityTag.tag_id)
+            .where(Tag.name == tag)
+        )
+    return statement
 
 
 def list_services(
@@ -169,36 +184,57 @@ def list_services(
     tag: str | None = None,
     q: str | None = None,
 ) -> list[dict]:
-    stmt = select(Service)
-    if compute_id:
-        stmt = stmt.where(Service.compute_id == compute_id)
-    if hardware_id:
-        stmt = stmt.where(Service.hardware_id == hardware_id)
-    if category:
-        stmt = stmt.join(Category, Category.id == Service.category_id).where(
-            Category.name.ilike(category)
-        )
-    if environment_id is not None:
-        stmt = stmt.where(Service.environment_id == environment_id)
-    elif environment:
-        stmt = stmt.where(Service.environment == environment)
-    if q:
-        stmt = stmt.where(or_(Service.name.ilike(f"%{q}%"), Service.description.ilike(f"%{q}%")))
-    if tag:
-        stmt = (
-            stmt.join(
-                EntityTag,
-                (EntityTag.entity_type == "service") & (EntityTag.entity_id == Service.id),
-            )
-            .join(Tag, Tag.id == EntityTag.tag_id)
-            .where(Tag.name == tag)
-        )
+    stmt = _services_filtered_statement(
+        compute_id=compute_id,
+        hardware_id=hardware_id,
+        category=category,
+        environment=environment,
+        environment_id=environment_id,
+        tag=tag,
+        q=q,
+    )
     rows = db.execute(stmt).scalars().all()
     result = []
     for r in rows:
         d = _to_dict(db, r)  # ip_mode, ip_conflict, ip_conflict_with included from stored columns
         result.append(d)
     return result
+
+
+def list_services_page(
+    db: Session,
+    page: PageRequest,
+    *,
+    compute_id: int | None = None,
+    hardware_id: int | None = None,
+    category: str | None = None,
+    environment: str | None = None,
+    environment_id: int | None = None,
+    tag: str | None = None,
+    q: str | None = None,
+) -> PageResult[dict]:
+    """Return a bounded services page enriched without per-row tag/document queries."""
+    filtered = _services_filtered_statement(
+        compute_id=compute_id,
+        hardware_id=hardware_id,
+        category=category,
+        environment=environment,
+        environment_id=environment_id,
+        tag=tag,
+        q=q,
+    ).options(joinedload(Service.category_rel), joinedload(Service.environment_rel))
+    rows, total = paginate_rows(
+        db,
+        filtered=filtered,
+        page=page,
+        sort_columns=_SERVICE_SORT_COLUMNS,
+        id_column=Service.id,
+    )
+    ids = [row.id for row in rows]
+    tags = get_tags_for_many(db, "service", ids)
+    documents = get_documents_for_many(db, "service", ids)
+    items = [_to_dict(db, row, tags=tags[row.id], documents=documents[row.id]) for row in rows]
+    return page_result(items, total=total, page=page)
 
 
 def get_service(db: Session, service_id: int) -> dict:
@@ -254,7 +290,7 @@ def create_service(db: Session, payload: ServiceCreate) -> dict:
     resolved_env_id = resolve_environment_id(db, payload.environment_id, payload.environment)
     ports_json = _ports_to_json(payload.ports)
     slug = payload.slug or re.sub(r"[^a-z0-9]+", "-", payload.name.lower()).strip("-")
-    # CB-REL-002: auto-populate hardware_id from compute_unit when compute-bound
+    # CB-the contract: auto-populate hardware_id from compute_unit when compute-bound
     effective_hardware_id = payload.hardware_id
     if payload.compute_id and not effective_hardware_id:
         from app.db.models import ComputeUnit as _CU
@@ -336,7 +372,7 @@ def update_service(db: Session, service_id: int, payload: ServiceUpdate) -> dict
         data["environment_id"] = resolve_environment_id(db, env_id, env_str)
         if env_str is not None:
             data["environment"] = env_str
-    # CB-REL-002: auto-populate hardware_id from compute_unit when compute-bound
+    # CB-the contract: auto-populate hardware_id from compute_unit when compute-bound
     effective_compute = data.get("compute_id", svc.compute_id)
     if effective_compute and "hardware_id" not in data:
         from app.db.models import ComputeUnit as _CU
@@ -351,6 +387,10 @@ def update_service(db: Session, service_id: int, payload: ServiceUpdate) -> dict
 
     for field, value in data.items():
         setattr(svc, field, value)
+    if svc.is_docker_container and ({"compute_id", "hardware_id"} & data.keys()):
+        # A direct service edit is an explicit user decision. Docker source
+        # reconciliation may refresh observations but must not move it later.
+        svc.docker_parent_provenance = "manual"
     svc.ip_mode = conflict_result["ip_mode"]
     svc.ip_conflict = conflict_result["is_conflict"]
     svc.ip_conflict_json = conflict_result["conflict_with"]

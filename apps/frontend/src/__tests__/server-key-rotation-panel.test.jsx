@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 
 const mockToast = { success: vi.fn(), error: vi.fn(), info: vi.fn() };
 vi.mock('../components/common/Toast', () => ({ useToast: () => mockToast }));
@@ -46,6 +46,19 @@ describe('ServerKeyRotationPanel', () => {
     await waitFor(() => expect(screen.getByText(/no rotation in progress/i)).toBeInTheDocument());
     expect(screen.getByText(/a3f9c1e2/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /rotate key/i })).toBeEnabled();
+  });
+
+  it('frames itself as a named region carrying the rotation state in its head', async () => {
+    getServerKeyStatus.mockResolvedValue({ data: ACTIVE });
+
+    render(<ServerKeyRotationPanel />);
+
+    const panel = await screen.findByRole('region', { name: 'Agent server key' });
+    // The state and the control that changes it read from the panel's own
+    // head, so an operator scanning the page sees whether a rotation is in
+    // flight without reading the fingerprints underneath.
+    expect(within(panel).getByText('rotation in progress')).toBeInTheDocument();
+    expect(within(panel).getByRole('button', { name: /rotate key/i })).toBeInTheDocument();
   });
 
   it('disables Rotate during an overlap and says why', async () => {

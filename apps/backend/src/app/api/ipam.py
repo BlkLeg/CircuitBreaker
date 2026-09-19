@@ -214,7 +214,7 @@ def scan_network_addresses(
     #
     # Both checks stay, and the accept/reject boundary is bit-for-bit what it
     # was: 1024 is a /22's num_addresses and 1022 is its host count, so no IPv4
-    # range that used to be accepted is now rejected, and the second check
+    # range that the first check accepts is rejected, and the second check
     # still catches the IPv6 sizes in between (a /118 is 1024 addresses but
     # 1023 hosts).
     if network.num_addresses > 1024:

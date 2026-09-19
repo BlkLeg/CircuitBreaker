@@ -3,7 +3,8 @@ import React, { useState, useEffect, useCallback, useRef, useMemo, Suspense } fr
 import PropTypes from 'prop-types';
 import { useSearchParams } from 'react-router-dom';
 import MarkdownViewer from '../components/MarkdownViewer';
-const DocEditor = React.lazy(() => import('../components/DocEditor'));
+import { lazyRoute } from '../lib/lazyRoute';
+const DocEditor = lazyRoute('DocEditor', () => import('../components/DocEditor'));
 import DocLinkModal from '../components/DocLinkModal';
 import { docsApi } from '../api/client';
 import ConfirmDialog from '../components/common/ConfirmDialog';

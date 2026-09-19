@@ -110,15 +110,112 @@ describe('NotificationsPage', () => {
     expect(screen.getAllByText('1').length).toBeGreaterThan(0);
   });
 
-  it('tests a notification sink', async () => {
+  it('reports acceptance without claiming the message was delivered', async () => {
     render(<NotificationsPage />);
     await waitFor(() => screen.getByText('Slack Sink'));
 
-    notificationsApi.testSink.mockResolvedValue({ data: { ok: true } });
+    notificationsApi.testSink.mockResolvedValue({
+      data: {
+        ok: true,
+        state: 'accepted',
+        reason_code: 'provider_accepted',
+        message: 'Slack accepted the request.',
+        provider: 'slack',
+        sink_id: 1,
+        attempt_count: 1,
+        http_status: 200,
+      },
+    });
     fireEvent.click(screen.getAllByText('Test')[0]);
 
     await waitFor(() => expect(notificationsApi.testSink).toHaveBeenCalledWith(1));
-    expect(mockToast.success).toHaveBeenCalledWith('Test notification sent successfully.');
+    await waitFor(() => screen.getByText('Accepted by Slack'));
+
+    // The forbidden claim, which this surface must not make on any 2xx.
+    expect(mockToast.success).not.toHaveBeenCalledWith('Test notification sent successfully.');
+    expect(screen.getByText(/not proof a person received it/i)).toBeInTheDocument();
+  });
+
+  it('shows a rejected provider response as a failure, not a success', async () => {
+    render(<NotificationsPage />);
+    await waitFor(() => screen.getByText('Slack Sink'));
+
+    notificationsApi.testSink.mockResolvedValue({
+      data: {
+        ok: false,
+        state: 'terminal',
+        reason_code: 'retry_exhausted',
+        message: 'The provider is temporarily unavailable.',
+        error: 'The provider is temporarily unavailable.',
+        provider: 'slack',
+        sink_id: 1,
+        attempt_count: 3,
+        http_status: 500,
+      },
+    });
+    fireEvent.click(screen.getAllByText('Test')[0]);
+
+    await waitFor(() => screen.getByText('Slack did not accept it'));
+    expect(screen.getByText('500')).toBeInTheDocument();
+    expect(screen.getByText('3')).toBeInTheDocument();
+    expect(mockToast.success).not.toHaveBeenCalled();
+  });
+
+  it('names which destination the result belongs to', async () => {
+    render(<NotificationsPage />);
+    await waitFor(() => screen.getByText('Slack Sink'));
+
+    notificationsApi.testSink.mockResolvedValue({
+      data: {
+        ok: false,
+        state: 'terminal',
+        reason_code: 'authentication_rejected',
+        message: 'The provider rejected the destination credentials.',
+        provider: 'slack',
+        sink_id: 1,
+        attempt_count: 1,
+        http_status: 401,
+      },
+    });
+    fireEvent.click(screen.getAllByText('Test')[0]);
+
+    await waitFor(() => screen.getByText('Slack did not accept it'));
+    // A provider name alone cannot identify one of several Slack destinations.
+    expect(
+      screen.getByText('Slack Sink', { selector: '.delivery-result__destination' })
+    ).toBeInTheDocument();
+  });
+
+  it('tells the operator what to do when stored credentials cannot be read', async () => {
+    render(<NotificationsPage />);
+    await waitFor(() => screen.getByText('Slack Sink'));
+
+    notificationsApi.testSink.mockResolvedValue({
+      data: {
+        ok: false,
+        state: 'terminal',
+        reason_code: 'credential_unavailable',
+        message: 'Destination credentials are unavailable.',
+        provider: 'slack',
+        sink_id: 1,
+        attempt_count: 0,
+      },
+    });
+    fireEvent.click(screen.getAllByText('Test')[0]);
+
+    expect(await screen.findByText(/re-enter them for this destination/i)).toBeInTheDocument();
+  });
+
+  it('names the provider when the request never reaches the server', async () => {
+    render(<NotificationsPage />);
+    await waitFor(() => screen.getByText('Slack Sink'));
+
+    notificationsApi.testSink.mockRejectedValue(new Error('Network Error'));
+    fireEvent.click(screen.getAllByText('Test')[0]);
+
+    // Read from the sink's `provider_type`; the row has no `type` field at all.
+    await waitFor(() => screen.getByText('Slack did not accept it'));
+    expect(screen.getByText(/never left Circuit Breaker/i)).toBeInTheDocument();
   });
 
   it('adds a new destination', async () => {
@@ -136,7 +233,7 @@ describe('NotificationsPage', () => {
 
 describe('NotificationsPage sink editing', () => {
   // A sink as the API now serves it: the webhook URL is masked and carries a
-  // read-only set-flag alongside it (INC-06).
+  // read-only set-flag alongside it.
   const MASK = 'https://hooks.slack.com/services/•••';
   const maskedSink = {
     id: 7,

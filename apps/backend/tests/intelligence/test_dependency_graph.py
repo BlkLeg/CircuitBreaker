@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from app.db.models import ServiceDependency
+from app.db.models import (
+    HardwareNetwork,
+    ServiceDependency,
+    ServiceStorage,
+    Storage,
+)
 from app.services.intelligence.dependency_graph import (
     calculate_blast_radius,
 )
@@ -59,9 +64,121 @@ def test_blast_radius_summary_text(db_session, factories):
 
     assert "core-switch" in result.summary
     assert "1" in result.summary
+    assert "Potential impact" in result.summary
 
 
-# ── API tests ─────────────────────────────────────────────────────────────────
+def test_shared_network_is_connectivity_not_operational_dependency(db_session, factories):
+    first = factories.hardware(name="first")
+    second = factories.hardware(name="second")
+    network = factories.network(name="shared")
+    db_session.add_all(
+        [
+            HardwareNetwork(hardware_id=first.id, network_id=network.id),
+            HardwareNetwork(hardware_id=second.id, network_id=network.id),
+        ]
+    )
+    db_session.flush()
+
+    result = calculate_blast_radius(db_session, "hardware", first.id)
+
+    assert result.impacted_hardware == []
+    assert result.total_impact_count == 0
+    assert len(result.connectivity) == 1
+
+
+def test_storage_failure_includes_explicit_consumers_with_path(db_session, factories):
+    hardware = factories.hardware(name="nas")
+    storage = Storage(name="pool", kind="pool", hardware_id=hardware.id)
+    service = factories.service(name="database")
+    db_session.add(storage)
+    db_session.flush()
+    db_session.add(ServiceStorage(service_id=service.id, storage_id=storage.id, purpose="data"))
+    db_session.flush()
+
+    result = calculate_blast_radius(db_session, "storage", storage.id)
+
+    assert [item.asset_id for item in result.impacted_services] == [service.id]
+    assert result.paths[0].edges[0].source_kind == "service_storage"
+    assert result.paths[0].provenance == "confirmed"
+
+
+def test_dependency_cycle_terminates_and_deduplicates_assets(db_session, factories):
+    first = factories.service(name="first")
+    second = factories.service(name="second")
+    db_session.add_all(
+        [
+            ServiceDependency(service_id=second.id, depends_on_id=first.id),
+            ServiceDependency(service_id=first.id, depends_on_id=second.id),
+        ]
+    )
+    db_session.flush()
+
+    result = calculate_blast_radius(db_session, "service", first.id)
+
+    assert [item.asset_id for item in result.impacted_services] == [second.id]
+    assert len(result.paths) == 1
+    assert result.completeness == "complete"
+
+
+def test_traversal_limit_is_disclosed(db_session, factories):
+    root = factories.service(name="root")
+    previous = root
+    for index in range(3):
+        current = factories.service(name=f"dependent-{index}")
+        db_session.add(ServiceDependency(service_id=current.id, depends_on_id=previous.id))
+        previous = current
+    db_session.flush()
+
+    result = calculate_blast_radius(db_session, "service", root.id, max_depth=1)
+
+    assert result.completeness == "truncated"
+    assert result.truncation_reason == "depth_limit"
+    assert result.total_impact_count == 1
+
+
+def test_query_count_is_bounded_not_per_asset(db_session, factories):
+    """Plan 06, I4: edge loading and name resolution are bulk.
+
+    Sixty-four assets must not cost more statements than one: edges load one
+    query per relationship table and names resolve one query per asset type,
+    so the statement count is a property of the graph *shape*, not its size.
+    """
+    from sqlalchemy import event
+
+    def count_statements(asset_type, asset_id):
+        counter = {"statements": 0}
+
+        def hook(conn, cursor, statement, parameters, context, executemany):
+            counter["statements"] += 1
+
+        engine = db_session.get_bind()
+        event.listen(engine, "before_cursor_execute", hook)
+        try:
+            result = calculate_blast_radius(db_session, asset_type, asset_id)
+        finally:
+            event.remove(engine, "before_cursor_execute", hook)
+        return counter["statements"], result
+
+    bulk_host = factories.hardware(name="bulk-host", ip_address="10.30.0.1")
+    for index in range(64):
+        compute = factories.compute_unit(name=f"vm-{index}", hardware_id=bulk_host.id)
+        factories.service(name=f"svc-{index}", compute_id=compute.id)
+    tiny_host = factories.hardware(name="tiny-host", ip_address="10.30.0.2")
+    tiny_compute = factories.compute_unit(name="tiny-vm", hardware_id=tiny_host.id)
+    factories.service(name="tiny-svc", compute_id=tiny_compute.id)
+    db_session.flush()
+
+    # Warm any lazy identity-map behaviour, then measure the steady state.
+    count_statements("hardware", bulk_host.id)
+    bulk_statements, bulk_result = count_statements("hardware", bulk_host.id)
+    tiny_statements, tiny_result = count_statements("hardware", tiny_host.id)
+
+    assert bulk_result.total_impact_count == 128  # 64 compute units + 64 services
+    assert tiny_result.total_impact_count == 2
+    assert bulk_statements == tiny_statements
+
+
+# ── API tests# ── API tests ─────────────────────────────────────────────────────────────────
 
 
 async def test_blast_radius_api_returns_impact(client, auth_headers, db_session, factories):

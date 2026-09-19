@@ -40,7 +40,7 @@ vi.mock('../api/client', () => ({
 }));
 
 import { hardwareApi } from '../api/client';
-import { createLinkByNodes } from '../components/map/linkMutations';
+import { createLinkByNodes } from '../features/map/model/linkMutations';
 
 describe('createLinkByNodes — hardware → hardware', () => {
   it('returns edgeId e-hh-42 and updatable=true using res.data.id', async () => {

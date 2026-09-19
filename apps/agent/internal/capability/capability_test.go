@@ -90,7 +90,7 @@ func TestGate_LoadCached_NoOpWhenFileMissing(t *testing.T) {
 	}
 }
 
-// --- Task 12: per-capability grant fault isolation (D-6) ------------------
+// --- per-capability grant fault isolation ------------------
 
 // faultNames reduces a fault list to the capability names it blames, so a test
 // can assert on the blame without pinning an error string.
@@ -103,7 +103,7 @@ func faultNames(faults []GrantFault) []string {
 }
 
 // TestApplyGrants_InvalidHostConfigDoesNotBlockOtherCapabilities pins the core
-// of D-6: one capability's bad config is that capability's problem. Before this
+// of the rule: one capability's bad config is that capability's problem. Before this
 // change decode() returned (nil, err) for the whole snapshot, so a typo in
 // host_telemetry.interval_s silently discarded the remote_probe and
 // local_discovery grants that arrived in the same frame.
@@ -282,7 +282,7 @@ func TestApplyGrants_PersistsEffectiveNotRejectedConfig(t *testing.T) {
 	}
 }
 
-// --- Task 5: the remote_probe configuration schema (design §3) -------------
+// --- the remote_probe configuration schema (the design) -------------
 
 // TestNormalizeRemoteProbeConfig_DefaultsAndBounds mirrors the backend's
 // test_defaults_match_the_design_document and test_max_concurrent_out_of_range_raises.
@@ -339,7 +339,7 @@ func TestNormalizeRemoteProbeConfig_DefaultsAndBounds(t *testing.T) {
 }
 
 // TestNormalizeRemoteProbeConfig_InvalidConfigKeepsEnabledAndPreviousConfig is
-// the per-capability isolation contract (D-6) applied to the new normalizer:
+// the per-capability isolation contract applied to the new normalizer:
 // registering one must not need decode() to learn anything about it.
 func TestNormalizeRemoteProbeConfig_InvalidConfigKeepsEnabledAndPreviousConfig(t *testing.T) {
 	g := New(t.TempDir())
@@ -367,7 +367,7 @@ func TestNormalizeRemoteProbeConfig_InvalidConfigKeepsEnabledAndPreviousConfig(t
 	}
 }
 
-// TestRemoteProbeConfig_LocalEditsAreOverwrittenByServerGrant pins §3's "scope
+// TestRemoteProbeConfig_LocalEditsAreOverwrittenByServerGrant pins the "scope
 // and grant configuration are never host-editable". grants.json is a cache, not
 // a control surface: a host-side edit widening the scope survives only until the
 // next capabilities.set, and leaves nothing behind on disk when it does.
@@ -408,7 +408,7 @@ func TestRemoteProbeConfig_LocalEditsAreOverwrittenByServerGrant(t *testing.T) {
 	}
 }
 
-// --- Slice 4 Task 3: the local_discovery configuration schema (plan §1) -----
+// --- the local_discovery configuration schema -----
 
 // TestNormalizeLocalDiscoveryConfig_DefaultsAndBounds mirrors the backend's
 // test_defaults_match_the_plan_document and test_numeric_bounds_are_enforced.
@@ -431,10 +431,10 @@ func TestNormalizeLocalDiscoveryConfig_DefaultsAndBounds(t *testing.T) {
 	if want.MaxAddressesPerJob != 1024 || want.MaxConcurrentHosts != 64 ||
 		want.HostTimeoutMS != 1500 || want.JobTimeoutSeconds != 300 ||
 		want.ScopeMode != netscope.ScopeModeDirectPrivate {
-		t.Errorf("DefaultLocalDiscoveryConfig() = %+v, does not match plan §1", want)
+		t.Errorf("DefaultLocalDiscoveryConfig() = %+v does not match the documented defaults", want)
 	}
 	if !reflect.DeepEqual(want.TCPPorts, []int{22, 53, 80, 443, 445, 3389, 8000, 8080, 8443}) {
-		t.Errorf("DefaultLocalDiscoveryConfig().TCPPorts = %v, does not match plan §1", want.TCPPorts)
+		t.Errorf("DefaultLocalDiscoveryConfig().TCPPorts = %v does not match the documented defaults", want.TCPPorts)
 	}
 
 	for _, tc := range []struct {

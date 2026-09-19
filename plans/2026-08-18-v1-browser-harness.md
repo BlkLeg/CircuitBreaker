@@ -220,7 +220,7 @@ backend and stays fast enough to gate every PR."
 
 ### Task 2: Reproduce the navigation regression
 
-`known_bugs-v1.0.0-rc.1.md` item 1: clicking a nav entry changes the URL but the page content does not respond until a manual reload. Open in rc.2, high severity, and explicitly *"not reproducible in jsdom"*. The file also warns against blind fixes — `8bb0ee25` added the `AnimatePresence` wrapper *as* the fix for this same symptom, so deleting it may reopen the original cause.
+`docs/evidence/known_bugs-v1.0.0-rc.1.md` item 1: clicking a nav entry changes the URL but the page content does not respond until a manual reload. Open in rc.2, high severity, and explicitly *"not reproducible in jsdom"*. The file also warns against blind fixes — `8bb0ee25` added the `AnimatePresence` wrapper *as* the fix for this same symptom, so deleting it may reopen the original cause.
 
 **Files:**
 - Create: `apps/frontend/e2e/navigation.spec.ts`
@@ -235,7 +235,7 @@ backend and stays fast enough to gate every PR."
 import { expect, test } from '@playwright/test';
 import { collectConsoleErrors, stubApi } from './fixtures/api';
 
-// known_bugs-v1.0.0-rc.1.md item 1: the URL advances but the route never
+// docs/evidence/known_bugs-v1.0.0-rc.1.md item 1: the URL advances but the route never
 // renders until a manual reload. The file's own investigation narrowed it to
 // two candidates — a wedged framer-motion exit animation (markup present,
 // opacity stuck at 0) or a route that never mounts (markup absent). The two
@@ -298,7 +298,7 @@ Three outcomes, and they mean different things — record which one you got:
 
 - **`toBeVisible` fails** → the route never mounted. The fix is in `AnimatePresence`/`Suspense` (`App.jsx:135-144`).
 - **`opacity` assertion fails** → the route mounted but the enter animation never ran. The fix is in the animation layer.
-- **Everything passes** → the bug does not reproduce against a stubbed API. Do **not** close the bug. Re-run with `--project=firefox --project=webkit`, then with a slowed network (`page.route` with a delay) to mimic the real first-visit chunk timing the report describes. If it still will not reproduce, record that in `known_bugs-v1.0.0-rc.1.md` with what was tried — the harness is still the deliverable.
+- **Everything passes** → the bug does not reproduce against a stubbed API. Do **not** close the bug. Re-run with `--project=firefox --project=webkit`, then with a slowed network (`page.route` with a delay) to mimic the real first-visit chunk timing the report describes. If it still will not reproduce, record that in `docs/evidence/known_bugs-v1.0.0-rc.1.md` with what was tried — the harness is still the deliverable.
 
 - [ ] **Step 3: Fix the cause the diagnostic identified**
 
@@ -321,12 +321,12 @@ Expected: PASS on chromium, firefox and webkit.
 
 - [ ] **Step 5: Update the bug record**
 
-Move item 1 in `known_bugs-v1.0.0-rc.1.md` from open to fixed, recording the diagnostic result, the cause, and the test that now guards it. If Step 2 did not reproduce, record that instead — an honest "not reproduced under these conditions" is a valid state; "fixed" is not.
+Move item 1 in `docs/evidence/known_bugs-v1.0.0-rc.1.md` from open to fixed, recording the diagnostic result, the cause, and the test that now guards it. If Step 2 did not reproduce, record that instead — an honest "not reproduced under these conditions" is a valid state; "fixed" is not.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/frontend/e2e/navigation.spec.ts apps/frontend/src/App.jsx known_bugs-v1.0.0-rc.1.md
+git add apps/frontend/e2e/navigation.spec.ts apps/frontend/src/App.jsx docs/evidence/known_bugs-v1.0.0-rc.1.md
 git commit -m "fix(routing): close the sticky-navigation regression, guarded by Playwright
 
 known_bugs item 1: the URL advanced but the route never rendered until a

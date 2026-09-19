@@ -1,4 +1,4 @@
-"""Schema-level guarantees for `agent_networks` (Task 2, D-1).
+"""Schema-level guarantees for `agent_networks`.
 
 The table holds one current normalized network report per agent — the whole
 input to the slice-3 scope evaluator — so the guarantees that matter here are

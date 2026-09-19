@@ -13,14 +13,14 @@ import (
 )
 
 // The method vocabulary discovery.request selects from and discovery.finding reports back as
-// evidence (plan §4). Only the two active checks this file performs are named here; the neighbor
+// evidence. Only the two active checks this file performs are named here; the neighbor
 // cache and reverse DNS name themselves where they are implemented.
 const (
 	MethodICMP       = "icmp"
 	MethodTCPConnect = "tcp_connect"
 )
 
-// The collector limits from plan §1, applied when a caller passes zero. They are the same numbers
+// The documented collector limits, applied when a caller passes zero. They are the same numbers
 // the grant defaults to, and they exist because a zero read out of a malformed or partially
 // populated grant must mean "the documented bound", never "no bound at all" — an unbounded sweep
 // would open one socket per address at once.
@@ -111,7 +111,7 @@ type SweepSummary struct {
 }
 
 // Liveness runs bounded host-liveness sweeps: one unprivileged ICMP echo and a connect to each
-// granted TCP port, per address (plan §1).
+// granted TCP port, per address.
 //
 // Both dependencies are injected so no test reaches the kernel — an ICMP socket needs
 // ping_group_range to cover the test runner's GID, and a real connect would make the concurrency
@@ -242,7 +242,7 @@ func (l *Liveness) openPorts(ctx context.Context, addr netip.Addr, opts Options)
 			if err != nil {
 				return
 			}
-			// The handshake was the observation. Nothing is written and nothing is read: plan §7
+			// The handshake was the observation. Nothing is written and nothing is read: discovery
 			// bars discovery from speaking application protocols, and the bounded banner read is
 			// its own deliberate, separately budgeted step.
 			_ = conn.Close()

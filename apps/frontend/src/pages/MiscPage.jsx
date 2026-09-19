@@ -9,6 +9,9 @@ import FormModal from '../components/common/FormModal';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import { useToast } from '../components/common/Toast';
 import { validateDuplicateName } from '../utils/validation';
+import InventorySelectionToolbar from '../components/common/InventorySelectionToolbar';
+import { useInventoryPage } from '../hooks/useInventoryPage';
+import { clearSelection, SELECTION_MODE_ALL_MATCHING } from '../lib/inventoryList';
 
 const BASE_COLUMNS = [
   { key: 'id', label: 'ID' },
@@ -38,36 +41,22 @@ const FIELDS = [
 
 function MiscPage() {
   const toast = useToast();
-  const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState(null);
-  const [q, setQ] = useState('');
-  const [tagFilter, setTagFilter] = useState('');
-  const [kindFilter, setKindFilter] = useState('');
   const [formApiErrors, setFormApiErrors] = useState({});
-  const [selectedIds, setSelectedIds] = useState([]);
   const [allTags, setAllTags] = useState([]);
+  const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const params = {};
-      if (q) params.q = q;
-      if (tagFilter) params.tag = tagFilter;
-      if (kindFilter) params.kind = kindFilter;
-      const res = await miscApi.list(params);
-      setItems(res.data);
-    } catch (err) {
-      toast.error(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }, [q, tagFilter, kindFilter, toast]);
+  const fetchPage = useCallback(async (params) => miscApi.page(params), []);
+
+  const page = useInventoryPage({
+    fetchPage,
+    extraFilters: { kind: '' },
+  });
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    if (page.listError) toast.error(page.listError);
+  }, [page.listError, toast]);
 
   const fetchTags = useCallback(async () => {
     try {
@@ -94,7 +83,7 @@ function MiscPage() {
             allTags={allTags}
             onTagsChange={async (names) => {
               await miscApi.update(row.id, { tags: names });
-              fetchData();
+              page.fetchData();
             }}
             onTagColorChange={async (id, color) => {
               await tagsApi.update(id, { color });
@@ -104,7 +93,7 @@ function MiscPage() {
         ),
       },
     ],
-    [allTags, fetchData, fetchTags]
+    [allTags, page, fetchTags]
   );
 
   const handleCellSave = useCallback(
@@ -112,9 +101,9 @@ function MiscPage() {
       if (value == null) return;
       await miscApi.update(row.id, { [columnKey]: value });
       toast.success('Saved.');
-      fetchData();
+      page.fetchData();
     },
-    [toast, fetchData]
+    [toast, page]
   );
 
   const bulkActions = useMemo(
@@ -123,6 +112,12 @@ function MiscPage() {
         label: 'Delete selected',
         danger: true,
         onClick: (ids) => {
+          if (page.selection.mode === SELECTION_MODE_ALL_MATCHING) {
+            toast.warn(
+              'All-matching delete is not available yet. Select specific rows on this page.'
+            );
+            return;
+          }
           setConfirmState({
             open: true,
             message: `Delete ${ids.length} misc item(s)?`,
@@ -130,14 +125,14 @@ function MiscPage() {
               setConfirmState((s) => ({ ...s, open: false }));
               for (const id of ids) await miscApi.delete(id);
               toast.success('Deleted.');
-              setSelectedIds([]);
-              fetchData();
+              page.setSelection(clearSelection(page.selection));
+              page.fetchData();
             },
           });
         },
       },
     ],
-    [toast, fetchData]
+    [toast, page]
   );
 
   const handleSubmit = async (values) => {
@@ -152,7 +147,7 @@ function MiscPage() {
       setShowForm(false);
       setEditTarget(null);
       setFormApiErrors({});
-      fetchData();
+      page.fetchData();
     } catch (err) {
       if (err.fieldErrors) {
         setFormApiErrors(err.fieldErrors);
@@ -161,8 +156,6 @@ function MiscPage() {
       }
     }
   };
-
-  const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
 
   const handleDelete = (id) => {
     setConfirmState({
@@ -173,7 +166,7 @@ function MiscPage() {
         try {
           await miscApi.delete(id);
           toast.success('Misc item deleted.');
-          fetchData();
+          page.fetchData();
         } catch (err) {
           toast.error(err.message);
         }
@@ -197,13 +190,16 @@ function MiscPage() {
       </div>
 
       <div className="filter-bar">
-        <SearchBox value={q} onChange={setQ} />
-        <TagFilter value={tagFilter} onChange={setTagFilter} />
+        <SearchBox value={page.q} onChange={(value) => page.applyListFilter({ q: value })} />
+        <TagFilter
+          value={page.tagFilter}
+          onChange={(value) => page.applyListFilter({ tag: value })}
+        />
         <select
           className="filter-select"
           aria-label="Filter by kinds"
-          value={kindFilter}
-          onChange={(e) => setKindFilter(e.target.value)}
+          value={page.domainFilters.kind || ''}
+          onChange={(e) => page.applyListFilter({ kind: e.target.value })}
         >
           <option value="">All kinds</option>
           <option value="external_saas">External SaaS</option>
@@ -213,12 +209,12 @@ function MiscPage() {
         </select>
       </div>
 
-      {loading ? (
+      {page.loading ? (
         <SkeletonTable cols={5} />
       ) : (
         <EntityTable
           columns={COLUMNS}
-          data={items}
+          data={page.items}
           onEdit={(row) => {
             setEditTarget(row);
             setShowForm(true);
@@ -227,9 +223,12 @@ function MiscPage() {
           editableColumns={['name', 'kind', 'url', 'description']}
           onCellSave={handleCellSave}
           selectable
-          selectedIds={selectedIds}
-          onSelectionChange={setSelectedIds}
+          selectedIds={page.selectedIds}
+          rowIsSelected={page.rowIsSelected}
+          onSelectionChange={page.onSelectionChange}
           bulkActions={bulkActions}
+          serverPaging={page.serverPaging}
+          selectionToolbar={<InventorySelectionToolbar {...page.selectionToolbarProps} />}
         />
       )}
 
@@ -241,7 +240,7 @@ function MiscPage() {
         onSubmit={handleSubmit}
         onValidate={(values) => {
           const errors = {};
-          const nameErr = validateDuplicateName(values.name, items, editTarget?.id);
+          const nameErr = validateDuplicateName(values.name, page.items, editTarget?.id);
           if (nameErr) errors.name = nameErr;
           return errors;
         }}

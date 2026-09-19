@@ -21,7 +21,7 @@ import (
 // it records call ordinals, entry timestamps and peak concurrency through
 // atomics so the tests stay race-detector clean.
 //
-// Task 9 (readiness on the failure paths) consumes this type — extend it here
+// readiness on the failure paths consumes this type — extend it here
 // rather than declaring a second double in this package.
 type fakeCollector struct {
 	// result and err are returned when fn is nil.

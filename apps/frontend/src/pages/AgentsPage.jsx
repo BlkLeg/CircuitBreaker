@@ -23,6 +23,7 @@ import {
 } from '../lib/fleetFilters';
 import { useToast } from '../components/common/Toast';
 import ConfirmDialog from '../components/common/ConfirmDialog';
+import Panel from '../components/common/Panel';
 import AgentApprovalModal from '../components/agents/AgentApprovalModal';
 import AddAgentPanel from '../components/agents/AddAgentPanel';
 import ServerKeyRotationPanel from '../components/agents/ServerKeyRotationPanel';
@@ -74,6 +75,20 @@ function withPresence(agent, presence) {
     spool_depth: presence.spool_depth,
     spool_bytes: presence.spool_bytes,
     spool_reported_at: presence.spool_reported_at,
+    // Whether that depth is a measurement of now or the last thing the agent
+    // managed to say. Computed server-side; without it here the row would fall
+    // back to reading `spool_reported_at` against this browser's clock.
+    spool_stale: presence.spool_stale,
+    // The eviction group travels with them. It has to be listed explicitly:
+    // this function copies named fields rather than spreading `presence`, so a
+    // field the endpoint sends and this list omits reaches the row as
+    // undefined — which for the loss chip is indistinguishable from "this
+    // agent never reported one", and silently disables it fleet-wide.
+    spool_evicted_frames: presence.spool_evicted_frames,
+    spool_evicted_bytes: presence.spool_evicted_bytes,
+    spool_evicted_oldest_at: presence.spool_evicted_oldest_at,
+    spool_evicted_newest_at: presence.spool_evicted_newest_at,
+    spool_evicted_reported_at: presence.spool_evicted_reported_at,
   };
 }
 
@@ -243,8 +258,15 @@ FleetFilters.propTypes = {
  * numbers change under the operator as filters are applied and as polls land,
  * and a count that only sighted users can see moving is not a count.
  */
-function FleetSummary({ summary }) {
-  const parts = [`${summary.matching} of ${summary.total} agents`];
+export function FleetSummary({ summary }) {
+  const parts = [];
+  // summarizeFleet excludes pending agents from `total` on purpose — the
+  // filter predicates do not apply to an agent nobody has approved. But a
+  // deployment whose only agent is pending then read "0 of 0 agents" directly
+  // above a visible row. The arithmetic was right and the sentence was wrong.
+  if (summary.total > 0 || summary.pending === 0) {
+    parts.push(`${summary.matching} of ${summary.total} agents`);
+  }
   if (summary.pending > 0) parts.push(`${summary.pending} awaiting approval`);
   if (summary.offline > 0) parts.push(`${summary.offline} offline`);
   if (summary.attention > 0) parts.push(`${summary.attention} need attention`);
@@ -337,7 +359,7 @@ export default function AgentsPage() {
     refreshPresence();
   }, [loadAgents, refreshPresence]);
 
-  // Live "enrolled" events (Task 10) name only an agent_id — fetch and splice
+  // Live "enrolled" events name only an agent_id — fetch and splice
   // in the new record immediately rather than waiting up to REFRESH_MS for the
   // next poll to surface it as a pinned pending row. The presence refetch rides
   // along so the new row arrives with its presence slice already filled in.
@@ -448,7 +470,7 @@ export default function AgentsPage() {
 
   if (loading) return <div className="agents-page">Loading…</div>;
 
-  // Design §4, "No agents at all": the Add-agent panel *is* the page — expanded,
+  // "No agents at all": the Add-agent panel *is* the page — expanded,
   // no filters and no table chrome, because there is nothing to filter or sort
   // and an empty 11-column header is a worse answer than a guided flow. An
   // active filter is excluded on purpose: "nothing matched" is a filter result,
@@ -480,8 +502,14 @@ export default function AgentsPage() {
 
       {!isAddStandalone && (
         <>
-          <FleetFilters filters={filters} summary={summary} onChange={setFilterParam} />
-          <FleetSummary summary={summary} />
+          {/* Bodyless: the filter bar carries its own dense spacing, and the
+              panel's body padding would inset it into a second box. The counts
+              live in here with the controls that produce them rather than
+              floating between this and the table. */}
+          <Panel title="Filters" bodyless>
+            <FleetFilters filters={filters} summary={summary} onChange={setFilterParam} />
+            <FleetSummary summary={summary} />
+          </Panel>
           <FleetTable
             rows={[...pending, ...fleetRows]}
             isFiltered={isFiltered}

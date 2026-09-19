@@ -20,7 +20,7 @@ import logging
 import os
 from typing import Any
 
-from nats.js.api import RetentionPolicy
+from nats.js.api import ConsumerConfig, RetentionPolicy
 
 from app.core.nats_client import nats_client
 from app.core.time import utcnow
@@ -32,6 +32,7 @@ from app.services.telemetry_normalize import (
     _normalise_payload,
     live_metric_fields,
 )
+from app.workers.dead_letter import handle_failed_delivery
 from app.workers.stream_limits import update_stream_limits
 
 _logger = logging.getLogger(__name__)
@@ -39,6 +40,10 @@ _logger = logging.getLogger(__name__)
 _STREAM_NAME = "TELEMETRY"
 _SUBJECT_FILTER = "telemetry.ingest.>"
 _CONSUMER_DURABLE = "telemetry_ingest"
+#: Delivery budget before a message is parked. See the matching
+#: constant in monitor_poll_worker — the two consumers deliberately share a
+#: policy so an operator does not have to remember which stream forgives more.
+_MAX_DELIVER = 5
 _BATCH_SIZE = 50
 _FETCH_TIMEOUT_S = 5.0
 _CACHE_TTL_SECONDS = 60
@@ -85,7 +90,7 @@ async def _update_stream_limits(js: Any, cfg: dict[str, Any]) -> None:
     whole argument — why the body is built from the server's stored config, why
     retention is not sent, and why the dedupe window is clamped. It is shared
     with the DISCOVERY worker because this logic existed twice, only one copy was
-    fixed for R12, and nothing made the divergence visible.
+    fixed for the contract, and nothing made the divergence visible.
     """
     await update_stream_limits(js, cfg)
 
@@ -197,7 +202,7 @@ async def _process_batch(msgs: list[Any]) -> None:
 
         try:
             await cache_telemetry(hw_id, cache_payload, ttl=_CACHE_TTL_SECONDS)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _logger.debug("Telemetry ingest cache failed hw:%d: %s", hw_id, exc)
 
         try:
@@ -205,7 +210,7 @@ async def _process_batch(msgs: list[Any]) -> None:
                 hw_id,
                 {"entity_type": "hardware", "hardware_id": hw_id, **cache_payload},
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _logger.debug("Telemetry ingest publish failed hw:%d: %s", hw_id, exc)
 
 
@@ -227,7 +232,11 @@ async def run_ingest_loop(stop_event: asyncio.Event) -> None:
             try:
                 await _ensure_stream()
                 js = nats_client._nc.jetstream()
-                psub = await js.pull_subscribe(_SUBJECT_FILTER, durable=_CONSUMER_DURABLE)
+                psub = await js.pull_subscribe(
+                    _SUBJECT_FILTER,
+                    durable=_CONSUMER_DURABLE,
+                    config=ConsumerConfig(max_deliver=_MAX_DELIVER),
+                )
                 _logger.info(
                     "Telemetry ingest worker subscribed to %s stream (durable=%s)",
                     _STREAM_NAME,
@@ -269,20 +278,27 @@ async def run_ingest_loop(stop_event: asyncio.Event) -> None:
         # ── Process ───────────────────────────────────────────────────────────
         try:
             await _process_batch(msgs)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _logger.error("Telemetry ingest batch failed: %s", exc, exc_info=True)
-            # NAK so NATS will redeliver after the ack-wait period.
+            # NAK so NATS redelivers after the ack-wait period — but only while
+            # the message still has a delivery budget. Once it is spent the
+            # payload is parked and the message terminated, so one unprocessable
+            # sample cannot stall ingest forever.
             for msg in msgs:
-                try:
-                    await msg.nak()
-                except Exception:
-                    pass
+                await handle_failed_delivery(
+                    msg,
+                    stream=_STREAM_NAME,
+                    consumer=_CONSUMER_DURABLE,
+                    error=f"{type(exc).__name__}: {exc}",
+                    max_deliver=_MAX_DELIVER,
+                    session_factory=get_session_context,
+                )
             continue
 
         for msg in msgs:
             try:
                 await msg.ack()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 _logger.debug("Telemetry ingest ACK failed: %s", exc)
 
     _logger.info("Telemetry ingest worker stopped.")

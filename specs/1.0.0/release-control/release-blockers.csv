@@ -1,0 +1,4 @@
+requirement_id,blocks,why
+SRV-02,B1,Worker ownership — the Tier 3 scheduled-monitor assertion is what backs it
+ACC-01,B1,Fresh native install — the deb and rpm install rows
+ACC-14,B3,Backup and restore — the encrypted snapshot round trip

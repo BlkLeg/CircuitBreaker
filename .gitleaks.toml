@@ -3,6 +3,19 @@
 [extend]
 useDefault = true
 
+# Slice B mints agent enrollment tokens as `cbe_` plus 32 random bytes,
+# base64url and unpadded (43 characters). They are short-lived bearer
+# credentials that enrol an agent with no human present, so one reaching a
+# commit is worth stopping. The prefix exists for exactly this: it gives
+# scanners and log redaction a stable thing to match. The regex is pinned
+# against the minting code by
+# tests/build/test_enrollment_token_never_shipped.py, so the two cannot drift.
+[[rules]]
+id = "circuitbreaker-agent-enrollment-token"
+description = "Circuit Breaker agent enrollment token (cbe_)"
+regex = '''cbe_[A-Za-z0-9_-]{43}'''
+keywords = ["cbe_"]
+
 [[allowlists]]
 id = "alembic-revisions"
 description = "Alembic migration revision IDs (hex hashes) are not API keys"
@@ -44,6 +57,16 @@ paths = [
   # identifier. Without this, running `make verify-fleet` made the next
   # `make verify` fail on the evidence the first one produced.
   'artifacts/.*',
+  # MkDocs build output (.gitignore:17-18, GOV-08: "docs/ is canonical; site/
+  # is generated"). Same shape as the two entries above: every byte of it is
+  # derived from tracked files under docs/, it is gitignored and never
+  # committed, and CI's history scan cannot reach it -- but the local gate
+  # scans the working tree with --no-git, where mkdocs renders heading
+  # anchors like <h2 id="apicompatibility-plan"> into HTML that
+  # generic-api-key scores as a credential ("API/compatibility" beside an
+  # `=`). Any real secret in it would have to arrive via a scanned docs/
+  # source file or a docs build plugin.
+  'site/.*',
 ]
 
 [[allowlists]]
@@ -114,3 +137,33 @@ regexes = ['MIIBVgIBADAN']
 id = "test-vault-key-literal"
 description = "base64 of the ASCII string \"test-vault-key\", a stub-snapshot fixture for restore.sh round-trip assertions"
 regexes = ['dGVzdC12YXVsdC1rZXk=']
+
+# The design tool (.superdesign) keeps a resume manifest mapping each source
+# file it has read to the SHA-256 of that file's contents. generic-api-key
+# scores those digests as credentials, so a design session that touched nothing
+# but CSS turned the secret gate red on state holding no secret at all.
+#
+# Matched on the LINE, and deliberately without a `paths` key. A global
+# allowlist with `paths` does not narrow a scan, it removes the file from it:
+# gitleaks drops a path-allowlisted file before applying any rule, so pairing
+# `paths` with `regexes` -- with or without matchCondition = "AND" -- would
+# quietly stop the cbe_ rule above from ever firing inside resume.json.
+# Verified against gitleaks 8.30.1: a planted enrollment token in that file is
+# found by this config and vanishes under every `paths` variant.
+#
+# What is excused is therefore a shape, not a file and not a value: a quoted
+# source path carrying an extension, a colon, and a quoted 64-hex digest. The
+# same digest written as `CB_VAULT_KEY = "<hex>"` is a different shape and is
+# still a finding -- in resume.json as anywhere else. Matching the secret alone
+# would have allowlisted every bare 64-hex string in the repo, which is exactly
+# what a hex-encoded key looks like.
+#
+# tests/build/test_superdesign_hash_manifest_allowlist.py holds this to all
+# three properties: it covers what the manifest really contains, it refuses
+# credential shapes carrying an identical value, and it fails if `paths` ever
+# comes back.
+[[allowlists]]
+id = "superdesign-content-hash-manifest"
+description = "Design-tool content hashes are file digests, not credentials"
+regexTarget = "line"
+regexes = ['"[^"]+\.(?:jsx|js|ts|tsx|css|md|json|html)": "[a-f0-9]{64}"']

@@ -126,3 +126,110 @@ async def test_the_old_secret_stops_authenticating_after_rotation(
 async def test_rotating_a_missing_token_is_404(client, auth_headers):
     resp = await client.post("/api/v1/auth/api-tokens/999999/rotate", headers=auth_headers)
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_http_create_rotate_revoke_are_audited_without_the_secret(
+    client, auth_headers, db_session, factories
+):
+    from app.db.models import Log
+
+    create = await client.post(
+        "/api/v1/auth/api-token",
+        headers=auth_headers,
+        json={"label": "audited-http", "scopes": ["read:*"]},
+    )
+    assert create.status_code == 200
+    secret = create.json()["token"]
+    token_id = create.json()["id"]
+
+    rotate = await client.post(f"/api/v1/auth/api-tokens/{token_id}/rotate", headers=auth_headers)
+    assert rotate.status_code == 200
+    rotated = rotate.json()["token"]
+    new_id = rotate.json()["id"]
+
+    revoke = await client.delete(f"/api/v1/auth/api-tokens/{new_id}", headers=auth_headers)
+    assert revoke.status_code == 204
+
+    actions = {
+        row.action
+        for row in db_session.query(Log).filter(Log.category == "audit").all()
+        if row.action in {"api_token_created", "api_token_rotated", "api_token_revoked"}
+    }
+    assert actions == {"api_token_created", "api_token_rotated", "api_token_revoked"}
+
+    blob = " ".join(
+        (row.details or "") + (row.entity_name or "")
+        for row in db_session.query(Log).filter(Log.category == "audit").all()
+    )
+    assert secret not in blob
+    assert rotated not in blob
+
+
+@pytest.mark.asyncio
+async def test_using_an_api_token_updates_last_used_at(client, auth_headers):
+    """B7: authenticating with a token stamps `last_used_at`.
+
+    `touch_api_token_last_used` writes on a connection of its own, so the row it
+    updates has to be committed rather than held in the `db_session` fixture's
+    SAVEPOINT — an uncommitted row is invisible to that connection and the stamp
+    would no-op. Committing here is what makes the assertion mean what it says;
+    it also matches how the row exists in production.
+    """
+    import secrets
+
+    from app.core.security import invalidate_token_cache
+    from app.core.time import utcnow_iso
+    from app.db import session as _db_session
+    from app.db.models import User
+
+    raw = "raw-last-used-probe"
+    with _db_session.SessionLocal() as writer:
+        # A dedicated, *active* owner: the token authenticates as its creator, so
+        # an inactive one is refused 401 before the stamp is ever reached.
+        owner = User(
+            email=f"last-used-probe-{secrets.token_hex(4)}@test.invalid",
+            hashed_password="!",
+            role="admin",
+            is_admin=True,
+            is_superuser=False,
+            is_active=True,
+            display_name="last used probe owner",
+            provider="local",
+            created_at=utcnow_iso(),
+        )
+        writer.add(owner)
+        writer.flush()
+        owner_id = int(owner.id)
+        row = APIToken(
+            token_hash=create_salted_api_token_hash(raw),
+            label="last-used",
+            created_by=owner.id,
+            scopes=["read:*"],
+            last_used_at=None,
+        )
+        writer.add(row)
+        writer.commit()
+        token_id = int(row.id)
+
+    try:
+        invalidate_token_cache()
+
+        resp = await client.get("/api/v1/hardware", headers={"Authorization": f"Bearer {raw}"})
+        assert resp.status_code == 200
+
+        with _db_session.SessionLocal() as reader:
+            updated = reader.get(APIToken, token_id)
+            assert updated is not None
+            assert updated.last_used_at is not None
+    finally:
+        # Both rows escaped the fixture's rollback, so remove them explicitly.
+        # Token first: it holds the foreign key to the owner.
+        with _db_session.SessionLocal() as cleaner:
+            stale = cleaner.get(APIToken, token_id)
+            if stale is not None:
+                cleaner.delete(stale)
+            stale_owner = cleaner.get(User, owner_id)
+            if stale_owner is not None:
+                cleaner.delete(stale_owner)
+            cleaner.commit()

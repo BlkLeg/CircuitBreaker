@@ -10,13 +10,15 @@ import asyncio
 import json
 import logging
 import os
-import time
 from collections.abc import Callable
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
+from nats.js.api import ConsumerConfig
+
 from app.core.nats_client import nats_client
+from app.core.worker_heartbeat import touch_heartbeat
+from app.db.session import get_session_context
 from app.services.monitoring.collectors import COLLECTORS, CheckResult, Sample
 from app.services.monitoring.result_service import (
     OUTCOME_COMPLETED,
@@ -25,31 +27,32 @@ from app.services.monitoring.result_service import (
     process_results,
 )
 from app.services.monitoring.writer import SampleRow
+from app.workers.dead_letter import handle_failed_delivery
 
 logger = logging.getLogger(__name__)
 
-_HEALTHY_FILE = Path("/data/worker-monitor-poll.healthy")
 _MAX_PARALLEL = int(os.getenv("CB_MONITOR_POLL_PARALLEL", "50"))
 _FETCH_BATCH = int(os.getenv("CB_MONITOR_POLL_FETCH", "50"))
 _JS_STREAM = "MONITOR_POLL"
 _JS_DURABLE = "monitor_pollers"
+#: Delivery budget before a message is parked. Five attempts across
+#: the ack-wait window is long enough to ride out a transient database or NATS
+#: blip, and short enough that a genuinely poisoned message stops blocking its
+#: batch within minutes rather than never.
+_MAX_DELIVER = 5
 _sema = asyncio.Semaphore(_MAX_PARALLEL)
 
 # What one collector run yields, before it is turned into a MonitorResult:
 # the sample row, the target verdict, the message, the execution outcome, and
 # the collector's free-form details. The last two are carried rather than
 # dropped so the shape matches what a remote vantage reports; on this path
-# `details` has nowhere to land (D-8) and the outcome is always `completed`,
+# `details` has nowhere to land and the outcome is always `completed`,
 # because a server-side collector crash is a down datum, not an execution error.
 PollOutcome = tuple[SampleRow, bool, str, str, dict | None]
 
 
 def _touch_healthy() -> None:
-    try:
-        _HEALTHY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _HEALTHY_FILE.write_text(str(time.time()))
-    except OSError:
-        pass
+    touch_heartbeat("worker-monitor-poll")
 
 
 async def poll_one(item: dict) -> PollOutcome:
@@ -69,7 +72,7 @@ async def poll_one(item: dict) -> PollOutcome:
     try:
         async with _sema:
             result: CheckResult = await asyncio.to_thread(collector, item["host"], item["params"])
-    except Exception as exc:  # noqa: BLE001 — a probe crash is a down datum
+    except Exception as exc:  # a probe crash is a down datum
         logger.debug("Check crashed for monitor %s: %s", item["item_id"], exc)
         result = CheckResult(
             up=False,
@@ -81,13 +84,13 @@ async def poll_one(item: dict) -> PollOutcome:
 
 
 async def process_batch(items: list[dict], db_factory: Callable[[], Any]) -> int:
-    """Poll a claimed batch, then hand it to the one shared result path (§6).
+    """Poll a claimed batch, then hand it to the one shared result path.
 
     Everything after the collectors — the Proxmox override, samples, the state
     machine, events, alerts and the live push — lives in
     `services/monitoring/result_service.py`, which the remote `probe.result`
     ingest path calls with the identical record shape. This function is
-    deliberately thin: a second copy of that logic here is exactly the drift §6
+    deliberately thin: a second copy of that logic here is exactly the drift the contract
     exists to prevent.
     """
     outcomes = await asyncio.gather(*(poll_one(i) for i in items))
@@ -123,40 +126,101 @@ async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
 
     await nats_client.ensure_monitor_poll_stream()
     js = nats_client._nc.jetstream()
-    psub = await js.pull_subscribe("mon.poll.item", durable=_JS_DURABLE, stream=_JS_STREAM)
+    psub = await js.pull_subscribe(
+        "mon.poll.item",
+        durable=_JS_DURABLE,
+        stream=_JS_STREAM,
+        config=ConsumerConfig(max_deliver=_MAX_DELIVER),
+    )
     logger.info("monitor-poll worker subscribed (durable=%s)", _JS_DURABLE)
     _touch_healthy()
 
     while not (shutdown_event and shutdown_event.is_set()):
         try:
             msgs = await psub.fetch(_FETCH_BATCH, timeout=1.0)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             if "Timeout" not in type(exc).__name__:
                 logger.warning("monitor-poll fetch error: %s", exc)
             _touch_healthy()
             continue
 
-        items: list[dict] = []
+        # Messages stay paired with what they decoded to. The previous version
+        # built a bare `items` list that silently skipped unparseable messages,
+        # so indices no longer lined up with `msgs` and the failure path below
+        # could not tell which message caused what.
+        parsed: list[tuple[Any, dict]] = []
         for m in msgs:
             try:
-                items.append(json.loads(m.data.decode()))
-            except json.JSONDecodeError:
-                logger.warning("monitor-poll: bad message, dropping")
+                parsed.append((m, json.loads(m.data.decode())))
+            except json.JSONDecodeError as exc:
+                # Parked, not dropped. "bad message, dropping" acked it, which
+                # deleted the payload and left no record — despite
+                # db/models_failed_message.py naming a message that failed to
+                # parse as exactly the kind that belongs in failed_messages.
+                # max_deliver=1 because a parse failure is deterministic:
+                # redelivering the same bytes cannot succeed.
+                logger.warning("monitor-poll: unparseable message, parking")
+                await handle_failed_delivery(
+                    m,
+                    stream=_JS_STREAM,
+                    consumer=_JS_DURABLE,
+                    error=f"JSONDecodeError: {exc}",
+                    max_deliver=1,
+                    session_factory=get_session_context,
+                )
 
-        if items:
+        if parsed:
             try:
-                await process_batch(items, SessionLocal)
-            except Exception as exc:  # noqa: BLE001
-                logger.error("monitor-poll batch failed: %s", exc, exc_info=True)
-                for m in msgs:
-                    await _safe_nak(m)
+                await process_batch([item for _, item in parsed], SessionLocal)
+            except Exception as exc:
+                logger.error("monitor-poll batch failed, isolating: %s", exc, exc_info=True)
+                # Failure handling was per-batch despite the comment claiming
+                # otherwise: only the *delivery budget* was checked per message.
+                # One poison item in a 50-message fetch naked all 50 together,
+                # marched all 50 to max_deliver, then parked and terminated
+                # them — 49 healthy monitor checks deleted from a work queue and
+                # filed as failures under someone else's exception.
+                #
+                # Re-running one at a time isolates the real offender. A message
+                # that already succeeded inside the failed batch may be polled
+                # twice; that was already true of every redelivery, since a nak
+                # re-polls the whole batch, and a duplicate availability sample
+                # is a far smaller harm than discarding 49 checks.
+                await _process_individually(parsed)
+                _touch_healthy()
                 continue
 
-        for m in msgs:
+        for m, _ in parsed:
             await _safe_ack(m)
         _touch_healthy()
 
     logger.info("monitor-poll worker stopped")
+
+
+async def _process_individually(parsed: list[tuple[Any, dict]]) -> None:
+    """Re-run a failed batch one message at a time, so only the poison one pays.
+
+    Called after a batch raises. Each message is acked on success and handed to
+    the dead-letter path on its own failure, with its own error attached rather
+    than the batch exception that happened to surface first.
+    """
+    from app.db.session import SessionLocal
+
+    for m, item in parsed:
+        try:
+            await process_batch([item], SessionLocal)
+        except Exception as exc:  # attributed to this message, not the batch
+            logger.error("monitor-poll: message failed in isolation: %s", exc, exc_info=True)
+            await handle_failed_delivery(
+                m,
+                stream=_JS_STREAM,
+                consumer=_JS_DURABLE,
+                error=f"{type(exc).__name__}: {exc}",
+                max_deliver=_MAX_DELIVER,
+                session_factory=get_session_context,
+            )
+        else:
+            await _safe_ack(m)
 
 
 async def _safe_ack(msg: Any) -> None:

@@ -1,4 +1,4 @@
-"""Schema-level guarantees for the agent host telemetry tables (Task 8, D-3).
+"""Schema-level guarantees for the agent host telemetry tables.
 
 Two independent things are pinned here:
 

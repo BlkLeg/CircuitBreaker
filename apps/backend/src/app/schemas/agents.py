@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator
 
-# The one capability registry (Task 14 / D-14). Imported at module scope: it is
+# The one capability registry. Imported at module scope: it is
 # dependency-free (typing/stdlib only), so the schema layer does not pull in a
 # DB-touching service and there is no cycle to work around.
 from app.services.agent_capabilities import normalize_grant
@@ -20,8 +20,8 @@ class CapabilityGrant(BaseModel):
 # `CapabilitiesUpdateRequest.capabilities`: every REST *request* keeps
 # accepting a bare boolean or an `{enabled, config}` object per capability,
 # indefinitely. It is never emitted on a response — every response carrying
-# grants uses `CapabilityGrant` with server-normalized config (Task 15,
-# **D-11**). The agent wire protocol is separate and unaffected:
+# grants uses `CapabilityGrant` with server-normalized config (the design,
+# **the contract**). The agent wire protocol is separate and unaffected:
 # `api/ws_agents._wire_grants` still downgrades to booleans for
 # `capability_schema < 2`.
 CapabilityValue = bool | CapabilityGrant
@@ -57,8 +57,36 @@ class AgentSummary(BaseModel):
     fingerprint: str
     hardware_id: int | None
     last_seen_at: datetime | None
+    # Why this agent is no longer authorized. NULL on one that still is.
+    #
+    # On the *summary* rather than only on `AgentRead` because the fleet table
+    # and the detail page have to agree: a row that reads "Revoked" beside a
+    # page that reads "Uninstalled" is two answers to one question.
+    revoked_at: datetime | None = None
+    #: The operator's own words, or the server's own `uninstalled by agent`.
+    revoke_reason: str | None = None
+    #: Excluded from the response — it feeds `revoked_by` below and nothing
+    #: else. A user id is more than any UI needs to phrase the outcome, and
+    #: `revoked_by` is exactly what it does need.
+    revoked_by_user_id: int | None = Field(default=None, exclude=True)
 
     model_config = {"from_attributes": True}
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def revoked_by(self) -> str | None:
+        """Which *kind* of actor revoked this agent: "operator" or "agent".
+
+        An operator revoke and a `cb-agent uninstall` both end at
+        `status=revoked`, and the instruction each leaves behind is opposite:
+        one leaves a live agent on a host still to be dealt with, the other has
+        already removed itself. `agent_link._handle_uninstall` passes
+        `actor_user_id=None` for precisely this reason, so the absence of an
+        actor is the discriminator — not a guess.
+        """
+        if self.status != "revoked":
+            return None
+        return "operator" if self.revoked_by_user_id is not None else "agent"
 
 
 class AgentRead(AgentSummary):
@@ -70,7 +98,11 @@ class AgentRead(AgentSummary):
     enrolled_at: datetime
     approved_at: datetime | None
     connected_since: datetime | None
-    # Last-reported outbound-spool backlog (Task 16, D-12). NULL means the
+    # The address the agent reported dialing, as it dialed it. NULL for an
+    # agent that enrolled before the server recorded it, or one running a build
+    # that does not report it — deliberately distinct from "dialed nothing".
+    enrolled_via_endpoint: str | None = None
+    # Last-reported outbound-spool backlog. NULL means the
     # agent has never reported one — a build predating `HeartbeatPayload` —
     # which is deliberately distinct from 0 ("reported, and drained").
     spool_depth: int | None = None
@@ -137,12 +169,12 @@ class AgentLatestSample(BaseModel):
 
 class AgentPresenceRead(BaseModel):
     """One fleet table row's worth of presence + grant + hardware data —
-    the bulk lookup Task 12 adds so `AgentsPage` (Task 14) can render the
+    the bulk lookup the design adds so `AgentsPage` can render the
     whole fleet from a single request instead of one per-agent call.
 
     `capabilities` is the canonical `{name: {enabled, config}}` shape,
-    unconditionally and with no `?capability_shape` escape hatch (Task 15,
-    **D-11**) — byte-identical to `AgentRead.capabilities` for the same grant
+    unconditionally and with no `?capability_shape` escape hatch (the design,
+    **the contract**) — byte-identical to `AgentRead.capabilities` for the same grant
     rows, both projected by `agent_registry._structured_grant`. Consumers must
     read `.enabled`; the object itself is always truthy.
     """
@@ -165,6 +197,38 @@ class AgentPresenceRead(BaseModel):
     spool_depth: int | None = None
     spool_bytes: int | None = None
     spool_reported_at: datetime | None = None
+    # Whether the three fields above are old enough that they describe the
+    # past rather than now (`agent_registry.spool_reading_is_stale`). Computed
+    # on the server, not in the browser: an agent reports its backlog only
+    # while connected, so the number freezes for the whole of the outage in
+    # which the backlog is actually growing, and "is this current" must not
+    # depend on the viewer's clock.
+    #
+    # Named `spool_stale` rather than `stale` because it qualifies exactly the
+    # `spool_*` group on this row and nothing else — a bare `stale` on a fleet
+    # row would read as a claim about the agent.
+    #
+    # Defaults False only so the model is constructible without it; every
+    # response sets it explicitly. A client that receives no such key is
+    # talking to a server predating this field and derives freshness from
+    # `spool_reported_at` itself.
+    spool_stale: bool = False
+    # What that agent's spool has *permanently destroyed*, and the window of
+    # observations that is gone. A separate group from the three above rather
+    # than a flag on them, because they describe different futures: a backlog
+    # drains, and this does not. The fleet table shows both, and phase 4's
+    # "this reading is stale" is a third, equally separate fact — the row must
+    # be able to say "history was destroyed" and "the current backlog is
+    # unknown" at the same time, since an operator needs both.
+    #
+    # `None` means "never reported" (an agent predating the fields) and stays
+    # distinct from 0 ("reported, and nothing has been destroyed"), so the UI
+    # renders nothing rather than a reassuring zero.
+    spool_evicted_frames: int | None = None
+    spool_evicted_bytes: int | None = None
+    spool_evicted_oldest_at: datetime | None = None
+    spool_evicted_newest_at: datetime | None = None
+    spool_evicted_reported_at: datetime | None = None
 
 
 class AgentSeriesPoint(BaseModel):
@@ -227,13 +291,13 @@ class PairingLookupResponse(BaseModel):
 class ApproveRequest(BaseModel):
     hardware_id: int | None = None
     # Explicit record of which host-link path the approver took
-    # (`AgentApprovalModal`, Task 18) — "accept" the proposed match, "select"
+    # (`AgentApprovalModal`, the design) — "accept" the proposed match, "select"
     # a different existing Hardware row, "create" one from reported facts
     # (frontend creates it via POST /hardware first, then approves with the
     # resulting id), or leave the agent "unlinked". Purely descriptive for
     # the approval event's audit detail; `hardware_id` above is what
     # actually drives linkage. Optional/omittable so existing untyped
-    # callers (and tests predating Task 18) keep working.
+    # callers (and tests predating the design) keep working.
     host_link_action: Literal["accept", "select", "create", "unlinked"] | None = None
     capabilities: dict[str, CapabilityValue] | None = None
 
@@ -275,7 +339,7 @@ class ServerKeyFleetAdoption(BaseModel):
 
     Derived from `Agent.server_pk_current_pinned_at` /
     `server_pk_successor_pinned_at`, which exist for exactly this (see the
-    comment at db/models.py:432-450). Those columns record which key an
+    comment on `Agent` in db/models/agents.py). Those columns record which key an
     agent's handshakes have USED — the server has no visibility into whether
     an agent's local state directory holds the successor key. Field names and
     all UI copy must preserve that distinction.
@@ -306,7 +370,7 @@ class ServerKeyPendingAgent(BaseModel):
 
 
 class ServerKeyRotationStatus(BaseModel):
-    """Task 28: the server's identity-key rotation state, as surfaced to
+    """the server's identity-key rotation state, as surfaced to
     admins. Never carries key material — fingerprints only, same convention
     as `app.core.agent_crypto.server_fingerprint`."""
 
@@ -316,3 +380,100 @@ class ServerKeyRotationStatus(BaseModel):
     started_at: datetime | None = None
     overlap_expires_at: datetime | None = None
     fleet: ServerKeyFleetAdoption | None = None
+
+
+class TLSPinPendingAgent(BaseModel):
+    """One active agent that has not confirmed the successor TLS policy.
+
+    `bucket` mirrors `ServerKeyPendingAgent`'s naming: "current" means the
+    agent has dialed since the rotation began but matched the outgoing
+    policy; "unseen" means it has not reported a policy at all — either it
+    has not dialed, or it predates the `tls_pin_kind` field entirely. Both
+    buckets block activation, because both describe an agent the cutover
+    would strand.
+    """
+
+    id: int
+    hostname: str | None
+    name: str | None
+    last_seen_at: datetime | None
+    bucket: str
+
+
+class TLSPinRotationStatus(BaseModel):
+    """the TLS trust rotation's state, as surfaced to admins.
+
+    `successor_pin_fingerprint` is a truncated digest of the successor pin,
+    never the pin itself — matching `ServerKeyRotationStatus`'s convention
+    that this endpoint family returns no key material. It is None for a
+    public-mode successor, which has no pin by definition.
+    """
+
+    active: bool
+    successor_mode: str | None = None
+    successor_pin_fingerprint: str | None = None
+    started_at: datetime | None = None
+    overlap_expires_at: datetime | None = None
+    converged: int = 0
+    unconverged: int = 0
+    #: Enrolled-but-unapproved agents. They are outside `converged`/`unconverged`
+    #: because approval state is not liveness and they cannot converge: the
+    #: `/link` socket closes a non-active agent before the rotation resend, by
+    #: design. They still hold the *current* pin from their install command, so a
+    #: cutover strands them exactly as it would an active agent — and they cannot
+    #: even reach approval afterwards. Counted here rather than folded into the
+    #: gate, which they would deadlock: they can never report readiness, so every
+    #: rotation would have to be forced.
+    pending_agents: int = 0
+
+
+class TLSPinRotateRequest(BaseModel):
+    """The certificate whose trust policy becomes the advertised successor."""
+
+    certificate_id: int
+
+
+# ── Slice B: unattended enrollment ───────────────────────────────────────────
+
+
+class EnrollmentTokenCreate(BaseModel):
+    """Mint request.
+
+    The bounds are declared here *and* in `agent_enrollment_tokens.mint_token`.
+    The schema gives the API a 422 naming the field; the service gives every
+    other caller — the CLI, a future importer — the same limits. They are what
+    bound a token's blast radius, so neither layer is decoration.
+    """
+
+    label: str = Field(min_length=1, max_length=120)
+    endpoint_id: str = Field(min_length=1)
+    capabilities: dict[str, CapabilityValue] | None = None
+    ttl_seconds: int = Field(default=3600, ge=1, le=86400)
+    max_uses: int = Field(default=1, ge=1)
+
+
+class EnrollmentTokenRead(BaseModel):
+    """A token as an operator sees it.
+
+    Carries no key material. The plaintext is returned once, by the mint route,
+    and is not recoverable afterwards — the row holds only its SHA-256.
+    """
+
+    id: int
+    label: str
+    endpoint_url: str
+    capabilities: dict[str, Any]
+    max_uses: int
+    uses: int
+    expires_at: datetime
+    revoked_at: datetime | None
+    created_at: datetime
+    #: How many agents enrolled through this token. The reason a spent or
+    #: revoked token is kept rather than deleted.
+    agent_count: int
+
+
+class EnrollmentTokenMinted(EnrollmentTokenRead):
+    """The mint response, and the only place the plaintext ever appears."""
+
+    token: str

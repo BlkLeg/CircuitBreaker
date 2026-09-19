@@ -5,33 +5,41 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Manual re-run against an arbitrary ref. The gate is the only thing standing
+  # between a branch and `main`, and when it fails for a reason outside the
+  # commit — a runner image change, a registry timeout, a flaky Testcontainer —
+  # the only recovery was to push an empty commit, which rewrites the history
+  # being gated in order to test it. This re-runs the same ref instead.
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-# REL-20, first half: determinism. Every knob that can reorder or reseed a run
-# is pinned here instead of left to the runner's defaults, and each job copies
-# these values into a run manifest it uploads, so a retained artifact says what
-# produced it rather than requiring the workflow file to be read at the same
-# revision.
+# One in-flight run per pull request, so rapid pushes do not start three full
+# copies of the gate.
 #
-#   PYTHONHASHSEED  CPython salts the hash of str and bytes per process. Left
-#                   unset, anything that iterates a set of strings — a
-#                   dict-backed cache, fixture teardown order, our own shard
-#                   assignment if it used hash() — can differ between two runs
-#                   of the same commit. Pinning it removes a whole class of
-#                   "it only fails in CI".
-#   CB_TEST_SEED    One seed the suites derive from. Fixed rather than
-#                   ${{ github.run_id }} on purpose: a per-run seed makes a
-#                   failure reproducible only after someone reads the log that
-#                   recorded it, and makes two runs of the same commit
-#                   incomparable. The seed is still recorded, so a deliberate
-#                   change to it is visible in the artifacts of both runs.
+# cancel-in-progress is scoped to pull_request deliberately: a push to `main` is
+# the run of record for an already-merged commit, and cancelling it leaves that
+# commit with no evidence — exactly the history a release bisect needs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# REL-20: determinism. Every knob that can reorder or reseed a run is pinned
+# here, and each job copies these values into an uploaded run manifest so a
+# retained artifact says what produced it.
 #
-# The second half — retention — is per job: every job below writes JUnit,
-# coverage, logs and diagnostics into `artifacts/` and uploads that directory
-# with `if: always()`, because the run that most needs its evidence kept is the
-# one that failed.
+#   PYTHONHASHSEED  CPython salts str/bytes hashing per process, so anything
+#                   iterating a set of strings can differ between two runs of
+#                   the same commit.
+#   CB_TEST_SEED    One fixed seed the suites derive from, not
+#                   ${{ github.run_id }}: a per-run seed makes two runs of the
+#                   same commit incomparable. Still recorded, so a change to it
+#                   is visible in both runs' artifacts.
+#
+# Retention is per job: each writes JUnit, coverage, logs and diagnostics into
+# `artifacts/` and uploads with `if: always()`, because the run that most needs
+# its evidence kept is the one that failed.
 env:
   PYTHONHASHSEED: "0"
   CB_TEST_SEED: "20260826"
@@ -40,16 +48,25 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-22.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
 
+      # pip's and npm's download caches only, not the installed environment:
+      # every job still runs a real `pip install -e` and `npm ci`, so the
+      # lockfiles remain the only thing deciding versions and a cache hit
+      # cannot change a resolution.
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/backend/pyproject.toml
 
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
 
       - name: Install Python deps
         run: |
@@ -77,12 +94,15 @@ jobs:
   security-gate:
     name: Security Gate
     runs-on: ubuntu-22.04
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/backend/pyproject.toml
 
       # SECURITY_SCAN_VENV has to match on both steps. security_scan.sh reads
       # it to find its toolchain and provisions the venv itself when it is
@@ -117,33 +137,21 @@ jobs:
     # 16.2 testcontainer used by tests/conftest.py. Ubuntu 22.04's pg_dump 14
     # cannot dump that server and breaks the real snapshot tests.
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     # Docker is required, not optional: tests/conftest.py boots a TimescaleDB
-    # testcontainer and sets CB_DB_URL from it BEFORE any app module is
-    # imported, so there is no sqlite-only mode to fall back to. GitHub-hosted
-    # Ubuntu runners ship with Docker already running.
+    # testcontainer and sets CB_DB_URL from it before any app module is
+    # imported, so there is no sqlite-only fallback.
     #
-    # Added 2026-08-09 (F-9). Until then no workflow ran backend pytest at all
-    # — the whole 2146-test suite was enforced locally only, so nothing found
-    # during user testing could be kept fixed. The blocker was the coverage
-    # gate in apps/backend/pyproject.toml, which demanded 60% against a real
-    # 55.42%; it is now ratcheted to the measured number, so this job's exit
-    # code means what it says.
+    # The 35+ minute docker e2e suite (apps/agent/e2e) is too slow for the PR
+    # path; .github/workflows/e2e.yml runs it nightly and per release tag.
     #
-    # The 35+ minute docker e2e suite (apps/agent/e2e) is not run here: it is
-    # too slow for the PR path. It is no longer unrun, though — AGT-01 requires
-    # it against every RC and on a schedule, so .github/workflows/e2e.yml runs
-    # it nightly and on every release tag. It does not gate publication; the
-    # header of e2e.yml says why.
-    #
-    # REL-20: sharded, because ~2900 tests behind a testcontainer is the long
-    # pole of the whole workflow. The split is by file and by blake2b of the
-    # path (tests/build/backend_shard.py), so a given test file is in the same
-    # shard on every run, on every machine and under any hash seed — "shard 3
-    # failed" names a reproducible set of tests. The coverage ratchet is not
-    # enforced per shard, because a quarter of the suite cannot reach a
-    # whole-suite threshold; the `backend-coverage` job below combines the four
-    # data files and applies the gate to the total, so the number being
-    # enforced is still the one in apps/backend/pyproject.toml.
+    # REL-20: sharded by file and by blake2b of the path
+    # (tests/build/backend_shard.py), so a file lands in the same shard on
+    # every run and under any hash seed — "shard 3 failed" names a
+    # reproducible set. The coverage ratchet is NOT enforced per shard (a
+    # quarter of the suite cannot reach a whole-suite threshold); the
+    # `backend-coverage` job below combines the four data files and gates the
+    # total.
     strategy:
       # A red shard must not cancel its siblings: cancelling them destroys
       # exactly the evidence needed to tell a shard-local failure from a
@@ -163,6 +171,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/backend/pyproject.toml
 
       - name: Install PostgreSQL 16 client
         run: |
@@ -183,6 +193,8 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
 
       - name: Build frontend (route surface under test)
         run: cd apps/frontend && npm ci && npm run build
@@ -263,12 +275,15 @@ jobs:
     # evidence regardless, so nothing is lost by not running this.
     needs: backend-tests
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/backend/pyproject.toml
 
       - name: Install Python deps
         run: |
@@ -320,27 +335,19 @@ jobs:
           retention-days: 14
 
   # ── Fresh-install migrations ─────────────────────────────────────────────────
-  # Nothing in this repo ran `alembic upgrade head` against an empty database.
-  # Both pytest conftests build their schema with Base.metadata.create_all(),
-  # and tests/integration/conftest.py sets CB_AUTO_MIGRATE=false on top, so the
-  # path every real install takes was exercised only on a user's machine. That
-  # shipped a v0.4.0 whose backend could not start: 0001_init bootstraps a fresh
-  # schema straight from live app.db.models, and 0105_backup_age_recipient then
-  # re-added a column that bootstrap had already created.
+  # `alembic upgrade head` against a genuinely empty database — the path every
+  # real install takes, and the only place it is exercised. Both pytest
+  # conftests build their schema with Base.metadata.create_all() instead.
   #
-  # Separate from backend-tests rather than folded into it, for two reasons that
-  # are both about the database. That job shards apps/backend/tests only —
-  # tests/build/backend_shard.py enumerates that directory, so tests/integration
-  # is invisible to it — and it takes its database from a testcontainer that the
-  # session fixture has already populated with create_all(). This check needs
-  # one it can create, drop, and start genuinely empty.
-  #
-  # Artifact Smoke does not cover this either. It installs the candidate .deb on
-  # a clean host and asserts version, shipped files and broker resolution, but
-  # never starts the service, so no migration runs there.
+  # Kept separate from backend-tests because that job shards
+  # apps/backend/tests only (tests/integration is invisible to
+  # backend_shard.py) and inherits a testcontainer already populated by
+  # create_all(). This needs a database it can create, drop and start empty.
+  # Artifact Smoke never starts the service, so no migration runs there.
   fresh-install-migrations:
     name: Fresh-install migrations
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16
@@ -365,6 +372,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/backend/pyproject.toml
 
       - name: Install Python deps
         run: |
@@ -386,16 +395,13 @@ jobs:
             echo "CB_TEST_SEED=${CB_TEST_SEED}"
           } | tee artifacts/run-manifest.txt
 
-      # Invoked the way `make test-backend` invokes it: from apps/backend, with
-      # the path passed explicitly. pytest takes its rootdir from the argument,
-      # so /pytest.ini governs this run — which is where `filterwarnings = error`
-      # lives, and why the backend's own --cov-fail-under does not apply to a
-      # two-test file.
+      # Invoked as `make test-backend` does: from apps/backend with the path
+      # passed explicitly, so pytest takes its rootdir from the argument and
+      # /pytest.ini governs the run (where `filterwarnings = error` lives).
       #
-      # No frontend build and no Redis or NATS: the fixture talks to PostgreSQL
-      # and runs alembic in a subprocess. CB_ALLOW_DEGRADED_DEPENDENCIES matches
-      # the Makefile so importing app.main at collection time does not demand a
-      # broker this job has no reason to run.
+      # No frontend build, Redis or NATS: the fixture only needs PostgreSQL.
+      # CB_ALLOW_DEGRADED_DEPENDENCIES matches the Makefile so importing
+      # app.main at collection time does not demand a broker.
       - name: Fresh-install migration chain
         shell: bash
         env:
@@ -436,16 +442,19 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-22.04
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26"
           cache-dependency-path: apps/agent/go.sum
 
       - name: Install frontend deps
@@ -464,16 +473,12 @@ jobs:
             echo "CB_TEST_SEED=${CB_TEST_SEED}"
           } | tee artifacts/run-manifest.txt
 
-      # REL-15: coverage is enforced and retained, not just produced. The
-      # thresholds live in vitest.config.ts so a local run fails identically;
-      # only the reporter, the seed and the log destination are added here.
+      # REL-15: thresholds live in vitest.config.ts so a local run fails
+      # identically; only the reporter, seed and log destination are added.
       #
-      # Not sharded, deliberately. Vitest's own --shard is deterministic, but
-      # the v8 coverage thresholds in vitest.config.ts apply per run, so a
-      # sharded run would need --merge-reports to keep the REL-15 gate honest —
-      # more machinery than a suite this size is worth. Determinism is what
-      # REL-20 asks for and is already true: sequence.shuffle is off, so the
-      # file order is the sorted one, and the seed below is recorded with it.
+      # Not sharded: the v8 coverage thresholds apply per run, so sharding
+      # would need --merge-reports to keep the gate honest. Order is already
+      # deterministic (sequence.shuffle is off) and the seed is recorded.
       - name: Frontend tests with coverage
         shell: bash
         run: |
@@ -494,14 +499,10 @@ jobs:
           retention-days: 14
 
       # -race is mandatory: the agent's daemon-startup ordering guarantees are
-      # only observable under the race detector (see apps/agent/Makefile). The
-      # command stays `make test` so the Makefile remains the one place that
-      # decides how the agent is tested; the extra flags arrive through GOFLAGS,
-      # scoped to this step so `go vet` below does not inherit them.
-      #
-      # -shuffle=off is go test's default and is stated anyway: REL-20 asks for
-      # a deterministic order, and a default that is never written down is a
-      # default that changes without anyone noticing.
+      # only observable under the race detector. The command stays `make test`
+      # so the Makefile remains the one place deciding how the agent is tested;
+      # flags arrive via GOFLAGS, scoped so `go vet` does not inherit them.
+      # -shuffle=off is the default, stated so it cannot drift unnoticed.
       - name: Agent tests
         shell: bash
         env:
@@ -574,20 +575,18 @@ jobs:
   browser-e2e:
     name: Browser E2E (shard ${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-22.04
+    timeout-minutes: 45
     # Pinned to the Playwright image so rendering matches the container the
     # REL-18 visual baselines are generated in. A version skew between this tag
     # and the @playwright/test version in package.json shows up as
     # unexplainable screenshot diffs.
     container:
       image: mcr.microsoft.com/playwright:v1.62.1-noble
-    # Steps in a container run as root, but the runner mounts its own home at
-    # /github/home and hands it to the job as $HOME — owned by the image's
-    # `pwuser`, not by root. Firefox refuses to start in that situation
-    # ("Running Nightly as root in a regular user's session is not supported"),
-    # which is why all 15 firefox specs failed to launch a browser at all while
-    # chromium, webkit and mobile-chrome passed. /root is root's own directory,
-    # so the ownership check succeeds. This is the workaround Playwright itself
-    # prints in the failure message. Nothing in this job needs $HOME to persist.
+    # Steps in a container run as root, but the runner mounts $HOME at
+    # /github/home owned by the image's `pwuser`. Firefox refuses to start in
+    # that situation ("Running Nightly as root in a regular user's session is
+    # not supported"); /root is root's own directory, so the check succeeds.
+    # Nothing in this job needs $HOME to persist.
     env:
       HOME: /root
     # REL-20: Playwright's --shard is deterministic by construction — it sorts
@@ -602,6 +601,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # No `cache: npm` here, unlike every other job: this one runs inside the
+      # Playwright container with HOME forced to /root, so the directory the
+      # cache step saves is not the one restored next run. The mismatch is
+      # silent — a cache that never hits costs an upload per shard for nothing.
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
@@ -656,3 +659,37 @@ jobs:
             artifacts/
           if-no-files-found: warn
           retention-days: 14
+
+  # ── Browser E2E aggregate ────────────────────────────────────────────────────
+  # The stable check-run name branch protection can require.
+  #
+  # A matrix produces `Browser E2E (shard 1/2)` and `(shard 2/2)`, never a bare
+  # `Browser E2E`. Requiring the shard names instead would couple the branch
+  # settings to the shard count: adding a third silently stops enforcing it,
+  # because a required check that no longer exists blocks merges while a new one
+  # nobody required does not. This job's value is entirely in `needs` and the
+  # assertion below.
+  browser-e2e-gate:
+    name: Browser E2E
+    needs: browser-e2e
+    # Required, and the whole point. Without it this job is skipped whenever a
+    # shard fails, and GitHub counts a skipped required check as satisfied — so
+    # the aggregate would turn red shards green, which is worse than the naming
+    # bug it replaces. `always()` makes it run regardless, and the step decides.
+    if: always()
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Assert every Playwright shard passed
+        env:
+          # The matrix's combined result: `success` only when every leg
+          # succeeded, `failure` if any leg failed, and `skipped`/`cancelled`
+          # for the cases that must not read as a pass either.
+          SHARDS_RESULT: ${{ needs.browser-e2e.result }}
+        run: |
+          echo "browser-e2e matrix result: ${SHARDS_RESULT}"
+          if [ "${SHARDS_RESULT}" != "success" ]; then
+            echo "::error::browser E2E did not pass (matrix result: ${SHARDS_RESULT})"
+            exit 1
+          fi
+          echo "all Playwright shards passed"

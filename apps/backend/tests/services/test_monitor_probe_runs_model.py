@@ -1,9 +1,9 @@
-"""The two lifecycle rules §1 pushes down into the database itself (Task 6).
+"""The two lifecycle rules §1 pushes down into the database itself.
 
 `monitor_probe_runs` is the durable lease behind a remote check, so "one
 in-flight run per monitor" and "an agent with assignments cannot be deleted"
 are enforced by constraints rather than by whichever caller remembers to look.
-The dispatcher's pre-check (D-6) and the delete-409 wrapper (Task 14) sit on
+The dispatcher's pre-check and the delete-409 wrapper sit on
 top of these; both would be defeated by a concurrent second caller if the
 database were not the backstop.
 """

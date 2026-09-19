@@ -496,7 +496,15 @@ def test_revoking_an_agent_records_the_reason(db_session, factories):
     summary = cli_admin.revoke_agent(db_session, admin, agent.id, "decommissioned")
     assert summary.status == "revoked"
     entries = _audit_entries(db_session, "agent_revoked")
-    assert json.loads(entries[0].details)["reason"] == "decommissioned"
+    assert len(entries) == 1, "one chained entry per revocation, whatever the surface"
+    # Read from `diff`, not `details`: since slice 4.3 (F17) the single audit
+    # entry for a revocation is the one `agent_registry.record_event` writes,
+    # and it carries the event detail in write_log's `diff` column. The CLI no
+    # longer writes a second row of its own — its `via` provenance rides on
+    # this same entry instead.
+    payload = json.loads(entries[0].diff)
+    assert payload["reason"] == "decommissioned"
+    assert payload["via"] == "cli"
 
 
 def test_agent_list_filters_by_status(db_session, factories):
@@ -536,7 +544,7 @@ def test_the_cli_resolves_the_same_alembic_ini_the_server_upgrades_with(monkeypa
     """
     import alembic.command
 
-    import app.main as app_main
+    import app.startup.schema as startup_schema
 
     upgraded: list[str] = []
     stamped: list[str] = []
@@ -548,7 +556,7 @@ def test_the_cli_resolves_the_same_alembic_ini_the_server_upgrades_with(monkeypa
     monkeypatch.setattr(
         alembic.command, "stamp", lambda config, revision: stamped.append(config.config_file_name)
     )
-    app_main.run_alembic_upgrade()
+    startup_schema.run_alembic_upgrade()
 
     expected = str(cli_admin.alembic_ini_path())
     assert upgraded == [expected]
@@ -650,21 +658,21 @@ def test_upgrade_goes_through_the_servers_own_path_and_nothing_else(monkeypatch)
     ``pg_advisory_xact_lock`` that serialises it against the API's own
     auto-migrate phase. Calling Alembic directly would skip all three.
     """
-    import app.main as app_main
+    import app.startup.schema as startup_schema
 
     calls: list[int] = []
-    monkeypatch.setattr(app_main, "run_alembic_upgrade", lambda: calls.append(1))
+    monkeypatch.setattr(startup_schema, "run_alembic_upgrade", lambda: calls.append(1))
     cli_admin.apply_migrations()
     assert calls == [1]
 
 
 def test_a_failed_upgrade_is_an_operator_message_not_a_traceback(monkeypatch):
-    import app.main as app_main
+    import app.startup.schema as startup_schema
 
     def _boom() -> None:
         raise RuntimeError("Can't locate revision identified by 'deadbeef'")
 
-    monkeypatch.setattr(app_main, "run_alembic_upgrade", _boom)
+    monkeypatch.setattr(startup_schema, "run_alembic_upgrade", _boom)
     with pytest.raises(AdminError) as excinfo:
         cli_admin.apply_migrations()
     assert "deadbeef" in str(excinfo.value)

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -64,8 +65,7 @@ func generateTestKeypair(t *testing.T) (priv, pub [32]byte) {
 }
 
 // testResponderSession mirrors enroll_test.go's helper of the same name —
-// duplicated per Task 11's plan note since this codebase has no shared Go
-// test-utility package yet.
+// duplicated because this codebase has no shared Go test-utility package yet.
 type testResponderSession struct {
 	hs   *noise.HandshakeState
 	send *noise.CipherState // c2: responder -> initiator
@@ -211,7 +211,7 @@ func TestRun_SendsHeartbeatsAndAppliesCapabilitiesSet(t *testing.T) {
 		OnConnected: func() {
 			atomic.AddInt32(&connectedCount, 1)
 		},
-		OnUpdate: func(payload json.RawMessage, send SendUpdateStatus) error {
+		OnUpdate: func(payload json.RawMessage) error {
 			var instr struct {
 				Version string `json:"version"`
 			}
@@ -220,9 +220,6 @@ func TestRun_SendsHeartbeatsAndAppliesCapabilitiesSet(t *testing.T) {
 			}
 			if instr.Version != "0.2.0" {
 				t.Errorf("OnUpdate payload version = %q, want %q", instr.Version, "0.2.0")
-			}
-			if err := send(instr.Version, "started", ""); err != nil {
-				t.Errorf("send(started) error = %v", err)
 			}
 			atomic.AddInt32(&updateApplied, 1)
 			return nil
@@ -249,11 +246,10 @@ func TestRun_SendsHeartbeatsAndAppliesCapabilitiesSet(t *testing.T) {
 }
 
 // TestRun_OnUpdateSendsStartedThenFailedStatusFrames drives an `update` frame
-// whose OnUpdate callback reports "started" then simulates a download
-// failure by reporting "failed" with a message — the two update.status calls
-// Task 24 expects for a failing update, both sent over the same live
-// connection the `update` frame arrived on, in order, before any retry or
-// reconnect.
+// whose OnUpdate accepts the instruction, then queues the "started" and
+// "failed" pair onto UpdateStatusFrames exactly as the daemon's update worker
+// does when a download fails. Both must be sent over the same live connection
+// the `update` frame arrived on, in order, drained by the event-loop goroutine.
 func TestRun_OnUpdateSendsStartedThenFailedStatusFrames(t *testing.T) {
 	serverPriv, serverPub := generateTestKeypair(t)
 
@@ -345,24 +341,30 @@ func TestRun_OnUpdateSendsStartedThenFailedStatusFrames(t *testing.T) {
 		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
 	}
 
+	// The worker's side of the contract, exercised as the daemon drives it:
+	// OnUpdate is enqueue-only (here: accept), and every status report is a
+	// channel send the event loop drains. Buffered like the daemon's own
+	// updateStatusQueueDepth so the "worker" never blocks on the loop.
+	statusC := make(chan UpdateStatusEvent, 4)
+
 	opts := Options{
 		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
 		Key:    key, AgentVersion: "0.1.0-test",
-		OnUpdate: func(payload json.RawMessage, send SendUpdateStatus) error {
+		OnUpdate: func(payload json.RawMessage) error {
 			var instr struct {
 				Version string `json:"version"`
 			}
 			if err := json.Unmarshal(payload, &instr); err != nil {
 				return err
 			}
-			if err := send(instr.Version, "started", ""); err != nil {
-				t.Errorf("send(started) error = %v", err)
-			}
-			if err := send(instr.Version, "failed", "simulated download failure"); err != nil {
-				t.Errorf("send(failed) error = %v", err)
-			}
-			return fmt.Errorf("simulated download failure")
+			// The worker reports started as soon as it picks the job up,
+			// then failed when the download breaks. Both are plain channel
+			// sends from here — a goroutine the link knows nothing about.
+			statusC <- UpdateStatusEvent{Version: instr.Version, Phase: "started"}
+			statusC <- UpdateStatusEvent{Version: instr.Version, Phase: "failed", ErrMsg: "simulated download failure"}
+			return nil
 		},
+		UpdateStatusFrames: statusC,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -385,7 +387,7 @@ func TestRun_OnUpdateSendsStartedThenFailedStatusFrames(t *testing.T) {
 // hello.ack with ReportPendingUpdateOutcome reporting a pending rollback —
 // the situation main.go's rollback goroutine leaves behind for the next
 // process to report, since it has no live connection of its own at the
-// moment it decides to roll back (Task 24). Asserts the agent sends exactly
+// moment it decides to roll back. Asserts the agent sends exactly
 // one update.status(rolled_back) frame right after the accepted hello.ack,
 // and that ClearPendingUpdateOutcome fires only once the send actually
 // succeeded.
@@ -469,11 +471,11 @@ func TestRun_ReportsRolledBackOnceConnectedThenClears(t *testing.T) {
 	opts := Options{
 		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
 		Key:    key, AgentVersion: "0.1.0-test",
-		ReportPendingUpdateOutcome: func() (string, bool) {
+		ReportPendingUpdateOutcome: func() (string, string, bool) {
 			if !pending {
-				return "", false
+				return "", "", false
 			}
-			return "0.3.0", true
+			return "0.3.0", "rolled_back", true
 		},
 		ClearPendingUpdateOutcome: func() {
 			pending = false
@@ -494,6 +496,208 @@ func TestRun_ReportsRolledBackOnceConnectedThenClears(t *testing.T) {
 	}
 	if atomic.LoadInt32(&cleared) != 1 {
 		t.Errorf("ClearPendingUpdateOutcome called %d time(s), want 1", cleared)
+	}
+}
+
+// TestRun_ReportsSucceededPendingOutcomeOnceConnectedThenClears is the
+// succeeded twin of TestRun_ReportsRolledBackOnceConnectedThenClears: a prior
+// process persisted phase=succeeded before re-exec, the live send was lost, and
+// this process must replay update.status(succeeded) on the first accepted
+// hello.ack and clear the durable record only after that send works.
+func TestRun_ReportsSucceededPendingOutcomeOnceConnectedThenClears(t *testing.T) {
+	serverPriv, serverPub := generateTestKeypair(t)
+	var mu atomicStatusList
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade: %v", err)
+		}
+		defer conn.Close()
+
+		responder := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			t.Errorf("responder handshake: %v", err)
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+
+		_, helloCt, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("expected a hello frame after handshake: %v", err)
+			return
+		}
+		if _, err := responder.Decrypt(helloCt); err != nil {
+			t.Errorf("decrypt hello: %v", err)
+			return
+		}
+
+		ack := map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"accepted": true, "agent_id": 1},
+		}
+		ackBytes, _ := json.Marshal(ack)
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(ackBytes))
+
+		for {
+			_, ct, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			pt, err := responder.Decrypt(ct)
+			if err != nil {
+				return
+			}
+			var f struct {
+				Type    string          `json:"type"`
+				Payload json.RawMessage `json:"payload"`
+			}
+			json.Unmarshal(pt, &f)
+			if f.Type == "update.status" {
+				var st struct {
+					Version string `json:"version"`
+					Phase   string `json:"phase"`
+					Error   string `json:"error"`
+				}
+				json.Unmarshal(f.Payload, &st)
+				mu.add(st.Version, st.Phase, st.Error)
+			}
+		}
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	pending := true
+	var cleared int32
+	opts := Options{
+		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
+		Key:    key, AgentVersion: "0.1.0-test",
+		ReportPendingUpdateOutcome: func() (string, string, bool) {
+			if !pending {
+				return "", "", false
+			}
+			return "0.9.0", "succeeded", true
+		},
+		ClearPendingUpdateOutcome: func() {
+			pending = false
+			atomic.AddInt32(&cleared, 1)
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = Run(ctx, opts)
+
+	got := mu.snapshot()
+	if len(got) != 1 {
+		t.Fatalf("observed %d update.status frames, want 1: %+v", len(got), got)
+	}
+	if got[0] != (statusEntry{"0.9.0", "succeeded", ""}) {
+		t.Errorf("update.status = %+v, want {0.9.0 succeeded }", got[0])
+	}
+	if atomic.LoadInt32(&cleared) != 1 {
+		t.Errorf("ClearPendingUpdateOutcome called %d time(s), want 1", cleared)
+	}
+}
+
+// TestRun_FailedPendingOutcomeSendDoesNotClear is the negative of the
+// clear-after-send rule: when the first accepted connection dies before the
+// pending-outcome write can land, the durable record must stay so the next
+// reconnect can retry. Clearing on a failed WriteMessage would erase the only
+// evidence that the prior process finished the update.
+func TestRun_FailedPendingOutcomeSendDoesNotClear(t *testing.T) {
+	serverPriv, serverPub := generateTestKeypair(t)
+	var connections atomic.Int32
+	var cleared int32
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		n := connections.Add(1)
+		if n > 1 {
+			// Refuse reconnects so a later successful send cannot clear the
+			// record and hide a first-connection Clear that should not fire.
+			conn.Close()
+			return
+		}
+
+		responder := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			conn.Close()
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			conn.Close()
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+
+		_, helloCt, err := conn.ReadMessage()
+		if err != nil {
+			conn.Close()
+			return
+		}
+		if _, err := responder.Decrypt(helloCt); err != nil {
+			conn.Close()
+			return
+		}
+
+		ack, _ := json.Marshal(map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"accepted": true, "agent_id": 1},
+		})
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(ack))
+
+		// Hard-RST the TCP socket so the agent's follow-up update.status
+		// WriteMessage fails rather than buffering into a half-closed peer.
+		if tcp, ok := conn.NetConn().(*net.TCPConn); ok {
+			_ = tcp.SetLinger(0)
+		}
+		conn.Close()
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	opts := Options{
+		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
+		Key:    key, AgentVersion: "0.1.0-test",
+		ReportPendingUpdateOutcome: func() (string, string, bool) {
+			return "0.9.0", "succeeded", true
+		},
+		ClearPendingUpdateOutcome: func() {
+			atomic.AddInt32(&cleared, 1)
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = Run(ctx, opts)
+
+	if atomic.LoadInt32(&cleared) != 0 {
+		t.Errorf("ClearPendingUpdateOutcome called %d time(s), want 0 — a failed send must leave the pending outcome for the next reconnect", cleared)
 	}
 }
 
@@ -1088,24 +1292,21 @@ func TestRun_OnDisconnectedNotCalledOnCleanShutdown(t *testing.T) {
 	}
 }
 
-// TestRunOnce_DropBeforeStabilityWindowIsNotStable drives an accepted
-// hello.ack and then has the fake server close the connection immediately
-// — well before stabilityWindow elapses. runOnce must report stable=false:
-// an accepted hello.ack alone isn't enough to reset backoff, the connection
-// also has to survive the stability window (Finding 1 of the task-4
-// review).
-func TestRunOnce_DropBeforeStabilityWindowIsNotStable(t *testing.T) {
-	originalWindow := stabilityWindow
-	stabilityWindow = 300 * time.Millisecond
-	defer func() { stabilityWindow = originalWindow }()
+// The stability window is gone: an accepted hello.ack now resets the reconnect
+// ladder on its own, and a link that keeps being accepted and then dropping is
+// caught by the flap floor in backoffState instead (see backoff_test.go). What
+// runOnce still owes the retry loop is an honest report of *whether* it was
+// accepted and for how long, which is what these two cover.
 
+func TestRunOnce_ReportsAcceptanceAndHowLongTheRunLasted(t *testing.T) {
 	serverPriv, serverPub := generateTestKeypair(t)
 
 	upgrader := websocket.Upgrader{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			t.Fatalf("upgrade: %v", err)
+			t.Errorf("upgrade: %v", err)
+			return
 		}
 		defer conn.Close()
 
@@ -1123,88 +1324,6 @@ func TestRunOnce_DropBeforeStabilityWindowIsNotStable(t *testing.T) {
 
 		_, helloCt, err := conn.ReadMessage()
 		if err != nil {
-			t.Errorf("expected a hello frame after handshake: %v", err)
-			return
-		}
-		if _, err := responder.Decrypt(helloCt); err != nil {
-			t.Errorf("decrypt hello: %v", err)
-			return
-		}
-
-		ack := map[string]any{
-			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
-			"payload": map[string]any{"accepted": true, "agent_id": 1},
-		}
-		ackBytes, _ := json.Marshal(ack)
-		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(ackBytes))
-		// Deliberately drop the connection right after the accepted
-		// hello.ack — well inside stabilityWindow (300ms) — by returning
-		// immediately, which fires the deferred conn.Close().
-	}))
-	defer srv.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
-	dir := t.TempDir()
-	key, err := enroll.LoadOrCreateDeviceKey(dir)
-	if err != nil {
-		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
-	}
-
-	var connectedCount int32
-	opts := Options{
-		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
-		Key:    key, AgentVersion: "0.1.0-test",
-		OnConnected: func() {
-			atomic.AddInt32(&connectedCount, 1)
-		},
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	stable, _ := runOnce(ctx, opts)
-
-	if atomic.LoadInt32(&connectedCount) == 0 {
-		t.Fatal("OnConnected never fired — accepted hello.ack should still trigger it")
-	}
-	if stable {
-		t.Error("runOnce reported stable=true for a connection that dropped before stabilityWindow elapsed, want false")
-	}
-}
-
-// TestRunOnce_StaysUpPastStabilityWindowIsStable drives an accepted
-// hello.ack and keeps the connection alive past stabilityWindow (the test
-// context deadline extends beyond it). runOnce must report stable=true
-// once the window has elapsed while the connection is still up.
-func TestRunOnce_StaysUpPastStabilityWindowIsStable(t *testing.T) {
-	originalWindow := stabilityWindow
-	stabilityWindow = 150 * time.Millisecond
-	defer func() { stabilityWindow = originalWindow }()
-
-	serverPriv, serverPub := generateTestKeypair(t)
-
-	upgrader := websocket.Upgrader{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Fatalf("upgrade: %v", err)
-		}
-		defer conn.Close()
-
-		responder := newTestResponderSession(t, serverPriv, serverPub)
-		_, msg1, err := conn.ReadMessage()
-		if err != nil {
-			return
-		}
-		msg2, err := responder.ReadHandshakeMessage(msg1)
-		if err != nil {
-			t.Errorf("responder handshake: %v", err)
-			return
-		}
-		conn.WriteMessage(websocket.BinaryMessage, msg2)
-
-		_, helloCt, err := conn.ReadMessage()
-		if err != nil {
-			t.Errorf("expected a hello frame after handshake: %v", err)
 			return
 		}
 		if _, err := responder.Decrypt(helloCt); err != nil {
@@ -1219,8 +1338,6 @@ func TestRunOnce_StaysUpPastStabilityWindowIsStable(t *testing.T) {
 		ackBytes, _ := json.Marshal(ack)
 		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(ackBytes))
 
-		// Stay up well past stabilityWindow (150ms) — keep reading so the
-		// connection isn't torn down by the client's own writes stalling.
 		for {
 			_, ct, err := conn.ReadMessage()
 			if err != nil {
@@ -1244,28 +1361,103 @@ func TestRunOnce_StaysUpPastStabilityWindowIsStable(t *testing.T) {
 	opts := Options{
 		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
 		Key:    key, AgentVersion: "0.1.0-test",
-		OnConnected: func() {
-			atomic.AddInt32(&connectedCount, 1)
-		},
+		OnConnected: func() { atomic.AddInt32(&connectedCount, 1) },
 	}
 
-	// Deadline comfortably past stabilityWindow (150ms) so runOnce is still
-	// connected when the window elapses, then returns via ctx.Err().
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
 	defer cancel()
-	stable, err := runOnce(ctx, opts)
+	outcome, err := runOnce(ctx, opts)
 
 	if atomic.LoadInt32(&connectedCount) == 0 {
 		t.Fatal("OnConnected never fired")
 	}
-	if !stable {
-		t.Error("runOnce reported stable=false for a connection that stayed up past stabilityWindow, want true")
+	if !outcome.reachedHelloAck {
+		t.Error("reachedHelloAck = false for a session the server accepted, want true")
+	}
+	if outcome.upFor <= 0 {
+		t.Errorf("upFor = %v, want a positive duration measured from the accepted hello.ack", outcome.upFor)
 	}
 	if err != context.DeadlineExceeded {
 		t.Errorf("runOnce err = %v, want context.DeadlineExceeded", err)
 	}
 }
 
+// A server that accepts the socket and completes Noise but never sends an
+// accepted hello.ack — a cold connection pool in the seconds after a restart —
+// must fail fast and classify as the server coming back. Without its own
+// deadline it costs a full 60s read timeout and advances the backoff, since a
+// run that never reached hello.ack is indistinguishable from one that failed.
+func TestRunOnce_HelloAckTimeoutFailsFastAndIsTransient(t *testing.T) {
+	original := helloAckTimeout
+	helloAckTimeout = 200 * time.Millisecond
+	defer func() { helloAckTimeout = original }()
+
+	serverPriv, serverPub := generateTestKeypair(t)
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		responder := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			t.Errorf("responder handshake: %v", err)
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+
+		// Read the hello and then stall — never ack. This is the shape of a
+		// server whose socket is up but whose database is still warming.
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	opts := Options{
+		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
+		Key:    key, AgentVersion: "0.1.0-test",
+	}
+
+	// Generous relative to helloAckTimeout, tight relative to the 60s read
+	// deadline: if the deadline is not armed this test times out instead.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	outcome, err := runOnce(ctx, opts)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, errHelloAckTimeout) {
+		t.Fatalf("runOnce err = %v, want errHelloAckTimeout", err)
+	}
+	if outcome.reachedHelloAck {
+		t.Error("reachedHelloAck = true, want false — the server never accepted the session")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("runOnce took %v, want it bounded by helloAckTimeout (%v)", elapsed, helloAckTimeout)
+	}
+	if got := classifyFailure(err, outcome.reachedHelloAck); got != classComingBack {
+		t.Errorf("classifyFailure = %v, want %v — a stalled server is one that is coming back", got, classComingBack)
+	}
+}
 func (s *testResponderSession) RekeySend() { s.send.Rekey() }
 func (s *testResponderSession) RekeyRecv() { s.recv.Rekey() }
 
@@ -1402,7 +1594,7 @@ func TestRun_RekeysBothDirectionsOverMultipleIntervals(t *testing.T) {
 
 			switch f.Type {
 			case "transport.rekey":
-				// The announcement itself arrived under the old key (it just
+				// The announcement itself arrived under the previous key (it just
 				// decrypted); rotate the receive cipher to match the agent's
 				// send cipher, which it rotated right after sending this.
 				seenAgentRekeys++
@@ -1533,7 +1725,7 @@ func newHandshakenSession(t *testing.T) (*noiseconn.Session, *noise.CipherState,
 	return session, responder.recv, responder.send
 }
 
-// ── Task 28: server-key rotation (key.rotate kind="server") ────────────────
+// ── Server-key rotation (key.rotate kind="server") ─────────────────────────
 
 func TestServerKeyCandidates_NoStateDirReturnsOnlyConfigKey(t *testing.T) {
 	cfg := &config.Config{ServerStaticPK: strings.Repeat("aa", 32)}
@@ -1587,7 +1779,7 @@ func TestServerKeyCandidates_SkipsSuccessorIdenticalToCurrent(t *testing.T) {
 }
 
 // TestRunOnce_PersistsSuccessorServerKeyFromKeyRotateFrame proves the
-// receiving half of Task 28's fix: an inbound `key.rotate` (kind="server")
+// receiving half of server-key rotation: an inbound `key.rotate` (kind="server")
 // frame durably persists its successor_pk via config.SaveServerKeyRotation,
 // so it survives past this connection (and a restart).
 func TestRunOnce_PersistsSuccessorServerKeyFromKeyRotateFrame(t *testing.T) {
@@ -1689,8 +1881,8 @@ func TestRunOnce_PersistsSuccessorServerKeyFromKeyRotateFrame(t *testing.T) {
 	}
 }
 
-// TestRunOnce_IgnoresKeyRotateWithDeviceKind proves kind="device" — Task 27's
-// own agent -> server direction, never something the server sends — is
+// TestRunOnce_IgnoresKeyRotateWithDeviceKind proves kind="device" — the
+// agent's own agent -> server direction, never something the server sends — is
 // logged and left alone rather than persisted as a trusted server key.
 func TestRunOnce_IgnoresKeyRotateWithDeviceKind(t *testing.T) {
 	serverPriv, serverPub := generateTestKeypair(t)
@@ -1781,15 +1973,11 @@ func TestRunOnce_IgnoresKeyRotateWithDeviceKind(t *testing.T) {
 }
 
 // TestRunOnce_AcceptsSuccessorServerKeyOncePreviousKeyIsNoLongerValid proves
-// the initiator half of Task 28's fix: with a successor key already
-// persisted (as TestRunOnce_PersistsSuccessorServerKeyFromKeyRotateFrame
-// proved key.rotate delivers), the agent still connects successfully even
-// though its config file's ServerStaticPK now names a key the server no
-// longer holds — mirroring the server's own accept-either-key stance from
-// the other direction: candidate 1 (the stale config key) fails the Noise
-// handshake against this server, and the agent falls back to candidate 2
-// (the persisted successor) within the same connection attempt, no reconnect
-// or backoff wait required.
+// the initiator half of server-key rotation: with a successor key already
+// persisted, the agent still connects successfully even though its config
+// file's ServerStaticPK now names a key the server no longer holds — mirroring
+// the server's own accept-either-key stance from the other direction:
+// candidate 1 (the stale config key) fails the Noise
 func TestRunOnce_AcceptsSuccessorServerKeyOncePreviousKeyIsNoLongerValid(t *testing.T) {
 	staleServerPriv, staleServerPub := generateTestKeypair(t)
 	_ = staleServerPriv // never used to build a responder — this server no longer holds it
@@ -2092,16 +2280,14 @@ func discoveryInboundFrames() []map[string]any {
 	}
 }
 
-// TestRun_DeliversDiscoveryRequestAndCancelToTheirCallbacks is Task 14's inbound half, and the
-// regression guard for the gap it closed: before these two switch arms existed the frame types
-// decoded cleanly, passed the seq guard and were then dropped on the floor. Server-side that is
-// indistinguishable from an agent that never heard the dispatch — the scan job sits at
-// `running` with no finding and no refusal until its dispatch deadline expires.
+// TestRun_DeliversDiscoveryRequestAndCancelToTheirCallbacks guards the inbound
+// half: without these two switch arms the frame types decode cleanly, pass the
+// seq guard and are then dropped on the floor. Server-side that is
+// indistinguishable from an agent that never heard the dispatch — the scan job
+// sits at `running` with no finding and no refusal until its dispatch deadline
+// expires.
 //
 // The payload is asserted field by field for the same reason the probe test above does it:
-// dispatch_id is the only identifier a finding may be posted against, and every bound here is
-// re-checked by the agent against its own grant, so anything this path re-encodes or normalizes
-// makes the whole dispatch either unmatchable or wrongly authorized.
 func TestRun_DeliversDiscoveryRequestAndCancelToTheirCallbacks(t *testing.T) {
 	wsURL, serverPK := serveInboundFrames(t, discoveryInboundFrames()...)
 
@@ -2219,7 +2405,7 @@ func TestRunOnce_DiscoveryFramesSurviveAMissingOrRefusingHandler(t *testing.T) {
 				OnConnected:       func() {},
 				OnRejected:        func(string) {},
 				OnCapabilitiesSet: func(json.RawMessage) error { return nil },
-				OnUpdate:          func(json.RawMessage, SendUpdateStatus) error { return nil },
+				OnUpdate:          func(json.RawMessage) error { return nil },
 			}
 			if tt.install {
 				refuse := func(json.RawMessage) error {

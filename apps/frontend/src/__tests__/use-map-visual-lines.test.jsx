@@ -1,6 +1,6 @@
 import { act, renderHook } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { useMapVisualLines } from '../hooks/useMapVisualLines';
+import { useMapVisualLines } from '../features/map/hooks/useMapVisualLines';
 
 function makeArgs(overrides = {}) {
   let visualLinesState = [

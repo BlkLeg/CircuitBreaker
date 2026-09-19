@@ -1,4 +1,4 @@
-"""Phase 2 tests — audit log retention purge."""
+"""Audit log retention purge."""
 
 from datetime import timedelta
 

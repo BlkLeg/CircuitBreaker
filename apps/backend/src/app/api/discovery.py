@@ -49,20 +49,29 @@ from app.schemas.discovery import (
     ScanLogOut,
     ScanResultOut,
 )
+from app.schemas.docker import (
+    DockerManagedContainerOut,
+    DockerParentAssignment,
+    DockerSourceOut,
+    DockerSyncAccepted,
+    DockerSyncRequest,
+    DockerSyncRunOut,
+)
 from app.schemas.proxmox import ProxmoxDiscoverRunOut
 from app.services import (
     agent_discovery,
     agent_registry,
+    discovery_admission,
+    discovery_dispatch,
     discovery_eligibility,
     discovery_profiles_service,
+    discovery_result_service,
     discovery_service,
 )
 from app.services.bulk_suggest import get_vendor_catalog, suggest_bulk_actions
+from app.services.discovery_admission import AgentExecutionLocationError
 from app.services.discovery_safe import is_docker_socket_available
-from app.services.discovery_service import (
-    AgentExecutionLocationError,
-    _has_raw_socket_privilege,
-)
+from app.services.discovery_service import _has_raw_socket_privilege
 from app.services.log_service import write_log
 from app.services.proxmox_service import get_proxmox_discover_run, list_proxmox_discover_runs
 from app.services.settings_service import get_or_create_settings
@@ -77,7 +86,7 @@ router = APIRouter(tags=["discovery"], dependencies=[require_scope("read", "*")]
 
 
 def _execution_location_http_error(exc: AgentExecutionLocationError) -> HTTPException:
-    """The one 422 an agent-targeted request is refused with (Task 19).
+    """The one 422 an agent-targeted request is refused with.
 
     Byte-for-byte the body `discovery_profiles_service._validate_execution_location`
     already returns on profile save, so a frontend switches on a single closed
@@ -217,12 +226,23 @@ def get_readiness(db: Session = Depends(get_db), user: User = require_role("admi
 
 
 @router.get("/status", response_model=DiscoveryStatusOut)
-async def get_discovery_status(db: Session = Depends(get_db)):
+def get_discovery_status(db: Session = Depends(get_db)) -> DiscoveryStatusOut:
+    """Current discovery state — the heaviest read on the navigation path.
+
+    Deliberately a **sync** handler (route slice 2.5). It awaits nothing, and
+    `_compute_discovery_status` is all blocking work: several ORM queries, an
+    APScheduler introspection, and a Docker socket probe that can stat a path
+    on a stalled mount. Declared `async def`, every one of those ran on the
+    event loop and stalled every other request the worker was serving; as a
+    plain `def`, FastAPI runs it in the threadpool instead. A later refactor
+    must not put it back — `tests/build/test_nav_endpoints_off_loop.py` asserts
+    this function is not a coroutine function.
+    """
     # Always compute fresh so docker_available reflects current socket (e.g. after compose up).
     return _compute_discovery_status(db)
 
 
-# --- The "Scan from" selector (plan §6, Task 26) ---
+# --- The "Scan from" selector ---
 
 # The one collector `discovery_eligibility` actually gates on. Read from that
 # module rather than spelled out, so a build that starts requiring a second one
@@ -247,7 +267,7 @@ def _max_concurrent_hosts(config: dict[str, Any]) -> int:
 def _agent_job_counts(db: Session, agent_ids: list[int]) -> dict[int, int]:
     """Jobs each agent currently owes an answer for.
 
-    `queued` is counted alongside `running` because D-5 parks an unreachable
+    `queued` is counted alongside `running` becausethe contract parks an unreachable
     agent's job as `queued`/`waiting_for_agent`: it is work outstanding against
     that vantage point, and an operator picking an agent needs to see it.
     """
@@ -284,7 +304,7 @@ def _execution_location_verdict(
     on the latter would advertise an agent that the very next request refuses.
     """
     try:
-        discovery_service.validate_agent_execution_location(
+        discovery_admission.validate_agent_execution_location(
             db, scan_agent_id=agent_id, targets=targets
         )
     except AgentExecutionLocationError as exc:
@@ -300,13 +320,13 @@ async def get_eligible_discovery_agents(
     ),
     _user: User = require_role("viewer"),
 ) -> Any:
-    """Plan §6: every candidate vantage, and for each one why it cannot be chosen.
+    """Every candidate vantage, and for each one why it cannot be chosen.
 
     Rendered for the whole **active** fleet whether or not each agent is
-    eligible, exactly as `GET /agents/probe-eligible` does — §7's selector shows
+    eligible, exactly as `GET /agents/probe-eligible` does —the selector shows
     why an agent is unusable instead of hiding it, and an agent missing from a
     dropdown is the one failure an operator cannot debug. Pending, rejected and
-    revoked agents are not candidates at all (§7: they can never scan), so they
+    revoked agents are not candidates at all (the contract: they can never scan), so they
     are not listed; the fleet page is where an unapproved agent is dealt with.
 
     `cidr` is optional, unlike the destination `GET /agents/probe-eligible`
@@ -331,7 +351,7 @@ async def get_eligible_discovery_agents(
                 )
             ).scalars()
         }
-    paused_agents = discovery_service.paused_agent_ids(db, agent_ids)
+    paused_agents = discovery_admission.paused_agent_ids(db, agent_ids)
 
     rows = []
     for agent in agents:
@@ -353,9 +373,9 @@ async def get_eligible_discovery_agents(
                 scope_networks=list(scope.networks),
                 direct_networks=list(scope.direct_networks),
                 excluded_networks=list(scope.excluded_networks),
-                max_addresses_per_job=discovery_service.granted_address_ceiling(config),
+                max_addresses_per_job=discovery_admission.granted_address_ceiling(config),
                 max_concurrent_hosts=_max_concurrent_hosts(config),
-                tcp_ports=sorted(discovery_service.granted_tcp_ports(config)),
+                tcp_ports=sorted(discovery_admission.granted_tcp_ports(config)),
                 active_jobs=active_jobs.get(agent.id, 0),
                 assigned_profiles=assigned.get(agent.id, 0),
                 # Answered independently of `eligible`, which short-circuits on
@@ -399,7 +419,7 @@ async def update_profile(
     user: User = require_role("admin"),
     db: Session = Depends(get_db),
 ):
-    """`async def` for D-14's sake, not for concurrency: disabling a profile
+    """`async def` forthe sake, not for concurrency: disabling a profile
     cancels its in-flight agent dispatches, and the service publishes those
     `discovery.cancel` frames through `agent_discovery.schedule_discovery_cancels`
     — which needs a running event loop to schedule onto. A `def` route runs in
@@ -424,23 +444,23 @@ def delete_profile(
 def _set_profile_pause(
     db: Session, profile_id: int, actor: str, *, paused: bool
 ) -> DiscoveryProfile:
-    """M14's per-subnet hold, written directly onto the row.
+    """the per-subnet hold, written directly onto the row.
 
     Not routed through `discovery_profiles_service.update_profile`, deliberately.
     That function is the closed field list for the *configuration* of a profile —
     it re-validates the execution location, re-normalizes the CIDR, re-derives
     the scan types and, on the `enabled` transition, cancels everything the
-    profile has in flight (D-14). A pause changes none of those: it is a
+    profile has in flight. A pause changes none of those: it is a
     scheduling decision that deletes nothing, cancels nothing and must not be
     expressible through a request schema, or an API client could park an
     arbitrary timestamp on the column.
 
     `reload_discovery_jobs` is what applies it to the live schedule — that
     function removes every discovery job it owns and re-registers from
-    `discovery_service.profiles_due_for_scheduling`, which is where the three
-    pause scopes are read (Task 25). Without the reload the column would be
+    `discovery_admission.profiles_due_for_scheduling`, which is where the three
+    pause scopes are read. Without the reload the column would be
     correct while `next_scheduled` kept advertising runs that
-    `discovery_service.profile_scheduling_held` would then refuse at fire time —
+    `discovery_admission.profile_scheduling_held` would then refuse at fire time —
     a hold the operator could not see they had.
 
     Pausing an already-held profile leaves the original timestamp: `paused_at` is
@@ -477,7 +497,7 @@ def _set_profile_pause(
 def pause_profile(
     profile_id: int, user: User = require_role("admin"), db: Session = Depends(get_db)
 ):
-    """Hold one subnet's automatic discovery (plan §6). Deletes nothing."""
+    """Hold one subnet's automatic discovery. Deletes nothing."""
     return _set_profile_pause(db, profile_id, _get_actor(db, user.id), paused=True)
 
 
@@ -489,7 +509,7 @@ def resume_profile(
 
 
 class GlobalDiscoveryPauseOut(BaseModel):
-    """The fleet-wide hold's state (Fix A2 / Task 26's M14).
+    """The fleet-wide hold's state (Fix A2 / the the contract).
 
     One field, because the global scope *is* one boolean — unlike the per-subnet
     scope, whose state is the profile row, and the per-agent scope, whose state
@@ -504,23 +524,23 @@ def _set_global_pause(db: Session, actor: str, *, paused: bool) -> GlobalDiscove
     """Hold or release automatic discovery for the whole agent fleet.
 
     Scoped to **agent-executed** profiles, exactly as
-    `discovery_service.global_agent_discovery_paused` documents:
+    `discovery_admission.global_agent_discovery_paused` documents:
     `app_settings.discovery_enabled` is already the product's master discovery
     switch, and a second flag that also stopped the server's own crons would
     mean an operator holding an agent fleet silently stopped scanning the
     networks the server can see itself.
 
-    No precedence over the other two scopes, in either direction (Task 25):
+    No precedence over the other two scopes, in either direction:
     resuming globally does not resume a paused subnet or a paused agent, and
     pausing globally does not mark them. Each hold is released by the route that
     set it, or an operator would resume the wrong one and see nothing change.
 
     `reload_discovery_jobs` is what applies it to the live schedule, as in both
     sibling routes: it drops every discovery job it owns and re-registers from
-    `discovery_service.profiles_due_for_scheduling`, which is where the three
+    `discovery_admission.profiles_due_for_scheduling`, which is where the three
     pause scopes are read. Without it the column would be correct while
     `next_scheduled` kept advertising runs that
-    `discovery_service.profile_scheduling_held` would then refuse at fire time.
+    `discovery_admission.profile_scheduling_held` would then refuse at fire time.
     """
     settings = get_or_create_settings(db)
     # The mapped column by name, never a constant plus `setattr`: a
@@ -551,7 +571,7 @@ def _set_global_pause(db: Session, actor: str, *, paused: bool) -> GlobalDiscove
 def pause_agent_discovery_globally(
     user: User = require_role("admin"), db: Session = Depends(get_db)
 ):
-    """Hold every agent's automatic discovery (plan §6). Deletes nothing."""
+    """Hold every agent's automatic discovery. Deletes nothing."""
     return _set_global_pause(db, _get_actor(db, user.id), paused=True)
 
 
@@ -596,11 +616,11 @@ async def run_profile_scan(
             triggered_by=_get_actor(db, user_id),
             # Manual "Run now" is the other half of the cron path in
             # `discovery_scheduler._run_profile_job_async`, and it copies the
-            # execution location the same way and for the same reason: D-6 makes
+            # execution location the same way and for the same reason: the contract makes
             # `["agent_connect"]` the only legal scan-type list on an agent
             # profile, so a run that dropped the agent would be refused by
             # `validate_scan_types` outright, and one that somehow got past it
-            # would scan from the server's vantage point — which plan §3 forbids
+            # would scan from the server's vantage point — which the contract forbids
             # because it silently changes what the scan can see. Copied onto the
             # job rather than read back off the profile later, so repointing a
             # profile cannot rewrite the attribution of scans that already ran.
@@ -625,7 +645,7 @@ async def run_profile_scan(
 
     # B2: async def endpoint runs on the event loop — asyncio.create_task works here
     try:
-        discovery_service.schedule_discovery_scan_job(job.id)
+        discovery_dispatch.schedule_discovery_scan_job(job.id)
     except Exception as exc:
         _logger.exception("Failed to schedule scan job %s", job.id)
         raise HTTPException(status_code=500, detail="Failed to start scan.") from exc
@@ -662,13 +682,13 @@ async def run_adhoc_scan(
                 target_cidr=target_cidr,
                 vlan_ids=payload.vlan_ids,
                 scan_types=payload.scan_types,
-                nmap_arguments=payload.nmap_arguments,  # B12: thread through
+                nmap_arguments=payload.nmap_arguments,  # thread through
                 label=payload.label,
                 triggered_by=_get_actor(db, user_id),
-                # Task 19: the ad-hoc form is the second place an operator names
+                # The ad-hoc form is the second place an operator names
                 # an execution location, and `AdHocScanRequest` has carried
                 # `scan_agent_id` since the schema landed. Dropping it here left
-                # an eligible agent unreachable by hand: D-6 forbids server scan
+                # an eligible agent unreachable by hand: the contract forbids server scan
                 # types on an agent and forbids an empty list, so the only list
                 # the request can carry is `["agent_connect"]`, which
                 # `validate_scan_types` refuses outright without an agent.
@@ -691,7 +711,7 @@ async def run_adhoc_scan(
     except AgentExecutionLocationError as exc:
         # Ordered ahead of the generic arm below because it is a `ValueError`
         # subclass, and it is the one refusal whose message an operator can act
-        # on: Task 19 requires the machine-readable `reason`, and the opaque
+        # on: the design requires the machine-readable `reason`, and the opaque
         # "Invalid scan request parameters." would leave the UI nothing to
         # render. Same body as profile save — one reason vocabulary, not two.
         _logger.info("Ad-hoc scan refused at its agent: %s", exc)
@@ -727,7 +747,7 @@ async def run_adhoc_scan(
 
     try:
         for job_id in job_ids:
-            discovery_service.schedule_discovery_scan_job(job_id)
+            discovery_dispatch.schedule_discovery_scan_job(job_id)
     except Exception as task_exc:
         _logger.exception("Failed to schedule scan job(s) %s: %s", job_ids, task_exc)
         raise HTTPException(
@@ -802,7 +822,7 @@ def _close_cancelled_job(db: Session, job: ScanJob) -> agent_discovery.JobCancel
 
     Both arms are compare-and-sets predicated on the job still being open, so
     this endpoint can never overwrite a status some other writer got to first —
-    `discovery_service.finalize_agent_job` accepting the agent's terminal summary
+    `discovery_dispatch.finalize_agent_job` accepting the agent's terminal summary
     on the `/link` connection, `agent_discovery._transition_terminal` closing the
     job for a scope or grant change, or `_scan_finalize` ending a server scan.
     Those three and this are now the complete set of terminal writers for a scan
@@ -812,12 +832,12 @@ def _close_cancelled_job(db: Session, job: ScanJob) -> agent_discovery.JobCancel
     else close this row first?" has exactly one answer for the caller to act on.
     """
     if job.scan_agent_id is not None:
-        # D-14: an agent job also holds a dispatch lease, and closing the job
+        # An agent job also holds a dispatch lease, and closing the job
         # without closing the lease leaves the agent sweeping a subnet whose
         # findings the ingest path will refuse. The lease is retired inside this
         # transaction and the `discovery.cancel` published only after it commits,
         # so an agent is never told to abandon work a rollback would reinstate.
-        # No `reason` is passed: an operator cancelling a job is not one of D-4's
+        # No `reason` is passed: an operator cancelling a job is not one ofthe
         # error outcomes, and the status alone says what happened.
         return agent_discovery.cancel_job_dispatch(db, job)
     return agent_discovery.JobCancelOutcome(
@@ -1044,7 +1064,7 @@ async def enrich_opnsense_job(
     if not private_ips:
         raise HTTPException(status_code=400, detail="No private IPs found — nothing to enrich")
 
-    bg_tasks.add_task(discovery_service.run_opnsense_enrich, job_id, private_ips)
+    bg_tasks.add_task(discovery_dispatch.run_opnsense_enrich, job_id, private_ips)
 
     log_audit(
         db,
@@ -1064,7 +1084,7 @@ def lldp_enrich(
     db: Session = Depends(get_db),
 ):
     from app.db.models import Hardware
-    from app.services.discovery_service import enqueue_lldp_job
+    from app.services.discovery_dispatch import enqueue_lldp_job
 
     hw_rows = (
         db.execute(select(Hardware).where(Hardware.id.in_(payload.hardware_ids))).scalars().all()
@@ -1279,8 +1299,19 @@ def list_results(
     status: str = "pending",
     job_id: int | None = None,
     agent_id: int | None = None,
+    limit: int = Query(200, ge=1, le=1000),
     db: Session = Depends(get_db),
-):
+) -> list[ScanResultOut]:
+    """Scan results at one `merge_status` — `"pending"` is the review queue itself.
+
+    `"auto_updated"` is the other set the UI asks for by name: devices discovery
+    re-found and `discovery_enrich` backfilled, which never entered the queue.
+
+    `limit` is bounded rather than optional. The review queue has been sending it
+    since it was written and this endpoint has been ignoring it, which was
+    harmless while the only queryable set was the pending one an operator drains,
+    and stops being harmless now that `auto_updated` is a set that only grows.
+    """
     q = select(ScanResult)
     if status != "all":
         q = q.where(ScanResult.merge_status == status)
@@ -1291,8 +1322,8 @@ def list_results(
         # discovery_agent_id and must not be attributed to anyone.
         q = q.where(ScanResult.discovery_agent_id == agent_id)
 
-    results = db.scalars(q.order_by(ScanResult.created_at.desc())).all()
-    return results
+    results = db.scalars(q.order_by(ScanResult.created_at.desc()).limit(limit)).all()
+    return discovery_result_service.serialize_results(db, results)
 
 
 @router.post("/results/{result_id}/merge")
@@ -1351,29 +1382,105 @@ def vendor_catalog():
 
 @router.get("/docker/status")
 def docker_status(db: Session = Depends(get_db)):
-    """Return Docker socket connectivity status and last sync summary."""
-    from app.services.docker_discovery import get_docker_status, get_last_sync_result
+    """Return durable configured-source status without contacting the daemon."""
+    from app.services.docker_sources import configured_status
 
-    settings = get_or_create_settings(db)
-    socket_path = getattr(settings, "docker_socket_path", _DEFAULT_DOCKER_SOCKET)
-    status = get_docker_status(socket_path)
-    last_sync = get_last_sync_result()
-    return {**status, "last_sync": last_sync}
+    return configured_status(db)
 
 
-@router.post("/docker/sync")
+@router.get("/docker/sources", response_model=list[DockerSourceOut])
+def docker_sources(db: Session = Depends(get_db)) -> list[DockerSourceOut]:
+    """List source records with their latest run; ensure the installed one exists."""
+    from app.services.docker_sources import list_source_views
+
+    return list_source_views(db)
+
+
+@router.get(
+    "/docker/sources/{source_id}/containers",
+    response_model=list[DockerManagedContainerOut],
+)
+def docker_source_containers(
+    source_id: int, db: Session = Depends(get_db)
+) -> list[DockerManagedContainerOut]:
+    from app.services.docker_sources import (
+        DockerSourceConfigurationError,
+        list_source_containers,
+    )
+
+    try:
+        return list_source_containers(db, source_id)
+    except DockerSourceConfigurationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/docker/sync", response_model=DockerSyncAccepted, status_code=202)
 def docker_sync(
     background_tasks: BackgroundTasks,
+    payload: DockerSyncRequest | None = None,
     user: User = require_role("admin"),
     db: Session = Depends(get_db),
 ):
-    """Trigger an immediate Docker topology sync (runs in background)."""
-    from app.services.docker_discovery import sync_docker_topology
+    """Durably admit a source sync before returning its stable run ID.
 
-    settings = get_or_create_settings(db)
-    socket_path = getattr(settings, "docker_socket_path", _DEFAULT_DOCKER_SOCKET)
-    background_tasks.add_task(sync_docker_topology, socket_path=socket_path)
-    return {"status": "sync_started", "socket_path": socket_path}
+    The body is optional so the older settings caller, which posts nothing,
+    keeps syncing the configured daemon exactly as before.
+    """
+    from app.services.docker_discovery import queue_configured_sync, run_source_sync
+    from app.services.docker_sources import (
+        DockerSourceConfigurationError,
+        DockerSourceConflict,
+    )
+
+    try:
+        run = queue_configured_sync(
+            db, _get_actor(db, user.id), payload.source_id if payload else None
+        )
+    except DockerSourceConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DockerSourceConfigurationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    background_tasks.add_task(run_source_sync, run.source_id, run.id)
+    return DockerSyncAccepted(source_id=run.source_id, run_id=run.id)
+
+
+@router.get("/docker/runs/{run_id}", response_model=DockerSyncRunOut)
+def docker_run(run_id: str, db: Session = Depends(get_db)) -> DockerSyncRunOut:
+    from app.services.docker_sources import (
+        DockerSourceConfigurationError,
+        get_sync_run,
+    )
+
+    try:
+        return DockerSyncRunOut.model_validate(get_sync_run(db, run_id))
+    except DockerSourceConfigurationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.patch("/docker/sources/{source_id}/parent", response_model=DockerSourceOut)
+def docker_source_parent(
+    source_id: int,
+    assignment: DockerParentAssignment,
+    user: User = require_role("admin"),
+    db: Session = Depends(get_db),
+) -> DockerSourceOut:
+    from app.services.docker_sources import (
+        DockerSourceConfigurationError,
+        DockerSourceConflict,
+        assign_source_parent_committed,
+        source_view_committed,
+    )
+
+    try:
+        source = assign_source_parent_committed(db, source_id, assignment, _get_actor(db, user.id))
+        # Answer with the same projection the listing uses: a host assignment
+        # must not blank the run state the caller is already rendering.
+        return source_view_committed(db, source)
+    except DockerSourceConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DockerSourceConfigurationError as exc:
+        status_code = 404 if "unavailable" in str(exc) else 422
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 @router.get("/docker/networks")
@@ -1392,6 +1499,7 @@ def docker_networks(db: Session = Depends(get_db)):
             "name": n.name,
             "docker_network_id": n.docker_network_id,
             "docker_driver": n.docker_driver,
+            "docker_source_id": n.docker_source_id,
             "cidr": n.cidr,
             "gateway": n.gateway,
             "created_at": n.created_at,
@@ -1401,7 +1509,7 @@ def docker_networks(db: Session = Depends(get_db)):
     ]
 
 
-# ── Phase 4: Always-On Listener ──────────────────────────────────────────────
+# ── Always-On Listener ──────────────────────────────────────────────────────────
 
 
 @router.get("/listener/status")

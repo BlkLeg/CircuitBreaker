@@ -7,7 +7,7 @@
  *   onClose ()         — called to dismiss
  */
 import React, { useState, useEffect } from 'react';
-import { discoveryApi } from '../api/client';
+import { lldpApply, lldpJobResults } from '../api/discovery';
 import { useToast } from './common/Toast';
 
 export default function LLDPReviewModal({ jobId, onApply, onClose }) {
@@ -18,8 +18,7 @@ export default function LLDPReviewModal({ jobId, onApply, onClose }) {
   const toast = useToast();
 
   useEffect(() => {
-    discoveryApi
-      .lldpJobResults(jobId)
+    lldpJobResults(jobId)
       .then((res) => {
         const items = res.data.neighbors;
         setNeighbors(items);
@@ -55,7 +54,7 @@ export default function LLDPReviewModal({ jobId, onApply, onClose }) {
           neighbor_index: neighbor.neighbor_index,
         };
       });
-      const res = await discoveryApi.lldpApply(jobId, { connections });
+      const res = await lldpApply(jobId, { connections });
       const { edges_created, stubs_created } = res.data;
       toast.success(
         `Applied: ${edges_created} connection${edges_created !== 1 ? 's' : ''}${stubs_created ? `, ${stubs_created} new stub${stubs_created !== 1 ? 's' : ''}` : ''} added`

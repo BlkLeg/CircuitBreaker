@@ -3,7 +3,8 @@
  * Thin shell: data owned by useIPAMData, rendering delegated to tab components.
  * ≤ 150 LOC, cognitive complexity ≤ 20.
  */
-import React, { useState } from 'react';
+import React from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useToast } from '../components/common/Toast';
 import { useIPAMData } from '../hooks/useIPAMData';
 import IPAddressesTab from '../components/ipam/IPAddressesTab';
@@ -11,7 +12,12 @@ import VLANsTab from '../components/ipam/VLANsTab';
 import SitesTab from '../components/ipam/SitesTab';
 import NetworksTab from '../components/ipam/NetworksTab';
 
-const TABS = ['Networks', 'IP Addresses', 'VLANs', 'Sites'];
+const TABS = [
+  { id: 'networks', label: 'Networks' },
+  { id: 'addresses', label: 'IP Addresses' },
+  { id: 'vlans', label: 'VLANs' },
+  { id: 'sites', label: 'Sites' },
+];
 
 const TAB_STYLE = (active) => ({
   padding: '6px 16px',
@@ -28,7 +34,16 @@ const TAB_STYLE = (active) => ({
 
 export default function IPAMPage() {
   const toast = useToast();
-  const [activeTab, setActiveTab] = useState(0);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTab = searchParams.get('tab');
+  const activeTab = TABS.some((tab) => tab.id === requestedTab) ? requestedTab : 'networks';
+
+  const selectTab = (tabId) => {
+    const next = new URLSearchParams(searchParams);
+    next.set('tab', tabId);
+    if (tabId !== 'networks') next.delete('entity');
+    setSearchParams(next);
+  };
   const {
     ips,
     vlans,
@@ -66,18 +81,19 @@ export default function IPAMPage() {
       >
         {TABS.map((tab, i) => (
           <button
-            key={tab}
+            key={tab.id}
             id={`ipam-tab-${i}`}
-            style={TAB_STYLE(activeTab === i)}
-            onClick={() => setActiveTab(i)}
+            style={TAB_STYLE(activeTab === tab.id)}
+            aria-current={activeTab === tab.id ? 'page' : undefined}
+            onClick={() => selectTab(tab.id)}
           >
-            {tab}
+            {tab.label}
           </button>
         ))}
       </div>
 
       <div style={{ paddingTop: 16 }}>
-        {activeTab === 0 && (
+        {activeTab === 'networks' && (
           <NetworksTab
             networks={networks}
             sites={sites}
@@ -87,7 +103,7 @@ export default function IPAMPage() {
             onDelete={deleteNetwork}
           />
         )}
-        {activeTab === 1 && (
+        {activeTab === 'addresses' && (
           <IPAddressesTab
             ips={ips}
             networks={networks}
@@ -98,7 +114,7 @@ export default function IPAMPage() {
             onScanNetwork={scanNetwork}
           />
         )}
-        {activeTab === 2 && (
+        {activeTab === 'vlans' && (
           <VLANsTab
             vlans={vlans}
             networks={networks}
@@ -108,7 +124,7 @@ export default function IPAMPage() {
             onDelete={deleteVLAN}
           />
         )}
-        {activeTab === 3 && (
+        {activeTab === 'sites' && (
           <SitesTab
             sites={sites}
             networks={networks}

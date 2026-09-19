@@ -86,7 +86,7 @@ describe('every route has a home', () => {
 
 /**
  * Whether the two surfaces agree once rendered is asserted in nav-surface-parity.test.jsx,
- * which mounts MacOSDOCK and Header. It cannot be asserted here: every expression available
+ * which mounts MacOSDOCK and GlobalNavigator. It cannot be asserted here: every expression available
  * to this file reduces to canSeeNavItem, so comparing a "dock" set to a "menu" set built
  * the same way is filter(f).length === filter(f).length — true even if MacOSDOCK grew a
  * private role filter tomorrow. What this file can guarantee is that no such filter exists.
@@ -94,7 +94,7 @@ describe('every route has a home', () => {
 describe('navigation RBAC has one implementation', () => {
   const surfaces = [
     ['MacOSDOCK.jsx', 'components/MacOSDOCK.jsx'],
-    ['Header.jsx', 'components/Header.jsx'],
+    ['GlobalNavigator.jsx', 'components/navigation/GlobalNavigator.jsx'],
     ['DockSettings.jsx', 'components/settings/DockSettings.jsx'],
   ];
 
@@ -103,8 +103,7 @@ describe('navigation RBAC has one implementation', () => {
   it.each(surfaces)('%s decides no nav visibility of its own', (_name, rel) => {
     // eslint-disable-next-line security/detect-non-literal-fs-filename -- reads a source file in this repo
     const src = readFileSync(srcFile(rel), 'utf8');
-    // Header goes through visibleNavGroups, which is canSeeNavItem applied to NAV_GROUPS;
-    // the dock and the picker call the predicate directly. Either is the one implementation.
+    // The navigator, dock, and picker call the shared predicate directly.
     expect(
       /canSeeNavItem|visibleNavGroups/.test(src),
       `${_name} filters nav through neither canSeeNavItem nor visibleNavGroups`
@@ -199,7 +198,7 @@ describe('navigation derives its role gate from routeGuards', () => {
 });
 
 /**
- * INC-09 was a configuration advertising content that did not exist: six languages in
+ * The defect is a configuration advertising content that does not exist: six languages in
  * supportedLngs, five namespaces, three of them empty files, and about twenty-two
  * translated strings in total. This is that made into a test.
  */
@@ -223,7 +222,7 @@ describe('i18n advertises only what it ships', () => {
     expect(
       declared.slice().sort(),
       'i18n.js advertises a language with no locale directory, or a directory ships ' +
-        'without being advertised. Either is INC-09 returning.'
+        'without being advertised. Either is the defect returning.'
     ).toEqual(present);
   });
 

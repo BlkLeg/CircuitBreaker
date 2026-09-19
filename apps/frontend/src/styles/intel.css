@@ -1,0 +1,112 @@
+/* Intel console. Severity badges come from vulnerability.css; nothing here
+   re-defines a colour that the theme pipeline owns. */
+.intel-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.intel-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-alt);
+  color: var(--color-text);
+}
+
+/* One modifier per tone describeAssessment can produce: danger, muted,
+   warning, ok. A state whose tone class is missing would render as neutral,
+   which is the same failure the data-warning attribute used to hide. */
+.intel-chip--danger {
+  border-color: var(--color-danger);
+}
+.intel-chip--warning {
+  border-color: var(--color-warning);
+}
+.intel-chip--ok {
+  border-color: var(--color-success);
+}
+.intel-chip--muted {
+  color: var(--color-text-muted);
+}
+
+.intel-identity {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+.intel-muted {
+  color: var(--color-text-muted);
+}
+
+.intel-fleet-table td {
+  vertical-align: middle;
+}
+
+/* The entity link had no colour of its own, so it rendered at the user agent's
+   default #0000ee — 1.23:1 against the dark table surface, a serious axe
+   violation. Same treatment the agent fleet table gives its name cell:
+   --color-text is floored to AA against every surface it can land on, and the
+   accent plus an underline is reserved for hover. */
+.intel-fleet-table a {
+  color: var(--color-text);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.intel-fleet-table a:hover,
+.intel-fleet-table a:focus-visible {
+  color: var(--color-primary);
+  text-decoration: underline;
+}
+
+.intel-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+@media (max-width: 640px) {
+  .intel-fleet-table {
+    display: block;
+    overflow-x: auto;
+  }
+}
+
+/* A forecast projected to saturate inside its warning threshold. This used to
+   be a data-warning attribute with no stylesheet reading it: present in the
+   DOM, invisible on the page. */
+.intel-row--warning td:first-child {
+  box-shadow: inset 3px 0 0 var(--color-warning);
+}
+
+.intel-row--warning td {
+  background: color-mix(in srgb, var(--color-warning) 8%, transparent);
+}
+
+/* Entities counted under their worst finding's severity. A list, not a chart:
+   four numbers do not need an axis. */
+.intel-severity {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.intel-severity li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.intel-severity__count {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text);
+}

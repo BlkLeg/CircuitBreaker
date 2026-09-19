@@ -1,6 +1,6 @@
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useMapNodeDragSnap } from '../hooks/useMapNodeDragSnap';
+import { useMapNodeDragSnap } from '../features/map/hooks/useMapNodeDragSnap';
 
 const mockSnapEdgesToNearestHandles = vi.fn((_movedNodeIds, _nodes, edges) => edges);
 

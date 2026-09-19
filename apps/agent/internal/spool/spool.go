@@ -9,8 +9,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"circuitbreaker.dev/cb-agent/internal/frame"
+	"circuitbreaker.dev/cb-agent/internal/logging"
 )
 
 const (
@@ -30,7 +32,7 @@ const (
 )
 
 // Spool is a bounded, oldest-dropped, append-only queue for *data* frames
-// only — control frames must never be enqueued (spec §4.4). Persisted as
+// only — control frames must never be enqueued. Persisted as
 // newline-delimited JSON so an unclean shutdown still recovers every line
 // that was fully written before the crash; a torn final line is dropped and
 // rewritten away by load() before anything is appended after it.
@@ -56,10 +58,46 @@ type Spool struct {
 	// head is the consumed prefix: entries[:head] have been delivered and
 	// are pending compaction, entries[head:] are the live backlog.
 	head int
+	// origin is the absolute position of entries[head] — how many frames have left
+	// the live backlog since this Spool was opened, whether by Commit or by cap
+	// eviction.
+	//
+	// Positional bookkeeping is not safe for a caller that holds frames across a
+	// round trip. `Commit(n)` and a head-relative peek both describe "the first n
+	// live frames", and Enqueue's drop-oldest policy advances head underneath them
+	// from another goroutine. For a caller that commits only when the server
+	// acknowledges, that window is a whole ack round trip and the frames at the
+	// head are precisely the ones in flight — an eviction there makes Commit
+	// discard that many never-sent frames on top of the ones eviction already
+	// destroyed.
+	//
+	// Positions are stable across both eviction and commit, so PeekAt and
+	// CommitThrough let such a caller name exactly the frames it means. They are
+	// per-Spool-instance and deliberately not persisted: the only caller that needs
+	// them holds them for the life of one connection.
+	origin int64
 	// bytes is the encoded size (including newlines) of entries[head:],
 	// maintained incrementally on load/enqueue/commit/compact so SizeBytes
 	// is O(1) instead of re-encoding the whole queue.
 	bytes int64
+	// evictedPath / evicted are the permanent record of what the
+	// drop-oldest policy has destroyed — see evictions.go. Cumulative for
+	// the life of the state directory and never reset by this package.
+	evictedPath string
+	evicted     EvictionStats
+	// destroyedPending / lastDestroyedReport batch RecordDestroyed's *log
+	// line* — see destroyedReportInterval. Only the line: the `evicted`
+	// record above is updated and persisted on every call, because it is the
+	// audit trail for destroyed data and a restart must not find less of it
+	// than the running agent was reporting. destroyedPending accumulates the
+	// count, bytes and observation window of the losses since the last line
+	// so that line can describe the whole hole rather than its newest end.
+	destroyedPending    EvictionStats
+	lastDestroyedReport time.Time
+	// persistFailing is whether the last attempt to write the eviction
+	// record failed, so a run of failures reports when it *starts* rather
+	// than only when the next log window happens to open.
+	persistFailing bool
 }
 
 // entry is one queued frame plus the encoded length (including its trailing
@@ -76,9 +114,17 @@ func Open(stateDir string, capBytes int64) (*Spool, error) {
 		return nil, fmt.Errorf("spool: create state dir: %w", err)
 	}
 	s := &Spool{
-		path:     filepath.Join(stateDir, queueFilename),
-		headPath: filepath.Join(stateDir, headFilename),
-		capBytes: capBytes,
+		path:        filepath.Join(stateDir, queueFilename),
+		headPath:    filepath.Join(stateDir, headFilename),
+		evictedPath: filepath.Join(stateDir, evictedFilename),
+		capBytes:    capBytes,
+	}
+	// Before load(): the eviction record describes history this state
+	// directory has already destroyed, and an agent restart must not be able
+	// to zero it. A read failure is fatal to Open for the same reason —
+	// continuing with a blank record would silently under-report the loss.
+	if err := s.loadEvictions(); err != nil {
+		return nil, err
 	}
 	if err := s.load(); err != nil {
 		return nil, err
@@ -261,16 +307,75 @@ func (s *Spool) Enqueue(f frame.Frame) error {
 	s.entries = append(s.entries, entry{f: f, n: int64(len(data)) + 1})
 	s.bytes += int64(len(data)) + 1
 
-	evicted := false
+	// Eviction is the drop-oldest policy the spool has always had. What is
+	// new is that it is recorded and said out loud: `batch` accumulates this
+	// one Enqueue's losses so the log line below fires once per batch rather
+	// than once per destroyed frame, and s.evicted accumulates them for the
+	// life of the state directory.
+	var batch EvictionStats
 	for s.bytes > s.capBytes && len(s.entries)-s.head > 1 {
-		s.bytes -= s.entries[s.head].n
+		dropped := s.entries[s.head]
+		s.bytes -= dropped.n
 		s.head++
-		evicted = true
+		s.origin++
+		batch.Frames++
+		batch.Bytes += dropped.n
+		// The dropped frame's own TS, not time.Now(): the fact worth
+		// recording is which observations were lost, not when the eviction
+		// ran. LastEvictedAt below is the wall-clock half.
+		batch.widen(dropped.f.TS)
 	}
-	if evicted {
-		return s.compactLocked()
+	if batch.Frames == 0 {
+		return nil
 	}
-	return nil
+
+	s.evicted.Frames += batch.Frames
+	s.evicted.Bytes += batch.Bytes
+	s.evicted.widen(batch.OldestDroppedTS)
+	s.evicted.widen(batch.NewestDroppedTS)
+	s.evicted.LastEvictedAt = time.Now().UTC()
+	s.evicted.LastDestroyedCause = CauseSizeCap
+	s.evicted.LastDestroyedReason = CapEvictionReason
+
+	// logging.Warnf, not log.Printf. internal/logging.Configure points the
+	// standard log package at a gate that forwards only while Info is
+	// enabled, so a log.Printf line — whatever word it contains — disappears
+	// entirely at `log_level = "warn"`. That is precisely the setting an
+	// operator reduces noise with on a homelab box, and losing the one signal
+	// that data was destroyed to a noise-reduction setting would reproduce
+	// this task's whole defect one layer down.
+	logging.Warnf(
+		"cb-agent: spool: WARNING permanently discarded %d buffered observation(s) (%d bytes) covering %s..%s "+
+			"to stay under the %d-byte cap; cumulative loss for this agent is %d observation(s) / %d bytes. "+
+			"This data is gone and cannot be recovered — raise spool_cap_bytes in agent.toml if the outage window matters.",
+		batch.Frames, batch.Bytes,
+		formatEvictedTS(batch.OldestDroppedTS), formatEvictedTS(batch.NewestDroppedTS),
+		s.capBytes, s.evicted.Frames, s.evicted.Bytes,
+	)
+
+	// Persisted before the compaction that actually rewrites the queue, so a
+	// crash between the two leaves the record over-stating nothing and
+	// under-stating nothing: the frames are already gone from s.entries.
+	// A write failure is loud but not fatal to Enqueue — the frame the caller
+	// handed us *is* spooled, and returning an error here would tell it
+	// otherwise and invite a double-handle.
+	if err := s.persistEvictionsLocked(); err != nil {
+		// Errorf, a level above the eviction line itself: the loss has
+		// happened either way, but a record that could not be written is a
+		// loss the next restart will not be able to report at all.
+		logging.Errorf("cb-agent: spool: could not persist the eviction record: %v", err)
+	}
+	return s.compactLocked()
+}
+
+// formatEvictedTS renders one end of a destroyed window for the log line.
+// A frame that carried no timestamp leaves the bound unknown, and saying so
+// is better than printing year 1 as though it were a real observation time.
+func formatEvictedTS(ts time.Time) string {
+	if ts.IsZero() {
+		return "unknown"
+	}
+	return ts.UTC().Format(time.RFC3339)
 }
 
 func (s *Spool) appendLine(data []byte) error {
@@ -302,14 +407,75 @@ func (s *Spool) appendLine(data []byte) error {
 func (s *Spool) Peek(maxFrames int, maxBytes int64) []frame.Frame {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.peekLocked(0, maxFrames, maxBytes)
+}
 
-	if maxFrames <= 0 {
+// FromHead asks PeekAt to start at the head of the live backlog, whatever
+// absolute position that currently is.
+const FromHead int64 = -1
+
+// PeekResult is one PeekAt answer, positioned in the spool's absolute stream
+// so the caller can hold it across a round trip. See Spool.origin.
+type PeekResult struct {
+	Frames []frame.Frame
+	// Start is the absolute position of Frames[0]. Meaningless when Frames
+	// is empty. It can be *greater* than the `from` the caller asked for:
+	// cap eviction may have destroyed everything between the two, and the
+	// gap is the caller's evidence of exactly that.
+	Start int64
+	// Origin is the absolute position of the live backlog's head at the
+	// moment of this peek. Everything below it has left the spool — some
+	// committed, some destroyed by the cap — and is reported in the same
+	// call so a caller cannot race between reading one and the other.
+	Origin int64
+}
+
+// PeekAt returns up to maxFrames live frames starting at absolute position
+// `from` (FromHead for the oldest undelivered frame), stopping once their
+// encoded size would exceed maxBytes. It mutates nothing.
+//
+// This is the peek half of position-based delivery — see Spool.origin for why
+// a head-relative index is not safe to hold across a round trip. A `from`
+// below the current head is not an error: the frames it named are gone, and
+// the result's Start and Origin say so.
+//
+// The first frame is always returned regardless of maxBytes, so a frame
+// larger than one tick's byte budget cannot wedge the queue forever.
+func (s *Spool) PeekAt(from int64, maxFrames int, maxBytes int64) PeekResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	skip := 0
+	if from > s.origin {
+		skip = int(from - s.origin)
+	}
+	return PeekResult{
+		Frames: s.peekLocked(skip, maxFrames, maxBytes),
+		Start:  s.origin + int64(skip),
+		Origin: s.origin,
+	}
+}
+
+// Origin is the absolute position of the oldest undelivered frame. It only
+// ever increases, and a caller holding positions below it is holding frames
+// that have left the spool.
+func (s *Spool) Origin() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.origin
+}
+
+// peekLocked is the shared body of Peek and PeekAt, so the byte budget and
+// the always-return-the-first-frame rule cannot drift between them.
+func (s *Spool) peekLocked(skip, maxFrames int, maxBytes int64) []frame.Frame {
+	if maxFrames <= 0 || skip < 0 {
 		return nil
 	}
 	live := s.entries[s.head:]
-	if len(live) == 0 {
+	if skip >= len(live) {
 		return nil
 	}
+	live = live[skip:]
 	out := make([]frame.Frame, 0, min(maxFrames, len(live)))
 	var total int64
 	for _, e := range live {
@@ -325,15 +491,45 @@ func (s *Spool) Peek(maxFrames int, maxBytes int64) []frame.Frame {
 	return out
 }
 
-// Commit discards the first n undelivered frames — the ones the caller has
-// now actually sent. n is clamped to what is available, so committing more
-// than was peeked (or committing an empty spool) is a no-op rather than an
-// error. Nothing is discarded before this call, which is what makes a crash
-// mid-burst re-send rather than lose.
-func (s *Spool) Commit(n int) error {
+// commit discards the first n undelivered frames. n is clamped to what is
+// available, so committing more than was peeked, or committing an empty spool,
+// is a no-op rather than an error. Nothing is discarded before this call, which
+// is what makes a crash mid-burst re-send rather than lose.
+//
+// Unexported on purpose, and it must stay that way. Counting frames from the
+// head is only safe for a caller certain the head has not moved since it chose
+// n, and with a producer enqueueing from another goroutine into a spool that
+// evicts oldest-first, no caller holding frames across a send can be.
+// CommitThrough names frames by position and cannot be fooled.
+//
+// It survives as the primitive CommitThrough is expressed in, and as the handle
+// this package's own tests reach for when the head demonstrably has not moved.
+func (s *Spool) commit(n int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.commitLocked(n)
+}
 
+// CommitThrough discards every live frame whose absolute position is at or
+// below pos — the commit half of position-based delivery.
+//
+// A pos already below the head is a no-op rather than an error, and that is
+// the whole point: those frames left the spool while the caller was waiting
+// for its acknowledgement, either because the caller itself committed them or
+// because cap eviction destroyed them. A positional Commit could not tell the
+// difference and would discard that many *unsent* frames instead. Eviction
+// already counted what it destroyed (see EvictionStats), so nothing here is
+// lost silently.
+func (s *Spool) CommitThrough(pos int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if pos < s.origin {
+		return nil
+	}
+	return s.commitLocked(int(pos - s.origin + 1))
+}
+
+func (s *Spool) commitLocked(n int) error {
 	if n <= 0 {
 		return nil
 	}
@@ -348,6 +544,7 @@ func (s *Spool) Commit(n int) error {
 		consumed += e.n
 	}
 	s.head += n
+	s.origin += int64(n)
 	s.bytes -= consumed
 
 	if s.head >= compactHeadThreshold || s.consumedBytesLocked() > s.capBytes/4 {

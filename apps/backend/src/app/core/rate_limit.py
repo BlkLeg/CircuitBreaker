@@ -35,6 +35,7 @@ PROFILES: dict[str, dict[str, str]] = {
         "mfa_verify": "10/15minutes",
         "scan": "5/minute",
         "telemetry": "30/minute",
+        "telemetry_batch": "30/minute",
         "default": "60/minute",
     },
     "normal": {
@@ -43,6 +44,7 @@ PROFILES: dict[str, dict[str, str]] = {
         "mfa_verify": "5/15minutes",
         "scan": "1/minute",
         "telemetry": "15/minute",
+        "telemetry_batch": "15/minute",
         "default": "30/minute",
     },
     "strict": {
@@ -51,6 +53,7 @@ PROFILES: dict[str, dict[str, str]] = {
         "mfa_verify": "3/15minutes",
         "scan": "1/5minutes",
         "telemetry": "5/minute",
+        "telemetry_batch": "5/minute",
         "default": "10/minute",
     },
 }

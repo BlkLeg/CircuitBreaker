@@ -41,7 +41,7 @@ import (
 	"circuitbreaker.dev/cb-agent/internal/update"
 )
 
-// TestPrintVersion covers the Task 20 bug fix directly: `cb-agent version`
+// TestPrintVersion covers directly: `cb-agent version`
 // must never generate a device key as a side effect, and must only print a
 // fingerprint line when one already exists.
 func TestPrintVersion(t *testing.T) {
@@ -96,7 +96,7 @@ func TestPrintVersion(t *testing.T) {
 	}
 }
 
-// TestPrintStatus_NoFileYet covers the other Task 20 bug-fix requirement:
+// TestPrintStatus_NoFileYet covers the other requirement:
 // `cb-agent status` must not generate a device key (or anything else) when
 // no runtime status file exists yet.
 func TestPrintStatus_NoFileYet(t *testing.T) {
@@ -174,6 +174,94 @@ func TestPrintStatus_ReflectsWriterState(t *testing.T) {
 			wantAll: []string{
 				"spool: depth=7 bytes=12345",
 			},
+			// A healthy agent must not be told about a loss it has not had:
+			// a permanent "spool loss: 0" line is a line operators learn to
+			// skip, which would defeat it on the one agent where it matters.
+			wantNot: []string{"spool loss"},
+		},
+		{
+			// Destroyed history must be stated in plain words, naming the
+			// window that is gone and the remedy.
+			//
+			// Both remedies: the same counter also records
+			// observations the spool could not write at all — every data
+			// frame goes through the spool before it can reach a socket, so
+			// a refused write ends the observation — and telling an operator
+			// with a read-only disk to raise a size cap is advice that
+			// cannot work.
+			name: "permanently discarded observations are reported in full",
+			mutate: func(w *status.Writer) error {
+				return w.SetSpoolEvictions(spool.EvictionStats{
+					Frames:          9412,
+					Bytes:           33554432,
+					OldestDroppedTS: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+					NewestDroppedTS: time.Date(2026, 9, 3, 18, 30, 0, 0, time.UTC),
+					LastEvictedAt:   time.Date(2026, 9, 3, 18, 30, 5, 0, time.UTC),
+				})
+			},
+			wantAll: []string{
+				"spool loss: 9412 observation(s) (33554432 bytes) were permanently discarded",
+				"destroyed window: 2026-09-01T00:00:00Z .. 2026-09-03T18:30:00Z",
+				"cannot be recovered",
+				"usual cause: the spool hit its size cap",
+				"spool_cap_bytes in agent.toml",
+				"other cause: the spool could not write at all",
+				"free or remount the disk",
+			},
+		},
+		{
+			// The record knows which cause destroyed data most recently, so
+			// the status output names it instead of listing both and sending
+			// the operator off to grep. The other cause is still mentioned —
+			// the counter is cumulative and both may have contributed — but
+			// it is no longer given equal billing with what actually
+			// happened.
+			name: "a cap eviction names itself as the most recent cause",
+			mutate: func(w *status.Writer) error {
+				return w.SetSpoolEvictions(spool.EvictionStats{
+					Frames:              9412,
+					Bytes:               33554432,
+					LastEvictedAt:       time.Date(2026, 9, 3, 18, 30, 5, 0, time.UTC),
+					LastDestroyedCause:  spool.CauseSizeCap,
+					LastDestroyedReason: spool.CapEvictionReason,
+				})
+			},
+			wantAll: []string{
+				"most recent cause: the spool hit its size cap during an outage",
+				"raise spool_cap_bytes in agent.toml",
+			},
+			// The disk remedy must not be offered as though it were the fix.
+			wantNot: []string{"remedy: free or remount"},
+		},
+		{
+			// The case the whole two-cause rework exists for: an operator
+			// whose state directory is read-only must not be told to raise a
+			// size cap.
+			name: "a refused write names itself as the most recent cause",
+			mutate: func(w *status.Writer) error {
+				return w.SetSpoolEvictions(spool.EvictionStats{
+					Frames:              12,
+					Bytes:               2048,
+					LastEvictedAt:       time.Date(2026, 9, 3, 18, 30, 5, 0, time.UTC),
+					LastDestroyedCause:  spool.CauseWriteFailed,
+					LastDestroyedReason: "spool write failed: read-only file system",
+				})
+			},
+			wantAll: []string{
+				"most recent cause: the spool could not write at all",
+				"read-only file system",
+				"remedy: free or remount",
+			},
+			wantNot: []string{"remedy: raise spool_cap_bytes"},
+		},
+		{
+			// An agent that reports eviction state with nothing destroyed is
+			// as silent as one that predates the field. Zero is not news.
+			name: "an explicit zero eviction record prints nothing",
+			mutate: func(w *status.Writer) error {
+				return w.SetSpoolEvictions(spool.EvictionStats{})
+			},
+			wantNot: []string{"spool loss"},
 		},
 	}
 
@@ -230,7 +318,7 @@ func TestPrintStatus_ReadError(t *testing.T) {
 // (spool.Open's load()) is actually invoked at daemon startup, and that the
 // recovered backlog gets surfaced into the runtime status file `cb-agent
 // status` reads (spec: "Recover valid segments after an unclean shutdown").
-// It uses a fake, test-only frame type — no real Slice 1 data frame type
+// It uses a fake, test-only frame type — no real data frame type
 // exists to populate a backlog with (Global Constraints).
 func TestOpenSpool_RecoversAfterUncleanShutdownAndReportsStats(t *testing.T) {
 	dir := t.TempDir()
@@ -298,7 +386,7 @@ func TestOpenSpool_DefaultsCapWhenConfigZero(t *testing.T) {
 	}
 }
 
-// --- Task 30: startup ownership/mode audit -------------------------------
+// --- startup ownership/mode audit -------------------------------
 
 // sensitiveAuditFiles mirrors the file classes auditStateDir enforces —
 // identity (device.key), cached capability grant (grants.json), and runtime
@@ -320,7 +408,7 @@ func TestAuditStateDir_MissingStateDir(t *testing.T) {
 
 // TestAuditStateDir_MissingSensitiveFileIsNotError covers a fresh install
 // that has an identity but has never received a capabilities.set frame
-// (spec §4.2) — grants.json legitimately does not exist yet. Auditing must
+// — grants.json legitimately does not exist yet. Auditing must
 // not treat an individual missing sensitive file as an error.
 func TestAuditStateDir_MissingSensitiveFileIsNotError(t *testing.T) {
 	dir := t.TempDir()
@@ -363,7 +451,7 @@ func TestAuditStateDir_CorrectOwnershipAndModesPassSilently(t *testing.T) {
 }
 
 // TestAuditStateDir_CorrectsWrongMode covers the actual gap this task
-// closes: status.json's mode was only ever set at creation (Task 20) — this
+// closes: status.json's mode was only ever set at creation — this
 // asserts every one of the three sensitive file classes gets its mode
 // corrected back to 0600 at startup, not merely at creation, if it is ever
 // found wider.
@@ -475,7 +563,7 @@ func TestCheckOwnership_PerFileClass(t *testing.T) {
 	}
 }
 
-// --- Task 25: durable update swap and rollback --------------------------
+// --- durable update swap and rollback --------------------------
 
 // stageSwappedUpdate builds the on-disk state a swapped-but-unconfirmed
 // update leaves behind, with the marker's rollback deadline set to deadline.
@@ -503,7 +591,7 @@ func stageSwappedUpdate(t *testing.T, deadline time.Time) (dir, currentLink, old
 }
 
 // TestRollbackExpiredUpdate_RollsBackAndReExecsWithoutEverReachingTheServer is
-// the regression test for F-8. runDaemon calls this before enroll.Run, so the
+// the durable half of the rollback net. runDaemon calls this before enroll.Run, so the
 // path exercised here is the one an agent takes when the update it just
 // installed is the reason it can no longer reach the server: enrollment would
 // fail, os.Exit(1) would follow, and watchForRollback — spawned only after a
@@ -644,7 +732,7 @@ func TestWatchForRollback_NoConfirmationTriggersRollback(t *testing.T) {
 // TestWatchForRollback_ConfirmedWithinWindowRetainsNewBinary covers "a
 // restart that gets hello.ack within 2 minutes retains the new binary and
 // clears the marker". A goroutine simulates onConnected's hello.ack-gated
-// confirmation (Task 4) by clearing the marker partway through the window;
+// confirmation by clearing the marker partway through the window;
 // watchForRollback must observe that and leave the new binary and backup
 // alone, never re-exec.
 func TestWatchForRollback_ConfirmedWithinWindowRetainsNewBinary(t *testing.T) {
@@ -707,13 +795,11 @@ func TestWatchForRollback_ConfirmedWithinWindowRetainsNewBinary(t *testing.T) {
 	}
 }
 
-// TestWatchForRollback_CrashBeforeSwapDoesNotRollBackToStaleBackup
-// reproduces, live, the fix-round-1 Critical finding: marker-first ordering
-// (Task 25's own fix) broke the invariant that a marker's presence implies
-// ".previous" is *that* update's actual backup, because nothing stopped a
-// crash between WriteMarker and Swap from leaving a marker naming a new
-// version while ".previous" still held a stale, two-versions-back backup
-// from an earlier, already-confirmed update.
+// TestWatchForRollback_CrashBeforeSwapDoesNotRollBackToStaleBackup pins that
+// a marker's presence alone does not imply ".previous" is that update's
+// actual backup: a crash between WriteMarker and Swap leaves a marker naming
+// a new version while ".previous" still holds a stale, two-versions-back
+// backup from an earlier, already-confirmed update.
 //
 // Scenario: a v0->v1 update already completed and confirmed — target holds
 // the healthy, running v1 binary, and its ".previous" (v0) was retained per
@@ -787,24 +873,15 @@ func TestWatchForRollback_CrashBeforeSwapDoesNotRollBackToStaleBackup(t *testing
 	}
 }
 
-// TestWatchForRollback_FailedRollbackStillClearsMarker covers the
-// fix-round-1 Important finding: if update.Rollback itself fails (no
-// ".previous" present, unreadable, a cross-device error, ...),
-// watchForRollback must still clear the marker rather than leaving it in
-// place — an uncleared marker would re-arm this exact same doomed rollback
-// attempt on every subsequent restart, forever, since nothing else would
-// ever clear it (the update that wrote it never confirmed, and never will,
-// since it never actually installed).
+// TestWatchForRollback_FailedRollbackStillClearsMarker pins that a failed
+// update.Rollback (no ".previous", unreadable, a cross-device error) still
+// clears the marker. An uncleared marker re-arms the same doomed rollback on
+// every subsequent restart, forever, because nothing else would ever clear it:
+// the update that wrote it never confirmed and never will.
 //
-// This scenario is a newly-live path after Task 25's marker-first
-// reordering: a first-ever update crashing between WriteMarker and Swap
-// leaves a phasePendingConfirm-less marker with no ".previous" at all to
-// roll back to (there's never been a prior install to back up). This test
-// forces the same failure directly against a phasePendingConfirm marker
-// (Rollback failing for any reason, not just this specific cause) to
-// isolate the marker-clearing behavior from the phase-detection behavior
-// TestWatchForRollback_CrashBeforeSwapDoesNotRollBackToStaleBackup already
-// covers.
+// The failure is forced directly against a phasePendingConfirm marker, so this
+// isolates marker-clearing from the phase detection that
+// TestWatchForRollback_CrashBeforeSwapDoesNotRollBackToStaleBackup covers.
 func TestWatchForRollback_FailedRollbackStillClearsMarker(t *testing.T) {
 	orig := rollbackWindow
 	rollbackWindow = 30 * time.Millisecond
@@ -848,7 +925,7 @@ func TestWatchForRollback_FailedRollbackStillClearsMarker(t *testing.T) {
 	}
 }
 
-// --- Bug 1 fix round 4: test-only pre-re-exec delay override -------------
+// --- test-only pre-re-exec delay override ---------------------------------
 
 // TestResolveReExecDelay_UnsetIsInert pins the production-safety guarantee
 // for reExecDelayEnvOverride: with CB_AGENT_TEST_PRE_REEXEC_DELAY_MS unset
@@ -882,7 +959,7 @@ func TestResolveReExecDelay_IgnoresGarbageAndNonPositive(t *testing.T) {
 	}
 }
 
-// --- Task 29: self-performing `cb-agent uninstall` -----------------------
+// --- self-performing `cb-agent uninstall` -----------------------
 
 // TestRequireRoot covers the "non-root invocation refuses with a clear
 // error" requirement directly, without needing the test process to actually
@@ -933,7 +1010,7 @@ func fakeSystemctl(calls *[][]string, shouldFail func(args []string) bool) syste
 // agent's own agent.toml (so it comes out empty and is itself removable —
 // TestPerformUninstall_ConfigDirCoLocatedWithServerFilesLeftIntact below
 // covers the opposite, populated case) and a state dir (populated the way
-// Task 30's auditStateDir expects: device.key/grants.json/status.json
+// auditStateDir expects: device.key/grants.json/status.json
 // directly under it, plus a spool/ subdirectory) — so performUninstall's
 // "remove the whole state dir" behavior is exercised against a realistic
 // footprint, not just an empty directory.
@@ -1156,7 +1233,7 @@ func TestPerformUninstall_SystemctlReloadFailureStillReportsRemoval(t *testing.T
 // test for the self-update-fix design gap: resolveUninstallPaths must
 // always target the fixed /usr/local/bin/cb-agent entry point, not
 // os.Executable()'s resolved (symlink-followed) result. Under the
-// versioned-symlink layout (specs/2026-08-05-cb-agent-self-update-fix-
+// versioned-symlink layout (see internal/update's
 // design.md), os.Executable() resolves straight through to whatever
 // {stateDir}/versions/<v>/cb-agent happens to be running, which would
 // leave the actual root-owned /usr/local/bin/cb-agent symlink behind after
@@ -1181,7 +1258,7 @@ func TestResolveUninstallPaths_PinsToInstalledBinaryPath(t *testing.T) {
 	}
 }
 
-// --- Task 10: daemon startup ordering ------------------------------------
+// --- daemon startup ordering ------------------------------------
 
 // fakeHostCollector stands in for internal/collect/host during the
 // startDaemonState tests. The real collector reads /proc and /sys, which no
@@ -1228,7 +1305,7 @@ func (f *networkFixture) report() []frame.NetworkFacts { return *f.v.Load() }
 //
 // It is a named var rather than a literal inside the helper because the scope the
 // daemon derives from it is *also* recomputed by the discovery tests, which have
-// to state the netscope version a dispatch is authorized under (D-16). Two copies
+// to state the netscope version a dispatch is authorized under. Two copies
 // of these facts would make that version silently disagree and every discovery
 // request refuse itself.
 var daemonFixtureNetworks = []frame.NetworkFacts{{
@@ -1356,10 +1433,8 @@ func TestStartDaemonState_NoRaceBetweenCollectorReadinessAndStatusWriter(t *test
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() {
-		cancel()
-		_ = rt.Close()
-	})
+	stopDaemonState(t, rt)
+	t.Cleanup(cancel)
 
 	awaitReadiness(t, dir, "host.core")
 }
@@ -1380,7 +1455,7 @@ func TestStartDaemonState_CollectorReadinessIsNotErasedByIdentityReadiness(t *te
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 
 	st := awaitReadiness(t, dir, "agent.identity", "host.core")
 	for i := 1; i < len(st.Readiness); i++ {
@@ -1481,7 +1556,7 @@ func shrinkReadinessTimers(t *testing.T, tick, floor time.Duration) {
 	t.Cleanup(func() { reconcileTickInterval, readinessReportInterval = prevTick, prevFloor })
 }
 
-// TestApplyHostConfig_DisableEmitsDisabledForEveryHostCollector pins D-4: a
+// TestApplyHostConfig_DisableEmitsDisabledForEveryHostCollector pins that a
 // revoked host_telemetry grant must actively overwrite every host.* readiness
 // row with "disabled" rather than returning bare and leaving the server's rows
 // frozen at their last good value (the stale-"Live" defect). The agent's own
@@ -1497,7 +1572,7 @@ func TestApplyHostConfig_DisableEmitsDisabledForEveryHostCollector(t *testing.T)
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 	rt.linked.Store(true)
 
 	awaitReadiness(t, dir, "agent.identity", "host.core")
@@ -1520,8 +1595,8 @@ func TestApplyHostConfig_DisableEmitsDisabledForEveryHostCollector(t *testing.T)
 }
 
 // TestApplyHostConfig_ReEnableFlipsDisabledBackToReady proves the other half of
-// D-4: nothing synthesizes an "enabling" report — the runner's first collection
-// fires immediately and Task 9's all-six-every-run guarantee is what overwrites
+// Nothing synthesizes an "enabling" report — the runner's first collection
+// fires immediately and the all-six-every-run guarantee is what overwrites
 // the disabled rows.
 func TestApplyHostConfig_ReEnableFlipsDisabledBackToReady(t *testing.T) {
 	allReady := make([]frame.Readiness, 0, len(hostcollect.CollectorNames))
@@ -1536,7 +1611,7 @@ func TestApplyHostConfig_ReEnableFlipsDisabledBackToReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 	// Mirror what OnConnected does: the disable report was published while
 	// unlinked, so the link coming up is what forces it out.
 	rt.linked.Store(true)
@@ -1576,7 +1651,7 @@ func TestReadinessReconciliation_FiresWithoutAnyCollection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 	rt.linked.Store(true)
 
 	// Nothing here ever collects and nothing forces a send — the disable
@@ -1602,7 +1677,7 @@ func TestQueueReadiness_DoesNotConsumeBudgetWhileDisconnected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 
 	// startDaemonState's applyHostConfig already published the disable report
 	// while unlinked; nothing may have been queued.
@@ -1639,7 +1714,7 @@ func TestPublishReadiness_MergesIdentityWithHostCollectors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 	rt.linked.Store(true)
 	drainFrames(rt.controlFrames)
 
@@ -1662,7 +1737,7 @@ func TestPublishReadiness_MergesIdentityWithHostCollectors(t *testing.T) {
 	}
 }
 
-// --- Task 12: capability grant faults report as readiness (D-6) -----------
+// --- capability grant faults report as readiness -----------
 
 // awaitCapabilityReadinessItem reads capability.readiness frames until one
 // carries collector, and returns that entry. The host collector publishes on
@@ -1771,7 +1846,31 @@ func awaitCapabilityReadinessState(t *testing.T, ch <-chan frame.Frame, collecto
 	}
 }
 
-// TestOnCapabilitiesSet_ReportsCapabilityFaultAsDegradedReadiness pins D-6's
+// stopDaemonState registers the shutdown every test that starts the daemon
+// needs.
+//
+// startDaemonState launches the collector, probe and discovery goroutines, and
+// they write into the state directory — status.json most often. Cancelling the
+// context tells them to stop but does not wait, so returning straight after
+// `cancel()` races t.TempDir's cleanup and fails on `unlinkat: directory not
+// empty`, naming a file unrelated to what the test asserted. rt.stop is
+// synchronous, which makes teardown deterministic. The reconcile goroutine is
+// not among them: it exits on ctx.Done and is not waited on, harmless only
+// because its one-minute ticker means it has almost never started work.
+//
+// It registers rt.Close, which stops those goroutines and *then* closes the
+// spool they write to, rather than leaving that order to two separate t.Cleanup
+// calls — t.Cleanup runs last-in-first-out, so a separately registered spool
+// close would run first, which is the opposite of what is intended.
+func stopDaemonState(t *testing.T, rt *daemonRuntime) {
+	t.Helper()
+	if rt == nil {
+		return
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+}
+
+// TestOnCapabilitiesSet_ReportsCapabilityFaultAsDegradedReadiness pins the
 // reporting half: a capability whose config fails normalization is not a frame
 // failure (onCapabilitiesSet returns nil, so internal/link stops logging it as
 // one) — it is a capability.<name> = degraded readiness row, carried on the
@@ -1787,7 +1886,7 @@ func TestOnCapabilitiesSet_ReportsCapabilityFaultAsDegradedReadiness(t *testing.
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 	rt.linked.Store(true)
 	drainFrames(rt.controlFrames)
 
@@ -1832,10 +1931,8 @@ func TestStartDaemonState_CachedGrantFaultIsReportedAtStartup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() {
-		cancel()
-		_ = rt.Close()
-	})
+	stopDaemonState(t, rt)
+	t.Cleanup(cancel)
 	if !rt.capGate.Allowed("remote_probe") {
 		t.Error("Allowed(remote_probe) = false after a restart, want true — one bad cached grant dropped the rest")
 	}
@@ -1858,7 +1955,7 @@ func TestStartDaemonState_CachedGrantFaultIsReportedAtStartup(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Probe wiring (Task 20). The seams below exist so that not one assertion in
+// Probe wiring. The seams below exist so that not one assertion in
 // this section can reach a socket, a resolver, or the interface list of the
 // machine the test happens to run on.
 // ---------------------------------------------------------------------------
@@ -1986,7 +2083,7 @@ func awaitProbeResult(t *testing.T, ch <-chan frame.Frame) frame.ProbeResultPayl
 }
 
 // TestApplyProbeConfig_DisablePublishesDisabledForEveryProbeName pins the
-// probe half of D-4. ingest_readiness only ever upserts — it never deletes —
+// probe half of the same rule. ingest_readiness only ever upserts — it never deletes —
 // so a revoked remote_probe grant that merely returned bare would leave Agent
 // Detail showing this vantage as probe-ready for good. Every name in
 // probecollect.ProbeNames must be actively overwritten with "disabled", and
@@ -2001,7 +2098,7 @@ func TestApplyProbeConfig_DisablePublishesDisabledForEveryProbeName(t *testing.T
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 	rt.linked.Store(true)
 	rt.queueReadiness(true)
 
@@ -2045,7 +2142,7 @@ func TestApplyProbeConfig_DisableCancelsInFlightRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 
 	if err := rt.probeRuntime.Assign(probeAssign(t, "run-cancel", probeInScopeHost)); err != nil {
 		t.Fatalf("Assign() error = %v", err)
@@ -2075,7 +2172,7 @@ func TestApplyProbeConfig_DisableCancelsInFlightRuns(t *testing.T) {
 }
 
 // TestApplyProbeConfig_ConcurrencyChangeTakesEffectWithoutRestart pins the
-// grant-change path §2 asks for: raising max_concurrent must be picked up by
+// grant-change path requires: raising max_concurrent must be picked up by
 // the running dispatcher. Rebuilding the runtime instead would abandon every
 // in-flight run and hand the backend a batch of timeouts for a change that is
 // supposed to be transparent, so the test also asserts the runtime is the same
@@ -2091,7 +2188,7 @@ func TestApplyProbeConfig_ConcurrencyChangeTakesEffectWithoutRestart(t *testing.
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 	before := rt.probeRuntime
 
 	for _, assignment := range []struct{ runID, host string }{
@@ -2141,7 +2238,7 @@ func TestStartDaemonState_ProbeRuntimeIsWiredAfterTheGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 	if rt.probeRuntime == nil {
 		t.Fatal("daemonRuntime.probeRuntime is nil, want a runtime link's probe callbacks can bind to")
 	}
@@ -2173,11 +2270,11 @@ func TestStartDaemonState_ProbeRuntimeIsWiredAfterTheGate(t *testing.T) {
 	stub.assertNoCheckStart(t, 200*time.Millisecond)
 }
 
-// --- Task 13: current networks ride every capability.readiness frame (D-8) ---
+// --- current networks ride every capability.readiness frame ---
 
 // readinessFrameNetworks decodes a capability.readiness frame's `networks` and, separately, the
 // raw key as it appeared on the wire. Both are needed: a nil slice and an absent key both decode
-// to a nil Networks, and D-8's whole point is that the wire must tell them apart.
+// to a nil Networks, and the whole point is that the wire must tell them apart.
 func readinessFrameNetworks(t *testing.T, f frame.Frame) ([]frame.NetworkFacts, json.RawMessage) {
 	t.Helper()
 	if f.Type != frame.TypeCapabilityReadiness {
@@ -2198,7 +2295,7 @@ func readinessFrameNetworks(t *testing.T, f frame.Frame) ([]frame.NetworkFacts, 
 	return payload.Networks, raw
 }
 
-// TestPublishReadiness_CarriesTheCurrentNetworks pins D-8: `hello` reports this host's directly
+// TestPublishReadiness_CarriesTheCurrentNetworks pins that `hello` reports this host's directly
 // connected networks only at connect, so without them on the periodic frame a subnet that came up
 // on this machine would not become discoverable until the next reconnect — which may be days.
 func TestPublishReadiness_CarriesTheCurrentNetworks(t *testing.T) {
@@ -2210,7 +2307,7 @@ func TestPublishReadiness_CarriesTheCurrentNetworks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 	rt.linked.Store(true)
 	drainFrames(rt.controlFrames)
 
@@ -2223,7 +2320,7 @@ func TestPublishReadiness_CarriesTheCurrentNetworks(t *testing.T) {
 	}
 }
 
-// TestPublishReadiness_AnEmptyNetworkListIsReportedAsSuch is the load-bearing half of D-8's
+// TestPublishReadiness_AnEmptyNetworkListIsReportedAsSuch is the load-bearing half of the
 // no-omitempty tag. An agent that has lost every interface must be able to say `[]`: the server
 // gates persistence on the key's presence, so a dropped field would leave it standing on a stale,
 // wider-than-reality scope forever. It must also be a *change* — the frame has to go out now
@@ -2237,7 +2334,7 @@ func TestPublishReadiness_AnEmptyNetworkListIsReportedAsSuch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 	rt.linked.Store(true)
 	rt.publishReadiness([]frame.Readiness{{Collector: "host.core", State: "ready"}})
 	awaitReadinessFrame(t, rt.controlFrames)
@@ -2270,7 +2367,7 @@ func TestPublishReadiness_AnUnreadableInterfaceListRepeatsTheLastReport(t *testi
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 	rt.linked.Store(true)
 	rt.publishReadiness([]frame.Readiness{{Collector: "host.core", State: "ready"}})
 	want, _ := readinessFrameNetworks(t, awaitReadinessFrame(t, rt.controlFrames))
@@ -2291,7 +2388,7 @@ func TestPublishReadiness_AnUnreadableInterfaceListRepeatsTheLastReport(t *testi
 	}
 }
 
-// TestQueueReadiness_ADroppedForcedFrameSurvivesTheRateLimitFloor pins the recovery half of D-8's
+// TestQueueReadiness_ADroppedForcedFrameSurvivesTheRateLimitFloor pins the recovery half of the
 // "the frame has to go out now": a forced frame that could not be enqueued must still be sent at
 // the next opportunity rather than swallowed.
 //
@@ -2302,7 +2399,7 @@ func TestPublishReadiness_AnUnreadableInterfaceListRepeatsTheLastReport(t *testi
 // dedup baseline: no later publish of the same state looks changed again, and the reconcile tick's
 // unforced queueReadiness is refused by the readinessReportInterval floor. Without a pending-force
 // memory the change is therefore never sent at all, and a networks-only change (which nothing else
-// re-reports) waits a whole report interval — exactly the wiped-scope window D-8 exists to close.
+// re-reports) waits a whole report interval — exactly the wiped-scope window this exists to close.
 func TestQueueReadiness_ADroppedForcedFrameSurvivesTheRateLimitFloor(t *testing.T) {
 	_, key, fx := startDaemonStateTestDirNetworks(t, `{"host_telemetry":{"enabled":false}}`, nil)
 	// A floor and a tick longer than the test can possibly run, so the delivery asserted below can
@@ -2315,7 +2412,7 @@ func TestQueueReadiness_ADroppedForcedFrameSurvivesTheRateLimitFloor(t *testing.
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 	rt.linked.Store(true)
 
 	// One successful send first: the floor only bites once readinessSentAt has been stamped.
@@ -2352,25 +2449,23 @@ func TestQueueReadiness_ADroppedForcedFrameSurvivesTheRateLimitFloor(t *testing.
 	}
 }
 
-// --- Task 14: the discovery runtime's daemon wiring ---
+// --- the discovery runtime's daemon wiring ---
 
 // discoveryNeighborStub is the injected kernel-neighbor-cache read every
 // discovery test below runs against, and the handle they use to hold a dispatch
 // open.
 //
 // The neighbor cache is the only one of discovery's four collectors whose
-// dependency is injectable from outside internal/collect/discover
-// (discover.RuntimeOptions.Neighbors; Liveness' socket and dialer are
-// unexported), and it is the only one these tests use: every request below names
-// methods ["neighbor_cache"] with no tcp_ports, which is exactly the shape that
-// makes discover.Liveness open nothing at all — its ICMP half and its TCP half
-// are both gated on the request's method list. A cmd-level test that let the
-// sweep run would be probing whatever is really on the runner's 10.20.0.0/24.
+// dependency is injectable from outside internal/collect/discover (Liveness'
+// socket and dialer are unexported), and it is the only one these tests use:
+// every request names methods ["neighbor_cache"] with no tcp_ports, the shape
+// that makes discover.Liveness open nothing at all. A cmd-level test that let
+// the sweep run would be probing whatever is really on the runner's network.
 //
-// hold is what makes "in flight" observable. The cache is read once per dispatch,
-// inside the scan and before any sweep, so a read that blocks is a dispatch the
-// runtime has genuinely started and not yet summarised — which is the state
-// D-14's disable path and plan §4's cancellation both have to interrupt.
+// hold is what makes "in flight" observable. The cache is read once per
+// dispatch, inside the scan and before any sweep, so a read that blocks is a
+// dispatch genuinely started and not yet summarised — the state both the
+// disable path and cancellation have to interrupt.
 type discoveryNeighborStub struct {
 	entries []discovercollect.Neighbor
 
@@ -2478,7 +2573,7 @@ const discoveryHostTimeoutMS = 200
 // derives, from the same fixture interface list startDaemonStateTestDirNetworks
 // installs plus the grant's own scope config.
 //
-// It is recomputed rather than read back off the runtime on purpose: D-16's
+// It is recomputed rather than read back off the runtime on purpose: the
 // contract is that the server and the agent derive the same version
 // independently, and a test that asked the runtime what version it happened to
 // hold would pin nothing at all.
@@ -2579,7 +2674,7 @@ func TestStartDaemonState_DiscoveryRuntimeIsWiredAfterTheGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 	if rt.discoverRuntime == nil {
 		t.Fatal("daemonRuntime.discoverRuntime is nil, want a runtime link's discovery callbacks can bind to")
 	}
@@ -2629,7 +2724,7 @@ func TestStartDaemonState_DiscoveryRuntimeIsWiredAfterTheGate(t *testing.T) {
 }
 
 // TestStartDaemonState_DiscoveryRuntimeScansNothingWhileUngranted is the "starts
-// only when local_discovery is granted" half of Task 14.
+// only when local_discovery is granted" half.
 //
 // The runtime *object* is constructed and started unconditionally, for the same
 // reason the probe runtime is: link's callbacks bind to it once, so a dispatch
@@ -2650,7 +2745,7 @@ func TestStartDaemonState_DiscoveryRuntimeScansNothingWhileUngranted(t *testing.
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 
 	version := discoveryScopeVersion(capability.DefaultLocalDiscoveryConfig())
 	err = rt.discoverRuntime.Request(
@@ -2675,7 +2770,7 @@ func TestStartDaemonState_DiscoveryRuntimeScansNothingWhileUngranted(t *testing.
 }
 
 // TestApplyDiscoveryConfig_DisablePublishesDisabledForEveryDiscoverName pins the
-// discovery half of D-4. ingest_readiness only ever upserts — it never deletes —
+// discovery half of the same rule. ingest_readiness only ever upserts — it never deletes —
 // so a revoked local_discovery grant that merely returned bare would leave Agent
 // Detail reading this vantage as a discovery-ready one for good. Every name in
 // discover.DiscoverNames must be actively overwritten with "disabled" on the one
@@ -2691,7 +2786,7 @@ func TestApplyDiscoveryConfig_DisablePublishesDisabledForEveryDiscoverName(t *te
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 	rt.linked.Store(true)
 	rt.queueReadiness(true)
 
@@ -2720,22 +2815,15 @@ func TestApplyDiscoveryConfig_DisablePublishesDisabledForEveryDiscoverName(t *te
 }
 
 // TestOnCapabilitiesSet_DisablingLocalDiscoveryCancelsInFlightWorkAndStopsFutureWork
-// pins D-14 at the daemon's own seam: the whole path from a server
-// capabilities.set that turns local_discovery off, through the gate, to a
-// dispatch that stops now rather than at the end of its deadline.
+// pins the daemon's own seam: the whole path from a server capabilities.set
+// that turns local_discovery off, through the gate, to a dispatch that stops
+// now rather than at the end of its deadline.
 //
 // It has to go through onCapabilitiesSet rather than calling
 // applyDiscoveryConfig directly, because the frame handler is what the server
-// actually reaches — a wiring that installed the grant but forgot to re-apply the
-// discovery half would pass an applyDiscoveryConfig-only test and leave a revoked
-// agent scanning.
-//
-// Both halves are asserted. Cancelling in flight: the running dispatch is closed
-// out with a `cancelled` summary, because once the grant is off agent_link's
-// grant gate drops the agent's own terminal summary and a dispatch nobody closes
-// is a job that hangs for its whole dispatch deadline. Stopping future work: the
-// next dispatch is refused with `capability_disabled` and never reaches the
-// collector.
+// actually reaches — a wiring that installed the grant but forgot to re-apply
+// the discovery half would pass an applyDiscoveryConfig-only test and leave a
+// revoked agent scanning.
 func TestOnCapabilitiesSet_DisablingLocalDiscoveryCancelsInFlightWorkAndStopsFutureWork(t *testing.T) {
 	stub := useDiscoveryStub(t, true)
 	_, key := startDaemonStateTestDir(t,
@@ -2747,7 +2835,7 @@ func TestOnCapabilitiesSet_DisablingLocalDiscoveryCancelsInFlightWorkAndStopsFut
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 
 	version := discoveryScopeVersion(capability.DefaultLocalDiscoveryConfig())
 	if err := rt.discoverRuntime.Request(
@@ -2788,7 +2876,7 @@ func TestOnCapabilitiesSet_DisablingLocalDiscoveryCancelsInFlightWorkAndStopsFut
 }
 
 // TestOnCapabilitiesSet_DiscoveryBoundsAreReAppliedWithoutRestart pins the
-// grant-change path plan §2 asks for: a rewritten local_discovery config must be
+// grant-change path requires: a rewritten local_discovery config must be
 // what the *next* dispatch is judged against, with no restart. Rebuilding the
 // runtime instead would abandon every dispatch in flight and hand the backend a
 // batch of expired jobs for a change that is supposed to be transparent, so this
@@ -2810,7 +2898,7 @@ func TestOnCapabilitiesSet_DiscoveryBoundsAreReAppliedWithoutRestart(t *testing.
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 	before := rt.discoverRuntime
 
 	// The scope is unchanged by either grant — max_addresses_per_job is not one of
@@ -3063,7 +3151,7 @@ func newDiscoveryLinkServer(t *testing.T, request, cancellation json.RawMessage)
 	return s
 }
 
-// TestDiscoveryRuntime_RequestAndCancelFramesReachTheRuntime is Task 14's inbound half at the
+// TestDiscoveryRuntime_RequestAndCancelFramesReachTheRuntime is the inbound half at the
 // only level that can observe all of it: a `discovery.request` written by a stand-in backend has
 // to cross a real Noise-encrypted link, be recognized by internal/link's inbound switch, be
 // delivered to the binding runDaemon installed, start a scan, and have the matching
@@ -3090,7 +3178,7 @@ func TestDiscoveryRuntime_RequestAndCancelFramesReachTheRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 
 	const reason = "scope_changed"
 	version := discoveryScopeVersion(capability.DefaultLocalDiscoveryConfig())
@@ -3103,7 +3191,21 @@ func TestDiscoveryRuntime_RequestAndCancelFramesReachTheRuntime(t *testing.T) {
 	// frame type. The hooks are left zero — link.Run nil-defaults them, and none of the
 	// update-marker or status-file work they do is what is under test here.
 	linkCfg := &config.Config{ServerURL: srv.url, ServerStaticPK: srv.serverPKHex}
-	go func() { _ = link.Run(ctx, rt.linkOptions(linkCfg, key, "0.1.0-test", linkHooks{})) }()
+	// Waited on rather than left running: link.Run owns goroutines that write
+	// into this test's TempDir (the spool, and status.json via OnSpoolStats),
+	// and every data frame now goes through the spool rather than past it — so
+	// a Run still shutting down when the test returns races TempDir's cleanup
+	// and fails the test on an unlinkat that has nothing to do with what it
+	// asserts.
+	linkDone := make(chan struct{})
+	go func() {
+		defer close(linkDone)
+		_ = link.Run(ctx, rt.linkOptions(linkCfg, key, "0.1.0-test", linkHooks{}))
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-linkDone
+	})
 
 	stub.awaitRead(t)
 	srv.sendCancel()
@@ -3148,7 +3250,7 @@ func TestDaemonLinkOptions_EveryActionableInboundFrameTypeHasAHandler(t *testing
 	if err != nil {
 		t.Fatalf("startDaemonState() error = %v", err)
 	}
-	t.Cleanup(func() { _ = rt.sp.Close() })
+	stopDaemonState(t, rt)
 
 	opts := rt.linkOptions(&config.Config{}, key, "0.1.0-test", linkHooks{})
 	for _, binding := range []struct {
@@ -3214,5 +3316,267 @@ func TestConfigureLogging_RejectsAnUnknownLevel(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "verbose") {
 		t.Errorf("error %q does not name the offending value", err)
+	}
+}
+
+// ── The agent must survive a server outage at startup ─────────────────────
+//
+// Calling enroll.Run synchronously and os.Exit(1) on any failure means an
+// agent that restarts while the server is down — or that is enrolling for the
+// very first time against one that is not up yet — dies immediately and
+// crash-loops under systemd's or Docker's restart policy, collecting and
+// spooling nothing for as long as the outage
+// lasted. shouldEnroll and retryEnroll below are what replace that.
+
+func TestShouldEnroll_TrueWithoutAMarkerFalseWithOne(t *testing.T) {
+	dir := t.TempDir()
+	if !shouldEnroll(dir) {
+		t.Fatal("shouldEnroll() = false with no marker, want true")
+	}
+	if err := enroll.MarkEnrolled(dir); err != nil {
+		t.Fatalf("MarkEnrolled() error = %v", err)
+	}
+	if shouldEnroll(dir) {
+		t.Fatal("shouldEnroll() = true with the marker present, want false")
+	}
+}
+
+func TestRetryEnroll_UnreachableServerRetriesInsteadOfExitingAndStopsOnCancellation(t *testing.T) {
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+	// Port 1 is privileged and nothing in this test environment listens on
+	// it, so every dial fails immediately — exactly the "server is down"
+	// case this loop exists for.
+	cfg := &config.Config{ServerURL: "ws://127.0.0.1:1", ServerStaticPK: strings.Repeat("ab", 32)}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- retryEnroll(ctx, cfg, key, "0.1.0-test", dir) }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("retryEnroll() returned %v after the first failure, want it to keep retrying", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("retryEnroll() error = nil after context cancellation, want ctx.Err()")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("retryEnroll() did not return within 5s of context cancellation")
+	}
+
+	if enroll.IsEnrolled(dir) {
+		t.Fatal("IsEnrolled() = true after every attempt failed against an unreachable server")
+	}
+}
+
+// newEnrollRefusalServer stands in for the backend's enrollment endpoint just
+// long enough to complete the Noise handshake, read (and discard) the
+// agent's hello, and answer with one hello.ack-shaped frame carrying the
+// given status — "rejected" or "revoked", enroll.Run's two authoritative
+// refusal outcomes.
+func newEnrollRefusalServer(t *testing.T, statusValue string) (wsURL, serverPubHex string) {
+	t.Helper()
+	serverPriv, serverPub := generateDaemonTestKeypair(t)
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		responder := newDaemonTestResponder(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.readHandshakeMessage(msg1)
+		if err != nil {
+			return
+		}
+		if err := conn.WriteMessage(websocket.BinaryMessage, msg2); err != nil {
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil { // the hello frame, discarded
+			return
+		}
+
+		final := map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"agent_id": 1, "status": statusValue},
+		}
+		finalBytes, err := json.Marshal(final)
+		if err != nil {
+			t.Errorf("marshal final status: %v", err)
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, responder.encrypt(finalBytes))
+	}))
+	t.Cleanup(srv.Close)
+	return "ws" + strings.TrimPrefix(srv.URL, "http"), hex.EncodeToString(serverPub[:])
+}
+
+func TestRetryEnroll_RejectedWritesStatusAndKeepsRetryingRatherThanExiting(t *testing.T) {
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+	wsURL, serverPubHex := newEnrollRefusalServer(t, "rejected")
+	cfg := &config.Config{ServerURL: wsURL, ServerStaticPK: serverPubHex}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- retryEnroll(ctx, cfg, key, "0.1.0-test", dir) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		st, ok, err := status.Read(dir)
+		if err != nil {
+			t.Fatalf("status.Read() error = %v", err)
+		}
+		if ok && st.LinkState == status.LinkRejected {
+			if st.LastError != "rejected" {
+				t.Errorf("LastError = %q, want %q", st.LastError, "rejected")
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("status.json never recorded the rejection within 5s")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	select {
+	case err := <-done:
+		t.Fatalf("retryEnroll() returned %v after one rejection, want it to keep retrying on the slow schedule", err)
+	default:
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("retryEnroll() error = nil after context cancellation, want ctx.Err()")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("retryEnroll() did not return within 5s of context cancellation")
+	}
+
+	if enroll.IsEnrolled(dir) {
+		t.Fatal("IsEnrolled() = true after a rejected enrollment")
+	}
+}
+
+func TestRetryEnroll_RevokedWritesStatusAndKeepsRetrying(t *testing.T) {
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+	wsURL, serverPubHex := newEnrollRefusalServer(t, "revoked")
+	cfg := &config.Config{ServerURL: wsURL, ServerStaticPK: serverPubHex}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- retryEnroll(ctx, cfg, key, "0.1.0-test", dir) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		st, ok, err := status.Read(dir)
+		if err != nil {
+			t.Fatalf("status.Read() error = %v", err)
+		}
+		if ok && st.LinkState == status.LinkRejected && st.LastError == "revoked" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("status.json never recorded the revocation within 5s")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("retryEnroll() error = nil after context cancellation, want ctx.Err()")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("retryEnroll() did not return within 5s of context cancellation")
+	}
+}
+
+func TestRetryEnroll_SucceedsOnceTheServerAccepts(t *testing.T) {
+	// The upgrade path: an agent with no marker yet — this build's first run
+	// after upgrading from one that predates enroll.MarkEnrolled — must still
+	// reach an ordinary "active" outcome through retryEnroll, exactly as the
+	// a direct Run call would.
+	serverPriv, serverPub := generateDaemonTestKeypair(t)
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		responder := newDaemonTestResponder(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.readHandshakeMessage(msg1)
+		if err != nil {
+			return
+		}
+		if err := conn.WriteMessage(websocket.BinaryMessage, msg2); err != nil {
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		final := map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"agent_id": 1, "status": "active"},
+		}
+		finalBytes, _ := json.Marshal(final)
+		conn.WriteMessage(websocket.BinaryMessage, responder.encrypt(finalBytes))
+	}))
+	t.Cleanup(srv.Close)
+
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+	cfg := &config.Config{
+		ServerURL:      "ws" + strings.TrimPrefix(srv.URL, "http"),
+		ServerStaticPK: hex.EncodeToString(serverPub[:]),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- retryEnroll(ctx, cfg, key, "0.1.0-test", dir) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("retryEnroll() error = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("retryEnroll() did not return within 5s against a server that accepts immediately")
+	}
+	if !enroll.IsEnrolled(dir) {
+		t.Fatal("IsEnrolled() = false after retryEnroll succeeded")
 	}
 }

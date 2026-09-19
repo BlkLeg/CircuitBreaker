@@ -26,7 +26,7 @@ stub models the real thing on the only axis that matters here: an erroring state
 fatal, and reflected in the exit status, only when `-v ON_ERROR_STOP=1` is on its
 command line. Everything else restore.sh shells out to that is not guaranteed on a
 developer machine is stubbed too, so this module carries no skip marker -- a skipped
-test pins nothing, and REL-19 rightly makes every skip a registered, dated liability.
+test pins nothing, and every skip is a registered, dated liability.
 
 The second half of the module covers the other artifact this script now takes. `install.sh
 --upgrade` writes a bare `pre-upgrade-*.sql` before it migrates, and post-1.0 downgrade is
@@ -359,22 +359,17 @@ def test_an_empty_dump_is_refused(tmp_path: Path):
 
 # ── The printed rollback has to survive being pasted ─────────────────────────
 #
-# deploy/setup.sh prints `sudo /opt/circuitbreaker/deploy/scripts/restore.sh <dump>`
-# after a failed upgrade, at the point where it has already stopped
-# circuitbreaker.target. Three things made that instruction a trap on a host
-# install.sh had itself built, and none of them were reachable through the stubs
-# above, because a `dropdb`/`createdb` that always exits 0 cannot express the
-# failure:
+# setup.sh prints the restore command after it has already stopped
+# circuitbreaker.target, so the instruction has to work unattended on a host
+# install.sh built. Stubs that always exit 0 cannot express these, so they are
+# asserted directly:
 #
-#   * `dropdb -h 127.0.0.1 -U postgres` cannot authenticate. pg_hba.conf is
-#     `host all all 127.0.0.1/32 md5`, and setup.sh initdb's the cluster with
-#     --auth-host=md5 and never sets a password on the postgres role. dropdb's
-#     failure was eaten by `|| true`; createdb was the line that actually died,
-#     under set -e, after the service was already stopped.
-#   * the owner-side replay ran psql with no PGPASSWORD against the same md5 rule.
-#   * on the dnf families the client binaries live under /usr/pgsql-*/bin, which
-#     is not on root's PATH -- setup.sh:1608 says so and qualifies its own
-#     pg_dump accordingly, while this script called them bare.
+#   * `dropdb -h 127.0.0.1 -U postgres` cannot authenticate — pg_hba is md5 for
+#     127.0.0.1 and the postgres role has no password. dropdb's failure is eaten
+#     by `|| true`; createdb is the line that dies under set -e.
+#   * the owner-side replay needs PGPASSWORD against the same md5 rule.
+#   * on dnf families the client binaries live under /usr/pgsql-*/bin, which is
+#     not on root's PATH, so they must be qualified rather than called bare.
 
 
 def _superuser_stub_that_refuses_tcp(tmp_path: Path) -> dict[str, str]:
@@ -535,26 +530,17 @@ def test_the_client_binaries_are_resolved_through_pg_bin_dir(tmp_path: Path):
 
 # ── the rollback has to be executable without a human ───────────────────────
 #
-# ADR 0005 Phase 3, F11. The upgrade row executes the documented rollback the way
-# the docs tell an operator to -- through the shipped
-# `/usr/local/bin/circuit-breaker-rollback` wrapper -- over `ssh host '...'`,
-# which has no TTY and no stdin. restore.sh's `read -r -p "Continue? [y/N]"` got
-# EOF and the restore declined, so the row stopped at the banner having proved
-# nothing about the rollback.
+# The documented rollback runs over ssh with no TTY and no stdin, so restore.sh's
+# `read -r -p "Continue? [y/N]"` gets EOF and declines.
 #
-# Prompting by default is right and is not being changed: this is a destructive
-# operation and "no answer is not consent" is the rule
-# test_uninstall_volume_prompt.py pins. What was missing is a way to give consent
-# *in advance*, which is what any runbook, cron job or recovery script needs --
-# and what the tier that has to evidence ADR 0005's Tier 1 rollback guarantee
-# needs, since it cannot type.
+# Prompting by default stays: this is destructive and "no answer is not consent"
+# is the rule test_uninstall_volume_prompt.py pins. What is needed is a way to
+# give consent IN ADVANCE, which any runbook or recovery script requires.
 #
-# Deliberately NOT copied from uninstall.sh: that script answers "can this
-# process be asked anything at all?" before its first destructive step, because
-# its prompt came *after* the container had been removed. restore.sh's prompt
-# precedes every destructive step, so the ordering hazard that justified the
-# preflight there does not exist here, and a `[ -t 0 ]` gate would only break
-# every caller that legitimately pipes an answer.
+# Deliberately NOT a `[ -t 0 ]` gate copied from uninstall.sh: that script's
+# prompt came after its first destructive step, so it needs the preflight.
+# restore.sh's prompt precedes every destructive step, and a TTY gate would only
+# break callers that legitimately pipe an answer.
 
 
 def test_an_unanswered_prompt_still_aborts(tmp_path: Path):

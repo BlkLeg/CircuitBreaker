@@ -25,7 +25,7 @@ const (
 	ErrorCodeDeadlinePassed      = "deadline_passed"
 	ErrorCodeMalformedDispatchID = "malformed_dispatch_id"
 
-	// ErrorCodeScopeVersionMismatch is D-16's end of the versioned dispatch: the request was
+	// ErrorCodeScopeVersionMismatch is the end of the versioned dispatch: the request was
 	// built against an authorization this agent no longer holds, so nothing else it claims can
 	// be trusted either.
 	ErrorCodeScopeVersionMismatch = "scope_version_mismatch"
@@ -41,7 +41,7 @@ const (
 // cannot match to anything.
 const dispatchIDLength = 32
 
-// knownMethods is the closed discovery.request method vocabulary (plan §4). A request naming
+// knownMethods is the closed discovery.request method vocabulary. A request naming
 // anything else is refused wholesale rather than run with the unknown entry dropped: the operator
 // asked for evidence this build cannot gather, and silently returning less would read as "nothing
 // was there".
@@ -74,7 +74,7 @@ type Validator func(frame.DiscoveryRequestPayload, netscope.Scope) Rejection
 // now is the clock the deadline is judged against; nil takes the wall clock in UTC, matching the
 // frame's own timestamps.
 //
-// Nothing in the returned function touches the network. That is the point of the split: plan §7
+// Nothing in the returned function touches the network. That is the point of the split: validation
 // requires a request to be refused on what it says, and a validator that resolved a name would
 // let a hostile DNS answer decide how long the refusal took and whether it happened at all.
 func NewValidator(cfg capability.LocalDiscoveryConfig, now func() time.Time) Validator {
@@ -106,7 +106,7 @@ func NewValidator(cfg capability.LocalDiscoveryConfig, now func() time.Time) Val
 			}
 		}
 		// Then the scope version, because it decides whether the rest of the request is even
-		// being read against the authorization it was written against (D-16). Judging the
+		// being read against the authorization it was written against. Judging the
 		// targets first would refuse a stale request under whichever limit it happened to trip.
 		if req.ScopeVersion != scope.Version {
 			return Rejection{
@@ -151,8 +151,8 @@ func NewValidator(cfg capability.LocalDiscoveryConfig, now func() time.Time) Val
 					Msg:  fmt.Sprintf("target %q is not in this agent's scope", target),
 				}
 			}
-			// §7's execution-time re-check, which the backend cannot make on the agent's behalf.
-			// The approved half is the exemption plan §2 requires: an administrator may add a
+			// the execution-time re-check, which the backend cannot make on the agent's behalf.
+			// The approved half is the documented exemption: an administrator may add a
 			// routed subnet on purpose, and such a subnet is on no segment this host is attached
 			// to, so demanding direct connection would make the override unusable. A target in
 			// neither half reached the allow list some other way and is authorized by nothing

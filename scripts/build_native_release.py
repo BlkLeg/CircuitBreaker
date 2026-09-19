@@ -134,7 +134,22 @@ def build_agent_binaries(version: str, work_dir: Path) -> Path:
     subprocess.run(
         ["make", "manifest"],
         cwd=AGENT_ROOT,
-        env={**os.environ, "VERSION": version, "DIST": str(agent_dist / version)},
+        # PYTHON: gen_manifest.py's signing step imports `cryptography`,
+        # which lives in this interpreter's environment and not necessarily
+        # in whatever bare `python3` the agent Makefile would otherwise
+        # resolve to.
+        env={
+            **os.environ,
+            "VERSION": version,
+            "DIST": str(agent_dist / version),
+            "PYTHON": sys.executable,
+            # The ldflag that embeds the verifying key in the
+            # built binaries. os.environ already carries it, but naming it
+            # here keeps the two halves of the signing contract — the private
+            # key gen_manifest.py reads and the public key build-all embeds —
+            # visible in one place.
+            "SIGNING_PUBKEY": os.environ.get("SIGNING_PUBKEY", ""),
+        },
         check=True,
     )
     return agent_dist
@@ -394,7 +409,7 @@ Full documentation
 def _write_build_info(share_dir: Path, version: str, target_os: str, target_arch: str) -> None:
     """Record where and on what this package was built, inside the package.
 
-    ADR 0005 Phase 3, F8. A PyInstaller bundle inherits the glibc floor of its
+    A PyInstaller bundle inherits the glibc floor of its
     build host: built on Fedora 44 it demands GLIBC_2.38 and will not run on
     Debian 12, while the release job builds on ubuntu-22.04 whose 2.35 floor
     every supported distro clears. So a locally built package and the released
@@ -494,7 +509,7 @@ def stage_bundle(
     # Bundle installer infrastructure for curl-pipe / Proxmox installs
     deploy_src = REPO_ROOT / "deploy"
     deploy_dst = bundle_dir / "deploy"
-    for subdir in ("config", "systemd", "nginx", "cli", "misc", "scripts", "helper"):
+    for subdir in ("config", "systemd", "nginx", "cli", "misc", "scripts", "helper", "lib"):
         src = deploy_src / subdir
         if src.exists():
             shutil.copytree(src, deploy_dst / subdir, dirs_exist_ok=True)

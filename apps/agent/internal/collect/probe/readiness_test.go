@@ -37,7 +37,7 @@ func healthyReadinessDeps() readinessDeps {
 	}
 }
 
-// TestProbeReadiness_TCPAndHTTPAreReadyByDefault pins §5's baseline: neither check needs anything
+// TestProbeReadiness_TCPAndHTTPAreReadyByDefault pins the baseline: neither check needs anything
 // of the host beyond an outbound socket, so on a working host all four rows are reported and TCP
 // and HTTP are ready. The report must also cover exactly ProbeNames, in ProbeNames order — the
 // daemon's disable path iterates that list, so a name that only one of the two knows about is a
@@ -62,7 +62,7 @@ func TestProbeReadiness_TCPAndHTTPAreReadyByDefault(t *testing.T) {
 }
 
 // TestProbeReadiness_ICMPIsUnavailableWhenPingGroupRangeIsUnusable pins the one host condition
-// §5 names for ICMP. It is the same condition icmpChecker turns into ErrICMPUnavailable, and it
+// required for ICMP. It is the same condition icmpChecker turns into ErrICMPUnavailable, and it
 // must be reported as unavailable — not degraded, and never as a reason to hand the agent
 // CAP_NET_RAW — with a remediation an operator can act on.
 func TestProbeReadiness_ICMPIsUnavailableWhenPingGroupRangeIsUnusable(t *testing.T) {
@@ -95,7 +95,7 @@ func TestProbeReadiness_ICMPIsUnavailableWhenPingGroupRangeIsUnusable(t *testing
 	}
 }
 
-// TestProbeReadiness_DNSIsDegradedWhenNoUsableResolverIsConfigured pins §5's DNS wording exactly:
+// TestProbeReadiness_DNSIsDegradedWhenNoUsableResolverIsConfigured pins the DNS wording exactly:
 // degraded, not unavailable. A DNS monitor that names its own resolver still runs on a host with
 // an empty /etc/resolv.conf, so reporting the capability as gone would be a lie that costs the
 // operator every DNS monitor on that vantage.

@@ -8,7 +8,7 @@ import (
 )
 
 // Session wraps a Noise_IK_25519_ChaChaPoly_SHA256 handshake in the
-// initiator role — the agent's role per spec §2.2. The responder counterpart
+// initiator role — the agent's role per the Noise spec. The responder counterpart
 // is app.core.agent_crypto.NoiseIKResponder on the Python side.
 //
 // Goroutine affinity: the send cipher (Encrypt, RekeySend) and the receive
@@ -59,7 +59,7 @@ func (s *Session) ReadHandshakeMessage(data []byte) error {
 // underlying noise.CipherState.Encrypt returns an error (reserved for nonce
 // exhaustion at 2^64 messages or a reused/copied cipher state) that cannot
 // occur within a session's practical lifetime; it is converted to a panic
-// here to preserve the brief-mandated (and Task 11 `internal/link`-relied
+// here to preserve the brief-mandated (and the design `internal/link`-relied
 // upon) error-free public signature.
 func (s *Session) Encrypt(plaintext []byte) []byte {
 	ct, err := s.send.Encrypt(nil, nil, plaintext)

@@ -1,4 +1,4 @@
-"""DNS-01 provider credential handling (INC-07).
+"""DNS-01 provider credential handling.
 
 A Cloudflare API token or an RFC2136 TSIG key authorizes publishing records in the zone the
 certificate is issued against. That makes it a bearer credential of the same class as the
@@ -32,7 +32,7 @@ from sqlalchemy.orm import Session
 from app.services.credential_vault import get_vault
 
 # Which config keys are credentials, per DNS provider. Two providers and no more: an
-# untested provider is worse than an absent one, which is the finding (INC-16) this batch
+# untested provider is worse than an absent one, which is the finding this batch
 # closes alongside.
 SECRET_KEYS: dict[str, tuple[str, ...]] = {
     "cloudflare": ("api_token",),

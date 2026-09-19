@@ -10,3 +10,7 @@ node_modules
 
 # Lockfile (not meant to be formatted)
 package-lock.json
+
+# Playwright output
+test-results
+playwright-report

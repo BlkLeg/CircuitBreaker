@@ -1,4 +1,4 @@
-"""REL-20: the backend shard split must be a partition, and must not move.
+"""The backend shard split must be a partition, and must not move.
 
 Two properties, and both have a concrete failure behind them.
 

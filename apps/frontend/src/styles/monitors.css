@@ -246,7 +246,7 @@
   white-space: nowrap;
 }
 
-/* Slice 3 §7: the vantage and the secondary execution condition. Both sit under
+/* The vantage and the secondary execution condition. Both sit under
    the target line and neither is allowed to look like the UP/DOWN pill — the
    pill shows target state only. */
 .mon-vantage {
@@ -316,7 +316,7 @@
 }
 .mon-stats {
   display: grid;
-  /* auto-fit rather than a fixed count: Slice 3 added a fifth tile and five
+  /* auto-fit rather than a fixed count: a fifth tile makes five
      fixed columns are unreadable on a narrow card. */
   grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
   gap: 8px;
@@ -394,4 +394,152 @@
 }
 .mon-run-from-warning {
   color: var(--color-warning, #d19a1c);
+}
+
+/* Metric alert rules. Tones come from the theme tokens, which deriveReadableText
+   floors to AA — no literal colours here. */
+.rule-list__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.rule-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-alt);
+  color: var(--color-text);
+}
+
+.rule-chip--danger {
+  border-color: var(--color-danger);
+}
+.rule-chip--warning {
+  border-color: var(--color-warning);
+}
+.rule-chip--success {
+  border-color: var(--color-success);
+}
+.rule-chip--muted {
+  color: var(--color-text-muted);
+}
+
+.rule-reason {
+  display: block;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  margin-top: 4px;
+  max-width: 44ch;
+}
+
+.rule-incident {
+  display: inline-block;
+  margin-left: 8px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+/* An entity link with no colour of its own renders at the user agent default,
+   which is a serious contrast violation on a dark surface. */
+.rule-table a {
+  color: var(--color-text);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.rule-table a:hover,
+.rule-table a:focus-visible {
+  color: var(--color-primary);
+  text-decoration: underline;
+}
+
+@media (max-width: 640px) {
+  .rule-table {
+    display: block;
+    overflow-x: auto;
+  }
+}
+
+/* The rule editor and its preview. Colours come from the theme tokens, which
+   deriveReadableText floors to AA — no literal colours here. */
+.form-error {
+  font-size: 12px;
+  color: var(--color-danger, var(--color-text));
+  margin: 2px 0 0;
+}
+
+.rule-editor__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px 16px;
+  margin-bottom: 12px;
+}
+
+.rule-editor__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.rule-editor__field > label,
+.rule-editor__field > span {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.rule-editor__unit {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.rule-editor__target {
+  font-size: 12px;
+  color: var(--color-text);
+}
+
+.rule-editor__actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.rule-preview {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-alt);
+  padding: 12px 16px;
+}
+
+.rule-preview h4 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: var(--color-text);
+}
+
+.rule-preview__result {
+  margin-top: 8px;
+}
+
+.rule-preview__result p {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--color-text);
+}
+
+.rule-preview__facts {
+  color: var(--color-text-muted);
+}
+
+/* A rule that lost its destination: still evaluating, no longer going where the
+   operator sent it. Warning-toned, but it sits beside the assessment rather
+   than replacing it -- the rule's state is still the rule's state. */
+.rule-reason--warn {
+  color: var(--color-warning);
 }

@@ -1,32 +1,22 @@
 /**
  * The server's clock, as observed through ordinary API responses.
  *
- * Every "last seen 4 minutes ago" on the agent surfaces is arithmetic between
- * a timestamp the *server* produced and a `Date.now()` the *browser* produced.
- * That is only meaningful while the two clocks agree. A workstation an hour
- * behind renders an agent that checked in ten seconds ago as "1 hour ago", and
- * every freshness rule built on top of it — stale telemetry, offline-for,
- * live-push arbitration — inherits the same lie with nothing on screen saying
- * so. AGT-14 lists clock skew as a state the UI must define for exactly this
- * reason, and slice AGT-6 spells out the rule it follows from: "avoid
- * client-clock-only truth".
+ * Every "last seen 4 minutes ago" is arithmetic between a server timestamp and
+ * a browser `Date.now()`, which is only meaningful while the two clocks agree.
+ * A workstation an hour behind renders an agent that checked in ten seconds ago
+ * as "1 hour ago", and every freshness rule built on it inherits the same lie.
  *
- * There is no endpoint to ask. There does not need to be one: HTTP/1.1 makes
- * `Date` mandatory on every response (RFC 9110 §6.6.1), it is a
- * CORS-safelisted response header so script can always read it, and the
- * frontend is served same-origin behind the same nginx that proxies the API.
- * So the offset falls out of traffic the page already makes, with no extra
- * request and no new backend field.
+ * No endpoint is needed: HTTP/1.1 makes `Date` mandatory on every response, it
+ * is CORS-safelisted so script can always read it, and the frontend is
+ * same-origin with the API. The offset falls out of traffic the page already
+ * makes.
  *
- * `Date` has one-second resolution and the sample includes one round trip, so
- * a few seconds of apparent offset is measurement noise, not skew — see
- * CLOCK_SKEW_WARN_SECONDS in lib/agentState.js for the threshold that decides
- * when it is worth telling an operator about.
+ * `Date` has one-second resolution and the sample includes a round trip, so a
+ * few seconds of apparent offset is noise — see CLOCK_SKEW_WARN_SECONDS in
+ * lib/agentState.js for the threshold worth telling an operator about.
  *
  * Module state, not React state: the offset is a property of the deployment,
- * not of any one component, and every surface that formats an agent timestamp
- * has to reach the same answer or the "one freshness calculation" the slice
- * requires is not one calculation.
+ * and every surface formatting an agent timestamp must reach the same answer.
  */
 
 // Client Date.now() minus the server's Date header, in ms. Positive means the

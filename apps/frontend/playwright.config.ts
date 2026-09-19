@@ -10,8 +10,15 @@ import { defineConfig, devices } from '@playwright/test';
 // page.route intercepts everything without a config change. That keeps this
 // suite backend-free and fast enough to gate every PR. Full-stack journeys
 // (ACC-05 through ACC-08) need a real backend and are deliberately out of scope.
+
+// The preview port. Overridable because 4173 is a common default and a
+// developer host may already have something on it — see
+// e2e/fixtures/assert-server-is-ours.ts, which refuses to test a stranger.
+const PORT = Number(process.env.CB_E2E_PORT || 4173);
+
 export default defineConfig({
   testDir: './e2e',
+  globalSetup: './e2e/fixtures/assert-server-is-ours.ts',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
@@ -30,7 +37,7 @@ export default defineConfig({
     toHaveScreenshot: { maxDiffPixelRatio: 0.01 },
   },
   use: {
-    baseURL: 'http://127.0.0.1:4173',
+    baseURL: `http://127.0.0.1:${PORT}`,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
@@ -42,14 +49,22 @@ export default defineConfig({
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
-      testIgnore: /visual\.spec\.ts/,
+      testIgnore: /(visual|nav-wedge)\.spec\.ts/,
     },
-    { name: 'firefox', use: { ...devices['Desktop Firefox'] }, testIgnore: /visual\.spec\.ts/ },
-    { name: 'webkit', use: { ...devices['Desktop Safari'] }, testIgnore: /visual\.spec\.ts/ },
+    {
+      name: 'firefox',
+      use: { ...devices['Desktop Firefox'] },
+      testIgnore: /(visual|nav-wedge)\.spec\.ts/,
+    },
+    {
+      name: 'webkit',
+      use: { ...devices['Desktop Safari'] },
+      testIgnore: /(visual|nav-wedge)\.spec\.ts/,
+    },
     {
       name: 'mobile-chrome',
       use: { ...devices['Pixel 5'] },
-      testIgnore: /visual\.spec\.ts/,
+      testIgnore: /(visual|nav-wedge)\.spec\.ts/,
     },
 
     // REL-18 visual regression. Baselines must be generated in the CI
@@ -65,10 +80,22 @@ export default defineConfig({
       testMatch: /visual\.spec\.ts/,
       use: { ...devices['Pixel 5'] },
     },
+    // Opt-in diagnostic: deliberately slow and statistical, never part of PR shards.
+    {
+      name: 'nav-wedge',
+      testMatch: /nav-wedge\.spec\.ts/,
+      use: { ...devices['Desktop Chrome'], trace: 'on', screenshot: 'on', video: 'on' },
+      workers: 1,
+      retries: 0,
+      timeout: 15 * 60_000,
+    },
   ],
   webServer: {
-    command: 'npm run build && npm run preview -- --port 4173 --strictPort',
-    url: 'http://127.0.0.1:4173',
+    command: `npm run build && npm run preview -- --port ${PORT} --strictPort`,
+    url: `http://127.0.0.1:${PORT}`,
+    // Outside CI an already-running preview is reused, which saves a rebuild
+    // per run. globalSetup checks that what answers is actually this app, so
+    // reuse cannot silently point the whole suite at someone else's server.
     reuseExistingServer: !process.env.CI,
     timeout: 180_000,
   },

@@ -275,3 +275,17 @@ def run_flap_detection(db: Session, window_minutes: int = 30, min_transitions: i
 
     db.flush()
     return created
+
+
+def list_flap_incidents(
+    db: Session, *, active: bool | None = None, limit: int = 50
+) -> list[FlapIncident]:
+    """Return flap incidents, newest window first.
+
+    The reader for what `run_flap_detection` writes. `active` filters by
+    resolution state; omitted returns both active and resolved incidents.
+    """
+    query = db.query(FlapIncident)
+    if active is not None:
+        query = query.filter(FlapIncident.is_active.is_(active))
+    return query.order_by(FlapIncident.window_end.desc()).limit(limit).all()

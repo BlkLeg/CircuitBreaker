@@ -30,6 +30,11 @@ export const HEALTH_POLL_INTERVAL_STOPPING_MS = 1_000; // stopping — fastest
 export const HEALTH_POLL_INTERVAL_OFFLINE_MS = 2_000; // offline — retry freq
 export const HEALTH_REQUEST_TIMEOUT_MS = 3_000; // per-request abort timeout
 export const MAX_OFFLINE_BEFORE_NOTIFY_MS = 10_000; // delay before showing offline banner
+// Consecutive failed health polls required before resolving to 'offline'. A single
+// aborted/refused/network-error poll is not conclusive on its own; this tolerates one
+// or two transient failures without flipping state. Does not apply to a successful
+// response reporting 'starting'/'stopping' — those take effect immediately.
+export const HEALTH_FAILURES_BEFORE_OFFLINE = 3;
 
 // Discovery / scan
 export const MAX_NETWORKS_PER_SCAN = 10;
@@ -88,3 +93,19 @@ export const TEMP_CRITICAL_C = 85;
 // one signal that predicts trouble before a metric goes red, so the threshold
 // is 1, not a percentage of anything.
 export const SPOOL_BACKLOG_WARN_DEPTH = 1;
+
+// How old a reported backlog may be before the row stops presenting it as the
+// current one. Mirrors `agent_registry._SPOOL_FRESH_SECONDS` (20s heartbeat +
+// the 60s row-write throttle + slack).
+//
+// The server decides this and ships `spool_stale`, precisely so the answer
+// does not depend on the viewer's clock. This constant exists only for the
+// new-UI-against-an-older-server case, where no such field arrives and the
+// client has nothing but `spool_reported_at` to go on — a self-hoster can run
+// a rebuilt frontend against a server they have not restarted yet, and the
+// fallback has to fail towards "unknown" rather than towards a confident zero.
+export const SPOOL_READING_FRESH_SECONDS = 120;
+
+// How long the map's "Save Filters" button shows its confirmation before
+// reverting to the idle label.
+export const FILTER_SAVED_NOTICE_MS = 2000;

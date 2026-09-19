@@ -6,7 +6,7 @@ export const createProfile = (data) => client.post('/discovery/profiles', data);
 export const updateProfile = (id, data) => client.patch(`/discovery/profiles/${id}`, data);
 export const deleteProfile = (id) => client.delete(`/discovery/profiles/${id}`);
 export const runProfile = (id) => client.post(`/discovery/profiles/${id}/run`);
-// Slice 4 §6 / M14's per-subnet hold. A pause withholds future scheduling and
+// The per-subnet hold. A pause withholds future scheduling and
 // deletes nothing — no profile, job or result — and `paused_at` is "held since",
 // so pausing an already-held profile keeps the original timestamp. Both answer
 // with the `DiscoveryProfileOut` they changed.
@@ -40,8 +40,15 @@ export const getVendorCatalog = () => client.get('/discovery/vendor-catalog');
 export const getPendingResults = (params) =>
   client.get('/discovery/results', { params: { status: 'pending', ...params } });
 
+// Devices a scan re-found and `discovery_enrich` backfilled on the spot. They
+// never enter the review queue — that is the point — so `getPendingResults`
+// cannot see them, and the queue asks for them by name to show what was filled
+// in without anyone having to click.
+export const getEnrichedResults = (params) =>
+  client.get('/discovery/results', { params: { status: 'auto_updated', limit: 25, ...params } });
+
 // Every device a given agent's local-discovery scans have turned up, at any
-// merge status — the accepted ones are what Slice 3 §7's "Create monitor from
+// merge status — the accepted ones are what "Create monitor from
 // this agent" action builds a monitor from, and those are no longer `pending`.
 export const getAgentDiscoveredDevices = (agentId, params) =>
   client.get('/discovery/results', {
@@ -50,8 +57,28 @@ export const getAgentDiscoveredDevices = (agentId, params) =>
 
 // Docker discovery
 export const getDockerStatus = () => client.get('/discovery/docker/status');
-export const syncDocker = () => client.post('/discovery/docker/sync');
 export const getDockerNetworks = () => client.get('/discovery/docker/networks');
+
+// Source-oriented Docker discovery (plan 03). `syncDocker` is kept alongside
+// these rather than renamed: it is still the call IntegrationsSection makes,
+// and self-hosters upgrade on their own schedule. It answers 202 with
+// `{status, source_id, run_id}` — the run ID is what makes the outcome
+// knowable, which the older caller simply discarded.
+//
+// `sourceId` names the source the caller is looking at. Omitting it keeps the
+// original behaviour of syncing whichever daemon is configured now, which is
+// what the settings entry point wants and what older deployments send.
+export const syncDocker = (sourceId) =>
+  client.post('/discovery/docker/sync', sourceId ? { source_id: sourceId } : {});
+export const listDockerSources = () => client.get('/discovery/docker/sources');
+export const getDockerSourceContainers = (sourceId) =>
+  client.get(`/discovery/docker/sources/${sourceId}/containers`);
+export const getDockerRun = (runId) => client.get(`/discovery/docker/runs/${runId}`);
+// `expected_revision` is the source revision the caller last saw; the server
+// answers 409 if it moved, so a correction cannot silently land on top of
+// someone else's.
+export const assignDockerSourceParent = (sourceId, assignment) =>
+  client.patch(`/discovery/docker/sources/${sourceId}/parent`, assignment);
 export const getListenerStatus = () => client.get('/discovery/listener/status');
 export const getListenerEvents = (params) => client.get('/discovery/listener/events', { params });
 export const enrichOpnsenseJob = (jobId) => client.post(`/discovery/jobs/${jobId}/enrich`);
@@ -59,7 +86,7 @@ export const enrichOpnsenseJob = (jobId) => client.post(`/discovery/jobs/${jobId
 // Discovery readiness
 export const getDiscoveryReadiness = () => client.get('/discovery/readiness');
 
-// Slice 4 §6's "Scan from" selector. Every **active** agent comes back whether
+// The "Scan from" selector. Every **active** agent comes back whether
 // or not it may be chosen, each carrying `eligible` plus the machine-readable
 // `reason`/`detail` pair `POST /discovery/scan` refuses with — produced by the
 // same call — so the selector can never advertise an agent the next request
@@ -69,3 +96,21 @@ export const getDiscoveryReadiness = () => client.get('/discovery/readiness');
 // worth rendering before the operator has finished typing a target.
 export const getEligibleDiscoveryAgents = (params = {}) =>
   client.get('/discovery/eligible-agents', { params });
+
+// ── Scan import and LLDP enrichment ──────────────────────────────────────────
+// These five lived on a second `discoveryApi` object in `api/client.jsx`, which
+// also carried its own copies of `getJobs` and `getJob`. Two surfaces for one
+// resource meant a caller had to know which of them a given endpoint had been
+// added to, and the duplicated pair could drift apart without anything failing.
+// One module owns `/discovery` now; the object is gone.
+
+export const getResultsWithInference = (jobId) =>
+  client.get(`/discovery/jobs/${jobId}/results`, { params: { with_inference: true } });
+export const batchImport = (jobId, items) =>
+  client.post(`/discovery/jobs/${jobId}/batch-import`, { items });
+export const importAsNetwork = (jobId, payload) =>
+  client.post(`/discovery/jobs/${jobId}/import-as-network`, payload);
+export const lldpEnrich = (payload) => client.post('/discovery/lldp-enrich', payload);
+export const lldpJobResults = (jobId) => client.get(`/discovery/lldp-jobs/${jobId}/results`);
+export const lldpApply = (jobId, payload) =>
+  client.post(`/discovery/lldp-jobs/${jobId}/apply`, payload);

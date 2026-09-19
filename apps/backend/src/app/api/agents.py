@@ -11,8 +11,10 @@ from fastapi.responses import FileResponse
 from slowapi.util import get_remote_address
 from sqlalchemy import and_, case, func, select
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.core import agent_crypto, agent_scope
+from app.core.audit import log_audit
 from app.core.rate_limit import get_limit, limiter
 from app.core.rbac import require_role, require_scope
 from app.core.scheduler import reload_discovery_jobs
@@ -21,6 +23,7 @@ from app.db.bucket import epoch_bucket
 from app.db.models import (
     Agent,
     AgentCapabilityReadiness,
+    AgentEnrollmentToken,
     AgentEvent,
     AgentHostSample,
     AgentHostSampleHourly,
@@ -45,6 +48,9 @@ from app.schemas.agents import (
     ApproveRequest,
     CapabilitiesUpdateRequest,
     CapabilityGrant,
+    EnrollmentTokenCreate,
+    EnrollmentTokenMinted,
+    EnrollmentTokenRead,
     HardwareSummary,
     InstallCommandResponse,
     PairingLookupRequest,
@@ -53,6 +59,9 @@ from app.schemas.agents import (
     ServerKeyFleetAdoption,
     ServerKeyPendingAgent,
     ServerKeyRotationStatus,
+    TLSPinPendingAgent,
+    TLSPinRotateRequest,
+    TLSPinRotationStatus,
     UpdateRequest,
 )
 from app.schemas.discovery import (
@@ -73,9 +82,11 @@ from app.services import (
     agent_discovery,
     agent_enrollment,
     agent_registry,
+    agent_tls_pin,
     agent_update,
+    certificate_service,
+    discovery_admission,
     discovery_eligibility,
-    discovery_service,
     monitor_service,
 )
 from app.services.monitoring import probe_eligibility
@@ -185,7 +196,7 @@ def get_pending_agents(
 def get_capability_defaults(
     _user: Annotated[User, require_role("viewer")],
 ) -> Any:
-    """The server capability registry's approval defaults (Task 14 / D-14).
+    """The server capability registry's approval defaults.
 
     The single source the approval modal and the agent-detail capability editor
     read their preset and config fallbacks from, so a frontend constant can
@@ -209,21 +220,219 @@ def get_capability_defaults(
     }
 
 
+@router.get("/endpoint-usage")
+def get_endpoint_usage(
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("admin")],
+) -> dict[str, int]:
+    """How many agents enrolled through each endpoint.
+
+    An endpoint with no agents is the only observable signal that it is
+    unreachable: the agent that would report the failure is the one that
+    cannot connect to report it.
+
+    The grouping lives in services/agent_endpoints, not here: routes stay thin
+    (CLAUDE.md), and tests/build's api/ ratchet enforces it.
+    """
+    from app.services import agent_endpoints
+
+    return agent_endpoints.usage_counts(db)
+
+
+def _token_capability_scope(capabilities: dict[str, Any] | None) -> dict[str, Any]:
+    """The capability scope a token grants, as plain JSON, validated now.
+
+    Validated at mint rather than at enrollment, because enrollment is the
+    moment nobody is watching: a token naming an unknown capability would mint
+    cleanly and then fail every unattended boot it was made for, with the
+    operator long since gone. `normalize_grant` raises ValueError on an unknown
+    name or an invalid config, which the caller turns into a 400.
+
+    Stored in the shape the wire already accepts — a bare boolean or an
+    `{enabled, config}` object — so `approve_agent` consumes it unchanged.
+    """
+    scope: dict[str, Any] = {}
+    for name, value in (capabilities or {}).items():
+        raw = value if isinstance(value, bool) else value.model_dump()
+        agent_capabilities.normalize_grant(name, raw)
+        scope[name] = raw
+    return scope
+
+
+def _token_to_read(row: AgentEnrollmentToken, counts: Mapping[int, int]) -> dict[str, Any]:
+    """Render one token row, with the count of agents that came through it.
+
+    Never includes the token: the row cannot reproduce it, and this shape is
+    what both the listing and the revoke response return. `counts` comes from
+    `agent_enrollment_tokens.agent_counts`, so a listing costs one query rather
+    than one per row.
+    """
+    count = counts.get(row.id, 0)
+    return {
+        "id": row.id,
+        "label": row.label,
+        "endpoint_url": row.endpoint_url,
+        "capabilities": row.capabilities or {},
+        "max_uses": row.max_uses,
+        "uses": row.uses,
+        "expires_at": row.expires_at,
+        "revoked_at": row.revoked_at,
+        "created_at": row.created_at,
+        "agent_count": int(count),
+    }
+
+
+@router.post("/enrollment-tokens", response_model=EnrollmentTokenMinted, status_code=201)
+def post_enrollment_token(
+    body: EnrollmentTokenCreate,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, require_role("admin")],
+) -> Any:
+    """Slice B: mint a token that enrolls an agent with no human present.
+
+    The plaintext is in this response and nowhere else, ever — the row stores
+    only its SHA-256. The attended flow is unchanged and remains the default;
+    this is opt-in, and the contract states its cost.
+
+    Declared before "/{agent_id}" so "enrollment-tokens" is not parsed as an
+    agent id, same as "/pending", "/install-command" and "/endpoint-usage".
+    """
+    from app.services import agent_endpoints, agent_enrollment_tokens
+
+    endpoint = agent_endpoints.find_endpoint(db, body.endpoint_id)
+    if endpoint is None:
+        # Never fall back to a derived address. A token scoped to an endpoint
+        # nobody declared would send its agents somewhere the operator did not
+        # choose, which is the defect the endpoint feature exists to remove.
+        raise HTTPException(
+            status_code=404, detail=f"No agent endpoint with id {body.endpoint_id!r}"
+        )
+
+    try:
+        plaintext, row = agent_enrollment_tokens.mint_token(
+            db,
+            label=body.label,
+            endpoint_url=endpoint["url"],
+            capabilities=_token_capability_scope(body.capabilities),
+            ttl_seconds=body.ttl_seconds,
+            max_uses=body.max_uses,
+            created_by_user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # The audit row records that a credential was minted; it is deliberately
+    # not a copy of one. `details` names the scope and the bounds, which is
+    # what an auditor needs, and nothing that could be replayed.
+    log_audit(
+        db,
+        request,
+        user_id=current_user.id,
+        action="agent_enrollment_token_minted",
+        resource=f"agents:enrollment-token:{row.id}",
+        status="ok",
+        details=(
+            f"label={row.label} endpoint_url={row.endpoint_url} "
+            f"max_uses={row.max_uses} expires_at={row.expires_at}"
+        ),
+        severity="warn",
+    )
+    rendered = _token_to_read(row, agent_enrollment_tokens.agent_counts(db))
+    db.commit()
+    return {**rendered, "token": plaintext}
+
+
+@router.get("/enrollment-tokens", response_model=list[EnrollmentTokenRead])
+def get_enrollment_tokens(
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("admin")],
+) -> Any:
+    """Slice B: every token, newest first, including revoked and expired ones.
+
+    An operator auditing what was minted needs the ones that are no longer
+    live, and a spent token still names the agents that came through it.
+    """
+    from app.services import agent_enrollment_tokens
+
+    counts = agent_enrollment_tokens.agent_counts(db)
+    return [_token_to_read(row, counts) for row in agent_enrollment_tokens.list_tokens(db)]
+
+
+@router.post("/enrollment-tokens/{token_id}/revoke", response_model=EnrollmentTokenRead)
+def post_revoke_enrollment_token(
+    token_id: int,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, require_role("admin")],
+) -> Any:
+    """Slice B: shut a token immediately.
+
+    Agents already enrolled through it are unaffected — they hold their own
+    device identity and never present the token again.
+    """
+    from app.services import agent_enrollment_tokens
+
+    row = agent_enrollment_tokens.revoke_token(db, token_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No enrollment token with id {token_id}")
+
+    log_audit(
+        db,
+        request,
+        user_id=current_user.id,
+        action="agent_enrollment_token_revoked",
+        resource=f"agents:enrollment-token:{row.id}",
+        status="ok",
+        details=f"label={row.label} uses={row.uses} max_uses={row.max_uses}",
+        severity="warn",
+    )
+    rendered = _token_to_read(row, agent_enrollment_tokens.agent_counts(db))
+    db.commit()
+    return rendered
+
+
 @router.get("/install-command", response_model=InstallCommandResponse)
 def get_install_command(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
     _user: Annotated[User, require_role("admin")],
+    endpoint: str | None = None,
+    enrollment_token: str | None = None,
 ) -> Any:
     from app.core.forwarded import forwarded_base_url
-    from app.services import agent_install
+    from app.services import agent_endpoints, agent_install
 
-    # Not `request.url`: nginx terminates TLS and proxies in the clear, so the
-    # raw scheme is http on every https deployment — and this URL is written
-    # into the agent's own config as `server_url`. See forwarded_base_url.
-    server_url = forwarded_base_url(request)
+    # An absent `endpoint` keeps today's behaviour, so existing commands and
+    # unconfigured installs are untouched. A *named* endpoint that does not
+    # exist is refused rather than falling back: silently substituting a
+    # different address is exactly the defect this parameter exists to fix, and
+    # it would return the moment an operator deleted an endpoint whose install
+    # command was still open in someone's terminal.
+    if endpoint is None:
+        # Not `request.url`: nginx terminates TLS and proxies in the clear, so
+        # the raw scheme is http on every https deployment — and this URL is
+        # written into the agent's own config as `server_url`. See
+        # forwarded_base_url.
+        server_url = forwarded_base_url(request)
+    else:
+        selected = agent_endpoints.find_endpoint(db, endpoint)
+        if selected is None:
+            raise HTTPException(status_code=404, detail=f"No agent endpoint with id {endpoint!r}")
+        server_url = selected["url"]
+
     try:
-        return agent_install.build_install_command(db, server_url)
+        # The id goes through as well as the URL: it is what puts `?endpoint=`
+        # on the download link inside the emitted command, so the machine that
+        # runs it asks `/install-agent.sh` for this same endpoint rather than
+        # letting that route re-derive an address from its own request.
+        # `enrollment_token` is passed in, never minted here: the wizard mints
+        # once through POST /agents/enrollment-tokens and then asks for a
+        # command carrying it, so re-fetching the command — an endpoint change,
+        # a re-render — never silently burns a second credential.
+        return agent_install.build_install_command(
+            db, server_url, endpoint_id=endpoint, enroll_token=enrollment_token
+        )
     except ValueError as exc:
         # A missing or unreadable TLS certificate is an operator-fixable
         # deployment problem, not a bug in the request. Surfacing it as a bare
@@ -295,7 +504,7 @@ def get_server_key_rotation_status(
     db: Annotated[Session, Depends(get_db)],
     _user: Annotated[User, require_role("admin")],
 ) -> Any:
-    """Task 28: current/successor server identity key fingerprints and
+    """current/successor server identity key fingerprints and
     overlap timing — never key material itself, same as `/install-command`
     above never embeds a private key."""
     return _rotation_status(agent_crypto.load_server_key_rotation_state(db), db)
@@ -303,10 +512,11 @@ def get_server_key_rotation_status(
 
 @router.post("/server-key/rotate", response_model=ServerKeyRotationStatus, status_code=201)
 async def post_server_key_rotate(
+    request: Request,
     db: Annotated[Session, Depends(get_db)],
-    _user: Annotated[User, require_role("admin")],
+    current_user: Annotated[User, require_role("admin")],
 ) -> Any:
-    """Task 28: start a server-key rotation (fresh successor keypair, 7-day
+    """start a server-key rotation (fresh successor keypair, 7-day
     overlap by default). Rejects with 409 while a prior rotation's overlap is
     still active — the server has exactly one rotation in flight at a time
     (see `agent_crypto.start_server_key_rotation`'s docstring).
@@ -324,6 +534,16 @@ async def post_server_key_rotate(
             detail="A server-key rotation is already active (overlap window in progress)",
         )
     await agent_registry.broadcast_server_key_rotate(db, state)
+    log_audit(
+        db,
+        request,
+        user_id=current_user.id,
+        action="agent_server_key_rotated",
+        resource="agents:server-key",
+        status="ok",
+        details=f"overlap_expires_at={state.overlap_expires_at}",
+        severity="warn",
+    )
     return _rotation_status(state, db)
 
 
@@ -381,12 +601,117 @@ def get_server_key_pending_agents(
     ]
 
 
+def _tls_pin_status(db: Session, state: agent_tls_pin.TLSPinRotationState) -> TLSPinRotationStatus:
+    """Shape one rotation state for the admin surface, including the fleet
+    convergence counts the certificate-activation gate reads."""
+    converged, unconverged = agent_tls_pin.convergence_counts(db, state)
+    pending_agents = len(agent_registry.list_agents(db, status="pending"))
+    fingerprint: str | None = None
+    if state.successor_pin:
+        fingerprint = hashlib.sha256(state.successor_pin.encode()).hexdigest()[:32]
+    return TLSPinRotationStatus(
+        active=state.rotation_active,
+        successor_mode=state.successor_mode,
+        successor_pin_fingerprint=fingerprint,
+        started_at=state.started_at,
+        overlap_expires_at=state.overlap_expires_at,
+        converged=converged,
+        unconverged=unconverged,
+        pending_agents=pending_agents,
+    )
+
+
+@router.get("/tls-pin/status", response_model=TLSPinRotationStatus)
+def get_tls_pin_rotation_status(
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("admin")],
+) -> Any:
+    """the advertised successor TLS trust policy and how much of
+    the fleet has confirmed it. Never returns the pin itself."""
+    return _tls_pin_status(db, agent_tls_pin.load_tls_pin_rotation_state(db))
+
+
+@router.post("/tls-pin/rotate", response_model=TLSPinRotationStatus, status_code=201)
+async def post_tls_pin_rotate(
+    body: TLSPinRotateRequest,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, require_role("admin")],
+) -> Any:
+    """advertise a staged certificate's trust policy as the
+    successor, so the fleet accepts either leaf across the cutover.
+
+    Start this *before* activating the certificate. Activation is gated on
+    convergence (see `api/certificates.py`) precisely so the wrong order
+    fails loudly instead of stranding agents.
+
+    Rejects with 409 while a prior rotation is still advertised — one
+    rotation in flight, matching the server-key endpoint beside this one.
+    """
+    cert = certificate_service.get_certificate(db, body.certificate_id)
+    if cert is None:
+        raise HTTPException(status_code=404, detail="Certificate not found")
+
+    state = agent_tls_pin.start_tls_pin_rotation(db, cert)
+    if state is None:
+        raise HTTPException(
+            status_code=409,
+            detail="A TLS pin rotation is already active (overlap window in progress)",
+        )
+    await agent_registry.broadcast_tls_pin_rotate(db, state)
+    log_audit(
+        db,
+        request,
+        user_id=current_user.id,
+        action="agent_tls_pin_rotated",
+        resource=f"agents:tls-pin:certificate:{cert.id}",
+        status="ok",
+        details=(
+            f"domain={cert.domain} successor_mode={state.successor_mode} "
+            f"overlap_expires_at={state.overlap_expires_at}"
+        ),
+        severity="warn",
+    )
+    return _tls_pin_status(db, state)
+
+
+@router.get("/tls-pin/pending", response_model=list[TLSPinPendingAgent])
+def get_tls_pin_pending_agents(
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("admin")],
+) -> Any:
+    """the active agents that have not confirmed the successor
+    policy — the ones activating the certificate would strand. Capped like
+    the other fleet drill-downs; a longer list is a rollout problem."""
+    state = agent_tls_pin.load_tls_pin_rotation_state(db)
+    if not state.rotation_active or state.started_at is None:
+        return []
+    pending: list[TLSPinPendingAgent] = []
+    for agent in agent_registry.list_agents(db, status="active"):
+        pinned = agent.tls_pin_successor_pinned_at
+        if pinned is not None and pinned >= state.started_at:
+            continue
+        seen = agent.tls_pin_current_pinned_at
+        pending.append(
+            TLSPinPendingAgent(
+                id=agent.id,
+                hostname=agent.hostname,
+                name=agent.name,
+                last_seen_at=agent.last_seen_at,
+                bucket=("current" if seen is not None and seen >= state.started_at else "unseen"),
+            )
+        )
+        if len(pending) >= _PENDING_AGENT_LIMIT:
+            break
+    return pending
+
+
 def _latest_samples(db: Session, agent_ids: list[int]) -> dict[int, AgentLatestSample]:
     """The newest host sample for every agent in the fleet, in **one** query.
 
     `DISTINCT ON (agent_id) ... ORDER BY agent_id, collected_at DESC` is the
     whole trick: PostgreSQL walks the existing composite index
-    `ix_agent_host_samples_agent_time` (`db/models.py:570`) and keeps the first
+    `ix_agent_host_samples_agent_time` (`db/models/agents.py`) and keeps the first
     row it meets per agent, so the cost is independent of how much history each
     agent has retained. No new index, no new collection, no schema change.
 
@@ -422,6 +747,52 @@ def _latest_samples(db: Session, agent_ids: list[int]) -> dict[int, AgentLatestS
     }
 
 
+def _load_presence_agents(db: Session, ids: list[int] | None) -> list[Agent]:
+    """The fleet (or the explicit `ids` subset) for `GET /agents/presence`.
+
+    Split out of the handler so the blocking `Session` read runs in the
+    threadpool instead of on the event loop (route slice 2.5). Same single
+    statement it always was.
+    """
+    stmt = select(Agent)
+    if ids is not None:
+        stmt = stmt.where(Agent.id.in_(ids))
+    return list(db.execute(stmt).scalars())
+
+
+def _load_presence_context(
+    db: Session, agents: list[Agent]
+) -> tuple[
+    dict[int, dict[str, dict[str, Any]]],
+    dict[int, AgentLatestSample],
+    dict[int, Hardware],
+]:
+    """Grants, newest host sample, and linked hardware for a loaded fleet.
+
+    Everything `GET /agents/presence` still needs from the database once
+    presence itself has been resolved out of Redis. Extracted so it can run in
+    the threadpool, and deliberately kept to a **fixed** statement count
+    regardless of fleet size — `test_presence_query_count_does_not_scale_with_
+    fleet_size` asserts exactly that, so a rewrite into per-agent reads here
+    would be caught rather than merely slow.
+    """
+    agent_ids = [agent.id for agent in agents]
+    grants = agent_registry.bulk_structured_grants_dict(db, agent_ids)
+    # One DISTINCT ON for the whole fleet, hoisted out of the response
+    # comprehension so the head metric values cost one query rather than one
+    # per row.
+    latest_by_agent = _latest_samples(db, agent_ids)
+
+    hardware_ids = {agent.hardware_id for agent in agents if agent.hardware_id is not None}
+    hardware_by_id: dict[int, Hardware] = {}
+    if hardware_ids:
+        hardware_by_id = {
+            hw.id: hw
+            for hw in db.execute(select(Hardware).where(Hardware.id.in_(hardware_ids))).scalars()
+        }
+    return grants, latest_by_agent, hardware_by_id
+
+
 @router.get("/presence", response_model=list[AgentPresenceRead])
 async def get_agents_presence(
     db: Annotated[Session, Depends(get_db)],
@@ -429,7 +800,7 @@ async def get_agents_presence(
     ids: Annotated[list[int] | None, Query()] = None,
 ) -> Any:
     """Bulk online/offline + grants + linked-hardware summary, one request for
-    the whole fleet (or an explicit `ids` list) — what `AgentsPage` (Task 14)
+    the whole fleet (or an explicit `ids` list) — what `AgentsPage`
     needs to render its table without an N+1 per-agent call.
 
     Declared before "/{agent_id}" so "presence" isn't parsed as an agent id,
@@ -442,25 +813,18 @@ async def get_agents_presence(
     if ids is not None and not ids:
         return []
 
-    stmt = select(Agent)
-    if ids is not None:
-        stmt = stmt.where(Agent.id.in_(ids))
-    agents = list(db.execute(stmt).scalars())
+    agents = await run_in_threadpool(_load_presence_agents, db, ids)
     agent_ids = [agent.id for agent in agents]
 
     presence = await agent_registry.bulk_presence(agent_ids)
-    grants = agent_registry.bulk_structured_grants_dict(db, agent_ids)
-    # One DISTINCT ON for the whole fleet, hoisted out of the comprehension
-    # below so the head metric values cost one query rather than one per row.
-    latest_by_agent = _latest_samples(db, agent_ids)
 
-    hardware_ids = {agent.hardware_id for agent in agents if agent.hardware_id is not None}
-    hardware_by_id: dict[int, Hardware] = {}
-    if hardware_ids:
-        hardware_by_id = {
-            hw.id: hw
-            for hw in db.execute(select(Hardware).where(Hardware.id.in_(hardware_ids))).scalars()
-        }
+    # The three remaining reads run as one threadpool hop rather than three:
+    # they are sequential against the same `Session`, which is not safe to use
+    # concurrently, so there is nothing to gain from splitting them and one
+    # hop costs one context switch instead of three.
+    grants, latest_by_agent, hardware_by_id = await run_in_threadpool(
+        _load_presence_context, db, agents
+    )
 
     return [
         AgentPresenceRead(
@@ -486,6 +850,22 @@ async def get_agents_presence(
             spool_depth=agent.spool_depth,
             spool_bytes=agent.spool_bytes,
             spool_reported_at=agent.spool_reported_at,
+            # …and whether those three describe now or only the last moment
+            # the agent could speak. An agent reports its backlog solely while
+            # connected, so the row keeps its pre-outage value for the whole
+            # outage; without this the table renders a frozen 0 as "no
+            # backlog", which is not a small number but no information at all.
+            spool_stale=agent_registry.spool_reading_is_stale(agent),
+            # Permanently destroyed history, from the same already-loaded row.
+            # It rides the fleet presence poll rather than the detail page
+            # alone because the loss is fleet-shaped: an outage that fills one
+            # agent's spool usually filled several, and an operator should not
+            # have to open each agent to find out which.
+            spool_evicted_frames=agent.spool_evicted_frames,
+            spool_evicted_bytes=agent.spool_evicted_bytes,
+            spool_evicted_oldest_at=agent.spool_evicted_oldest_at,
+            spool_evicted_newest_at=agent.spool_evicted_newest_at,
+            spool_evicted_reported_at=agent.spool_evicted_reported_at,
         )
         for agent in agents
     ]
@@ -603,11 +983,11 @@ def get_agents_metrics_series(
     ]
 
 
-# ── Slice 3 §7: probe vantages ───────────────────────────────────────────────
+# ── probe vantages ───────────────────────────────────────────────────────────
 
 
 def _active_run_counts(db: Session, agent_ids: list[int]) -> dict[int, int]:
-    """Runs each agent currently holds — §2's concurrency, measured server-side.
+    """Runs each agent currently holds —the concurrency, measured server-side.
 
     The two statuses here are exactly the ones `uq_monitor_probe_runs_active`
     covers, so this counts leases the agent is still expected to answer for
@@ -656,7 +1036,7 @@ async def get_probe_eligible_agents(
     target_type: Annotated[str | None, Query()] = None,
     target_id: Annotated[int | None, Query()] = None,
 ) -> Any:
-    """§7's eligible-agent listing: every active agent, judged against one
+    """the eligible-agent listing: every active agent, judged against one
     destination.
 
     Scope compatibility is a property of the *pair*, not of the agent, so a
@@ -667,7 +1047,7 @@ async def get_probe_eligible_agents(
     Declared before "/{agent_id}" so "probe-eligible" isn't parsed as an agent
     id, same as "/pending", "/capability-defaults" and "/presence" above.
 
-    Every row is rendered whether or not it is eligible: §7's selector shows why
+    Every row is rendered whether or not it is eligible:the selector shows why
     an agent cannot be chosen, and the reason is `probe_eligibility`'s
     machine-readable vocabulary — the same string the check-now 409 returns.
     """
@@ -753,12 +1133,12 @@ def get_agent_probes(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, require_scope("read", "*")],
 ) -> Any:
-    """§7's Assigned Probes section: what this vantage is responsible for.
+    """the Assigned Probes section: what this vantage is responsible for.
 
     Target state (`status`) and execution condition (`probe_execution_*`) are
     returned side by side and never folded into one another — the UP/DOWN pill
     shows target state only, and a monitor whose agent is offline keeps its last
-    known target state (§2, D-12).
+    known target state.
 
     This is a monitor read, so it carries the same `read` scope and tenant rule
     as `/monitors` — a scoped token without `read` cannot enumerate a vantage's
@@ -805,7 +1185,7 @@ def get_agent_probes(
     )
 
 
-# ── §6's "Discovery scope" section (Task 26) ─────────────────────────────────
+# ──the "Discovery scope" section ─────────────────────────────────
 
 #: How much job history the section shows. A bounded page, not the whole record:
 #: `DiscoveryHistoryPage` is where an operator goes for that, and this list
@@ -813,7 +1193,7 @@ def get_agent_probes(
 _RECENT_DISCOVERY_JOBS = 20
 
 #: The statuses that mean an agent still owes an answer. `queued` counts because
-#: D-5 parks an unreachable agent's job there with `waiting_for_agent` — it is
+#: the contract parks an unreachable agent's job there with `waiting_for_agent` — it is
 #: outstanding work against this vantage point, not a finished one.
 _OPEN_JOB_STATUSES = ("queued", "running")
 
@@ -823,7 +1203,7 @@ _PROVENANCE_EXCLUDED = "excluded"
 
 
 def _discovery_scope_entries(scope: agent_scope.EffectiveScope) -> list[DiscoveryScopeEntry]:
-    """Plan §6's scope table: every CIDR once, with its origin and its verdict.
+    """the scope table: every CIDR once, with its origin and its verdict.
 
     Order is automatic, then override, then exclusion, because that is the order
     an operator reasons about them in — what the agent found, what an
@@ -865,7 +1245,7 @@ def _discovery_scope_entries(scope: agent_scope.EffectiveScope) -> list[Discover
 def _grant_int(config: Mapping[str, Any], key: str) -> int:
     """One integer grant setting, or 0 for anything that is not one.
 
-    Tolerant on purpose, matching `discovery_service.granted_address_ceiling` and
+    Tolerant on purpose, matching `discovery_admission.granted_address_ceiling` and
     `granted_tcp_ports`: `_structured_grant` merges the registry default over the
     *stored* value without re-normalizing it, so this renders whatever is on the
     row. A malformed legacy value must show as 0 on a detail page, never turn the
@@ -887,16 +1267,16 @@ def _discovery_limits(config: dict[str, Any]) -> DiscoveryLimits:
     merged = defaults | config
     return DiscoveryLimits(
         scope_mode=str(merged.get("scope_mode") or ""),
-        max_addresses_per_job=discovery_service.granted_address_ceiling(merged),
+        max_addresses_per_job=discovery_admission.granted_address_ceiling(merged),
         max_concurrent_hosts=_grant_int(merged, "max_concurrent_hosts"),
         host_timeout_ms=_grant_int(merged, "host_timeout_ms"),
         job_timeout_seconds=_grant_int(merged, "job_timeout_seconds"),
-        tcp_ports=sorted(discovery_service.granted_tcp_ports(merged)),
+        tcp_ports=sorted(discovery_admission.granted_tcp_ports(merged)),
     )
 
 
 def _discovery_readiness_rows(db: Session, agent_id: int) -> list[DiscoveryReadinessRow]:
-    """Every D-8 collector, whether or not it has ever reported.
+    """Every the contract collector, whether or not it has ever reported.
 
     A missing row is rendered with `state = None` rather than omitted: it is what
     makes a job refuse with `readiness_unknown`, and an operator who cannot see
@@ -930,7 +1310,7 @@ def _discovery_readiness_rows(db: Session, agent_id: int) -> list[DiscoveryReadi
 
 
 async def _agent_discovery_read(db: Session, agent_id: int) -> AgentDiscoveryRead:
-    """§6's Discovery scope section: what this vantage point is discovering.
+    """the Discovery scope section: what this vantage point is discovering.
 
     `GET /{agent_id}/probes`' counterpart, loaded by the same page in the same
     way. It answers one question — what is being discovered from here, and if
@@ -939,7 +1319,7 @@ async def _agent_discovery_read(db: Session, agent_id: int) -> AgentDiscoveryRea
     three more round trips that could each disagree with the others.
 
     The verdict is asked with no targets and `require_online=False`: this is a
-    question about the *agent*, and D-5 makes reachability a scheduling condition
+    question about the *agent*, andthe contract makes reachability a scheduling condition
     (an offline agent's job parks as `waiting_for_agent`) rather than a
     configuration error. `online` is reported separately so the page can say so.
     """
@@ -977,8 +1357,8 @@ async def _agent_discovery_read(db: Session, agent_id: int) -> AgentDiscoveryRea
         agent_id=agent_id,
         online=await agent_registry.is_agent_online(agent_id),
         granted=bool((grant or {}).get("enabled")),
-        paused=bool(config.get(discovery_service.AGENT_DISCOVERY_PAUSE_KEY) is True),
-        globally_paused=discovery_service.global_agent_discovery_paused(db),
+        paused=bool(config.get(discovery_admission.AGENT_DISCOVERY_PAUSE_KEY) is True),
+        globally_paused=discovery_admission.global_agent_discovery_paused(db),
         eligible=decision.ok,
         reason=decision.reason,
         detail=decision.detail,
@@ -1011,8 +1391,8 @@ async def get_agent_discovery(
 def _discovery_pause_flag(db: Session, agent_id: int) -> bool:
     """The agent's `auto_discovery_paused` hold as the scheduler reads it.
 
-    `is True` and not truthiness, matching `discovery_service.paused_agent_ids`:
-    the normalizer stores a real boolean (Task 3), and agreeing with the reader
+    `is True` and not truthiness, matching `discovery_admission.paused_agent_ids`:
+    the normalizer stores a real boolean, and agreeing with the reader
     that actually withholds the crons is what makes a "did this change?"
     comparison here mean the same thing as "does the schedule change?".
 
@@ -1023,22 +1403,22 @@ def _discovery_pause_flag(db: Session, agent_id: int) -> bool:
         discovery_eligibility.CAPABILITY
     )
     config = (grant or {}).get("config") or {}
-    return config.get(discovery_service.AGENT_DISCOVERY_PAUSE_KEY) is True
+    return config.get(discovery_admission.AGENT_DISCOVERY_PAUSE_KEY) is True
 
 
 async def _set_agent_discovery_pause(
     db: Session, agent_id: int, *, paused: bool, actor_user_id: int
 ) -> AgentDiscoveryRead:
-    """M14's per-agent hold, written where Task 3 put it: the grant config.
+    """the per-agent hold, written where the design put it: the grant config.
 
     A grant write rather than a column of its own because that is already the
     per-agent settings store the UI edits, the registry normalizes and
-    `capabilities.set` carries — and because `discovery_service.paused_agent_ids`,
+    `capabilities.set` carries — and because `discovery_admission.paused_agent_ids`,
     which is what actually withholds the crons, reads it there.
 
     Three things this is deliberately **not**:
 
-    * It is not a capability disable. D-14 retires every in-flight dispatch the
+    * It is not a capability disable. the contract retires every in-flight dispatch the
       moment `local_discovery` goes off; a pause cancels nothing, which is why
       `put_capabilities`' cancellation arms are not reached from here.
     * It does not touch `enabled`, which is read off the stored grant and written
@@ -1052,7 +1432,7 @@ async def _set_agent_discovery_pause(
 
     `reload_discovery_jobs` is what applies it — that function rebuilds the whole
     discovery schedule from `profiles_due_for_scheduling`, which is where all
-    three pause scopes are read (Task 25).
+    three pause scopes are read.
     """
     grants = agent_registry.structured_grants_dict(db, agent_id)
     enabled = bool((grants.get(discovery_eligibility.CAPABILITY) or {}).get("enabled"))
@@ -1062,7 +1442,7 @@ async def _set_agent_discovery_pause(
         {
             discovery_eligibility.CAPABILITY: {
                 "enabled": enabled,
-                "config": {discovery_service.AGENT_DISCOVERY_PAUSE_KEY: paused},
+                "config": {discovery_admission.AGENT_DISCOVERY_PAUSE_KEY: paused},
             }
         },
         actor_user_id=actor_user_id,
@@ -1088,7 +1468,7 @@ async def pause_agent_discovery(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, require_role("admin")],
 ) -> Any:
-    """Hold this agent's automatic discovery (plan §6). Deletes and cancels nothing."""
+    """Hold this agent's automatic discovery. Deletes and cancels nothing."""
     if agent_registry.get_agent(db, agent_id) is None:
         raise HTTPException(status_code=404, detail="Agent not found")
     return await _set_agent_discovery_pause(db, agent_id, paused=True, actor_user_id=user.id)
@@ -1146,7 +1526,7 @@ def get_agent_telemetry(
             for r in readiness
         ],
         "capability": grant,
-        # The agent's last-reported outbound-spool backlog (Task 16, D-12).
+        # The agent's last-reported outbound-spool backlog.
         # It rides this endpoint rather than one of its own because the Agent
         # Detail page already polls it every 30s, so the catch-up indicator is
         # live with no second poll. `None` means the agent has never reported
@@ -1156,6 +1536,42 @@ def get_agent_telemetry(
             "depth": agent.spool_depth,
             "bytes": agent.spool_bytes,
             "reported_at": agent.spool_reported_at,
+            # Whether the three above are a measurement of now or the last
+            # thing the agent managed to say before the link dropped. Server
+            # side (`agent_registry.spool_reading_is_stale`) so the answer does
+            # not depend on the viewer's clock; the tab renders the depth as
+            # last-known, with its timestamp, rather than as live catch-up.
+            "stale": agent_registry.spool_reading_is_stale(agent),
+            # Two independent losses, deliberately kept apart from the backlog
+            # above and from each other. `evicted_*` is what the *agent*
+            # destroyed when its disk buffer filled; `refused_*` is what *this
+            # server* dropped on ingest. They have different remedies — raise
+            # the agent's `spool_cap_bytes` versus fix the grant or the agent
+            # status — so collapsing them into one "lost" number would name
+            # neither. All `None` for an agent that has never reported, which
+            # the UI renders as nothing rather than as a reassuring zero.
+            "evicted_frames": agent.spool_evicted_frames,
+            "evicted_bytes": agent.spool_evicted_bytes,
+            "evicted_oldest_at": agent.spool_evicted_oldest_at,
+            "evicted_newest_at": agent.spool_evicted_newest_at,
+            "evicted_reported_at": agent.spool_evicted_reported_at,
+            "refused_frames": agent.refused_frames,
+            "refused_last_at": agent.refused_frames_last_at,
+            "refused_last_reason": agent.refused_frames_last_reason,
+            # Whether this agent's buffered observations leave its spool when
+            # this server has stored them, or merely when the socket accepted
+            # them. It rides the spool block because it is a fact *about* the
+            # spool — it decides what committing a frame means — and because
+            # an operator asking "is this host's data safe" is reading this
+            # block already.
+            #
+            # `True` is the current agent-and-server pairing. `False` is an
+            # agent whose build predates the acknowledgement handshake: still
+            # at-most-once on the wire, which the UI says out loud rather than
+            # leaving to be inferred. `None` is "has not connected since this
+            # server learned to report it", and renders as nothing — never as
+            # a reassuring answer to a question nobody has asked yet.
+            "ack_negotiated": agent.data_ack_negotiated,
         },
         "hardware_id": agent.hardware_id,
     }
@@ -1294,7 +1710,7 @@ def patch_agent(
         raise HTTPException(status_code=404, detail="Agent not found")
 
     fields = payload.model_dump(exclude_unset=True)
-    # hardware_id (Task 19: host-link editing after approval) is handled
+    # hardware_id (the design: host-link editing after approval) is handled
     # separately from a plain setattr, same as approve_agent's own
     # hardware_id param — it needs FK validation (a plain setattr would
     # otherwise surface an unhandled IntegrityError for a bogus id) and an
@@ -1327,7 +1743,7 @@ async def post_pairing_lookup(
         raise HTTPException(status_code=429, detail="Too many incorrect pairing codes")
 
     # consume, not resolve — the code has done its job once it identifies the
-    # pending agent; single-use per spec §2.4.
+    # pending agent; single-use per the contract.
     agent_id = await agent_enrollment.consume_pairing_code(payload.code)
     if agent_id is None:
         await agent_enrollment.record_pairing_miss(ip)
@@ -1385,7 +1801,7 @@ async def post_reject(
     agent = agent_registry.reject_agent(db, agent_id, actor_user_id=user.id)
     db.commit()
     await agent_registry.broadcast_presence(agent_id, "rejected")
-    # Immediate cross-worker disconnect (Task 9's delivery path, Task 10's
+    # Immediate cross-worker disconnect (the delivery path, the
     # trigger): a rejected agent is never expected to hold a live /link
     # socket in practice (enroll_stream only ever leaves a device pending or
     # active), but publishing here is harmless and cheap on the off chance
@@ -1411,7 +1827,7 @@ async def post_revoke(
     if not payload.reason or len(payload.reason.strip()) < 3:
         raise HTTPException(status_code=422, detail="A revoke reason is required")
     agent = agent_registry.revoke_agent(db, agent_id, actor_user_id=user.id, reason=payload.reason)
-    # §8: a revoked agent's runs are cancelled and its assignments are kept as
+    # A revoked agent's runs are cancelled and its assignments are kept as
     # unavailable. The agent-initiated path (agent_link._handle_uninstall) does
     # exactly the same thing through the same helper — the two must not diverge,
     # since either one leaves the same runs holding the same partial unique
@@ -1419,10 +1835,10 @@ async def post_revoke(
     cancellation = monitor_service.cancel_agent_probe_runs(
         db, agent_id, reason=monitor_service.CANCEL_AGENT_REVOKED
     )
-    # Slice 4 D-14, and the same argument one slice later: a revoked agent's
+    # The same argument as the probe half above: a revoked agent's
     # discovery dispatches are closed here, in this transaction, because from the
     # moment the status flips `dispatch_frame`'s grant gate drops the agent's own
-    # terminal summary and nothing else would ever close them. D-4 has no
+    # terminal summary and nothing else would ever close them. the contract has no
     # `agent_revoked`; `agent_unavailable` is what a job whose executor no longer
     # exists failed for, and it is what `discovery_eligibility`'s `agent_inactive`
     # already maps onto at dispatch time.
@@ -1454,7 +1870,7 @@ async def post_revoke(
     # report on.
     await monitor_service.publish_probe_cancels(cancellation)
     await agent_discovery.publish_discovery_cancels(discovery_cancellation)
-    # Immediate cross-worker disconnect (Task 9's delivery path, Task 10's
+    # Immediate cross-worker disconnect (the delivery path, the
     # trigger): if the agent is connected right now, whichever worker holds
     # its /link socket picks this up via
     # agent_registry.claim_agent_control_frames and closes the connection
@@ -1479,7 +1895,7 @@ async def put_capabilities(
     if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
     was_granted = agent_registry.grants_dict(db, agent_id).get(probe_eligibility.CAPABILITY, False)
-    # D-16's second scope trigger. Read *before* the write, because the version
+    # the second scope trigger. Read *before* the write, because the version
     # is derived from the grant's `scope_mode`/`excluded_cidrs`/`additional_cidrs`
     # as well as from what the agent reported, and after the write there is
     # nothing left to compare against.
@@ -1487,21 +1903,21 @@ async def put_capabilities(
         agent_discovery.CAPABILITY, False
     )
     # Phase D. `auto_discovery_paused` is an ordinary client-settable key of the
-    # `local_discovery` grant (Task 3), so this route is a *second* writer of the
+    # `local_discovery` grant, so this route is a *second* writer of the
     # same hold `POST /{id}/discovery/pause` writes — and a hold has to be
     # effective when it is written, whichever route wrote it. The flag is read
     # once per `reload_discovery_jobs`, by
-    # `discovery_service.profiles_due_for_scheduling`. A write that did not
+    # `discovery_admission.profiles_due_for_scheduling`. A write that did not
     # rebuild the schedule would be accepted, reported back as paused, and leave
     # `next_scheduled` advertising runs that
-    # `discovery_service.profile_scheduling_held` would refuse at fire time — the
+    # `discovery_admission.profile_scheduling_held` would refuse at fire time — the
     # second line of the gate, not a substitute for this one. Read before the
     # write, like
     # `was_discovering` above: `set_capability_grants` merges the new config over
     # the stored one, so afterwards there is nothing left to compare against.
     was_discovery_paused = _discovery_pause_flag(db, agent_id)
     agent_registry.set_capability_grants(db, agent_id, payload.capabilities, actor_user_id=user.id)
-    # §8's capability-disable row, and it has to happen *here* rather than being
+    # The capability-disable row has to happen *here* rather than being
     # left to the result path: from the moment the grant is off,
     # agent_link.dispatch_frame's gate (a bare grants_dict lookup) drops any
     # probe.result as a capability_violation, so a still-open run would never be
@@ -1514,10 +1930,10 @@ async def put_capabilities(
         cancellation = monitor_service.cancel_agent_probe_runs(
             db, agent_id, reason=monitor_service.CANCEL_CAPABILITY_DISABLED
         )
-    # Slice 4 D-14/D-16, and for the same reason the probe half above sits here:
+    # The same reason the probe half above sits here:
     # once `local_discovery` is off, `dispatch_frame`'s gate drops the agent's own
     # terminal summary as a `capability_violation`, so a dispatch nobody closed
-    # stays open until Task 23's pass expires it. A grant that is still on but
+    # stays open until the pass expires it. A grant that is still on but
     # whose scope moved is the other half of the same edit —
     # `cancel_scope_changed_dispatches` re-derives the version and retires only
     # the dispatches whose snapshot no longer matches, so an unrelated setting
@@ -1544,7 +1960,7 @@ async def put_capabilities(
         reload_discovery_jobs(db)
     await monitor_service.publish_probe_cancels(cancellation)
     await agent_discovery.publish_discovery_cancels(discovery_cancellation)
-    # Immediate cross-worker push (Task 9) on top of the DB write above: if the
+    # Immediate cross-worker push on top of the DB write above: if the
     # agent is connected right now, whichever worker holds its /link socket
     # picks this up via agent_registry.claim_agent_control_frames and applies
     # it without waiting on anything poll-based. The authoritative grants
@@ -1580,7 +1996,7 @@ def delete_agent(
     agent = agent_registry.get_agent(db, agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
-    # §8: deletion is blocked while assignments remain. `monitor_items.
+    # Deletion is blocked while assignments remain. `monitor_items.
     # probe_agent_id` is the one agents FK declared RESTRICT rather than
     # CASCADE, so without this pre-check the delete would surface as an
     # unhandled IntegrityError and a 500 — and the operator would learn nothing
@@ -1594,8 +2010,8 @@ def delete_agent(
             status_code=409,
             detail=f"{assigned} monitor(s) are still assigned to this agent",
         )
-    # D-1's other live assignment. `discovery_profiles.scan_agent_id` is the one
-    # Slice 4 FK declared RESTRICT — a profile names where its scans *will* run,
+    # the other live assignment. `discovery_profiles.scan_agent_id` is the one
+    # FK declared RESTRICT — a profile names where its scans *will* run,
     # so deleting the vantage point out from under it would leave a profile that
     # can never execute. `scan_jobs.scan_agent_id` and
     # `scan_results.discovery_agent_id` are CASCADE and deliberately not counted
@@ -1680,7 +2096,7 @@ async def post_update(
         arch=agent.arch or "amd64",
         os_name=agent.os or "linux",
     )
-    # Immediate cross-worker push (Task 9), same reasoning as put_capabilities
+    # Immediate cross-worker push, same reasoning as put_capabilities
     # above: request_update above already queues the pending update in Redis,
     # which link_stream's existing _LINK_POLL_SECONDS poll (agent_update.
     # pop_pending_update) picks up as the recovery fallback if this publish is
@@ -1698,12 +2114,12 @@ async def post_update(
             },
         },
     )
-    # Task 24: `update_queued` marks queue-time only — the fleet-visible
+    # `update_queued` marks queue-time only — the fleet-visible
     # `version_changed` event doesn't fire until the new binary actually
     # reconnects and its hello reports this exact version (see
     # agent_registry.update_hello_metadata). `pending_update_version` is what
     # that later check compares against, and is also how a subsequent
-    # `update.status` frame (started/succeeded/failed/rolled_back — Task 24,
+    # `update.status` frame (started/succeeded/failed/rolled_back — the design,
     # agent_link._handle_update_status) knows which in-flight attempt it's
     # reporting on.
     agent.pending_update_version = version
@@ -1721,6 +2137,35 @@ async def post_update(
 # Unauthenticated — the agent has no user session; integrity comes from the
 # SHA-256 delivered over the Noise-encrypted link, not from route auth.
 binary_router = APIRouter(tags=["agents-binary"])
+
+
+# Registered BEFORE get_binary, and the order is load-bearing. Starlette
+# matches in registration order and a `{str}` path parameter accepts dots, so
+# `/binary/1.2.3/linux/amd64.sig` matches the route below with
+# arch="amd64.sig" if that route is reached first. `binary_path` would then
+# resolve the .sig file quite happily, so this endpoint would *appear* to
+# work while being dead code — and its 404-on-missing-signature behavior,
+# which is what tells an agent "this build is unsigned" rather than "this
+# version does not exist", would never run.
+@binary_router.get("/binary/{version}/{os_name}/{arch}.sig")
+def get_binary_signature(version: str, os_name: str, arch: str) -> FileResponse:
+    """the detached Ed25519 signature over the binary below.
+
+    Unauthenticated, like the binary route beside it, and for a stronger
+    reason: the signature *is* the integrity mechanism. Route auth would add
+    nothing an attacker who can serve the binary could not also defeat, and
+    the agent has no user session to present.
+    """
+    try:
+        path = agent_update.binary_signature_path(version, os_name, arch)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Signature not found") from None
+    if not path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"No signature for {os_name}/{arch} at version {version}",
+        )
+    return FileResponse(path, media_type="application/octet-stream", filename=path.name)
 
 
 @binary_router.get("/binary/{version}/{os_name}/{arch}")

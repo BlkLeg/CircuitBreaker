@@ -2,7 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
 
-// Slice 3 Global Constraints, "one capability registry": these bounds are the
+// One capability registry: these bounds are the
 // backend's, byte-identical. `_normalize_remote_probe_config` in
 // `services/agent_capabilities.py` rejects anything outside 1..100, so a value
 // this editor accepts must be a value that endpoint accepts — the check here
@@ -41,7 +41,7 @@ const splitList = (text) =>
     .filter(Boolean);
 
 /**
- * The `remote_probe` grant's structured config (design §3).
+ * The `remote_probe` grant's structured config.
  *
  * Presentational: every edit is handed to `onChange(patch)`, which owns the
  * optimistic update and the rollback. That split is deliberate — the rollback
@@ -88,7 +88,7 @@ export default function RemoteProbeConfigEditor({ config, defaults, onChange, di
       {/* `direct_private` is the only mode the registry declares (SCOPE_MODES
           is a one-element frozenset), so this is a readout, not a control. A
           select with a single option would imply a choice that does not exist
-          and would be the first thing to drift when Slice 4 adds one. */}
+          and would be the first thing to drift if a second registry appeared. */}
       <p className="agent-probes__scope-mode">
         Scope mode: <code>{merged.scope_mode ?? '—'}</code> — derived from the networks this agent
         reports, so a directly connected target needs no scope edit.

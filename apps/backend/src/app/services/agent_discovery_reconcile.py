@@ -1,4 +1,4 @@
-"""The owner of an agent discovery job nobody else will ever look at (D-5).
+"""The owner of an agent discovery job nobody else will ever look at.
 
 Three jobs have no owner in the product without this pass, and each of them is
 a job an operator was told would run:
@@ -9,7 +9,7 @@ a job an operator was told would run:
    `discovery_scheduler._running_scan_count` slot and doing no work — the
    wedged-item failure `probe_reconcile` exists to prevent on the remote probe
    path, in this table.
-2. **A job parked in `waiting_for_agent`.** D-5 deliberately gives the claim
+2. **A job parked in `waiting_for_agent`.** The scheduler deliberately gives the claim
    back and leaves the job `queued` so it consumes no slot, which is correct and
    is also exactly why nothing looks at it again.
 3. **The `queued` backlog itself.** `discovery_scheduler._schedule_queued_scan_jobs`
@@ -40,13 +40,13 @@ Three passes, in this order and for these reasons:
 * **Drain the backlog**, gating the parked jobs on the agent actually being
   back for the same reason.
 
-Nothing here writes, moves or deletes a `ScanResult`. D-4 is explicit that an
+Nothing here writes, moves or deletes a `ScanResult`. the contract is explicit that an
 interrupted agent scan is `failed` with its findings **retained** and
 reviewable: there is no `partial` status, and the hosts the agent did report
 before it went quiet were really observed.
 
 **`services/discovery_reconciler.py` is not imported here and must not be.**
-D-5 says so outright: that module heals discovery *readiness* — whether `nmap`
+the contract says so outright: that module heals discovery *readiness* — whether `nmap`
 is present and capable on the server — and touches no `ScanJob` row. The two
 share a word and nothing else, and `tests/services/test_agent_discovery_reconcile.py`
 asserts the boundary against this file's own source.
@@ -67,7 +67,12 @@ from app.core.job_lock import run_with_advisory_lock
 from app.core.time import utcnow
 from app.db.models import ScanJob
 from app.db.session import SessionLocal
-from app.services import agent_discovery, agent_registry, discovery_scheduler, discovery_service
+from app.services import (
+    agent_discovery,
+    agent_registry,
+    discovery_dispatch,
+    discovery_scheduler,
+)
 from app.services.settings_service import get_or_create_settings
 
 _logger = logging.getLogger(__name__)
@@ -91,13 +96,13 @@ RECONCILE_INTERVAL_S = int(os.getenv("CB_DISCOVERY_RECONCILE_INTERVAL_S", "60"))
 # against a dispatch already expired.
 LEASE_GRACE_S = int(agent_discovery.LATE_FINDING_GRACE.total_seconds())
 
-# D-5's parking horizon, from the module that stamps it onto the row. Used for
+# the parking horizon, from the module that stamps it onto the row. Used for
 # the rows that carry no `dispatch_deadline_at` of their own — see `_horizon`.
 WAITING_HORIZON_S = agent_discovery.DISPATCH_DEADLINE_S
 
 # `scan_jobs.dispatch_status` for a lease the server gave up on.
-# `db/models.py` names `expired` in the column's vocabulary and
-# `agent_discovery` declines to define it ("`expired` is Task 23's"), because
+# `db/models/discovery.py` names `expired` in the column's vocabulary and
+# `agent_discovery` declines to define it ("`expired` is the"), because
 # this is the only module that can write it: `finalize_agent_job` maps every
 # `failed` job onto `execution_error`, which is the agent's own word for a scan
 # that ran and went wrong. These scans never ran, or stopped reporting.
@@ -114,9 +119,9 @@ _DRAIN_LIMIT = 200
 class ReconcileSummary:
     """What one pass did, for the caller's logs and for the tests."""
 
-    # Leases whose agent stopped reporting mid-scan (D-4 `agent_disconnected`).
+    # Leases whose agent stopped reporting mid-scan (the contract `agent_disconnected`).
     disconnected: int = 0
-    # Parked jobs whose agent never came back (D-4 `agent_unavailable`).
+    # Parked jobs whose agent never came back (the contract `agent_unavailable`).
     unavailable: int = 0
     # Jobs handed to `agent_discovery.dispatch_discovery_job` and accepted by it.
     dispatched: int = 0
@@ -164,7 +169,7 @@ async def _expire_dead_leases(db: Session, moment: datetime) -> int:
     exactly the set `_assert_dispatch_open` still admits a finding under, so the
     two can never disagree about whether a lease is live.
 
-    D-4: `failed`, not a sixth status, and the accepted findings stay exactly
+    the contract: `failed`, not a sixth status, and the accepted findings stay exactly
     where they are.
     """
     cutoff = moment - timedelta(seconds=LEASE_GRACE_S)
@@ -192,7 +197,7 @@ async def _expire_dead_leases(db: Session, moment: datetime) -> int:
 
 
 async def _expire_parked_jobs(db: Session, moment: datetime) -> int:
-    """Fail every `waiting_for_agent` job past its deadline (D-5, D-4).
+    """Fail every `waiting_for_agent` job past its deadline.
 
     No grace is added here, unlike the lease pass. `_release_to_waiting` clears
     `dispatch_id` along with the claim, so no request was ever published under a
@@ -227,7 +232,7 @@ async def _expire(db: Session, job: ScanJob, error_reason: str) -> bool:
     them — which is what makes this pass idempotent without a lock, and the lock
     a defence against wasted work rather than against corruption.
     """
-    closed = await discovery_service.finalize_agent_job(
+    closed = await discovery_dispatch.finalize_agent_job(
         db, job, "failed", error_reason=error_reason, error_text=error_reason
     )
     if not closed:
@@ -247,7 +252,7 @@ def _horizon(job: ScanJob, moment: datetime) -> datetime:
     `dispatch_deadline_at` is the real clock and is what both the dispatcher and
     the ingest path judge against. A row without one is not thereby immortal —
     `probe_reconcile` coalesces onto `scheduled_at` for exactly this reason, and
-    D-5's own `DISPATCH_DEADLINE_S` measured from the job's creation is this
+    the own `DISPATCH_DEADLINE_S` measured from the job's creation is this
     table's equivalent. An unparseable `created_at` is the one case that refuses
     to guess: the job is left for the drain rather than failed on a clock
     nobody can read.
@@ -338,7 +343,7 @@ async def _drain_queued_jobs(db: Session) -> tuple[int, int]:
         if slots <= 0:
             break
         if job.scan_agent_id is None:
-            discovery_service.schedule_discovery_scan_job(job.id)
+            discovery_dispatch.schedule_discovery_scan_job(job.id)
             scheduled += 1
         else:
             if job.progress_phase == agent_discovery.PHASE_WAITING_FOR_AGENT and not presence.get(
@@ -375,12 +380,12 @@ async def _reconcile_once() -> None:
 
 async def run_agent_discovery_reconciliation() -> None:
     """APScheduler entry point, registered on an `IntervalTrigger` in `main.py`'s
-    lifespan (D-5) — **not** in `core.scheduler.reload_discovery_jobs`, which is
+    lifespan — **not** in `core.scheduler.reload_discovery_jobs`, which is
     re-invoked on every profile write and first removes every job it registered.
 
     A coroutine on purpose. `AsyncIOScheduler` runs a coroutine job on the event
     loop and a plain function in its thread pool, and this pass belongs on the
-    loop: `discovery_service.schedule_discovery_scan_job` starts the server-scan
+    loop: `discovery_dispatch.schedule_discovery_scan_job` starts the server-scan
     executor, and its first choice is `asyncio.create_task` on the calling
     thread's loop. Off the loop it no longer raises — it falls back to
     `run_coroutine_threadsafe` on `discovery_scheduler.main_loop()`, which is

@@ -1,4 +1,4 @@
-"""Route severity is validated at the boundary (INC-03).
+"""Route severity is validated at the boundary.
 
 ``RouteCreate.alert_severity`` was a bare ``str``, so a typo — or a client
 sending "warn" — stored a threshold the dispatcher could never match and the

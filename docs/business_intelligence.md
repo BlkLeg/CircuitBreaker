@@ -1,16 +1,26 @@
 # Business Intelligence
 
-Circuit Breaker's intelligence layer provides automated blast-radius analysis, predictive capacity forecasting, right-sizing recommendations, flap detection, and configurable telemetry retention — all derived from the same asset graph and live-metric data already collected by the platform.
+Circuit Breaker's intelligence layer provides automated blast-radius analysis, predictive capacity forecasting, right-sizing recommendations, flap detection, vulnerability assessment, and configurable telemetry retention — all derived from the same asset graph and live-metric data already collected by the platform.
 
 ## Where these appear
 
+The **Intel** page (`/intel`) is two tabs. The **Vulnerabilities** tab is the
+fleet vulnerability console: one assessment state per assessable entity —
+hardware, compute unit, service — with fleet counts, readiness first, and
+identity correction inline. The **Operations** tab holds the operational
+analytics: capacity forecasts, right-sizing recommendations and flapping
+hardware. Both tabs are deep-linkable through `?tab=`.
+
 | Capability | Surface |
 |---|---|
-| Capacity forecasts | **Intel** page (`/intel`) |
-| Resource efficiency | **Intel** page (`/intel`) |
+| Fleet vulnerability assessment | **Intel → Vulnerabilities** tab (`/intel`), plus the **Vulnerability assessment** panel on each entity's detail view |
+| Capacity forecasts | **Intel → Operations** tab (`/intel?tab=operations`) |
+| Resource efficiency | **Intel → Operations** tab |
+| Flap detection | **Intel → Operations** tab |
 | Blast radius | **Impact** panel on a hardware, compute unit, service, or storage detail view |
+| Vulnerability assessment (per entity) | **Vulnerability assessment** panel on a hardware, compute unit, or service detail view |
 
-All three are readable by any signed-in user; they carry no role restriction.
+All of these are readable by any signed-in user; they carry no role restriction. Correcting an assessment identity and triggering a feed sync require editor access.
 
 ## When the data appears
 
@@ -24,7 +34,49 @@ them: the job writes nothing when it finds nothing.
 
 Blast radius is computed on demand when you expand the **Impact** panel, not on
 a schedule, because it reflects the dependency graph as it stands right now.
-"Nothing depends on this" is a real answer and is displayed as one.
+It reports **potential dependency impact** from declared relationships — what
+could lose its provider — never an observed outage. Every listed asset can
+show the path of evidence that connects it. "Nothing depends on this" is a
+real answer and is displayed as one; a traversal that stopped at a limit says
+so instead, because an empty result from part of the graph is not proof that
+nothing depends on the asset.
+
+## Vulnerability assessment, honestly
+
+The **Vulnerability assessment** panel matches an entity's product identity
+against a locally cached NVD CVE feed. It separates readiness from findings:
+the first thing it shows is what state the assessment is in, and only a
+`completed` assessment with zero findings says **No matches in this
+assessment** — never "safe". A missing, incomplete, stale, or failed feed
+cannot produce an unqualified clean result.
+
+The assessment states:
+
+| State | Meaning |
+|-------|---------|
+| `unavailable` | No complete feed generation is active (never synced, incomplete, or failed). Findings are withheld. |
+| `unassessed` | The entity has no usable identity — missing product, missing version, or a version format with no supported comparator. |
+| `partial` | The assessment ran, but candidates or findings exceeded their limits, or some applicability could only evaluate to unknown. |
+| `completed` | Every matching candidate in the active feed was evaluated. |
+| `stale` | The findings come from a feed older than the freshness policy. They remain displayed, labelled stale, until a fresh sync completes. |
+
+**Identity.** The matcher evaluates vendor/product/version. It reads them from
+the entity's inventory fields first; an operator can correct them on the
+panel, and the correction carries a revision so a stale edit cannot silently
+overwrite a newer one. Editing the identity invalidates the previous
+assessment immediately.
+
+**Evidence and limits.** Each finding can show the CPE criteria that matched it,
+including inclusive/exclusive version bounds. Version comparison supports
+dotted-numeric versions only; any other scheme reports `unknown` rather than
+guessing. Unsupported applicability coexists with confirmed matches, and the
+result says which. Assessments are bounded (candidate and finding caps); when
+a cap is hit the result is `partial` with the limitation stated, not a silent
+truncation.
+
+The feed sync itself is configured under **Settings → Security** (CVE feed
+sync) and downloads the NVD feed to a local SQLite cache; no inventory data
+leaves the host. See [Privacy](security/privacy.md).
 
 ---
 
@@ -51,7 +103,7 @@ All endpoints require authentication and are prefixed `/api/v1/intel/`.
 
 ### `GET /api/v1/intel/blast-radius/{asset_type}/{asset_id}`
 
-Returns the downstream impact of a given asset going offline. Performs a BFS traversal of the dependency graph starting from the specified asset.
+Returns the downstream impact of a given asset going offline. Performs a bounded breadth-first traversal of the operational dependency graph starting from the specified asset.
 
 **Path parameters:**
 
@@ -59,6 +111,14 @@ Returns the downstream impact of a given asset going offline. Performs a BFS tra
 |-----------|--------|
 | `asset_type` | `hardware`, `compute_unit`, `service`, `storage` |
 | `asset_id` | integer primary key |
+
+**Query parameters:**
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `include_inferred` | `false` | Also traverse edges whose provenance is inferred, not just confirmed ones. The response states whether any inferred edges exist (`inferred_available`). |
+| `max_nodes` | `500` | Traversal node cap (1–1000). |
+| `max_depth` | `12` | Traversal hop cap (1–24). |
 
 **Response:**
 
@@ -74,18 +134,55 @@ Returns the downstream impact of a given asset going offline. Performs a BFS tra
   ],
   "impacted_storage": [],
   "total_impact_count": 2,
-  "summary": "hypervisor-01 is DOWN. Impact: 1 VM, 1 service affected."
+  "summary": "hypervisor-01 is DOWN. Impact: 1 VM, 1 service affected.",
+  "paths": [
+    {
+      "asset": { "asset_type": "service", "asset_id": 7, "name": "api-server", "status": null },
+      "edges": [
+        { "identity": "compute_units.hardware_id:3:hardware:1:compute_unit:3",
+          "provider_type": "hardware", "provider_id": 1,
+          "dependent_type": "compute_unit", "dependent_id": 3,
+          "edge_type": "hosting", "provenance": "confirmed",
+          "source_kind": "compute_units.hardware_id", "source_id": 3,
+          "label": "hosted by" }
+      ],
+      "provenance": "confirmed"
+    }
+  ],
+  "edges": [],
+  "connectivity": [],
+  "evaluated_at": "2026-09-15T12:00:00Z",
+  "completeness": "complete",
+  "truncation_reason": null,
+  "limits": { "max_nodes": 500, "max_depth": 12, "max_edges": 5000 },
+  "inferred_available": false
 }
 ```
 
-**Dependency graph edges traversed:**
+Every listed asset has an entry in `paths` (unless a cap was hit first) made
+of typed, provenance-tagged edges. `edges` carries the deduplicated edges the
+traversal used; `connectivity` carries ordinary connectivity (physical links
+and network memberships) that is *not* counted as impact. `completeness` is
+`"truncated"` with a `truncation_reason` of `node_limit`, `depth_limit` or
+`edge_limit` when a cap stopped the traversal — a truncated result is partial,
+never exhaustive.
+
+**Dependency graph edges traversed (impact):**
+
+- `ComputeUnit.hardware_id` — compute units hosted on a hardware node (**hosting**)
+- `Service.hardware_id` / `Service.compute_id` — services running on hardware or compute (**hosting**)
+- `ServiceDependency` — if service A depends on service B, B going down impacts A (**dependency**)
+- `Storage.hardware_id` — storage attached to hardware (**hosting**)
+- `ServiceStorage` — services that use a storage target (**dependency**)
+
+**Edges reported as connectivity only (never traversed for impact):**
 
 - `HardwareConnection` — direct hardware-to-hardware links
-- `HardwareNetwork` — hardware nodes sharing a network (bidirectional)
-- `ComputeUnit.hardware_id` — compute units hosted on a hardware node
-- `Service.hardware_id` / `Service.compute_id` — services running on hardware or compute
-- `ServiceDependency` — if service A depends on service B, B going down impacts A
-- `Storage.hardware_id` — storage attached to hardware
+- `HardwareNetwork` / `ComputeNetwork` — network memberships
+
+Shared subnet membership is connectivity, not an operational dependency: two
+devices on the same network are not mutual dependents, and membership is never
+expanded into device pairs.
 
 ### `GET /api/v1/intel/capacity-forecasts`
 
@@ -126,6 +223,126 @@ Returns right-sizing recommendations ordered by most recently evaluated.
 ]
 ```
 
+### `GET /api/v1/intel/flap-incidents`
+
+Returns flap incidents recorded by the analytics job's flap-detection pass:
+hardware seen transitioning UP/DOWN repeatedly within one window. This is the
+reader for data `run_flap_detection` has been writing since it shipped.
+
+**Query parameters:**
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `active` | *(unset)* | `true` returns only unresolved incidents, `false` only resolved ones. Omitted returns both. |
+| `limit` | `50` | Maximum rows returned (1–500), newest window first. |
+
+**Response:**
+
+```json
+[
+  {
+    "id": 1,
+    "asset_type": "hardware",
+    "asset_id": 3,
+    "asset_name": "flappy-01",
+    "window_start": "2026-09-17T09:30:00Z",
+    "window_end": "2026-09-17T10:00:00Z",
+    "transition_count": 7,
+    "is_active": true,
+    "resolved_at": null
+  }
+]
+```
+
+`asset_name` is resolved per request and is `null` when the referenced asset
+no longer exists — a deleted host's historical incidents are still reported,
+with the labelled id in place of a name.
+
+---
+
+## Vulnerability assessment API
+
+Assessment endpoints are prefixed `/api/v1/cve/`. Reads are available to any
+signed-in user; identity correction and feed sync require editor access.
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/v1/cve/fleet` | GET | The whole-fleet assessment behind the Intel console: feed state, fleet summary, one row per assessable entity, and the pass's limits. |
+| `/api/v1/cve/entity/{entity_type}/{entity_id}` | GET | The full `AssessmentResult` for one entity: state, reason code, identity and its revision, feed generation/age, findings with applicability evidence, completeness, and limitations. |
+| `/api/v1/cve/entity/{entity_type}/{entity_id}/identity` | PUT | Correct the identity. The request must carry the identity revision currently shown; a stale revision is rejected with `stale_identity`. |
+| `/api/v1/cve/status` | GET | Feed configuration and state: sync enabled, interval, entry count, and the active generation's state/freshness. |
+| `/api/v1/cve/sync` | POST | Trigger an immediate feed sync (also scheduled). |
+| `/api/v1/cve/search` | GET | Search the cached CVE catalog directly. |
+
+The identity revision makes out-of-order corrections rejectable on the client:
+a response for revision *n* cannot overwrite a state already advanced to *n+1*.
+
+### `GET /api/v1/cve/fleet`
+
+Assesses every assessable entity — hardware, compute units and services — in one
+pass, evaluating each **distinct identity** once (a rack of identical hosts costs
+one evaluation, reported on every row) and issuing a single batched candidate
+query for the whole request. It shares its evaluation code with the per-entity
+endpoint, so a fleet row's state and reason are what the entity panel shows for
+the same asset.
+
+**Response:**
+
+```json
+{
+  "feed": { "state": "ready", "reason_code": "ready", "generation": "gen-1", "age_seconds": 3600, "coverage_complete": true },
+  "assessed_at": "2026-09-17T10:00:00Z",
+  "summary": {
+    "total_entities": 42,
+    "by_state": { "completed": 30, "unassessed": 8, "stale": 3, "unavailable": 1 },
+    "entities_with_findings": 12,
+    "findings_total": 57,
+    "by_severity": { "critical": 2, "high": 5, "medium": 4, "low": 1 }
+  },
+  "rows": [
+    {
+      "entity_type": "hardware",
+      "entity_id": 1,
+      "name": "nas-01",
+      "state": "completed",
+      "reason_code": "completed",
+      "identity": { "vendor": "acme", "product": "widget", "version": "1.9", "version_scheme": "dotted_numeric", "provenance": "inventory", "revision": 0 },
+      "finding_count": 3,
+      "max_severity": "high",
+      "max_cvss": 8.1,
+      "completeness": "complete"
+    }
+  ],
+  "limits": {
+    "identity_limit": 250,
+    "identities_total": 19,
+    "identities_assessed": 19,
+    "identity_limit_reached": false,
+    "candidate_limited_products": []
+  }
+}
+```
+
+`summary.by_state` counts readiness apart from findings: an entity with no
+product identity is `unassessed`, never folded into a count that could read as
+clean. `by_severity` is a histogram over each entity's *worst* finding.
+
+**Bounding.** The pass assesses at most `identity_limit` distinct identities
+(default 250). Entities beyond the cap are returned with state `unassessed` and
+reason `fleet_limit` — never dropped — and `limits.identity_limit_reached` says
+the summary is a floor, not a total. Products whose candidate set hit the
+per-pair cap are listed in `candidate_limited_products`, and their rows are
+`partial`. With no complete feed generation, every row is `unavailable` and
+nothing can read as an all-clear. There is no pagination: the summary requires
+the full pass, and the console filters client-side over the complete set.
+
+The revision counts *corrections*, not identities. An identity read from the
+entity's own inventory fields has never been corrected, so it reports revision
+**0** — which is the base revision the first correction must send, because no
+operator-override row exists yet to compare against. The first accepted
+correction creates that row at revision 1. The panel shows a revision only for
+an identity an operator has actually corrected.
+
 ---
 
 ## Analytics Jobs
@@ -148,7 +365,7 @@ Runs three passes in order:
    - `over_provisioned` — CPU avg < 10% and memory avg < 15%
    - `balanced` — everything else
 
-3. **Flap detection** (`run_flap_detection`) — Counts UP/DOWN status transitions within a 30-minute window. Nodes with ≥ 5 transitions get an active `FlapIncident`. Incidents are resolved automatically when transitions drop below threshold.
+3. **Flap detection** (`run_flap_detection`) — Counts UP/DOWN status transitions within a 30-minute window. Nodes with ≥ 5 transitions get an active `FlapIncident`. Incidents are resolved automatically when transitions drop below threshold. Its output is served by `GET /api/v1/intel/flap-incidents` and shown on the **Intel → Operations** tab — the first surface flap detection has ever had.
 
 ### Retention job (`run_retention_job`)
 
@@ -197,4 +414,10 @@ Asset identity uses stable `(asset_type, asset_id)` tuples throughout, so extern
 
 ## Extending Blast Radius
 
-To add a new asset type to the blast-radius graph, add edges in `_build_adjacency()` inside `src/app/services/intelligence/dependency_graph.py`. Each edge is a `(asset_type, id) → (asset_type, id)` entry in the adjacency dict. The BFS traversal and result classification handle the rest automatically.
+To add a new relationship to the blast-radius graph, add it in
+`load_dependency_edges()` inside `src/app/services/intelligence/dependency_edges.py`.
+Operational relationships go in `dependencies` with an edge type (`hosting`,
+`dependency`) and provenance; physical links and memberships go in
+`connectivity`, which is reported but never traversed for impact. The
+traversal, path assembly and completeness handling in
+`dependency_graph.py` pick edges up from there automatically.

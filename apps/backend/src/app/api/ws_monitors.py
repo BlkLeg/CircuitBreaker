@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# REL-07 fault-metric identity for this stream.
+# Fault-metric identity for this stream.
 _COMPONENT = "ws_monitors"
 # RFC 6455 1011 "internal error" — the server cannot fulfil the stream contract.
 _WS_INTERNAL_ERROR = 1011
@@ -76,7 +76,7 @@ def _extract_client_ip(websocket: WebSocket) -> str:
 
     It is the `_MAX_PER_IP` cap bucket, and it is the address the operator's
     `ws_allowed_cidrs` allowlist is matched against at the CIDR-whitelist gate
-    below. Until B24 was closed everywhere this read the leftmost
+    below. Until the contract was closed everywhere this read the leftmost
     `X-Forwarded-For` entry off any peer, so an off-net client could put an
     allowlisted address in a header it wrote itself and walk through a network
     ACL. The trust rule is shared with every other WS stream; see
@@ -172,7 +172,7 @@ async def _redis_listener(ws: WebSocket, channels: set[str], stop_event: asyncio
     except Exception as exc:
         # Without the subscription this socket can never report another status
         # change, and a monitor dashboard that shows stale "UP" forever is worse
-        # than one that reconnects — close explicitly (REL-07).
+        # than one that reconnects — close explicitly.
         record_stream_fault(
             f"{_COMPONENT}.subscribe", exc, logger=logger, context={"channels": len(channels)}
         )

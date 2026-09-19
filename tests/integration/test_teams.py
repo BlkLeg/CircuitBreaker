@@ -9,23 +9,18 @@ tenant isolation as a security boundary (ADR 0003): the router at
 real is the ``tenant_id`` column on the entity tables, so rows written by an
 older install still load. These tests pin that contract.
 
-Requires CB_TEST_DB_URL to be set to a real PostgreSQL database URL because
-JSONB and the tenant_id FK constraints are PostgreSQL-specific.
+Needs a real PostgreSQL database because JSONB and the tenant_id FK
+constraints are PostgreSQL-specific — the same requirement every other test
+in this directory has via tests/integration/conftest.py's ``db``/``client``
+fixtures, which default to a live Postgres even when CB_TEST_DB_URL is not
+explicitly exported. No separate skip is needed here: this file rides the
+same fixtures.
 
 Run:
-    CB_TEST_DB_URL=postgresql://breaker:breaker@localhost:5432/circuitbreaker_test \
-        pytest tests/integration/test_teams.py -v
+    pytest tests/integration/test_teams.py -v
 """
 
-import os
-
-import pytest
 from sqlalchemy import inspect
-
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("CB_TEST_DB_URL"),
-    reason="CB_TEST_DB_URL not set — PG required for team tenancy tests",
-)
 
 
 def test_tenants_api_is_gone(client, auth_headers):

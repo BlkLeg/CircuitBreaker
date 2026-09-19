@@ -605,7 +605,17 @@ function LogRow({
             <div style={{ display: 'flex', flexDirection: 'column' }}>
               <span>{log.actor_name || log.actor || 'anonymous'}</span>
               {log.role_at_time && (
-                <span style={{ fontSize: 9, opacity: 0.7, textTransform: 'uppercase' }}>
+                // No opacity: deriveReadableText floors --color-text-muted to
+                // AA against the surface it sits on, and dimming it puts the
+                // text back under the floor the theme just guaranteed. Measured
+                // at 4.0:1 on gruvbox without it. 9px goes with it.
+                <span
+                  style={{
+                    fontSize: 11,
+                    color: 'var(--color-text-muted)',
+                    textTransform: 'uppercase',
+                  }}
+                >
                   {log.role_at_time}
                 </span>
               )}
@@ -956,7 +966,7 @@ function LogsPage({ auditMode = false }) {
     setError(null);
     try {
       const params = { limit, offset, sort: timestampSort };
-      // INC-12: the audit view is GET /logs?category=audit. The dedicated
+      // The audit view is GET /logs?category=audit. The dedicated
       // GET /logs/audit route is a strict subset of this one — it drops
       // entity_type, level, severity and search — so it is not used.
       if (auditMode) params.category = 'audit';
@@ -1150,6 +1160,7 @@ function LogsPage({ auditMode = false }) {
 
           {/* Entity type */}
           <select
+            aria-label="Filter by entity type"
             value={entityType}
             onChange={(e) => setEntityType(e.target.value)}
             style={{
@@ -1171,6 +1182,7 @@ function LogsPage({ auditMode = false }) {
 
           {/* Action dropdown */}
           <select
+            aria-label="Filter by action"
             value={actionFilter}
             onChange={(e) => setActionFilter(e.target.value)}
             style={{
@@ -1192,6 +1204,7 @@ function LogsPage({ auditMode = false }) {
 
           {/* Actor dropdown */}
           <select
+            aria-label="Filter by actor"
             value={actorFilter}
             onChange={(e) => setActorFilter(e.target.value)}
             style={{
@@ -1275,6 +1288,7 @@ function LogsPage({ auditMode = false }) {
 
           {/* Limit */}
           <select
+            aria-label="Entries per page"
             value={limit}
             onChange={(e) => setLimit(Number(e.target.value))}
             style={{

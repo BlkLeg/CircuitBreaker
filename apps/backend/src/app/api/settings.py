@@ -44,7 +44,10 @@ def put_settings(
     user: Any = require_role("admin"),
 ) -> Any:
     """Merge-update app settings. Only supplied fields are changed."""
-    result = settings_service.update_settings(db, payload, user_id=user.id)
+    try:
+        result = settings_service.update_settings(db, payload, user_id=user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if payload.rate_limit_profile is not None:
         from app.core.rate_limit import invalidate_rate_limit_profile_cache
 
@@ -110,7 +113,7 @@ def patch_acme_dns(
     db: Session = Depends(get_db),
     user: Any = require_role("admin"),
 ) -> Any:
-    """Configure the DNS-01 provider used for Let's Encrypt issuance (INC-07).
+    """Configure the DNS-01 provider used for Let's Encrypt issuance.
 
     Admin-only, unlike the settings read: the value being written is a credential that can
     publish records in the install's DNS zone.

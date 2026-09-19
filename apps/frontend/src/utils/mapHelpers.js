@@ -30,10 +30,60 @@ export function isHiddenByTag(node, trimmedTag) {
 }
 
 /**
+ * Single source of truth for map node visibility.
+ *
+ * Tag and hardware-role are independent reasons to hide a node, so they are
+ * OR-ed here rather than applied by separate effects. Two effects each writing
+ * `hidden` for every node meant the last one to run won, and changing either
+ * filter could unhide a node the other had excluded.
+ *
+ * @param {object} node - map node carrying `_tags`, `_hwRole`, `originalType`
+ * @param {{tag?: string, hwRole?: string}} filters - active filter values
+ * @returns {boolean} true when the node should be hidden
+ */
+export function isNodeHidden(node, { tag, hwRole } = {}) {
+  if (isHiddenByTag(node, tag)) return true;
+  if (hwRole && node.originalType === 'hardware' && node._hwRole !== hwRole) return true;
+  return false;
+}
+
+/**
  * Returns the modal title for the quick-create shortcut based on the active mode.
  */
 export function getQuickCreateTitle(mode) {
   if (mode === 'service') return 'New Service';
   if (mode === 'compute') return 'New Compute Unit';
   return 'New Storage';
+}
+
+/**
+ * Entity key -> the `include` token the topology endpoint matches.
+ * The backend compares against plural forms (see api/graph.py), so `service`
+ * and `network` must be sent as `services` and `networks`.
+ */
+const INCLUDE_TOKENS = new Map([
+  ['hardware', 'hardware'],
+  ['compute', 'compute'],
+  ['service', 'services'],
+  ['storage', 'storage'],
+  ['network', 'networks'],
+  ['misc', 'misc'],
+  ['external', 'external'],
+]);
+
+/**
+ * Builds the topology `include` CSV from the map's entity-type filter.
+ * Shared by both renderers so React Flow and Sigma request the same graph.
+ *
+ * @param {Map<string, boolean>} types - entity key -> included
+ * @returns {string} comma-separated include tokens, never empty
+ */
+export function buildIncludeCSV(types) {
+  return (
+    Array.from(types.entries())
+      .filter(([, v]) => v)
+      .map(([k]) => INCLUDE_TOKENS.get(k))
+      .filter(Boolean)
+      .join(',') || 'hardware'
+  );
 }

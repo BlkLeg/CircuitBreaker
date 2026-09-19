@@ -8,7 +8,7 @@
  *   onImported (resp)   — called after successful import
  */
 import React, { useState, useMemo, useCallback } from 'react';
-import { discoveryApi } from '../api/client';
+import { getJob, importAsNetwork, lldpEnrich } from '../api/discovery';
 import { useToast } from './common/Toast';
 import LLDPReviewModal from './LLDPReviewModal';
 
@@ -78,7 +78,7 @@ export default function ScanImportModal({ scanId, results = [], onClose, onImpor
           scan_result_id: r.id,
           overrides: roleOverrides[r.id] ? { role: roleOverrides[r.id] } : {},
         }));
-      const resp = await discoveryApi.importAsNetwork(scanId, { items });
+      const resp = await importAsNetwork(scanId, { items });
       const allIds = [...(resp.data.created || []), ...(resp.data.updated || [])]
         .map((n) => n.id)
         .filter(Boolean);
@@ -95,11 +95,11 @@ export default function ScanImportModal({ scanId, results = [], onClose, onImpor
     if (!importedIds?.length) return;
     setLldpEnriching(true);
     try {
-      const res = await discoveryApi.lldpEnrich({ hardware_ids: importedIds });
+      const res = await lldpEnrich({ hardware_ids: importedIds });
       const jobId = res.data.job_id;
       const poll = setInterval(async () => {
         try {
-          const jobRes = await discoveryApi.getJob(jobId);
+          const jobRes = await getJob(jobId);
           if (jobRes.data.status === 'completed' || jobRes.data.status === 'failed') {
             clearInterval(poll);
             setLldpEnriching(false);

@@ -1,4 +1,4 @@
-"""`hello.networks` -> `agent_networks`, versioned (Task 2, D-1).
+"""`hello.networks` -> `agent_networks`, versioned.
 
 The generation counter is the contract: Slice 4 cancels in-flight work when
 the scope version moves, so it must move when — and only when — the agent's

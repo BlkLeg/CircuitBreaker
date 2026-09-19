@@ -1,4 +1,4 @@
-"""What POST /certificates does when the requested type cannot be produced (INC-07).
+"""What POST /certificates does when the requested type cannot be produced.
 
 The route used to have no failure path at all: creation always succeeded, because it fell
 back to generating a self-signed certificate whatever type was asked for.

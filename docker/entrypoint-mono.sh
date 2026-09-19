@@ -72,7 +72,7 @@ fi
 PG_BIN="/usr/lib/postgresql/15/bin"
 
 ensure_data_dirs() {
-  # acme-challenge / letsencrypt / tmp are certbot's (INC-07). Without letsencrypt/
+  # acme-challenge / letsencrypt / tmp are certbot's. Without letsencrypt/
   # certbot falls back to /etc/letsencrypt, which a non-root process cannot create --
   # the original defect reappearing one directory over. Without tmp/, the credentials
   # TemporaryDirectory issuance writes into has nowhere to live.
@@ -86,6 +86,22 @@ ensure_data_dirs() {
 }
 
 ensure_data_dirs
+
+# Secret-free install identity for operator tooling (host cb and in-container).
+if [ -f /usr/local/lib/circuitbreaker/install-identity.sh ]; then
+  # shellcheck source=/dev/null
+  . /usr/local/lib/circuitbreaker/install-identity.sh
+  _cb_version="$(cat /app/VERSION 2>/dev/null || cat /VERSION 2>/dev/null || echo unknown)"
+  write_install_identity "${DATA}/install-identity.json" \
+    mode=mono \
+    version="${_cb_version}" \
+    data_dir="${DATA}" \
+    env_file="${DATA}/.env" \
+    container_name="${HOSTNAME:-circuitbreaker}" \
+    cli_path=/usr/local/bin/cb \
+    health_url=http://127.0.0.1:8080/api/v1/readyz \
+    || echo "[entrypoint] warning: could not write install identity" >&2
+fi
 
 run_as_breaker() {
   local cmd="$1"

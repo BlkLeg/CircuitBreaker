@@ -214,7 +214,7 @@ def test_get_uptime_no_data_is_none(db_session):
     uptime = monitor_service.get_uptime(db_session, created["id"])
     # Every percentage is None ("no data yet"), but coverage is 0-of-window
     # rather than None: the monitor exists, so how much of the window went
-    # unobserved is a known fact, not an unknown one (D-12).
+    # unobserved is a known fact, not an unknown one.
     assert uptime == {
         "pct_24h": None,
         "pct_7d": None,
@@ -228,9 +228,9 @@ def test_get_uptime_no_data_is_none(db_session):
     }
 
 
-# ── D-12: observed coverage ──────────────────────────────────────────────────
+# ── observed coverage ──────────────────────────────────────────────────
 #
-# An agent that cannot run a check writes no `avail` sample (§2), so an
+# An agent that cannot run a check writes no `avail` sample, so an
 # unobserved stretch shrinks the uptime denominator instead of showing as
 # downtime. These pin the other half of D-12: the response says how much of the
 # window was actually observed, so a 100% is readable as the claim it is.

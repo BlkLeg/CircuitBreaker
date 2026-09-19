@@ -37,10 +37,17 @@ complete OOBE promptly and keep the port off untrusted networks while you do it.
 
 ### API tokens
 
-Admins can mint scoped API tokens from the **API tokens** tab of the Profile modal (`POST /api/v1/auth/api-token`).
-The token value is shown once at creation — copy it then, because it cannot be retrieved later. Existing tokens are
-listed and can be revoked individually (`GET /api/v1/auth/api-tokens`, `DELETE /api/v1/auth/api-tokens/{token_id}`). A token carries scopes rather
-than a session, so it is the right way to script against the API instead of reusing a user login.
+Admins can mint personal API tokens from the **API tokens** tab of the Profile modal
+(`POST /api/v1/auth/api-token` with label/expiry only — scopes default to the creator's
+effective permissions). For fleet inventory, least-privilege presets, service accounts,
+rotation, and revoke with typed confirmation, use **Govern → Access Tokens**
+(`/admin/tokens`). See [API tokens & service accounts](api-tokens.md).
+
+The token value is shown once at creation or rotation — copy it then, because it cannot be
+retrieved later. Existing tokens are listed and can be revoked individually
+(`GET /api/v1/auth/api-tokens`, `DELETE /api/v1/auth/api-tokens/{token_id}`). A token carries
+scopes rather than a session, so it is the right way to script against the API instead of
+reusing a user login.
 
 ---
 

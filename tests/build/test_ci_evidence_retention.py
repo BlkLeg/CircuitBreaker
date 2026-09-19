@@ -1,4 +1,4 @@
-"""REL-20: runs are deterministic, and their evidence survives the run.
+"""Runs are deterministic, and their evidence survives the run.
 
 The acceptance criterion is blunt — "any failed release job is diagnosable from
 retained artifacts alone" — and it has one failure mode: the evidence exists
@@ -93,7 +93,7 @@ def test_the_seeds_are_pinned_at_the_workflow_level(name: str):
 def test_the_seed_is_fixed_rather_than_derived_from_the_run(name: str):
     """A seed that changes every run is recorded, not fixed. Recording it makes
     a failure reproducible only for whoever reads that run's log; fixing it
-    makes two runs of the same commit comparable, which is what REL-20 asks
+    makes two runs of the same commit comparable, which is what the policy asks
     for. `${{ github.run_id }}` is the specific mistake this catches."""
     seed = str((_load(name).get("env") or {}).get("CB_TEST_SEED", ""))
     assert "${{" not in seed, f"{name}: CB_TEST_SEED={seed!r} is derived per run, not fixed"
@@ -188,7 +188,7 @@ def test_the_coverage_data_files_are_not_dropped_as_dotfiles(name: str):
 
 
 def test_every_named_artifact_class_is_retained_somewhere():
-    """REL-20 names them: JUnit, coverage, logs, traces, screenshots, seeds and
+    """The required artifacts: JUnit, coverage, logs, traces, screenshots, seeds and
     container diagnostics. Traces, screenshots and video are what
     playwright.config.ts writes into test-results/ on failure, so retaining
     that directory is how those three are kept; the seed is in the run

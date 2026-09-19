@@ -1,0 +1,236 @@
+package link
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"log"
+	"slices"
+
+	"circuitbreaker.dev/cb-agent/internal/config"
+	"circuitbreaker.dev/cb-agent/internal/tlsdial"
+)
+
+// ResolveTrust returns the TLS trust policy every dial in this agent should
+// honor: the effective policy — a promoted successor (config.TLSTrustPolicy) if
+// one exists, otherwise agent.toml's tls_pin — plus any successor a
+// `tls.pin.rotate` frame advertised and internal/config persisted.
+//
+// This must stay the single resolver. All four dial sites — enrollment, the
+// /link websocket and its re-dial, and the update download — go through it, so
+// no path is left behind on a trust change. The update download is how a broken
+// agent would otherwise be repaired, so a stranded download path makes every
+// other stranding unrecoverable.
+// tests/build/test_phase4_supply_chain_ratchets.py enforces it.
+//
+// stateDir == "" skips both persisted lookups and returns just the configured
+// policy, matching serverKeyCandidates' handling of the same case.
+func ResolveTrust(cfg *config.Config, stateDir string) tlsdial.Trust {
+	trust := tlsdial.Trust{Mode: tlsdial.ModeSelfSigned, Pins: []string{cfg.TLSPin}}
+	if cfg.TLSPin == "" {
+		trust = tlsdial.Trust{Mode: tlsdial.ModePublic}
+	}
+	if stateDir == "" {
+		return trust
+	}
+	// A previously promoted policy replaces agent.toml's, which names the
+	// certificate that rotation retired. See config.TLSTrustPolicy.
+	if promoted, err := config.LoadEffectiveTLSTrust(stateDir); err != nil {
+		log.Printf("link: reading promoted tls trust policy: %v", err)
+	} else if promoted != nil {
+		if promoted.Mode == tlsdial.ModePublic {
+			trust = tlsdial.Trust{Mode: tlsdial.ModePublic}
+		} else if promoted.Pin != "" {
+			trust = tlsdial.Trust{Mode: tlsdial.ModeSelfSigned, Pins: []string{promoted.Pin}}
+		}
+	}
+	rotation, err := config.LoadTLSPinRotation(stateDir)
+	if err != nil {
+		log.Printf("link: reading persisted tls pin rotation: %v", err)
+		return trust
+	}
+	if rotation == nil {
+		return trust
+	}
+	if rotation.Mode == tlsdial.ModePublic {
+		trust.PublicSuccessorPending = true
+		return trust
+	}
+	// Compared against the *effective* pin rather than cfg.TLSPin: after one
+	// promotion those differ, and comparing against the retired pin would
+	// re-append a successor the agent is already serving under.
+	if rotation.SuccessorPin != "" && !slices.Contains(trust.Pins, rotation.SuccessorPin) {
+		trust.Pins = append(trust.Pins, rotation.SuccessorPin)
+	}
+	return trust
+}
+
+// PromoteTrust records the outcome of one completed TLS handshake against a
+// trust policy ResolveTrust produced, and reports which policy matched.
+//
+// matchedIndex is the candidate index tlsdial.Trust.Matches returned: index 0 is
+// the effective policy ("current"), anything above it the advertised successor.
+// A successor match means the server is now serving the new certificate, so the
+// rotation is complete — the successor becomes the effective policy and the
+// rotation file is cleared.
+//
+// Recording it is not optional. agent.toml is root-owned and never rewritten, so
+// its tls_pin still names the certificate the rotation retired; an agent that
+// only cleared the rotation would fall back to that retired pin and strand on
+// its next reconnect.
+//
+// A current match deliberately keeps the rotation: the cutover has not happened
+// yet, and dropping the successor would mean re-advertising the agent before it
+// can survive the actual change. A successful cross-mode retry passes
+// successorRetryIndex and lands in the same successor branch.
+//
+// The returned kind travels to the server on the next hello as `tls_pin_kind`,
+// feeding the operator's convergence view and the activation gate.
+func PromoteTrust(cfg *config.Config, stateDir string, matchedIndex int) (string, error) {
+	if matchedIndex <= 0 {
+		return "current", nil
+	}
+	if stateDir == "" {
+		return "successor", nil
+	}
+	rotation, err := config.LoadTLSPinRotation(stateDir)
+	if err != nil {
+		return "successor", err
+	}
+	if rotation == nil {
+		// Nothing was advertised, so there is no policy to promote. The
+		// caller still matched above index 0, which cannot happen without a
+		// successor candidate — treat it as already promoted rather than
+		// writing a policy this agent was never told about.
+		return "successor", nil
+	}
+	// Recorded BEFORE the clear, and this order is the whole fix: the
+	// rotation file is the only record of what was promoted, so clearing it
+	// first and failing here would leave the agent resolving agent.toml's
+	// retired pin against the certificate now being served.
+	if err := config.SaveEffectiveTLSTrust(stateDir, config.TLSTrustPolicy{
+		Mode: rotation.Mode,
+		Pin:  rotation.SuccessorPin,
+	}); err != nil {
+		return "successor", err
+	}
+	if err := config.ClearTLSPinRotation(stateDir); err != nil {
+		return "successor", err
+	}
+	log.Printf("link: promoted the successor TLS trust policy — the server is now serving it")
+	return "successor", nil
+}
+
+// successorRetryIndex is the candidate index PromoteTrust is given after a
+// successful cross-mode retry. Any index above zero means "not the current
+// policy", and a cross-mode successor has no pin candidate in the current
+// policy's list to point at, so this is a named constant rather than a magic 1.
+const successorRetryIndex = 1
+
+// successorRetryTrust returns the trust policy one cross-mode retry should
+// use, and whether such a retry is warranted at all.
+//
+// The mechanism is symmetric because the hazard is. Both cutover directions
+// strand the whole fleet, and for mirror-image reasons:
+//
+//   - self_signed -> public: the agent holds a pin that can never match a
+//     publicly-trusted leaf.
+//   - public -> self_signed: the agent holds no pin and does standard
+//     verification, which a self-signed leaf can never pass.
+//
+// In each case the *current* policy provably cannot verify the *successor*
+// certificate, so no amount of retrying the current policy helps and the agent
+// can never report convergence — which leaves the activation gate shut
+// forever. One retry under the announced successor policy is what closes it.
+//
+// Warranted only when the server advertised the cross-mode successor over the
+// already-authenticated Noise link and the agent persisted it. That
+// precondition is what keeps this from being a trust-on-first-use fallback: an
+// attacker who can merely make dials fail gets nothing, because they cannot
+// make the agent believe a cutover was announced.
+func successorRetryTrust(trust tlsdial.Trust, rotation *config.TLSPinRotation) (tlsdial.Trust, bool) {
+	if rotation == nil {
+		return tlsdial.Trust{}, false
+	}
+	switch {
+	case trust.Mode == tlsdial.ModeSelfSigned && rotation.Mode == tlsdial.ModePublic:
+		return tlsdial.Trust{Mode: tlsdial.ModePublic}, true
+	case trust.Mode == tlsdial.ModePublic && rotation.Mode == tlsdial.ModeSelfSigned &&
+		rotation.SuccessorPin != "":
+		return tlsdial.Trust{
+			Mode: tlsdial.ModeSelfSigned,
+			Pins: []string{rotation.SuccessorPin},
+		}, true
+	}
+	return tlsdial.Trust{}, false
+}
+
+// SuccessorReady reports whether this agent has durably persisted an
+// advertised successor trust policy, and so would survive the cutover to it.
+//
+// This, not the matched-policy kind, is what the server's convergence view
+// and certificate-activation gate need. Until the server actually serves the
+// successor, every reachable agent's handshake matches the *current* policy
+// — so a gate keyed on a successor match could never open on the normal
+// path, and an operator would have to force every rotation, which is exactly
+// the stranding the gate exists to prevent.
+//
+// Travels to the server on hello as `tls_pin_successor_ready`. False once
+// promoted: the agent is then on the new policy outright and reports that as
+// a "successor" match instead.
+func SuccessorReady(stateDir string) bool {
+	if stateDir == "" {
+		return false
+	}
+	rotation, err := config.LoadTLSPinRotation(stateDir)
+	if err != nil {
+		log.Printf("link: reading persisted tls pin rotation for readiness: %v", err)
+		return false
+	}
+	return rotation != nil
+}
+
+// policyFingerprintChars matches POLICY_FINGERPRINT_CHARS in
+// app/services/agent_tls_pin.py.
+const policyFingerprintChars = 32
+
+// PolicyFingerprint returns a stable digest of a (mode, pin) trust policy.
+//
+// Over the policy rather than the pin, because the rotated unit is a policy: a
+// public-mode successor carries an empty pin, so a pin-only digest cannot tell
+// "stop pinning" apart from "no successor at all".
+//
+// The server computes this identically in
+// app/services/agent_tls_pin.py:policy_fingerprint. Two languages agreeing on a
+// digest is exactly the kind of contract that drifts in silence — neither
+// suite alone would catch a mismatch, because each would be checking its own
+// arithmetic — so tests/build/test_tls_pin_fingerprint_contract.py pins both
+// against shared vectors, as the agent signature encoding already is.
+func PolicyFingerprint(mode, pin string) string {
+	sum := sha256.Sum256([]byte(mode + "\x00" + pin))
+	return hex.EncodeToString(sum[:])[:policyFingerprintChars]
+}
+
+// SuccessorFingerprint reports which successor trust policy this agent holds,
+// or "" when it holds none.
+//
+// SuccessorReady alone answers "do you hold a successor", which is not the
+// question the server's gate needs: an agent can hold one indefinitely from a
+// rotation that was abandoned — the server clears its own state and no frame
+// ever tells the agent to drop its copy, and nothing here acts on Expiry — so
+// a bare boolean credited that agent as converged on the *next* rotation, for a
+// policy it had never received. The cutover then stranded it, which is F4 by
+// way of the mechanism built to prevent F4.
+func SuccessorFingerprint(stateDir string) string {
+	if stateDir == "" {
+		return ""
+	}
+	rotation, err := config.LoadTLSPinRotation(stateDir)
+	if err != nil {
+		log.Printf("link: reading persisted tls pin rotation for fingerprint: %v", err)
+		return ""
+	}
+	if rotation == nil {
+		return ""
+	}
+	return PolicyFingerprint(rotation.Mode, rotation.SuccessorPin)
+}

@@ -1,4 +1,4 @@
-"""Phase 2 tests — CVE service, API endpoints, and migration.
+"""CVE service, API endpoints, and migration.
 
 Two product contracts shape the arrangement here:
 
@@ -211,3 +211,104 @@ def test_migration_creates_cve_entries_table(db_engine):
     inspector = inspect(db_engine)
     tables = inspector.get_table_names()
     assert "cve_entries" in tables
+
+
+# ── Assessment identity API (plan 04) ──────────────────────────────────────────
+
+
+def _ensure_cve_cache_tables(db_engine):
+    """The normalized cache tables live on their own metadata (db/cve_models.py),
+    so the integration engine does not create them with Base.metadata. Create
+    them the way init_cve_db() does on the real SQLite file."""
+    from app.db.cve_models import CVECacheBase
+
+    CVECacheBase.metadata.create_all(bind=db_engine, checkfirst=True)
+
+
+def _make_hardware(db, name, ip):
+    from app.db.models import Hardware
+
+    hw = Hardware(name=name, role="server", ip_address=ip)
+    db.add(hw)
+    db.commit()
+    db.refresh(hw)
+    return hw
+
+
+def test_cve_entity_assessment_is_honest_without_a_feed(client, auth_headers, db, db_engine):
+    """GET /cve/entity for a real entity with no complete feed is unavailable,
+    never clean — the state the panel renders as readiness, not as a verdict."""
+    _ensure_cve_cache_tables(db_engine)
+    hw = _make_hardware(db, "assessed-host", "10.40.0.1")
+
+    r = client.get(f"/api/v1/cve/entity/hardware/{hw.id}", headers=auth_headers)
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["state"] == "unavailable"
+    assert data["reason_code"] == "feed_missing"
+    assert data["findings"] == []
+    assert data["completeness"] == "none"
+    assert data["limitations"]
+    # The entity-panel compatibility alias stays intact.
+    assert data["items"] == []
+    # Identity is present even when the assessment cannot run.
+    assert data["identity"]["provenance"] == "inventory"
+
+
+def test_cve_identity_correction_requires_auth(client, db, db_engine):
+    """PUT identity without credentials is 401, not a silent correction."""
+    _ensure_cve_cache_tables(db_engine)
+    hw = _make_hardware(db, "auth-host", "10.40.0.2")
+
+    r = client.put(
+        f"/api/v1/cve/entity/hardware/{hw.id}/identity",
+        json={"vendor": "debian", "product": "nginx", "version": "1.24.0", "revision": 0},
+    )
+
+    assert r.status_code == 401
+
+
+def test_cve_identity_correction_is_revision_checked(client, auth_headers, db, db_engine):
+    """A fresh correction creates revision 1; replaying the same base revision
+    is rejected as stale instead of overwriting the newer identity."""
+    _ensure_cve_cache_tables(db_engine)
+    hw = _make_hardware(db, "identity-host", "10.40.0.3")
+
+    first = client.put(
+        f"/api/v1/cve/entity/hardware/{hw.id}/identity",
+        json={"vendor": "nginx", "product": "nginx", "version": "1.24.0", "revision": 0},
+        headers=auth_headers,
+    )
+    assert first.status_code == 200
+    body = first.json()
+    assert body["revision"] == 1
+    assert body["provenance"] == "operator"
+    assert body["vendor"] == "nginx"
+
+    stale = client.put(
+        f"/api/v1/cve/entity/hardware/{hw.id}/identity",
+        json={"vendor": "nginx", "product": "nginx", "version": "9.9.9", "revision": 0},
+        headers=auth_headers,
+    )
+    assert stale.status_code == 409
+    assert stale.json()["error_code"] == "stale_identity"
+
+    # The rejected write left the identity untouched.
+    current = client.get(
+        f"/api/v1/cve/entity/hardware/{hw.id}", headers=auth_headers
+    ).json()
+    assert current["identity"]["version"] == "1.24.0"
+    assert current["identity_revision"] == 1
+
+
+def test_cve_identity_correction_on_missing_entity_is_404(client, auth_headers, db, db_engine):
+    _ensure_cve_cache_tables(db_engine)
+
+    r = client.put(
+        "/api/v1/cve/entity/hardware/999999/identity",
+        json={"vendor": "x", "product": "y", "version": "1", "revision": 0},
+        headers=auth_headers,
+    )
+
+    assert r.status_code == 404

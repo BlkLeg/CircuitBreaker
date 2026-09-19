@@ -8,7 +8,7 @@ default from `start.py`, which is 8080, and the package's own closing text tells
 the operator to open `http://localhost:8080`.
 
 The consequence is worth recording: the row had never once reached a live
-service. Phase 2's F1 (`CB_DATA_DIR`) crashed the service before startup
+service. A bad `CB_DATA_DIR` crashes the service before startup
 completed, so the probe never got as far as connecting to the wrong port, and
 the defect sat latent behind a louder one. "The row ran and found a bug" is not
 the same claim as "the row ran green", and only the second one backs a tier.

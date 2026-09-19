@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://circuitbreaker.local/schemas/diagnostic-result.schema.json",
+  "title": "CircuitBreakerDiagnosticResult",
+  "description": "One normalized diagnostic check. Evidence is bounded and redacted; never include secrets.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "component",
+    "check",
+    "status",
+    "severity",
+    "evidence",
+    "remediation",
+    "safe_to_retry"
+  ],
+  "properties": {
+    "component": {
+      "type": "string",
+      "minLength": 1
+    },
+    "check": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pass", "warn", "fail", "unknown", "skipped"]
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["info", "warning", "error", "critical"]
+    },
+    "evidence": {
+      "type": "string",
+      "description": "Bounded, redacted operator-facing evidence"
+    },
+    "remediation": {
+      "type": "string"
+    },
+    "safe_to_retry": {
+      "type": "boolean"
+    }
+  }
+}

@@ -2,36 +2,36 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 
-from app.db.models import CapacityForecast, ResourceEfficiencyRecommendation
+from app.db.models import (
+    CapacityForecast,
+    FlapIncident,
+    ResourceEfficiencyRecommendation,
+)
 from app.db.session import get_db
-from app.services.intelligence.dependency_graph import AssetRef, calculate_blast_radius
+from app.schemas.intelligence import (
+    AssetRefOut,
+    BlastRadiusOut,
+    ImpactEdgeOut,
+    ImpactLimitsOut,
+    ImpactPathOut,
+)
+from app.services.intelligence import analytics
+from app.services.intelligence.dependency_edges import DependencyEdge
+from app.services.intelligence.dependency_graph import (
+    AssetRef,
+    calculate_blast_radius,
+)
 
 router = APIRouter()
 
 _VALID_TYPES = frozenset({"hardware", "compute_unit", "service", "storage"})
-
-
-class AssetRefOut(BaseModel):
-    asset_type: str
-    asset_id: int
-    name: str
-    status: str | None
-
-
-class BlastRadiusOut(BaseModel):
-    root_asset: AssetRefOut
-    impacted_hardware: list[AssetRefOut]
-    impacted_compute_units: list[AssetRefOut]
-    impacted_services: list[AssetRefOut]
-    impacted_storage: list[AssetRefOut]
-    total_impact_count: int
-    summary: str
 
 
 class CapacityForecastOut(BaseModel):
@@ -63,6 +63,20 @@ class ResourceEfficiencyOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class FlapIncidentOut(BaseModel):
+    id: int
+    asset_type: str
+    asset_id: int
+    asset_name: str | None = None
+    window_start: datetime
+    window_end: datetime
+    transition_count: int
+    is_active: bool
+    resolved_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
 def _ref_out(r: AssetRef) -> AssetRefOut:
     return AssetRefOut(
         asset_type=r.asset_type,
@@ -72,16 +86,41 @@ def _ref_out(r: AssetRef) -> AssetRefOut:
     )
 
 
+def _edge_out(edge: DependencyEdge) -> ImpactEdgeOut:
+    return ImpactEdgeOut(
+        identity=edge.identity,
+        provider_type=edge.provider[0],
+        provider_id=edge.provider[1],
+        dependent_type=edge.dependent[0],
+        dependent_id=edge.dependent[1],
+        edge_type=edge.edge_type,
+        provenance=edge.provenance,
+        source_kind=edge.source_kind,
+        source_id=edge.source_id,
+        label=edge.label,
+    )
+
+
 @router.get("/blast-radius/{asset_type}/{asset_id}", response_model=BlastRadiusOut)
 def get_blast_radius(
     asset_type: str,
     asset_id: int,
+    include_inferred: bool = False,
+    max_nodes: int = Query(500, ge=1, le=1000),
+    max_depth: int = Query(12, ge=1, le=24),
     db: Session = Depends(get_db),
 ) -> BlastRadiusOut:
     """Compute downstream impact of an asset going offline."""
     if asset_type not in _VALID_TYPES:
         raise HTTPException(status_code=400, detail=f"Invalid asset_type: {asset_type!r}")
-    result = calculate_blast_radius(db, asset_type, asset_id)
+    result = calculate_blast_radius(
+        db,
+        asset_type,
+        asset_id,
+        include_inferred=include_inferred,
+        max_nodes=max_nodes,
+        max_depth=max_depth,
+    )
     return BlastRadiusOut(
         root_asset=_ref_out(result.root_asset),
         impacted_hardware=[_ref_out(r) for r in result.impacted_hardware],
@@ -90,6 +129,25 @@ def get_blast_radius(
         impacted_storage=[_ref_out(r) for r in result.impacted_storage],
         total_impact_count=result.total_impact_count,
         summary=result.summary,
+        paths=[
+            ImpactPathOut(
+                asset=_ref_out(path.asset),
+                edges=[_edge_out(edge) for edge in path.edges],
+                provenance=path.provenance,  # type: ignore[arg-type]
+            )
+            for path in result.paths
+        ],
+        edges=[_edge_out(edge) for edge in result.edges],
+        connectivity=[_edge_out(edge) for edge in result.connectivity],
+        evaluated_at=result.evaluated_at,
+        completeness=result.completeness,  # type: ignore[arg-type]
+        truncation_reason=result.truncation_reason,  # type: ignore[arg-type]
+        limits=ImpactLimitsOut(
+            max_nodes=result.limits.max_nodes,
+            max_depth=result.limits.max_depth,
+            max_edges=result.limits.max_edges,
+        ),
+        inferred_available=result.inferred_available,
     )
 
 
@@ -114,7 +172,8 @@ def list_capacity_forecasts(db: Session = Depends(get_db)) -> list[CapacityForec
 
 
 def _resolve_asset_names(
-    db: Session, rows: list[ResourceEfficiencyRecommendation]
+    db: Session,
+    rows: Sequence[ResourceEfficiencyRecommendation | FlapIncident],
 ) -> dict[tuple[str, int], str]:
     """id -> name for every asset referenced by `rows`, in one query per
     asset TYPE present (at most four), never one per row.
@@ -149,6 +208,28 @@ def list_resource_efficiency(
     out: list[ResourceEfficiencyOut] = []
     for row in rows:
         item = ResourceEfficiencyOut.model_validate(row)
+        item.asset_name = names.get((row.asset_type, row.asset_id))
+        out.append(item)
+    return out
+
+
+@router.get("/flap-incidents", response_model=list[FlapIncidentOut])
+def list_flap_incidents(
+    active: bool | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[FlapIncidentOut]:
+    """Return hardware seen transitioning up and down within one window.
+
+    The analytics job has recorded these since it shipped; this is the first
+    endpoint to read them. The query lives in the analytics service beside
+    the writer, keeping the route thin.
+    """
+    rows = analytics.list_flap_incidents(db, active=active, limit=limit)
+    names = _resolve_asset_names(db, rows)
+    out: list[FlapIncidentOut] = []
+    for row in rows:
+        item = FlapIncidentOut.model_validate(row)
         item.asset_name = names.get((row.asset_type, row.asset_id))
         out.append(item)
     return out

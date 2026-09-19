@@ -17,6 +17,10 @@ import { useToast } from '../components/common/Toast';
 import { validateIpAddress, validateDuplicateName } from '../utils/validation';
 import { useTargetMonitors } from '../hooks/useTargetMonitors';
 import MonitorCell, { MonitorStatusCell } from '../components/monitors/MonitorCell';
+import { useEntityDeepLink } from '../hooks/useEntityDeepLink';
+import InventorySelectionToolbar from '../components/common/InventorySelectionToolbar';
+import { useInventoryPage } from '../hooks/useInventoryPage';
+import { clearSelection, SELECTION_MODE_ALL_MATCHING } from '../lib/inventoryList';
 
 const COLUMNS = [
   { key: 'id', label: 'ID' },
@@ -122,51 +126,53 @@ function ComputeUnitsPage() {
   const { settings } = useSettings();
   const toast = useToast();
   const [environmentsList, setEnvironmentsList] = useState([]);
-  const [items, setItems] = useState([]);
   const [hardware, setHardware] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState(null);
   const [detailTarget, setDetailTarget] = useState(null);
-  const [q, setQ] = useState('');
-  const [tagFilter, setTagFilter] = useState('');
-  const [kindFilter, setKindFilter] = useState('');
-  const [envFilter, setEnvFilter] = useState('');
-  const [hwFilter, setHwFilter] = useState('');
   const [formApiErrors, setFormApiErrors] = useState({});
-  const [selectedIds, setSelectedIds] = useState([]);
   const [allTags, setAllTags] = useState([]);
+  const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
 
   // Icon picker state (lives outside EntityForm since it's a modal)
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [pendingIconSlug, setPendingIconSlug] = useState(null);
   const [iconPickerCallback, setIconPickerCallback] = useState(null);
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const params = {};
-      if (q) params.q = q;
-      if (tagFilter) params.tag = tagFilter;
-      if (kindFilter) params.kind = kindFilter;
-      if (envFilter) params.environment_id = envFilter;
-      if (hwFilter) params.hardware_id = hwFilter;
-      const [cuRes, hwRes] = await Promise.all([computeUnitsApi.list(params), hardwareApi.list()]);
-      const hwMap = Object.fromEntries(hwRes.data.map((h) => [h.id, h.name]));
-      setHardware(hwRes.data);
-      setItems(
-        cuRes.data.map((cu) => ({ ...cu, hardware_name: hwMap[cu.hardware_id] ?? cu.hardware_id }))
-      );
-    } catch (err) {
-      toast.error(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }, [q, tagFilter, kindFilter, envFilter, hwFilter, toast]);
+  const fetchPage = useCallback(async (params) => {
+    const [cuRes, hwRes] = await Promise.all([computeUnitsApi.page(params), hardwareApi.list()]);
+    setHardware(hwRes.data || []);
+    const hwMap = Object.fromEntries((hwRes.data || []).map((h) => [h.id, h.name]));
+    return {
+      ...cuRes,
+      data: {
+        ...cuRes.data,
+        items: (cuRes.data?.items || []).map((cu) => ({
+          ...cu,
+          hardware_name: hwMap[cu.hardware_id] ?? cu.hardware_id,
+        })),
+      },
+    };
+  }, []);
+
+  const page = useInventoryPage({
+    fetchPage,
+    extraFilters: { kind: '', environment_id: '', hardware_id: '' },
+  });
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    if (page.listError) toast.error(page.listError);
+  }, [page.listError, toast]);
+
+  const loadDeepLinkedEntity = useCallback(async (id) => (await computeUnitsApi.get(id)).data, []);
+  const selectDetail = useCallback((entity) => setDetailTarget(entity), []);
+  const reportDeepLinkError = useCallback((message) => toast.error(message), [toast]);
+  const { openEntity, closeEntity } = useEntityDeepLink({
+    loadEntity: loadDeepLinkedEntity,
+    selectedId: detailTarget?.id,
+    onSelect: selectDetail,
+    onError: reportDeepLinkError,
+  });
 
   useEffect(() => {
     environmentsApi
@@ -191,7 +197,7 @@ function ComputeUnitsPage() {
     fetchTags();
   }, [fetchTags]);
 
-  const monitorTargetIds = useMemo(() => items.map((i) => i.id), [items]);
+  const monitorTargetIds = useMemo(() => page.items.map((i) => i.id), [page.items]);
   const monitors = useTargetMonitors('compute_unit', monitorTargetIds);
 
   const monitorAction = useCallback(
@@ -228,7 +234,7 @@ function ComputeUnitsPage() {
             allTags={allTags}
             onTagsChange={async (names) => {
               await computeUnitsApi.update(row.id, { tags: names });
-              fetchData();
+              page.fetchData();
             }}
             onTagColorChange={async (id, color) => {
               await tagsApi.update(id, { color });
@@ -238,7 +244,7 @@ function ComputeUnitsPage() {
         ),
       },
     ],
-    [allTags, fetchData, fetchTags, monitors.byId]
+    [allTags, page, fetchTags, monitors.byId]
   );
 
   const handleCellSave = useCallback(
@@ -250,9 +256,9 @@ function ComputeUnitsPage() {
       }
       await computeUnitsApi.update(row.id, payload);
       toast.success('Saved.');
-      fetchData();
+      page.fetchData();
     },
-    [toast, fetchData]
+    [toast, page]
   );
 
   const bulkActions = useMemo(
@@ -261,6 +267,12 @@ function ComputeUnitsPage() {
         label: 'Delete selected',
         danger: true,
         onClick: (ids) => {
+          if (page.selection.mode === SELECTION_MODE_ALL_MATCHING) {
+            toast.warn(
+              'All-matching delete is not available yet. Select specific rows on this page.'
+            );
+            return;
+          }
           setConfirmState({
             open: true,
             message: `Delete ${ids.length} compute unit(s)?`,
@@ -268,14 +280,14 @@ function ComputeUnitsPage() {
               setConfirmState((s) => ({ ...s, open: false }));
               for (const id of ids) await computeUnitsApi.delete(id);
               toast.success('Deleted.');
-              setSelectedIds([]);
-              fetchData();
+              page.setSelection(clearSelection(page.selection));
+              page.fetchData();
             },
           });
         },
       },
     ],
-    [toast, fetchData]
+    [toast, page]
   );
 
   // Build fields dynamically so icon slug state can be passed in
@@ -347,7 +359,7 @@ function ComputeUnitsPage() {
       setShowForm(false);
       setEditTarget(null);
       setFormApiErrors({});
-      fetchData();
+      page.fetchData();
     } catch (err) {
       if (err.fieldErrors) {
         setFormApiErrors(err.fieldErrors);
@@ -356,8 +368,6 @@ function ComputeUnitsPage() {
       }
     }
   };
-
-  const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
 
   const handleDelete = (id) => {
     setConfirmState({
@@ -368,7 +378,7 @@ function ComputeUnitsPage() {
         try {
           await computeUnitsApi.delete(id);
           toast.success('Compute unit deleted.');
-          fetchData();
+          page.fetchData();
         } catch (err) {
           toast.error(err.message);
         }
@@ -401,13 +411,16 @@ function ComputeUnitsPage() {
       )}
 
       <div className="filter-bar">
-        <SearchBox value={q} onChange={setQ} />
-        <TagFilter value={tagFilter} onChange={setTagFilter} />
+        <SearchBox value={page.q} onChange={(value) => page.applyListFilter({ q: value })} />
+        <TagFilter
+          value={page.tagFilter}
+          onChange={(value) => page.applyListFilter({ tag: value })}
+        />
         <select
           className="filter-select"
           aria-label="Filter by kinds"
-          value={kindFilter}
-          onChange={(e) => setKindFilter(e.target.value)}
+          value={page.domainFilters.kind || ''}
+          onChange={(e) => page.applyListFilter({ kind: e.target.value })}
         >
           <option value="">All kinds</option>
           <option value="vm">VM</option>
@@ -416,8 +429,12 @@ function ComputeUnitsPage() {
         <select
           className="filter-select"
           aria-label="Filter by environments"
-          value={envFilter}
-          onChange={(e) => setEnvFilter(e.target.value ? Number(e.target.value) : '')}
+          value={page.domainFilters.environment_id || ''}
+          onChange={(e) =>
+            page.applyListFilter({
+              environment_id: e.target.value ? Number(e.target.value) : '',
+            })
+          }
         >
           <option value="">All environments</option>
           {environmentsList.map((e) => (
@@ -429,8 +446,8 @@ function ComputeUnitsPage() {
         <select
           className="filter-select"
           aria-label="Filter by hardware"
-          value={hwFilter}
-          onChange={(e) => setHwFilter(e.target.value)}
+          value={page.domainFilters.hardware_id || ''}
+          onChange={(e) => page.applyListFilter({ hardware_id: e.target.value })}
         >
           <option value="">All hardware</option>
           {hardware.map((h) => (
@@ -441,7 +458,7 @@ function ComputeUnitsPage() {
         </select>
       </div>
 
-      {!loading && items.length === 0 && settings?.show_page_hints && (
+      {!page.loading && page.items.length === 0 && settings?.show_page_hints && (
         <div className="info-tip" style={{ marginBottom: 12 }}>
           💡 <strong>Tip:</strong> Add compute units (VMs or containers) that run on your hardware
           nodes. Add hardware first, then create compute units here before assigning services to
@@ -449,12 +466,12 @@ function ComputeUnitsPage() {
         </div>
       )}
 
-      {loading ? (
+      {page.loading ? (
         <SkeletonTable cols={5} />
       ) : (
         <EntityTable
           columns={COLUMNS_WITH_TAGS}
-          data={items}
+          data={page.items}
           onEdit={(row) => {
             setEditTarget(row);
             setShowForm(true);
@@ -469,21 +486,20 @@ function ComputeUnitsPage() {
               onCheckNow={() => monitorAction(() => monitors.checkNow(row.id), 'Probe triggered.')}
             />
           )}
-          onRowClick={(row) => setDetailTarget(row)}
+          onRowClick={openEntity}
           editableColumns={['name']}
           onCellSave={handleCellSave}
           selectable
-          selectedIds={selectedIds}
-          onSelectionChange={setSelectedIds}
+          selectedIds={page.selectedIds}
+          rowIsSelected={page.rowIsSelected}
+          onSelectionChange={page.onSelectionChange}
           bulkActions={bulkActions}
+          serverPaging={page.serverPaging}
+          selectionToolbar={<InventorySelectionToolbar {...page.selectionToolbarProps} />}
         />
       )}
 
-      <ComputeDetail
-        compute={detailTarget}
-        isOpen={!!detailTarget}
-        onClose={() => setDetailTarget(null)}
-      />
+      <ComputeDetail compute={detailTarget} isOpen={!!detailTarget} onClose={closeEntity} />
 
       <FormModal
         open={showForm}
@@ -493,7 +509,7 @@ function ComputeUnitsPage() {
         onSubmit={handleSubmit}
         onValidate={(values) => {
           const errors = {};
-          const nameErr = validateDuplicateName(values.name, items, editTarget?.id);
+          const nameErr = validateDuplicateName(values.name, page.items, editTarget?.id);
           if (nameErr) errors.name = nameErr;
           const ipErr = validateIpAddress(values.ip_address);
           if (ipErr) errors.ip_address = ipErr;

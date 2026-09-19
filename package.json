@@ -1,6 +1,6 @@
 {
   "name": "circuitbreaker",
-  "version": "0.4.0",
+  "version": "0.4.2",
   "private": true,
   "description": "Self-hosted infrastructure discovery, monitoring, and interactive topology visualization for homelabs and private networks.",
   "directories": {
@@ -39,8 +39,8 @@
     "lint-staged": "^16.3.2"
   },
   "lint-staged": {
-    "*.{ts,tsx,py}": "make lint",
-    "apps/**/tests/**": "echo '🚫 Tests blocked from prod paths' && exit 1"
+    "*.{js,jsx,py}": "make lint",
+    "apps/backend/src/**/{tests/**,test_*.py,*_test.py,conftest.py}": "echo '🚫 Tests blocked from prod paths' && exit 1"
   },
   "dependencies": {
     "@lottiefiles/dotlottie-react": "^0.19.9"

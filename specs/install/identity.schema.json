@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://circuitbreaker.local/schemas/install-identity.schema.json",
+  "title": "CircuitBreakerInstallIdentity",
+  "description": "Versioned install identity written by every supported installer. Fields that do not apply are absent or empty; tooling must never infer them from defaults.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "mode", "version", "installed_at"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["native", "package", "mono", "proxmox"]
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "config_path": {
+      "type": "string"
+    },
+    "data_dir": {
+      "type": "string"
+    },
+    "env_file": {
+      "type": "string"
+    },
+    "service_names": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "container_name": {
+      "type": "string"
+    },
+    "compose_file": {
+      "type": "string"
+    },
+    "cli_path": {
+      "type": "string"
+    },
+    "health_url": {
+      "type": "string"
+    },
+    "installed_at": {
+      "type": "string",
+      "minLength": 1,
+      "description": "ISO-8601 UTC timestamp when identity was written"
+    }
+  }
+}

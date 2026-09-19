@@ -14,6 +14,7 @@ from app.schemas.agent_frame import (
     TYPE_CAPABILITIES_SET,
     TYPE_CAPABILITY_READINESS,
     TYPE_CAPABILITY_VIOLATION,
+    TYPE_DATA_ACK,
     TYPE_DISCOVERY_CANCEL,
     TYPE_DISCOVERY_FINDING,
     TYPE_DISCOVERY_REQUEST,
@@ -25,6 +26,7 @@ from app.schemas.agent_frame import (
     TYPE_PROBE_CANCEL,
     TYPE_PROBE_RESULT,
     TYPE_TELEMETRY_HOST,
+    TYPE_TLS_PIN_ROTATE,
     TYPE_TRANSPORT_REKEY,
     TYPE_UNINSTALL,
     TYPE_UPDATE,
@@ -32,6 +34,7 @@ from app.schemas.agent_frame import (
     AgentFrame,
     CapabilityReadinessPayload,
     CapabilityViolationPayload,
+    DataAckPayload,
     DiscoveryCancelPayload,
     DiscoveryFindingPayload,
     DiscoveryRequestPayload,
@@ -43,6 +46,7 @@ from app.schemas.agent_frame import (
     ProbeAssignPayload,
     ProbeCancelPayload,
     ProbeResultPayload,
+    TLSPinRotatePayload,
     TransportRekeyPayload,
     UpdateStatusPayload,
 )
@@ -68,6 +72,8 @@ _PAYLOAD_MODEL_FOR_TYPE = {
     TYPE_DISCOVERY_REQUEST: DiscoveryRequestPayload,
     TYPE_DISCOVERY_CANCEL: DiscoveryCancelPayload,
     TYPE_DISCOVERY_FINDING: DiscoveryFindingPayload,
+    TYPE_TLS_PIN_ROTATE: TLSPinRotatePayload,
+    TYPE_DATA_ACK: DataAckPayload,
 }
 
 
@@ -272,6 +278,135 @@ def test_heartbeat_empty_payload_is_distinguishable_from_an_explicit_zero_backlo
     assert {} in corpus_payloads, "corpus must keep the old-shaped empty heartbeat"
     assert any(p.get("spool_depth") for p in corpus_payloads), (
         "corpus must cover a heartbeat carrying a real backlog"
+    )
+
+
+def test_spool_eviction_group_is_present_absent_not_zero_valued():
+    """Phase 3, and the same rule D-12 set for the backlog, applied to the
+    counters that say history was *permanently destroyed*.
+
+    The Go side carries no ``omitempty`` on any of the four, so a current
+    agent always emits them — explicit ``0`` with ``null`` bounds when it has
+    destroyed nothing. An agent that predates the group omits them entirely.
+    Only presence separates "confirmed clean" from "never said", and writing a
+    fabricated 0 for the second would claim a confirmation that never
+    happened. Both ``hello`` and ``heartbeat`` carry the group, because
+    eviction happens while the agent is disconnected and the reconnect is the
+    first moment this server can learn of it at all.
+    """
+    for model in (HeartbeatPayload, HelloPayload):
+        old_agent = model.model_validate({})
+        assert old_agent.spool_evicted_frames == 0
+        assert old_agent.spool_evicted_oldest_ts is None
+        assert "spool_evicted_frames" not in old_agent.model_fields_set
+
+        clean = model.model_validate(
+            {
+                "spool_evicted_frames": 0,
+                "spool_evicted_bytes": 0,
+                "spool_evicted_oldest_ts": None,
+                "spool_evicted_newest_ts": None,
+            }
+        )
+        assert "spool_evicted_frames" in clean.model_fields_set
+        assert clean.spool_evicted_oldest_ts is None
+
+        lossy = model.model_validate(
+            {
+                "spool_evicted_frames": 9412,
+                "spool_evicted_bytes": 33554432,
+                "spool_evicted_oldest_ts": "2026-09-01T00:00:00Z",
+                "spool_evicted_newest_ts": "2026-09-03T18:30:00Z",
+            }
+        )
+        assert lossy.spool_evicted_frames == 9412
+        assert lossy.spool_evicted_bytes == 33554432
+        assert lossy.spool_evicted_oldest_ts is not None
+        assert lossy.spool_evicted_newest_ts is not None
+        assert model.model_validate_json(lossy.model_dump_json()) == lossy
+
+    heartbeats = [entry["json"]["payload"] for entry in _corpus_entries_of_type(TYPE_HEARTBEAT)]
+    assert any(p.get("spool_evicted_frames") for p in heartbeats), (
+        "corpus must cover a heartbeat reporting destroyed history"
+    )
+    assert any("spool_evicted_frames" in p and not p["spool_evicted_frames"] for p in heartbeats), (
+        "corpus must cover a heartbeat reporting eviction state with nothing destroyed"
+    )
+    hellos = [entry["json"]["payload"] for entry in _corpus_entries_of_type(TYPE_HELLO)]
+    assert any(p.get("spool_evicted_frames") for p in hellos), (
+        "corpus must cover hello's at-connect eviction snapshot"
+    )
+
+
+def test_data_ack_watermark_survives_the_typed_model_by_name():
+    """The delivery watermark, asserted by name against the fixture.
+
+    ``seq`` is the entire payload, and pydantic drops unknown keys — so a
+    model that misspelled it would validate every real ack into ``seq=0``,
+    ``test_corpus_typed_payloads_decode_and_round_trip`` would still pass
+    (both sides of its comparison equally zero), and the agent would be told
+    that nothing had ever been handled. Its spool would then never commit
+    anything and would grow until its cap evicted the oldest observations —
+    the exact loss the acknowledgement exists to prevent, caused by the
+    acknowledgement itself.
+
+    The corpus covers the top of the range because ``seq`` is a ``uint64`` on
+    the Go side and a Python ``int`` here: a watermark that saturated or
+    wrapped on the way through would commit frames the server never handled.
+    """
+    entries = _corpus_entries_of_type(TYPE_DATA_ACK)
+    assert entries, "corpus must cover data.ack"
+
+    for entry in entries:
+        wire = entry["json"]["payload"]
+        assert "seq" in wire, "a data.ack fixture without a `seq` is not a watermark"
+        payload = DataAckPayload.model_validate(wire)
+        assert payload.seq == wire["seq"]
+        assert DataAckPayload.model_validate_json(payload.model_dump_json()) == payload
+
+    seqs = {entry["json"]["payload"]["seq"] for entry in entries}
+    assert 0 in seqs, "corpus must cover a watermark of 0 — nothing handled yet on this connection"
+    assert max(seqs) == 2**64 - 1, (
+        "corpus must cover the top of the uint64 range the Go side declares"
+    )
+
+
+def test_data_ack_negotiation_flags_default_to_unsupported():
+    """Absent means "does not support acknowledged delivery", on both frames.
+
+    This is the opposite convention from the ``spool_evicted_*`` group, and
+    deliberately so. Those need an explicit 0 on the wire because absent means
+    "cannot report", which is a different fact from "nothing was destroyed".
+    Here absent and False are the *same* fact — an agent that predates the
+    mechanism does not support acks, and a server that predates it does not
+    send them — so both sides carry ``omitempty``/a plain default and the safe
+    answer is the default one.
+
+    Getting this backwards in either direction is a live hazard: a server that
+    read an absent ``ack_data`` as True would send ``data.ack`` frames to an
+    agent that has no idea what they are, and an agent that read an absent
+    ``data_ack`` as True would wait forever for acknowledgements that are
+    never coming and drain nothing.
+    """
+    assert HelloPayload.model_validate({}).ack_data is False
+    assert HelloPayload.model_validate({"ack_data": True}).ack_data is True
+    assert HelloAckPayload.model_validate({}).data_ack is False
+    assert HelloAckPayload.model_validate({"accepted": True}).data_ack is False
+    assert HelloAckPayload.model_validate({"data_ack": True}).data_ack is True
+
+    hellos = [entry["json"]["payload"] for entry in _corpus_entries_of_type(TYPE_HELLO)]
+    assert any(p.get("ack_data") for p in hellos), (
+        "corpus must cover an agent asking for acknowledged delivery"
+    )
+    assert any("ack_data" not in p for p in hellos), (
+        "corpus must keep a hello from an agent that predates the negotiation"
+    )
+    acks = [entry["json"]["payload"] for entry in _corpus_entries_of_type(TYPE_HELLO_ACK)]
+    assert any(p.get("data_ack") for p in acks), (
+        "corpus must cover a server granting acknowledged delivery"
+    )
+    assert any("data_ack" not in p for p in acks), (
+        "corpus must keep a hello.ack from a server that predates the negotiation"
     )
 
 

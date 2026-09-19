@@ -61,6 +61,7 @@ function Drawer({ isOpen, onClose, title, children, width = '500px' }) {
           <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600 }}>{title}</h3>
           <button
             onClick={onClose}
+            aria-label="Close"
             style={{
               background: 'transparent',
               border: 'none',

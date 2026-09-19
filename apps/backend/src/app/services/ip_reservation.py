@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.models import ComputeUnit, Hardware, Service
@@ -456,3 +457,32 @@ def bulk_conflict_map(db: Session) -> dict[tuple[str, int], bool]:
             result[("service", svc.id)] = True
 
     return result
+
+
+def hardware_conflict_map(
+    db: Session, hardware_rows: Sequence[Hardware]
+) -> dict[tuple[str, int], bool]:
+    """Classify duplicate hardware IPs for one bounded list page.
+
+    The legacy topology helper above must inspect all inventory types because
+    it annotates a full graph. A paged hardware list only needs to compare the
+    page's IPs against matching hardware rows, so this query materializes at
+    most one aggregate row per distinct page IP.
+    """
+    target_ips = {_norm(row.ip_address) for row in hardware_rows if _norm(row.ip_address)}
+    if not target_ips:
+        return {}
+
+    normalized_ip = func.lower(func.btrim(Hardware.ip_address))
+    duplicates = {
+        ip
+        for ip, count in db.execute(
+            select(normalized_ip, func.count(Hardware.id))
+            .where(normalized_ip.in_(target_ips))
+            .group_by(normalized_ip)
+        ).all()
+        if count > 1
+    }
+    return {
+        ("hardware", row.id): True for row in hardware_rows if _norm(row.ip_address) in duplicates
+    }

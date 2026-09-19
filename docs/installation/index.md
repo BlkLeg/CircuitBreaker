@@ -111,18 +111,37 @@ how the container is started, not in what runs inside it.
 
 ## After Installing
 
-Regardless of method, your next steps are:
+Regardless of method, your next steps are the same operator journey:
+
+```bash
+cb info          # confirm mode, paths, health URL
+cb doctor        # diagnose before opening the browser
+cb setup-token   # if first-run needs the one-time setup token
+```
 
 1. Open Circuit Breaker in your browser at the HTTPS URL the installer prints — `https://<host>/` for a native or Docker Compose install, `https://<container-ip>:8088` for Proxmox LXC. Plain HTTP redirects to HTTPS and cannot complete account creation, which requires a secure context.
-2. Complete the **first-run setup wizard** — see [First-Run Setup](first-run.md).
+2. Complete the **first-run setup wizard** — see [First-Run Setup](first-run.md). If setup was interrupted, restart services and continue; backend bootstrap state is authoritative (no marker cleanup).
 3. Back up the vault key shown at the end of the wizard (only displayed once).
 4. Optionally review the [Configuration Reference](configuration.md) to tune environment variables.
+
+Machine-readable paths and support status:
+[`specs/install/compatibility-matrix.yaml`](../../specs/install/compatibility-matrix.yaml).
+
+---
+
+## Advanced artifacts
+
+Distro packages (deb/rpm/apk), AppImage, and archives are **advanced/manual**
+channels. They are supported with a compatibility contract in the matrix above,
+but are not presented as equivalent to the recommended native bundle. See
+[packaging/README.md](../../packaging/README.md).
 
 ---
 
 ## Related Pages
 
 - [First-Run Setup](first-run.md)
+- [cb CLI](../cb-cli.md)
 - [Single Docker Container](manual-docker.md)
 - [Docker Compose — From Source](docker-compose-source.md)
 - [Configuration Reference](configuration.md)

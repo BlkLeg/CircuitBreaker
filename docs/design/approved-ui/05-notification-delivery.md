@@ -1,0 +1,65 @@
+# 05 · Notification configuration and honest delivery feedback
+
+Status: **implemented.** Destinations, routing and honest delivery outcomes shipped;
+see the 0.4.2 entries in [CHANGELOG.md](../../../CHANGELOG.md). Its dependant, plan 08's
+metric-rule dispatch, shipped 2026-09-17 on top of it.
+Depends on plan 00.
+
+## Outcome and location
+
+Use the existing Notifications/configuration surfaces to manage destinations and existing severity routes, send a test, and understand accepted, rejected, retrying, or exhausted outcomes. Configuration saved, endpoint accepted, and message read by a person are different events.
+
+Existing integration points: frontend `pages/NotificationsPage.jsx`, `components/settings/NotificationsManager.jsx`, settings forms/client; backend `api/notifications.py`, `workers/notification_worker.py`, `core/url_validation.py`, `services/notification_severity.py`, and existing secret/routing services.
+
+Reuse the current notification worker, destinations, routing, and diagnostics. Add a small shared response-classification helper near existing delivery logic rather than another dispatch pipeline.
+
+## Delivery contract
+
+- Test and real dispatch share response acceptance and error classification. A rejected HTTP response is not success just because the request returned without throwing.
+- Distinguish validation/configuration failure, authentication rejection, rate limit, transient upstream/network failure, timeout, and terminal failure.
+- Retry only eligible failures with bounded attempts and backoff; respect valid bounded Retry-After where appropriate. Do not blindly retry invalid credentials/configuration.
+- Outcomes include destination/provider, accepted/failed state, attempt count, safe reason, and existing correlation/request information. Expose live retry stages only when backend lifecycle data exists.
+- A 2xx/accepted response means the provider accepted the request. Do not claim human receipt or guaranteed future delivery.
+- Keep outbound-request protections, secret encryption/redaction, and provider-specific payload requirements intact.
+- Reuse existing audit/diagnostic information for troubleshooting. Do not invent a durable delivery-history store to fill a visual table; show unavailable history honestly if necessary.
+
+## Work packages
+
+- [x] **N1:** Expand existing notification worker/API tests to capture Test versus production parity for Slack, Discord, Teams, and other already supported delivery adapters as applicable.
+- [x] **N2:** Define a shared acceptance/retry classification and sanitized result contract. Identify existing diagnostic fields that can support the approved feedback panel.
+- [x] **N3:** Build destination editing, existing severity routing, Test progress/result, and contextual error states. Preserve masked secrets unless deliberately changed; never reveal stored credentials in forms or diagnostics.
+- [x] **N4:** Correct worker/provider result validation and bounded retry behavior. Ensure final outcome reaches the API/job/diagnostic surface accurately.
+- [x] **N5:** Wire configuration and Test independently. A failed test does not discard valid unsaved configuration or imply it was saved.
+- [x] **N6:** Cover destination removal/disable, missing routing, insufficient permissions, and repeated clicks. Make configuration and delivery actions separately auditable using existing mechanisms.
+- [x] **N7:** Update operational troubleshooting guidance and document exactly what Test success establishes.
+
+> Status 2026-09-15: N1/N2/N4 landed with the backend in `4729e8bd`
+> (`services/notification_delivery.py`, `notification_routing.py`, the `TestResult`
+> contract). N3/N5/N6/N7 are the frontend correction: both surfaces now render the
+> shared `DeliveryResult` instead of their own copy, which is how they drifted into
+> "Test delivered" apart from each other.
+>
+> Status 2026-09-17 (correction): three gaps against the delivery contract above.
+> The Notifications page renders one shared result panel above the table and
+> titled it by provider alone, so with several Slack destinations the outcome
+> named no destination the operator could act on — it now names it. Three reason
+> codes the backend actually emits (`credential_unavailable`, `delivery_error`,
+> `request_failed`) had no entry in the guidance table and reached the operator
+> with a reason and no next action. And the page read the tested sink's provider
+> from a `type` field the API does not return, so a failed request was
+> attributed to "The destination" instead of the provider.
+>
+> Still open: the browser/theme/keyboard pass from *Acceptance and tests* below has
+> not been run in a real browser.
+
+## Acceptance and tests
+
+- Provider HTTP 500 cannot be reported accepted; retries exhaust into a visible terminal failure.
+- HTTP 429, invalid credentials, malformed destination, missing configuration, network timeout, successful acceptance, and retry exhaustion have defined outcomes.
+- Test and real dispatch classify the same provider response consistently.
+- Secret URLs/tokens/passwords and raw error bodies do not appear in user messages or logs; outbound policy tests remain intact.
+- Existing severity selection/routing works, with disabled/deleted destinations handled honestly.
+- Button progress, safe retry, permission restrictions, keyboard interactions, and all theme states pass.
+- Existing notification dispatch/routing/email/API tests remain green. Use fake endpoints in tests; do not send real notifications during automated verification.
+
+Advanced escalation, acknowledgement, correlation, and new provider integrations are not part of this delivery correction.

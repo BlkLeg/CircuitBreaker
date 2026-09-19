@@ -2,7 +2,7 @@ import client from './client.jsx';
 
 export const listAgents = (params = {}) => client.get('/agents', { params });
 export const listPendingAgents = () => client.get('/agents/pending');
-// Task 12 bulk lookup: online/connected_since/last_seen_at/capabilities/hardware
+// Bulk lookup: online/connected_since/last_seen_at/capabilities/hardware
 // for the whole fleet in one request, or an explicit `ids` list (e.g. a single
 // agent's detail page). See AgentPresenceRead on the backend.
 export const getAgentsPresence = (params = {}) =>
@@ -13,7 +13,7 @@ export const getAgentsPresence = (params = {}) =>
     paramsSerializer: { indexes: null },
   });
 export const getAgent = (id) => client.get(`/agents/${id}`);
-// Task 14: the server capability registry's approval defaults, as
+// The server capability registry's approval defaults, as
 // {name: {enabled, config}}. The single source of the approval preset and of
 // the host-telemetry config key list / fallback values — the frontend keeps no
 // copy of either, so it can never drift from CAPABILITY_DEFINITIONS.
@@ -21,14 +21,14 @@ export const getCapabilityDefaults = () => client.get('/agents/capability-defaul
 export const getAgentEvents = (id, limit = 50) =>
   client.get(`/agents/${id}/events`, { params: { limit } });
 export const getAgentTelemetry = (id) => client.get(`/agents/${id}/telemetry`);
-// Slice 3 §7: the Assigned Probes section on Agent Detail. Returns
+// The Assigned Probes section on Agent Detail. Returns
 // {agent_id, max_concurrent, active_runs, assignments} — see AgentProbesRead.
 // Target state (`status`) and execution condition (`probe_execution_*`) come
 // back side by side and are never folded into one another: the UP/DOWN pill
 // shows target state only, so a monitor whose agent went offline keeps its last
 // known target state while its execution condition turns unavailable.
 export const getAgentProbes = (id) => client.get(`/agents/${id}/probes`);
-// Slice 3 §7's eligible-agent listing, for the "Run from" selector and for the
+// The eligible-agent listing, for the "Run from" selector and for the
 // reassign action on Agent Detail. Scope compatibility is a property of the
 // (agent, destination) *pair*, so the backend requires a destination — either
 // `monitor_id` for an existing monitor or `host` (plus optional
@@ -40,7 +40,7 @@ export const getAgentProbes = (id) => client.get(`/agents/${id}/probes`);
 export const listProbeEligibleAgents = (params = {}) =>
   client.get('/agents/probe-eligible', { params });
 
-// Slice 4 §6: the Discovery scope section on Agent Detail, and `GET
+// The Discovery scope section on Agent Detail, and `GET
 // /agents/{id}/probes`' counterpart — one request answers "what is this vantage
 // point discovering, and if nothing, why". Returns AgentDiscoveryRead:
 // {granted, paused, globally_paused, eligible, reason, detail, scope_version,
@@ -74,10 +74,41 @@ export const revokeAgent = (id, reason) => client.post(`/agents/${id}/revoke`, {
 export const setAgentCapabilities = (id, capabilities) =>
   client.put(`/agents/${id}/capabilities`, { capabilities });
 export const deleteAgent = (id) => client.delete(`/agents/${id}`);
-export const getInstallCommand = () => client.get('/agents/install-command');
+// `endpointId` names one of the operator-declared agent endpoints. Omitting it
+// is the pre-existing behaviour — the server derives the address from the host
+// the browser is on — so an install with nothing configured is unchanged.
+// `enrollmentToken` makes the emitted command an unattended one. It is passed
+// in rather than minted here: the caller mints once and then asks for a command
+// carrying it, so re-fetching the command never silently burns a second
+// credential.
+export const getInstallCommand = (endpointId, enrollmentToken) =>
+  client.get('/agents/install-command', {
+    params: {
+      ...(endpointId ? { endpoint: endpointId } : {}),
+      ...(enrollmentToken ? { enrollment_token: enrollmentToken } : {}),
+    },
+  });
 export const triggerAgentUpdate = (id, version) => client.post(`/agents/${id}/update`, { version });
 
-// Fleet redesign §1.2: the sparkline series for the Agents page, deliberately a
+// Agents enrolled per endpoint URL. An endpoint with no agents is the only
+// positive evidence an operator gets that an address they declared is
+// unreachable — the agent that would report it is the one that cannot connect.
+export const getEndpointUsage = () => client.get('/agents/endpoint-usage');
+
+// Slice B: unattended enrollment. The mint response is the only place the
+// plaintext token ever appears — the row stores only its hash, so it cannot be
+// read back.
+export const mintEnrollmentToken = (body) => client.post('/agents/enrollment-tokens', body);
+
+// Every token, newest first, revoked and expired included: an operator
+// auditing what was minted needs the ones that are no longer live.
+export const listEnrollmentTokens = () => client.get('/agents/enrollment-tokens');
+
+// Shuts a token immediately. Agents already enrolled through it are unaffected
+// — they hold their own device identity and never present it again.
+export const revokeEnrollmentToken = (id) => client.post(`/agents/enrollment-tokens/${id}/revoke`);
+
+// The sparkline series for the Agents page, deliberately a
 // second endpoint rather than a flag on /agents/presence. The two reads have
 // different costs and therefore different cadences — presence carries the head
 // values and ticks every 30s, while this returns a 30-minute downsampled window
@@ -93,7 +124,7 @@ export const getAgentsMetricsSeries = (params = {}) =>
     paramsSerializer: { indexes: null },
   });
 
-// INC-13: server identity-key rotation. `status` and `rotate` both return
+// Server identity-key rotation. `status` and `rotate` both return
 // ServerKeyRotationStatus — fingerprints and timing only, never key material,
 // plus a `fleet` adoption block while a rotation is active. `pending` is the
 // actionable drill-down behind those counts.

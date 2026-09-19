@@ -111,7 +111,7 @@ func TestNetFacts_OmitsLinkLocalAndUnroutableAddresses(t *testing.T) {
 }
 
 func TestNetFacts_IsDeterministicallyOrdered(t *testing.T) {
-	// The kernel's enumeration order is not a stable contract, and Task 2 bumps a generation
+	// The kernel's enumeration order is not a stable contract, and the server bumps a generation
 	// counter whenever the normalized facts differ — an unsorted report would churn that
 	// counter on every reconnect without a single byte of the host's networking having changed.
 	c := fixedEnumerator(t,
@@ -175,7 +175,7 @@ func TestNetFacts_EnumeratorErrorYieldsEmptySliceNotPanic(t *testing.T) {
 // empty results that a `len(got) == 0` assertion cannot see.
 //
 // capability.readiness' `networks` field carries no `omitempty` so that an agent which lost every
-// interface can send `[]` and replace the server's scope (D-8). That makes nil and `[]` two
+// interface can send `[]` and replace the server's scope. That makes nil and `[]` two
 // different statements on the wire, and the daemon decides which to send by testing this exact
 // nilness: an unreadable /sys/class/net coerced into `[]` would wipe a working scope and churn
 // the scope generation every time the read blinked.

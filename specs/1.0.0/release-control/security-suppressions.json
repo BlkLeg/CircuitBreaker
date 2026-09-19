@@ -69,6 +69,28 @@
       "requirements": ["SEC-18", "RC-08"]
     },
     {
+      "id": "TRIVY-007",
+      "tool": "trivy",
+      "selector": "apps/backend/.dev-data/tls/",
+      "owner": "security-owner",
+      "reviewer": "release-owner",
+      "reason": "Native-development TLS material, the same class as TRIVY-003 and TRIVY-004 but for the non-container paths. `make dev` and `make backend` set CB_DATA_DIR to apps/backend/.dev-data, and scripts/dev-tls.sh generates a self-signed EC certificate under its tls/ for the agent front door. Gitignored (.dev-data/), regenerated on demand, never source and never in a packaged RC artifact. Its absence made `make verify` fail its own security gate on every machine that had run the dev stack.",
+      "compensating_control": "tests/build/test_secret_suppression_scope.py asserts this path is gitignored and holds no git-tracked file, so the suppression cannot mask a committed key; scripts/secret_exposure_guard.sh blocks TLS material tracked in HEAD; Gitleaks still scans git history.",
+      "expiry": "2026-11-13",
+      "requirements": ["SEC-18", "RC-08"]
+    },
+    {
+      "id": "TRIVY-008",
+      "tool": "trivy",
+      "selector": "circuitbreaker-data/tls/",
+      "owner": "security-owner",
+      "reviewer": "release-owner",
+      "reason": "The repository-root data directory. The Makefile's default CB_DATA_DIR (?= ./circuitbreaker-data) and docker-compose.yml both resolve here, so a compose run or a dev-tls invocation that does not override CB_DATA_DIR writes its self-signed EC certificate to this tls/. Gitignored (circuitbreaker-data/) and ephemeral. Registered alongside TRIVY-007 rather than after it turns someone's gate red.",
+      "compensating_control": "Identical to TRIVY-007: the suppression-scope test proves the path is gitignored and untracked, secret_exposure_guard.sh blocks tracked TLS material in HEAD, and Gitleaks covers history.",
+      "expiry": "2026-11-13",
+      "requirements": ["SEC-18", "RC-08"]
+    },
+    {
       "id": "GITLEAKS-001",
       "tool": "gitleaks",
       "selector": "SECURITY_PATCHES/scanner_false_positives_2026-03-12.md:generic-api-key",
@@ -173,8 +195,8 @@
       "selector": "runtime-data",
       "owner": "security-owner",
       "reviewer": "release-owner",
-      "reason": "Local runtime data directories hold generated databases and instance secrets; they are gitignored and are not source or release artifacts.",
-      "compensating_control": "Tracked source, manifests, built artifacts, and release archives remain scanned; runtime secrets are validated by startup fail-closed checks.",
+      "reason": "Local runtime data directories hold generated databases and instance secrets, and tool-generated working-tree output (agent scratch state, Tier 0-3 evidence, MkDocs site/ build output) is derived from tracked files; all are gitignored and are not source or release artifacts.",
+      "compensating_control": "Tracked source, manifests, built artifacts, and release archives remain scanned; runtime secrets are validated by startup fail-closed checks; the canonical docs/ sources behind site/ are scanned by every rule including the enrollment-token rule.",
       "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
     },
@@ -230,6 +252,17 @@
       "reviewer": "release-owner",
       "reason": "dGVzdC12YXVsdC1rZXk= is base64 for the ASCII string \"test-vault-key\". tests/build/test_restore_dump_errors.py writes it into a stub snapshot so restore.sh can be asserted to carry CB_VAULT_KEY through into the restored env file; nothing is ever encrypted or decrypted with it. This is the same fabricated value already excused for apps/backend/tests/services/test_restore_targets.py by the documented-and-test-fixtures allowlist.",
       "compensating_control": "The allowlist matches the literal rather than a path, so a real vault key in any of the restore tests still fails the gate, and the next test asserting the same round-trip is covered without widening the suppression to another directory.",
+      "expiry": "2026-11-13",
+      "requirements": ["SEC-18", "RC-08"]
+    },
+    {
+      "id": "GITLEAKS-CONFIG-011",
+      "tool": "gitleaks-config",
+      "selector": "superdesign-content-hash-manifest",
+      "owner": "security-owner",
+      "reviewer": "release-owner",
+      "reason": "The design tool rewrites .superdesign/resume.json on every session, mapping each source file it read to the SHA-256 of that file's contents. generic-api-key reads a quoted 64-hex value beside a quoted label as a credential, so a session that touched only CSS turned the gate red on state holding no secret. A digest of a tracked source file discloses nothing: anyone who can read the manifest can read the file and recompute it.",
+      "compensating_control": "The allowlist matches the manifest's line shape -- a quoted source path with a file extension, a colon, a quoted 64-hex digest -- rather than allowlisting the path. A path entry would have been strictly worse than it looks: gitleaks drops a path-allowlisted file before applying any rule, so it would have silently stopped the cbe_ enrollment-token rule from firing inside that file. Verified against gitleaks 8.30.1 that a token planted in resume.json is still found under this entry, and that the same digest written as CB_VAULT_KEY = \"<hex>\" is still a finding. tests/build/test_superdesign_hash_manifest_allowlist.py fails if a paths key ever returns, if regexTarget stops being \"line\", or if the regex starts matching a credential assignment.",
       "expiry": "2026-11-13",
       "requirements": ["SEC-18", "RC-08"]
     }

@@ -2,6 +2,7 @@
 package update
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -27,34 +28,45 @@ type Instruction struct {
 
 const markerFilename = "update_pending"
 
-// markerPhase distinguishes the two states a still-present rollback marker
-// can be in when read back after an unplanned restart. Before this
-// distinction existed, a marker's mere presence was treated as proof that
-// the marker's recorded backup was *this* update's actual prior version —
-// true only because, pre-Task-25, the marker was written after Swap
-// succeeded. Task 25 correctly moved WriteMarker to run before Swap (so a
-// crash between the two leaves a recoverable "nothing happened yet" state
-// instead of an unguarded replaced binary), but that reordering broke the
-// old proof: a marker written just before a crash, with Swap never having
-// run, would otherwise be indistinguishable from one written after a real
-// Swap — and watchForRollback would "roll back" current to whatever stale
-// version directory happens to be lying around from some earlier,
-// already-confirmed update. Two versions back. Silently.
+// markerPhase distinguishes the two states a still-present rollback marker can
+// be in when read back after an unplanned restart.
 //
-//   - phasePendingSwap: WriteMarker has run but Swap has not (yet) durably
-//     completed for this marker's version. current is untouched and no
-//     prevVersionDir has been recorded yet — there is nothing to roll back
-//     to.
+// A marker's mere presence is NOT proof that its recorded backup is this
+// update's actual prior version. WriteMarker runs before Swap, so a crash
+// between the two leaves a marker whose Swap never ran; treating that as
+// swapped would roll `current` back to whatever stale version directory is
+// lying around from an earlier, already-confirmed update — two versions back,
+// silently.
+//
+//   - phasePendingSwap: WriteMarker has run but Swap has not durably completed
+//     for this marker's version. current is untouched and no prevVersionDir is
+//     recorded — there is nothing to roll back to.
 //   - phasePendingConfirm: Swap completed and MarkSwapped recorded
-//     prevVersionDir — that directory is now guaranteed to be *this*
-//     update's actual prior version, so a rollback (if the update never
-//     confirms) is safe and meaningful.
+//     prevVersionDir, which is then guaranteed to be this update's actual prior
+//     version, so a rollback is safe and meaningful.
 type markerPhase string
 
 const (
 	phasePendingSwap    markerPhase = "pending-swap"
 	phasePendingConfirm markerPhase = "pending-confirm"
 )
+
+// pendingOutcomeFilename persists a terminal update outcome — today
+// "succeeded" — that a process is about to report live but could lose to a
+// connection drop at exactly the wrong moment. The succeeded report is written
+// to the socket immediately before syscall.Exec replaces this process image,
+// and a successful local WebSocket write is not an acknowledgement from the
+// server: the bytes can die in a socket buffer or a partition while the process
+// that could retry them is gone. So the outcome is recorded durably before the
+// live send, and the process the re-exec lands in reports it after its first
+// accepted hello.ack and clears it only once that send succeeded.
+//
+// A distinct file from rollbackReportFilename, never merged into it: the
+// rollback report is written by the new process after it decides to roll back,
+// and read by the old process the rollback re-execs into — a build that
+// predates this file. Changing that format would hand that old reader a
+// phase-suffixed string it would report as a version.
+const pendingOutcomeFilename = "update_outcome"
 
 // rollbackReportFilename persists the version a rollback restored *away*
 // from, across the re-exec that follows a rollback decision. The process
@@ -85,23 +97,40 @@ var downloadTimeout = 2 * time.Minute
 // data.
 var maxDownloadBytes int64 = 256 * 1024 * 1024
 
-// Download fetches the update binary named by instr from cfg.ServerURL and
-// writes it to a new temp file, returning its path. The request routes
-// through tlsdial.NewTransport(cfg.TLSPin) — the same pinned-TLS/proxy
-// policy used for the agent's enroll and link websocket connections —
-// rather than a bare http.Get, so a self-signed/TOFU install's tls_pin is
-// actually enforced for the download and not just the control connection.
-func Download(cfg *config.Config, instr Instruction) (string, error) {
-	url := fmt.Sprintf(
+// binaryURL is where instr's binary lives on cfg.ServerURL. Shared with
+// Download and DownloadSignature — the latter appends ".sig" to exactly
+// this — so the binary and the signature that authenticates it can never
+// come from different URLs.
+func binaryURL(cfg *config.Config, instr Instruction) string {
+	return fmt.Sprintf(
 		"%s/api/v1/agents/binary/%s/%s/%s",
 		strings.TrimRight(cfg.ServerURL, "/"), instr.Version, instr.OS, instr.Arch,
 	)
+}
 
+// downloadTo fetches url through trust's pinned transport into a new temp
+// file named with prefix, refusing any response larger than limit, and
+// returns the temp file's path. Shared by Download and DownloadSignature so
+// the status, Content-Length and size-limit handling cannot drift between
+// the binary and the signature that authenticates it.
+//
+// ctx reaches the HTTP request itself via http.NewRequestWithContext, so a
+// cancelled context — daemon shutdown, update-worker stop — interrupts a
+// stalled connect or a slow body mid-read instead of waiting out
+// downloadTimeout. The client timeout remains as the outer bound for the
+// cases no context covers (a caller that passes context.Background).
+func downloadTo(
+	ctx context.Context, trust tlsdial.Trust, url, prefix string, limit int64, mode os.FileMode,
+) (string, error) {
 	client := &http.Client{
-		Transport: tlsdial.NewTransport(cfg.TLSPin),
+		Transport: tlsdial.NewTransport(trust),
 		Timeout:   downloadTimeout,
 	}
-	resp, err := client.Get(url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("update: download %s: %w", url, err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("update: download %s: %w", url, err)
 	}
@@ -109,14 +138,30 @@ func Download(cfg *config.Config, instr Instruction) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("update: download %s: status %d", url, resp.StatusCode)
 	}
-	if resp.ContentLength > maxDownloadBytes {
+	if resp.ContentLength > limit {
 		return "", fmt.Errorf(
 			"update: download %s: content-length %d exceeds limit %d bytes",
-			url, resp.ContentLength, maxDownloadBytes,
+			url, resp.ContentLength, limit,
 		)
 	}
 
-	tmp, err := os.CreateTemp("", "cb-agent-update-*")
+	// Where this lands is chosen per download rather than fixed at
+	// os.TempDir(), because the requirement is known only now: an honest
+	// Content-Length is the exact figure, and without one the ceiling this
+	// call is already bounded by — capped at scratchFloorBytes so a 4 KB
+	// signature is not asked to reserve the room a 256 MB binary would.
+	need := resp.ContentLength
+	if need <= 0 {
+		need = limit
+		if need > scratchFloorBytes {
+			need = scratchFloorBytes
+		}
+	}
+	dir, err := scratchDir(need)
+	if err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(dir, prefix)
 	if err != nil {
 		return "", fmt.Errorf("update: create temp file: %w", err)
 	}
@@ -125,20 +170,63 @@ func Download(cfg *config.Config, instr Instruction) (string, error) {
 	// Read one byte past the limit so an over-limit response can be told
 	// apart from one landing exactly at it, without trusting Content-Length
 	// (checked above only as an early rejection when present and honest).
-	n, err := io.Copy(tmp, io.LimitReader(resp.Body, maxDownloadBytes+1))
+	n, err := io.Copy(tmp, io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		os.Remove(tmp.Name())
 		return "", fmt.Errorf("update: write temp file: %w", err)
 	}
-	if n > maxDownloadBytes {
+	if n > limit {
 		os.Remove(tmp.Name())
-		return "", fmt.Errorf("update: download %s: response exceeded size limit %d bytes", url, maxDownloadBytes)
+		return "", fmt.Errorf(
+			"update: download %s: response exceeded size limit %d bytes", url, limit,
+		)
 	}
-	if err := tmp.Chmod(0o755); err != nil {
+	if err := tmp.Chmod(mode); err != nil {
 		os.Remove(tmp.Name())
 		return "", fmt.Errorf("update: chmod temp file: %w", err)
 	}
 	return tmp.Name(), nil
+}
+
+// Download fetches the update binary named by instr from cfg.ServerURL and
+// writes it to a new temp file, returning its path. The request routes
+// through tlsdial.NewTransport(trust) — the same pinned-TLS/proxy policy
+// used for the agent's enroll and link websocket connections — rather than
+// a bare http.Get, so a self-signed/TOFU install's tls_pin is actually
+// enforced for the download and not just the control connection. trust is
+// resolved by the caller via link.ResolveTrust: cfg is kept here only
+// because the URL above is built from cfg.ServerURL. ctx cancels the HTTP
+// request itself (see downloadTo) so a shutdown landing mid-download does
+// not wait out downloadTimeout for a stalled response.
+func Download(ctx context.Context, cfg *config.Config, trust tlsdial.Trust, instr Instruction) (string, error) {
+	return downloadTo(
+		ctx, trust, binaryURL(cfg, instr), "cb-agent-update-*", maxDownloadBytes, 0o755,
+	)
+}
+
+// maxSignatureBytes bounds a detached signature download. An Ed25519
+// signature is 64 raw bytes, 88 base64 characters — this leaves generous
+// headroom while keeping a hostile server from streaming an unbounded
+// response into a client expecting a fixed-size blob. Deliberately not
+// maxDownloadBytes, which is sized for a binary.
+const maxSignatureBytes = 4096
+
+// DownloadSignature fetches the detached signature published beside the
+// binary Download fetches — the same URL with a .sig suffix — through the
+// same pinned transport. ctx cancels the HTTP request itself (see
+// downloadTo) so a shutdown landing mid-fetch does not wait out
+// downloadTimeout.
+func DownloadSignature(
+	ctx context.Context, cfg *config.Config, trust tlsdial.Trust, instr Instruction,
+) (string, error) {
+	return downloadTo(
+		ctx,
+		trust,
+		binaryURL(cfg, instr)+".sig",
+		"cb-agent-update-sig-*",
+		maxSignatureBytes,
+		0o600,
+	)
 }
 
 func VerifySHA256(path, want string) error {
@@ -173,9 +261,12 @@ func constantTimeEqualHexFold(a, b string) bool {
 }
 
 // moveFile renames src to dst, falling back to a copy+remove when the rename
-// fails across a filesystem boundary (EXDEV) — expected in practice, since
-// Download() writes into os.TempDir() while the install target usually
-// lives on a different mount (e.g. /usr/local/bin).
+// fails across a filesystem boundary (EXDEV). Rare in practice:
+// Download() stages inside the agent's own state directory when it can
+// (see scratchCandidates), which is the same filesystem as the install
+// target. The fallback still has to be correct, because a host whose state
+// directory is unwritable stages in a temp directory that usually is on a
+// different mount.
 func moveFile(src, dst string) error {
 	if err := os.Rename(src, dst); err == nil {
 		return nil
@@ -200,10 +291,10 @@ func moveFile(src, dst string) error {
 		os.Remove(dst)
 		return fmt.Errorf("moveFile: copy %s -> %s: %w", src, dst, err)
 	}
-	// This is the production install path in practice — Download() writes
-	// into os.TempDir() while the install target usually lives on a
-	// different mount, so os.Rename above almost always fails with EXDEV and
-	// lands here. Without an explicit Sync, dst's data may still be sitting
+	// Reached whenever the staging directory and the install target are on
+	// different mounts, which is every host that could not stage in its own
+	// state directory and fell back to a temp directory. Without an explicit
+	// Sync, dst's data may still be sitting
 	// in the page cache when Close returns: Close flushes Go-side buffers,
 	// not the kernel's, so a power loss right after a cross-mount swap could
 	// leave dst truncated or partially written — and unlike the same-
@@ -305,8 +396,7 @@ func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
 // CurrentLinkPath returns the path of the "current" symlink under stateDir
 // that Swap/Rollback re-point — the middle link in the two-level indirection
 // /usr/local/bin/cb-agent -> {stateDir}/current ->
-// {stateDir}/versions/<version>/cb-agent (see
-// specs/2026-08-05-cb-agent-self-update-fix-design.md). Exported so
+// {stateDir}/versions/<version>/cb-agent. Exported so
 // cmd/cb-agent/main.go builds the same path without duplicating the
 // "current" literal.
 func CurrentLinkPath(stateDir string) string {
@@ -359,17 +449,15 @@ func resolveSymlinkAbs(linkPath string) (string, error) {
 
 // Swap fsyncs newBinaryPath (see fsyncFile), moves it into
 // {stateDir}/versions/<version>/cb-agent (immutable once written), then
-// atomically re-points {stateDir}/current to that new version directory —
-// so self-update never touches anything outside stateDir, which is already
-// writable by the unprivileged cb-agent user running this process (see
-// specs/2026-08-05-cb-agent-self-update-fix-design.md — this replaces the
-// old in-place rename at a root-owned /usr/local/bin/cb-agent, which that
-// user could never actually perform). Returns the version directory
-// current pointed to *before* the swap, so a later Rollback knows where to
-// point back to; empty if current did not exist yet (never happens against
-// a real install, whose install script always creates it — see
-// agent_install.py — but tolerated so tests can exercise a first-ever swap
-// without seeding one).
+// atomically re-points {stateDir}/current at that new version directory.
+// Self-update therefore never touches anything outside stateDir, which the
+// unprivileged cb-agent user running this process can already write — unlike a
+// root-owned /usr/local/bin/cb-agent, which it could never rename in place.
+//
+// Returns the version directory current pointed to before the swap, so a later
+// Rollback knows where to point back to; empty if current did not exist yet,
+// which never happens against a real install but is tolerated so tests can
+// exercise a first-ever swap without seeding one.
 func Swap(newBinaryPath, version, stateDir string) (prevVersionDir string, err error) {
 	// version ultimately comes from a server-controlled update instruction
 	// (internal/update.Instruction) and is used directly as a path
@@ -418,7 +506,7 @@ func Swap(newBinaryPath, version, stateDir string) (prevVersionDir string, err e
 // currentLink's live target and keepVersionDir (the version an update was
 // just confirmed away from) — called once an update confirms (a
 // post-update hello.ack arrives; see cmd/cb-agent/main.go's onConnected),
-// mirroring the single-".previous"-backup retention the old scheme kept.
+// keeping one backup version, no more.
 // keepVersionDir may be "" (nothing to additionally retain beyond
 // current). Best-effort: a failure removing one stale version directory is
 // collected and returned, but does not stop pruning from attempting the
@@ -489,18 +577,16 @@ func Rollback(currentLink, prevVersionDir string) error {
 }
 
 // WriteMarker durably records that targetVersion is pending confirmation via
-// atomicWriteFile — a torn write here would be worse than useless, since the
-// whole point of the marker is that it's trustworthy after an unplanned
-// restart. Callers (cmd/cb-agent/main.go's onUpdate) must call this *before*
-// executing the binary swap it guards, not after: if a crash lands between
-// WriteMarker and Swap, the marker still correctly names the version that
-// was *about to be* installed, and ReadMarker on restart finds a
-// consistent, recoverable state (Swap never ran, so current is untouched —
-// there's nothing to roll back).
+// atomicWriteFile — a torn write would be worse than useless, since the whole
+// point of the marker is that it is trustworthy after an unplanned restart.
 //
-// The marker written here starts in phasePendingSwap with no previous
-// version recorded yet (Swap hasn't run, so there's nothing to record) —
-// see MarkSwapped, which callers must invoke once Swap actually succeeds.
+// Callers must invoke this BEFORE the binary swap it guards, never after: if a
+// crash lands between WriteMarker and Swap, the marker still correctly names
+// the version that was about to be installed, and ReadMarker finds a
+// recoverable state (Swap never ran, so current is untouched).
+//
+// The marker starts in phasePendingSwap with no previous version recorded —
+// see MarkSwapped, which callers must invoke once Swap succeeds.
 func WriteMarker(stateDir, targetVersion string) error {
 	return writeMarkerPhase(stateDir, phasePendingSwap, targetVersion, "", time.Time{})
 }
@@ -607,24 +693,13 @@ func readMarker(stateDir string) (m marker, present bool, err error) {
 // deadline, and reports the version it rolled back away from ("" when it did
 // nothing).
 //
-// This exists because the in-process rollback window (cmd/cb-agent's
-// watchForRollback) cannot cover the failure it matters most for. That
-// goroutine is spawned only after runDaemon's unconditional enroll.Run
-// succeeds, and an enrollment failure is fatal — so an update that leaves the
-// agent unable to reach the server at all kills the process long before the
-// window elapses, and does so again on every restart. Evaluating a durable
-// deadline from disk, before any network call, is what makes a crash-looping
-// agent converge on a rollback instead of looping forever on a broken build.
-//
-// The two watchForRollback rules that still apply here apply for the same
-// reasons: an unswapped marker has nothing to roll back (current was never
-// re-pointed, and its recorded prevVersionDir, if any, belongs to some earlier
-// already-confirmed update), and a failed Rollback still clears the marker so
-// the same doomed attempt is not re-armed on every subsequent start.
-//
-// A marker with no deadline is deliberately inert rather than expired: it was
-// written by an older agent build, its update may well be healthy and
-// in-flight, and watchForRollback remains its judge.
+// The in-process rollback window (cmd/cb-agent's watchForRollback) cannot cover
+// the failure this matters most for: that goroutine is spawned only after
+// runDaemon's unconditional enroll.Run succeeds, and an enrollment failure is
+// fatal — so an update that leaves the agent unable to reach the server at all
+// kills the process long before the window elapses, and again on every restart.
+// Evaluating a durable deadline from disk, before any network call, is what
+// makes a crash-looping agent converge on a rollback.
 func RollbackIfExpired(stateDir, currentLink string, now time.Time) (rolledBackFrom string, err error) {
 	m, present, err := readMarker(stateDir)
 	if err != nil || !present {
@@ -645,6 +720,16 @@ func RollbackIfExpired(stateDir, currentLink string, now time.Time) (rolledBackF
 	if err := WriteRollbackReport(stateDir, m.version); err != nil {
 		return "", err
 	}
+	// The rollback is the terminal word on this attempt, so any pending
+	// outcome an earlier phase recorded must not survive it — a succeeded
+	// record sitting beside a rollback report would win the next
+	// connection's single report slot (cmd/cb-agent reads the outcome file
+	// first), and "succeeded, then rolled back" is this report's story to
+	// tell. Best-effort by the same rule ClearMarker follows in
+	// watchForRollback: failing the rollback over a clear that cannot run
+	// would re-arm this same doomed attempt on every restart, and the
+	// degraded case is a misleading report, never a lost rollback.
+	_ = ClearPendingOutcome(stateDir)
 	if err := ClearMarker(stateDir); err != nil {
 		return "", err
 	}
@@ -687,6 +772,59 @@ func ClearRollbackReport(stateDir string) error {
 	err := os.Remove(filepath.Join(stateDir, rollbackReportFilename))
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("update: clear rollback report: %w", err)
+	}
+	return nil
+}
+
+// WritePendingOutcome durably records one terminal update outcome — phase
+// "succeeded" is the case this exists for (see pendingOutcomeFilename's doc
+// comment) — as "<version>\n<phase>", written via atomicWriteFile because a
+// torn write here would be worse than nothing: the next process has to be
+// able to trust that the outcome it reads is the one the re-exec'd process
+// actually reached. Callers must write this *before* attempting the live
+// status send it describes, so the record exists even if the connection
+// drops at exactly the wrong moment.
+func WritePendingOutcome(stateDir, version, phase string) error {
+	data := []byte(version + "\n" + phase)
+	if err := atomicWriteFile(filepath.Join(stateDir, pendingOutcomeFilename), data, 0o600); err != nil {
+		return fmt.Errorf("update: write pending outcome: %w", err)
+	}
+	return nil
+}
+
+// ReadPendingOutcome mirrors ReadMarker's contract: ok is false with a nil
+// error when no outcome is pending (the overwhelmingly common case — a
+// process that just re-exec'd after a successful update, and is the one
+// that reads this, only sees one when its predecessor's live send was
+// lost). A file that exists but does not parse is an error rather than a
+// silent miss: the difference between "nothing to report" and "an
+// unreportable record" is exactly what an operator needs to see, and
+// returning ok=false would swallow it into the former.
+func ReadPendingOutcome(stateDir string) (version, phase string, ok bool, err error) {
+	data, err := os.ReadFile(filepath.Join(stateDir, pendingOutcomeFilename))
+	if os.IsNotExist(err) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, fmt.Errorf("update: read pending outcome: %w", err)
+	}
+	version, phase, ok = strings.Cut(string(data), "\n")
+	if !ok || version == "" || phase == "" {
+		return "", "", false, fmt.Errorf("update: malformed pending outcome")
+	}
+	return version, phase, true, nil
+}
+
+// ClearPendingOutcome mirrors ClearRollbackReport: removing an
+// already-absent outcome is not an error, so a caller can call this
+// unconditionally once the report has actually been sent — and, per the
+// rollback-report clearing rule both share, never before: a send that
+// failed (the connection dropped immediately after hello.ack) leaves the
+// outcome in place for the next reconnect to retry.
+func ClearPendingOutcome(stateDir string) error {
+	err := os.Remove(filepath.Join(stateDir, pendingOutcomeFilename))
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("update: clear pending outcome: %w", err)
 	}
 	return nil
 }

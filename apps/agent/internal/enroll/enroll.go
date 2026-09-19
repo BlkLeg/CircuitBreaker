@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -39,7 +41,63 @@ import (
 // cleared as soon as the first frame arrives. A var so tests can shrink it.
 var handshakeTimeout = 10 * time.Second
 
-func Run(cfg *config.Config, key *DeviceKey, agentVersion string) error {
+// enrollTokenPath is where the installer plants a token supplied through
+// CB_ENROLL_TOKEN. A var so tests can point it elsewhere.
+var enrollTokenPath = "/etc/circuit-breaker/enroll-token"
+
+// readEnrollToken returns the token at path, or "" when there is none.
+//
+// An absent file is not an error: it is the attended flow, which is the
+// default and by far the common case. A file that exists and cannot be read
+// is worth reporting, since that is a misconfiguration an operator can fix and
+// silently falling back to attended enrollment is not what they asked for.
+func readEnrollToken(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("enroll: read token: %w", err)
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
+// clearEnrollToken removes a spent token, best-effort.
+//
+// It is spent the moment the server accepts it, so keeping it buys nothing and
+// leaves a credential on disk for the life of the host. A failure to remove it
+// must not fail an enrollment that has already succeeded: the agent is
+// enrolled either way, and refusing to start over a leftover file would turn a
+// cleanup problem into an outage.
+func clearEnrollToken(path string) {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Printf("enroll: could not remove spent token at %s: %v", path, err)
+	}
+}
+
+// ErrRejected and ErrRevoked are the sentinels for Run's two authoritative
+// refusal outcomes — an operator explicitly declining or revoking this
+// device, as opposed to any of the ordinary transient failures above (a dial
+// error, a stalled handshake, a closed connection). Exported, unlike the
+// a generic errors.New, so a caller retrying
+// Run (cmd/cb-agent's retryEnroll) can tell "the operator said no" apart from
+// "the network is having a bad day" with errors.Is and answer each
+// differently — see retryEnroll's doc comment.
+var (
+	ErrRejected = errors.New("enroll: enrollment was rejected")
+	ErrRevoked  = errors.New("enroll: agent was revoked")
+)
+
+// Run takes trust as a resolved tlsdial.Trust rather than resolving it
+// itself: internal/link already imports internal/enroll for DeviceKey, so
+// enroll importing internal/link back (to call link.ResolveTrust) would be
+// an import cycle. cmd/cb-agent/main.go resolves it once via
+// link.ResolveTrust(cfg, config.StateDir()) and passes the result in.
+//
+// stateDir is where MarkEnrolled writes its durable marker once the server
+// confirms "active" — see that function's doc comment for why runDaemon
+// needs it and why it is written only here, only after that confirmation.
+func Run(cfg *config.Config, key *DeviceKey, agentVersion string, trust tlsdial.Trust, stateDir string) error {
 	remotePub, err := hex.DecodeString(cfg.ServerStaticPK)
 	if err != nil || len(remotePub) != 32 {
 		return fmt.Errorf("enroll: invalid server_static_pk in config: %w", err)
@@ -59,7 +117,7 @@ func Run(cfg *config.Config, key *DeviceKey, agentVersion string) error {
 	u.Scheme = strings.Replace(u.Scheme, "http", "ws", 1)
 	u.Path = "/api/v1/agents/enroll"
 
-	conn, _, err := tlsdial.NewDialer(cfg.TLSPin).Dial(u.String(), nil)
+	conn, _, err := tlsdial.NewDialer(trust).Dial(u.String(), nil)
 	if err != nil {
 		return fmt.Errorf("enroll: dial %s: %w", u.String(), err)
 	}
@@ -82,7 +140,15 @@ func Run(cfg *config.Config, key *DeviceKey, agentVersion string) error {
 		return fmt.Errorf("enroll: %w", err)
 	}
 
-	helloPayload := hostinfo.Collect(agentVersion)
+	helloPayload := hostinfo.Collect(agentVersion, cfg.ServerURL)
+	token, err := readEnrollToken(enrollTokenPath)
+	if err != nil {
+		return err
+	}
+	// Set here rather than inside hostinfo.Collect: internal/link builds its
+	// hello from that same helper, and this credential belongs on exactly one
+	// frame in the agent's lifetime.
+	helloPayload.EnrollToken = token
 	helloFrame := frame.Frame{V: 1, Type: frame.TypeHello, Seq: 0, TS: time.Now().UTC()}
 	helloFrame.Payload, err = json.Marshal(helloPayload)
 	if err != nil {
@@ -136,12 +202,28 @@ func Run(cfg *config.Config, key *DeviceKey, agentVersion string) error {
 		status, _ := payload["status"].(string)
 		switch status {
 		case "active":
+			// Unlinked only now, once the server has confirmed it accepted the
+			// enrollment. Removing it earlier would strand an agent whose
+			// enrollment then failed, with no credential left to retry.
+			if token != "" {
+				clearEnrollToken(enrollTokenPath)
+			}
+			// Written after "active", never before: a marker written on
+			// speculation would let a later restart skip Run for a device the
+			// server never actually confirmed. A failure to persist it is
+			// logged rather than turned into an error — the enrollment itself
+			// already succeeded, and failing it now over a marker write would
+			// turn a cosmetic problem (one extra Run call on the next restart)
+			// into an outage.
+			if err := MarkEnrolled(stateDir); err != nil {
+				log.Printf("enroll: %v", err)
+			}
 			fmt.Println("approved — connecting")
 			return nil
 		case "rejected":
-			return errors.New("enroll: enrollment was rejected")
+			return ErrRejected
 		case "revoked":
-			return errors.New("enroll: agent was revoked")
+			return ErrRevoked
 		}
 	}
 }

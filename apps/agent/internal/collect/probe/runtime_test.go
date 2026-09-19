@@ -259,7 +259,7 @@ func TestProbeRuntime_HandlerReturnsImmediatelyAndDoesNotBlockTheCaller(t *testi
 	}
 }
 
-// TestProbeRuntime_RespectsMaxConcurrentFromTheGrant pins §2's per-agent concurrency limit,
+// TestProbeRuntime_RespectsMaxConcurrentFromTheGrant pins the per-agent concurrency limit,
 // which the `remote_probe` grant's max_concurrent carries (default 20, range 1-100).
 func TestProbeRuntime_RespectsMaxConcurrentFromTheGrant(t *testing.T) {
 	checker := &stubChecker{outcome: Outcome{Up: true, Msg: "ok"}, delay: 25 * time.Millisecond}
@@ -287,7 +287,7 @@ func TestProbeRuntime_RespectsMaxConcurrentFromTheGrant(t *testing.T) {
 	}
 }
 
-// TestProbeRuntime_QueueOfOneHundredIsBoundedAndOverflowReturnsRejected pins §2: an agent holds
+// TestProbeRuntime_QueueOfOneHundredIsBoundedAndOverflowReturnsRejected pins the rule: an agent holds
 // at most 100 assignments, and capacity exhaustion is *reported* — a silent drop leaves the
 // backend waiting out the run's whole deadline for a result that was never coming.
 func TestProbeRuntime_QueueOfOneHundredIsBoundedAndOverflowReturnsRejected(t *testing.T) {
@@ -562,7 +562,7 @@ func TestProbeRuntime_ResultsAreEmittedOnTheDataFrameChannel(t *testing.T) {
 	}
 }
 
-// TestProbeRuntime_AssignmentSecretsAreNeverPersistedOrLogged pins D-10: probe.assign carries the
+// TestProbeRuntime_AssignmentSecretsAreNeverPersistedOrLogged pins the rule: probe.assign carries the
 // monitor's full validated config, credentials included. The agent holds it in memory for the
 // life of the run and nowhere else — not in a log line, not echoed in probe.result, and not
 // retained after the run closes.
@@ -693,7 +693,7 @@ func TestProbeRuntime_UnsupportedCheckTypeIsRejectedRatherThanIgnored(t *testing
 }
 
 // TestProbeRuntime_CheckerFailureIsAnExecutionErrorNotTargetDown — a checker returns an error
-// only when it could not perform the probe at all (§5's `icmp_unavailable` case). Target failure
+// only when it could not perform the probe at all. Target failure
 // is an Outcome with Up false, which is a completely different monitor-state input.
 func TestProbeRuntime_CheckerFailureIsAnExecutionErrorNotTargetDown(t *testing.T) {
 	checker := &stubChecker{err: errors.New("icmp socket unavailable: operation not permitted")}
@@ -766,7 +766,7 @@ func TestProbeRuntime_MessageIsBoundedAtTwoThousandCharacters(t *testing.T) {
 }
 
 // TestProbeRuntime_DisableCancelsEverythingAndRefusesNewAssignments — the agent-side half of a
-// revoked or disabled `remote_probe` grant (Task 20 calls this from onCapabilitiesSet).
+// revoked or disabled `remote_probe` grant (the design calls this from onCapabilitiesSet).
 func TestProbeRuntime_DisableCancelsEverythingAndRefusesNewAssignments(t *testing.T) {
 	checker := &stubChecker{block: make(chan struct{}), started: make(chan string, 4)}
 	defer close(checker.block)

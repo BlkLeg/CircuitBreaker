@@ -3,7 +3,7 @@ import { CERTIFICATE_FIELDS } from '../pages/CertificatesPage.jsx';
 import { certificateTypeLabel } from '../utils/certificateTypes';
 
 /**
- * INC-07: the backend now creates the type that was asked for. Three types exist, so the
+ * The backend creates the type that was asked for. Three types exist, so the
  * form must be able to ask for all three and the table must be able to name all three.
  * A row typed "imported" rendered as "Self-Signed" is the same mislabelling in a new place.
  */

@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import FleetRow from '../components/agents/FleetRow';
-import AgentStateChip from '../components/agents/AgentStateChip';
+import AgentStateChip, { stateDetailText } from '../components/agents/AgentStateChip';
+import AgentStateBanner from '../components/agents/AgentStateBanner';
 import { STATE_ORDER, agentStateDefinition, deriveAgentStates } from '../lib/agentState';
 
 /**
@@ -38,6 +39,10 @@ const BASE = {
   capabilities: { host_telemetry: { enabled: true, config: { interval_s: 30 } } },
   latest: { collected_at: RECENT(), cpu_pct: 12, mem_pct: 30 },
   spool_depth: 0,
+  // With no report time the row reads the backlog as unknown rather than as
+  // drained, which is a different row from the healthy one these cases are
+  // about. The freshness cases live in fleet-row.test.jsx.
+  spool_reported_at: RECENT(),
 };
 
 const renderRow = (agent, props = {}) =>
@@ -184,5 +189,114 @@ describe('the fleet row', () => {
     const row = container.querySelector('tr');
     expect(row).toHaveAttribute('data-state', 'pending');
     expect(within(row).getByText('pending').textContent).toMatch(/Compare the fingerprint/);
+  });
+});
+
+describe('permanently destroyed history in a fleet row', () => {
+  it('renders a critical loss chip carrying the reason and the remedy', () => {
+    renderRow({
+      ...BASE,
+      spool_evicted_frames: 9412,
+      spool_evicted_bytes: 33554432,
+      spool_evicted_oldest_at: '2026-08-20T00:00:00Z',
+      spool_evicted_newest_at: '2026-08-22T00:00:00Z',
+    });
+
+    const chip = screen.getByText(/lost 9412/).closest('.fleet-chip');
+    expect(chip).toBeTruthy();
+    expect(chip.getAttribute('data-tone')).toBe('critical');
+    // The remedy has to reach a screen-reader user, who cannot hover a title.
+    expect(chip.textContent).toMatch(/spool_cap_bytes/);
+    expect(chip.textContent).toMatch(/cannot be recovered/);
+  });
+
+  it('shows the loss chip beside the backlog chip, not instead of it', () => {
+    // Two facts with two futures: the backlog drains, the loss does not. A
+    // single chip that changed colour could only ever state one of them.
+    renderRow({ ...BASE, spool_depth: 4096, spool_evicted_frames: 12 });
+
+    expect(screen.getByText(/spool 4096/)).toBeTruthy();
+    expect(screen.getByText(/lost 12/)).toBeTruthy();
+  });
+
+  it('shows the loss chip on an offline row, where the loss is happening', () => {
+    renderRow({ ...BASE, online: false, last_seen_at: OLD(), spool_evicted_frames: 12 });
+
+    expect(screen.getByText(/lost 12/)).toBeTruthy();
+  });
+
+  it('renders nothing for an explicit zero or an agent that never reported', () => {
+    const { unmount } = renderRow({ ...BASE, spool_evicted_frames: 0 });
+    expect(screen.queryByText(/lost /)).toBeNull();
+    unmount();
+
+    renderRow({ ...BASE, spool_evicted_frames: null });
+    expect(screen.queryByText(/lost /)).toBeNull();
+  });
+
+  it('names both causes rather than blaming the size cap for every loss', () => {
+    // The same counter now records observations the agent could not
+    // buffer at all — a full disk, a read-only state directory — because
+    // every data frame is spooled before it can reach a socket. Telling an
+    // operator whose disk is read-only to raise a size cap is a remedy that
+    // cannot work, which is precisely the confidently-wrong reporting this
+    // state exists to replace.
+    const state = agentStateDefinition('spool_evicted');
+    expect(state.summary).not.toMatch(/filled/);
+    expect(state.action).toMatch(/spool_cap_bytes/);
+    expect(state.action).toMatch(/writes failing|remount/);
+  });
+});
+
+describe('the spool_evicted chip and banner on the agent detail page', () => {
+  // The fleet row suppresses AgentStateChip for this code (its own `lost N`
+  // chip says it more densely), so the detail page is the only consumer of
+  // stateDetailText's spool_evicted branch. Until useAgentDetail passed the
+  // eviction fields through, the page could not produce the state at all and
+  // the branch was unreachable. These tests are what make it reachable.
+  const STATE = {
+    code: 'spool_evicted',
+    ...agentStateDefinition('spool_evicted'),
+    detail: {
+      frames: 9412,
+      bytes: 33554432,
+      oldestAt: '2026-09-01T00:00:00Z',
+      newestAt: '2026-09-03T18:30:00Z',
+    },
+  };
+
+  it('names the count and the destroyed window', () => {
+    const text = stateDetailText(STATE);
+    expect(text).toMatch(/9412 observations were permanently discarded/);
+    expect(text).toMatch(/covering/);
+  });
+
+  it('states the bare count when the agent reported no window', () => {
+    // An older report can carry the count with no bounds. Inventing a window
+    // for it would be a more precise claim than the agent actually made.
+    const text = stateDetailText({ ...STATE, detail: { frames: 12 } });
+    expect(text).toBe('12 observations were permanently discarded.');
+  });
+
+  it('says nothing when there is no count to state', () => {
+    expect(stateDetailText({ ...STATE, detail: {} })).toBeNull();
+  });
+
+  it('reaches the detail chip with its reason and remedy in the accessible name', () => {
+    render(<AgentStateChip state={STATE} />);
+    const chip = document.querySelector('.fleet-chip');
+    expect(chip.getAttribute('data-tone')).toBe('critical');
+    expect(chip.textContent).toMatch(/History discarded/);
+    expect(chip.textContent).toMatch(/9412 observations were permanently discarded/);
+    expect(chip.textContent).toMatch(/spool_cap_bytes/);
+  });
+
+  it('reaches the detail page state banner as a danger tone', () => {
+    // agentState's `critical` maps onto Banner's `danger` at the boundary.
+    render(<AgentStateBanner state={STATE} />);
+    const banner = document.querySelector('.cb-banner');
+    expect(banner.getAttribute('data-tone')).toBe('danger');
+    expect(banner.textContent).toMatch(/History discarded/);
+    expect(banner.textContent).toMatch(/9412 observations were permanently discarded/);
   });
 });

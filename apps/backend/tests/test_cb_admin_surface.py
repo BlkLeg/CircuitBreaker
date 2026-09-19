@@ -16,6 +16,7 @@ re-split on whitespace, produces a command that runs and does something else.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import stat
@@ -74,18 +75,81 @@ def test_root_cli_forwards_the_admin_groups_and_their_exit_code(group, tmp_path,
     assert recorded.read_text().split("\n")[:4] == ["--admin", group, "list", "--json"]
 
 
+def _install_identity(tmp_path: Path, binary: Path) -> Path:
+    """An installed `package`-mode host, which is what the native `cb` requires.
+
+    Since the identity work in `67dbefb8`, every administration command is
+    gated on an install identity (or a legacy install.conf); without one the
+    wrapper refuses with exit 1 before it ever reaches the binary, and nothing
+    about argv or exit-code forwarding can be observed. `package` maps to
+    CB_MODE=binary, which is the branch that execs CB_BINARY directly.
+
+    `CB_IDENTITY_PATH` rather than a file under HOME: `_load_install_identity`
+    searches /etc before $HOME, so a host that happens to have Circuit Breaker
+    installed would otherwise supply its own identity to this test.
+    """
+    env_file = tmp_path / "circuit-breaker.env"
+    env_file.write_text("CB_DB_URL=postgresql://example/db\n")
+    identity = tmp_path / "install-identity.json"
+    identity.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "mode": "package",
+                "version": "0.0.0-test",
+                "installed_at": "2026-01-01T00:00:00Z",
+                "data_dir": str(tmp_path / "data"),
+                "env_file": str(env_file),
+                "cli_path": str(binary),
+            }
+        )
+    )
+    return identity
+
+
 @pytest.mark.parametrize("group", ADMIN_GROUPS)
 def test_native_cli_forwards_the_admin_groups_and_their_exit_code(group, tmp_path, fake_binary):
+    binary, recorded = fake_binary
+    identity = _install_identity(tmp_path, binary)
+
+    result = _run(
+        _NATIVE_CLI,
+        [group, "list", "--json"],
+        {
+            "CB_IDENTITY_PATH": str(identity),
+            "CB_BINARY": str(binary),
+            "HOME": str(tmp_path),
+        },
+    )
+
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert recorded.read_text().split("\n")[:4] == ["--admin", group, "list", "--json"]
+
+
+@pytest.mark.parametrize("group", ADMIN_GROUPS)
+def test_native_cli_refuses_an_admin_group_without_an_install_identity(
+    group, tmp_path, fake_binary
+):
+    """The gate itself, so the fixture above cannot quietly stop exercising it.
+
+    A host with no identity must be told so and must not reach the binary --
+    exit 1 with the repair guidance, not the binary's own status.
+    """
     binary, recorded = fake_binary
 
     result = _run(
         _NATIVE_CLI,
         [group, "list", "--json"],
-        {"CB_BIN": str(binary), "HOME": str(tmp_path)},
+        {
+            "CB_IDENTITY_PATH": str(tmp_path / "absent.json"),
+            "CB_BINARY": str(binary),
+            "HOME": str(tmp_path),
+        },
     )
 
-    assert result.returncode == 3, result.stdout + result.stderr
-    assert recorded.read_text().split("\n")[:4] == ["--admin", group, "list", "--json"]
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "requires install identity" in result.stdout + result.stderr
+    assert not recorded.exists()
 
 
 def test_arguments_with_flags_and_values_arrive_intact(tmp_path, fake_binary):

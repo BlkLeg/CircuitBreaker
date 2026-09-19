@@ -41,7 +41,7 @@ class SingleOwnerScheduler(AsyncIOScheduler):
 _scheduler = SingleOwnerScheduler()
 
 #: Catch-up window for a discovery-profile cron whose fire time was missed.
-#: Named and exported because `app.main` registers the same jobs at startup:
+#: Named and exported because `app.startup.jobs` registers the same jobs at startup:
 #: a profile that changed its catch-up behaviour the moment an unrelated
 #: profile write triggered the first reload of a process would be
 #: untraceable from the outside.
@@ -75,7 +75,7 @@ def shutdown_scheduler() -> None:
 async def run_scheduled_snapshot() -> None:
     """Scheduled wrapper for run_full_snapshot — called by APScheduler daily at 02:00.
 
-    The job body lives here; its *registration* lives in `app.main.lifespan`.
+    The job body lives here; its *registration* lives in `app.startup.jobs`.
     This function used to be registered by `reload_discovery_jobs` below, which
     runs only when an administrator writes a discovery profile — so a process
     that never saw such a write took no full-state snapshot at all, and nothing
@@ -103,22 +103,22 @@ def reload_discovery_jobs(db: Session) -> None:
     or is disabled. Register CronTrigger jobs for active profiles.
     Job IDs follow the pattern: "discovery_profile_{profile_id}"
 
-    Which profiles are due is `discovery_service.profiles_due_for_scheduling`'s
-    answer, not a query written here: Slice 4 plan §3 lets an operator pause
+    Which profiles are due is `discovery_admission.profiles_due_for_scheduling`'s
+    answer, not a query written here: an operator may pause
     automatic discovery globally, per agent or per subnet, and a pause has to be
     a decision of the discovery domain rather than of the module that turns the
     answer into `CronTrigger`s. Because this function removes every discovery job
     it owns before re-registering, withholding a profile here is the whole
     mechanism: nothing is deleted, and the profile resumes on the next reload.
     """
+    from app.services.discovery_admission import profiles_due_for_scheduling
     from app.services.discovery_scheduler import run_scan_job_by_profile
-    from app.services.discovery_service import profiles_due_for_scheduling
 
     # Remove all existing discovery jobs
     scheduler = get_scheduler()
 
-    # Only the per-profile crons. `discovery_purge` used to be removed here too,
-    # because this function also registered it — see the note below the loop.
+    # Only the per-profile crons — `discovery_purge` is not registered here;
+    # see the note below the loop.
     for job in scheduler.get_jobs():
         if job.id.startswith("discovery_profile_"):
             job.remove()
@@ -143,11 +143,11 @@ def reload_discovery_jobs(db: Session) -> None:
         except Exception as e:
             logger.error(f"Failed to schedule profile {profile.id}: {e}")
 
-    # The daily scan-result purge is **not** registered here. `app.main.lifespan`
+    # The daily scan-result purge is **not** registered here. `app.startup.jobs`
     # already registers the same callable at 03:00 under the id
-    # `purge_old_scan_results`, and this function used to add a second copy of it
-    # under the id `discovery_purge` (B43) — so every discovery-profile write left
-    # two jobs running one purge on the same trigger. `SingleOwnerScheduler` keys
+    # `purge_old_scan_results`. A second copy under the id `discovery_purge`
+    # would leave every discovery-profile write with two jobs running one purge
+    # on the same trigger. `SingleOwnerScheduler` keys
     # its advisory lock on the *job id*, so two ids are two locks: the copies did
     # not exclude each other, and the only reason the DELETE did not actually run
     # twice at once was `discovery_scheduler.purge_old_scan_results`' own inner
@@ -157,7 +157,7 @@ def reload_discovery_jobs(db: Session) -> None:
     # the duplicate becomes a genuine concurrent double purge. Do not re-add a
     # registration here: the purge has to exist on every boot, not only in the
     # stretch between a profile write and the next restart, which is the same
-    # reason the nightly snapshot moved out of this function (B09).
+    # reason the nightly snapshot moved out of this function.
 
     # Register daily aggregation rollup job
     from app.workers.rollup_worker import run_rollup_job

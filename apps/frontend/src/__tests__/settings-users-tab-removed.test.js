@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { SETTINGS_TABS } from '../components/settings/SettingsNav.jsx';
+import { SETTINGS_TABS } from '../data/settingsDestinations.js';
 import { NAV_MAP } from '../data/navigation';
 
 // Vitest serves modules through Vite, so import.meta.url is not a file: URL and

@@ -14,13 +14,25 @@
 apps/backend/.venv/
 
 # ── Runtime-generated TLS certificates ────────────────────────────────────────
-# docker/data/tls/ and docker/circuitbreaker-data/tls/ hold self-signed EC
-# certificates created on first container start by entrypoint-mono.sh:
+# Every ${CB_DATA_DIR}/tls that this repo's own tooling can create inside the
+# working tree. They hold self-signed EC certificates generated on first start:
 #   openssl req -x509 -nodes -days 365 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1
-# They are ephemeral development certificates, never committed to git (covered by
-# docker/data/ and docker/circuitbreaker-data/ rules in .gitignore).
+# by docker/entrypoint-mono.sh for the container paths and by scripts/dev-tls.sh
+# for the native ones. All are ephemeral development material, gitignored, and
+# never committed.
+#
+# The list is not left to memory: tests/build/test_secret_suppression_scope.py
+# reads the CB_DATA_DIR values out of the Makefile, the shell scripts and the
+# compose files, and fails the build if one of them has no entry here. That test
+# exists because apps/backend/.dev-data/tls/ had no entry: `make dev` writes a
+# self-signed key there, and from that moment on `make verify` failed its own
+# security gate on every run, on any machine that had started the dev stack. A
+# pre-push gate that goes red on a state the documented workflow produces is a
+# gate people learn to bypass.
 docker/data/tls/
 docker/circuitbreaker-data/tls/
+apps/backend/.dev-data/tls/
+circuitbreaker-data/tls/
 
 # ── Claude agent worktrees ────────────────────────────────────────────────────
 # .claude/worktrees/ contains agent checkout copies that duplicate source files

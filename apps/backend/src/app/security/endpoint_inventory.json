@@ -1,6 +1,6 @@
 {
   "generated_by": "apps/backend/scripts/generate_endpoint_inventory.py",
-  "route_count": 435,
+  "route_count": 476,
   "routes": [
     {
       "auth_policy": "authenticated",
@@ -145,6 +145,27 @@
       ],
       "name": "list_snapshots",
       "path": "/api/v1/admin/db/snapshots",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.diagnostics.get_diagnostics",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.diagnostics",
+      "endpoint_name": "get_diagnostics",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_diagnostics",
+      "path": "/api/v1/admin/diagnostics",
       "rbac_policy": "declared-role-or-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
@@ -650,6 +671,23 @@
       "transport": "http"
     },
     {
+      "auth_policy": "agent-download",
+      "dependency_calls": [
+        "app.api.agents.get_binary_signature"
+      ],
+      "disclosure": "detached Ed25519 signature over a versioned agent binary",
+      "endpoint_module": "app.api.agents",
+      "endpoint_name": "get_binary_signature",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_binary_signature",
+      "path": "/api/v1/agents/binary/{version}/{os_name}/{arch}.sig",
+      "rbac_policy": "none",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
       "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.agents.get_capability_defaults",
@@ -666,6 +704,90 @@
       ],
       "name": "get_capability_defaults",
       "path": "/api/v1/agents/capability-defaults",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.agents.get_endpoint_usage",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.agents",
+      "endpoint_name": "get_endpoint_usage",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_endpoint_usage",
+      "path": "/api/v1/agents/endpoint-usage",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.agents.get_enrollment_tokens",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.agents",
+      "endpoint_name": "get_enrollment_tokens",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_enrollment_tokens",
+      "path": "/api/v1/agents/enrollment-tokens",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.agents.post_enrollment_token",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.agents",
+      "endpoint_name": "post_enrollment_token",
+      "methods": [
+        "POST"
+      ],
+      "name": "post_enrollment_token",
+      "path": "/api/v1/agents/enrollment-tokens",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.agents.post_revoke_enrollment_token",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.agents",
+      "endpoint_name": "post_revoke_enrollment_token",
+      "methods": [
+        "POST"
+      ],
+      "name": "post_revoke_enrollment_token",
+      "path": "/api/v1/agents/enrollment-tokens/{token_id}/revoke",
       "rbac_policy": "declared-role-or-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
@@ -855,6 +977,69 @@
       ],
       "name": "get_server_key_rotation_status",
       "path": "/api/v1/agents/server-key/status",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.agents.get_tls_pin_pending_agents",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.agents",
+      "endpoint_name": "get_tls_pin_pending_agents",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_tls_pin_pending_agents",
+      "path": "/api/v1/agents/tls-pin/pending",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.agents.post_tls_pin_rotate",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.agents",
+      "endpoint_name": "post_tls_pin_rotate",
+      "methods": [
+        "POST"
+      ],
+      "name": "post_tls_pin_rotate",
+      "path": "/api/v1/agents/tls-pin/rotate",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.agents.get_tls_pin_rotation_status",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.agents",
+      "endpoint_name": "get_tls_pin_rotation_status",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_tls_pin_rotation_status",
+      "path": "/api/v1/agents/tls-pin/status",
       "rbac_policy": "declared-role-or-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
@@ -2445,6 +2630,26 @@
     {
       "auth_policy": "authenticated",
       "dependency_calls": [
+        "app.api.compute_units.list_compute_units_page",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.compute_units",
+      "endpoint_name": "list_compute_units_page",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_compute_units_page",
+      "path": "/api/v1/compute-units/page",
+      "rbac_policy": "authenticated-session",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
         "app.api.compute_units.delete_compute_unit",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
@@ -2547,6 +2752,47 @@
     {
       "auth_policy": "authenticated",
       "dependency_calls": [
+        "app.api.cve.update_entity_identity",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.core.security.require_write_auth",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.cve",
+      "endpoint_name": "update_entity_identity",
+      "methods": [
+        "PUT"
+      ],
+      "name": "update_entity_identity",
+      "path": "/api/v1/cve/entity/{entity_type}/{entity_id}/identity",
+      "rbac_policy": "editor-or-admin-or-write-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.cve.fleet_assessment",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.cve",
+      "endpoint_name": "fleet_assessment",
+      "methods": [
+        "GET"
+      ],
+      "name": "fleet_assessment",
+      "path": "/api/v1/cve/fleet",
+      "rbac_policy": "authenticated-session",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
         "app.api.cve.search_cves",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
@@ -2642,6 +2888,91 @@
       ],
       "name": "docker_networks",
       "path": "/api/v1/discovery/docker/networks",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.discovery.docker_run",
+        "app.core.rbac.require_scope.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.discovery",
+      "endpoint_name": "docker_run",
+      "methods": [
+        "GET"
+      ],
+      "name": "docker_run",
+      "path": "/api/v1/discovery/docker/runs/{run_id}",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.discovery.docker_sources",
+        "app.core.rbac.require_scope.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.discovery",
+      "endpoint_name": "docker_sources",
+      "methods": [
+        "GET"
+      ],
+      "name": "docker_sources",
+      "path": "/api/v1/discovery/docker/sources",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.discovery.docker_source_containers",
+        "app.core.rbac.require_scope.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.discovery",
+      "endpoint_name": "docker_source_containers",
+      "methods": [
+        "GET"
+      ],
+      "name": "docker_source_containers",
+      "path": "/api/v1/discovery/docker/sources/{source_id}/containers",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.discovery.docker_source_parent",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.rbac.require_scope.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.discovery",
+      "endpoint_name": "docker_source_parent",
+      "methods": [
+        "PATCH"
+      ],
+      "name": "docker_source_parent",
+      "path": "/api/v1/discovery/docker/sources/{source_id}/parent",
       "rbac_policy": "declared-role-or-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
@@ -3883,6 +4214,26 @@
     {
       "auth_policy": "authenticated",
       "dependency_calls": [
+        "app.api.external_nodes.list_external_nodes_page",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.external_nodes",
+      "endpoint_name": "list_external_nodes_page",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_external_nodes_page",
+      "path": "/api/v1/external-nodes/page",
+      "rbac_policy": "authenticated-session",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
         "app.api.external_nodes.delete_external_node",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
@@ -4000,6 +4351,69 @@
       "name": "list_services",
       "path": "/api/v1/external-nodes/{node_id}/services",
       "rbac_policy": "authenticated-session",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.failed_messages.list_failed_messages",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.failed_messages",
+      "endpoint_name": "list_failed_messages",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_failed_messages",
+      "path": "/api/v1/failed-messages",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.failed_messages.discard_failed_message",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.failed_messages",
+      "endpoint_name": "discard_failed_message",
+      "methods": [
+        "POST"
+      ],
+      "name": "discard_failed_message",
+      "path": "/api/v1/failed-messages/{message_id}/discard",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.failed_messages.requeue_failed_message",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.failed_messages",
+      "endpoint_name": "requeue_failed_message",
+      "methods": [
+        "POST"
+      ],
+      "name": "requeue_failed_message",
+      "path": "/api/v1/failed-messages/{message_id}/requeue",
+      "rbac_policy": "declared-role-or-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
@@ -4416,6 +4830,47 @@
     {
       "auth_policy": "authenticated",
       "dependency_calls": [
+        "app.api.hardware.list_hardware_page",
+        "app.core.rbac.require_scope.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.hardware",
+      "endpoint_name": "list_hardware_page",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_hardware_page",
+      "path": "/api/v1/hardware/page",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.telemetry.get_telemetry_batch",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.telemetry",
+      "endpoint_name": "get_telemetry_batch",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_telemetry_batch",
+      "path": "/api/v1/hardware/telemetry/batch",
+      "rbac_policy": "authenticated-session",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
         "app.api.hardware.delete_hardware",
         "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
@@ -4631,11 +5086,11 @@
     {
       "auth_policy": "health",
       "dependency_calls": [
-        "app.db.session.get_db",
-        "app.main.health"
+        "app.api.health.health",
+        "app.db.session.get_db"
       ],
       "disclosure": "bounded health state",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.health",
       "endpoint_name": "health",
       "methods": [
         "GET"
@@ -4649,11 +5104,11 @@
     {
       "auth_policy": "health",
       "dependency_calls": [
-        "app.db.session.get_db",
-        "app.main.health"
+        "app.api.health.health",
+        "app.db.session.get_db"
       ],
       "disclosure": "bounded health state",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.health",
       "endpoint_name": "health",
       "methods": [
         "HEAD"
@@ -5333,6 +5788,26 @@
     {
       "auth_policy": "authenticated",
       "dependency_calls": [
+        "app.api.intel.list_flap_incidents",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.intel",
+      "endpoint_name": "list_flap_incidents",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_flap_incidents",
+      "path": "/api/v1/intel/flap-incidents",
+      "rbac_policy": "authenticated-session",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
         "app.api.intel.list_resource_efficiency",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
@@ -5347,6 +5822,132 @@
       "name": "list_resource_efficiency",
       "path": "/api/v1/intel/resource-efficiency",
       "rbac_policy": "authenticated-session",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.inventory_transfer.export_portable_inventory",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.inventory_transfer",
+      "endpoint_name": "export_portable_inventory",
+      "methods": [
+        "GET"
+      ],
+      "name": "export_portable_inventory",
+      "path": "/api/v1/inventory-transfer/export",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.inventory_transfer.get_inventory_transfer_result",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.inventory_transfer",
+      "endpoint_name": "get_inventory_transfer_result",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_inventory_transfer_result",
+      "path": "/api/v1/inventory-transfer/operations/{operation_id}",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.inventory_transfer.apply_inventory_transfer",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.inventory_transfer",
+      "endpoint_name": "apply_inventory_transfer",
+      "methods": [
+        "POST"
+      ],
+      "name": "apply_inventory_transfer",
+      "path": "/api/v1/inventory-transfer/plans/{plan_id}/apply",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.inventory_transfer.preview_inventory_transfer",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.inventory_transfer",
+      "endpoint_name": "preview_inventory_transfer",
+      "methods": [
+        "POST"
+      ],
+      "name": "preview_inventory_transfer",
+      "path": "/api/v1/inventory-transfer/preview",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.inventory_transfer.get_inventory_transfer_summary",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.inventory_transfer",
+      "endpoint_name": "get_inventory_transfer_summary",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_inventory_transfer_summary",
+      "path": "/api/v1/inventory-transfer/summary",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.inventory.list_options",
+        "app.core.rbac.require_scope.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.inventory",
+      "endpoint_name": "list_options",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_options",
+      "path": "/api/v1/inventory/options",
+      "rbac_policy": "declared-role-or-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
@@ -5707,10 +6308,10 @@
     {
       "auth_policy": "health",
       "dependency_calls": [
-        "app.main.livez"
+        "app.api.health.livez"
       ],
       "disclosure": "process liveness and uptime",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.health",
       "endpoint_name": "livez",
       "methods": [
         "GET"
@@ -5724,10 +6325,10 @@
     {
       "auth_policy": "health",
       "dependency_calls": [
-        "app.main.livez"
+        "app.api.health.livez"
       ],
       "disclosure": "process liveness and uptime",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.health",
       "endpoint_name": "livez",
       "methods": [
         "HEAD"
@@ -6054,6 +6655,26 @@
     {
       "auth_policy": "authenticated",
       "dependency_calls": [
+        "app.api.misc.list_misc_page",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.misc",
+      "endpoint_name": "list_misc_page",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_misc_page",
+      "path": "/api/v1/misc/page",
+      "rbac_policy": "authenticated-session",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
         "app.api.misc.delete_misc_item",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
@@ -6152,6 +6773,150 @@
       "name": "create_monitor",
       "path": "/api/v1/monitors",
       "rbac_policy": "editor-or-admin-or-write-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.metric_alerts.list_metric_rules",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.metric_alerts",
+      "endpoint_name": "list_metric_rules",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_metric_rules",
+      "path": "/api/v1/monitors/alert-rules",
+      "rbac_policy": "authenticated-session",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.metric_alerts.create_metric_rule",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.metric_alerts",
+      "endpoint_name": "create_metric_rule",
+      "methods": [
+        "POST"
+      ],
+      "name": "create_metric_rule",
+      "path": "/api/v1/monitors/alert-rules",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.metric_alerts.metric_catalog",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.metric_alerts",
+      "endpoint_name": "metric_catalog",
+      "methods": [
+        "GET"
+      ],
+      "name": "metric_catalog",
+      "path": "/api/v1/monitors/alert-rules/catalog",
+      "rbac_policy": "authenticated-session",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.metric_alerts.preview_metric_rule",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.metric_alerts",
+      "endpoint_name": "preview_metric_rule",
+      "methods": [
+        "POST"
+      ],
+      "name": "preview_metric_rule",
+      "path": "/api/v1/monitors/alert-rules/preview",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.metric_alerts.delete_metric_rule",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.metric_alerts",
+      "endpoint_name": "delete_metric_rule",
+      "methods": [
+        "DELETE"
+      ],
+      "name": "delete_metric_rule",
+      "path": "/api/v1/monitors/alert-rules/{rule_id}",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.metric_alerts.get_metric_rule",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.metric_alerts",
+      "endpoint_name": "get_metric_rule",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_metric_rule",
+      "path": "/api/v1/monitors/alert-rules/{rule_id}",
+      "rbac_policy": "authenticated-session",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.metric_alerts.update_metric_rule",
+        "app.core.rbac.require_role.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.metric_alerts",
+      "endpoint_name": "update_metric_rule",
+      "methods": [
+        "PUT"
+      ],
+      "name": "update_metric_rule",
+      "path": "/api/v1/monitors/alert-rules/{rule_id}",
+      "rbac_policy": "declared-role-or-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
@@ -7114,10 +7879,10 @@
     {
       "auth_policy": "health",
       "dependency_calls": [
-        "app.main.readyz"
+        "app.api.health.readyz"
       ],
       "disclosure": "lifecycle state and ok/error per dependency",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.health",
       "endpoint_name": "readyz",
       "methods": [
         "GET"
@@ -7131,10 +7896,10 @@
     {
       "auth_policy": "health",
       "dependency_calls": [
-        "app.main.readyz"
+        "app.api.health.readyz"
       ],
       "disclosure": "lifecycle state and ok/error per dependency",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.health",
       "endpoint_name": "readyz",
       "methods": [
         "HEAD"
@@ -7149,6 +7914,7 @@
       "auth_policy": "authenticated",
       "dependency_calls": [
         "app.api.search.search",
+        "app.core.rbac.require_scope.<locals>._dep",
         "app.core.security.get_optional_user",
         "app.core.security.require_auth_always",
         "app.db.session.get_db"
@@ -7161,7 +7927,28 @@
       ],
       "name": "search",
       "path": "/api/v1/search",
-      "rbac_policy": "authenticated-session",
+      "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.search.search_page",
+        "app.core.rbac.require_scope.<locals>._dep",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.search",
+      "endpoint_name": "search_page",
+      "methods": [
+        "GET"
+      ],
+      "name": "search_page",
+      "path": "/api/v1/search/page",
+      "rbac_policy": "declared-role-or-scope",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
@@ -7242,6 +8029,26 @@
       ],
       "name": "check_service_ip",
       "path": "/api/v1/services/check-ip",
+      "rbac_policy": "authenticated-session",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.services.list_services_page",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.services",
+      "endpoint_name": "list_services_page",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_services_page",
+      "path": "/api/v1/services/page",
       "rbac_policy": "authenticated-session",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
@@ -7953,10 +8760,10 @@
     {
       "auth_policy": "health",
       "dependency_calls": [
-        "app.main.startupz"
+        "app.api.health.startupz"
       ],
       "disclosure": "lifecycle state",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.health",
       "endpoint_name": "startupz",
       "methods": [
         "GET"
@@ -7970,10 +8777,10 @@
     {
       "auth_policy": "health",
       "dependency_calls": [
-        "app.main.startupz"
+        "app.api.health.startupz"
       ],
       "disclosure": "lifecycle state",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.health",
       "endpoint_name": "startupz",
       "methods": [
         "HEAD"
@@ -8022,6 +8829,26 @@
       "name": "create_storage",
       "path": "/api/v1/storage",
       "rbac_policy": "editor-or-admin-or-write-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.storage.list_storage_page",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.storage",
+      "endpoint_name": "list_storage_page",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_storage_page",
+      "path": "/api/v1/storage/page",
+      "rbac_policy": "authenticated-session",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
@@ -8188,6 +9015,26 @@
       "name": "get_entity_telemetry",
       "path": "/api/v1/telemetry/entity/{entity_type}/{entity_id}",
       "rbac_policy": "declared-role-or-scope",
+      "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
+      "transport": "http"
+    },
+    {
+      "auth_policy": "authenticated",
+      "dependency_calls": [
+        "app.api.telemetry.get_telemetry_batch",
+        "app.core.security.get_optional_user",
+        "app.core.security.require_auth_always",
+        "app.db.session.get_db"
+      ],
+      "disclosure": "authenticated response; see route response model/schema",
+      "endpoint_module": "app.api.telemetry",
+      "endpoint_name": "get_telemetry_batch",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_telemetry_batch",
+      "path": "/api/v1/telemetry/telemetry/batch",
+      "rbac_policy": "authenticated-session",
       "tenant_policy": "single-tenant-per-deployment; tenant selectors ignored",
       "transport": "http"
     },
@@ -8809,10 +9656,10 @@
     {
       "auth_policy": "public-ui-asset",
       "dependency_calls": [
-        "app.main.favicon_file"
+        "app.api.static_spa.favicon_file"
       ],
       "disclosure": "favicon bytes",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.static_spa",
       "endpoint_name": "favicon_file",
       "methods": [
         "GET"
@@ -8826,10 +9673,10 @@
     {
       "auth_policy": "agent-download",
       "dependency_calls": [
-        "app.main.get_install_agent_script"
+        "app.api.static_spa.get_install_agent_script"
       ],
       "disclosure": "install script",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.static_spa",
       "endpoint_name": "get_install_agent_script",
       "methods": [
         "GET"
@@ -8843,10 +9690,10 @@
     {
       "auth_policy": "public-ui-asset",
       "dependency_calls": [
-        "app.main.spa_fallback"
+        "app.api.static_spa.spa_fallback"
       ],
       "disclosure": "frontend application shell",
-      "endpoint_module": "app.main",
+      "endpoint_module": "app.api.static_spa",
       "endpoint_name": "spa_fallback",
       "methods": [
         "GET"
@@ -9001,7 +9848,7 @@
         "GET",
         "HEAD"
       ],
-      "mount_class": "app.main._AcmeChallengeFiles",
+      "mount_class": "app.api.static_spa._AcmeChallengeFiles",
       "name": "acme-challenge",
       "path": "/.well-known/acme-challenge/{path:path}",
       "public_reason": "ACME HTTP-01 validation must be readable by the certificate authority before any certificate exists.",

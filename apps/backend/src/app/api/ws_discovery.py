@@ -42,22 +42,19 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
 import app.db.session as _db_session
+from app.api.ws_session import resolve_ws_session_user
 from app.core.auth_cookie import is_websocket_secure, token_from_websocket_scope, ws_require_wss
 from app.core.forwarded import client_host, forwarded_client_identity, request_from_trusted_proxy
 from app.core.rbac import require_role
-from app.core.security import decode_token
-from app.core.time import utcnow, utcnow_iso
+from app.core.time import utcnow_iso
 from app.core.ws_manager import ws_manager
-from app.db.models import User
-from app.services.settings_service import get_or_create_settings
 from app.services.stream_faults import close_stream_socket, record_stream_fault
-from app.services.user_service import is_session_revoked
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# REL-07 fault-metric identity for this stream; also the log prefix.
+# Fault-metric identity for this stream; also the log prefix.
 _COMPONENT = "ws_discovery"
 _EVENT_CHANNEL = "cb:discovery:events"
 # RFC 6455 1011 "internal error" — the server cannot fulfil the stream contract.
@@ -90,7 +87,7 @@ def trusted_ws_client_ip(websocket: WebSocket) -> str:
     peer is not one of our own proxies.
 
     This lives here, and ws_telemetry/ws_monitors/ws_topology/ws_agents import
-    it, because B24 was exactly the cost of having had five byte-identical
+    it, because the contract was exactly the cost of having had five byte-identical
     copies of the old two-line read: the first fix pass corrected two of them and
     left the /ws/monitors allowlist bypass live in the other three. Do not paste
     a sixth copy into a new stream, and do not "simplify" the body back to
@@ -175,10 +172,10 @@ async def _redis_discovery_listener(ws: WebSocket, stop_event: asyncio.Event) ->
         pass
     except Exception as exc:
         # Redis pub/sub is the *only* cross-worker delivery path for this
-        # stream. Losing it used to be a DEBUG line and a silent return, which
-        # left the socket open, pinging, and permanently empty — the client had
-        # no way to tell a quiet scan queue from a broken fan-out. Classify it,
-        # count it, and close the socket so the client reconnects (REL-07).
+        # stream. A DEBUG line and a silent return would leave the socket open,
+        # pinging, and permanently empty — the client has no way to tell a quiet
+        # scan queue from a broken fan-out. Classify it,
+        # count it, and close the socket so the client reconnects.
         record_stream_fault(
             f"{_COMPONENT}.subscribe", exc, logger=logger, context={"channel": _EVENT_CHANNEL}
         )
@@ -225,23 +222,10 @@ async def discovery_stream(websocket: WebSocket) -> None:
         user_id: int | None = None
 
         with _db_session.SessionLocal() as db:
-            cfg = get_or_create_settings(db)
-            if cfg.jwt_secret:
-                if is_session_revoked(db, raw_token):
-                    authenticated = False
-                else:
-                    uid = decode_token(raw_token, cfg.jwt_secret)
-                    if uid is not None:
-                        u = db.get(User, uid)
-                        if u and u.is_active:
-                            if not (u.locked_until and u.locked_until > utcnow()):
-                                if not (
-                                    u.role == "demo"
-                                    and u.demo_expires
-                                    and u.demo_expires <= utcnow()
-                                ):
-                                    authenticated = True
-                                    user_id = uid
+            _ws_user = resolve_ws_session_user(db, raw_token)
+            if _ws_user is not None:
+                authenticated = True
+                user_id = _ws_user.id
 
         if not authenticated:
             logger.warning("WS auth failed (ip=%s)", client_ip)

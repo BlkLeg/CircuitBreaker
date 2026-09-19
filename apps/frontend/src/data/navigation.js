@@ -11,6 +11,7 @@ import {
   KeyRound,
   Layers,
   Map,
+  PackageX,
   Satellite,
   ScanSearch,
   ScrollText,
@@ -27,15 +28,16 @@ import { guardFor } from './routeGuards';
 /**
  * The single source of navigation truth.
  *
- * Consumers: components/Header.jsx (the menu), components/MacOSDOCK.jsx (the dock),
- * components/settings/DockSettings.jsx (dock preferences), components/CommandPalette.jsx.
+ * Consumers: components/Header.jsx, components/MacOSDOCK.jsx (the dock),
+ * components/settings/DockSettings.jsx (dock preferences), and the global navigator.
  * None of them may keep its own list or its own role filter — see
- * specs/2026-08-24-navigation-ia-rework-design.md.
+ *.
  *
  * Groups follow the lifecycle of a tracked thing: it is acquired, it becomes
  * inventory, it is observed, access to it is governed. System is the app itself.
  *
  * Item fields:
+ *   id          stable semantic id; paths may gain query strings, this must not
  *   path        route path; must match a <Route path> in App.jsx
  *   icon        lucide-react component
  *   label       English default
@@ -50,18 +52,24 @@ export const NAV_GROUPS = [
     labelKey: 'header.groupAcquire',
     items: [
       {
+        id: 'discovery',
         path: '/discovery',
         icon: ScanSearch,
         label: 'Discovery',
         labelKey: 'header.discovery',
         dockDefault: true,
+        description: 'Scan the network and review discovered assets.',
+        aliases: ['scan', 'onboarding', 'import', 'find devices'],
       },
       {
+        id: 'agents',
         path: '/agents',
         icon: Satellite,
         label: 'Agents',
         labelKey: 'header.agents',
         dockDefault: true,
+        description: 'Manage collectors and their telemetry connections.',
+        aliases: ['collectors', 'probes', 'endpoints', 'telemetry'],
       },
     ],
   },
@@ -71,35 +79,71 @@ export const NAV_GROUPS = [
     labelKey: 'header.groupInventory',
     items: [
       {
+        id: 'hardware',
         path: '/hardware',
         icon: Cpu,
         label: 'Hardware',
         labelKey: 'header.hardware',
         dockDefault: true,
+        description: 'Physical servers, appliances, and devices.',
+        aliases: ['servers', 'devices', 'machines', 'inventory'],
       },
       {
+        id: 'compute',
         path: '/compute-units',
         icon: Server,
         label: 'Compute',
         labelKey: 'header.compute',
         dockDefault: true,
+        description: 'Virtual machines and compute workloads.',
+        aliases: ['vms', 'virtual machines', 'guests', 'instances'],
       },
       {
+        id: 'services',
         path: '/services',
         icon: Layers,
         label: 'Services',
         labelKey: 'header.services',
         dockDefault: true,
+        description: 'Applications and network services.',
+        aliases: ['apps', 'ports', 'daemons', 'workloads'],
       },
-      { path: '/storage', icon: HardDrive, label: 'Storage', labelKey: 'header.storage' },
       {
+        id: 'storage',
+        path: '/storage',
+        icon: HardDrive,
+        label: 'Storage',
+        labelKey: 'header.storage',
+        description: 'Volumes, shares, arrays, and storage systems.',
+        aliases: ['disks', 'nas', 'san', 'volumes'],
+      },
+      {
+        id: 'external-nodes',
         path: '/external-nodes',
         icon: Cloud,
         label: 'External Nodes',
         labelKey: 'header.externalNodes',
+        description: 'Cloud and off-network infrastructure.',
+        aliases: ['cloud', 'remote', 'external', 'saas'],
       },
-      { path: '/ipam', icon: Globe, label: 'IPAM', labelKey: 'header.ipam' },
-      { path: '/misc', icon: Boxes, label: 'Other Assets', labelKey: 'header.otherAssets' },
+      {
+        id: 'ipam',
+        path: '/ipam',
+        icon: Globe,
+        label: 'IPAM',
+        labelKey: 'header.ipam',
+        description: 'Networks, addresses, VLANs, and sites.',
+        aliases: ['network', 'subnet', 'address', 'topology'],
+      },
+      {
+        id: 'other-assets',
+        path: '/misc',
+        icon: Boxes,
+        label: 'Other Assets',
+        labelKey: 'header.otherAssets',
+        description: 'Inventory that does not fit another asset type.',
+        aliases: ['misc', 'custom assets', 'uncategorized'],
+      },
     ],
   },
   {
@@ -107,20 +151,43 @@ export const NAV_GROUPS = [
     label: 'Observe',
     labelKey: 'header.groupObserve',
     items: [
-      { path: '/map', icon: Map, label: 'Map', labelKey: 'header.map', dockDefault: true },
       {
+        id: 'map',
+        path: '/map',
+        icon: Map,
+        label: 'Map',
+        labelKey: 'header.map',
+        dockDefault: true,
+        description: 'Explore relationships in the infrastructure topology.',
+        aliases: ['topology', 'graph', 'relationships', 'network map'],
+      },
+      {
+        id: 'monitors',
         path: '/monitors',
         icon: Activity,
         label: 'Monitors',
         labelKey: 'header.monitors',
         dockDefault: true,
+        description: 'Track health, availability, and alert conditions.',
+        aliases: ['health', 'uptime', 'checks', 'alerts'],
       },
-      { path: '/intel', icon: TrendingUp, label: 'Intel', labelKey: 'header.intel' },
       {
+        id: 'intel',
+        path: '/intel',
+        icon: TrendingUp,
+        label: 'Intel',
+        labelKey: 'header.intel',
+        description: 'Review vulnerability and operational intelligence.',
+        aliases: ['cve', 'vulnerabilities', 'risk', 'security intelligence'],
+      },
+      {
+        id: 'privacy',
         path: '/privacy',
         icon: ShieldCheck,
         label: 'Privacy',
         labelKey: 'header.privacy',
+        description: 'Inspect privacy posture and exposed sensitive data.',
+        aliases: ['pii', 'sensitive data', 'exposure', 'compliance'],
       },
     ],
   },
@@ -130,41 +197,68 @@ export const NAV_GROUPS = [
     labelKey: 'header.groupGovern',
     items: [
       {
+        id: 'users',
         path: '/admin/users',
         icon: Users,
         label: 'Users',
         labelKey: 'header.users',
+        description: 'Administer users, roles, and account access.',
+        aliases: ['accounts', 'members', 'roles', 'permissions'],
       },
       {
+        id: 'access-tokens',
         path: '/admin/tokens',
         icon: KeyRound,
         label: 'Access Tokens',
         labelKey: 'header.accessTokens',
+        description: 'Create and revoke API access tokens.',
+        aliases: ['api keys', 'tokens', 'credentials', 'authentication'],
       },
       {
+        id: 'certificates',
         path: '/certificates',
         icon: Shield,
         label: 'Certificates',
         labelKey: 'header.certificates',
+        description: 'Track TLS certificates and expiration risk.',
+        aliases: ['ssl', 'tls', 'expiry', 'pki'],
       },
       {
+        id: 'notifications',
         path: '/notifications',
         icon: Bell,
         label: 'Notifications',
         labelKey: 'header.notifications',
+        description: 'Review alerts and notification delivery.',
+        aliases: ['inbox', 'alerts', 'messages', 'delivery'],
       },
       {
+        id: 'logs',
         path: '/logs',
         icon: ScrollText,
         label: 'Logs',
         labelKey: 'header.logs',
         dockDefault: true,
+        description: 'Search application and infrastructure events.',
+        aliases: ['events', 'activity', 'system logs', 'troubleshooting'],
       },
       {
+        id: 'audit-log',
         path: '/logs/audit',
         icon: FileClock,
         label: 'Audit Log',
         labelKey: 'header.auditLog',
+        description: 'Review security-sensitive administrative activity.',
+        aliases: ['audit', 'history', 'changes', 'compliance'],
+      },
+      {
+        id: 'parked-messages',
+        path: '/logs/parked',
+        icon: PackageX,
+        label: 'Parked Messages',
+        labelKey: 'header.parkedMessages',
+        description: 'Recover or abandon work the message bus could not deliver.',
+        aliases: ['dead letter', 'dlq', 'jetstream', 'poison', 'requeue', 'stuck', 'nats'],
       },
     ],
   },
@@ -174,13 +268,33 @@ export const NAV_GROUPS = [
     labelKey: 'header.groupSystem',
     items: [
       {
+        id: 'settings',
         path: '/settings',
         icon: Settings,
         label: 'Settings',
         labelKey: 'header.settings',
         dockDefault: true,
+        description: 'Configure Circuit Breaker and integrations.',
+        aliases: [
+          'preferences',
+          'configuration',
+          'options',
+          'setup',
+          'inventory transfer',
+          'data management',
+          'import inventory',
+          'export inventory',
+        ],
       },
-      { path: '/docs', icon: BookOpen, label: 'Docs', labelKey: 'header.docs' },
+      {
+        id: 'docs',
+        path: '/docs',
+        icon: BookOpen,
+        label: 'Docs',
+        labelKey: 'header.docs',
+        description: 'Read product guidance and API documentation.',
+        aliases: ['documentation', 'help', 'guide', 'reference'],
+      },
     ],
   },
 ];
@@ -201,8 +315,8 @@ const NAV_GROUP_OF = Object.fromEntries(
 /**
  * NAV_MAP lookup for a path that came from outside the code — a stored `dock_order`, a
  * URL. Both maps are plain objects, so a bare `NAV_MAP[path]` resolves `constructor` or
- * `toString` to a truthy function whose `.path` is undefined; the dock used to crash the
- * whole app on that. Every consumer of an untrusted path goes through here, which is also
+ * `toString` to a truthy function whose `.path` is undefined, which crashes the whole
+ * app. Every consumer of an untrusted path goes through here, which is also
  * why the object-injection suppression exists once rather than at each call site.
  */
 export function navItem(path) {
@@ -220,8 +334,7 @@ export function navGroupOf(path) {
 export const DEFAULT_DOCK_ITEMS = NAV_ITEMS_FLAT.filter((i) => i.dockDefault).map((i) => i.path);
 
 /**
- * The dock as it shipped before this rework — the old ORIGINAL_DOCK_ORDER minus the
- * dead /networks entry. Migration input only: it is what an install that predates
+ * The dock as it shipped, minus the dead /networks entry. Migration input only: it is what an install that predates
  * `dock_order` gets, so upgrading never silently removes icons. Delete this once
  * every install has written `dock_order` at least once.
  */

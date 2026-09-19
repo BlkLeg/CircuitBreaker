@@ -6,11 +6,12 @@ import EntityTable from '../EntityTable';
 import SearchBox from '../SearchBox';
 import TagFilter from '../TagFilter';
 import TagsCell from '../TagsCell';
-import { hardwareApi, computeUnitsApi, tagsApi } from '../../api/client';
+import { hardwareApi, computeUnitsApi, networksApi, tagsApi } from '../../api/client';
 import NetworkDetail from '../details/NetworkDetail';
 import FormModal from '../common/FormModal';
 import ConfirmDialog from '../common/ConfirmDialog';
 import { useToast } from '../common/Toast';
+import { useEntityDeepLink } from '../../hooks/useEntityDeepLink';
 
 function NetworksTab({ networks, sites, loading, onCreate, onUpdate, onDelete }) {
   const toast = useToast();
@@ -26,6 +27,16 @@ function NetworksTab({ networks, sites, loading, onCreate, onUpdate, onDelete })
   const [selectedIds, setSelectedIds] = useState([]);
   const [allTags, setAllTags] = useState([]);
   const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
+
+  const loadDeepLinkedEntity = useCallback(async (id) => (await networksApi.get(id)).data, []);
+  const selectDetail = useCallback((entity) => setDetailTarget(entity), []);
+  const reportDeepLinkError = useCallback((message) => toast.error(message), [toast]);
+  const { openEntity, closeEntity } = useEntityDeepLink({
+    loadEntity: loadDeepLinkedEntity,
+    selectedId: detailTarget?.id,
+    onSelect: selectDetail,
+    onError: reportDeepLinkError,
+  });
 
   const fetchHardware = useCallback(async () => {
     try {
@@ -281,7 +292,7 @@ function NetworksTab({ networks, sites, loading, onCreate, onUpdate, onDelete })
             setShowForm(true);
           }}
           onDelete={(row) => handleDelete(row.id)}
-          onRowClick={(row) => setDetailTarget(row)}
+          onRowClick={openEntity}
           onCellSave={handleCellSave}
           selectedIds={selectedIds}
           onSelectionChange={setSelectedIds}
@@ -292,9 +303,10 @@ function NetworksTab({ networks, sites, loading, onCreate, onUpdate, onDelete })
       {detailTarget && (
         <NetworkDetail
           network={detailTarget}
+          isOpen={!!detailTarget}
           hardware={hardware}
           computeUnits={computeUnits}
-          onClose={() => setDetailTarget(null)}
+          onClose={closeEntity}
         />
       )}
 

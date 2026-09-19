@@ -44,7 +44,7 @@ def _system_ping(host: str, timeout: float) -> float | None | Any:
         return _PROBE_UNAVAILABLE
     wait = max(1, round(timeout))
     try:
-        proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        proc = subprocess.run(  # fixed argv, no shell
             ["ping", "-n", "-c", "1", "-W", str(wait), host],
             capture_output=True,
             text=True,

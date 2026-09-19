@@ -18,7 +18,7 @@ import LatencyChart from '../components/monitors/LatencyChart';
 import StatusPill from '../components/monitors/StatusPill';
 
 /**
- * The observed-coverage caveat under an uptime percentage (D-12).
+ * The observed-coverage caveat under an uptime percentage.
  *
  * A vantage that could not run a check writes no availability sample, so hours
  * it was gone shrink the denominator rather than counting as downtime. Rendered
@@ -86,7 +86,7 @@ export default function MonitorDetailPage() {
   const probeAgentId = monitor.probe_agent_id ?? null;
   const probeAgentName =
     monitor.probe_agent?.name || (probeAgentId ? `agent ${probeAgentId}` : null);
-  // §7: the execution condition is reported beside the target state, never
+  // The execution condition is reported beside the target state, never
   // folded into it — the pill above still shows the last target state.
   const executionStatus = probeAgentId == null ? null : monitor.probe_execution_status || 'unknown';
 

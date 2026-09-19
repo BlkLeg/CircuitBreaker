@@ -1,11 +1,13 @@
-"""Generates install-agent.sh and the two curl command forms shown in-app
-(spec §2.3). No secret is embedded — only the server's public identity."""
+"""Generates install-agent.sh and the two curl command forms shown in-app. No secret is embedded —
+only the server's public identity."""
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import shlex
 from pathlib import Path
+from urllib.parse import quote
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -46,6 +48,18 @@ cb_curl() {{
   fi
 }}
 
+# Reachability preflight. The server cannot test this for us: it never connects
+# to an agent, so the first machine that can answer "is this address reachable
+# from here?" is this one. Failing here, before a user or a systemd unit exists,
+# means a wrong CB_SERVER_URL costs nothing and says so precisely.
+if ! cb_curl "${{CB_SERVER_URL}}/api/v1/health" >/dev/null 2>&1; then
+  echo "Cannot reach ${{CB_SERVER_URL}} from this machine." >&2
+  echo "The agent would dial that address forever and never appear in the UI." >&2
+  echo "Check that the address is correct for THIS network, that DNS resolves" >&2
+  echo "it here, and that outbound HTTPS to it is permitted." >&2
+  exit 1
+fi
+
 if ! id cb-agent >/dev/null 2>&1; then
   useradd --system --no-create-home --shell /usr/sbin/nologin cb-agent
 fi
@@ -59,13 +73,88 @@ esac
 
 {binary_digest_cases}
 
-TMP_BIN="$(mktemp)"
+# Staging directory for the binary download. Deliberately not /tmp first: on a
+# real host /tmp is routinely a small tmpfs, and the systemd unit below adds a
+# RAM-backed one of its own via PrivateTmp=, so a full /tmp failed this install
+# with whatever error curl happened to produce -- naming neither the filesystem
+# nor the fix. The agent's own directory leads instead. It is real disk, and it
+# is the same filesystem as the install target below, which makes that `install`
+# a rename rather than a cross-mount copy.
+#
+# Each candidate must exist or be creatable, accept a write, and -- where df can
+# answer -- have room. CB_AGENT_DOWNLOAD_DIR is the way out for a host whose
+# /var/lib is the constrained filesystem; the last two are the general fallback
+# for a host that cannot write its own state directory at all.
+#
+# CB_STATE_DIR defaults to the real path and exists so the installer's tests can
+# point this block at a scratch directory. It is not an operator knob.
+CB_STAGE_MIN_KB=65536
+cb_stage_reasons=""
+CB_STAGE_DIR=""
+cb_stage_skip() {{
+  cb_stage_reasons="${{cb_stage_reasons}}  $1
+"
+}}
+for cb_candidate in \
+  "${{CB_AGENT_DOWNLOAD_DIR:-}}" \
+  "${{CB_STATE_DIR:-/var/lib/cb-agent}}/.staging" \
+  "${{TMPDIR:-}}" \
+  /tmp \
+  /var/tmp
+do
+  [ -n "$cb_candidate" ] || continue
+  if ! mkdir -p "$cb_candidate" 2>/dev/null; then
+    cb_stage_skip "$cb_candidate: cannot be created"
+    continue
+  fi
+  # mktemp rather than a fixed probe name: /tmp and /var/tmp are world-writable
+  # and this runs as root, so a name another user can predict is a name they can
+  # pre-create as a symlink onto a file this would then truncate.
+  if ! cb_probe="$(mktemp "$cb_candidate/.cb-write-probe.XXXXXX" 2>/dev/null)"; then
+    cb_stage_skip "$cb_candidate: not writable"
+    continue
+  fi
+  rm -f "$cb_probe"
+  # The probe proves permission, not room -- a filesystem with one byte free
+  # still accepts an empty file. A df that cannot answer (busybox, a stripped
+  # image, an unusual mount) is a reason to proceed on the probe alone rather
+  # than to refuse, so an unparseable answer is treated as no answer.
+  cb_free_kb="$(df -Pk "$cb_candidate" 2>/dev/null | awk 'NR==2 {{print $4}}')"
+  case "$cb_free_kb" in
+    ''|*[!0-9]*) cb_free_kb="" ;;
+  esac
+  if [ -n "$cb_free_kb" ] && [ "$cb_free_kb" -lt "$CB_STAGE_MIN_KB" ]; then
+    cb_stage_skip "$cb_candidate: ${{cb_free_kb}} KB free, needs ${{CB_STAGE_MIN_KB}} KB"
+    continue
+  fi
+  CB_STAGE_DIR="$cb_candidate"
+  break
+done
+if [ -z "$CB_STAGE_DIR" ]; then
+  echo "No directory can hold the agent binary download (${{CB_STAGE_MIN_KB}} KB needed):" >&2
+  printf '%s' "$cb_stage_reasons" >&2
+  echo "Free space on one of them, or re-run with CB_AGENT_DOWNLOAD_DIR set to a" >&2
+  echo "directory that has room." >&2
+  exit 1
+fi
+
+TMP_BIN="$(mktemp "$CB_STAGE_DIR/cb-agent-download.XXXXXX")"
+# The staging directory outlives this script, so a download abandoned by an
+# interrupted install is nobody else's to clean up.
+trap 'rm -f "$TMP_BIN"' EXIT INT TERM
 CB_BINARY_URL="${{CB_SERVER_URL}}/api/v1/agents/binary/{latest_version}/linux/${{CB_ARCH}}"
 cb_curl "$CB_BINARY_URL" -o "$TMP_BIN"
 echo "${{CB_BINARY_SHA256}}  ${{TMP_BIN}}" | sha256sum -c
 
 mkdir -p /etc/circuit-breaker /var/lib/cb-agent
 chown cb-agent:cb-agent /var/lib/cb-agent
+# The agent stages its own update downloads in the same directory (see
+# internal/update's scratchCandidates). Created above as root, it would be
+# unwritable by cb-agent, and every future update would silently fall back to
+# the tmpfs this staging block exists to avoid.
+if [ -d "${{CB_STATE_DIR:-/var/lib/cb-agent}}/.staging" ]; then
+  chown cb-agent:cb-agent "${{CB_STATE_DIR:-/var/lib/cb-agent}}/.staging" || true
+fi
 install -d -m 0755 -o cb-agent -g cb-agent "/var/lib/cb-agent/versions/{latest_version}"
 install -m 0755 -o cb-agent -g cb-agent "$TMP_BIN" \
   "/var/lib/cb-agent/versions/{latest_version}/cb-agent"
@@ -80,6 +169,26 @@ tls_pin = "${{CB_TLS_PIN}}"
 log_level = "info"
 spool_cap_bytes = 67108864
 EOF
+
+# Enrollment token (optional). Supplied through the environment, never as a
+# script argument: argv is visible in `ps` and lands in shell history and
+# cloud-init logs. It is also never rendered into this script, which is served
+# by an unauthenticated route -- baking it in would publish it to anyone who
+# can reach the server. The agent unlinks the file after a successful enroll;
+# a spent token left on disk is a stale secret with no purpose.
+#
+# CB_CONF_DIR defaults to the real path and exists so the installer's tests can
+# point this block at a scratch directory. It is not an operator knob.
+if [ -n "${{CB_ENROLL_TOKEN:-}}" ]; then
+  cb_token_file="${{CB_CONF_DIR:-/etc/circuit-breaker}}/enroll-token"
+  (umask 077 && printf '%s\n' "${{CB_ENROLL_TOKEN}}" > "$cb_token_file")
+  chmod 600 "$cb_token_file"
+  # `|| true` because `set -e` is on and the install must not die over
+  # ownership: the file is already mode 0600 and root-owned, which the agent
+  # can still read.
+  chown cb-agent:cb-agent "$cb_token_file" 2>/dev/null || true
+  echo "enrollment token installed -- this agent will enroll unattended"
+fi
 
 if command -v docker >/dev/null 2>&1; then
   usermod -aG docker cb-agent || true
@@ -153,6 +262,23 @@ ReadWritePaths=/var/lib/cb-agent
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# A staging directory the operator named at install time is one the agent needs
+# at update time too -- its own downloads go to the same place. Two directives,
+# both required: Environment= tells the agent where, and ReadWritePaths= is what
+# lets it write there at all, since ProtectSystem=strict above makes everything
+# outside /var/lib/cb-agent read-only. With only the first, the agent would find
+# the directory unwritable and fall back to the tmpfs this staging work exists
+# to avoid -- silently, which is the failure mode that started all of this.
+#
+# CB_UNIT_DIR defaults to the real path and exists so the installer's tests can
+# point this block at a scratch directory. It is not an operator knob.
+if [ -n "${{CB_AGENT_DOWNLOAD_DIR:-}}" ]; then
+  mkdir -p "${{CB_UNIT_DIR:-/etc/systemd/system}}/cb-agent.service.d"
+  printf '[Service]\nEnvironment=CB_AGENT_DOWNLOAD_DIR=%s\nReadWritePaths=%s\n' \
+    "${{CB_AGENT_DOWNLOAD_DIR}}" "${{CB_AGENT_DOWNLOAD_DIR}}" \
+    > "${{CB_UNIT_DIR:-/etc/systemd/system}}/cb-agent.service.d/10-download-dir.conf"
+fi
 systemctl daemon-reload
 
 echo "Enrolling — compare the fingerprint below against the one shown in the approval screen."
@@ -235,6 +361,75 @@ def _tls_mode_and_pin(cert: Certificate | None) -> tuple[str, str]:
     )
 
 
+def tls_policy_for_certificate(cert: Certificate) -> tuple[str, str]:
+    """The wire trust policy `cert` implies, derived from the row alone.
+
+    Deliberately *not* `_tls_mode_and_pin`. That function prefers the live
+    nginx certificate over the row it is handed, which is right for the
+    install command — a new agent must be given the pin its very next
+    handshake will see. It is wrong for a successor: on any real install
+    `{CB_DATA_DIR}/tls/fullchain.pem` exists, so deriving a slice 4.1
+    successor through it would advertise the pin the fleet already trusts.
+    Every agent would report convergence on a policy nothing changed, and
+    the activation gate would wave through the cutover that strands them.
+
+    Lives here rather than in `agent_tls_pin` so the DB `type` -> wire mode
+    mapping ("selfsigned" -> "self_signed", "letsencrypt" -> "public") has
+    exactly one implementation, next to the other one that needs it.
+    """
+    if cert.type == "letsencrypt":
+        return "public", ""
+    return "self_signed", _spki_pin(cert.cert_pem)
+
+
+def served_tls_policy() -> tuple[str, str] | None:
+    """The wire trust policy nginx is presenting right now, or None when this
+    install serves no certificate yet.
+
+    Read from the live file rather than the `Certificate` table because that
+    is what an agent's handshake actually sees — `_live_nginx_cert_pem`'s
+    docstring has the full reason. None is a real answer, not an error: an
+    install with nothing on disk has no policy for an agent to have pinned.
+
+    The mode is reported as "self_signed" for anything on disk. This function
+    cannot tell a publicly-trusted leaf from a self-signed one by inspection,
+    and it does not need to: its only caller compares the *pin*, and two
+    certificates with the same SPKI digest are the same trust decision
+    whatever issued them.
+    """
+    pem = _live_nginx_cert_pem()
+    if pem is None:
+        return None
+    return "self_signed", _spki_pin(pem)
+
+
+def served_trust_policy(db: Session) -> tuple[str, str] | None:
+    """The trust policy the fleet is actually operating under, or None when
+    this install serves no certificate yet.
+
+    `served_tls_policy` reads the bytes on disk, which is what an agent's
+    handshake sees — but it cannot tell a publicly-trusted leaf from a
+    self-signed one by inspection, so it reports "self_signed" for both. That
+    is the right conservative answer for comparing a *pin* and the wrong one
+    for comparing a *mode*: an agent enrolled against a Let's Encrypt server
+    is in "public" mode and pins nothing, so a renewal changes nothing it
+    verifies. Reading the mode off disk called every such renewal a trust
+    change, which made `activation_block_reason` refuse an activation its own
+    docstring lists as always safe.
+
+    The mode comes from the active `Certificate` row, because that is the
+    server's own record of what it advertised to the fleet. The pin still
+    comes from the live file: when the two disagree the bytes win, since the
+    bytes are what an agent checks.
+    """
+    served = served_tls_policy()
+    if served is None:
+        return None
+    active = db.execute(select(Certificate).filter(Certificate.is_active)).scalars().first()
+    mode = "public" if active is not None and active.type == "letsencrypt" else "self_signed"
+    return mode, served[1]
+
+
 def render_install_script(
     *,
     server_url: str,
@@ -269,8 +464,36 @@ def render_install_script(
     )
 
 
-def build_install_command(db: Session, server_url: str) -> InstallCommandResponse:
-    # Task 28: once a server-key rotation has begun, a freshly generated
+def _script_download_arg(server_url: str, endpoint_id: str | None) -> str:
+    """The `/install-agent.sh` URL as it appears in the emitted command.
+
+    The id is *only* a link-builder here: `server_url` still decides the
+    address, exactly as it did before. But the command is run on the target
+    machine, and that machine's curl is the only thing `/install-agent.sh`
+    ever sees — so without `?endpoint=<id>` on this URL the route takes its
+    "absent" branch and re-derives the address from `forwarded_base_url`,
+    which is the derivation the endpoint feature exists to eliminate (design
+    the contract). It also breaks the published `script_sha256`, since that digest is
+    computed over the endpoint variant while the download would be the
+    fallback one.
+
+    Shell-quoted, because `?` is a glob character. `shlex.quote` leaves an
+    ordinary URL untouched, so a command with no endpoint is byte-identical
+    to what shipped before endpoints existed.
+    """
+    url = f"{server_url}/install-agent.sh"
+    if endpoint_id is not None:
+        url = f"{url}?endpoint={quote(endpoint_id, safe='')}"
+    return shlex.quote(url)
+
+
+def build_install_command(
+    db: Session,
+    server_url: str,
+    endpoint_id: str | None = None,
+    enroll_token: str | None = None,
+) -> InstallCommandResponse:
+    # Once a server-key rotation has begun, a freshly generated
     # install prefers the successor identity key over the current one — it's
     # the key this install will still be valid under once the current key is
     # retired at the end of the overlap window (agent_crypto.
@@ -291,20 +514,41 @@ def build_install_command(db: Session, server_url: str) -> InstallCommandRespons
         manifest=manifest,
     )
     script_sha256 = hashlib.sha256(script.encode()).hexdigest()
+    download = _script_download_arg(server_url, endpoint_id)
+
+    # Slice B: an enrollment token rides in the *environment* of the shell that
+    # runs the script — never in argv, which is visible in `ps` and lands in
+    # shell history and cloud-init logs, and never in the script itself, which
+    # an unauthenticated route serves. `sudo -E` because sudo scrubs the
+    # environment by default; without it the assignment is silently dropped and
+    # every unattended install quietly falls back to waiting for a human.
+    # Shell-quoted so the command cannot be broken out of by a value it did not
+    # mint. With no token the two strings are what shipped, byte for byte.
+    prefix = f"CB_ENROLL_TOKEN={shlex.quote(enroll_token)} " if enroll_token else ""
+    run_sh = "sudo -E sh" if enroll_token else "sudo sh"
 
     if tls_mode == "public":
-        command = f"curl -fsSL {server_url}/install-agent.sh | sudo sh"
+        command = f"curl -fsSL {download} | {prefix}{run_sh}"
     else:
         # --pinnedpubkey is what actually verifies this fetch (curl enforces it
         # even alongside -k, which is only here because the chain cannot
         # validate). The digest check below stays as an independent second
         # check rather than, as before, the only thing between -k and a
         # MITM'd installer.
+        # Staged through one shell variable rather than three copies of a
+        # hardcoded /tmp path. /tmp is frequently a small tmpfs and is the
+        # first filesystem on a host to fill, which is how an agent install
+        # came to fail with an error naming neither the filesystem nor the
+        # fix; /var/tmp is persistent storage and is not swept mid-boot.
+        # TMPDIR still wins, because the operator knows where their host has
+        # room. One variable also means the file downloaded, the file whose
+        # digest is checked and the file executed cannot drift apart.
         command = (
+            'cb_installer="${TMPDIR:-/var/tmp}/cb-agent-install.sh"; '
             f'curl -fsSL --insecure --pinnedpubkey "sha256//{tls_pin}" '
-            f"{server_url}/install-agent.sh -o /tmp/cb-agent-install.sh && "
-            f'echo "{script_sha256}  /tmp/cb-agent-install.sh" | sha256sum -c && '
-            f"sudo sh /tmp/cb-agent-install.sh"
+            f'{download} -o "$cb_installer" && '
+            f'echo "{script_sha256}  $cb_installer" | sha256sum -c && '
+            f'{prefix}{run_sh} "$cb_installer"'
         )
 
     return InstallCommandResponse(tls_mode=tls_mode, command=command, script_sha256=script_sha256)

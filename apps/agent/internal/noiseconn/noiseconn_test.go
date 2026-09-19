@@ -22,7 +22,7 @@ func generateKeypair(t *testing.T) (priv, pub [32]byte) {
 
 // newTestResponder builds a bare noise.HandshakeState in the responder role,
 // standing in for the Python agent_crypto.NoiseIKResponder this initiator
-// will really talk to (proven in Task 10's cross-language conformance test).
+// will really talk to (proven in the cross-language conformance test).
 func newTestResponder(t *testing.T, priv, pub [32]byte) *noise.HandshakeState {
 	t.Helper()
 	cs := noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
@@ -75,7 +75,7 @@ func TestInitiator_CompletesHandshakeAndExchangesTransportMessage(t *testing.T) 
 	// error, swap which of respSend/respRecv is used here — the flynn/noise
 	// c1/c2 return order needs confirming against the installed version,
 	// exactly as app.core.agent_crypto's dissononce equivalent does on the
-	// Python side (Task 2, Step 6's note).
+	// Python side.
 	if err != nil {
 		t.Fatalf("responder decrypt error = %v", err)
 	}

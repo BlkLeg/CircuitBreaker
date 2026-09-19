@@ -1,36 +1,27 @@
 /**
  * Everything the agent surfaces are allowed to SAY about a failure (AGT-15).
  *
- * The requirement has two halves and they pull in opposite directions:
- * install and enrollment errors must be *actionable*, and they must not expose
- * keys or protocol internals. Passing the server's text straight through
- * satisfies the first and abandons the second; replacing it with "an error
- * occurred" does the reverse. This module is the place the trade is made once,
- * so no individual component has to get it right on its own.
+ * Two requirements pull in opposite directions: install and enrollment errors
+ * must be ACTIONABLE, and must not expose keys or protocol internals. The trade
+ * is made once here so no component has to get it right alone.
  *
- * Two mechanisms, in this order, because the second alone is not enough:
+ * Two mechanisms, because the second alone is not enough:
  *
- *  1. **Allow-list the shape.** `describeAgentEvent` renders an
- *     `agent_events.detail` blob by naming the keys it is willing to show, per
- *     event type. Anything else is dropped without being inspected. This is
- *     structural: a key added to a backend payload later cannot appear on
- *     screen by default, so the UI cannot be made to leak by a change made
- *     somewhere else. The Events list on Agent Detail previously rendered
- *     `JSON.stringify(e.detail)` — which put `frame_type`, `seq`, `last_seq`
- *     and raw validation-error strings from the wire in front of the operator,
- *     the exact "protocol internals" the requirement rules out.
+ *  1. Allow-list the shape. `describeAgentEvent` names the keys it will show per
+ *     event type and drops everything else uninspected. This is structural: a
+ *     key added to a backend payload later cannot reach the screen by default,
+ *     so the UI cannot be made to leak by a change made elsewhere. A
+ *     `JSON.stringify(detail)` here puts `frame_type`, `seq` and raw wire
+ *     validation strings in front of the operator.
  *
- *  2. **Redact the values.** `redactSensitive` scrubs secret-shaped substrings
- *     out of any free text that does get rendered — server `detail` strings,
- *     a collector's own reason, an agent-authored update error. The allow-list
- *     decides *whether* text is shown; this decides what may be inside it.
+ *  2. Redact the values. `redactSensitive` scrubs secret-shaped substrings from
+ *     any free text that is rendered. The allow-list decides WHETHER text is
+ *     shown; this decides what may be inside it.
  *
- * Deliberately NOT redacted: the 32-hex agent fingerprint. It is public
- * identity material, it is what an operator compares against the string the
- * agent printed on the machine, and blurring it would break the one control
- * that stops an impostor being approved. Key material is 64 hex (an X25519
- * public key) and is redacted; the threshold between the two is stated in
- * SECRET_HEX_MIN_LENGTH below.
+ * Deliberately NOT redacted: the 32-hex agent fingerprint. It is public identity
+ * material and what an operator compares against the string the agent printed,
+ * so blurring it would break the one control that stops an impostor being
+ * approved. Key material is 64 hex and IS redacted; see SECRET_HEX_MIN_LENGTH.
  */
 
 // A fingerprint is 32 hex (sha256[:32]); a device or server public key is 64.
@@ -193,11 +184,9 @@ const HTTP_UNAVAILABLE = 503;
  * operator can act on, without echoing anything they should not see.
  *
  * The server's own `detail` is preferred where it exists, because on this path
- * it is written to be actionable (an unreadable TLS certificate names the file
- * and the chmod that fixes it). It is redacted on the way through rather than
- * trusted: this function has no way to know that every future 503 on this route
- * will be as careful, and a UI that depends on the server never making a
- * mistake is one change away from leaking.
+ * it is written to be actionable. It is redacted on the way through rather than
+ * trusted: a UI that depends on the server never making a mistake is one change
+ * away from leaking.
  *
  * @param {*} error axios error
  * @param {{fallback: string, forbidden?: string}} copy

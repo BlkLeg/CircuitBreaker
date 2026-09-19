@@ -11,7 +11,7 @@ discovery is silently not running". It is the wrong reading, and the consumer
 body is what settles it: the handler ran masscan, then nmap, and then
 **discarded both results**. No `ScanResult` row, no `ScanJob` transition, no
 broadcast — nothing a scan is for. It was never the other half of anything.
-Scheduled discovery runs through `discovery_service.execute_scan_job`, which
+Scheduled discovery runs through `discovery_dispatch.execute_scan_job`, which
 either scans from the server (`run_scan_job`) or dispatches to an agent
 (`agent_discovery.dispatch_discovery_job`); both are wired, tested and
 unrelated to this queue.
@@ -204,6 +204,13 @@ def test_no_publisher_exists_for_the_subject_the_worker_consumes() -> None:
             "--exclude-dir=.venv",
             "--exclude-dir=node_modules",
             "--exclude-dir=.git",
+            # Registered git worktrees live under .claude/ and hold FULL
+            # copies of the source tree, so without this the scan reports
+            # workers/discovery.py once per worktree — as a "publisher",
+            # against paths that are not this checkout. Unrelated to slice
+            # 4.x; the same hazard is why the Phase 4 ratchets ask git what
+            # is tracked instead of walking the filesystem.
+            "--exclude-dir=.claude",
             '"discovery.jobs"',
             str(_REPO),
         ],

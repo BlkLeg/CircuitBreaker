@@ -37,10 +37,13 @@ full-instance backup; use the full-state snapshot for that.
 
 1. Open **Settings**.
 2. Go to the **System** tab.
-3. In the **Data Management** section, find **Full Backup**.
-4. Click **Download Backup** and save the file somewhere safe.
+3. In the **Data Management** section, open **Inventory transfer → Export & recovery**.
+4. Under **Portable inventory export**, review what the file includes and excludes, then click
+   **Export inventory** and save it somewhere safe.
 
-The equivalent API call is `GET /api/v1/admin/export`, which requires the **admin** role.
+The file is named `circuit-breaker-inventory-<date>.json`. The equivalent API call is
+`GET /api/v1/inventory-transfer/export`, which requires the **admin** role. The older
+`GET /api/v1/admin/export` still returns the same legacy v2 shape for existing callers.
 
 Tip: keep date-stamped backups so you can roll back to a known point in time.
 
@@ -48,7 +51,18 @@ Tip: keep date-stamped backups so you can roll back to a known point in time.
 
 ## Import a Backup
 
-Import is **API-only in this release** — there is no import control in the UI.
+There are two import paths, and they are not interchangeable:
+
+- **Previewed inventory merge (the UI path).** Settings → System → Data Management →
+  Inventory transfer validates the file, shows every conflict for a decision, previews the
+  exact changes, and applies them in one transaction. See
+  [Portable Inventory Transfer](#portable-inventory-transfer).
+- **Legacy `/admin/import` (API compatibility surface).** Accepts the exported document
+  directly, upserting by primary key. It exists for existing API callers, not for moving
+  another lab into this instance, and its `wipe_before_import` mode stays gated behind the
+  confirmation headers below. The transfer UI never calls it.
+
+### Legacy endpoint
 
 `POST /api/v1/admin/import` accepts the exported document and requires the **admin** role:
 
@@ -74,6 +88,37 @@ to the audit log:
 | `x-cb-backup-verified` | `true` |
 
 Only set `wipe_before_import` when you intentionally want to remove current data before restoring.
+
+---
+
+## Portable Inventory Transfer
+
+The Inventory transfer screen (Settings → System → Data Management) is the supported way to
+bring a lab — yours or someone else's — into this instance. It is a merge, and only a merge:
+
+- **Validate.** The file must be a portable inventory document
+  (`format: "circuitbreaker.inventory"`, `version: 1`). Legacy v2 exports from earlier
+  releases are accepted through an explicit adapter; anything else — unknown fields,
+  unsupported versions, oversized files — changes nothing.
+- **Resolve.** Identity collisions (a local record with the same slug or name) are never
+  decided for you: keep both by renaming the incoming record, or explicitly match the
+  existing one. References to a host that is not in the file can be assigned to an existing
+  local record. Primary-key equality is never proof of identity — incoming IDs are always
+  remapped to fresh local IDs.
+- **Review.** The preview states exactly what will happen — new records, matched records,
+  relationships — and the confirmation binds it: if the inventory changes underneath, the
+  preview is rejected and offered for re-review instead of silently re-planning.
+- **Apply.** One transaction, guarded by an idempotency key: retrying or double-clicking
+  cannot import the lab twice, and a mid-apply failure rolls back completely.
+
+The API behind it (`/api/v1/inventory-transfer`) exposes the same flow:
+`POST /preview`, `POST /plans/{plan_id}/apply` with an `Idempotency-Key` header, and
+`GET /operations/{operation_id}` for the stored result. A portable export never contains
+users, sessions, tokens, credentials, instance settings, operational history, telemetry,
+map layouts, or uploaded files — the manifest inside the file says exactly what is in it.
+
+Replacement (wipe-and-restore) is **not** an import mode. Whole-instance recovery is the
+offline restore workflow below.
 
 ---
 

@@ -33,7 +33,7 @@ const (
 	ErrorCodeQueueFull             = "queue_full"
 )
 
-// Errors Request returns. They are sentinels because link logs them and Task 14's daemon wiring
+// Errors Request returns. They are sentinels because link logs them and the daemon wiring
 // distinguishes them; except for the two below that cannot be reported any other way, the
 // corresponding terminal summary is emitted regardless, so no caller has to translate one into a
 // frame.
@@ -85,7 +85,7 @@ type RuntimeOptions struct {
 	Now func() time.Time
 }
 
-// Runtime owns one agent's discovery execution (plan §4).
+// Runtime owns one agent's discovery execution.
 //
 // The shape differs from probe.Runtime in the one way that matters: a probe assignment produces
 // exactly one result, while a dispatch produces N host findings *plus* exactly one terminal
@@ -163,7 +163,7 @@ type scanResult struct {
 //
 // The returned Runtime is disabled: it refuses every request with ErrorCodeCapabilityDisabled
 // until Configure installs a grant, and Start only brings up the dispatcher and the pump.
-// Construction is not authorization — plan §7 requires an agent to scan nothing until the server
+// Construction is not authorization — an agent must scan nothing until the server
 // grants `local_discovery`, and a constructor that enabled itself would leave that guarantee
 // resting on whether every caller happened to check the grant first. main.go's
 // applyDiscoveryConfig runs at startup and on every capabilities.set, so a granted agent is
@@ -231,7 +231,7 @@ func (r *Runtime) Stop() {
 // this is both the first grant and every later change to it: nothing restarts, and the next
 // request is judged against the new authorization.
 //
-// It does not cancel anything. A grant change that *invalidates* live work is D-16's scope-version
+// It does not cancel anything. A grant change that *invalidates* live work is the scope-version
 // path, which the server drives with an explicit discovery.cancel per dispatch, because only the
 // server knows which jobs it has already closed.
 func (r *Runtime) Configure(scope netscope.Scope, validate Validator) {
@@ -242,7 +242,7 @@ func (r *Runtime) Configure(scope netscope.Scope, validate Validator) {
 	r.mu.Unlock()
 }
 
-// Disable refuses further requests and cancels every dispatch in flight. Plan §7 requires
+// Disable refuses further requests and cancels every dispatch in flight. The contract requires
 // discovery to stop quickly on a grant change, and a revoked agent or a disabled local_discovery
 // grant must stop scanning now rather than at the end of the current job deadline.
 func (r *Runtime) Disable(reason string) {
@@ -299,7 +299,7 @@ func (r *Runtime) Request(payload json.RawMessage) error {
 	// agent with no grant is not entitled to an opinion about the request's contents. The code is
 	// distinct from ErrorCodeValidationUnavailable below because the two are different failures —
 	// this one says the server has not authorized discovery on this agent, that one says the agent
-	// could not judge the request at all — and D-4 maps them to different job error_reasons.
+	// could not judge the request at all — and they map to different job error_reasons.
 	if !enabled {
 		return r.refuse(entry, ErrNotEnabled, ErrorCodeCapabilityDisabled,
 			"local_discovery is not enabled on this agent")
@@ -321,7 +321,7 @@ func (r *Runtime) Request(payload json.RawMessage) error {
 	}
 }
 
-// Cancel applies one best-effort `discovery.cancel` payload (plan §4). An unknown dispatch id is
+// Cancel applies one best-effort `discovery.cancel` payload. An unknown dispatch id is
 // not an error: cancellation races completion by design, and the backend rejects a late finding
 // independently.
 func (r *Runtime) Cancel(payload json.RawMessage) error {
@@ -553,7 +553,7 @@ func (r *Runtime) scan(runCtx context.Context, entry *dispatch) scanResult {
 	summary, sweepErr := r.liveness.Sweep(ctx, addrs, opts, pipe.report)
 
 	// An address the kernel already knows about but that answered nothing is still a host: the
-	// neighbor cache is one of plan §1's four methods and the only one that needs no reply. This
+	// neighbor cache is one of the plan's four methods and the only one that needs no reply. This
 	// runs after the sweep so a host that answered is reported once, with both sources of evidence
 	// on one finding, and is skipped entirely on cancellation — an address the scan never reached
 	// is not something it observed.
@@ -601,7 +601,7 @@ func (r *Runtime) scan(runCtx context.Context, entry *dispatch) scanResult {
 // neighborCache reads the kernel's neighbor cache once per dispatch and keeps only the entries
 // this request was asked about.
 //
-// A failure degrades rather than failing the scan: plan §1 lists the cache as one of four methods,
+// A failure degrades rather than failing the scan: the cache is one of four methods,
 // and a kernel that will not give one up must not cost the operator the ICMP and TCP results. The
 // reason is carried into the summary's msg so the operator learns why the MAC addresses are
 // missing instead of concluding the LAN has none.
@@ -866,10 +866,8 @@ func (r *Runtime) findingFrame(dispatchID string, payload frame.DiscoveryFinding
 // It equally may not be *waited* on where it is produced. refuse and cancelDispatch run on link's
 // inbound goroutine — Request and Cancel are bound under an enqueue-only contract, see
 // link.Options.OnDiscoveryRequest — and that goroutine also drives the heartbeat, the rekey and the
-// drain tickers. Worse, link's runOnce reads inbound frames and Options.DataFrames from the *same*
-// select, so for as long as a request handler runs nobody is draining the channel the summary has
-// to leave by: a blocking send there would not be slow, it would be a deadlock until the read
-// deadline fired.
+// drain tickers, so a blocking send there stalls the link the summary has to travel over. The
+// channel is also unbuffered from this side whenever the agent is between connections.
 //
 // So the producer only appends and the pump does the waiting, bounded by the runtime context. The
 // backlog is a slice rather than a second buffered channel because a fixed bound would drop in

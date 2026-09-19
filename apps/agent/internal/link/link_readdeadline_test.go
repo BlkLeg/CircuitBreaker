@@ -144,7 +144,7 @@ func (s *blackHoleServer) options(t *testing.T) Options {
 		OnConnected:       func() {},
 		OnRejected:        func(string) {},
 		OnCapabilitiesSet: func(json.RawMessage) error { return nil },
-		OnUpdate:          func(json.RawMessage, SendUpdateStatus) error { return nil },
+		OnUpdate:          func(json.RawMessage) error { return nil },
 	}
 }
 
@@ -158,14 +158,10 @@ func shrinkReadTimeout(t *testing.T, d time.Duration) {
 	t.Cleanup(func() { readTimeout = original })
 }
 
-// TestRunOnce_SilentServerTripsSteadyStateReadDeadline is the F-5
-// regression at the connection level: an established link whose peer has
-// gone silent must be torn down on the read deadline, not held open
-// forever.
-//
-// Before the fix runOnce had no steady-state read deadline at all, so this
-// test hung until its own context expired — returning context.DeadlineExceeded
-// after 3s rather than a read timeout after ~600ms.
+// TestRunOnce_SilentServerTripsSteadyStateReadDeadline pins that an established
+// link whose peer has gone silent is torn down on the read deadline rather than
+// held open forever. Without a steady-state read deadline this hangs until its
+// own context expires.
 func TestRunOnce_SilentServerTripsSteadyStateReadDeadline(t *testing.T) {
 	shrinkReadTimeout(t, 400*time.Millisecond)
 	srv := newBlackHoleServer(t, 0, false)
@@ -224,19 +220,15 @@ func TestRunOnce_InboundFramesRefreshTheReadDeadline(t *testing.T) {
 	}
 }
 
-// TestRun_BlackHolePartitionSpoolsSubsequentDataFrames is the F-5
-// regression at the level the follow-up actually describes: during a
-// black-hole partition the agent must stop believing the link is up and
-// start spooling, so an outage's samples survive to be delivered on
-// reconnect instead of being written into the void.
+// TestRun_BlackHolePartitionSpoolsSubsequentDataFrames pins that during a
+// black-hole partition the agent stops believing the link is up and starts
+// spooling, so an outage's samples survive to be delivered on reconnect instead
+// of being written into the void.
 //
-// The server accepts exactly one connection; after the deadline tears it
-// down, every redial is refused, so the agent stays disconnected and every
-// data frame pushed from then on has nowhere to go but the spool.
-//
-// Before the fix this asserted zero: Run's `live` flag stayed true forever
-// because no send ever failed, so DataFrames were routed straight into the
-// dead socket and the spool was never touched.
+// The server accepts exactly one connection; after the deadline tears it down
+// every redial is refused, so the agent stays disconnected and every data frame
+// pushed from then on has nowhere to go but the spool. Without the deadline
+// Run's `live` flag stays true forever, because no send ever fails.
 func TestRun_BlackHolePartitionSpoolsSubsequentDataFrames(t *testing.T) {
 	shrinkReadTimeout(t, 400*time.Millisecond)
 	srv := newBlackHoleServer(t, 0, true)
@@ -340,7 +332,7 @@ func TestDialAndHandshake_SilentServerTripsHandshakeReadDeadline(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	_, _, err = dialAndHandshake(ctx, opts, wsURL, hex.EncodeToString(serverPub[:]))
+	_, _, _, err = dialAndHandshake(ctx, opts, wsURL, hex.EncodeToString(serverPub[:]))
 	elapsed := time.Since(start)
 
 	if err == nil {

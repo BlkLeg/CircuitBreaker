@@ -15,6 +15,10 @@ import { validateDuplicateName } from '../utils/validation';
 import { useTargetMonitors } from '../hooks/useTargetMonitors';
 import MonitorCell, { MonitorStatusCell } from '../components/monitors/MonitorCell';
 import MonitorPanel from '../components/monitors/MonitorPanel';
+import { useEntityDeepLink } from '../hooks/useEntityDeepLink';
+import InventorySelectionToolbar from '../components/common/InventorySelectionToolbar';
+import { useInventoryPage } from '../hooks/useInventoryPage';
+import { clearSelection, SELECTION_MODE_ALL_MATCHING } from '../lib/inventoryList';
 
 const PROVIDER_OPTIONS = [
   'AWS',
@@ -49,26 +53,19 @@ const LINK_TYPE_OPTIONS = ['vpn', 'wan', 'wireguard', 'reverse_proxy', 'direct',
 function ExternalNodesPage() {
   const toast = useToast();
   const { settings } = useSettings();
-  const [items, setItems] = useState([]);
   const [networks, setNetworks] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState(null);
   const [detailTarget, setDetailTarget] = useState(null);
   const [nodeNetworks, setNodeNetworks] = useState([]);
   const [nodeServices, setNodeServices] = useState([]);
   const [showLinkNetworkForm, setShowLinkNetworkForm] = useState(false);
-  const [q, setQ] = useState('');
-  const [tagFilter, setTagFilter] = useState('');
-  const [providerFilter, setProviderFilter] = useState('');
-  const [kindFilter, setKindFilter] = useState('');
-  const [envFilter, setEnvFilter] = useState('');
   const [formApiErrors, setFormApiErrors] = useState({});
-  const [selectedIds, setSelectedIds] = useState([]);
   const [allTags, setAllTags] = useState([]);
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [pendingIconSlug, setPendingIconSlug] = useState(null);
   const [iconPickerCallback, setIconPickerCallback] = useState(null);
+  const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
 
   const envOptions = useMemo(
     () => settings?.environments || ['prod', 'staging', 'dev'],
@@ -135,31 +132,20 @@ function ExternalNodesPage() {
     [envOptions]
   );
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const params = {};
-      if (q) params.q = q;
-      if (tagFilter) params.tag = tagFilter;
-      if (providerFilter) params.provider = providerFilter;
-      if (kindFilter) params.kind = kindFilter;
-      if (envFilter) params.environment = envFilter;
-      const [extRes, netRes] = await Promise.all([
-        externalNodesApi.list(params),
-        networksApi.list(),
-      ]);
-      setItems(extRes.data);
-      setNetworks(netRes.data);
-    } catch (err) {
-      toast.error(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }, [q, tagFilter, providerFilter, kindFilter, envFilter, toast]);
+  const fetchPage = useCallback(async (params) => {
+    const [extRes, netRes] = await Promise.all([externalNodesApi.page(params), networksApi.list()]);
+    setNetworks(netRes.data || []);
+    return extRes;
+  }, []);
+
+  const page = useInventoryPage({
+    fetchPage,
+    extraFilters: { provider: '', kind: '', environment: '' },
+  });
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    if (page.listError) toast.error(page.listError);
+  }, [page.listError, toast]);
 
   const fetchTags = useCallback(async () => {
     try {
@@ -174,7 +160,7 @@ function ExternalNodesPage() {
     fetchTags();
   }, [fetchTags]);
 
-  const monitorTargetIds = useMemo(() => items.map((i) => i.id), [items]);
+  const monitorTargetIds = useMemo(() => page.items.map((i) => i.id), [page.items]);
   const monitors = useTargetMonitors('external_node', monitorTargetIds);
 
   const monitorAction = useCallback(
@@ -211,7 +197,7 @@ function ExternalNodesPage() {
             allTags={allTags}
             onTagsChange={async (names) => {
               await externalNodesApi.update(row.id, { tags: names });
-              fetchData();
+              page.fetchData();
             }}
             onTagColorChange={async (id, color) => {
               await tagsApi.update(id, { color });
@@ -221,7 +207,7 @@ function ExternalNodesPage() {
         ),
       },
     ],
-    [allTags, fetchData, fetchTags, COLUMNS, monitors.byId]
+    [allTags, page, fetchTags, COLUMNS, monitors.byId]
   );
 
   const handleCellSave = useCallback(
@@ -229,9 +215,9 @@ function ExternalNodesPage() {
       if (value == null) return;
       await externalNodesApi.update(row.id, { [columnKey]: value });
       toast.success('Saved.');
-      fetchData();
+      page.fetchData();
     },
-    [toast, fetchData]
+    [toast, page]
   );
 
   const bulkActions = useMemo(
@@ -240,6 +226,12 @@ function ExternalNodesPage() {
         label: 'Delete selected',
         danger: true,
         onClick: (ids) => {
+          if (page.selection.mode === SELECTION_MODE_ALL_MATCHING) {
+            toast.warn(
+              'All-matching delete is not available yet. Select specific rows on this page.'
+            );
+            return;
+          }
           setConfirmState({
             open: true,
             message: `Delete ${ids.length} external node(s)?`,
@@ -247,14 +239,14 @@ function ExternalNodesPage() {
               setConfirmState((s) => ({ ...s, open: false }));
               for (const id of ids) await externalNodesApi.delete(id);
               toast.success('Deleted.');
-              setSelectedIds([]);
-              fetchData();
+              page.setSelection(clearSelection(page.selection));
+              page.fetchData();
             },
           });
         },
       },
     ],
-    [toast, fetchData]
+    [toast, page]
   );
 
   const fetchDetail = useCallback(
@@ -273,6 +265,26 @@ function ExternalNodesPage() {
     [toast]
   );
 
+  const loadDeepLinkedEntity = useCallback(async (id) => (await externalNodesApi.get(id)).data, []);
+  const selectExternalDetail = useCallback(
+    (entity) => {
+      setDetailTarget(entity);
+      if (entity) fetchDetail(entity);
+      else {
+        setNodeNetworks([]);
+        setNodeServices([]);
+      }
+    },
+    [fetchDetail]
+  );
+  const reportDeepLinkError = useCallback((message) => toast.error(message), [toast]);
+  const { openEntity, closeEntity } = useEntityDeepLink({
+    loadEntity: loadDeepLinkedEntity,
+    selectedId: detailTarget?.id,
+    onSelect: selectExternalDetail,
+    onError: reportDeepLinkError,
+  });
+
   const handleSubmit = async (values) => {
     try {
       if (editTarget) {
@@ -285,7 +297,7 @@ function ExternalNodesPage() {
       setShowForm(false);
       setEditTarget(null);
       setFormApiErrors({});
-      fetchData();
+      page.fetchData();
     } catch (err) {
       if (err.fieldErrors) {
         setFormApiErrors(err.fieldErrors);
@@ -294,8 +306,6 @@ function ExternalNodesPage() {
       }
     }
   };
-
-  const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
 
   const handleDelete = (id) => {
     setConfirmState({
@@ -307,7 +317,7 @@ function ExternalNodesPage() {
           await externalNodesApi.delete(id);
           toast.success('External node deleted.');
           if (detailTarget?.id === id) setDetailTarget(null);
-          fetchData();
+          page.fetchData();
         } catch (err) {
           toast.error(err.message);
         }
@@ -336,11 +346,6 @@ function ExternalNodesPage() {
     }
   };
 
-  const openDetail = (row) => {
-    setDetailTarget(row);
-    fetchDetail(row);
-  };
-
   return (
     <div className="page">
       <div className="page-header">
@@ -357,13 +362,16 @@ function ExternalNodesPage() {
       </div>
 
       <div className="filter-bar">
-        <SearchBox value={q} onChange={setQ} />
-        <TagFilter value={tagFilter} onChange={setTagFilter} />
+        <SearchBox value={page.q} onChange={(value) => page.applyListFilter({ q: value })} />
+        <TagFilter
+          value={page.tagFilter}
+          onChange={(value) => page.applyListFilter({ tag: value })}
+        />
         <select
           className="filter-select"
           aria-label="Filter by providers"
-          value={providerFilter}
-          onChange={(e) => setProviderFilter(e.target.value)}
+          value={page.domainFilters.provider || ''}
+          onChange={(e) => page.applyListFilter({ provider: e.target.value })}
         >
           <option value="">All Providers</option>
           {PROVIDER_OPTIONS.map((p) => (
@@ -375,8 +383,8 @@ function ExternalNodesPage() {
         <select
           className="filter-select"
           aria-label="Filter by kinds"
-          value={kindFilter}
-          onChange={(e) => setKindFilter(e.target.value)}
+          value={page.domainFilters.kind || ''}
+          onChange={(e) => page.applyListFilter({ kind: e.target.value })}
         >
           <option value="">All Kinds</option>
           {KIND_OPTIONS.map((k) => (
@@ -388,8 +396,8 @@ function ExternalNodesPage() {
         <select
           className="filter-select"
           aria-label="Filter by environments"
-          value={envFilter}
-          onChange={(e) => setEnvFilter(e.target.value)}
+          value={page.domainFilters.environment || ''}
+          onChange={(e) => page.applyListFilter({ environment: e.target.value })}
         >
           <option value="">All Environments</option>
           {envOptions.map((e) => (
@@ -400,19 +408,19 @@ function ExternalNodesPage() {
         </select>
       </div>
 
-      {!loading && items.length === 0 && settings?.show_page_hints && (
+      {!page.loading && page.items.length === 0 && settings?.show_page_hints && (
         <div className="info-tip" style={{ marginBottom: 8 }}>
           💡 <strong>Tip:</strong> Add external/cloud nodes (VPS, managed databases, SaaS
           dependencies) here. You can link them to your local networks and services.
         </div>
       )}
 
-      {loading ? (
+      {page.loading ? (
         <SkeletonTable cols={6} />
       ) : (
         <EntityTable
           columns={COLUMNS_WITH_TAGS}
-          data={items}
+          data={page.items}
           onEdit={(row) => {
             setEditTarget(row);
             setShowForm(true);
@@ -427,26 +435,21 @@ function ExternalNodesPage() {
               onCheckNow={() => monitorAction(() => monitors.checkNow(row.id), 'Probe triggered.')}
             />
           )}
-          onRowClick={openDetail}
+          onRowClick={openEntity}
           editableColumns={['name', 'provider', 'kind', 'region', 'ip_address', 'environment']}
           onCellSave={handleCellSave}
           selectable
-          selectedIds={selectedIds}
-          onSelectionChange={setSelectedIds}
+          selectedIds={page.selectedIds}
+          rowIsSelected={page.rowIsSelected}
+          onSelectionChange={page.onSelectionChange}
           bulkActions={bulkActions}
+          serverPaging={page.serverPaging}
+          selectionToolbar={<InventorySelectionToolbar {...page.selectionToolbarProps} />}
         />
       )}
 
       {/* Detail Panel */}
-      <Drawer
-        isOpen={!!detailTarget}
-        onClose={() => {
-          setDetailTarget(null);
-          setNodeNetworks([]);
-          setNodeServices([]);
-        }}
-        title={detailTarget?.name || ''}
-      >
+      <Drawer isOpen={!!detailTarget} onClose={closeEntity} title={detailTarget?.name || ''}>
         {detailTarget && (
           <div className="detail-content">
             <div className="detail-section">
@@ -543,7 +546,7 @@ function ExternalNodesPage() {
         onSubmit={handleSubmit}
         onValidate={(values) => {
           const errors = {};
-          const nameErr = validateDuplicateName(values.name, items, editTarget?.id);
+          const nameErr = validateDuplicateName(values.name, page.items, editTarget?.id);
           if (nameErr) errors.name = nameErr;
           return errors;
         }}

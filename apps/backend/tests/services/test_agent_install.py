@@ -1,10 +1,12 @@
 import http.server
 import os
 import re
+import shlex
 import shutil
 import ssl
 import subprocess
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -118,6 +120,21 @@ def test_render_install_script_creates_versioned_symlink_layout():
     assert 'install -m 0755 "$TMP_BIN" /usr/local/bin/cb-agent' not in script
 
 
+def test_script_preflights_the_server_before_touching_the_machine():
+    """A wrong address must fail at step one naming the address, not three
+    steps later inside a binary download."""
+    script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex="de" * 32,
+        tls_pin="pin",
+        manifest={"1.0.0": {"linux-amd64": "a" * 64}},
+    )
+    preflight_at = script.index("/api/v1/health")
+    useradd_at = script.index("useradd")
+    assert preflight_at < useradd_at, "preflight must run before the machine is modified"
+    assert "Cannot reach" in script
+
+
 def test_build_install_command_self_signed_includes_hash_verification(
     db_session, app_cfg, monkeypatch
 ):
@@ -201,7 +218,7 @@ def test_build_install_command_fails_closed_without_pin(monkeypatch, db_session)
         agent_install.build_install_command(db_session, "https://cb.example.com")
 
 
-# ── Task 28: install scripts reflect the successor key after activation ────
+# ── install scripts reflect the successor key after activation ────
 
 
 def _add_letsencrypt_cert(db_session) -> None:
@@ -358,16 +375,11 @@ def test_letsencrypt_needs_no_pin_even_with_an_unreadable_file(tmp_path, monkeyp
 
 
 # ── The binary download is verified, not just fetched ────────────────────────
-# build_install_command hands out `curl -fsSLk` for the *script* under
-# self-signed TLS, but the script's own binary download went out as plain
-# `curl -fsSL` against that same self-signed certificate -- so on the default
-# deployment it failed verification outright (curl exit 60), and the obvious
-# repair (`-k`) would have made it succeed while verifying nothing. The script
-# already carries the SPKI pin, and curl enforces --pinnedpubkey even when
-# --insecure is in force, so both fetches pin instead.
-#
-# The release gate never caught this because it reads the script's *text*; the
-# sh-level test below actually runs the fetch.
+# Under self-signed TLS a plain `curl -fsSL` for the binary fails verification,
+# and the obvious repair (`-k`) would succeed while verifying nothing. The script
+# carries an SPKI pin and curl enforces --pinnedpubkey even with --insecure, so
+# BOTH fetches pin. The sh-level test below runs the fetch rather than reading
+# the script's text, which is why it catches this.
 
 _SELF_SIGNED = dict(
     server_url="https://cb.example.com",
@@ -619,13 +631,11 @@ def test_unit_keeps_the_filesystem_sandbox_self_update_depends_on():
 
 # ── Unprivileged ICMP ────────────────────────────────────────────────────────
 #
-# The agent's ICMP prober opens datagram ICMP (`icmp.ListenPacket("udp4", ...)`)
-# and holds no CAP_NET_RAW, so it can only send an echo request when the
-# cb-agent group falls inside net.ipv4.ping_group_range. The installer used to
-# check only whether *a* line for that sysctl existed in /etc/sysctl.conf, and
-# skip if one did — so a host with a narrower range already set (the kernel
-# default `1 0` disables the feature entirely) silently got an agent whose ICMP
-# probes could never succeed.
+# The agent's ICMP prober opens datagram ICMP and holds no CAP_NET_RAW, so it
+# can only send an echo request when the cb-agent group falls inside
+# net.ipv4.ping_group_range. Checking merely that a line for that sysctl exists
+# is not enough: a narrower range already set (the kernel default `1 0` disables
+# it entirely) leaves ICMP probes that can never succeed.
 
 
 def _run_icmp_block(tmp_path, *, current_range: str, gid: str = "997"):
@@ -708,3 +718,729 @@ def test_icmp_widening_keeps_groups_the_host_already_allowed(tmp_path):
     line = [ln for ln in conf.splitlines() if ln.startswith("net.ipv4.ping_group_range")][-1]
     low, high = line.split("=")[1].split()
     assert int(low) <= 500 and int(high) >= 997, line
+
+
+def _run_preflight(tmp_path, *, reachable: bool, tls_pin: str = "c" * 44):
+    """Execute the installer up to and including the user-creation step.
+
+    Runs the real script prefix — the assignments, the curl-version guard,
+    `cb_curl`, the reachability preflight and the `useradd` block — against a
+    stub curl, rather than asserting on its source. Returns
+    `(returncode, stderr, curl_argv, user_created)`.
+
+    `user_created` is the assertion that matters. The preflight exists so that
+    a wrong `CB_SERVER_URL` "costs nothing": it must fail before
+    the script has touched the host. A stub `useradd` that records being called
+    is the only thing that can prove that, and asserting on the script's text
+    cannot.
+    """
+    import subprocess
+
+    script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex="ab" * 32,
+        tls_pin=tls_pin,
+        manifest={"0.1.0": {"linux-amd64": "deadbeef"}},
+    )
+    prefix = script[: script.index('ARCH="$(uname -m)"')]
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    argv_log = tmp_path / "curl-argv"
+    created = tmp_path / "useradd-ran"
+    # `--version` must always succeed: it is the curl-too-old guard ahead of
+    # the preflight, not a fetch. Every other invocation is the preflight's.
+    (bin_dir / "curl").write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do [ "$a" = "--version" ] && exit 0; done\n'
+        f'printf \'%s\\n\' "$@" >> "{argv_log}"\n'
+        f"exit {0 if reachable else 7}\n"
+    )
+    # No cb-agent user on this host, so the script reaches useradd.
+    (bin_dir / "id").write_text("#!/bin/sh\nexit 1\n")
+    (bin_dir / "useradd").write_text(f'#!/bin/sh\necho ran > "{created}"\nexit 0\n')
+    for stub in bin_dir.iterdir():
+        stub.chmod(0o755)
+
+    runner = tmp_path / "run.sh"
+    runner.write_text(prefix)
+    runner.chmod(0o755)
+
+    result = subprocess.run(
+        ["/bin/sh", str(runner)],
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+    )
+    argv = argv_log.read_text().splitlines() if argv_log.exists() else []
+    return result.returncode, result.stderr, argv, created.exists()
+
+
+def test_an_unreachable_server_fails_before_the_installer_touches_the_host(tmp_path):
+    """The wrong-endpoint case, and the whole reason the preflight exists.
+
+    An operator who picks the wrong endpoint gets a precise message and a
+    machine in exactly the state it was in beforehand — no cb-agent user, no
+    binary, no unit. Without this the agent installs cleanly and then dials an
+    unreachable address forever, which surfaces as "the agent never appeared".
+    """
+    code, stderr, _, user_created = _run_preflight(tmp_path, reachable=False)
+
+    assert code == 1, stderr
+    assert "Cannot reach https://cb.example.com from this machine." in stderr
+    assert not user_created, "the preflight must fail before creating the cb-agent user"
+
+
+def test_a_reachable_server_carries_on_into_the_install(tmp_path):
+    """The other direction: the preflight must not be a gate that never opens."""
+    code, stderr, _, user_created = _run_preflight(tmp_path, reachable=True)
+
+    assert code == 0, stderr
+    assert user_created, "a reachable server must let the install proceed"
+
+
+def test_the_preflight_uses_the_same_tls_trust_the_agent_will(tmp_path):
+    """It goes through `cb_curl`, so a self-signed install pins the same SPKI
+    the agent's tlsdial checks. A preflight that verified differently would
+    pass on a server the agent then refuses — a false green at the one moment
+    the operator is watching."""
+    _, stderr, argv, _ = _run_preflight(tmp_path, reachable=True)
+
+    assert "--pinnedpubkey" in argv, (argv, stderr)
+    assert f"sha256//{'c' * 44}" in argv, argv
+    assert "https://cb.example.com/api/v1/health" in argv, argv
+
+
+def test_a_publicly_trusted_install_pins_nothing_in_the_preflight(tmp_path):
+    """An empty pin means the system trust store applies; adding --insecure
+    there would be a straight downgrade."""
+    _, _, argv, _ = _run_preflight(tmp_path, reachable=True, tls_pin="")
+
+    assert "--pinnedpubkey" not in argv, argv
+    assert "--insecure" not in argv, argv
+
+
+@pytest.mark.asyncio
+async def test_install_command_uses_the_selected_endpoint_not_the_browsed_host(
+    client, auth_headers, db_session, letsencrypt_certificate
+):
+    """The whole point: the address an agent dials is not the address you browsed.
+
+    `letsencrypt_certificate` sidesteps the unrelated TLS-pin requirement
+    (`_tls_mode_and_pin` fails closed with no cert anywhere) so this test's
+    only assertion is about which server_url got rendered.
+    """
+    from app.schemas.settings import AppSettingsUpdate
+    from app.services import settings_service
+
+    settings_service.update_settings(
+        db_session,
+        AppSettingsUpdate(
+            agent_endpoints=[{"id": "pub1", "label": "Public", "url": "https://cb.example.com"}]
+        ),
+    )
+    db_session.commit()
+
+    resp = await client.get("/api/v1/agents/install-command?endpoint=pub1", headers=auth_headers)
+
+    assert resp.status_code == 200, resp.text
+    assert "https://cb.example.com" in resp.json()["command"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_endpoint_id_is_refused_rather_than_silently_substituted(
+    client, auth_headers
+):
+    """Falling back here would re-create the defect this feature exists to fix."""
+    resp = await client.get("/api/v1/agents/install-command?endpoint=nope", headers=auth_headers)
+    assert resp.status_code == 404
+    assert "nope" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_absent_endpoint_falls_back_to_the_browsed_host(
+    client, auth_headers, letsencrypt_certificate
+):
+    """Existing installs and existing commands keep working untouched.
+
+    `status_code in (200, 503)` was the whole assertion here, which passes
+    whether or not the fallback exists at all. Name the address instead: the
+    forwarded host is what the operator browsed, and with no endpoint chosen
+    it must be the one baked into the command, with no `?endpoint=` on the
+    download link for `/install-agent.sh` to resolve.
+
+    `letsencrypt_certificate` supplies the cert `_tls_mode_and_pin` fails
+    closed without, so a missing pin cannot turn this into a vacuous 503.
+    """
+    resp = await client.get(
+        "/api/v1/agents/install-command",
+        headers={
+            **auth_headers,
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "browsed.example.com",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    command = resp.json()["command"]
+    assert _download_url(command) == "https://browsed.example.com/install-agent.sh", command
+
+
+# ── The emitted command must carry the choice, not just honour it ────────────
+# Resolving an endpoint server-side is only half the fix: the command the
+# operator pastes is what the TARGET machine runs, and its curl is what
+# `/install-agent.sh` sees. Without `?endpoint=<id>` on that URL the route
+# re-derives the address from `forwarded_base_url` — the derivation §1.1 exists
+# to eliminate — so the declared endpoint lands only if the proxy chain happens
+# to reproduce it, and `script_sha256` no longer matches what was downloaded.
+
+
+def _download_url(command: str) -> str:
+    """The `/install-agent.sh` URL an emitted install command downloads.
+
+    Split the way a shell would, so a quoted URL and a bare one both resolve
+    to the same string.
+    """
+    for token in shlex.split(command):
+        if "/install-agent.sh" in token:
+            return token
+    raise AssertionError(f"no install-agent.sh download in command: {command!r}")
+
+
+def test_install_command_carries_the_endpoint_id_under_self_signed_tls(
+    db_session, app_cfg, monkeypatch
+):
+    cert_pem, _, _ = generate_selfsigned("cb.home")
+    monkeypatch.setattr(agent_install, "_live_nginx_cert_pem", lambda: cert_pem)
+
+    resp = agent_install.build_install_command(db_session, "https://cb.home", endpoint_id="pub1")
+
+    assert resp.tls_mode == "self_signed"
+    assert _download_url(resp.command) == "https://cb.home/install-agent.sh?endpoint=pub1"
+
+
+def test_install_command_carries_the_endpoint_id_under_public_tls(
+    db_session, app_cfg, letsencrypt_certificate
+):
+    resp = agent_install.build_install_command(
+        db_session, "https://cb.example.com", endpoint_id="pub1"
+    )
+
+    assert resp.tls_mode == "public"
+    assert _download_url(resp.command) == "https://cb.example.com/install-agent.sh?endpoint=pub1"
+
+
+def test_install_command_without_an_endpoint_has_no_query_string(
+    db_session, app_cfg, letsencrypt_certificate
+):
+    """Byte-identical to what shipped before endpoints existed: an operator who
+    configured none must see exactly today's command."""
+    resp = agent_install.build_install_command(db_session, "https://cb.example.com")
+
+    assert resp.command == "curl -fsSL https://cb.example.com/install-agent.sh | sudo sh"
+
+
+# ── Slice B: the enrollment token the installer plants ───────────────────────
+
+
+def _run_token_block(tmp_path, *, env_token: str | None):
+    """Execute the installer's enroll-token block against a scratch config dir.
+
+    Runs the real shell, like `_run_icmp_block` and `_run_preflight` beside it,
+    rather than asserting on the script's text — a guard and a comment look
+    identical to a substring search.
+    """
+    import subprocess
+
+    script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex="ab" * 32,
+        tls_pin="",
+        manifest={"0.1.0": {"linux-amd64": "deadbeef"}},
+    )
+    start = script.index("# Enrollment token")
+    end = script.index("if command -v docker", start)
+    snippet = script[start:end]
+
+    conf_dir = tmp_path / "etc"
+    conf_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    # The cb-agent user does not exist on this host; chown must not be fatal.
+    (bin_dir / "chown").write_text("#!/bin/sh\nexit 1\n")
+    (bin_dir / "chown").chmod(0o755)
+
+    runner = tmp_path / "run.sh"
+    runner.write_text(f"#!/bin/sh\nset -eu\nCB_CONF_DIR='{conf_dir}'\n{snippet}\n")
+    runner.chmod(0o755)
+
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin"}
+    if env_token is not None:
+        env["CB_ENROLL_TOKEN"] = env_token
+    result = subprocess.run(["/bin/sh", str(runner)], capture_output=True, text=True, env=env)
+    assert result.returncode == 0, result.stderr
+    return conf_dir / "enroll-token", result
+
+
+def test_the_token_is_written_only_readable_by_its_owner(tmp_path):
+    """It is a bearer credential on a machine other people may use."""
+    written, _ = _run_token_block(tmp_path, env_token="cbe_abc123")
+
+    assert written.exists()
+    assert written.read_text().strip() == "cbe_abc123"
+    assert oct(written.stat().st_mode)[-3:] == "600"
+
+
+def test_no_token_in_the_environment_writes_no_file(tmp_path):
+    """The attended flow is the default and must leave nothing behind."""
+    written, _ = _run_token_block(tmp_path, env_token=None)
+
+    assert not written.exists()
+
+
+def test_a_failed_chown_does_not_abort_the_install(tmp_path):
+    """`set -e` is on. An install that dies here would leave a half-configured
+    host over a file the agent can still read as root-installed."""
+    written, result = _run_token_block(tmp_path, env_token="cbe_abc123")
+
+    assert result.returncode == 0
+    assert written.exists()
+
+
+def test_the_token_never_appears_in_the_rendered_script(tmp_path):
+    """The script is served by an unauthenticated route. A token compiled into
+    it would be readable by anyone who can reach the server."""
+    script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex="ab" * 32,
+        tls_pin="",
+        manifest={"0.1.0": {"linux-amd64": "deadbeef"}},
+    )
+
+    assert "cbe_" not in script
+    assert "CB_ENROLL_TOKEN" in script, "the script reads it from the environment"
+
+
+def test_the_token_is_not_echoed_to_the_terminal(tmp_path):
+    """cloud-init captures stdout verbatim into a log that outlives the TTL."""
+    _, result = _run_token_block(tmp_path, env_token="cbe_secret-value")
+
+    assert "cbe_secret-value" not in result.stdout
+    assert "cbe_secret-value" not in result.stderr
+
+
+# ── Slice B: the unattended install command ──────────────────────────────────
+
+
+@pytest.fixture
+def public_tls(db_session, app_cfg):
+    """A publicly trusted certificate, so these tests assert on the command
+    shape rather than on TLS pinning."""
+    from datetime import timedelta
+
+    from app.core.time import utcnow
+    from app.db.models import Certificate
+
+    db_session.add(
+        Certificate(
+            domain="cb.example.com",
+            type="letsencrypt",
+            cert_pem="-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+            key_pem="-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----",
+            expires_at=utcnow() + timedelta(days=60),
+        )
+    )
+    db_session.flush()
+
+
+def test_an_unattended_command_passes_the_token_through_the_environment(db_session, public_tls):
+    """Never as an argument: argv is visible in `ps` and lands in shell history
+    and cloud-init logs."""
+    result = agent_install.build_install_command(
+        db_session, "https://cb.example.com", endpoint_id="pub1", enroll_token="cbe_abc"
+    )
+
+    assert "CB_ENROLL_TOKEN=cbe_abc" in result.command
+    assert "sudo -E" in result.command
+    # The token must not be an argument to anything.
+    assert "sh cbe_abc" not in result.command
+    assert not result.command.rstrip().endswith("cbe_abc")
+
+
+def test_an_attended_command_is_unchanged_by_this_feature(db_session, public_tls):
+    """The default path must stay byte-identical to what shipped."""
+    result = agent_install.build_install_command(
+        db_session, "https://cb.example.com", endpoint_id="pub1"
+    )
+
+    assert "CB_ENROLL_TOKEN" not in result.command
+    assert "sudo -E" not in result.command
+    assert "sudo sh" in result.command
+
+
+def test_the_published_digest_is_unaffected_by_the_token(db_session, public_tls):
+    """The token lives in the command, not the script, so one script — and one
+    digest — serves both flows."""
+    attended = agent_install.build_install_command(
+        db_session, "https://cb.example.com", endpoint_id="pub1"
+    )
+    unattended = agent_install.build_install_command(
+        db_session, "https://cb.example.com", endpoint_id="pub1", enroll_token="cbe_abc"
+    )
+
+    assert attended.script_sha256 == unattended.script_sha256
+
+
+def test_a_self_signed_unattended_command_still_verifies_before_it_runs(
+    db_session, app_cfg, monkeypatch
+):
+    """The token must not displace the digest check: the prefix belongs on the
+    final `sh`, not on the curl or the sha256sum that guard it."""
+    from app.services.certificate_service import generate_selfsigned
+
+    valid_cert_pem, _, _ = generate_selfsigned("cb.home")
+    monkeypatch.setattr(agent_install, "_live_nginx_cert_pem", lambda: valid_cert_pem)
+
+    result = agent_install.build_install_command(
+        db_session, "https://cb.home", enroll_token="cbe_abc"
+    )
+
+    assert "sha256sum -c" in result.command
+    assert result.script_sha256 in result.command
+    # The token appears once, and after the digest check rather than before it.
+    assert result.command.count("CB_ENROLL_TOKEN") == 1
+    assert result.command.index("sha256sum -c") < result.command.index("CB_ENROLL_TOKEN")
+
+
+@pytest.mark.parametrize(
+    "token", ["cbe_a;echo pwned", "cbe_a'quote", 'cbe_a"dquote', "cbe_a$(echo x)", "cbe_a`id`"]
+)
+def test_a_token_with_shell_metacharacters_survives_verbatim_and_runs_nothing(
+    db_session, public_tls, token
+):
+    """The value is server-minted today, but a command assembled by string
+    interpolation should not depend on that staying true.
+
+    Executed rather than pattern-matched: the property is that the shell puts
+    exactly this value in the environment and runs nothing extra, and only a
+    shell can demonstrate that.
+    """
+    import subprocess
+
+    result = agent_install.build_install_command(
+        db_session, "https://cb.example.com", enroll_token=token
+    )
+    prefix = result.command[
+        result.command.index("CB_ENROLL_TOKEN=") : result.command.index(" sudo -E")
+    ]
+
+    out = subprocess.run(
+        ["/bin/sh", "-c", f"{prefix} printenv CB_ENROLL_TOKEN"],
+        capture_output=True,
+        text=True,
+    )
+
+    assert out.returncode == 0, out.stderr
+    # Exact equality is the whole proof: the value arrived verbatim, and a
+    # shell that had run the injected fragment would print something else.
+    assert out.stdout == token + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Staging the binary download somewhere that is not, by default, /tmp.
+#
+# /tmp is routinely a small tmpfs, and systemd's PrivateTmp= gives this unit a
+# RAM-backed one of its own, so a full /tmp fails the install with whatever curl
+# happens to say — naming neither the filesystem nor the fix. The installer tries
+# the agent's own directory first (real disk, same filesystem as the target) and
+# falls through alternatives, refusing only when none can hold the download and
+# saying what each had.
+
+
+def _run_stage_block(
+    tmp_path,
+    *,
+    state_dir=None,
+    tmpdir=None,
+    override=None,
+    free_kb=None,
+    df_fails=False,
+    then_fail=False,
+):
+    """Execute the installer's staging-directory selection for real.
+
+    `free_kb` maps a path fragment to the KB a stub `df` reports for any
+    candidate containing it, defaulting to plenty — which is how a full
+    filesystem is simulated without needing one. Runs the shell rather than
+    reading the script, for the reason `_run_icmp_block` gives.
+    """
+    import subprocess
+
+    script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex="ab" * 32,
+        tls_pin="",
+        manifest={"0.1.0": {"linux-amd64": "deadbeef"}},
+    )
+    start = script.index("# Staging directory")
+    end = script.index("CB_BINARY_URL=", start)
+    snippet = script[start:end]
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    if df_fails:
+        (bin_dir / "df").write_text("#!/bin/sh\nexit 1\n")
+    else:
+        cases = "\n".join(
+            f"  *{fragment}*) available={kb} ;;" for fragment, kb in (free_kb or {}).items()
+        )
+        (bin_dir / "df").write_text(
+            "#!/bin/sh\n"
+            'target="$2"\n'
+            "available=10000000\n"
+            'case "$target" in\n'
+            f"{cases}\n"
+            "  *) ;;\n"
+            "esac\n"
+            'echo "Filesystem 1024-blocks Used Available Capacity Mounted"\n'
+            'echo "/dev/stub 20000000 0 $available 1% /"\n'
+        )
+    (bin_dir / "df").chmod(0o755)
+
+    lines = ["#!/bin/sh", "set -eu"]
+    if state_dir is not None:
+        lines.append(f"CB_STATE_DIR='{state_dir}'")
+    if tmpdir is not None:
+        lines.append(f"TMPDIR='{tmpdir}'")
+    if override is not None:
+        lines.append(f"CB_AGENT_DOWNLOAD_DIR='{override}'")
+    lines.append(snippet)
+    lines.append('echo "CHOSE=$CB_STAGE_DIR"')
+    lines.append('echo "STAGED=$TMP_BIN"')
+    if then_fail:
+        lines.append("exit 3")
+
+    runner = tmp_path / "run.sh"
+    runner.write_text("\n".join(lines) + "\n")
+    runner.chmod(0o755)
+
+    return subprocess.run(
+        ["/bin/sh", str(runner)],
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+    )
+
+
+def _reported(result, key: str) -> str:
+    for line in result.stdout.splitlines():
+        if line.startswith(f"{key}="):
+            return line.split("=", 1)[1]
+    raise AssertionError(f"{key} not reported: {result.stdout!r} {result.stderr!r}")
+
+
+def test_the_binary_is_staged_in_the_agents_own_directory(tmp_path):
+    """First choice: real disk, and the same filesystem as the install target,
+    so the later `install` is not a cross-mount copy."""
+    state = tmp_path / "state"
+    result = _run_stage_block(tmp_path, state_dir=state, tmpdir=str(tmp_path / "scratch"))
+
+    assert result.returncode == 0, result.stderr
+    assert _reported(result, "CHOSE") == f"{state}/.staging"
+    assert _reported(result, "STAGED").startswith(f"{state}/.staging/")
+
+
+def test_a_full_state_filesystem_falls_back_to_the_next_candidate(tmp_path):
+    """The failure that started this: one filesystem being full must not be
+    the end of the install."""
+    state = tmp_path / "state"
+    scratch = tmp_path / "scratch"
+    result = _run_stage_block(
+        tmp_path, state_dir=state, tmpdir=str(scratch), free_kb={"/.staging": 0}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _reported(result, "CHOSE") == str(scratch)
+
+
+def test_an_unusable_state_directory_does_not_stop_the_install(tmp_path):
+    """A path that cannot even be created — here a regular file, which fails
+    for root too — is skipped rather than fatal under `set -e`."""
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("x")
+    scratch = tmp_path / "scratch"
+    result = _run_stage_block(tmp_path, state_dir=blocked, tmpdir=str(scratch))
+
+    assert result.returncode == 0, result.stderr
+    assert _reported(result, "CHOSE") == str(scratch)
+
+
+def test_the_operator_can_name_the_staging_directory(tmp_path):
+    """The way out for a host whose /var/lib is the constrained filesystem."""
+    chosen = tmp_path / "elsewhere"
+    result = _run_stage_block(
+        tmp_path,
+        state_dir=tmp_path / "state",
+        tmpdir=str(tmp_path / "scratch"),
+        override=str(chosen),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _reported(result, "CHOSE") == str(chosen)
+
+
+def test_no_room_anywhere_names_every_candidate_it_tried(tmp_path):
+    """The message an operator has to act on. "No space left on device" from
+    inside curl says nothing about which filesystem to free."""
+    state = tmp_path / "state"
+    scratch = tmp_path / "scratch"
+    result = _run_stage_block(tmp_path, state_dir=state, tmpdir=str(scratch), free_kb={"": 0})
+
+    assert result.returncode == 1, result.stdout
+    assert f"{state}/.staging" in result.stderr
+    assert str(scratch) in result.stderr
+    assert "/var/tmp" in result.stderr
+    assert "CB_AGENT_DOWNLOAD_DIR" in result.stderr
+
+
+def test_a_df_that_cannot_answer_does_not_refuse_the_install(tmp_path):
+    """Busybox, a stripped image, an unusual mount: an unanswerable `df` is a
+    reason to proceed on the write probe alone, not to refuse."""
+    state = tmp_path / "state"
+    result = _run_stage_block(
+        tmp_path, state_dir=state, tmpdir=str(tmp_path / "scratch"), df_fails=True
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _reported(result, "CHOSE") == f"{state}/.staging"
+
+
+def test_a_failed_install_does_not_leave_the_download_behind(tmp_path):
+    """The staging directory persists across reboots now, so nothing else ever
+    sweeps it."""
+    result = _run_stage_block(
+        tmp_path,
+        state_dir=tmp_path / "state",
+        tmpdir=str(tmp_path / "scratch"),
+        then_fail=True,
+    )
+
+    assert result.returncode == 3, result.stderr
+    assert not Path(_reported(result, "STAGED")).exists()
+
+
+def test_the_staged_name_is_unpredictable(tmp_path):
+    """A staging directory can be world-writable (/tmp and /var/tmp both are),
+    so a guessable name is a symlink target somebody else can plant."""
+    first = _run_stage_block(tmp_path / "a", state_dir=tmp_path / "state")
+    second = _run_stage_block(tmp_path / "b", state_dir=tmp_path / "state")
+
+    assert _reported(first, "STAGED") != _reported(second, "STAGED")
+
+
+# ---------------------------------------------------------------------------
+# Where the emitted command stages the installer script itself.
+#
+# The self-signed form downloads the script, verifies its digest, then runs it,
+# and all three steps named /tmp by absolute path. Same finding as the binary
+# staging above: /tmp is frequently a small tmpfs and is the first thing to
+# fill. /var/tmp is on persistent storage and is not swept mid-boot, and TMPDIR
+# lets an operator put it wherever their host actually has room.
+
+
+@pytest.fixture
+def self_signed_command(db_session, app_cfg, monkeypatch):
+    cert_pem, _, _ = generate_selfsigned("cb.home")
+    monkeypatch.setattr(agent_install, "_live_nginx_cert_pem", lambda: cert_pem)
+    return agent_install.build_install_command(db_session, "https://cb.home")
+
+
+def _staged_installer_path(command: str, env: dict) -> str:
+    """Resolve the command's staging path the way the operator's shell will."""
+    assignment = command.split(";", 1)[0]
+    out = subprocess.run(
+        ["/bin/sh", "-c", f'{assignment}; printf "%s" "$cb_installer"'],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert out.returncode == 0, out.stderr
+    return out.stdout
+
+
+def test_the_emitted_command_stages_the_installer_off_tmp(self_signed_command):
+    assert "/tmp/" not in self_signed_command.command
+    assert _staged_installer_path(self_signed_command.command, {}) == (
+        "/var/tmp/cb-agent-install.sh"
+    )
+
+
+def test_the_staging_path_follows_tmpdir_when_the_host_sets_one(self_signed_command):
+    """The operator's own answer to "where does this host have room" wins."""
+    staged = _staged_installer_path(self_signed_command.command, {"TMPDIR": "/scratch"})
+
+    assert staged == "/scratch/cb-agent-install.sh"
+
+
+def test_the_digest_check_and_the_run_use_the_same_staged_file(self_signed_command):
+    """Three references to one path: download target, digest subject, and the
+    script actually executed. A path that drifted between them would verify one
+    file and run another."""
+    command = self_signed_command.command
+
+    # Three references: the download target, the digest's subject, and the
+    # script executed. The digest one sits inside a larger quoted string, so
+    # count the expansion rather than a quoted-argument shape.
+    assert command.count("$cb_installer") == 3
+    assert "/cb-agent-install.sh" not in command.split(";", 1)[1]
+
+
+def _run_dropin_block(tmp_path, *, download_dir: str | None):
+    """Execute the installer's systemd drop-in block against a scratch unit dir."""
+    script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex="ab" * 32,
+        tls_pin="",
+        manifest={"0.1.0": {"linux-amd64": "deadbeef"}},
+    )
+    start = script.index("# A staging directory the operator named")
+    end = script.index("systemctl daemon-reload", start)
+    snippet = script[start:end]
+
+    unit_dir = tmp_path / "systemd"
+    unit_dir.mkdir(parents=True)
+    runner = tmp_path / "run.sh"
+    lines = ["#!/bin/sh", "set -eu", f"CB_UNIT_DIR='{unit_dir}'"]
+    if download_dir is not None:
+        lines.append(f"CB_AGENT_DOWNLOAD_DIR='{download_dir}'")
+    lines.append(snippet)
+    runner.write_text("\n".join(lines) + "\n")
+    runner.chmod(0o755)
+
+    result = subprocess.run(
+        ["/bin/sh", str(runner)], capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"}
+    )
+    assert result.returncode == 0, result.stderr
+    return unit_dir / "cb-agent.service.d" / "10-download-dir.conf"
+
+
+def test_an_operators_download_directory_is_carried_into_the_unit(tmp_path):
+    """An operator who needed a directory at install time needs the same one at
+    update time — the agent's own downloads land there too."""
+    conf = _run_dropin_block(tmp_path, download_dir="/mnt/data/cb-staging")
+
+    assert conf.exists()
+    body = conf.read_text()
+    assert "Environment=CB_AGENT_DOWNLOAD_DIR=/mnt/data/cb-staging" in body
+    # Without this the sandbox silently wins: ProtectSystem=strict makes the
+    # directory read-only, the agent falls back to the tmpfs this whole change
+    # exists to avoid, and nothing reports it.
+    assert "ReadWritePaths=/mnt/data/cb-staging" in body
+
+
+def test_no_drop_in_is_written_when_the_default_is_fine(tmp_path):
+    """The default path needs no override, and an empty drop-in is one more
+    file for the next operator to wonder about."""
+    conf = _run_dropin_block(tmp_path, download_dir=None)
+
+    assert not conf.exists()

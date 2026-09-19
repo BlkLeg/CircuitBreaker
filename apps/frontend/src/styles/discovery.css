@@ -2111,7 +2111,7 @@ select.cb-input {
   pointer-events: none;
 }
 
-/* ── Execution location (Slice 4, plan §6) ─────────────────────────────────── */
+/* ── Execution location ────────────────────────────────────────────────────── */
 
 /* Where a scan ran. Server and agent are told apart by shape and by the link
    affordance, not by hue alone: the server chip is a flat muted tag, the agent

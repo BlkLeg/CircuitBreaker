@@ -1,0 +1,192 @@
+/*
+ * Explainable dependency impact (plan 06).
+ *
+ * Tokens only (plan 00): the focused graph strokes and fills come from theme
+ * variables, so a theme change recolours the graph with the rest of the
+ * surface instead of leaving fixed-palette lines behind.
+ */
+
+.blast-radius-panel .impact-honesty {
+  margin: 0 0 8px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.impact-truncated {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--color-warning);
+  border-left-width: 3px;
+  border-radius: 6px;
+  color: var(--color-text);
+  font-size: 12px;
+  background: var(--color-surface-raised);
+}
+
+/* Confirmed/inferred evidence scope. */
+.impact-scope-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+  font-size: 12px;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.impact-scope-note {
+  margin: 0 0 6px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+/* Focused graph — decoration, not the answer. The list carries the complete
+   result; this exists to make the shape of it graspable. */
+.impact-graph {
+  width: 100%;
+  max-height: 260px;
+  margin: 8px 0;
+  overflow: visible;
+}
+
+.impact-graph__node {
+  fill: var(--color-surface-raised);
+  stroke: var(--color-text-muted);
+  stroke-width: 1.5;
+}
+
+.impact-graph__node--root {
+  stroke: var(--color-primary);
+  stroke-width: 2;
+}
+
+.impact-graph__edge {
+  stroke: var(--color-text-muted);
+  stroke-width: 1.25;
+}
+
+.impact-graph__edge--inferred {
+  stroke-dasharray: 4 3;
+}
+
+.impact-graph__arrowhead {
+  fill: var(--color-text-muted);
+}
+
+.impact-graph__label {
+  fill: var(--color-text);
+  font-size: 10px;
+}
+
+.impact-graph-skipped {
+  margin: 4px 0;
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+/* Affected list with per-entry paths. */
+.impact-asset-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.impact-asset-list li {
+  padding: 2px 0;
+}
+
+.impact-asset-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.impact-why-toggle {
+  font-size: 11px;
+  padding: 1px 6px;
+}
+
+.impact-path {
+  margin: 2px 0 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface-raised);
+  font-size: 11px;
+}
+
+.impact-path__direction {
+  display: block;
+  color: var(--color-text-muted);
+  margin-bottom: 4px;
+}
+
+.impact-path-steps {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.impact-path-steps li {
+  padding: 1px 0;
+  color: var(--color-text);
+  font-family: monospace;
+}
+
+.impact-step-node {
+  font-weight: 600;
+}
+
+.impact-step-edge {
+  color: var(--color-text-muted);
+  margin: 0 4px;
+}
+
+.impact-step-edge--inferred {
+  font-style: italic;
+}
+
+.impact-badge {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+}
+
+.impact-badge--inferred {
+  color: var(--color-warning);
+  border-color: var(--color-warning);
+}
+
+/* Connectivity: context, never counted as impact. */
+.impact-connectivity {
+  margin-top: 10px;
+  border-top: 1px solid var(--color-border);
+  padding-top: 8px;
+}
+
+.impact-connectivity__toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.impact-connectivity__toggle:hover {
+  color: var(--color-text);
+}
+
+.impact-connectivity__list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+}

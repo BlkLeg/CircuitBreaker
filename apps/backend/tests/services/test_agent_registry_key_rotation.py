@@ -307,7 +307,7 @@ def test_start_device_key_rotation_rejects_successor_already_pending_for_another
     assert resolved.id == agent_a.id
 
 
-# ── record_server_key_pin (Task 28) ────────────────────────────────────────
+# ── record_server_key_pin ────────────────────────────────────────
 
 
 def test_record_server_key_pin_current_sets_current_timestamp_only(db_session, factories):

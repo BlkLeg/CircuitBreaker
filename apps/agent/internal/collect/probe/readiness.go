@@ -36,7 +36,7 @@ type readinessDeps struct {
 	systemServers func() ([]string, error)
 }
 
-// Readiness reports whether this host can actually perform each of the four checks (§5).
+// Readiness reports whether this host can actually perform each of the four checks.
 //
 // TCP and HTTP need nothing of the host beyond an outbound socket, so they are ready whenever
 // the capability is granted at all — an unreachable *target* is a monitor result, not a

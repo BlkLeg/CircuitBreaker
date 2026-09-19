@@ -2,7 +2,7 @@
 
 The scheduler puts nothing but a `run_id` on NATS; everything the agent needs —
 host, complete validated config, any HTTP credentials — is loaded here,
-immediately before encrypted delivery over the live /link socket (D-10).
+immediately before encrypted delivery over the live /link socket.
 """
 
 import json

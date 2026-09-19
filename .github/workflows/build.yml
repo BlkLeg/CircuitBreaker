@@ -6,6 +6,22 @@ on:
       version:
         required: true
         type: string
+      # Slice 4.2 (F3): the Ed25519 public key embedded in the agent binaries
+      # this build produces. A repository variable, not a secret — it is
+      # public by construction, and keeping it out of the secret store lets a
+      # fork see which key the official builds use. Empty in a fork, which
+      # yields warn-mode agents rather than a failed build.
+      signing_pubkey:
+        required: false
+        type: string
+        default: ""
+    secrets:
+      # The private half, used only by apps/agent/scripts/gen_manifest.py to
+      # sign the built binaries. Never read by the application runtime, and
+      # absent in forks — which produce unsigned, warn-mode binaries rather
+      # than failing.
+      AGENT_SIGNING_PRIVATE_KEY:
+        required: false
   workflow_dispatch:
     # checkov:skip=CKV_GHA_7: Manual RC/package rebuilds require an operator-supplied version; release.yml consumes the protected artifact path.
     inputs:
@@ -63,6 +79,14 @@ jobs:
         run: cd apps/frontend && npm ci && npm run build
 
       - name: Build packages
+        env:
+          # Signs the cb-agent binaries (apps/agent/scripts/gen_manifest.py)
+          # and embeds the matching public key in them
+          # (apps/agent/internal/update/signature.go). Both absent in forks
+          # and in local builds, which produce warn-mode agents rather than
+          # failing.
+          AGENT_SIGNING_PRIVATE_KEY: ${{ secrets.AGENT_SIGNING_PRIVATE_KEY }}
+          SIGNING_PUBKEY: ${{ inputs.signing_pubkey }}
         run: |
           .venv/bin/python scripts/build_native_release.py \
             --version "${{ steps.ver.outputs.version }}" \

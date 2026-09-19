@@ -1103,7 +1103,7 @@ func TestCollector_NilNowAndUsageFallBackToRealImplementations(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// CollectorNames: the collector and Task 11's disable path agree by
+// CollectorNames: the collector and the disable path agree by
 // construction, so every readiness slice this package produces is exactly one
 // entry per name, in CollectorNames order, on every path that reports at all.
 // ---------------------------------------------------------------------------

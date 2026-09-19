@@ -43,7 +43,7 @@ _LOGO_MIME: dict[str, str] = {".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".
 
 
 # Shared by the notification API's Test button and the worker's delivery path.
-# One constant so the two cannot drift apart again — them disagreeing is INC-02.
+# One constant so the two cannot drift apart again — them disagreeing is the contract.
 SMTP_NOT_CONFIGURED = (
     "SMTP is not configured — set the SMTP server under Settings → SMTP "
     "before sending email from Circuit Breaker."
@@ -306,7 +306,7 @@ class SmtpService:
         """Deliver one notification-sink alert.
 
         This is the *only* email path a notification sink takes, for both the
-        Test button and real dispatch (INC-02). Keeping them on one method is
+        Test button and real dispatch. Keeping them on one method is
         the point of the fix: they used to disagree, so a green test proved
         nothing about delivery.
 

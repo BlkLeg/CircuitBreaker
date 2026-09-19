@@ -1252,6 +1252,31 @@ func_do_install() {
   # ── Patch nginx so CB_PORT serves HTTPS (bundle ships with HTTP redirect) ───
   [[ "$CB_NO_TLS" == false ]] && patch_nginx_tls_port "$CTID"
 
+  # Mark identity as proxmox (native layout inside the CT).
+  pct exec "$CTID" -- bash -c '
+    set -euo pipefail
+    version="$(cat /opt/circuitbreaker/share/VERSION 2>/dev/null || echo unknown)"
+    if [[ -f /opt/circuitbreaker/deploy/lib/install-identity.sh ]]; then
+      # shellcheck source=/dev/null
+      source /opt/circuitbreaker/deploy/lib/install-identity.sh
+    elif [[ -f /usr/local/lib/circuitbreaker/install-identity.sh ]]; then
+      # shellcheck source=/dev/null
+      source /usr/local/lib/circuitbreaker/install-identity.sh
+    fi
+    if command -v write_install_identity >/dev/null 2>&1; then
+      write_install_identity /etc/circuitbreaker/install-identity.json \
+        mode=proxmox \
+        version="$version" \
+        config_path=/etc/circuitbreaker/.env \
+        data_dir=/var/lib/circuitbreaker \
+        env_file=/etc/circuitbreaker/.env \
+        cli_path=/usr/local/bin/cb \
+        health_url=http://127.0.0.1:'"$CB_PORT"'/api/v1/readyz \
+        service_names=circuitbreaker-postgres,circuitbreaker-pgbouncer,circuitbreaker-redis,circuitbreaker-nats,circuitbreaker-backend,nginx \
+        || true
+    fi
+  ' 2>/dev/null || msg_warn "Could not write proxmox install identity inside CT $CTID"
+
   # ── Done ────────────────────────────────────────────────────────────────────
   CLEANUP_CTID=""
   echo ""
@@ -1265,6 +1290,8 @@ func_do_install() {
   echo -e "  ╚══════════════════════════════════════════════════╝${nc}"
   echo ""
   echo -e "  Open the URL above to complete setup (OOBE wizard)."
+  echo -e "  Inside the CT: pct exec $CTID -- cb info"
+  echo -e "  Inside the CT: pct exec $CTID -- cb setup-token"
   echo -e "  ${yellow}Your browser will warn about the self-signed certificate."
   echo -e "  Click Advanced → Proceed (or Accept the Risk) to continue.${nc}"
   echo -e "  ${blue}Log:${nc} $LOG_FILE"

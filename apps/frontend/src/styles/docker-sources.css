@@ -1,0 +1,165 @@
+/*
+ * Docker source cards (plan 03). Tokens only — status colour has to survive a
+ * theme switch, and these cards carry the difference between "reachable and
+ * empty" and "we could not read it", which is precisely the distinction that
+ * must not depend on the reader's palette.
+ */
+
+.docker-source {
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: var(--color-surface-raised);
+  margin-bottom: 12px;
+}
+
+.docker-source--ok {
+  border-left-color: var(--color-success);
+}
+
+.docker-source--partial {
+  border-left-color: var(--color-warning);
+}
+
+.docker-source--failed {
+  border-left-color: var(--color-danger);
+}
+
+.docker-source--running {
+  border-left-color: var(--color-info);
+}
+
+.docker-source--never-run {
+  border-left-color: var(--color-border);
+}
+
+/* Attempted, but nothing can be concluded about how it went. Warning rather
+   than success: an unknown outcome is not a good one. */
+.docker-source--unknown {
+  border-left-color: var(--color-warning);
+}
+
+.docker-source__head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.docker-source__name {
+  margin: 0;
+  font-size: 14px;
+  color: var(--color-text);
+}
+
+.docker-source__endpoint {
+  margin: 2px 0 0;
+  font-size: 12px;
+  font-family: monospace;
+  color: var(--color-text-muted);
+}
+
+.docker-source__status {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.docker-source__state {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.docker-source--ok .docker-source__state {
+  color: var(--color-success);
+}
+
+.docker-source--partial .docker-source__state {
+  color: var(--color-warning);
+}
+
+.docker-source--failed .docker-source__state {
+  color: var(--color-danger);
+}
+
+.docker-source--unknown .docker-source__state {
+  color: var(--color-warning);
+}
+
+.docker-source__note,
+.docker-source__empty {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+/* Anything qualifying what the list below can be trusted to mean. */
+.docker-source__warning {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-warning);
+  font-size: 12px;
+  color: var(--color-text);
+}
+
+.docker-source__stamps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
+.docker-source__stamps dt {
+  color: var(--color-text-muted);
+}
+
+.docker-source__stamps dd {
+  margin: 2px 0 0;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.docker-source__parent {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-border);
+}
+
+.docker-source__containers {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  font-size: 12px;
+}
+
+.docker-source__containers li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.docker-source__containers li:last-child {
+  border-bottom: none;
+}
+
+.docker-source__container-name {
+  color: var(--color-text);
+  font-family: monospace;
+}
+
+.docker-source__container-meta {
+  color: var(--color-text-muted);
+}

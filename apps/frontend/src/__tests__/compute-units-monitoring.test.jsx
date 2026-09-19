@@ -1,6 +1,7 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal();
@@ -12,6 +13,18 @@ vi.mock('../api/client', async (importOriginal) => {
         data: [
           { id: 7, name: 'web-vm', kind: 'vm', hardware_id: 1, ip_address: '10.0.0.7', tags: [] },
         ],
+      }),
+      page: vi.fn().mockResolvedValue({
+        data: {
+          items: [
+            { id: 7, name: 'web-vm', kind: 'vm', hardware_id: 1, ip_address: '10.0.0.7', tags: [] },
+          ],
+          total: 1,
+          limit: 25,
+          offset: 0,
+          sort: 'name',
+          direction: 'asc',
+        },
       }),
       create: vi.fn(),
       update: vi.fn(),
@@ -98,7 +111,7 @@ describe('ComputeUnitsPage monitoring', () => {
   });
 
   it('renders a Monitor column and enables monitoring for the row', async () => {
-    render(<ComputeUnitsPage />);
+    render(<ComputeUnitsPage />, { wrapper: MemoryRouter });
 
     // The column header and the row's enable button both read "Monitor".
     await waitFor(() => expect(screen.getAllByText('Monitor').length).toBeGreaterThanOrEqual(2));
@@ -127,7 +140,7 @@ describe('ComputeUnitsPage monitoring', () => {
         },
       ],
     });
-    render(<ComputeUnitsPage />);
+    render(<ComputeUnitsPage />, { wrapper: MemoryRouter });
 
     await waitFor(() => expect(screen.getByText('Up')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
@@ -137,7 +150,7 @@ describe('ComputeUnitsPage monitoring', () => {
 
   it('explains the failure when the unit has no address to probe', async () => {
     createTargetMonitor.mockRejectedValue({ response: { status: 404 } });
-    render(<ComputeUnitsPage />);
+    render(<ComputeUnitsPage />, { wrapper: MemoryRouter });
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Monitor' })).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Monitor' }));

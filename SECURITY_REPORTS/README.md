@@ -16,7 +16,7 @@ introduced thirteen regressions of its own that the document lists. If you are p
 that work up mid-flight, start with
 [`HANDOFF-2026-08-26.md`](./HANDOFF-2026-08-26.md), which is the operating order.
 Everything else here predates the release candidate, between 2026-03-10
-(v0.2.0-beta) and 2026-06-30, and none of it has been re-run against 0.4.0.
+(v0.2.0-beta) and 2026-06-30, and none of it has been re-run against 0.4.2.
 
 The current security posture is defined by:
 
@@ -34,7 +34,7 @@ as history only. GOV-13 is the requirement this index exists to close.
 
 - **Superseded** — a later document, or a live control in the tree, covers the
   same ground. The row names what replaced it.
-- **Historical** — accurate for its date, not re-verified against 0.4.0.
+- **Historical** — accurate for its date, not re-verified against 0.4.2.
 - **Active** — at least one finding was still open in the tree when this index
   was written. Confirm against the ledger before acting.
 

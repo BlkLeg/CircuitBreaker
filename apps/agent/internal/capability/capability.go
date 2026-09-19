@@ -65,7 +65,7 @@ func DefaultRemoteProbeConfig() RemoteProbeConfig {
 }
 
 // LocalDiscoveryConfig is the server's normalized `local_discovery` grant config
-// (Slice 4 plan §1).
+// (see the local_discovery defaults).
 //
 // The scope half is netscope.Config embedded for the same reason
 // RemoteProbeConfig embeds it: there is exactly one Go declaration of what a
@@ -120,7 +120,7 @@ func New(stateDir string) *Gate {
 }
 
 // GrantFault records that one capability in a grant payload could not be
-// honored as sent. It is deliberately not an error: per D-6 a fault isolates to
+// honored as sent. It is deliberately not an error: by design a fault isolates to
 // its own capability, and the rest of the snapshot still applies.
 type GrantFault struct {
 	Capability string
@@ -609,7 +609,7 @@ func (g *Gate) Snapshot() Snapshot {
 	return out
 }
 
-// Grants preserves the Slice 1 status-file contract.
+// Grants preserves the status-file contract.
 func (g *Gate) Grants() map[string]bool {
 	out := map[string]bool{}
 	for k, v := range g.Snapshot() {

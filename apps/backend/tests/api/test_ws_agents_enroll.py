@@ -75,6 +75,34 @@ def test_enroll_creates_pending_agent_and_returns_pairing_code(db_session, ws_cl
     assert agent.hostname == "test-box"
 
 
+def test_enrollment_records_the_endpoint_the_agent_dialed(db_session, ws_client):
+    """An endpoint nothing can reach is invisible unless the agent names it: the
+    server never connects to an agent, so it cannot observe which address the
+    agent actually dialed on its own. The hello payload's `server_url` field
+    (optional, so an older agent that omits it still enrolls) is stored on the
+    new agent row as `enrolled_via_endpoint`."""
+    import secrets
+
+    from app.db.models import Agent
+
+    _, server_pub = get_server_static_keypair()
+    agent_priv = secrets.token_bytes(32)
+
+    with ws_client.websocket_connect("/api/v1/agents/enroll") as ws:
+        initiator = TestNoiseInitiator(agent_priv, server_pub)
+        ws.send_bytes(initiator.write_message())
+        initiator.read_message(ws.receive_bytes())
+
+        ws.send_bytes(
+            initiator.encrypt(_make_hello_frame_bytes(server_url="https://cb.example.com"))
+        )
+
+        initiator.decrypt(ws.receive_bytes())
+
+    agent = db_session.query(Agent).filter_by(status="pending").one()
+    assert agent.enrolled_via_endpoint == "https://cb.example.com"
+
+
 def test_enroll_rejects_stale_handshake_timestamp(db_session, ws_client):
     import secrets
     from datetime import timedelta

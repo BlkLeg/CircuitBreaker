@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import PropTypes from 'prop-types';
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { I18nextProvider } from 'react-i18next';
 import i18n from './i18n';
@@ -11,13 +12,15 @@ import { authApi } from './api/auth.js';
 import ErrorBoundary from './components/ErrorBoundary';
 import MacOSDOCK from './components/MacOSDOCK';
 import Header from './components/Header';
-import CommandPalette from './components/CommandPalette';
+import GlobalNavigator from './components/navigation/GlobalNavigator.jsx';
 import AuthModal from './components/auth/AuthModal.jsx';
 import ProfileModal from './components/auth/ProfileModal.jsx';
 import MiscPage from './pages/MiscPage';
 import LoginPage from './pages/LoginPage';
 import OOBEWizardPage from './pages/OOBEWizardPage';
 import { useDiscoveryStream, discoveryEmitter } from './hooks/useDiscoveryStream.js';
+import { useNavigationTiming, useNavigationMountSignal } from './hooks/useNavigationTiming.js';
+import { lazyRoute } from './lib/lazyRoute.js';
 import { connectSSE, disconnectSSE } from './lib/sseClient.js';
 import ConnectionStatus from './components/ConnectionStatus.jsx';
 import MasqueradeBanner from './components/MasqueradeBanner.jsx';
@@ -25,6 +28,8 @@ import UpdateBanner from './components/UpdateBanner.jsx';
 import ServerLifecycleBanner from './components/ServerLifecycleBanner.jsx';
 import LoadingScreen from './components/common/LoadingScreen.jsx';
 import Guarded from './components/common/Guarded';
+import { canSeeNavItem, navGroupOf, navItem } from './data/navigation';
+import { namespaceFor, recordRecent } from './lib/navigatorPrefs';
 
 /**
  * `/discovery/history` folded into `/discovery` — carrying the query string.
@@ -40,41 +45,66 @@ export function DiscoveryHistoryRedirect() {
   return <Navigate to={{ pathname: '/discovery', search }} replace />;
 }
 
-// Heavy pages lazy-loaded so their chunks are only downloaded when first visited.
-const DocsPage = React.lazy(() => import('./pages/DocsPage'));
-const SettingsPage = React.lazy(() => import('./pages/SettingsPage'));
-const MapPage = React.lazy(() => import('./pages/MapPage'));
-const DiscoveryPage = React.lazy(() => import('./pages/DiscoveryPage'));
-const HardwarePage = React.lazy(() => import('./pages/HardwarePage'));
-const ComputeUnitsPage = React.lazy(() => import('./pages/ComputeUnitsPage'));
-const ServicesPage = React.lazy(() => import('./pages/ServicesPage'));
-const StoragePage = React.lazy(() => import('./pages/StoragePage'));
-const LogsPage = React.lazy(() => import('./pages/LogsPage'));
-const ExternalNodesPage = React.lazy(() => import('./pages/ExternalNodesPage'));
-const AdminUsersPage = React.lazy(() => import('./pages/AdminUsersPage'));
-const AccessTokensPage = React.lazy(() => import('./pages/AccessTokensPage'));
-const UserActionsPage = React.lazy(() => import('./pages/UserActionsPage'));
-const InviteAcceptPage = React.lazy(() => import('./pages/InviteAcceptPage'));
-const ForceChangePasswordPage = React.lazy(() => import('./pages/ForceChangePasswordPage'));
-const ResetPasswordPage = React.lazy(() => import('./pages/ResetPasswordPage'));
-const VaultResetPage = React.lazy(() => import('./pages/VaultResetPage.jsx'));
-const IPAMPage = React.lazy(() => import('./pages/IPAMPage'));
+// Heavy pages lazy-loaded so their chunks are only downloaded when first
+// visited. `lazyRoute` is `React.lazy` plus the per-chunk fetch record route
+// 2 asks for and a single retry on a failed import — see lib/lazyRoute.js
+// for why both live in one wrapper. Do not reintroduce a bare `React.lazy`
+// here: a route without a chunk record is a hole in the route-diagnostics decision tree, and
+// tests/build has a check that fails the build for one.
+const DocsPage = lazyRoute('DocsPage', () => import('./pages/DocsPage'));
+const SettingsPage = lazyRoute('SettingsPage', () => import('./pages/SettingsPage'));
+const MapPage = lazyRoute('MapPage', () => import('./pages/MapPage'));
+const DiscoveryPage = lazyRoute('DiscoveryPage', () => import('./pages/DiscoveryPage'));
+const HardwarePage = lazyRoute('HardwarePage', () => import('./pages/HardwarePage'));
+const ComputeUnitsPage = lazyRoute('ComputeUnitsPage', () => import('./pages/ComputeUnitsPage'));
+const ServicesPage = lazyRoute('ServicesPage', () => import('./pages/ServicesPage'));
+const StoragePage = lazyRoute('StoragePage', () => import('./pages/StoragePage'));
+const LogsPage = lazyRoute('LogsPage', () => import('./pages/LogsPage'));
+const ParkedMessagesPage = lazyRoute(
+  'ParkedMessagesPage',
+  () => import('./pages/ParkedMessagesPage')
+);
+const ExternalNodesPage = lazyRoute('ExternalNodesPage', () => import('./pages/ExternalNodesPage'));
+const AdminUsersPage = lazyRoute('AdminUsersPage', () => import('./pages/AdminUsersPage'));
+const AccessTokensPage = lazyRoute('AccessTokensPage', () => import('./pages/AccessTokensPage'));
+const UserActionsPage = lazyRoute('UserActionsPage', () => import('./pages/UserActionsPage'));
+const InviteAcceptPage = lazyRoute('InviteAcceptPage', () => import('./pages/InviteAcceptPage'));
+const ForceChangePasswordPage = lazyRoute(
+  'ForceChangePasswordPage',
+  () => import('./pages/ForceChangePasswordPage')
+);
+const ResetPasswordPage = lazyRoute('ResetPasswordPage', () => import('./pages/ResetPasswordPage'));
+const VaultResetPage = lazyRoute('VaultResetPage', () => import('./pages/VaultResetPage.jsx'));
+const IPAMPage = lazyRoute('IPAMPage', () => import('./pages/IPAMPage'));
 
-const CertificatesPage = React.lazy(() => import('./pages/CertificatesPage'));
-const MonitorsPage = React.lazy(() => import('./pages/MonitorsPage'));
-const MonitorDetailPage = React.lazy(() => import('./pages/MonitorDetailPage'));
-const AgentsPage = React.lazy(() => import('./pages/AgentsPage'));
-const AgentDetailPage = React.lazy(() => import('./pages/AgentDetailPage'));
-const PrivacyPage = React.lazy(() => import('./pages/PrivacyPage'));
-const NotificationsPage = React.lazy(() => import('./pages/NotificationsPage'));
-const IntelPage = React.lazy(() => import('./pages/IntelPage'));
+const CertificatesPage = lazyRoute('CertificatesPage', () => import('./pages/CertificatesPage'));
+const MonitorsPage = lazyRoute('MonitorsPage', () => import('./pages/MonitorsPage'));
+const MonitorDetailPage = lazyRoute('MonitorDetailPage', () => import('./pages/MonitorDetailPage'));
+const AgentsPage = lazyRoute('AgentsPage', () => import('./pages/AgentsPage'));
+const AgentDetailPage = lazyRoute('AgentDetailPage', () => import('./pages/AgentDetailPage'));
+const PrivacyPage = lazyRoute('PrivacyPage', () => import('./pages/PrivacyPage'));
+const NotificationsPage = lazyRoute('NotificationsPage', () => import('./pages/NotificationsPage'));
+const IntelPage = lazyRoute('IntelPage', () => import('./pages/IntelPage'));
 
-function AppInner() {
-  const [paletteOpen, setPaletteOpen] = useState(false);
-  const { authModalOpen, setAuthModalOpen, profileModalOpen, setProfileModalOpen, isMasquerade } =
-    useAuth();
+// Exported for __tests__/navigator-wiring.test.jsx: this is the unit that owns
+// navigator state, the Ctrl/Cmd+K listener, activation, and recent
+// recording — U4's wiring guarantees are AppInner's, not the whole bootstrap
+// tree's, so the test renders exactly this and not App.
+export function AppInner() {
+  const [navigatorOpen, setNavigatorOpen] = useState(false);
+  const {
+    authModalOpen,
+    setAuthModalOpen,
+    profileModalOpen,
+    setProfileModalOpen,
+    openAuthModal,
+    openProfileModal,
+    isMasquerade,
+    user,
+  } = useAuth();
   const toast = useToast();
   const location = useLocation();
+  const navigate = useNavigate();
   const pathnameRef = useRef(location.pathname);
   pathnameRef.current = location.pathname;
 
@@ -104,14 +134,45 @@ function AppInner() {
     return () => discoveryEmitter.off('job:update', onJobUpdate);
   }, [toast]);
 
-  const handleClosePalette = useCallback(() => setPaletteOpen(false), []);
-  const handleOpenPalette = useCallback(() => setPaletteOpen(true), []);
+  const handleCloseNavigator = useCallback(() => setNavigatorOpen(false), []);
+  const handleOpenNavigator = useCallback(() => setNavigatorOpen(true), []);
+  const navigatorNamespace = useMemo(
+    () => namespaceFor({ user, isMasquerade }),
+    [user, isMasquerade]
+  );
+
+  const handleNavigatorActivate = useCallback(
+    (entry) => {
+      if (entry.path) {
+        navigate(entry.path);
+        return;
+      }
+      if (entry.actionFn === 'openAuthModal') openAuthModal();
+      if (entry.actionFn === 'openProfileModal') openProfileModal();
+    },
+    [navigate, openAuthModal, openProfileModal]
+  );
+
+  const handleRouteMounted = useCallback(
+    ({ pathname }) => {
+      const canonical = /^\/agents\/[^/]+/.test(pathname)
+        ? '/agents'
+        : /^\/monitors\/[^/]+/.test(pathname)
+          ? '/monitors'
+          : pathname;
+      const item = navItem(canonical);
+      const group = navGroupOf(canonical);
+      if (!item || !group || !canSeeNavItem(item, group, user)) return;
+      recordRecent(navigatorNamespace, `page:${item.path}`);
+    },
+    [navigatorNamespace, user]
+  );
 
   useEffect(() => {
     const handler = (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k' && !e.repeat && !e.isComposing) {
         e.preventDefault();
-        setPaletteOpen((v) => !v);
+        setNavigatorOpen((open) => !open);
       }
     };
     globalThis.addEventListener('keydown', handler);
@@ -120,8 +181,12 @@ function AppInner() {
 
   return (
     <div className="app-shell">
-      <CommandPalette isOpen={paletteOpen} onClose={handleClosePalette} />
-      <Header onOpenPalette={handleOpenPalette} />
+      <GlobalNavigator
+        isOpen={navigatorOpen}
+        onClose={handleCloseNavigator}
+        onNavigate={handleNavigatorActivate}
+      />
+      <Header onOpenNavigator={handleOpenNavigator} />
       <MasqueradeBanner />
       <ConnectionStatus discoveryConnected={discoveryConnected} />
       <div
@@ -136,21 +201,37 @@ function AppInner() {
         <ErrorBoundary>
           <React.Suspense fallback={<LoadingScreen />}>
             {/*
-              known_bugs-v1.0.0-rc.1.md item 1 reproduces from this route tree
-              (see e2e/navigation.spec.ts), but mode is NOT the cause: measured
-              on Firefox under 8-way load, "wait" wedged 2 times in 48 and
-              "sync" 1 in 48 — no difference. Left on "wait", the value
-              8bb0ee25 shipped. Do not switch it speculatively; the numbers are
-              in known_bugs.
+              This wrapper is a page transition and nothing more. It was added
+              by 8bb0ee25 as the fix for the sticky-navigation wedge
+              (known_bugs item 1) and was never actually load bearing for it:
+              removing `AnimatePresence` outright leaves the wedge rate
+              unchanged at 16/40, and `mode="sync"` gives 15/40 against 16/40
+              for `"wait"`. The wedge lives in the router — see the comment on
+              `<BrowserRouter>` at the bottom of this file.
+
+              So `mode` is a look, not a fix, and it is safe to change on
+              visual grounds. What is *not* safe is reaching for this block the
+              next time navigation misbehaves; that mistake cost this bug eight
+              months of investigation.
             */}
             <AnimatePresence mode="wait">
               <motion.div
                 key={location.pathname}
+                data-route-path={location.pathname}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.15 }}
               >
+                {/*
+                  Mounted fresh every navigation (this element's ancestor is
+                  keyed by location.pathname, so it fully remounts rather than
+                  updating) and gated by the same Suspense boundary as
+                  <Routes> below, so its mount effect fires exactly when the
+                  incoming route has actually rendered — see
+                  hooks/useNavigationTiming.js.
+                */}
+                <NavigationMountSignal onMounted={handleRouteMounted} />
                 <Routes location={location}>
                   <Route path="/" element={<Navigate to="/map" replace />} />
                   <Route path="/hardware" element={<HardwarePage />} />
@@ -209,6 +290,14 @@ function AppInner() {
                     }
                   />
                   <Route
+                    path="/logs/parked"
+                    element={
+                      <Guarded path="/logs/parked">
+                        <ParkedMessagesPage />
+                      </Guarded>
+                    }
+                  />
+                  <Route
                     path="/settings"
                     element={
                       <Guarded path="/settings">
@@ -260,6 +349,29 @@ function AppInner() {
     </div>
   );
 }
+
+// Mounted once, inside the router context but above the route tree, so
+// hooks/useNavigationTiming.js observes every navigation regardless of which
+// page is showing — deliberately not folded into AppInner alongside
+// useDiscoveryStream(), which is already suspected of a re-render
+// storm; this renders nothing, so it adds no re-render surface there.
+function NavigationTimingWatcher() {
+  useNavigationTiming();
+  return null;
+}
+
+// Mounted once, as a sibling of <Routes> inside the Suspense boundary that
+// wraps it (see AppInner below) — the other half of useNavigationTiming.js.
+// Renders nothing; its only job is the mount effect useNavigationMountSignal
+// runs, which closes out whatever nav useNavigationTiming() opened.
+function NavigationMountSignal({ onMounted }) {
+  useNavigationMountSignal(onMounted);
+  return null;
+}
+
+NavigationMountSignal.propTypes = {
+  onMounted: PropTypes.func,
+};
 
 // Preserves query-string (e.g. ?cb_auth_code= for OAuth exchange) when redirecting to /login
 function NavigateToLogin() {
@@ -431,7 +543,52 @@ function AppRoutes() {
 function App() {
   return (
     <I18nextProvider i18n={i18n}>
-      <BrowserRouter>
+      {/*
+        `useTransitions={false}` is the fix for known_bugs item 1, the sticky
+        navigation wedge: the URL advances and the page does not, permanently,
+        until a manual reload.
+
+        react-router v7 wraps every location update in `React.startTransition`,
+        while `history.pushState` has already changed the URL synchronously.
+        A transition is interruptible and non-urgent, so React is free to
+        render it late, discard the render, or never commit it at all — and
+        when the outgoing route is an expensive tree (MapPage's topology
+        canvas), that is exactly what happens. The URL and the rendered route
+        then disagree with nothing on screen to say so: no fallback, no error
+        boundary, no console error. A reload is the only recovery because it
+        re-seeds both from the address bar.
+
+        Measured on this app, dock-click navigations, Chromium under 6x CPU
+        throttle:
+
+        | variant                            | wedges |
+        |------------------------------------|--------|
+        | as shipped                         | 16/40  |
+        | `AnimatePresence mode="sync"`      | 15/40  |
+        | no `AnimatePresence` at all        | 16/40  |
+        | journey routes imported eagerly    | 16/40  |
+        | `useTransitions={false}`           |  0/80  |
+
+        and against a real backend, 15/40 -> 0/40. Every wedge in every run was
+        a navigation *away from* `/map`.
+
+        Read the middle rows before changing anything here. The animation
+        wrapper in `AppInner` and the `React.lazy` route chunks were the two
+        standing hypotheses for eight months, and both are innocent: removing
+        either one entirely leaves the wedge rate untouched. Only this prop does.
+
+        The cost is the intended one. Without transitions the location commits
+        immediately, so a route whose chunk is still loading shows the
+        `LoadingScreen` fallback instead of silently holding the previous page.
+        A visible loading state is the behaviour this app wants; a stale page
+        that lies about where you are is not.
+
+        tests/build/test_router_transitions_contract.py fails the build if this
+        prop is dropped, and e2e/navigation.spec.ts reproduces the wedge under
+        throttle.
+      */}
+      <BrowserRouter useTransitions={false}>
+        <NavigationTimingWatcher />
         <SettingsProvider>
           <TimezoneProvider>
             <AuthProvider>

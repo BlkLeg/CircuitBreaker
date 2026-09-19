@@ -144,6 +144,16 @@ Do not confuse it with `CB_ALLOW_DEGRADED_DEPENDENCIES`, which is a blanket brea
 waives *all* of those dependency gates at once. Use that one only to get a broken instance back up
 long enough to fix it.
 
+#### The UI does not fetch fonts from a third party
+
+The web UI serves its own typefaces from `/fonts`. Earlier versions injected a
+`fonts.googleapis.com` stylesheet for whichever font family the operator had
+selected, which meant every page load disclosed the viewer's IP and referrer to
+Google — on a console people self-host in order not to do that — and an
+air-gapped install fell back to system fonts instead of rendering as designed.
+Nothing in the UI now requests a third-party asset;
+`apps/frontend/e2e/no-third-party-fonts.spec.ts` is the regression guard.
+
 #### The daily release check leaves the box by default
 
 One outbound call is made without you configuring anything, and it discloses the instance version,

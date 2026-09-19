@@ -30,7 +30,7 @@ vi.mock('../api/agents', async () => {
       })
     ),
     getAgentsPresence: vi.fn(() => Promise.resolve({ data: [] })),
-    // The fleet redesign's second metric read (design §1.2). It has its own
+    // The fleet redesign's second metric read. It has its own
     // 120s cadence inside useFleetMetrics, so it has to exist on the mock even
     // for the tests that only care about presence — an undefined export throws
     // out of the hook's mount effect and takes the whole page down with it.
@@ -51,7 +51,7 @@ vi.mock('../api/agents', async () => {
     getCapabilityDefaults: vi.fn(() => Promise.resolve({ data: {} })),
     rejectAgent: vi.fn(),
     // The REAL implementation, pulled through importActual rather than
-    // re-implemented here: Task 15 makes every REST response emit
+    // re-implemented here: every REST response emits
     // {enabled, config}, and normalizeCapability is what keeps AgentsPage from
     // reading an always-truthy grant object as "granted". A hand-written copy
     // would keep passing after the real normalizer's semantics changed, which
@@ -146,15 +146,59 @@ describe('AgentsPage', () => {
     );
 
     await waitFor(() => expect(screen.getByText('online')).toBeInTheDocument());
-    // Scoped to the table: the Task 15 capability filter's <select> now also
+    // Scoped to the table: the capability filter's <select> also
     // renders a "Host telemetry" option, so an unscoped getByText would match
     // both.
     const table = screen.getByRole('table');
     expect(within(table).getByText('Host telemetry')).toBeInTheDocument();
-    // Task 15 / D-11: a disabled grant arrives as {enabled: false, config: {}},
+    // A disabled grant arrives as {enabled: false, config: {}},
     // which is truthy — the row must still report it as not granted.
     expect(within(table).queryByText('Remote probe')).not.toBeInTheDocument();
     expect(within(table).getByText('rack-a-switch')).toBeInTheDocument();
+  });
+
+  it('carries every spool fact from the presence row onto the fleet row', async () => {
+    // `withPresence` copies named fields rather than spreading the response, so
+    // a field the endpoint sends and that list omits arrives as `undefined` —
+    // which the row cannot tell apart from "this agent never reported one", and
+    // which therefore disables the chip silently and fleet-wide. That is not
+    // hypothetical: the eviction group shipped on the endpoint and on the row
+    // and was missing from this list, so the loss chip could never fire in the
+    // real app. All three groups are asserted together for that reason.
+    getAgentsPresence.mockResolvedValue({
+      data: [
+        {
+          agent_id: 2,
+          online: false,
+          connected_since: null,
+          last_seen_at: new Date(Date.now() - 3 * 3600 * 1000).toISOString(),
+          capabilities: { host_telemetry: { enabled: true, config: { interval_s: 30 } } },
+          hardware: null,
+          latest: null,
+          spool_depth: 0,
+          spool_bytes: 0,
+          spool_reported_at: new Date(Date.now() - 3 * 3600 * 1000).toISOString(),
+          spool_stale: true,
+          spool_evicted_frames: 9412,
+          spool_evicted_bytes: 33554432,
+          spool_evicted_oldest_at: '2026-09-01T00:00:00Z',
+          spool_evicted_newest_at: '2026-09-03T18:30:00Z',
+          spool_evicted_reported_at: '2026-09-03T18:30:05Z',
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/agents']}>
+        <AgentsPage />
+      </MemoryRouter>
+    );
+
+    const table = await screen.findByRole('table');
+    // The backlog, stated as unknown rather than as a frozen zero…
+    await waitFor(() => expect(within(table).getByText(/spool \?/)).toBeInTheDocument());
+    // …and the destroyed history beside it, not instead of it.
+    expect(within(table).getByText(/lost 9412/)).toBeInTheDocument();
   });
 
   it('inserts a newly enrolled agent as a pending row without waiting for the poll', async () => {
@@ -179,7 +223,7 @@ describe('AgentsPage', () => {
     await waitFor(() => expect(screen.getByText(/box1/i)).toBeInTheDocument());
     expect(screen.queryByText(/freshbox/i)).not.toBeInTheDocument();
 
-    // Simulate the live "enrolled" stream event (Task 10) — no poll tick.
+    // Simulate the live "enrolled" stream event — no poll tick.
     mockUseAgentLive.mockReturnValue({
       statuses: new Map([[99, { event_type: 'enrolled', detail: null, ts: Date.now() }]]),
       connected: true,
@@ -253,7 +297,7 @@ describe('AgentsPage', () => {
       connected: true,
     });
 
-    // The bulk presence poll (Task 12) lands after that stale event, and
+    // The bulk presence poll lands after that stale event, and
     // says the agent is actually offline with an updated last_seen_at.
     getAgentsPresence.mockResolvedValue({
       data: [
@@ -319,7 +363,7 @@ describe('AgentsPage', () => {
   });
 });
 
-// Task 15: status / capability / online filters, plus verifying pending rows
+// Status / capability / online filters, plus verifying pending rows
 // stay pinned at the top of the (now filterable) fleet table under every
 // combination.
 describe('AgentsPage fleet filters', () => {
@@ -420,6 +464,18 @@ describe('AgentsPage fleet filters', () => {
     await waitFor(() => expect(screen.getByText('Telemetry Agent')).toBeInTheDocument());
   }
 
+  it('frames the filters and their counts as one named region', async () => {
+    // The chrome down the left of this page is a stack of unlabelled boxes to
+    // anyone navigating by region. The counts belong inside the same box as
+    // the controls that produce them: every number in them comes from the
+    // predicate these selects set.
+    await renderPage();
+
+    const filters = screen.getByRole('region', { name: 'Filters' });
+    expect(within(filters).getByLabelText('Status')).toBeInTheDocument();
+    expect(within(filters).getByRole('status')).toHaveTextContent(/of \d+ agents/);
+  });
+
   it('narrows the table to the selected status, leaving the pending row pinned', async () => {
     await renderPage();
 
@@ -493,7 +549,7 @@ describe('AgentsPage fleet filters', () => {
   });
 });
 
-// Design §4's two states that used to have no rendering at all: an empty fleet
+// The two states with no rendering of their own: an empty fleet
 // (which showed an empty 11-column table) and a failed presence poll (which
 // AgentsPage swallowed with `.catch(() => {})`, freezing every metric while the
 // page still looked live).
@@ -516,6 +572,10 @@ describe('AgentsPage degraded states', () => {
     // Expanded without being asked, and fetching the command on mount.
     await waitFor(() => expect(getInstallCommand).toHaveBeenCalled());
     expect(screen.getByText('Add an agent')).toBeInTheDocument();
+    // Named, like the other chrome on this page. It keeps its own section
+    // rather than becoming a Panel: standalone it *is* the page, and a panel
+    // head above its numbered steps would title the page twice.
+    expect(screen.getByRole('region', { name: 'Add an agent' })).toBeInTheDocument();
     // No table chrome and no filters — there is nothing to sort or filter.
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Status')).not.toBeInTheDocument();
@@ -569,7 +629,7 @@ describe('AgentsPage degraded states', () => {
   });
 });
 
-// Design §3's invariant, stated there as a rule the whole three-clock
+// The invariant, stated as a rule the whole three-clock
 // arrangement rests on: "a WS push never overrides a metric value". The three
 // sources have deliberately disjoint slices — the stream owns presence
 // transitions, the 30s poll owns the head values, the 120s series owns the

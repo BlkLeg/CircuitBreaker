@@ -37,7 +37,7 @@ var icmpPayload = []byte("cb-agent-probe")
 // It is the agent-side counterpart of the backend collector's `icmp_unavailable` branch, and the
 // one place this package deliberately *diverges* from it: the backend reports up=False there,
 // which on an agent would mark every monitor on a misconfigured host DOWN. Here it is an
-// execution error, so the monitor keeps its last known state. Task 20's readiness evaluator
+// execution error, so the monitor keeps its last known state. The readiness evaluator
 // reports `probe.icmp = unavailable` off the same condition. The agent still ships with no
 // CAP_NET_RAW and this must not become a reason to add it.
 var ErrICMPUnavailable = errors.New("probe: unprivileged datagram ICMP is unavailable on this host")
@@ -45,11 +45,11 @@ var ErrICMPUnavailable = errors.New("probe: unprivileged datagram ICMP is unavai
 // EchoSession is one open unprivileged-ICMP socket. Injected so no test reaches the kernel.
 //
 // It is exported, together with ListenUnprivilegedICMP, for internal/collect/discover: the
-// host-liveness sweep of Slice 4 sends one echo per address and needs this exact socket. A copy
+// host-liveness sweep sends one echo per address and needs this exact socket. A copy
 // over there would be a second place to keep the ping_group_range degradation, the reply matching
 // and the cancellation-collapses-the-deadline behavior correct. This is the only thing that
-// package may take from here — discovery follows no redirects and sends no credentials (§7 of
-// plans/2026-08-04-cbi-agent-slice4-local-discovery.md), which puts http.go out of its reach.
+// package may take from here — discovery follows no redirects and sends no credentials, which
+// puts http.go out of its reach.
 type EchoSession interface {
 	// Ping sends one echo request and waits up to timeout for its reply. ok=false means the
 	// deadline passed with no answer, which is packet loss and not a failure; a non-nil error

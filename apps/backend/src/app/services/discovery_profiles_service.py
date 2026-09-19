@@ -69,18 +69,18 @@ def _normalize_cidr(cidr: str | None) -> str | None:
 
 # The request fields the execution-location decision is made from. An update that
 # names none of them is not re-decided, and that is deliberate: it has to stay
-# possible to rename, re-schedule or — the edit D-14 turns into a cancellation
+# possible to rename, re-schedule or — the edit the contract turns into a cancellation
 # trigger — *disable* a profile whose agent has since been revoked or lost its
 # collectors. An unconditional re-check would strand every profile naming such an
 # agent in the enabled state, with no way to stop it. What stops it from running
-# is the dispatch-time re-check, which is where plan §7's later checkpoints sit.
+# is the dispatch-time re-check, which is where the later checkpoints sit.
 _EXECUTION_LOCATION_FIELDS = frozenset(
     {"scan_agent_id", "cidr", "vlan_ids", "nmap_arguments", "scan_types"}
 )
 
-# The pair that decides which scan types are legal, and the only pair: §3's rule
+# The pair that decides which scan types are legal, and the only pair:the rule
 # is a function of the requested types and the execution location alone, so a
-# payload naming neither is not re-judged. That is what keeps D-6's write-only
+# payload naming neither is not re-judged. That is what keepsthe write-only
 # promise — a row written before the vocabulary existed may hold any string at
 # all, and re-checking it on an unrelated `cidr` edit would make it uneditable.
 _SCAN_TYPE_FIELDS = frozenset({"scan_types", "scan_agent_id"})
@@ -100,10 +100,10 @@ def _validate_execution_location(
     vlan_ids: list[int] | None,
     nmap_arguments: str | None,
 ) -> None:
-    """Refuse a profile the named agent could not run (plan §3, §7 checkpoint 1).
+    """Refuse a profile the named agent could not run (the contract, the contract checkpoint 1).
 
-    Delegates to `discovery_service.validate_agent_execution_location`, which is
-    also what job creation calls: plan §3 requires the *same* preconditions at
+    Delegates to `discovery_admission.validate_agent_execution_location`, which is
+    also what job creation calls: the contract requires the *same* preconditions at
     profile save and at job creation, and two implementations of them would be
     two answers. Imported inside the function because that module is a large one
     this service otherwise has no need of.
@@ -122,11 +122,11 @@ def _validate_execution_location(
     if scan_agent_id is None:
         return
 
-    from app.services.discovery_network import resolve_vlans_to_cidrs
-    from app.services.discovery_service import (
+    from app.services.discovery_admission import (
         AgentExecutionLocationError,
         validate_agent_execution_location,
     )
+    from app.services.discovery_network import resolve_vlans_to_cidrs
 
     targets, _ = resolve_vlans_to_cidrs(db, list(vlan_ids or []))
     if cidr and cidr.strip():
@@ -155,7 +155,7 @@ def _validate_merged_scan_types(
 
     Returns the normalized list, or None when there was nothing judgeable — an
     unreadable legacy `scan_types` column that this payload does not replace.
-    Refusing on that would strand the row (D-6 validates on write only, and the
+    Refusing on that would strand the row (the contract validates on write only, and the
     column is free text on rows that predate the vocabulary).
 
     Raises the same structured 422 as the other execution-location refusals so
@@ -222,7 +222,7 @@ def create_profile(
         name=payload.name,
         cidr=payload.cidr,
         normalized_cidr=_normalize_cidr(payload.cidr),
-        # None means the server scanner, which is every profile predating Slice 4.
+        # None means the server scanner, which is every profile predating the design.
         scan_agent_id=payload.scan_agent_id,
         managed_by=managed_by,
         vlan_ids=vlan_ids_json,
@@ -349,7 +349,7 @@ def update_profile(
     if profile.schedule_cron != old_cron or profile.enabled != old_enabled:
         changed_schedule = True
 
-    # D-14. Disabling a profile is a cancellation trigger, and the one an
+    # Disabling a profile is a cancellation trigger, and the one an
     # implementation forgets: nothing else stops the dispatches it already has in
     # flight, and once the profile is off nobody is going to look at them again.
     # Closed inside this transaction and published only after it commits, so an
@@ -399,14 +399,14 @@ def _cancel_in_flight_jobs(db: Session, profile: DiscoveryProfile) -> "Discovery
 
 
 def disable_profile(db: Session, profile_id: int, actor: str) -> DiscoveryProfile:
-    """Turn a profile off, cancelling whatever it has in flight (D-14).
+    """Turn a profile off, cancelling whatever it has in flight.
 
-    Task 24's subnet-disappearance entry point: a system-managed profile whose
+    the subnet-disappearance entry point: a system-managed profile whose
     subnet the agent stopped reporting is disabled rather than deleted, so its
     history survives. It routes through `update_profile` rather than writing
     `enabled = 0` itself, because that is where the cancellation, the audit row
     and the scheduler reload live and two implementations of "disable a profile"
-    would be two answers to D-14.
+    would be two answers to the contract.
     """
     # `model_validate` rather than the constructor, and it is load-bearing:
     # `update_profile` re-checks the execution location only for the fields the

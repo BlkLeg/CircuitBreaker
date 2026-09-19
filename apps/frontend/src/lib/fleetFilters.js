@@ -15,7 +15,12 @@
  */
 
 import { normalizeCapability } from '../api/agents';
+import { CAPABILITY_LABELS } from './agentCapabilities';
 import { deriveAgentStates, fleetRowStateInput, versionDrift } from './agentState';
+
+// Re-exported: the fleet filter bar renders these labels, and this module is
+// where its callers already import the rest of the filter vocabulary from.
+export { CAPABILITY_LABELS };
 
 export const ALL = 'all';
 export const PENDING_STATUS = 'pending';
@@ -25,12 +30,6 @@ export const ONLINE_VALUES = ['online', 'offline'];
 export const HEALTH_VALUES = ['attention', 'healthy'];
 export const DRIFT_VALUES = ['behind', 'current'];
 export const SPOOL_VALUES = ['pressure'];
-
-export const CAPABILITY_LABELS = {
-  host_telemetry: 'Host telemetry',
-  remote_probe: 'Remote probe',
-  local_discovery: 'Local discovery',
-};
 
 /**
  * Which derived states count as "needs attention".

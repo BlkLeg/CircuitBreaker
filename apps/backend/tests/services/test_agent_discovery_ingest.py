@@ -34,9 +34,11 @@ from sqlalchemy import delete, insert
 from sqlalchemy.exc import IntegrityError
 
 from app.core.time import utcnow, utcnow_iso
-from app.db.models import Agent, AgentEvent, ScanJob, ScanResult, Tenant
+from app.db.models import Agent, AgentEvent, Hardware, ScanJob, ScanResult, Tenant
 from app.services import (
     agent_discovery,
+    agent_link,
+    discovery_dispatch,
     discovery_eligibility,
     discovery_merge,
     discovery_service,
@@ -66,7 +68,7 @@ def _agent(db_session, factories, *, config=None, facts=None, tenant=None, statu
 
 
 def _job(db_session, agent, **kwargs):  # type: ignore[no-untyped-def]
-    """A job in the state the dispatcher (Task 20) leaves it in."""
+    """A job in the state the dispatcher leaves it in."""
     defaults = {
         "scan_agent_id": agent.id,
         "dispatch_id": secrets.token_hex(16),
@@ -291,7 +293,7 @@ async def test_finding_outside_the_jobs_targets_is_rejected_and_audited(
 async def test_finding_is_judged_against_the_scope_snapshotted_on_the_job(
     db_session, factories, emitted
 ):
-    """D-16. The agent's live scope is not the authority here: a sender that
+    """The agent's live scope is not the authority here: a sender that
     could move its own scope between dispatch and ingest — by reporting a new
     interface — would otherwise widen what it is allowed to report about. The
     job carries the version that was in force when the request was built, and a
@@ -438,6 +440,56 @@ async def test_duplicate_finding_inserts_one_result_and_emits_no_second_event(
     assert (stored.finding_count, stored.hosts_found) == (1, 1)
 
 
+async def test_rediscovery_across_agents_and_jobs_is_one_pending_device(
+    db_session, factories, emitted
+):
+    first_agent = _agent(db_session, factories)
+    second_agent = _agent(
+        db_session, factories, tenant=db_session.get(Tenant, first_agent.tenant_id)
+    )
+    jobs = [_job(db_session, agent) for agent in (first_agent, second_agent)]
+    payloads = [_payload(job) for job in jobs]
+    for agent, job, payload in zip((first_agent, second_agent), jobs, payloads, strict=True):
+        assert await agent_discovery.ingest_discovery_finding(db_session, agent, payload) == (
+            agent_discovery.DISPOSITION_ACCEPTED
+        )
+        db_session.refresh(job)
+        assert (job.hosts_found, job.finding_count) == (1, 1)
+    assert _results(db_session, jobs[0])[0].merge_status == "pending"
+    assert _results(db_session, jobs[1])[0].merge_status == "duplicate"
+    assert len(emitted) == 2
+    assert emitted[-1][1]["result"]["merge_status"] == "duplicate"
+    assert (
+        await agent_discovery.ingest_discovery_finding(db_session, second_agent, payloads[1])
+        == agent_discovery.DISPOSITION_DUPLICATE
+    )
+    assert len(_results(db_session, jobs[1])) == 1
+    assert len(emitted) == 2
+
+
+async def test_over_ceiling_rediscovery_rolls_back_pending_row_enrichment(
+    db_session, factories, emitted
+):
+    agent = _agent(db_session, factories)
+    first_job = _job(db_session, agent)
+    await agent_discovery.ingest_discovery_finding(
+        db_session, agent, _payload(first_job, mac_address=None)
+    )
+    first_result = _results(db_session, first_job)[0]
+    second_job = _job(db_session, agent, finding_count=1)
+    from app.schemas.agent_frame import DiscoveryFindingPayload
+
+    finding = DiscoveryFindingPayload.model_validate(_payload(second_job))
+    with pytest.raises(agent_discovery.InvalidDiscoveryFinding):
+        await agent_discovery._record_host_finding(
+            db_session, agent, second_job, finding, finding.ip_address, ceiling=1
+        )
+    db_session.refresh(first_result)
+    assert first_result.mac_address is None
+    assert first_result.merge_status == "pending"
+    assert _results(db_session, second_job) == []
+
+
 async def test_counters_increment_per_accepted_finding(db_session, factories, emitted):
     """D-10: the agent path increments, because it has no batch to write
     absolutely from. `hosts_found` plus exactly one of new/updated/conflict per
@@ -541,7 +593,7 @@ async def test_banner_is_carried_through_as_untrusted_text(db_session, factories
 async def test_result_tenant_comes_from_the_job_and_never_from_the_payload(
     db_session, factories, emitted
 ):
-    """D-17. Asserting only that a payload-supplied tenant was ignored would
+    """Asserting only that a payload-supplied tenant was ignored would
     pass against a NULL and prove nothing, so the non-NULL assertion is the
     point of the test."""
     agent = _agent(db_session, factories)
@@ -880,7 +932,7 @@ async def test_a_terminal_summary_finalizes_the_job(db_session, factories, emitt
 
 
 async def test_a_summary_never_clobbers_the_incremental_counters(db_session, factories, emitted):
-    """D-10. `_scan_finalize` writes `hosts_*` absolutely from a finished
+    """`_scan_finalize` writes `hosts_*` absolutely from a finished
     batch's stats dict; the agent path has no batch and increments them per
     accepted finding, so a shared finalizer would overwrite every count with a
     dict this path never assembles. The summary's own `hosts_found` is the
@@ -1007,7 +1059,7 @@ def test_the_terminal_vocabulary_has_no_partial_status() -> None:
     read by the history filter, the history query and the review badge; a sixth
     value is a cross-cutting change with no product requirement behind it, so an
     interrupted scan is `failed` with its findings kept instead."""
-    assert set(discovery_service.TERMINAL_JOB_STATUSES) == {"completed", "failed", "cancelled"}
+    assert set(discovery_dispatch.TERMINAL_JOB_STATUSES) == {"completed", "failed", "cancelled"}
     assert "partial" not in set(agent_discovery.STATUS_FOR_OUTCOME.values())
 
 
@@ -1024,7 +1076,7 @@ async def test_a_deadline_exceeded_summary_keeps_its_findings_and_says_they_are_
     job = _job(db_session, agent)
     for address in ("10.60.0.21", "10.60.0.22"):
         await agent_discovery.ingest_discovery_finding(
-            db_session, agent, _payload(job, ip_address=address)
+            db_session, agent, _payload(job, ip_address=address, mac_address=None)
         )
 
     await agent_discovery.ingest_discovery_finding(
@@ -1207,6 +1259,42 @@ async def test_a_host_finding_spooled_before_a_cancel_is_refused_but_never_audit
     assert emitted == []
 
 
+async def test_a_finding_refused_with_audited_still_increments_the_refusal_counter(
+    db_session, factories, emitted
+):
+    """The ordering guard for `_handle_discovery_finding`.
+
+    `agent_link` calls `record_refused_frame` *before* the `if exc.audited:
+    return` early return, and the two lines are one move apart. Moving the
+    counter below the return would leave every test in the suite green while
+    ceiling breaches and post-cancel findings stopped being counted forever —
+    the two cases where the largest volumes are refused.
+
+    The distinction the counter measures is frames destroyed, not rows written.
+    `audited` decides only what the audit trail says; it does not make the
+    finding any less discarded, and this test is what says so. It runs through
+    `dispatch_frame` rather than `ingest_discovery_finding` because the counter
+    lives in the handler, which is exactly the code path being pinned.
+    """
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent, dispatch_status="cancelled", status="cancelled")
+
+    frame = agent_link.AgentFrame(type="discovery.finding", ts=utcnow_iso(), payload=_payload(job))
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    db_session.expire_all()
+    refreshed = db_session.get(Agent, agent.id)
+    assert refreshed.refused_frames == 1, (
+        "an audited refusal is still a destroyed finding and must be counted — "
+        "record_refused_frame has to run before the `audited` early return"
+    )
+    assert refreshed.refused_frames_last_reason == "invalid_discovery_finding"
+    # `audited` still does its own job: no violation row, and no rate-limit
+    # window consumed on frames nobody is at fault for.
+    assert _events(db_session, agent) == []
+    assert _results(db_session, job) == []
+
+
 async def test_host_finding_without_an_address_is_rejected(db_session, factories, emitted):
     """`scan_results.ip_address` is NOT NULL, so an addressless host finding
     would otherwise be an IntegrityError inside the `/link` read loop."""
@@ -1222,7 +1310,7 @@ async def test_host_finding_without_an_address_is_rejected(db_session, factories
     assert _results(db_session, job) == []
 
 
-# ── Log hygiene (plan §7) ─────────────────────────────────────────────────────
+# ── Log hygiene ─────────────────────────────────────────────────────
 
 
 async def test_a_crlf_hostname_never_forges_a_second_log_record(
@@ -1256,7 +1344,7 @@ async def test_a_crlf_hostname_never_forges_a_second_log_record(
 async def test_rejection_reasons_carry_an_address_and_a_code_and_nothing_else(
     db_session, factories, emitted, caplog
 ):
-    """Plan §7: `banner`, `hostname` and `evidence` never appear in a reason
+    """`banner`, `hostname` and `evidence` never appear in a reason
     string, a log line or an `agent_events` detail. An operator reading the
     audit trail must not be reading attacker-authored text."""
     agent = _agent(db_session, factories)
@@ -1349,7 +1437,7 @@ async def test_a_schema_rejection_never_echoes_the_offending_untrusted_value(
     assert leak in str(excinfo.value.__cause__)
 
 
-# ── What ingest deliberately does not do (D-5, plan §5) ───────────────────────
+# ── What ingest deliberately does not do ───────────────────────
 
 
 def test_ingest_reaches_neither_the_reconciler_nor_auto_merge() -> None:
@@ -1433,7 +1521,7 @@ def test_finding_count_is_never_null_so_the_ceiling_predicate_is_decidable(
       Core insert that bypasses the ORM's omission — as an `IntegrityError`
       rather than as a row the ceiling can never match.
 
-    So no fix is needed in `db/models.py`; this test is the documentation that
+    So no fix is needed in `db/models/discovery.py`; this test is the documentation that
     the CAS predicate is decidable on every row that can exist.
     """
     column = ScanJob.__table__.c.finding_count
@@ -1674,3 +1762,101 @@ def test_two_concurrent_terminal_summaries_finalize_exactly_once(
             cleanup.execute(delete(Agent).where(Agent.id == agent_id))
             cleanup.execute(delete(Tenant).where(Tenant.id == tenant_id))
             cleanup.commit()
+
+
+# ── Enrichment of a device the inventory already knows ────────────────────────
+
+
+async def test_a_finding_for_a_known_device_enriches_it_and_never_reaches_the_queue(
+    db_session, factories, emitted
+):
+    """The complaint this whole path exists to answer: a re-found device used to
+    land in the review queue as though it were new, while the MAC it was carrying
+    never reached the `Hardware` row it had already been matched to."""
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent)
+    hw = factories.hardware(
+        name="printer.lan",  # agrees with the reported hostname, so not a conflict
+        ip_address="10.60.0.9",
+        mac_address=None,
+        tenant_id=agent.tenant_id,
+    )
+    db_session.flush()
+
+    await agent_discovery.ingest_discovery_finding(
+        db_session, agent, _payload(job, mac_address="aa:bb:cc:dd:ee:01")
+    )
+
+    (result,) = _results(db_session, job)
+    assert result.state == "matched"
+    assert result.merge_status == "auto_updated"  # never pending, so never queued
+    db_session.refresh(hw)
+    assert hw.mac_address == "AA:BB:CC:DD:EE:01"
+    assert {f["field"] for f in result.enriched_fields_json} >= {"mac_address"}
+
+
+async def test_ingest_enriches_but_never_creates_hardware(db_session, factories, emitted):
+    """The rule `finalize_agent_job` states is about *creation*. A finding with
+    no match must still leave the inventory exactly as it found it."""
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent)
+    before = db_session.query(Hardware).count()
+
+    await agent_discovery.ingest_discovery_finding(db_session, agent, _payload(job))
+
+    (result,) = _results(db_session, job)
+    assert result.state == "new"
+    assert result.merge_status == "pending"  # a genuinely new device still needs a human
+    assert db_session.query(Hardware).count() == before
+
+
+async def test_an_agent_finding_still_may_not_name_a_device_via_ingest(
+    db_session, factories, emitted
+):
+    """The end-to-end twin of the unit case: enrichment did not become a way for
+    a remote executor to name a device the inventory left unnamed."""
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent)
+    hw = factories.hardware(
+        name="printer.lan",
+        ip_address="10.60.0.9",
+        mac_address=None,
+        hostname=None,
+        tenant_id=agent.tenant_id,
+    )
+    db_session.flush()
+
+    await agent_discovery.ingest_discovery_finding(db_session, agent, _payload(job))
+
+    db_session.refresh(hw)
+    # `hostname` was empty and the finding reported one — a server scan would
+    # have filled it. An agent's is an observation, so it does not.
+    assert hw.hostname is None
+    assert hw.mac_address == "AA:BB:CC:DD:EE:01"  # the rest of the row still enriched
+
+
+async def test_a_replayed_finding_does_not_enrich_twice(db_session, factories, emitted):
+    """The replay guard returns before enrichment, so a spool replayed after a
+    reconnect stays as inert as it always was."""
+    agent = _agent(db_session, factories)
+    job = _job(db_session, agent)
+    hw = factories.hardware(
+        name="printer.lan",
+        ip_address="10.60.0.9",
+        mac_address=None,
+        tenant_id=agent.tenant_id,
+    )
+    db_session.flush()
+    payload = _payload(job, mac_address="aa:bb:cc:dd:ee:01")
+
+    await agent_discovery.ingest_discovery_finding(db_session, agent, payload)
+    db_session.refresh(hw)
+    hw.vendor = None  # anything a second pass would have refilled
+    db_session.flush()
+
+    await agent_discovery.ingest_discovery_finding(db_session, agent, payload)
+
+    assert len(_results(db_session, job)) == 1
+    db_session.refresh(hw)
+    assert hw.mac_address == "AA:BB:CC:DD:EE:01"
+    assert hw.vendor is None  # the replay wrote nothing

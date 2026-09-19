@@ -4,7 +4,7 @@
 # `lint` job, which meant it could only ever run in CI (ADR 0005, P1).
 set -euo pipefail
 
-# REL-20: both workflows pin this at workflow level (ci.yml, dev-ci.yml) and
+# Both workflows pin this at workflow level (ci.yml, dev-ci.yml) and
 # tests/build/test_ci_evidence_retention.py enforces it there. Exporting it
 # here too means the local gate removes the same source of run-to-run
 # nondeterminism (per-process str/bytes hash salting) that CI does, instead of

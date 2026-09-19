@@ -1,4 +1,4 @@
-"""Phase 6.5: User management — invite, lockout, sessions, RBAC."""
+"""User management — invite, lockout, sessions, RBAC."""
 
 import pytest
 

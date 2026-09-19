@@ -25,10 +25,13 @@ from httpx import AsyncClient
 _HEADLESS_PROBE = r"""
 import json, sys
 
+import app.api.static_spa as static_spa
 import app.main as main
 
 report = {
-    "frontend_dir": None if main._get_frontend_dir() is None else str(main._get_frontend_dir()),
+    "frontend_dir": (
+        None if static_spa._get_frontend_dir() is None else str(static_spa._get_frontend_dir())
+    ),
     "mounted": sorted(
         getattr(route, "path", "")
         for route in main.app.routes

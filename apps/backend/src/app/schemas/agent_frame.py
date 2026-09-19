@@ -1,6 +1,6 @@
 """The agent protocol v1 frame envelope — defined once here and in
-apps/agent/internal/frame/frame.go, nowhere else, per
-specs/2026-07-26-cb-agent-design.md §1's `agent_link.py` boundary note."""
+apps/agent/internal/frame/frame.go, nowhere else, per the `agent_link.py`
+boundary note."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ TYPE_CAPABILITY_VIOLATION = "capability.violation"
 TYPE_CAPABILITY_READINESS = "capability.readiness"
 TYPE_LOG = "log"
 TYPE_UNINSTALL = "uninstall"
-# Task 24: explicit self-update progress signal — the agent reports the
+# Explicit self-update progress signal — the agent reports the
 # transition points the server can't otherwise observe (download-start,
 # swap-success, failure, rollback; queue-time is already server-side, at
 # POST /{agent_id}/update). Additive-only protocol-v1 addition per Global
@@ -48,9 +48,15 @@ TYPE_PROBE_CANCEL = "probe.cancel"
 TYPE_DISCOVERY_REQUEST = "discovery.request"
 TYPE_DISCOVERY_CANCEL = "discovery.cancel"
 TYPE_KEY_ROTATE = "key.rotate"
+TYPE_TLS_PIN_ROTATE = "tls.pin.rotate"
 TYPE_UPDATE = "update"
 TYPE_DISCONNECT = "disconnect"
 TYPE_PING = "ping"
+# The delivery watermark — see ``DataAckPayload``. Sent only to an agent whose
+# hello set ``ack_data``, so an agent predating the mechanism never sees it and
+# an old server never sends it: two independent layers of additive-only
+# compatibility, since both sides also ignore frame types they do not know.
+TYPE_DATA_ACK = "data.ack"
 
 # bidirectional — either side may send it about its own cipher
 TYPE_TRANSPORT_REKEY = "transport.rekey"
@@ -73,8 +79,7 @@ class AgentFrame(BaseModel):
 
 
 class Readiness(BaseModel):
-    """One collector's ability to run, carried in HelloPayload.readiness — see
-    specs/2026-07-26-cb-agent-design.md §4.3."""
+    """One collector's ability to run, carried in HelloPayload.readiness."""
 
     collector: str
     state: str  # ready | degraded | unavailable
@@ -84,8 +89,8 @@ class Readiness(BaseModel):
 
 
 class NetworkFacts(BaseModel):
-    """One of the agent host's directly connected networks, carried in HelloPayload.networks
-    (D-1), mirroring apps/agent/internal/frame/frame.go's NetworkFacts.
+    """One of the agent host's directly connected networks, carried in HelloPayload.networks,
+    mirroring apps/agent/internal/frame/frame.go's NetworkFacts.
 
     ``addrs`` are CIDR strings holding the interface's own address *with* its prefix length
     ("10.0.0.5/24", "fd00::1/64") — the prefix is what makes the network directly connected and
@@ -100,7 +105,7 @@ class NetworkFacts(BaseModel):
 
 
 class HelloPayload(BaseModel):
-    """agent -> server `hello` payload (specs/2026-07-26-cb-agent-design.md §3.4, §4.3, §4.6).
+    """agent -> server `hello` payload.
 
     Every field is optional so an old-shaped hello — including today's empty ``{}`` payload —
     still validates: absent fields take their declared default rather than failing validation.
@@ -117,7 +122,50 @@ class HelloPayload(BaseModel):
     readiness: list[Readiness] = Field(default_factory=list)
     networks: list[NetworkFacts] = Field(default_factory=list)
     spool_depth: int = 0
+    # What the agent's outbound spool has *permanently destroyed* to stay
+    # inside its byte cap, cumulatively for the life of its state directory.
+    #
+    # Optional-with-default so an agent predating the group still validates —
+    # which is exactly why callers must gate persistence on
+    # ``"spool_evicted_frames" in payload.model_fields_set`` and NEVER on
+    # truthiness. The Go side has no ``omitempty``, so a current agent always
+    # sends the keys (an explicit ``0`` = "reports eviction state, destroyed
+    # nothing") while an older agent omits them and must leave the columns NULL.
+    # Fabricating a 0 would claim it had confirmed no data loss.
+    #
+    # The timestamps bound the window of observations that is gone, from the
+    # destroyed frames' own ``ts``. ``| None`` because an agent that evicted
+    # nothing sends an explicit ``null``, not a year-1 instant that would persist
+    # as a real claim.
+    spool_evicted_frames: int = 0
+    spool_evicted_bytes: int = 0
+    spool_evicted_oldest_ts: datetime | None = None
+    spool_evicted_newest_ts: datetime | None = None
     capability_schema: int = 1
+    tls_pin_kind: str | None = None
+    # Whether the agent already holds an advertised successor TLS trust
+    # policy. Distinct from `tls_pin_kind`, and it is this field the
+    # certificate-activation gate reads: until the server serves the
+    # successor every reachable agent matches the *current* policy, so
+    # convergence keyed on a successor match could never be reached before
+    # the change it gates. Absent from agents predating the mechanism, which
+    # is why the default is False rather than None — "did not say" and "does
+    # not hold one" are the same fact for the gate, and both must block.
+    tls_pin_successor_ready: bool = False
+    # Which successor policy the agent holds, not merely that it holds one
+    # Absent from agents predating the field, which the server treats
+    # as unconverged — otherwise a stale successor from an abandoned rotation
+    # satisfies the gate on the *next* rotation and strands the agent.
+    tls_pin_successor_fingerprint: str | None = None
+    # Whether this agent is asking the server to acknowledge data frames.
+    #
+    # ``False`` by default, and the Go side carries ``omitempty``, so absent and
+    # false are deliberately the same fact — "does not support acknowledged
+    # delivery" — the safe default for an agent predating the mechanism. The
+    # opposite convention from the ``spool_evicted_*`` group above, and NOT an
+    # inconsistency to harmonise: those need presence to separate "confirmed
+    # nothing destroyed" from "cannot report", a distinction this flag lacks.
+    ack_data: bool = False
 
 
 class HelloAckPayload(BaseModel):
@@ -134,14 +182,49 @@ class HelloAckPayload(BaseModel):
     server_time: datetime | None = None
     capabilities: dict[str, Any] = Field(default_factory=dict)
     agent_id: int | None = None
+    # Whether this server will send ``data.ack`` frames on this connection.
+    # A current server sets it only when the agent's hello asked
+    # (``HelloPayload.ack_data``), so the mode is negotiated rather than
+    # assumed by either side. Absent — every ack a server predating the
+    # mechanism sends — is False, and the agent then keeps committing spooled
+    # frames when the socket accepts them, and logs that it is doing so.
+    data_ack: bool = False
+
+
+class DataAckPayload(BaseModel):
+    """server -> agent `data.ack` payload: a delivery watermark, not a receipt for one frame.
+
+    ``seq`` is the highest sequence number such that *every* frame this
+    connection carried with ``seq <= n`` has been terminally handled —
+    ingested, deduped, or deliberately refused and audited.
+
+    "Terminally handled" rather than "accepted" is load-bearing. This server
+    drops some data frames it will never accept: a ``telemetry.host`` sample
+    whose capability grant is switched off, an ``Invalid*`` payload its
+    handler rejects, a duplicate or out-of-order sequence. Each of those is
+    counted against the agent (``agent_registry.record_refused_frame``) and is
+    as final as an ingest. If the watermark only advanced on success the
+    agent's spool head would wedge forever behind such a frame, it would
+    resend it until the cap evicted everything queued behind it, and a
+    durability fix would have become a data-loss bug.
+
+    The watermark lives for exactly one connection and is persisted by
+    neither side: the agent's ``seq`` counter restarts at every reconnect, and
+    anything uncommitted when a socket dies is re-sent from the spool head
+    with fresh sequence numbers, which ``uq_agent_host_sample (agent_id,
+    sample_id, collected_at)`` makes harmless. Mirrors
+    apps/agent/internal/frame/frame.go's DataAckPayload.
+    """
+
+    seq: int = 0
 
 
 class CapabilityReadinessPayload(BaseModel):
     """agent -> server `capability.readiness` payload.
 
     ``networks`` is the same shape as ``HelloPayload.networks`` and exists so an
-    agent can refresh its directly connected networks *mid-session* (Slice 4
-    D-8). Hello carries them only at connect, so without this a subnet that
+    agent can refresh its directly connected networks *mid-session* (the design
+    the contract). Hello carries them only at connect, so without this a subnet that
     appeared on the agent host would not become discoverable until the next
     reconnect — which may be days.
 
@@ -159,7 +242,7 @@ class CapabilityReadinessPayload(BaseModel):
 
 
 class HeartbeatPayload(BaseModel):
-    """agent -> server `heartbeat` payload (D-12), mirroring
+    """agent -> server `heartbeat` payload, mirroring
     apps/agent/internal/frame/frame.go's HeartbeatPayload field-for-field.
 
     Carries the agent's live outbound-spool backlog so the server can watch a
@@ -183,6 +266,36 @@ class HeartbeatPayload(BaseModel):
 
     spool_depth: int = 0
     spool_bytes: int = 0
+    # What the agent's outbound spool has *permanently destroyed* to stay
+    # inside its byte cap, cumulatively for the life of its state directory.
+    #
+    # Optional-with-default so an agent predating the group still validates —
+    # which is exactly why callers must gate persistence on
+    # ``"spool_evicted_frames" in payload.model_fields_set`` and NEVER on
+    # truthiness. The Go side has no ``omitempty``, so a current agent always
+    # sends the keys (an explicit ``0`` = "reports eviction state, destroyed
+    # nothing") while an older agent omits them and must leave the columns NULL.
+    # Fabricating a 0 would claim it had confirmed no data loss.
+    #
+    # The timestamps bound the window of observations that is gone, from the
+    # destroyed frames' own ``ts``. ``| None`` because an agent that evicted
+    # nothing sends an explicit ``null``, not a year-1 instant that would persist
+    # as a real claim.
+    spool_evicted_frames: int = 0
+    spool_evicted_bytes: int = 0
+    spool_evicted_oldest_ts: datetime | None = None
+    spool_evicted_newest_ts: datetime | None = None
+    # Repeats hello's field of the same name on every heartbeat. hello is
+    # sent once per connection, so an agent holding a live socket when a
+    # `tls.pin.rotate` arrives could not otherwise tell the server it applied
+    # the policy until its next reconnect — which may be days, while the
+    # certificate-activation gate waits on exactly that signal.
+    tls_pin_successor_ready: bool = False
+    # Which successor policy the agent holds, not merely that it holds one
+    # Absent from agents predating the field, which the server treats
+    # as unconverged — otherwise a stale successor from an abandoned rotation
+    # satisfies the gate on the *next* rotation and strands the agent.
+    tls_pin_successor_fingerprint: str | None = None
 
 
 class HostTelemetryPayload(BaseModel):
@@ -223,7 +336,7 @@ class TransportRekeyPayload(BaseModel):
 
 
 class UpdateStatusPayload(BaseModel):
-    """agent -> server `update.status` payload (Task 24): one self-update
+    """agent -> server `update.status` payload: one self-update
     transition the agent itself observed, reported over the live `/link`
     connection that originally delivered the `update` frame (or the next
     reconnect, for `rolled_back` — see internal/update/update.go's
@@ -244,14 +357,14 @@ class UpdateStatusPayload(BaseModel):
 
 
 class ProbeAssignPayload(BaseModel):
-    """server -> agent `probe.assign` payload (§4), mirroring
+    """server -> agent `probe.assign` payload, mirroring
     apps/agent/internal/frame/frame.go's ProbeAssignPayload field-for-field: exactly one remote
     check, fully specified, with no schedule for the agent to keep.
 
     ``run_id`` is the server-minted 32-hex token that is the only identifier a result may be
     posted against, so a leaked or guessed ``monitor_id`` buys nothing. ``config`` is the
     monitor's complete validated configuration and therefore carries HTTP credentials when the
-    monitor has them (D-10): the agent holds it in memory for the life of the run and it must
+    monitor has them: the agent holds it in memory for the life of the run and it must
     never reach ``status.json``, ``grants.json``, a log line, or ``probe.result``.
 
     ``scheduled_at``/``deadline_at`` must be serialized with ``.isoformat()``, never left as raw
@@ -269,7 +382,7 @@ class ProbeAssignPayload(BaseModel):
 
 
 class ProbeCancelPayload(BaseModel):
-    """server -> agent `probe.cancel` payload (§4), sent when a monitor is paused, deleted,
+    """server -> agent `probe.cancel` payload, sent when a monitor is paused, deleted,
     reassigned, has its capability disabled, or the agent is revoked.
 
     ``reason`` is advisory. Cancellation is best-effort and the backend stays authoritative: a
@@ -288,7 +401,7 @@ class ProbeSample(BaseModel):
 
     ``error_reason`` is the collectors' own per-sample annotation ("http_error", "dns_error").
     It is audit metadata: it lands in ``monitor_probe_runs.result_metadata`` and nowhere else,
-    exactly as it is dropped for server-executed checks today (D-8).
+    exactly as it is dropped for server-executed checks today.
     """
 
     metric: str
@@ -297,7 +410,7 @@ class ProbeSample(BaseModel):
 
 
 class ProbeResultPayload(BaseModel):
-    """agent -> server `probe.result` payload (§4), mirroring
+    """agent -> server `probe.result` payload, mirroring
     apps/agent/internal/frame/frame.go's ProbeResultPayload field-for-field.
 
     ``outcome`` is closed: "completed" (a real target result, feed the monitor state machine),
@@ -328,7 +441,7 @@ class ProbeResultPayload(BaseModel):
 _DISPATCH_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _FINDING_ID_RE = re.compile(r"^[0-9a-f]{1,64}$")
 
-# Slice 4 plan §4's bounds. They are declared here, on the model, rather than
+# The bounds. They are declared here, on the model, rather than
 # left to the ingest handler, because a bound the *schema* does not carry is one
 # the agent's own encoder has no reason to respect — and `discovery.finding` is
 # a spooled data frame, so a single oversized batch replayed after an outage is
@@ -351,7 +464,7 @@ DISCOVERY_KINDS = frozenset({DISCOVERY_KIND_HOST, DISCOVERY_KIND_SUMMARY})
 
 
 class DiscoveryRequestPayload(BaseModel):
-    """server -> agent `discovery.request` payload (plan §4).
+    """server -> agent `discovery.request` payload.
 
     One bounded, one-shot scan. Every limit here is *also* enforced by the agent
     against its own grant before it opens a socket — the backend deriving a
@@ -360,7 +473,7 @@ class DiscoveryRequestPayload(BaseModel):
 
     ``scope_version`` is the ``EffectiveScope.version`` in force when the
     request was built. The agent re-derives its own and refuses a mismatch: plan
-    §2 requires an active request to be cancelled when scope changes
+    the contract requires an active request to be cancelled when scope changes
     incompatibly, and a version is what makes that decidable without shipping
     the whole CIDR list on every dispatch.
 
@@ -388,7 +501,7 @@ class DiscoveryRequestPayload(BaseModel):
 
 
 class DiscoveryCancelPayload(BaseModel):
-    """server -> agent `discovery.cancel` payload (plan §4), sent when the job is
+    """server -> agent `discovery.cancel` payload, sent when the job is
     cancelled, its profile disabled, scope changed incompatibly, the capability
     disabled, or the agent revoked.
 
@@ -416,7 +529,7 @@ class DiscoveryOpenPort(BaseModel):
 
 
 class DiscoveryFindingPayload(BaseModel):
-    """agent -> server `discovery.finding` payload (plan §4), mirroring
+    """agent -> server `discovery.finding` payload, mirroring
     apps/agent/internal/frame/frame.go's DiscoveryFindingPayload field-for-field.
 
     ``kind`` is closed: ``host`` describes one discovered address, ``summary``
@@ -487,7 +600,7 @@ class DiscoveryFindingPayload(BaseModel):
         return v
 
 
-# Slice 4 plan §7's bounds on the agent's own outbound refusal report. Unlike
+# The bounds on the agent's own outbound refusal report. Unlike
 # every other agent -> server frame, `capability.violation` is deliberately
 # absent from `agent_link.CAPABILITY_FOR_TYPE`, so `dispatch_frame`'s grant gate
 # never runs for it: an agent with every capability disabled can still send one,
@@ -507,11 +620,10 @@ REASON_NOT_DIRECTLY_CONNECTED = "not_directly_connected"
 # `probe.Runtime.emitCapabilityViolation` sends (probe/runtime.go:606-619).
 #
 # Two of the evaluator's reasons are deliberately absent. `in_scope` is an
-# acceptance and can never describe a refusal. `unresolved_hostname` is a name
-# that resolved to nothing: the destination was never judged, so the agent
-# reports it as an execution error and explicitly does *not* emit a capability
-# violation for it (probe/runtime.go:511-518) — accepting it here would let the
-# misleading row that comment exists to prevent be written by some other sender.
+# acceptance and can never describe a refusal. `unresolved_hostname` means the
+# destination was never judged, so the agent reports an execution error and does
+# NOT emit a capability violation — accepting it here would let some other sender
+# write the misleading row that rule exists to prevent.
 CAPABILITY_VIOLATION_REASONS = frozenset(
     {
         REASON_SPECIAL_USE,
@@ -545,7 +657,7 @@ MAX_VIOLATION_DETAIL_CHARS = 200
 
 
 class CapabilityViolationPayload(BaseModel):
-    """agent -> server `capability.violation` payload (plan §7): the agent
+    """agent -> server `capability.violation` payload: the agent
     refused something this server asked it to do, and the two ends therefore
     disagree about this agent's authorization.
 
@@ -611,3 +723,21 @@ class KeyRotatePayload(BaseModel):
         if not _HEX_PK_RE.fullmatch(v):
             raise ValueError("successor_pk must be exactly 64 lowercase hex characters")
         return v
+
+
+class TLSPinRotatePayload(BaseModel):
+    """server -> agent `tls.pin.rotate` payload: the TLS trust policy this
+    install is about to start serving, advertised over the authenticated
+    Noise link ahead of the certificate actually changing.
+
+    The rotated unit is a policy, not a digest. `mode="public"` carries an
+    empty `successor_pin` and means "stop pinning; verify against the system
+    CA store" — the transition a Let's Encrypt cutover makes, which a
+    pin-only advertisement could not express. `mode="self_signed"` carries
+    the base64 SHA-256 SPKI digest of the successor leaf, the same value
+    `agent_install._spki_pin` computes.
+    """
+
+    mode: str
+    successor_pin: str = ""
+    expiry: datetime

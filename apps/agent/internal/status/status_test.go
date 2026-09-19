@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"circuitbreaker.dev/cb-agent/internal/frame"
+	"circuitbreaker.dev/cb-agent/internal/spool"
 )
 
 func TestRead_NotOkWhenFileAbsent(t *testing.T) {
@@ -185,6 +187,40 @@ func TestWriter_MergeReadinessUpsertsByCollectorAndKeepsOthers(t *testing.T) {
 	}
 	if !reflect.DeepEqual(st.Readiness, want) {
 		t.Errorf("Readiness = %+v, want %+v (upserted by collector, sorted by collector)", st.Readiness, want)
+	}
+}
+
+// TestWriter_SetSpoolEvictions pins that permanently destroyed history lands
+// in status.json as its own field, separate from the backlog. The two are
+// different facts — a backlog drains, a loss does not — and the reason the
+// eviction was invisible for so long is that only the backlog was reported.
+func TestWriter_SetSpoolEvictions(t *testing.T) {
+	dir := t.TempDir()
+	w := NewWriter(dir, "1.2.3", "fp")
+	want := spool.EvictionStats{
+		Frames:          9412,
+		Bytes:           33554432,
+		OldestDroppedTS: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+		NewestDroppedTS: time.Date(2026, 9, 3, 18, 30, 0, 0, time.UTC),
+		LastEvictedAt:   time.Date(2026, 9, 3, 18, 30, 5, 0, time.UTC),
+	}
+	if err := w.SetSpoolEvictions(want); err != nil {
+		t.Fatalf("SetSpoolEvictions() error = %v", err)
+	}
+	st, ok, err := Read(dir)
+	if err != nil || !ok {
+		t.Fatalf("Read() = ok %v, error %v", ok, err)
+	}
+	if !st.SpoolEvictions.OldestDroppedTS.Equal(want.OldestDroppedTS) ||
+		!st.SpoolEvictions.NewestDroppedTS.Equal(want.NewestDroppedTS) ||
+		!st.SpoolEvictions.LastEvictedAt.Equal(want.LastEvictedAt) ||
+		st.SpoolEvictions.Frames != want.Frames || st.SpoolEvictions.Bytes != want.Bytes {
+		t.Errorf("SpoolEvictions = %+v, want %+v", st.SpoolEvictions, want)
+	}
+	// The backlog fields are a separate concern and must not have been
+	// touched: a caller that reports a loss has said nothing about the queue.
+	if st.SpoolDepth != 0 || st.SpoolBytes != 0 {
+		t.Errorf("SpoolDepth/SpoolBytes = %d/%d, want 0/0 — SetSpoolEvictions must not write the backlog", st.SpoolDepth, st.SpoolBytes)
 	}
 }
 

@@ -229,8 +229,8 @@ def _db_airgap_enabled() -> bool:
     flag can only ever reduce egress, and it can never affect scan behaviour.
     """
     try:
-        from app.db.models import AppSettings  # noqa: PLC0415
-        from app.db.session import get_session_context  # noqa: PLC0415
+        from app.db.models import AppSettings
+        from app.db.session import get_session_context
 
         with get_session_context() as db:
             row = db.get(AppSettings, 1)

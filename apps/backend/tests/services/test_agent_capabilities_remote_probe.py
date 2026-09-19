@@ -1,4 +1,4 @@
-"""`remote_probe`'s real configuration schema (Task 5, design §3).
+"""`remote_probe`'s real configuration schema.
 
 The placeholder these replace accepted no key at all, so nothing anywhere could
 carry a concurrency limit or a scope override. Half of what is pinned here is
@@ -41,7 +41,7 @@ def _config(**overrides: object) -> dict[str, object]:
 
 def test_defaults_match_the_design_document() -> None:
     assert default_config_for("remote_probe") == _DESIGN_DEFAULTS
-    # Granted-but-idle stays the design (D-10): the default grant executes
+    # Granted-but-idle stays the design: the default grant executes
     # nothing until a monitor names this agent as its vantage.
     assert CAPABILITY_DEFINITIONS["remote_probe"].default_enabled is True
 

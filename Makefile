@@ -47,7 +47,7 @@ PYTHON ?= $(shell python3 -c "import sys; print('python3' if sys.version_info >=
 # ==============================================================================
 # CORE TARGETS
 # ==============================================================================
-.PHONY: help install dev backend backend-watch frontend monitor-workers migrate reset-oobe stop ensure-nmap
+.PHONY: help install dev backend backend-watch frontend monitor-workers migrate reset-oobe stop ensure-nmap agent-binaries dev-tls dev-tls-down dev-tls-status dev-agent dev-agent-down
 
 help: ## Show available targets
 	awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-15s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -78,6 +78,32 @@ dev: ensure-nmap deps-up stop migrate ## Native backend + frontend + monitor wor
 		$(MAKE) --no-print-directory monitor-workers & \
 		$(MAKE) --no-print-directory frontend
 
+# ── Agent feature on a dev box ───────────────────────────────────────────────
+# The agent path needs two things `make dev` alone does not provide: a TLS
+# terminator (agent_install derives an agent's SPKI pin from the certificate at
+# ${CB_DATA_DIR}/tls/fullchain.pem and fails closed without one) and built agent
+# binaries (the install script embeds a version and digest read from
+# CB_AGENT_BINARIES_DIR/manifest.json). Without both, "Add an agent" answers 503
+# and there is nothing for an enrolled agent to download.
+
+agent-binaries: ## Build cb-agent for linux/amd64+arm64 and write dist/manifest.json
+	$(MAKE) -C apps/agent manifest PYTHON=$(CURDIR)/.venv/bin/python
+
+dev-tls: agent-binaries ## TLS front door for the agent feature (https on :443)
+	./scripts/dev-tls.sh up
+
+dev-tls-down: ## Stop the dev TLS front door
+	./scripts/dev-tls.sh down
+
+dev-tls-status: ## Front door status, URL and the pin agents will verify
+	./scripts/dev-tls.sh status
+
+dev-agent: ## Enroll a throwaway containerised cb-agent against the dev server
+	./scripts/dev-agent.sh up
+
+dev-agent-down: ## Remove the throwaway agent and its enrolled identity
+	./scripts/dev-agent.sh down
+
 stop: ## Kill any process holding the dev ports
 	lsof -ti tcp:$(BACKEND_PORT) | xargs -r kill -9 || true
 	lsof -ti tcp:$(FRONTEND_PORT) | xargs -r kill -9 || true
@@ -94,11 +120,12 @@ backend:  ## Native backend (ZERO DOCKER DRIFT)
 		CB_DB_URL="postgresql://breaker:breaker@localhost:5432/circuitbreaker" \
 		CB_REDIS_URL="redis://localhost:6379/0" \
 		NATS_URL="nats://localhost:4222" \
-		NATS_AUTH_TOKEN="dev-token-local-only" \
+		NATS_AUTH_TOKEN="$(NATS_AUTH_TOKEN_DEV)" \
 		CB_ALLOW_DEGRADED_DEPENDENCIES="$(CB_ALLOW_DEGRADED_DEPENDENCIES_DEV)" \
 		CB_TOPOLOGY_MODE="$(CB_TOPOLOGY_MODE_DEV)" \
+		CB_AGENT_BINARIES_DIR="$(CURDIR)/apps/agent/dist" \
 		CB_AUTO_MIGRATE=false \
-		PYTHONPATH=src $(CURDIR)/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 8 $(CB_UVICORN_ARGS)
+		PYTHONPATH=src $(CURDIR)/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 8 --no-proxy-headers $(CB_UVICORN_ARGS)
 
 backend-watch:  ## Native backend WITH reload (post-fix only)
 	$(MAKE) backend --no-print-directory CB_UVICORN_ARGS="--reload"
@@ -153,7 +180,7 @@ deps-native-down:  ## Stop native systemd deps
 # ==============================================================================
 DIST_NATIVE ?= dist/native
 
-.PHONY: build build-deps build-in-release-image build-release build-from-source release-local release-tag release-retag release-untag docker-build docker-push sign sbom
+.PHONY: build build-deps build-in-release-image build-release build-from-source release-local version-sync release-tag release-retag release-untag agent-signing-key docker-build docker-push sign sbom
 
 build: ## Build native app (tarball + deb + rpm + apk + AppImage + .pkg.tar.zst)
 	cd $(FRONTEND_DIR) && npm ci && npm run build
@@ -166,9 +193,12 @@ build-deps: ## Install build toolchain (nfpm, appimagetool, Python 3.12, Node 20
 # build` on a modern workstation produces packages that will not run on the
 # distros in the support matrix -- the deb row failed exactly that way on Debian
 # 12. This reproduces the release job's ubuntu-22.04 / Python 3.12 environment so
-# the artifact has the floor the released one has. ADR 0005 Phase 3, F8.
+# the artifact has the floor the released one has. See ADR 0005.
 build-in-release-image: ## Build packages inside the ubuntu-22.04 image the release job uses
 	bash scripts/build-in-release-image.sh
+
+agent-signing-key: ## Generate an Ed25519 agent-update signing keypair (operators who build their own agents)
+	.venv/bin/python scripts/agent_signing_key.py
 
 build-release: ## Install build deps then build all packages
 	$(MAKE) --no-print-directory build-deps
@@ -183,6 +213,15 @@ release-local: ## build-release + tag current HEAD with VERSION
 	$(MAKE) --no-print-directory build-release
 	git tag -a "v$$(cat VERSION)" -m "Release v$$(cat VERSION)"
 	@echo "Tagged v$$(cat VERSION). Push with: git push origin v$$(cat VERSION)"
+
+# GOV-09 says VERSION is the only hand-edited version. apps/backend/pyproject.toml
+# gets that literally — hatch reads the file — but a package.json and a sentence
+# in a README cannot read anything, so for those it means "generated from
+# VERSION and gated on it". This is the generator; the gate is the same script
+# without --write, and both drive off one registry of locations so a place that
+# is written is always a place that is checked. Run it after editing VERSION.
+version-sync: ## Rewrite every manifest and doc that names the release to match VERSION
+	python3 scripts/check_version_parity.py --write
 
 release-tag: ## Tag current HEAD as vVERSION (first release of this version — fails if the tag already exists)
 	git tag -a "v$$(cat VERSION)" -m "Circuit Breaker v$$(cat VERSION)"
@@ -246,11 +285,19 @@ security-check: ## Run security scans (gate mode — fails on HIGH/CRIT)
 security-report: ## Run full security scan report (non-blocking)
 	./scripts/security_scan.sh
 
-.PHONY: lint format test test-db test-backend test-frontend security-check security-report verify-fast verify verify-full verify-fleet verify-fleet-upgrade
+.PHONY: lint format test test-db test-backend test-frontend security-check security-report verify-fast verify verify-full verify-fleet verify-fleet-upgrade loadgen nav-wedge
+
+loadgen: ## Seed and run a non-blocking Phase-2 baseline (TIER=A, CB_LOADGEN_TOKEN required)
+	$(CURDIR)/.venv/bin/python scripts/loadgen/seed.py seed --tier "$(or $(TIER),A)" --db-url "$(CB_TEST_DB_URL)"
+	$(CURDIR)/.venv/bin/python scripts/loadgen/run.py --tier "$(or $(TIER),A)" --token "$(CB_LOADGEN_TOKEN)" --output "artifacts/baselines/$$(date -u +%Y%m%dT%H%M%SZ)-$(or $(TIER),A).json"
+	$(CURDIR)/.venv/bin/python scripts/loadgen/seed.py cleanup --tier "$(or $(TIER),A)" --db-url "$(CB_TEST_DB_URL)"
+
+nav-wedge: ## Opt-in Chromium navigation wedge-rate run (NAV_WEDGE_REPEATS defaults to 30)
+	cd $(FRONTEND_DIR) && npx playwright test --project=nav-wedge
 
 # This target is NOT `scripts/ci/tier0-static.sh`, and that is deliberate
 # rather than an oversight: lint-staged (root package.json) runs `make lint`
-# on every commit that touches a staged .ts/.tsx/.py file, so it has to stay
+# on every commit that touches a staged .js/.jsx/.py file, so it has to stay
 # ruff+mypy+eslint fast. tier0-static.sh is the definition of record for the
 # full Tier 0 gate (ADR 0005) — it also runs the Alembic single-head check,
 # the tests/build repo-policy suite and the release-control ledger validator,
@@ -262,6 +309,12 @@ security-report: ## Run full security scan report (non-blocking)
 lint: ## Run backend and frontend linters (fast subset for pre-commit; see comment)
 	cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/ruff check src/app
 	cd $(BACKEND_DIR) && PYTHONPATH=src $(CURDIR)/.venv/bin/mypy src/app
+# The load generator lives outside src/app, so it has to be named here to be
+# gated at all. An untyped, unlinted measurement tool is the one place a silent
+# mistake is hardest to notice, because its output is a number nobody can check
+# by eye.
+	$(CURDIR)/.venv/bin/ruff check scripts/loadgen
+	MYPYPATH=$(CURDIR):$(BACKEND_DIR)/src $(CURDIR)/.venv/bin/mypy --explicit-package-bases scripts/loadgen
 	cd $(FRONTEND_DIR) && npm run lint
 
 format: ## Format backend and frontend code
@@ -321,7 +374,7 @@ verify-full: verify-fast ## Tier 0 + full Tier 1 including the backend suite (me
 
 # T3. Not part of `verify` and deliberately not wired into any workflow yet: it
 # boots a VM, downloads a 556MB image on first run, and takes minutes, which is
-# not a pre-push gate. Phase 2 shipped the install row; Phase 3 adds the upgrade
+# not a pre-push gate. The matrix carries the install row and the upgrade
 # and rollback row below, and the remaining formats and architectures after it.
 #
 # CB_CANDIDATE is required rather than defaulted to a dist/ glob. The claim this

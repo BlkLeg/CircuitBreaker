@@ -438,7 +438,7 @@ def _committed_assigned_monitors(agent_id: int, count: int, *, interval_secs: in
 def test_reconnect_makes_assigned_monitors_due_with_jitter_not_all_at_once(
     db_session, ws_client, monkeypatch
 ):
-    """D-16. An agent with hundreds of assignments reconnecting at exactly
+    """An agent with hundreds of assignments reconnecting at exactly
     `now()` gets a whole per-vantage batch claimed on the very next tick and
     dispatched into a bounded queue, turning a healthy reconnect into a burst of
     capacity-exhausted execution errors. `next_due_at` therefore lands inside

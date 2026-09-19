@@ -1,17 +1,15 @@
 import React from 'react';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import Header from '../components/Header.jsx';
-
-const mockUser = { current: { role: 'admin' } };
 
 vi.mock('../context/AuthContext.jsx', () => ({
   useAuth: () => ({
     openAuthModal: vi.fn(),
     openProfileModal: vi.fn(),
     isAuthenticated: true,
-    user: mockUser.current,
+    user: { role: 'admin' },
   }),
 }));
 vi.mock('../context/SettingsContext', () => ({
@@ -22,44 +20,40 @@ vi.mock('../components/ThemePalette', () => ({ default: () => null }));
 vi.mock('../components/HeaderWidgets.jsx', () => ({ default: () => null }));
 vi.mock('../components/auth/UserAvatar.jsx', () => ({ default: () => null }));
 
-function openMenu(user) {
-  mockUser.current = user;
-  render(
-    <MemoryRouter>
-      <Header onOpenPalette={() => {}} />
-    </MemoryRouter>
-  );
-  fireEvent.click(screen.getByLabelText('Open route menu'));
-}
-
-describe('header route menu', () => {
+describe('header navigator trigger', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('renders the five lifecycle groups for an admin', () => {
-    openMenu({ role: 'admin' });
-    for (const label of ['Acquire', 'Inventory', 'Observe', 'Govern', 'System']) {
-      expect(screen.getByText(label)).toBeTruthy();
-    }
+  it('renders exactly one compact navigator control', () => {
+    render(
+      <MemoryRouter>
+        <Header onOpenNavigator={vi.fn()} />
+      </MemoryRouter>
+    );
+    expect(screen.getAllByRole('button', { name: 'Open navigator' })).toHaveLength(1);
+    expect(screen.queryByLabelText('Open route menu')).toBeNull();
+    expect(screen.queryByLabelText('Open command palette')).toBeNull();
   });
 
-  it('shows a viewer no Govern group at all', () => {
-    openMenu({ role: 'viewer' });
-    expect(screen.queryByText('Govern')).toBeNull();
-    expect(screen.getByText('Observe')).toBeTruthy();
+  it('opens the shared navigator callback', () => {
+    const onOpenNavigator = vi.fn();
+    render(
+      <MemoryRouter>
+        <Header onOpenNavigator={onOpenNavigator} />
+      </MemoryRouter>
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Open navigator' }));
+    expect(onOpenNavigator).toHaveBeenCalledTimes(1);
   });
 
-  it('hides Certificates from a viewer', () => {
-    openMenu({ role: 'viewer' });
-    expect(screen.queryByText('Certificates')).toBeNull();
-  });
-
-  it('offers Access Tokens to an admin', () => {
-    openMenu({ role: 'admin' });
-    expect(screen.getByText('Access Tokens')).toBeTruthy();
-  });
-
-  it('offers Other Assets, which had no menu entry before', () => {
-    openMenu({ role: 'admin' });
-    expect(screen.getByText('Other Assets')).toBeTruthy();
+  it('advertises both platform shortcut forms', () => {
+    render(
+      <MemoryRouter>
+        <Header onOpenNavigator={vi.fn()} />
+      </MemoryRouter>
+    );
+    expect(screen.getByRole('button', { name: 'Open navigator' })).toHaveAttribute(
+      'aria-keyshortcuts',
+      'Control+K Meta+K'
+    );
   });
 });

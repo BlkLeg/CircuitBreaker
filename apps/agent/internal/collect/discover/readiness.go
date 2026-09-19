@@ -30,7 +30,7 @@ const (
 )
 
 // Readiness reports whether this host can actually perform each of the four discovery methods
-// (plan §6: collector state, whether ICMP datagram probing is usable, neighbor-cache
+// (collector state, whether ICMP datagram probing is usable, neighbor-cache
 // availability).
 //
 // It takes a context where probe.Readiness takes none, because one of the four checks is a real

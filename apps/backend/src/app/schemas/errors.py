@@ -1,6 +1,14 @@
 """Standard error response schema for API consistency (PROMPT.md step 7)."""
 
+from typing import Any
+
 from pydantic import BaseModel, Field
+
+
+class ErrorContext(BaseModel):
+    """Allowlisted structured context used by known public errors."""
+
+    conflicts: list[dict[str, Any]] | None = None
 
 
 class ErrorResponse(BaseModel):
@@ -9,6 +17,7 @@ class ErrorResponse(BaseModel):
     error_code: str = Field(..., description="Machine-readable code for client handling")
     detail: str = Field(..., description="Human-readable message")
     fields: dict[str, str] | None = Field(default=None, description="Field-level validation errors")
+    context: ErrorContext | None = Field(default=None, description="Safe structured error context")
     retry_after: int | None = Field(default=None, description="Seconds until retry (429 only)")
 
 

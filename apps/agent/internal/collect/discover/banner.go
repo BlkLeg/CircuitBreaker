@@ -18,16 +18,16 @@ const (
 	MaxBannerBytes = 512
 
 	// DefaultBannerTimeout is the whole budget for one capture — connect and read together.
-	// Plan §1 allows banners only under strict byte and time limits, and a granted port that
+	// The contract allows banners only under strict byte and time limits, and a granted port that
 	// accepts and then waits for a request it will never get is the common case, not the
 	// exception: 443 and 8443 behave exactly that way.
 	DefaultBannerTimeout = 2 * time.Second
 )
 
-// Banner captures the greeting a service sends unprompted on connect (plan §1).
+// Banner captures the greeting a service sends unprompted on connect.
 //
 // It never writes to the connection. That is the whole design: the moment discovery sends a
-// request it is speaking an application protocol, and plan §7 forbids following a redirect or
+// request it is speaking an application protocol, and following a redirect is forbidden, as is
 // making an application-level authenticated request in v1. Reading only what a service volunteers
 // keeps this to one TCP handshake with no credential, no header and no URL anywhere in it — see
 // the import guard in imports_test.go, which keeps an HTTP client out of this package entirely.
@@ -49,7 +49,7 @@ func NewBanner() *Banner {
 func (b *Banner) Capture(ctx context.Context, addr netip.Addr, port int, opts Options) string {
 	// A port the grant does not list is never touched, not even to be read from. The backend
 	// clamps discovery.request against the grant, but the agent checks its own effective grant
-	// immediately before each target connection (plan §7) — two independent checks so a backend
+	// immediately before each target connection — two independent checks so a backend
 	// bug cannot widen what an agent actually connects to. A banner is also strictly less than
 	// what the connect check already did, so a port outside the set has no path here at all.
 	if !opts.wants(MethodTCPConnect) || !opts.allowsPort(port) {
@@ -76,7 +76,7 @@ func (b *Banner) read(ctx context.Context, conn net.Conn) []byte {
 
 	// The read deadline bounds the wait but cannot observe cancellation, and the banner budget is
 	// longer than a whole host timeout. Without this, cancelling a dispatch would still take up
-	// to DefaultBannerTimeout per capture in flight, and plan §7 requires discovery to stop
+	// to DefaultBannerTimeout per capture in flight, and discovery must stop
 	// quickly on cancellation or a grant change. Moving the deadline into the past unblocks the
 	// read in place; closing the connection here would race the deferred Close above.
 	stop := make(chan struct{})

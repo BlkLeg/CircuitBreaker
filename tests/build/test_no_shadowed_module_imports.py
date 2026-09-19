@@ -1,7 +1,7 @@
 """A function-local import of a module already imported at file scope makes that
 name local for the WHOLE function — including every line above the import.
 
-Found by Tier 3 (ADR 0005 Phase 2), four layers into a packaged boot:
+Found by Tier 3 (ADR 0005), four layers into a packaged boot:
 
     File "start.py", line 353, in main
     UnboundLocalError: cannot access local variable 'os'

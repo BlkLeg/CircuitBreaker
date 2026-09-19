@@ -71,7 +71,7 @@ export default function AddAgentInstallStep({ installCommand, errorMessage, isLo
 
       {isLoading && <p>Generating an install command…</p>}
 
-      {/* Design §4: the reason a 503 (or a 403) came back renders where the
+      {/* The reason a 503 (or a 403) came back renders where the
           operator is already looking, not only in a toast that has faded by the
           time they scroll back to the panel. */}
       {errorMessage && (

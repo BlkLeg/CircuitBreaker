@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +17,8 @@ import (
 	"github.com/gorilla/websocket"
 
 	"circuitbreaker.dev/cb-agent/internal/config"
+	"circuitbreaker.dev/cb-agent/internal/frame"
+	"circuitbreaker.dev/cb-agent/internal/tlsdial"
 )
 
 // generateTestKeypair mirrors noiseconn_test.go's generateKeypair.
@@ -152,8 +156,11 @@ func TestRun_PrintsPairingCodeAndReturnsOnActive(t *testing.T) {
 	}
 
 	cfg := &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])}
-	if err := Run(cfg, key, "0.1.0-test"); err != nil {
+	if err := Run(cfg, key, "0.1.0-test", tlsdial.Trust{Mode: tlsdial.ModePublic}, dir); err != nil {
 		t.Fatalf("Run() error = %v, want nil (status=active)", err)
+	}
+	if !IsEnrolled(dir) {
+		t.Fatal("IsEnrolled() = false after Run returned nil on status=active")
 	}
 }
 
@@ -194,14 +201,15 @@ func TestRun_StalledServerDoesNotBlockForever(t *testing.T) {
 	srv := upgradeAndStall(t)
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
 
-	key, err := LoadOrCreateDeviceKey(t.TempDir())
+	dir := t.TempDir()
+	key, err := LoadOrCreateDeviceKey(dir)
 	if err != nil {
 		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
 	}
 	cfg := &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])}
 
 	done := make(chan error, 1)
-	go func() { done <- Run(cfg, key, "0.1.0-test") }()
+	go func() { done <- Run(cfg, key, "0.1.0-test", tlsdial.Trust{Mode: tlsdial.ModePublic}, dir) }()
 
 	select {
 	case err := <-done:
@@ -270,13 +278,100 @@ func TestRun_ApprovalMayTakeLongerThanTheHandshakeDeadline(t *testing.T) {
 	defer srv.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
-	key, err := LoadOrCreateDeviceKey(t.TempDir())
+	dir := t.TempDir()
+	key, err := LoadOrCreateDeviceKey(dir)
 	if err != nil {
 		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
 	}
 	cfg := &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])}
 
-	if err := Run(cfg, key, "0.1.0-test"); err != nil {
+	if err := Run(cfg, key, "0.1.0-test", tlsdial.Trust{Mode: tlsdial.ModePublic}, dir); err != nil {
 		t.Fatalf("Run() error = %v, want nil — a slow approval is not a timeout", err)
+	}
+}
+
+// ── Slice B: the enrollment token ────────────────────────────────────────────
+
+func TestReadEnrollToken_ReturnsEmptyWhenTheFileIsAbsent(t *testing.T) {
+	// The attended flow, which is the default and by far the common case. It
+	// must not be an error.
+	got, err := readEnrollToken(filepath.Join(t.TempDir(), "enroll-token"))
+	if err != nil {
+		t.Fatalf("absent token file must not be an error: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("want empty, got %q", got)
+	}
+}
+
+func TestReadEnrollToken_TrimsTheTrailingNewlineTheInstallerWrites(t *testing.T) {
+	// The installer writes it with printf '%s\n'; a token carrying a newline
+	// would not match the hash the server stored.
+	path := filepath.Join(t.TempDir(), "enroll-token")
+	if err := os.WriteFile(path, []byte("cbe_abc123\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := readEnrollToken(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "cbe_abc123" {
+		t.Fatalf("want %q, got %q", "cbe_abc123", got)
+	}
+}
+
+func TestReadEnrollToken_ReportsAPathItCannotRead(t *testing.T) {
+	// Present but unreadable is a misconfiguration an operator can fix, and is
+	// the one case worth failing on rather than silently falling back to the
+	// attended flow they did not ask for.
+	//
+	// A directory rather than a mode-0000 file: root can read 0000, so that
+	// version of this test had to skip under root, and a skip needs a register
+	// row. os.ReadFile on a directory fails for every uid, which
+	// exercises the same branch with no exemption to justify.
+	if _, err := readEnrollToken(t.TempDir()); err == nil {
+		t.Fatal("an unreadable token path must be reported, not ignored")
+	}
+}
+
+func TestClearEnrollToken_RemovesASpentToken(t *testing.T) {
+	// A spent token left on disk is a stale secret with no purpose.
+	path := filepath.Join(t.TempDir(), "enroll-token")
+	if err := os.WriteFile(path, []byte("cbe_abc123\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	clearEnrollToken(path)
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("token file survived: %v", err)
+	}
+}
+
+func TestClearEnrollToken_IsSilentWhenThereIsNothingToRemove(t *testing.T) {
+	// The attended flow reaches this path too; it must not log or panic.
+	clearEnrollToken(filepath.Join(t.TempDir(), "absent"))
+}
+
+func TestHelloPayload_CarriesTheTokenOnlyWhenThereIsOne(t *testing.T) {
+	// omitempty matters: an attended agent's hello must stay byte-identical to
+	// today's, and internal/link builds its hello from this same struct.
+	var p frame.HelloPayload
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "enroll_token") {
+		t.Fatalf("empty token must be omitted, got %s", b)
+	}
+
+	p.EnrollToken = "cbe_abc"
+	b, err = json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"enroll_token":"cbe_abc"`) {
+		t.Fatalf("token missing from hello: %s", b)
 	}
 }

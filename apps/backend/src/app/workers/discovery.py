@@ -1,4 +1,4 @@
-"""The DISCOVERY JetStream consumer — which deliberately runs no scan (B44).
+"""The DISCOVERY JetStream consumer — which deliberately runs no scan.
 
 Nothing in this tree publishes to `discovery.jobs`. Outside this module's own
 tests the subject is named in this file and in no other, in any language: the
@@ -12,7 +12,7 @@ The consumer body is what settles which way to resolve that. It used to run
 masscan, then nmap, and then throw both results away: no `ScanResult` row, no
 `ScanJob` transition, no broadcast, nothing a scan is for. It was never the other
 half of a discovery pipeline. Scheduled and operator-triggered discovery both go
-through `services/discovery_service.execute_scan_job`, which either scans from
+through `services/discovery_dispatch.execute_scan_job`, which either scans from
 the server (`run_scan_job`) or dispatches to an agent
 (`agent_discovery.dispatch_discovery_job`); neither touches this queue.
 
@@ -27,37 +27,30 @@ forever.
 
 Retiring the worker outright — the supervisord program, the `--type=discovery`
 entry in `workers/main.py`, the `topology.py` row, the native-release module
-list — is the rest of B44 and touches files outside this one. Until that
+list — is the rest of the contract and touches files outside this one. Until that
 happens `run_worker` must keep running and keep touching the heartbeat file, or
 supervisord's `startsecs=5` turns the exit into a crash loop. The stream
 declaration also stays: a deployment that already has a DISCOVERY stream should
-keep the B15 limits on it rather than have them quietly stop being applied.
+keep the the contract limits on it rather than have them quietly stop being applied.
 """
 
 import asyncio
 import logging
 import os
-import time
-from pathlib import Path
 from typing import Any
 
 from nats.js.api import RetentionPolicy
 
 from app.core.nats_client import nats_client
+from app.core.worker_heartbeat import touch_heartbeat
 from app.workers.stream_limits import update_stream_limits
 
 logger = logging.getLogger(__name__)
 
-_HEALTHY_FILE = Path("/data/worker-discovery.healthy")
-
 
 def _touch_healthy() -> None:
-    """Update heartbeat file so the container healthcheck can verify liveness."""
-    try:
-        _HEALTHY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _HEALTHY_FILE.write_text(str(time.time()))
-    except OSError:
-        pass
+    """Update heartbeat file so health/diagnostics can verify liveness."""
+    touch_heartbeat("worker-discovery")
 
 
 async def process_job(msg: Any, semaphore: asyncio.Semaphore) -> None:
@@ -86,12 +79,12 @@ async def process_job(msg: Any, semaphore: asyncio.Semaphore) -> None:
         logger.error(
             "Discarding a message on discovery.jobs (%d bytes): this worker has no "
             "publisher and no result path for that subject. Discovery runs through "
-            "discovery_service.execute_scan_job, not this queue.",
+            "discovery_dispatch.execute_scan_job, not this queue.",
             len(getattr(msg, "data", b"") or b""),
         )
         try:
             await msg.ack()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("Failed to ack a discarded discovery.jobs message: %s", exc)
 
 
@@ -124,7 +117,7 @@ async def _update_stream_limits(js: Any, cfg: dict[str, Any]) -> None:
     """Retro-fit `cfg`'s limits onto a DISCOVERY stream that already exists.
 
     Delegates to `workers.stream_limits.update_stream_limits`. This used to be a
-    byte-identical copy of the TELEMETRY worker's version, and when R12 was fixed
+    byte-identical copy of the TELEMETRY worker's version, and when the contract was fixed
     there this copy was left behind — so a clustered NATS kept silently demoting
     the R3 DISCOVERY stream to R1 while the TELEMETRY one was safe, and the
     report said the regression was closed. Two copies of this is the defect; the

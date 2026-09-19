@@ -120,4 +120,10 @@ describe('HighRiskConfirmDialog', () => {
     expect(screen.getByLabelText(/type rotate to confirm/i)).toHaveValue('');
     expect(screen.getByRole('button', { name: /^confirm$/i })).toBeDisabled();
   });
+
+  it('themes the confirm input with design tokens rather than a browser-default white field', () => {
+    render(<HighRiskConfirmDialog {...baseProps} />);
+    const input = screen.getByLabelText(/type rotate to confirm/i);
+    expect(input).toHaveClass('high-risk-confirm__input');
+  });
 });

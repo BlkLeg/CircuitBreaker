@@ -1,6 +1,7 @@
 package update
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"circuitbreaker.dev/cb-agent/internal/config"
+	"circuitbreaker.dev/cb-agent/internal/tlsdial"
 )
 
 func TestDownloadAndVerify_RoundTrips(t *testing.T) {
@@ -26,7 +28,7 @@ func TestDownloadAndVerify_RoundTrips(t *testing.T) {
 	cfg := &config.Config{ServerURL: srv.URL}
 	instr := Instruction{Version: "0.2.0", SHA256: wantHash, Arch: "amd64", OS: "linux"}
 
-	tmpPath, err := Download(cfg, instr)
+	tmpPath, err := Download(context.Background(), cfg, tlsdial.Trust{Mode: tlsdial.ModePublic}, instr)
 	if err != nil {
 		t.Fatalf("Download() error = %v", err)
 	}
@@ -130,7 +132,7 @@ func TestMarker_MarkSwappedTransitionsPhase(t *testing.T) {
 }
 
 // TestRollbackReport_WriteReadClear mirrors TestMarker_WriteReadClear for the
-// rollback-report marker (Task 24): the version a rollback restored away
+// rollback-report marker: the version a rollback restored away
 // from, persisted across the re-exec back into the prior binary so the fresh
 // process can report update.status(rolled_back) once reconnected.
 func TestRollbackReport_WriteReadClear(t *testing.T) {

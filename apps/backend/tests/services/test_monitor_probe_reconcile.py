@@ -1,6 +1,6 @@
 """Reconciliation: expiry, staleness, and probe-run retention (Slice 3 §8, D-4, D-5).
 
-The scheduler's own tick owns all of it (D-5). Without it the §1 partial unique
+The scheduler's own tick owns all of it. Without it the §1 partial unique
 index turns one silent agent into a permanent wedge for that monitor — the
 mirror image of the property
 `tests/integration/test_monitor_engine_e2e.py::test_restart_self_heals_no_wedged_items`
@@ -198,7 +198,7 @@ async def test_ready_agent_with_no_recent_result_is_marked_stale(db_session, fac
 
     events = db_session.query(MonitorEvent).filter(MonitorEvent.item_id == item.id).all()
     assert [e.event_type for e in events] == [result_service.EVENT_EXECUTION]
-    # The target's own state is carried through, never rewritten (§7).
+    # The target's own state is carried through, never rewritten.
     assert events[0].status_to == "up"
 
 

@@ -4,7 +4,7 @@ Every path that writes `hardware_live_metrics` — the synchronous poller write
 (`app/services/telemetry_service.py`), the JetStream ingest worker
 (`app/workers/telemetry_ingest_worker.py`), and the agent host-sample
 projection (`app/services/agent_telemetry.py`) — maps its input onto the metric
-columns through :func:`live_metric_fields` and nothing else. Slice 3's
+columns through :func:`live_metric_fields` and nothing else. the
 `probe.result` and slice 4's `discovery.finding` projections import the same
 function; a fourth copy of this mapping is a defect, not a shortcut.
 

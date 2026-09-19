@@ -232,6 +232,18 @@ export function useDiscoveryStream() {
             eta_seconds: msg.eta_seconds,
           });
           break;
+        // The source-sync path broadcasts this when a run reaches a committed
+        // state (services/docker_discovery.py::_emit_run_result). It is the
+        // reason the Docker panel needs no poll loop of its own.
+        case 'docker_sync_completed':
+          discoveryEmitter.emit('docker:sync-completed', {
+            run_id: msg.run_id,
+            source_id: msg.source_id,
+            status: msg.status,
+            containers_observed: msg.containers_observed,
+            networks_observed: msg.networks_observed,
+          });
+          break;
         case 'scan_log_entry':
           discoveryEmitter.emit('scan:log_entry', {
             job_id: msg.job_id,
@@ -248,7 +260,11 @@ export function useDiscoveryStream() {
             discoveryEmitter.emit('result:added', { ...msg });
           } else {
             discoveryEmitter.emit('result:added', msg.result);
-            setPendingCount((c) => c + 1);
+            // Enriched and duplicate observations are history, not queue items.
+            // Missing status retains compatibility with older backends.
+            if (!msg.result?.merge_status || msg.result.merge_status === 'pending') {
+              setPendingCount((c) => c + 1);
+            }
           }
           break;
         case 'result_enriched':

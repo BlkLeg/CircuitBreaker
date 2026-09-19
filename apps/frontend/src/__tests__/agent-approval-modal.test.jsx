@@ -13,7 +13,7 @@ vi.mock('../api/agents', () => ({
   getCapabilityDefaults: (...args) => mockGetCapabilityDefaults(...args),
 }));
 
-// Task 14: the modal has no capability preset of its own any more — this is
+// The modal has no capability preset of its own any more — this is
 // what GET /api/v1/agents/capability-defaults returns, i.e. the server
 // registry's CAPABILITY_DEFINITIONS rendered as {enabled, config}.
 const HOST_DEFAULT_CONFIG = {

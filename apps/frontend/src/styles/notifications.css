@@ -1,0 +1,98 @@
+/*
+ * Delivery test feedback (plan 05).
+ *
+ * Tokens only. The surface this replaces hardcoded #22c55e / #ef4444, which
+ * plan 00 rules out: status colour has to follow the active theme, and those
+ * two values were legible against exactly one background.
+ */
+
+.delivery-result {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: var(--color-surface-raised);
+  font-size: 12px;
+}
+
+.delivery-result--accepted {
+  border-left-color: var(--color-success);
+}
+
+.delivery-result--retrying {
+  border-left-color: var(--color-warning);
+}
+
+.delivery-result--failed {
+  border-left-color: var(--color-danger);
+}
+
+.delivery-result--pending {
+  border-left-color: var(--color-info);
+}
+
+.delivery-result__title {
+  display: block;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.delivery-result--accepted .delivery-result__title {
+  color: var(--color-success);
+}
+
+.delivery-result--retrying .delivery-result__title {
+  color: var(--color-warning);
+}
+
+.delivery-result--failed .delivery-result__title {
+  color: var(--color-danger);
+}
+
+/* Which destination answered, directly under the outcome it belongs to. */
+.delivery-result__destination {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.delivery-result__detail,
+.delivery-result__caveat,
+.delivery-result__guidance {
+  margin: 4px 0 0;
+  color: var(--color-text-muted);
+}
+
+/* The honesty line carries the whole point of the panel, so it reads as the
+   qualifier it is rather than as another sentence of detail. */
+.delivery-result__caveat {
+  font-style: italic;
+}
+
+.delivery-result__guidance {
+  color: var(--color-text);
+}
+
+.delivery-result__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 6px 0 0;
+}
+
+.delivery-result__fact {
+  display: flex;
+  gap: 4px;
+}
+
+.delivery-result__fact dt {
+  color: var(--color-text-muted);
+}
+
+.delivery-result__fact dd {
+  margin: 0;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}

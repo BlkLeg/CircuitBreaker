@@ -3,7 +3,7 @@
  * No React dependencies — safe to import from any module.
  */
 
-import { ENTITY_FIELDS, MONITOR_TARGET_TYPES } from '../components/map/mapConstants';
+import { ENTITY_FIELDS, MONITOR_TARGET_TYPES } from '../features/map/model/mapConstants';
 import { validateIpAddress } from './validation';
 import { servicesApi, computeUnitsApi, storageApi } from '../api/client';
 

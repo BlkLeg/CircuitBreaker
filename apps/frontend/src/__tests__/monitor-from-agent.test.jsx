@@ -3,7 +3,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
-// Slice 3 §7 (plans/2026-08-04-cbi-agent-slice3-remote-probe.md:414):
+// The contract:
 //
 //   Offer "Create monitor from this agent" actions for devices found in Slice
 //   4. These preselect the agent vantage and target while leaving monitor
@@ -11,8 +11,8 @@ import { MemoryRouter } from 'react-router-dom';
 //
 // It sits in that plan's "Agent UI" subsection, which is entirely about Agent
 // Detail — so the action hangs off the agent's own discovery section, and
-// Slice 4's review queue stays "preserved unchanged"
-// (plans/2026-08-04-cbi-agent-slice4-local-discovery.md:339).
+// The review queue stays "preserved unchanged"
+//.
 //
 // Cloned from monitor-run-from.test.jsx, whose fixture shape this reuses.
 const apiDefaults = vi.hoisted(() => {
@@ -147,7 +147,7 @@ describe('Create monitor from this agent — the action on Agent Detail', () => 
     expect(query.get('target_id')).toBe('55');
     expect(query.get('host')).toBe('10.77.0.11');
     // Type, interval and alert policy are deliberately absent — they stay
-    // under the operator's control per §7.
+    // under the operator's control
     expect(query.get('check_type')).toBeNull();
     expect(query.get('interval_secs')).toBeNull();
   });

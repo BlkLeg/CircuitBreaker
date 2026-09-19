@@ -3,10 +3,10 @@
 `tests/` at the repo root holds two different kinds of suite, and only one of
 them is runnable from here.
 
-  * `tests/build/` and `tests/unit/*.py` are repo-policy and pure-logic suites.
-    They read the checked-out tree, import nothing from the application, and
-    need no services. `pytest tests/` is their intended command, and CI runs
-    `pytest tests/build` in the Lint job.
+  * `tests/build/` is a repo-policy suite. It reads the checked-out tree,
+    imports nothing from the application, and needs no services. `pytest
+    tests/` is its intended command, and CI runs `pytest tests/build` in the
+    Lint job.
 
   * `tests/integration/` is backend-scoped despite living here. Its conftest
     does `from app.main import app` at import time, which needs

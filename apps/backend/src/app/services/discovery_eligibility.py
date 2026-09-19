@@ -1,6 +1,6 @@
-"""May this agent run this discovery job? (Slice 4 §3)
+"""May this agent run this discovery job?
 
-Plan §3 requires the same answer at four checkpoints — profile save, ad hoc job
+the contract requires the same answer at four checkpoints — profile save, ad hoc job
 creation, dispatch, and the re-check the dispatcher owes a job that has been
 sitting in the queue — so it is composed here once. Three of those callers owe a
 user a 422 or a 409 naming what is wrong, and the fourth writes it to the job's
@@ -22,7 +22,7 @@ discovery differs:
   result path already models; a sweep that half-works reports *fewer hosts*, and
   nothing in the discovery result contract distinguishes that from a segment
   that really is that empty. Silently short inventory is worse than no scan.
-* Reachability is optional (`require_online`). D-5 parks a job for an offline
+* Reachability is optional (`require_online`). the contract parks a job for an offline
   agent as `queued` + `waiting_for_agent` instead of failing it, so being
   offline is a scheduling condition; a profile save that refused it would make
   an agent unusable from its first reboot onwards.
@@ -69,7 +69,7 @@ REASON_READINESS_UNAVAILABLE = "readiness_unavailable"
 REASON_TENANT_MISMATCH = "tenant_mismatch"
 REASON_OUT_OF_SCOPE = "out_of_scope"
 
-# D-8: discovery collector state travels as ordinary `agent_capability_readiness`
+# Discovery collector state travels as ordinary `agent_capability_readiness`
 # rows under these names. Listed in full because the agent detail page renders
 # the set and a name invented at either end would render as a silent absence.
 READINESS_COLLECTORS = ("discovery.neighbor", "discovery.icmp", "discovery.tcp", "discovery.dns")
@@ -127,12 +127,12 @@ async def evaluate_eligibility(
     tenant_id: int | None = None,
     require_online: bool = True,
 ) -> Eligibility:
-    """Answer §3's preconditions, in §3's order, for one agent and its targets.
+    """Answerthe preconditions, inthe order, for one agent and its targets.
 
     `targets` are the CIDRs the job would scan; an empty sequence asks only about
     the agent, which is what the revoke and capability-disable paths need when
     they have no particular job in hand. `tenant_id` is the job's or profile's
-    tenant. `require_online` is what a creation-time caller drops (D-5).
+    tenant. `require_online` is what a creation-time caller drops.
 
     Caller owns the transaction; nothing here writes.
     """

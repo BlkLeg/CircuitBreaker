@@ -1,5 +1,7 @@
 import pytest
 
+from app.services import discovery_dispatch
+
 
 def test_arp_stub_injected_for_arp_only_host() -> None:
     """ARP-only IPs (phones with no open ports) get a stub in nmap_results."""
@@ -309,21 +311,17 @@ def test_scan_import_keeps_a_supplied_network_id(db_session, factories) -> None:
 
 # ── The queued backlog: parking, the ceiling, and the loop it must run on ─────
 #
-# Slice 4 Phase C remediation. Three defects live on one path — the drain that
-# `_scan_finalize` and `finalize_agent_job` run when a job gives its concurrency
-# slot back:
+# Three properties of the drain that `_scan_finalize` and `finalize_agent_job`
+# run when a job gives its concurrency slot back:
 #
-# * B1. The drain handed *every* queued job to the dispatcher, including one
-#   parked in `waiting_for_agent` (D-5), and `_release_to_waiting` re-stamps
-#   `dispatch_deadline_at` — so an unrelated scan finishing anywhere pushed a
-#   parked job's deadline forward and it never reached its `agent_unavailable`
-#   expiry.
-# * B2. The direct dispatch path consulted no concurrency ceiling, so a job
-#   created by cron or the API went `running` while ignoring
-#   `max_concurrent_scans` — a limit it then consumed a slot against.
-# * B3. `_scan_finalize` is sync and runs only in an executor thread, where
-#   `asyncio.create_task` raises: the drain blew up exactly when a slot had just
-#   been freed and a queued job existed.
+# * a job parked in `waiting_for_agent` must NOT be handed to the
+#   dispatcher — `_release_to_waiting` re-stamps `dispatch_deadline_at`, so any
+#   unrelated scan finishing would push a parked job's deadline forward and it
+#   would never reach its `agent_unavailable` expiry.
+# * the direct dispatch path must consult `max_concurrent_scans`, which it then
+#   consumes a slot against.
+# * `_scan_finalize` is sync and runs in an executor thread, where
+#   `asyncio.create_task` raises — so the drain must not use it.
 
 
 def _backlog_agent(db_session, factories):  # type: ignore[no-untyped-def]
@@ -420,7 +418,7 @@ def test_the_queued_drain_leaves_a_job_parked_for_its_agent_to_its_deadline_owne
     from datetime import timedelta
 
     from app.core.time import utcnow
-    from app.services import discovery_scheduler, discovery_service
+    from app.services import discovery_dispatch, discovery_scheduler
 
     _raise_the_ceiling(db_session)
     agent = _backlog_agent(db_session, factories)
@@ -434,7 +432,7 @@ def test_the_queued_drain_leaves_a_job_parked_for_its_agent_to_its_deadline_owne
 
     handed: list[int] = []
     monkeypatch.setattr(
-        discovery_service, "schedule_discovery_scan_job", lambda job_id: handed.append(job_id)
+        discovery_dispatch, "schedule_discovery_scan_job", lambda job_id: handed.append(job_id)
     )
 
     discovery_scheduler._schedule_queued_scan_jobs(db_session)
@@ -471,9 +469,9 @@ async def test_a_parked_job_keeps_its_original_deadline_when_an_unrelated_job_fi
     # SAVEPOINT. Everything downstream of it — the claim, the eligibility check,
     # the parking — is the production code.
     async def _route(job_id: int) -> None:
-        await discovery_service.execute_scan_job(db_session, job_id)
+        await discovery_dispatch.execute_scan_job(db_session, job_id)
 
-    monkeypatch.setattr(discovery_service, "_execute_scan_job_in_session", _route)
+    monkeypatch.setattr(discovery_dispatch, "_execute_scan_job_in_session", _route)
 
     with (
         patch.object(discovery_service, "SessionLocal", return_value=db_session),
@@ -501,7 +499,7 @@ async def test_an_agent_job_over_the_concurrency_ceiling_is_not_dispatched(
     """B2. `_claim` sets `status='running'`, so a dispatched agent job consumes a
     `max_concurrent_scans` slot from everyone else's point of view. A direct
     dispatch that never asked for one is a job exempt from a limit it spends."""
-    from app.services import agent_discovery, discovery_service
+    from app.services import agent_discovery
     from app.services.settings_service import get_or_create_settings
 
     settings = get_or_create_settings(db_session)
@@ -526,7 +524,7 @@ async def test_an_agent_job_over_the_concurrency_ceiling_is_not_dispatched(
 
     monkeypatch.setattr(agent_discovery, "dispatch_discovery_job", _spy)
 
-    await discovery_service.execute_scan_job(db_session, job.id)
+    await discovery_dispatch.execute_scan_job(db_session, job.id)
 
     assert dispatched == []
     db_session.refresh(job)
@@ -544,7 +542,7 @@ async def test_an_agent_job_with_a_free_slot_still_reaches_the_dispatcher(
 ) -> None:  # type: ignore[no-untyped-def]
     """The other half of B2's ceiling: it may not become a gate that refuses
     every agent job."""
-    from app.services import agent_discovery, discovery_service
+    from app.services import agent_discovery
 
     _raise_the_ceiling(db_session)
     agent = _backlog_agent(db_session, factories)
@@ -564,7 +562,7 @@ async def test_an_agent_job_with_a_free_slot_still_reaches_the_dispatcher(
 
     monkeypatch.setattr(agent_discovery, "dispatch_discovery_job", _spy)
 
-    await discovery_service.execute_scan_job(db_session, job.id)
+    await discovery_dispatch.execute_scan_job(db_session, job.id)
 
     assert dispatched == [job.id]
 
@@ -581,10 +579,10 @@ async def test_finalizing_in_an_executor_thread_still_drains_the_backlog(
     import asyncio
     from unittest.mock import patch
 
-    from app.services import discovery_scheduler, discovery_service
+    from app.services import discovery_dispatch, discovery_scheduler, discovery_service
 
     loop = asyncio.get_running_loop()
-    # What `main.py`'s lifespan does at startup, undone by monkeypatch here.
+    # What the lifespan does at startup, undone by monkeypatch here.
     monkeypatch.setattr(discovery_scheduler, "_main_loop", loop)
 
     _raise_the_ceiling(db_session)
@@ -596,7 +594,7 @@ async def test_finalizing_in_an_executor_thread_still_drains_the_backlog(
     async def _route(job_id: int) -> None:
         started.append(job_id)
 
-    monkeypatch.setattr(discovery_service, "_execute_scan_job_in_session", _route)
+    monkeypatch.setattr(discovery_dispatch, "_execute_scan_job_in_session", _route)
 
     with (
         patch.object(discovery_service, "SessionLocal", return_value=db_session),
@@ -612,28 +610,21 @@ async def test_finalizing_in_an_executor_thread_still_drains_the_backlog(
     )
 
 
-# ── Task 25: the recurring pass, and whose hostname may rename a device ───────
+# ── the recurring pass, and whose hostname may rename a device ───────
 #
-# `_auto_merge_known_devices` is what makes a *recurring* cadence bearable: a
-# profile that rescans the same subnet every six hours must refresh `last_seen`
-# on the devices it already knows rather than pile the same rows into the review
-# queue forever. Plan §4 lists `hostname` among the agent's *untrusted
-# observations*, next to banner and evidence, so a name an agent reports may not
-# be written onto a `Hardware` row.
+# `_auto_merge_known_devices` makes a recurring cadence bearable: a profile that
+# rescans the same subnet must refresh `last_seen` on known devices rather than
+# pile the same rows into the review queue. Plan §4 lists `hostname` among the
+# agent's UNTRUSTED observations, so an agent-reported name may not be written
+# onto a `Hardware` row.
 #
-# **Scope chosen: agent-sourced results only.** Plan §4's untrusted-observation
-# rule is written about the `discovery.finding` frame — a report from a process
-# on a host outside the server's trust boundary — and Task 25's own wording is
-# "agent-supplied `hostname`" twice. The server's own scan of a network the
-# server can see has always renamed hardware, and there is no requirement in
-# this slice to change that; doing so would silently move every DHCP rename on
-# every existing installation into the review queue. The guard therefore reads
-# `ScanResult.discovery_agent_id`, the row's own provenance (Task 4), not the
-# job's and not the setting's. The pair
-# `test_an_agent_findings_hostname_never_renames_the_hardware_row` /
-# `test_a_server_scans_hostname_change_still_renames_the_hardware_row` is what
-# records that choice: under the other reading — non-propagation for everyone —
-# the second of them fails.
+# Scope is agent-sourced results ONLY. The untrusted-observation rule is about
+# the `discovery.finding` frame, from a host outside the server's trust boundary.
+# A server-side scan has always renamed hardware, and changing that would move
+# every DHCP rename on every existing installation into the review queue. So the
+# guard reads `ScanResult.discovery_agent_id` — the row's own provenance — not
+# the job's and not the setting's. The agent/server pair of tests below is what
+# records that choice.
 
 
 def _merge_result(db_session, job, **kwargs):  # type: ignore[no-untyped-def]

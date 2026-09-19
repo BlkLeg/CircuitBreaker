@@ -37,7 +37,7 @@ fi
 
 # ── matrix lookup ───────────────────────────────────────────────────────────
 # cb::matrix_field (lib/common.sh) is the one definition; dispatch.sh reads the
-# same file for a row's `mode`, and Phase 3's second row made the id matching
+# same file for a row's `mode`, and a second row makes the id matching
 # load-bearing -- "fedora-rpm-amd64" is a prefix of "fedora-rpm-amd64-upgrade",
 # which the substring test this replaced would have resolved to the wrong row.
 ROW_ID="${1:-fedora-rpm-amd64}"
@@ -95,7 +95,7 @@ VM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cb-fleet-${ROW_ID}-XXXXXX")"
 # running VM that nothing is tracking. dispatch.sh does trap and destroy, but
 # only after it has READ the path below, so a failure before the handoff has no
 # owner at all. Two such directories were found on disk after the -nographic and
-# continuation-chain failures during Phase 2; "destroy always" has to include the
+# continuation-chain failures; "destroy always" has to include the
 # paths that never got far enough to tell anyone.
 #
 # Cleared deliberately on the success path: from that point the caller owns it.
@@ -198,7 +198,7 @@ done
 # fail-fast now, but that is one editable file standing between a broken machine
 # and a package getting the blame for it. Cheap to check, so check.
 #
-# WHICH services to check comes from the guest, not from here. Slice 1 hardcoded
+# WHICH services to check comes from the guest, not from here. Hardcoding
 # `postgresql && valkey`, which are Fedora's names -- Debian's redis unit is
 # redis-server, so the same literal would have failed the Debian row for a
 # service that was running perfectly. Each fixture writes the units it started to

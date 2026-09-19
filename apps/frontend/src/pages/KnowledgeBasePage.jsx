@@ -4,7 +4,7 @@ import { KB_TABS } from '../components/kb/kbTabs.jsx';
 import KbTable from '../components/kb/KbTable.jsx';
 
 /**
- * Operator-editable lookup tables that feed discovery naming (INC-11).
+ * Operator-editable lookup tables that feed discovery naming.
  *
  * Rendered as a Settings tab (`embedded`), following AdminUsersPage's
  * convention so SettingsPage gains one registration line rather than a feature.

@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
-import { getInstallCommand } from '../../api/agents';
+import { getInstallCommand, mintEnrollmentToken } from '../../api/agents';
+import { useSettings } from '../../context/SettingsContext';
 import { operatorErrorMessage } from '../../lib/agentErrors';
 import { agentDisplayName } from '../../lib/agentLabel';
 import { useToast } from '../common/Toast';
@@ -29,6 +30,30 @@ const GENERIC_INSTALL_ERROR =
 // not a fault. Saying who can get them one beats echoing "Not enough
 // permissions" at someone who cannot act on it.
 const INSTALL_ADMIN_ONLY = 'Ask an administrator for the install command';
+
+// An install that is going to fail fails silently: the agent
+// that would report "I cannot reach you" is the one that cannot reach us. After
+// this long with no check-in, say which address to go and verify rather than
+// spinning "listening…" indefinitely.
+const CHECK_IN_OVERDUE_MS = 90_000;
+
+const MODE_ATTENDED = 'attended';
+const MODE_UNATTENDED = 'unattended';
+// One hour, matching the server default: long enough for a human to paste the
+// value into a launch template, short enough that a forgotten token expires.
+const TOKEN_TTL_SECONDS = 3600;
+const GENERIC_MINT_ERROR = 'Could not create an enrollment token';
+
+// The endpoint whose address matches the one this browser is on is the likeliest
+// correct choice for a LAN agent, and picking it reproduces today's behaviour
+// for an operator who never opens the picker. Falling back to the first
+// declared endpoint beats falling back to none: an empty choice sends the
+// browsed host, which is exactly the address the list exists to override.
+function defaultEndpointId(endpoints) {
+  if (endpoints.length === 0) return '';
+  const match = endpoints.find((e) => e.url === globalThis.location.origin);
+  return (match ?? endpoints[0]).id ?? '';
+}
 
 // AGT-15: the server answers 503 with an operator-fixable reason when it has
 // one (an unreadable TLS cert names the path and the chmod that fixes it), and
@@ -62,6 +87,7 @@ export default function AddAgentPanel({
   onPairingResolved,
 }) {
   const toast = useToast();
+  const { settings } = useSettings();
   // Only the *operator's* toggle lives in state. Whether the panel is open is
   // derived below, because `isStandalone` can turn true after mount — deleting
   // the last agent empties the fleet — and a seeded initial state would leave
@@ -72,6 +98,25 @@ export default function AddAgentPanel({
   const [installError, setInstallError] = useState(null);
   const [isLoadingCommand, setIsLoadingCommand] = useState(false);
   const isMountedRef = useRef(true);
+
+  const endpoints = useMemo(() => settings?.agent_endpoints ?? [], [settings]);
+  // '' is "not chosen yet", which is distinct from "chosen nothing": the
+  // settings context loads asynchronously, so an explicit choice has to survive
+  // the list arriving, and the derived value below covers the gap before it does.
+  const [chosenEndpoint, setChosenEndpoint] = useState('');
+  // Slice B. Attended is the default and is what shipped; unattended is opt-in
+  // and mints a bearer credential, so nothing here happens without an explicit
+  // click. `mintedToken` holds the plaintext for exactly as long as the panel
+  // is showing it — it is not recoverable from the server afterwards.
+  const [mode, setMode] = useState(MODE_ATTENDED);
+  const [mintedToken, setMintedToken] = useState(null);
+  const [mintError, setMintError] = useState(null);
+  const [isMinting, setIsMinting] = useState(false);
+  const selectedEndpoint =
+    chosenEndpoint && endpoints.some((e) => e.id === chosenEndpoint)
+      ? chosenEndpoint
+      : defaultEndpointId(endpoints);
+  const selectedEndpointUrl = endpoints.find((e) => e.id === selectedEndpoint)?.url ?? '';
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -84,12 +129,12 @@ export default function AddAgentPanel({
     setIsLoadingCommand(true);
     setInstallError(null);
     try {
-      const { data } = await getInstallCommand();
+      const { data } = await getInstallCommand(selectedEndpoint, mintedToken?.token ?? null);
       if (isMountedRef.current) setInstallCommand(data);
     } catch (err) {
       if (!isMountedRef.current) return;
       const message = installErrorMessage(err);
-      // Inline *and* toast, deliberately (design §4): inline puts the reason
+      // Inline *and* toast, deliberately: inline puts the reason
       // where the operator is already looking, and the toast is what reaches
       // them if they have scrolled past the panel by the time it answers.
       setInstallError(message);
@@ -97,34 +142,88 @@ export default function AddAgentPanel({
     } finally {
       if (isMountedRef.current) setIsLoadingCommand(false);
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    // The token is a dependency because the command carries it: minting has to
+    // re-issue the command, or the operator copies an attended one.
+  }, [selectedEndpoint, mintedToken]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A token is scoped to one endpoint, so a change to either the endpoint or
+  // the mode drops it. Left in place it would emit a command whose token the
+  // server refuses, or — going back to attended — hand the operator a command
+  // still carrying a credential they think they abandoned.
+  const dropToken = useCallback(() => {
+    setMintedToken(null);
+    setMintError(null);
+  }, []);
+
+  const handleEndpointChange = (id) => {
+    dropToken();
+    setChosenEndpoint(id);
+  };
+
+  const handleModeChange = (next) => {
+    dropToken();
+    setMode(next);
+  };
+
+  const handleMint = async () => {
+    setIsMinting(true);
+    setMintError(null);
+    try {
+      const { data } = await mintEnrollmentToken({
+        label: `Unattended install — ${selectedEndpointUrl || 'this server'}`,
+        endpoint_id: selectedEndpoint,
+        ttl_seconds: TOKEN_TTL_SECONDS,
+        max_uses: 1,
+      });
+      if (isMountedRef.current) setMintedToken(data);
+    } catch (err) {
+      if (!isMountedRef.current) return;
+      // Inline and toast, matching how installError is handled above.
+      const message = operatorErrorMessage(err, {
+        fallback: GENERIC_MINT_ERROR,
+        forbidden: INSTALL_ADMIN_ONLY,
+      });
+      setMintError(message);
+      toast.error(message);
+    } finally {
+      if (isMountedRef.current) setIsMinting(false);
+    }
+  };
+
+  const isOpen = Boolean(isStandalone) || isExpanded;
 
   // Standalone means the fleet is empty and this panel *is* the page, so the
   // command is fetched without waiting to be asked. Inline, the fetch is the
   // operator opening the panel — and re-opening after a failure retries it.
+  // Keying on the chosen endpoint too is what makes the picker do anything: the
+  // command carries the address, so changing the address has to re-issue it.
   useEffect(() => {
-    if (isStandalone) loadInstallCommand();
-  }, [isStandalone, loadInstallCommand]);
+    if (isOpen) loadInstallCommand();
+  }, [isOpen, loadInstallCommand]);
 
-  const isOpen = Boolean(isStandalone) || isExpanded;
+  const hasCheckedIn = pendingAgents.length > 0;
+  const checkedInNames = pendingAgents.map((a) => agentDisplayName(a, a.id)).join(', ');
+
+  // Restarted whenever the command changes, so re-issuing it for a different
+  // endpoint gives that address its own fair wait rather than inheriting the
+  // previous one's expired clock.
+  const [isCheckInOverdue, setIsCheckInOverdue] = useState(false);
+  useEffect(() => {
+    setIsCheckInOverdue(false);
+    if (!installCommand || hasCheckedIn) return undefined;
+    const timer = setTimeout(() => setIsCheckInOverdue(true), CHECK_IN_OVERDUE_MS);
+    return () => clearTimeout(timer);
+  }, [installCommand, hasCheckedIn]);
+
   if (!isOpen) {
     return (
       <section className="add-agent">
-        <button
-          type="button"
-          onClick={() => {
-            setIsExpanded(true);
-            loadInstallCommand();
-          }}
-        >
+        <button type="button" onClick={() => setIsExpanded(true)}>
           Add agent
         </button>
       </section>
     );
   }
-
-  const hasCheckedIn = pendingAgents.length > 0;
-  const checkedInNames = pendingAgents.map((a) => agentDisplayName(a, a.id)).join(', ');
 
   return (
     <section
@@ -147,6 +246,97 @@ export default function AddAgentPanel({
       <ol className="add-agent__steps">
         <li className="add-agent__step" data-state={stepState(Boolean(installCommand), true)}>
           <h3>Run this on the new machine</h3>
+
+          {/* The address is part of the command, so it is chosen here rather
+              than buried in settings the operator would have to go and read. */}
+          {endpoints.length === 0 ? (
+            <p className="add-agent__warning">
+              No agent endpoints are configured, so this command will use the address you are
+              browsing ({globalThis.location.origin}). An agent on another network will not be able
+              to reach it. Add an endpoint in Settings → Connectivity.
+            </p>
+          ) : (
+            <label htmlFor="add-agent-endpoint" className="add-agent__endpoint">
+              Endpoint
+              <select
+                id="add-agent-endpoint"
+                value={selectedEndpoint}
+                onChange={(e) => handleEndpointChange(e.target.value)}
+              >
+                {endpoints.map((e) => (
+                  <option key={e.id} value={e.id}>{`${e.label} — ${e.url}`}</option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          {/* Attended is the default and is what shipped. Unattended mints a
+              bearer credential, so it is opt-in twice over: choosing it does
+              nothing until the operator asks for a token. */}
+          <fieldset className="add-agent__mode">
+            <legend>Approval</legend>
+            <div className="add-agent__mode-options">
+              <label htmlFor="add-agent-mode-attended">
+                <input
+                  id="add-agent-mode-attended"
+                  type="radio"
+                  name="add-agent-mode"
+                  value={MODE_ATTENDED}
+                  checked={mode === MODE_ATTENDED}
+                  onChange={() => handleModeChange(MODE_ATTENDED)}
+                />
+                Attended — you approve the machine here
+              </label>
+              <label htmlFor="add-agent-mode-unattended">
+                <input
+                  id="add-agent-mode-unattended"
+                  type="radio"
+                  name="add-agent-mode"
+                  value={MODE_UNATTENDED}
+                  checked={mode === MODE_UNATTENDED}
+                  onChange={() => handleModeChange(MODE_UNATTENDED)}
+                />
+                Unattended — the machine enrolls itself with a token
+              </label>
+            </div>
+          </fieldset>
+
+          {mode === MODE_UNATTENDED && (
+            <div className="add-agent__token">
+              {!mintedToken && (
+                <>
+                  <p>
+                    A token lets this machine enrol without waiting for approval. It is a bearer
+                    credential: anything presenting it enrols, until it is used or expires.
+                  </p>
+                  <button type="button" onClick={handleMint} disabled={isMinting}>
+                    {isMinting ? 'Generating…' : 'Generate token'}
+                  </button>
+                </>
+              )}
+              {mintError && (
+                <p className="add-agent__error" role="alert">
+                  {mintError}
+                </p>
+              )}
+              {mintedToken && (
+                <>
+                  <p>This machine will enrol without waiting for approval.</p>
+                  <p>
+                    One use, expires in an hour. <strong>It will not be shown again</strong> — the
+                    server keeps only a hash of it.
+                  </p>
+                  <code className="add-agent__token-value">{mintedToken.token}</code>
+                  <p>
+                    It is already in the command below, as an environment variable. Copy the command
+                    whole and do not pass the token as an argument: arguments are visible in{' '}
+                    <code>ps</code> and land in shell history and cloud-init logs.
+                  </p>
+                </>
+              )}
+            </div>
+          )}
+
           <AddAgentInstallStep
             installCommand={installCommand}
             errorMessage={installError}
@@ -171,6 +361,16 @@ export default function AddAgentPanel({
               <h3>Waiting for the machine to check in</h3>
               <span className="add-agent__chip">listening…</span>
               <p>The moment it enrolls it appears here — no need to reload.</p>
+              {/* An agent that cannot reach the server cannot
+                  say so, so after long enough this names the address to check
+                  rather than leaving "listening…" to imply progress. */}
+              {isCheckInOverdue && (
+                <p className="add-agent__warning">
+                  Nothing has checked in yet. The agent was told to dial{' '}
+                  <code>{selectedEndpointUrl || globalThis.location.origin}</code> — confirm that
+                  address resolves and is reachable from the machine you installed on.
+                </p>
+              )}
             </>
           )}
         </li>

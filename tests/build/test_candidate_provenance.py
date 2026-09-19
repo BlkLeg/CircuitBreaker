@@ -1,6 +1,6 @@
 """A Tier 3 row must be able to say which artifact it is talking about.
 
-ADR 0005 Phase 3, F8. The Makefile already refuses to test "whatever .rpm
+See ADR 0005. The Makefile already refuses to test "whatever .rpm
 happened to be lying in dist/" by requiring an explicit CB_CANDIDATE. But an
 explicitly named *locally built* package is still not the artifact a user
 installs, and the two are not interchangeable: a PyInstaller bundle inherits the

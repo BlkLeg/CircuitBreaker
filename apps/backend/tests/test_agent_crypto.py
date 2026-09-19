@@ -235,7 +235,7 @@ def test_production_rekey_interval_is_fifteen_minutes():
 
 
 # ── _resolve_rekey_interval_seconds / CB_AGENT_TEST_REKEY_INTERVAL_SECONDS ──
-# Production-safety tests for the Docker-E2E-only override (Task 31). The
+# Production-safety tests for the Docker-E2E-only override. The
 # Go-side counterpart (resolveRekeyInterval / rekeyIntervalEnvOverride) has
 # its own equivalent tests in apps/agent/internal/link/link_test.go.
 
@@ -347,7 +347,7 @@ def test_check_clock_skew_defaults_now_to_the_real_current_time():
         check_clock_skew(datetime(2000, 1, 1, tzinfo=UTC))
 
 
-# ── device_identity_matches (Task 27) ──────────────────────────────────────
+# ── device_identity_matches ──────────────────────────────────────
 
 
 def test_device_identity_matches_current_key_with_no_pending_rotation():
@@ -442,7 +442,7 @@ def test_device_identity_matches_defaults_now_to_the_real_current_time():
     )
 
 
-# ── server-key rotation with an overlap window (Task 28) ───────────────────
+# ── server-key rotation with an overlap window ───────────────────
 
 
 def test_load_server_key_rotation_state_defaults_to_no_active_rotation(db_session, app_cfg):

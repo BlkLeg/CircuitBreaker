@@ -26,7 +26,7 @@ const { externalNodesApi } = await import('../api/client.jsx');
 beforeEach(() => vi.clearAllMocks());
 
 describe('external-node relationship bindings', () => {
-  // INC-05: this path had no backend route for the whole 1.0.0 line — the
+  // This path must have a backend route behind it — the
   // router declaring it was never mounted, so both callers
   // (ExternalNodesPage.jsx and components/map/linkMutations.js) failed. The
   // matching route is pinned from the backend side by

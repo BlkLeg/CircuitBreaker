@@ -1,12 +1,12 @@
 """Retro-fit stream limits onto a JetStream stream that already exists.
 
 This lives here, shared, rather than once per worker, because having it twice is
-what produced regression R12 and then let half of it survive the fix.
+what produced regression the contract and then let half of it survive the fix.
 
 `add_stream` against a stream whose stored config differs reports "stream name
 already in use" -- the same string an identical stream never produces. A worker
 that swallows that keeps whatever limitless stream it was first created with,
-forever, and never sees a byte of the bounding fix (B15). So the mismatch branch
+forever, and never sees a byte of the bounding fix. So the mismatch branch
 has to reach back and update the stream in place.
 
 STREAM.UPDATE is a *replace*, not a patch. The request body is a whole
@@ -16,7 +16,7 @@ the server, it arrives as zero and JetStream substitutes its own default.
 Sending only the desired config therefore reset `num_replicas` to 1 and
 re-derived `storage`, which on a clustered NATS demotes an R3 stream to R1 on the
 first worker boot after an upgrade, with no error and no log line to say the
-redundancy is gone. That is R12. The update is consequently built from the
+redundancy is gone. That is the contract. The update is consequently built from the
 *server's* copy of the config, with only the fields this build actually wants to
 change laid over the top.
 
@@ -74,15 +74,15 @@ async def update_stream_limits(js: Any, cfg: dict[str, Any]) -> None:
         # Everything except retention, which stays whatever the server already has.
         update.update({field: value for field, value in cfg.items() if field != "retention"})
         # Echoing the stored config means the body now carries `duplicate_window`,
-        # which the pre-R12 body never sent, and that one field can cost the whole
+        # which the pre-the contract body never sent, and that one field can cost the whole
         # request. JetStream refuses an update whose dedupe window is longer than its
         # max_age (err_code=10052) instead of clamping it, and nats-server stamps its
         # 120s default on every stream created without an opinion on dedupe -- which
         # is every stream this retrofit exists for. So with a max_age under 120 the
         # update is rejected whole, the rejection lands in the `except` below as a
         # warning nobody reads, and the stream keeps max_age=0/max_bytes=-1 forever,
-        # since every later boot fails identically. That is B15's disk-exhaustion
-        # path, reopened by the fix for R12. Shrinking the window to fit is the only
+        # since every later boot fails identically. That isthe disk-exhaustion
+        # path, reopened by the fix for the contract. Shrinking the window to fit is the only
         # outcome the server accepts, and it is the cheap side of the trade: a
         # publisher retrying more than max_age later may be seen twice, against an
         # unbounded stream as the alternative. max_age == 0 is JetStream's "no age
@@ -92,5 +92,5 @@ async def update_stream_limits(js: Any, cfg: dict[str, Any]) -> None:
             update["duplicate_window"] = max_age
         await js.update_stream(**update)
         _logger.info("NATS %s stream limits updated", name)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _logger.warning("NATS %s stream limits update failed: %s", name, exc)

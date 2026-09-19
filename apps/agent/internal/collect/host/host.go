@@ -110,7 +110,7 @@ func (c *Collector) Collect(ctx context.Context) (collect.Result, error) {
 			}
 		}
 		// A collector recorded under a name absent from CollectorNames is
-		// drift: Task 11's disable path iterates CollectorNames, so that row
+		// drift: the disable path iterates CollectorNames, so that row
 		// would never be flipped to "disabled". Dropping it here would be
 		// worse — its readiness would never reach the backend at all, which is
 		// the stale-"Live" defect one layer down — so emit it, out of the

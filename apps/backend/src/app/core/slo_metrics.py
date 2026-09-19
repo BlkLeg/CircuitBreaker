@@ -30,10 +30,14 @@ survive across scrapes.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 from typing import TYPE_CHECKING
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
+
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -52,6 +56,19 @@ _HEALTH_STATES = ("starting", "ready", "degraded", "not_ready", "stopping")
 _LATENCY_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
 
 _UNMATCHED_ROUTE = "unmatched"
+
+#: the design (observability phase 2): buckets small enough to distinguish a
+#: healthy loop (sub-millisecond) from one that is starting to starve, since
+#: this histogram exists specifically to answer "how blocked does it get",
+#: not just "is it blocked".
+_LOOP_LAG_BUCKETS = (0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0)
+
+#: How often the sampler in `run_event_loop_lag_sampler` sleeps between
+#: samples, and therefore also the sleep duration the observed lag is measured
+#: against. A 100ms cadence is cheap enough to run unconditionally in
+#: production and fine-grained enough to catch a blocking call in the seconds
+#: after it starts.
+_LOOP_LAG_SAMPLE_INTERVAL_SECONDS = 0.1
 
 http_requests_total = Counter(
     "circuitbreaker_http_requests_total",
@@ -95,6 +112,58 @@ process_uptime_seconds = Gauge(
     registry=REGISTRY,
 )
 
+event_loop_lag_seconds = Gauge(
+    "circuitbreaker_event_loop_lag_seconds",
+    "Most recently observed asyncio event loop scheduling lag, in seconds",
+    registry=REGISTRY,
+)
+
+event_loop_lag_seconds_hist = Histogram(
+    "circuitbreaker_event_loop_lag_seconds_hist",
+    "Distribution of observed asyncio event loop scheduling lag, in seconds",
+    buckets=_LOOP_LAG_BUCKETS,
+    registry=REGISTRY,
+)
+
+# ── Connection-pool saturation (the contract: "DB pool utilization + pool_timeout
+# events") ─────────────────────────────────────────────────────────────────
+# These live here rather than in `app.api.metrics` because the timeout counter
+# has to survive across scrapes, and splitting a pool's utilization gauges from
+# its exhaustion counter across two registries would mean reading two different
+# exposition blocks to answer one question. The gauges are refreshed from the
+# live engine pool in `exposition()`, so they are point-in-time reads that
+# happen to be published from the process-lifetime registry.
+
+db_pool_size = Gauge(
+    "circuitbreaker_db_pool_size",
+    "Configured size of the synchronous SQLAlchemy connection pool",
+    registry=REGISTRY,
+)
+
+db_pool_checked_out = Gauge(
+    "circuitbreaker_db_pool_checked_out",
+    "Connections currently checked out of the synchronous pool",
+    registry=REGISTRY,
+)
+
+db_pool_checked_in = Gauge(
+    "circuitbreaker_db_pool_checked_in",
+    "Connections currently idle in the synchronous pool",
+    registry=REGISTRY,
+)
+
+db_pool_overflow = Gauge(
+    "circuitbreaker_db_pool_overflow",
+    "Overflow connections beyond the configured pool size (negative until the pool is full)",
+    registry=REGISTRY,
+)
+
+db_pool_timeouts_total = Counter(
+    "circuitbreaker_db_pool_timeouts_total",
+    "Requests that failed because the connection pool did not free a slot within pool_timeout",
+    registry=REGISTRY,
+)
+
 _PROCESS_START = time.monotonic()
 
 for _state in _HEALTH_STATES:
@@ -123,11 +192,84 @@ def refresh_process_gauges() -> None:
     process_uptime_seconds.set(time.monotonic() - _PROCESS_START)
 
 
+def record_db_pool_timeout() -> None:
+    """Count one connection-pool exhaustion (`pool_timeout` elapsed)."""
+    db_pool_timeouts_total.inc()
+
+
+def refresh_db_pool_gauges() -> None:
+    """Read the live pool's occupancy onto the gauges, best-effort.
+
+    Imported lazily because `app.db.session` builds the engine at import time
+    and raises when `CB_DB_URL` is unset — a metrics scrape must not be what
+    turns a configuration problem into an import error, and `core` must not
+    take a load-time dependency on `db`.
+
+    Only `QueuePool` keeps occupancy counters. A `NullPool` — which some test
+    configurations substitute — has nothing to report, and the gauges are left
+    at whatever they last held rather than being zeroed: an unmeasurable pool is
+    not an empty one, and publishing zeros would be a false reading.
+    """
+    try:
+        from sqlalchemy.pool import QueuePool
+
+        from app.db.session import engine
+
+        pool = engine.pool
+        if not isinstance(pool, QueuePool):
+            _logger.debug(
+                "[slo_metrics] %s does not expose occupancy counters", type(pool).__name__
+            )
+            return
+        db_pool_size.set(pool.size())
+        db_pool_checked_out.set(pool.checkedout())
+        db_pool_checked_in.set(pool.checkedin())
+        db_pool_overflow.set(pool.overflow())
+    except Exception as exc:  # a scrape must never fail on instrumentation
+        _logger.warning("[slo_metrics] db pool gauge refresh failed: %s", exc)
+
+
+def record_loop_lag(lag_seconds: float) -> None:
+    """Record one event-loop-lag sample onto both the gauge and the histogram."""
+    event_loop_lag_seconds.set(lag_seconds)
+    event_loop_lag_seconds_hist.observe(lag_seconds)
+
+
+async def run_event_loop_lag_sampler() -> None:
+    """Sample asyncio event-loop scheduling lag until cancelled.
+
+    Sleeps for `_LOOP_LAG_SAMPLE_INTERVAL_SECONDS` and measures how much
+    longer the sleep actually took than requested with
+    `time.perf_counter()` — the amount of time the loop spent doing something
+    else instead of waking this task on schedule, which is a direct measure
+    of whether the event loop is being blocked by synchronous work.
+
+    Meant to run as a background `asyncio.Task` for the life of the process
+    (started from the FastAPI lifespan in `main.py`). Cancellation is the
+    normal way to stop it: `asyncio.CancelledError` is deliberately not
+    caught here, so `task.cancel()` followed by `await task` behaves exactly
+    like cancelling any other task and the caller decides how to swallow it.
+    Any other exception is logged and the loop continues — a broken sampler
+    must not take the rest of the process down with it, and must not stop
+    producing samples over one bad measurement.
+    """
+    while True:
+        started = time.perf_counter()
+        await asyncio.sleep(_LOOP_LAG_SAMPLE_INTERVAL_SECONDS)
+        try:
+            elapsed = time.perf_counter() - started
+            lag = max(0.0, elapsed - _LOOP_LAG_SAMPLE_INTERVAL_SECONDS)
+            record_loop_lag(lag)
+        except Exception as exc:  # a broken sampler must not crash the process
+            _logger.warning("[slo_metrics] event loop lag sample failed: %s", exc)
+
+
 def exposition() -> bytes:
     """Prometheus text exposition for the process-lifetime series."""
     from prometheus_client import generate_latest
 
     refresh_process_gauges()
+    refresh_db_pool_gauges()
     return generate_latest(REGISTRY)
 
 

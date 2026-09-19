@@ -155,7 +155,7 @@ describe('MonitorCard', () => {
   it('groupStatusOf is unchanged by probe_execution_status', () => {
     // MonitorsPage imports groupStatusOf for the summary counts, the group
     // buckets and the status filter, so folding the execution condition into it
-    // would silently rewrite the dashboard (D-13).
+    // would silently rewrite the dashboard.
     for (const execStatus of ['ready', 'queued', 'running', 'stale', 'unavailable']) {
       const assigned = {
         ...up,

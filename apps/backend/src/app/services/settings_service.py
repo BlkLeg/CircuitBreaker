@@ -101,6 +101,13 @@ def update_settings(
     row = get_or_create_settings(db)
     data = payload.model_dump(exclude_unset=True)
     for field, value in data.items():
+        if field == "agent_endpoints":
+            # Validated here rather than in the schema so the error message names
+            # the offending endpoint by label, which a pydantic type error cannot.
+            from app.services.agent_endpoints import normalize_endpoints
+
+            row.agent_endpoints = normalize_endpoints(value or [])
+            continue
         if field == "branding":
             # Unpack nested branding config into flat columns
             if value is not None:

@@ -5,6 +5,7 @@ from datetime import timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.core.time import utcnow
 from app.db.models import Hardware, HardwareLiveMetric
@@ -90,8 +91,46 @@ def _row_to_payload(row: HardwareLiveMetric) -> dict[str, Any]:
     return payload
 
 
+def _load_hardware_row(db: Session, hardware_id: int) -> Hardware | None:
+    """The `Hardware` row this read is about, or `None` if it does not exist.
+
+    A blocking `Session` read, split out so `get_telemetry_for_hardware` can
+    hand it to the threadpool instead of running it on the event loop (route
+    slice 2.5). This is the nav path: `/map` asks for telemetry for every node
+    it renders, and the batch endpoint calls this function once per id, so a
+    read left on the loop here stalls every other request the worker is
+    serving — once per node, per poll.
+    """
+    return db.get(Hardware, hardware_id)
+
+
+def _load_latest_metric(db: Session, hardware_id: int) -> HardwareLiveMetric | None:
+    """Newest collected sample for *hardware_id*, or `None` if none exists.
+
+    The cache-miss half of `get_telemetry_for_hardware`, off the loop for the
+    same reason as `_load_hardware_row`. Kept as its own hop rather than merged
+    into that one because it must not run at all on a cache hit — the whole
+    point of the cache is to skip this query.
+    """
+    return (
+        db.query(HardwareLiveMetric)
+        .filter(HardwareLiveMetric.hardware_id == hardware_id)
+        .order_by(HardwareLiveMetric.collected_at.desc())
+        .first()
+    )
+
+
 async def get_telemetry_for_hardware(hardware_id: int, db: Session) -> TelemetryResponse:
-    hw = db.get(Hardware, hardware_id)
+    """Latest telemetry for one host, preferring the cache over the database.
+
+    Every `Session` read runs through `run_in_threadpool`; nothing in this
+    function may touch `db` directly, and
+    `tests/build/test_nav_endpoints_off_loop.py` fails the build if something
+    starts to. Attributes are read off the returned ORM instances afterwards,
+    which is safe because they are already-loaded columns and no commit
+    intervenes to expire them.
+    """
+    hw = await run_in_threadpool(_load_hardware_row, db, hardware_id)
     if hw is None:
         raise ValueError(f"Hardware {hardware_id} not found")
 
@@ -100,7 +139,7 @@ async def get_telemetry_for_hardware(hardware_id: int, db: Session) -> Telemetry
     cached: dict[str, Any] | None = None
     try:
         cached = await get_cached_telemetry(hardware_id)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _logger.debug("Telemetry cache read failed hw:%d: %s", hardware_id, exc)
 
     if cached:
@@ -116,12 +155,7 @@ async def get_telemetry_for_hardware(hardware_id: int, db: Session) -> Telemetry
             config=_safe_config(hw.telemetry_config),
         )
 
-    row = (
-        db.query(HardwareLiveMetric)
-        .filter(HardwareLiveMetric.hardware_id == hardware_id)
-        .order_by(HardwareLiveMetric.collected_at.desc())
-        .first()
-    )
+    row = await run_in_threadpool(_load_latest_metric, db, hardware_id)
     if row is not None:
         payload = _row_to_payload(row)
         response = TelemetryResponse(
@@ -148,7 +182,7 @@ async def get_telemetry_for_hardware(hardware_id: int, db: Session) -> Telemetry
                 },
                 ttl=_CACHE_TTL_SECONDS,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _logger.debug("Telemetry cache backfill failed hw:%d: %s", hardware_id, exc)
         return response
 
@@ -214,7 +248,7 @@ async def write_telemetry(
 
     try:
         await cache_telemetry(hardware_id, cache_payload, ttl=_CACHE_TTL_SECONDS)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _logger.debug("Telemetry cache write failed hw:%d: %s", hardware_id, exc)
 
     try:
@@ -226,7 +260,7 @@ async def write_telemetry(
                 "hardware_id": hardware_id,
             },
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _logger.debug("Telemetry publish failed hw:%d: %s", hardware_id, exc)
 
     return TelemetryResponse(

@@ -367,7 +367,7 @@ def _apply_database_tier(
 
     try:
         row = _read_app_settings(url)
-    except Exception as exc:  # noqa: BLE001 - every driver failure is one operator message
+    except Exception as exc:  # every driver failure is one operator message
         errors.append(
             f"--database was requested but the database could not be read: "
             f"{_redact_connection_error(exc)}. Re-run without --database to validate the "
@@ -831,7 +831,7 @@ def _cmd_snapshot_create(out: str | None) -> int:
     try:
         with _cli_session() as db:
             path = asyncio.run(_run_full_snapshot(db))
-    except Exception as exc:  # noqa: BLE001 - the CLI is the boundary; report, do not raise
+    except Exception as exc:  # the CLI is the boundary; report, do not raise
         print(f"snapshot failed: {exc}", file=sys.stderr)
         return 1
 
@@ -970,7 +970,7 @@ def _run_admin(handler: Any) -> int:
     except AdminError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return exc.exit_code
-    except Exception as exc:  # noqa: BLE001 - the CLI is the boundary
+    except Exception as exc:  # the CLI is the boundary
         print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
         return EXIT_FAILED
 

@@ -1,5 +1,5 @@
-from sqlalchemy import or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import Select, or_, select
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.time import utcnow
 from app.db.models import (
@@ -17,58 +17,81 @@ from app.schemas.external_nodes import (
     ExternalNodeUpdate,
     ServiceExternalNodeLink,
 )
+from app.schemas.inventory import PageRequest, PageResult
+from app.services import entity_tags
+from app.services.inventory_paging import escape_ilike, page_result, paginate_rows
 
 # ── Tag helpers (reuse the entity-tag system) ────────────────────────────────
 
 _ENTITY_TYPE = "external"
 
+_EXTERNAL_SORT_COLUMNS = {
+    "id": ExternalNode.id,
+    "name": ExternalNode.name,
+    "provider": ExternalNode.provider,
+    "kind": ExternalNode.kind,
+    "environment": ExternalNode.environment,
+    "created_at": ExternalNode.created_at,
+    "updated_at": ExternalNode.updated_at,
+}
+
 
 def _sync_tags(db: Session, entity_id: int, tag_names: list[str]) -> None:
-    existing = (
-        db.execute(
-            select(EntityTag).where(
-                EntityTag.entity_type == _ENTITY_TYPE,
-                EntityTag.entity_id == entity_id,
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for et in existing:
-        db.delete(et)
-    db.flush()
-    for name in tag_names:
-        tag = db.execute(select(Tag).where(Tag.name == name)).scalar_one_or_none()
-        if tag is None:
-            tag = Tag(name=name)
-            db.add(tag)
-            db.flush()
-        db.add(EntityTag(entity_type=_ENTITY_TYPE, entity_id=entity_id, tag_id=tag.id))
+    """`entity_tags.sync_tags` with this module's entity type applied."""
+    entity_tags.sync_tags(db, _ENTITY_TYPE, entity_id, tag_names)
 
 
 def _get_tags(db: Session, entity_id: int) -> list[str]:
-    rows = (
-        db.execute(
-            select(EntityTag).where(
-                EntityTag.entity_type == _ENTITY_TYPE,
-                EntityTag.entity_id == entity_id,
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return [row.tag.name for row in rows]
+    """`entity_tags.get_tags_for` with this module's entity type applied."""
+    return entity_tags.get_tags_for(db, _ENTITY_TYPE, entity_id)
 
 
-def _to_dict(db: Session, item: ExternalNode) -> dict:
+def _to_dict(db: Session, item: ExternalNode, tags: list[str] | None = None) -> dict:
     d = {c.name: getattr(item, c.name) for c in item.__table__.columns}
-    d["tags"] = _get_tags(db, item.id)
+    d["tags"] = tags if tags is not None else _get_tags(db, item.id)
     d["networks_count"] = len(item.network_links)
     d["services_count"] = len(item.service_links)
     return d
 
 
 # ── CRUD ─────────────────────────────────────────────────────────────────────
+
+
+def _external_filtered_statement(
+    *,
+    environment: str | None,
+    provider: str | None,
+    kind: str | None,
+    q: str | None,
+    tag: str | None,
+) -> Select[tuple[ExternalNode]]:
+    statement = select(ExternalNode)
+    if environment:
+        statement = statement.where(ExternalNode.environment == environment)
+    if provider:
+        statement = statement.where(ExternalNode.provider == provider)
+    if kind:
+        statement = statement.where(ExternalNode.kind == kind)
+    if q:
+        term = f"%{escape_ilike(q)}%"
+        statement = statement.where(
+            or_(
+                ExternalNode.name.ilike(term, escape="\\"),
+                ExternalNode.provider.ilike(term, escape="\\"),
+                ExternalNode.ip_address.ilike(term, escape="\\"),
+                ExternalNode.notes.ilike(term, escape="\\"),
+            )
+        )
+    if tag:
+        statement = (
+            statement.join(
+                EntityTag,
+                (EntityTag.entity_type == _ENTITY_TYPE) & (EntityTag.entity_id == ExternalNode.id),
+            )
+            .join(Tag, Tag.id == EntityTag.tag_id)
+            .where(Tag.name == tag)
+        )
+    return statement
 
 
 def list_external_nodes(
@@ -80,33 +103,40 @@ def list_external_nodes(
     q: str | None = None,
     tag: str | None = None,
 ) -> list[dict]:
-    stmt = select(ExternalNode)
-    if environment:
-        stmt = stmt.where(ExternalNode.environment == environment)
-    if provider:
-        stmt = stmt.where(ExternalNode.provider == provider)
-    if kind:
-        stmt = stmt.where(ExternalNode.kind == kind)
-    if q:
-        stmt = stmt.where(
-            or_(
-                ExternalNode.name.ilike(f"%{q}%"),
-                ExternalNode.provider.ilike(f"%{q}%"),
-                ExternalNode.ip_address.ilike(f"%{q}%"),
-                ExternalNode.notes.ilike(f"%{q}%"),
-            )
-        )
-    if tag:
-        stmt = (
-            stmt.join(
-                EntityTag,
-                (EntityTag.entity_type == _ENTITY_TYPE) & (EntityTag.entity_id == ExternalNode.id),
-            )
-            .join(Tag, Tag.id == EntityTag.tag_id)
-            .where(Tag.name == tag)
-        )
+    stmt = _external_filtered_statement(
+        environment=environment, provider=provider, kind=kind, q=q, tag=tag
+    )
     rows = db.execute(stmt).scalars().all()
     return [_to_dict(db, r) for r in rows]
+
+
+def list_external_nodes_page(
+    db: Session,
+    page: PageRequest,
+    *,
+    environment: str | None = None,
+    provider: str | None = None,
+    kind: str | None = None,
+    q: str | None = None,
+    tag: str | None = None,
+) -> PageResult[dict]:
+    """Return a bounded external-node page without per-row tag/link queries."""
+    filtered = _external_filtered_statement(
+        environment=environment, provider=provider, kind=kind, q=q, tag=tag
+    ).options(
+        selectinload(ExternalNode.network_links),
+        selectinload(ExternalNode.service_links),
+    )
+    rows, total = paginate_rows(
+        db,
+        filtered=filtered,
+        page=page,
+        sort_columns=_EXTERNAL_SORT_COLUMNS,
+        id_column=ExternalNode.id,
+    )
+    tags = entity_tags.get_tags_for_many(db, _ENTITY_TYPE, [row.id for row in rows])
+    items = [_to_dict(db, row, tags[row.id]) for row in rows]
+    return page_result(items, total=total, page=page)
 
 
 def get_external_node(db: Session, node_id: int) -> dict:

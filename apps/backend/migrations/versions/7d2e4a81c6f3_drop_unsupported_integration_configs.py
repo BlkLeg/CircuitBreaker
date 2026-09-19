@@ -8,7 +8,7 @@ narrowing the accepted set without this migration would strand them there perman
 
 Each removal is recorded in ``logs`` before it happens, because an operator who configured
 one is entitled to find out where it went. It is written to ``logs`` and not ``audit_log``:
-``db/models.py`` records that audit_log is trigger-populated and read-only from Python.
+``db/models/audit.py`` records that audit_log is trigger-populated and read-only from Python.
 
 Revision ID: 7d2e4a81c6f3
 Revises: 3b1f0c7a9d24

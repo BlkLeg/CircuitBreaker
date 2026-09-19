@@ -19,16 +19,11 @@ router = APIRouter(tags=["docs"])
 
 _DOC_UPLOADS_DIR = Path(settings.uploads_dir) / "docs"
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB
-# The four import ceilings are NOT defined here, and are NOT imported by name
-# either. They are the contract this endpoint shares with
-# docs_service.export_docs_zip, they live at the one place both ends can see
-# (the block at the top of docs_service.py), and every use below reads them
-# through the module — `docs_service.MAX_IMPORT_ZIP_BYTES` — so that at runtime
-# there is one object per ceiling rather than a definition and a snapshot of
-# it. A `from app.services.docs_service import MAX_IMPORT_ZIP_BYTES` here would
-# look identical and be a second name bound once at import time: moving the
-# definition would then move the exporter and leave this importer where it was,
-# which is R10 exactly.
+# The four import ceilings are defined in docs_service.py and read THROUGH the
+# module (`docs_service.MAX_IMPORT_ZIP_BYTES`), never imported by name. A
+# `from ... import MAX_IMPORT_ZIP_BYTES` binds a second name once at import
+# time, so moving the definition would move the exporter and silently leave this
+# importer on the old value.
 
 # Static routes MUST come before /{doc_id} to avoid path-matching conflicts
 
@@ -100,16 +95,12 @@ def _parse_zip_entries(data: bytes) -> list[tuple[str, str]]:
             status_code=413,
             detail=f"ZIP must be \u2264 {_mb(docs_service.MAX_IMPORT_ZIP_BYTES)} MB",
         )
-    # Same blunt catch, same reason as the member read further down: this call
-    # parses an attacker-supplied central directory, and BadZipFile is not the
-    # only thing it produces. Fuzzing 4000 corruptions of each of the four
-    # standard methods through this constructor alone raised
-    # NotImplementedError("zip file version 12.8") — a byte in the version
-    # field is enough — which the previous `except zipfile.BadZipFile` let out
-    # as a 500, i.e. B41 was open here too and not only on the member read.
-    # infolist() sits inside the try as well: it is a read of the directory
-    # this constructor just parsed, it costs nothing to cover, and it is one
-    # fewer place for the next zipfile release to raise something new from.
+    # Same blunt catch, same reason as the member read below: this parses an
+    # attacker-supplied central directory and BadZipFile is not the only thing it
+    # raises — a single byte in the version field is enough to get
+    # NotImplementedError. infolist() sits inside the try too: it reads the
+    # directory this constructor just parsed, and it is one fewer place for the
+    # next zipfile release to raise something new from.
     try:
         zf = zipfile.ZipFile(io.BytesIO(data))
         infos = zf.infolist()
@@ -154,42 +145,27 @@ def _parse_zip_entries(data: bytes) -> list[tuple[str, str]]:
                     f"{_mb(docs_service.MAX_IMPORT_TOTAL_MD_BYTES)} MB uncompressed"
                 ),
             )
-        # Read through a bounded stream instead of zf.read(info). This is not
-        # belt-and-braces on top of the file_size check above: zipfile's own
-        # read() hands the decompressor a max_length of 1 GB and only *then*
-        # truncates the result to file_size, so a member whose header lies small
-        # over a real multi-gigabyte deflate stream returns the handful of bytes
-        # it claimed while having materialized the whole stream on the way. A
-        # sized read caps what the decompressor is allowed to produce per chunk,
-        # which is the part that actually costs memory. One byte past the cap
+        # A bounded stream, never zf.read(info). zipfile's read() hands the
+        # decompressor a max_length of 1 GB and truncates to file_size only
+        # afterwards, so a member whose header lies small over a multi-gigabyte
+        # deflate stream returns the few bytes it claimed having materialized the
+        # whole thing. A sized read caps what the decompressor may produce per
+        # chunk, which is the part that costs memory. One byte past the cap
         # distinguishes "exactly at the limit" from "over it".
-        # The try around ZipFile() above covers the *central directory* only.
-        # Everything a member can be wrong about surfaces here instead, and it
-        # reached the client as a 500 until B41. Every one of those failures
-        # means "the archive you uploaded is not readable", which is a 400 —
-        # the same answer the same archive already got when its directory was
-        # the broken part.
         #
-        # The catch is deliberately `Exception` and must not be narrowed back
-        # to a tuple. B41's first fix enumerated the five shapes a corrupt
-        # *deflate or stored* member produces (zlib.error, BadZipFile for a bad
-        # CRC or a clobbered local header, RuntimeError for the encrypted bit,
-        # NotImplementedError for an unknown method) and a bzip2 member walked
-        # straight through it: bz2's decompressor raises a bare
-        # OSError("Invalid data stream"), and the two bytes that select method
-        # 12 are the uploader's to set. Fuzzing 4000 corruptions of each of the
-        # four methods CPython can decompress produced seven distinct types —
-        # BadZipFile, zlib.error, lzma.LZMAError, OSError, ValueError
-        # ("negative seek value", from a corrupted offset), RuntimeError and
-        # NotImplementedError — across three modules that are free to add an
-        # eighth in any CPython release. An enumeration of somebody else's
-        # exception surface is a list that is wrong the moment it is written.
+        # The catch is deliberately `Exception` and must NOT be narrowed to a
+        # tuple. Corrupt members raise from three different modules — BadZipFile,
+        # zlib.error, lzma.LZMAError, OSError, ValueError, RuntimeError and
+        # NotImplementedError have all been observed — and any CPython release is
+        # free to add another. An enumeration of somebody else's exception
+        # surface is wrong the moment it is written. Every one of these means
+        # "the archive is not readable", which is a 400.
         #
         # What makes the blunt catch safe is the size of the try body: exactly
         # two calls, both into zipfile, on bytes the uploader controls. Do not
-        # grow it. In particular the `len(md_bytes)` gate below must stay
+        # grow it — in particular the `len(md_bytes)` gate below must stay
         # outside, because HTTPException is an Exception too and moving it in
-        # would turn the B05 bomb ceilings into "could not read" 400s.
+        # would turn the bomb ceilings into "could not read" 400s.
         try:
             with zf.open(info) as fh:
                 md_bytes = fh.read(docs_service.MAX_IMPORT_MD_BYTES + 1)
@@ -251,17 +227,13 @@ async def import_docs(
 ) -> Any:
     """Import docs from a .md file or a .zip archive containing .md files."""
     filename = (file.filename or "").lower()
-    # Bounded read, not a bare file.read(). Every ceiling below is enforced
-    # against len(data), and a ceiling checked after an unbounded read is a
-    # ceiling checked after the cost it exists to prevent: Starlette spools a
-    # large body to disk rather than holding it in RAM, but .read() with no
-    # argument pulls all of it back into a single bytes object regardless of
-    # how big it got. nginx's client_max_body_size stops this in the shipped
-    # container and stops nothing for anything reaching the ASGI app directly,
-    # so the bound belongs here. One byte past the cap so the len() gate can
-    # still tell an upload sitting exactly on the limit from one over it. The
-    # .md branch has a tighter cap of its own and applies it to this same
-    # buffer, so reading to the larger of the two bounds is correct for both.
+    # Bounded read, never a bare file.read(): a ceiling checked after an
+    # unbounded read is checked after the cost it exists to prevent. Starlette
+    # spools a large body to disk, but .read() with no argument pulls all of it
+    # back into one bytes object. nginx's client_max_body_size stops this in the
+    # shipped container and stops nothing reaching the ASGI app directly, so the
+    # bound belongs here. One byte past the cap so the len() gate can still tell
+    # an upload on the limit from one over it.
     data = await file.read(docs_service.MAX_IMPORT_ZIP_BYTES + 1)
 
     is_zip = filename.endswith(".zip") or file.content_type in (

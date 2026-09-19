@@ -2,7 +2,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import PropTypes from 'prop-types';
 import { Trash2, Play, Plus, ChevronDown, ChevronUp } from 'lucide-react';
-import api from '../../api/client';
+import api, { notificationsApi } from '../../api/client';
+import DeliveryResult from '../notifications/DeliveryResult';
 import {
   ALERT_SEVERITY_ANY,
   ALERT_SEVERITY_OPTIONS,
@@ -74,10 +75,18 @@ function SinkRow({ sink, routes, onRefresh }) {
     setTesting(true);
     setTestResult(null);
     try {
-      const res = await api.post(`/notifications/sinks/${sink.id}/test`);
+      const res = await notificationsApi.testSink(sink.id);
       setTestResult(res.data);
     } catch (err) {
-      setTestResult({ ok: false, error: err?.response?.data?.detail || 'Request failed' });
+      // The request never reached a classification, so say that rather than
+      // borrowing a provider reason code the server never issued.
+      setTestResult({
+        state: 'terminal',
+        reason_code: 'request_failed',
+        message: err.message || 'The test request could not be sent.',
+        provider: sink.type,
+        attempt_count: 0,
+      });
     } finally {
       setTesting(false);
     }
@@ -178,11 +187,7 @@ function SinkRow({ sink, routes, onRefresh }) {
         </div>
       </div>
 
-      {testResult && (
-        <div style={{ marginTop: 6, fontSize: 12, color: testResult.ok ? '#22c55e' : '#ef4444' }}>
-          {testResult.ok ? '✓ Test delivered' : `✗ Failed: ${testResult.error}`}
-        </div>
-      )}
+      <DeliveryResult result={testResult} pending={testing} />
 
       {showRoutes && (
         <div

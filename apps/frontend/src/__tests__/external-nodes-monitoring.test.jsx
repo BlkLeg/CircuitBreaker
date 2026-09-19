@@ -1,6 +1,7 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal();
@@ -19,6 +20,25 @@ vi.mock('../api/client', async (importOriginal) => {
             tags: [],
           },
         ],
+      }),
+      page: vi.fn().mockResolvedValue({
+        data: {
+          items: [
+            {
+              id: 12,
+              name: 'hetzner-vps',
+              provider: 'Hetzner',
+              kind: 'vps',
+              ip_address: '192.0.2.40',
+              tags: [],
+            },
+          ],
+          total: 1,
+          limit: 25,
+          offset: 0,
+          sort: 'name',
+          direction: 'asc',
+        },
       }),
       create: vi.fn(),
       update: vi.fn(),
@@ -105,7 +125,7 @@ describe('ExternalNodesPage monitoring', () => {
   });
 
   it('enables monitoring for an external node row', async () => {
-    render(<ExternalNodesPage />);
+    render(<ExternalNodesPage />, { wrapper: MemoryRouter });
 
     await waitFor(() => expect(screen.getByRole('columnheader', { name: 'Monitor' })).toBeTruthy());
 
@@ -132,7 +152,7 @@ describe('ExternalNodesPage monitoring', () => {
         },
       ],
     });
-    render(<ExternalNodesPage />);
+    render(<ExternalNodesPage />, { wrapper: MemoryRouter });
 
     await waitFor(() => expect(screen.getByText('Down')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Check' }));
@@ -142,7 +162,7 @@ describe('ExternalNodesPage monitoring', () => {
 
   it('explains the failure when the node has no address to probe', async () => {
     createTargetMonitor.mockRejectedValue({ response: { status: 404 } });
-    render(<ExternalNodesPage />);
+    render(<ExternalNodesPage />, { wrapper: MemoryRouter });
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Monitor' })).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Monitor' }));

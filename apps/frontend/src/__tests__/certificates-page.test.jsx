@@ -93,9 +93,14 @@ describe('CertificatesPage', () => {
 
   it('renders certificates list', async () => {
     render(<CertificatesPage />);
-    await waitFor(() => expect(certificatesApi.list).toHaveBeenCalled());
-    expect(screen.getByText('test.local')).toBeDefined();
+    // Wait for the rendered rows, not for the request. `list` having been
+    // *called* says nothing about its promise having resolved and React having
+    // committed the result, and under coverage instrumentation that gap is wide
+    // enough to lose the race — which is how this passed alone and failed
+    // inside `make verify-full`.
+    await waitFor(() => expect(screen.getByText('test.local')).toBeDefined());
     expect(screen.getByText('expired.local')).toBeDefined();
+    expect(certificatesApi.list).toHaveBeenCalled();
   });
 
   it('opens add modal and submits', async () => {

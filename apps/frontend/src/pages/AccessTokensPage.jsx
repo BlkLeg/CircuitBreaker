@@ -1,23 +1,39 @@
 import React from 'react';
+import { ChevronRight, Shield } from 'lucide-react';
 import AccessTokensManager from '../components/settings/AccessTokensManager';
+import '../styles/access-tokens.css';
 
 /**
- * Page shell for the token administration UI built under INC-14.
+ * Admin credential operations workbench.
  *
- * AccessTokensManager renders a bare <div> with no page chrome, so unlike
- * AdminUsersPage and KnowledgeBasePage it needs no `embedded` prop — the
- * heading lives here and the component is mounted as-is. The shell follows
- * IntelPage: `.page` carries the fixed-header offset, and `.page-header` is a
- * flex row that would put the subtitle beside the heading rather than under it.
+ * AccessTokensManager owns inventory/issuance state. This shell supplies the
+ * page chrome from the approved SOC composition without duplicating API logic.
+ * Create lives only in the Issue credential panel — no duplicate header CTA.
  */
 export default function AccessTokensPage() {
   return (
-    <div className="page">
-      <h2>Access Tokens</h2>
-      <p style={{ opacity: 0.7, fontSize: 12 }}>
-        API tokens and service accounts across every administrator, with the scopes each one
-        carries.
-      </p>
+    <div className="page access-tokens-page">
+      <nav className="access-tokens-page__crumb" aria-label="Breadcrumb">
+        <Shield size={12} aria-hidden="true" />
+        <span>Administration</span>
+        <ChevronRight size={12} aria-hidden="true" />
+        <span>Access tokens</span>
+      </nav>
+
+      <div className="access-tokens-page__head">
+        <div>
+          <p className="access-tokens-page__eyebrow">
+            Identity &amp; access / Credential operations
+          </p>
+          <h2>Access Tokens</h2>
+          <p className="access-tokens-page__lead">
+            Issue, audit, rotate, and revoke machine credentials across every administrator. Secrets
+            are shown once; least privilege is chosen here — Profile still mints a personal
+            credential with your own scopes.
+          </p>
+        </div>
+      </div>
+
       <AccessTokensManager />
     </div>
   );

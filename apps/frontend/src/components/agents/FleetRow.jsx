@@ -4,15 +4,17 @@ import PropTypes from 'prop-types';
 import { Link } from 'react-router-dom';
 import Sparkline from './Sparkline';
 import { normalizeCapability } from '../../api/agents';
-import AgentStateChip from './AgentStateChip';
+import AgentStateChip, { stateDetailText } from './AgentStateChip';
 import { agentDisplayName } from '../../lib/agentLabel';
+import { CAPABILITY_LABELS } from '../../lib/agentCapabilities';
 import {
   agentStateDefinition,
   deriveAgentStates,
   fleetRowStateInput,
+  spoolReadingIsStale,
   versionDrift,
 } from '../../lib/agentState';
-import { elapsedSecondsFromIso, formatElapsed } from '../../lib/time';
+import { elapsedSecondsFromIso, formatDuration, formatElapsed } from '../../lib/time';
 import {
   CPU_CRITICAL_PCT,
   CPU_WARN_PCT,
@@ -52,10 +54,6 @@ const PENDING_DETAIL_SPAN = 8; // Ver … Caps
 // approval modal's comparison, which is where an approval actually happens.
 const FINGERPRINT_PREVIEW_CHARS = 8;
 
-const SECONDS_PER_MINUTE = 60;
-const SECONDS_PER_HOUR = 3600;
-const SECONDS_PER_DAY = 86400;
-
 // Base-1000 for link rates: NICs and every other tool an operator cross-checks
 // against quote bits/bytes per second in decimal units, unlike the spool's
 // base-1024 sizes on the detail page.
@@ -63,12 +61,6 @@ const BYTES_PER_KILOBYTE = 1000;
 const RATE_UNITS = ['B/s', 'kB/s', 'MB/s', 'GB/s'];
 const RATE_MEGABYTE_INDEX = 2;
 const RATE_DECIMALS = 1;
-
-const CAPABILITY_LABELS = {
-  host_telemetry: 'Host telemetry',
-  remote_probe: 'Remote probe',
-  local_discovery: 'Local discovery',
-};
 
 // `active` is the unremarkable case and gets no chip; the rest are conditions
 // an operator needs to see without opening the row.
@@ -112,19 +104,9 @@ function formatBytesPerSecond(value) {
   return `${scaled.toFixed(decimals)} ${RATE_UNITS[unitIndex]}`;
 }
 
-function formatDuration(seconds) {
-  if (!Number.isFinite(seconds) || seconds < 0) return null;
-  const days = Math.floor(seconds / SECONDS_PER_DAY);
-  const hours = Math.floor((seconds % SECONDS_PER_DAY) / SECONDS_PER_HOUR);
-  const minutes = Math.floor((seconds % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE);
-  if (days > 0) return `${days}d ${hours}h`;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  return minutes > 0 ? `${minutes}m` : '<1m';
-}
-
 function grantedCapabilityLabels(capabilities) {
   if (!capabilities) return [];
-  // Task 15 / D-11: a withheld grant arrives as {enabled: false, config: {}},
+  // A withheld grant arrives as {enabled: false, config: {}},
   // which is truthy — the object is never the test, `.enabled` is.
   return Object.entries(capabilities)
     .filter(([, value]) => normalizeCapability(value).enabled)
@@ -148,6 +130,127 @@ function SpoolChip({ depth }) {
 
 SpoolChip.propTypes = { depth: PropTypes.number.isRequired };
 
+// The same subject as SpoolChip in the one mood it cannot express: the number
+// is real, but it is not from now.
+//
+// An agent reports its backlog only while it is connected, so the stored depth
+// freezes the moment the link drops and stays frozen for the whole outage —
+// which is exactly the stretch in which the backlog is growing. Observed live:
+// an agent offline for hours with 1,195 undelivered frames on disk, whose row
+// read `spool_depth = 0` and rendered as no chip at all. Nothing on the row
+// said "no backlog"; the absence did, which is worse, because an absence
+// cannot be argued with.
+//
+// So the text is a question mark, never a bare number: `spool ?` when the last
+// value was 0, `spool ? (last known N)` when it was not. The last value is
+// still shown — it is information, and withholding it would replace one wrong
+// answer with no answer — but it is shown as what it is, with its timestamp in
+// the title.
+function SpoolUnknownChip({ depth, reportedAt }) {
+  const definition = agentStateDefinition('spool_unknown');
+  const detail = stateDetailText({
+    code: 'spool_unknown',
+    detail: { lastKnownDepth: depth, reportedAt },
+  });
+  const explanation = [definition.summary, detail, `What to do: ${definition.action}`]
+    .filter(Boolean)
+    .join(' ');
+  return (
+    <span
+      className="fleet-chip"
+      data-tone={definition.tone}
+      data-state="spool_unknown"
+      title={explanation}
+    >
+      {depth > 0 ? `spool ? (last known ${depth})` : 'spool ?'}
+      <span className="sr-only"> — {explanation}</span>
+    </span>
+  );
+}
+
+SpoolUnknownChip.propTypes = {
+  depth: PropTypes.number.isRequired,
+  reportedAt: PropTypes.string,
+};
+
+// The four cases the backlog reading can be in, decided once so the online
+// cell and the offline cell cannot disagree about the same agent:
+//
+//   never reported (depth is not a number) — nothing. That agent predates the
+//     field, and a chip would invent a measurement it never took.
+//   stale, any depth                       — the unknown chip, 0 included.
+//   fresh, at or above the warn threshold  — today's chip, unchanged.
+//   fresh, below it                        — nothing. This one really is a
+//     measurement of "no backlog", taken just now.
+//
+// Returns a descriptor rather than a component so both cells can position it
+// themselves; `null` means "render nothing", never "render a zero".
+function spoolReadingOf(agent) {
+  const depth = agent?.spool_depth;
+  if (typeof depth !== 'number') return null;
+  const reportedAt = agent.spool_reported_at ?? null;
+  if (spoolReadingIsStale({ stale: agent.spool_stale, reportedAt })) {
+    return { stale: true, depth, reportedAt };
+  }
+  return depth >= SPOOL_BACKLOG_WARN_DEPTH ? { stale: false, depth, reportedAt } : null;
+}
+
+function SpoolReadingChip({ reading }) {
+  if (!reading) return null;
+  return reading.stale ? (
+    <SpoolUnknownChip depth={reading.depth} reportedAt={reading.reportedAt} />
+  ) : (
+    <SpoolChip depth={reading.depth} />
+  );
+}
+
+SpoolReadingChip.propTypes = { reading: PropTypes.object };
+
+// The critical-tone sibling of SpoolChip, for history the agent has already
+// destroyed. Deliberately a second chip rather than a `tone` prop on the one
+// above, and rendered *alongside* it rather than instead of it: the backlog
+// and the loss are independent facts with independent futures — the backlog
+// drains, the loss does not — and an agent in trouble usually has both. One
+// chip that changed colour would make the row able to state only whichever
+// fact the code happened to check first.
+//
+// `lost` rather than `spool`, so the two are not read as one number in two
+// moods.
+function SpoolLossChip({ frames, oldestAt, newestAt }) {
+  const definition = agentStateDefinition('spool_evicted');
+  const window =
+    oldestAt && newestAt
+      ? ` The gap covers ${new Date(oldestAt).toLocaleString()} to ${new Date(newestAt).toLocaleString()}.`
+      : '';
+  const explanation = `${definition.summary}${window} What to do: ${definition.action}`;
+  return (
+    <span
+      className="fleet-chip"
+      data-tone="critical"
+      data-state="spool_evicted"
+      title={explanation}
+    >
+      lost {frames}
+      <span className="sr-only"> — {explanation}</span>
+    </span>
+  );
+}
+
+SpoolLossChip.propTypes = {
+  frames: PropTypes.number.isRequired,
+  oldestAt: PropTypes.string,
+  newestAt: PropTypes.string,
+};
+
+// Whether this row has a destroyed-history fact to state. `null`/undefined is
+// "never reported" (a build predating the counters) and an explicit 0 is a
+// real report of no loss — both render nothing, and neither is a zero the
+// operator could mistake for a confirmation the other way round.
+function spoolLossOf(agent) {
+  const frames = agent?.spool_evicted_frames;
+  return typeof frames === 'number' && frames > 0 ? frames : null;
+}
+
 // The states the status cell already renders in its own dense vocabulary (the
 // dot, the presence word, the status chip, the spool chip). Rendering an
 // AgentStateChip for these too would say the same thing twice in a 34px row;
@@ -160,6 +263,11 @@ const STATES_THE_ROW_ALREADY_SHOWS = new Set([
   'rejected',
   'pending_approval',
   'spool_pressure',
+  // Its stale-reading counterpart, rendered by the very same chip slot.
+  'spool_unknown',
+  // Rendered as its own chip below, in both the online and the offline cell,
+  // so an AgentStateChip for it would say the same thing twice in a 34px row.
+  'spool_evicted',
 ]);
 
 function AgentCell({ agent }) {
@@ -200,25 +308,42 @@ function StatusChip({ status }) {
 StatusChip.propTypes = { status: PropTypes.string.isRequired };
 
 function StatusCell({ agent, state, states }) {
-  const hasBacklog =
-    agent.online === true &&
-    typeof agent.spool_depth === 'number' &&
-    agent.spool_depth >= SPOOL_BACKLOG_WARN_DEPTH;
+  // Suppressed while the agent is offline for the same reason the loss chip
+  // below is: OfflineCell renders this very chip in the metric columns, and
+  // the fact must appear exactly once per row. It is no longer gated on
+  // `online === true`, which would mean an offline agent gets no chip at all
+  // — the silent zero in a different costume.
+  const spoolReading = agent.online === false ? null : spoolReadingOf(agent);
   // AGT-14: everything the row's own dot/word/chips cannot express — stale
   // telemetry, a degraded collector, a queued or failed update, a fully
   // withheld grant, this browser's clock. Each arrives with its own glyph and
   // its own operator action, so an operator never has to open the agent to
   // learn that something other than "up or down" is wrong with it.
   const advisory = states.filter((item) => !STATES_THE_ROW_ALREADY_SHOWS.has(item.code));
+  // Suppressed while the agent is offline only because OfflineCell renders the
+  // very same chip in the metric columns — the fact must appear exactly once
+  // per row, not zero times and not twice. Presence-unknown still shows it
+  // here, since OfflineCell does not run for that case.
+  const spoolLoss = agent.online === false ? null : spoolLossOf(agent);
   return (
     <td className="fleet-cell">
       <span className="fleet-dot" data-state={state} />
       <span className="fleet-status">{presenceWordFor(agent)}</span>
       {agent.status !== ACTIVE_STATUS && <StatusChip status={agent.status} />}
-      {/* Design §4: a backlog on a *healthy* agent is the one signal that
+      {/* A backlog on a *healthy* agent is the one signal that
           predicts trouble before anything goes red, so it sits beside the
           status word rather than hidden in the metric columns. */}
-      {hasBacklog && <SpoolChip depth={agent.spool_depth} />}
+      <SpoolReadingChip reading={spoolReading} />
+      {/* Beside the backlog chip, never in place of it. A spool that has
+          already overflowed is normally still full, and the row has to be
+          able to say both. */}
+      {spoolLoss !== null && (
+        <SpoolLossChip
+          frames={spoolLoss}
+          oldestAt={agent.spool_evicted_oldest_at}
+          newestAt={agent.spool_evicted_newest_at}
+        />
+      )}
       {advisory.map((item) => (
         <AgentStateChip key={item.code} state={item} />
       ))}
@@ -337,12 +462,26 @@ function offlineSummary(agent) {
 
 function OfflineCell({ agent }) {
   // Spool depth matters most here: it is what the agent will replay when it
-  // comes back, and whether it is about to hit its local cap.
-  const hasSpool = typeof agent.spool_depth === 'number' && agent.spool_depth > 0;
+  // comes back, and whether it is about to hit its local cap. It is also the
+  // reading least likely to still be true — this cell only renders for an
+  // agent that is not connected, and a disconnected agent has not been able to
+  // report its backlog since the moment it went away.
+  const spoolReading = spoolReadingOf(agent);
+  // And whether it has already run out of room: an agent that is offline long
+  // enough to fill its spool is exactly the case where the loss is happening
+  // right now and nobody is watching the detail page.
+  const spoolLoss = spoolLossOf(agent);
   return (
     <td className="fleet-cell fleet-muted" colSpan={METRIC_COLUMN_SPAN}>
       {offlineSummary(agent)}
-      {hasSpool && <SpoolChip depth={agent.spool_depth} />}
+      <SpoolReadingChip reading={spoolReading} />
+      {spoolLoss !== null && (
+        <SpoolLossChip
+          frames={spoolLoss}
+          oldestAt={agent.spool_evicted_oldest_at}
+          newestAt={agent.spool_evicted_newest_at}
+        />
+      )}
     </td>
   );
 }
@@ -350,7 +489,7 @@ function OfflineCell({ agent }) {
 OfflineCell.propTypes = { agent: PropTypes.object.isRequired };
 
 function TelemetryOffCell() {
-  // Design §4: `latest: null` is a real state and must never render as 0%.
+  // `latest: null` is a real state and must never render as 0%.
   // Zeros here would read as "this host is idle" when the truth is that nobody
   // granted it the capability that produces the numbers.
   return (
@@ -385,14 +524,23 @@ CapsCell.propTypes = { capabilities: PropTypes.object };
 
 function PendingCells({ agent }) {
   return (
-    <td className="fleet-cell fleet-muted" colSpan={PENDING_DETAIL_SPAN}>
-      Waiting for approval
-      <span className="fleet-muted">
+    <td className="fleet-cell fleet-muted fleet-pending" colSpan={PENDING_DETAIL_SPAN}>
+      {/* Every field is its own element. The separator between them is an
+          adjacent-sibling rule, and the leading label used to be a bare text
+          node — which no sibling selector can match, so the status ran
+          straight into the platform: "Waiting for approvallinux / amd64". */}
+      <span className="fleet-pending__item">Waiting for approval</span>
+      <span className="fleet-pending__item">
         {agent.os} / {agent.arch}
       </span>
       {agent.fingerprint && (
-        <span className="fleet-chip" data-tone="warn" title={agent.fingerprint}>
-          {agent.fingerprint.slice(0, FINGERPRINT_PREVIEW_CHARS)}…
+        <span className="fleet-pending__item">
+          {/* Full label text, abbreviated visually rather than by slicing it
+              here — a truncated string is unreachable to a screen reader.
+              `title` restores it on hover. */}
+          <span className="fleet-chip" data-tone="warn" title={agent.fingerprint}>
+            {agent.fingerprint.slice(0, FINGERPRINT_PREVIEW_CHARS)}…
+          </span>
         </span>
       )}
     </td>
@@ -409,14 +557,23 @@ PendingCells.propTypes = { agent: PropTypes.object.isRequired };
 // `.sr-only` clause carry the same fact without colour.
 function VersionCell({ agent, latestFleetVersion }) {
   const drift = versionDrift(agent.agent_version, latestFleetVersion);
-  if (agent.agent_version == null) return <td className="fleet-cell fleet-num">{EM_DASH}</td>;
+  if (agent.agent_version == null)
+    return (
+      <td className="fleet-cell">
+        <span className="fleet-num">{EM_DASH}</span>
+      </td>
+    );
   if (drift !== 'behind') {
-    return <td className="fleet-cell fleet-num">{agent.agent_version}</td>;
+    return (
+      <td className="fleet-cell">
+        <span className="fleet-num">{agent.agent_version}</span>
+      </td>
+    );
   }
   const explanation = `Behind the newest agent in this fleet (${latestFleetVersion}). Dispatch an update from the agent's page to bring it forward.`;
   return (
-    <td className="fleet-cell fleet-num" data-drift="behind" title={explanation}>
-      {agent.agent_version}
+    <td className="fleet-cell" data-drift="behind" title={explanation}>
+      <span className="fleet-num">{agent.agent_version}</span>
       <span className="fleet-drift-mark" aria-hidden="true">
         {' '}
         ↑
@@ -438,8 +595,10 @@ function FleetCells({ agent, latestFleetVersion }) {
       <VersionCell agent={agent} latestFleetVersion={latestFleetVersion} />
       {/* An offline agent's stored uptime is a snapshot from before it went
           away; rendering it would claim the host is still up that long. */}
-      <td className="fleet-cell fleet-num">
-        {(!isOffline && formatDuration(agent.latest?.uptime_s)) || EM_DASH}
+      <td className="fleet-cell">
+        <span className="fleet-num">
+          {(!isOffline && formatDuration(agent.latest?.uptime_s)) || EM_DASH}
+        </span>
       </td>
       {isOffline && <OfflineCell agent={agent} />}
       {!isOffline && agent.latest == null && <TelemetryOffCell />}

@@ -37,7 +37,7 @@ path. Unlike `0100`'s columns, neither object here is one `0001_init` copies
 * the FK's target table `scan_results` is not in `_EXCLUDED_TABLES` and its
   target column is not excluded, so `_should_copy_fk` keeps it and
   `_copy_column` carries `ondelete=fk.ondelete` verbatim — a fresh bootstrap
-  gets SET NULL straight from `models.py`;
+  gets SET NULL straight from `models/discovery.py`;
 * `agent_discovery_paused` is a plain `Boolean NOT NULL DEFAULT '0'` with no FK
   and no index, which `_copy_column` reproduces exactly.
 

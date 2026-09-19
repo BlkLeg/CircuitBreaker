@@ -89,6 +89,8 @@ func TestCorpus_TypedPayloadsDecode(t *testing.T) {
 				roundTripTransportRekeyPayload(t, decoded.Payload)
 			case TypeKeyRotate:
 				roundTripKeyRotatePayload(t, decoded.Payload)
+			case TypeTLSPinRotate:
+				roundTripTLSPinRotatePayload(t, decoded.Payload)
 			case TypeUpdateStatus:
 				roundTripUpdateStatusPayload(t, decoded.Payload)
 			case TypeTelemetryHost:
@@ -109,6 +111,8 @@ func TestCorpus_TypedPayloadsDecode(t *testing.T) {
 				roundTripDiscoveryCancelPayload(t, decoded.Payload)
 			case TypeDiscoveryFinding:
 				roundTripDiscoveryFindingPayload(t, decoded.Payload)
+			case TypeDataAck:
+				roundTripDataAckPayload(t, decoded.Payload)
 			}
 		})
 	}
@@ -131,8 +135,25 @@ func roundTripHelloPayload(t *testing.T, raw json.RawMessage) {
 	if first.DevicePK != second.DevicePK || first.Hostname != second.Hostname ||
 		first.MachineIDHash != second.MachineIDHash || first.OS != second.OS ||
 		first.OSVersion != second.OSVersion || first.Arch != second.Arch ||
-		first.AgentVersion != second.AgentVersion || first.SpoolDepth != second.SpoolDepth {
+		first.AgentVersion != second.AgentVersion || first.SpoolDepth != second.SpoolDepth ||
+		first.AckData != second.AckData {
 		t.Errorf("HelloPayload round-trip mismatch: got %+v, want %+v", second, first)
+	}
+	// `ack_data` asserted against the fixture's own bytes, not only against
+	// Go's re-encode: a mistyped tag leaves the field false on both sides of a
+	// first-vs-second comparison, and the Python half drops unknown keys
+	// silently, so an agent asking for acknowledged delivery would be read as
+	// one that never asked — and would silently keep the at-most-once
+	// behaviour this whole mechanism exists to end.
+	var wireHello struct {
+		AckData *bool `json:"ack_data"`
+	}
+	if err := json.Unmarshal(raw, &wireHello); err != nil {
+		t.Fatalf("HelloPayload wire decode error = %v", err)
+	}
+	wantAck := wireHello.AckData != nil && *wireHello.AckData
+	if first.AckData != wantAck {
+		t.Errorf("HelloPayload.AckData = %v, want %v from the fixture %s", first.AckData, wantAck, raw)
 	}
 	// omitempty drops a present-but-empty JSON array on re-encode, so a corpus entry with an
 	// explicit "primary_macs": [] decodes to a non-nil empty slice while the re-decode comes
@@ -140,19 +161,37 @@ func roundTripHelloPayload(t *testing.T, raw json.RawMessage) {
 	if !slicesEqualIgnoringNil(first.PrimaryMACs, second.PrimaryMACs) {
 		t.Errorf("HelloPayload.PrimaryMACs round-trip mismatch: got %v, want %v", second.PrimaryMACs, first.PrimaryMACs)
 	}
+	compareEvictionFields(t, "HelloPayload",
+		evictionFields{first.SpoolEvictedFrames, first.SpoolEvictedBytes, first.SpoolEvictedOldestTS, first.SpoolEvictedNewestTS},
+		evictionFields{second.SpoolEvictedFrames, second.SpoolEvictedBytes, second.SpoolEvictedOldestTS, second.SpoolEvictedNewestTS})
+	// hello's eviction group carries no omitempty either, for the same
+	// reason: an old agent's silence and a current agent's explicit zero must
+	// not encode identically.
+	helloKeys := map[string]json.RawMessage{}
+	if err := json.Unmarshal(reencoded, &helloKeys); err != nil {
+		t.Fatalf("HelloPayload re-decode as map error = %v", err)
+	}
+	for _, key := range []string{
+		"spool_evicted_frames", "spool_evicted_bytes",
+		"spool_evicted_oldest_ts", "spool_evicted_newest_ts",
+	} {
+		if _, ok := helloKeys[key]; !ok {
+			t.Errorf("re-encoded HelloPayload %s omits %q — the eviction group may not carry omitempty", reencoded, key)
+		}
+	}
 	if len(first.Readiness) != len(second.Readiness) || (len(first.Readiness) > 0 && !reflect.DeepEqual(first.Readiness, second.Readiness)) {
 		t.Errorf("HelloPayload.Readiness round-trip mismatch: got %+v, want %+v", second.Readiness, first.Readiness)
 	}
 	compareNetworkFacts(t, raw, first.Networks, second.Networks)
 }
 
-// compareNetworkFacts pins the Task 1 `networks` field. Every json tag it depends on — the outer
+// compareNetworkFacts pins the `networks` field. Every json tag it depends on — the outer
 // `networks` and each inner one — is spelled literally in wireNetworks below and asserted against
 // what NetworkFacts decoded, so the check is against the fixture and not against Go's own
 // re-encode: a mistyped tag at any level leaves the field zero on *both* sides, which a
 // first-vs-second comparison alone would call a clean round trip. That is not a theoretical
 // hazard — the Python half drops unknown keys silently (pydantic's default extra="ignore"), so a
-// tag only Go agrees with is exactly how `addrs`, the one field the rest of Slice 3 consumes,
+// tag only Go agrees with is exactly how `addrs`, the one field the rest of the pipeline consumes,
 // would arrive empty on the backend with this cross-language gate green.
 func compareNetworkFacts(t *testing.T, raw json.RawMessage, first, second []NetworkFacts) {
 	t.Helper()
@@ -237,6 +276,65 @@ func roundTripHelloAckPayload(t *testing.T, raw json.RawMessage) {
 	if first.ServerTime != nil && !first.ServerTime.Equal(*second.ServerTime) {
 		t.Errorf("HelloAckPayload.ServerTime round-trip mismatch: got %v, want %v", second.ServerTime, first.ServerTime)
 	}
+	// `data_ack` asserted against the fixture, for the reason hello's
+	// `ack_data` is: this one flag decides whether the agent commits a spooled
+	// frame when the socket takes it or when the server has stored it, and a
+	// tag only one side agrees with silently chooses the former.
+	if first.DataAck != second.DataAck {
+		t.Errorf("HelloAckPayload.DataAck round-trip mismatch: got %v, want %v", second.DataAck, first.DataAck)
+	}
+	var wireAck struct {
+		DataAck *bool `json:"data_ack"`
+	}
+	if err := json.Unmarshal(raw, &wireAck); err != nil {
+		t.Fatalf("HelloAckPayload wire decode error = %v", err)
+	}
+	wantDataAck := wireAck.DataAck != nil && *wireAck.DataAck
+	if first.DataAck != wantDataAck {
+		t.Errorf("HelloAckPayload.DataAck = %v, want %v from the fixture %s", first.DataAck, wantDataAck, raw)
+	}
+}
+
+// roundTripDataAckPayload pins the delivery watermark's wire shape. `seq` is
+// the only field, and it is a uint64 on both sides: the corpus carries the
+// maximum value precisely because a watermark that silently wrapped or
+// saturated would commit frames the server never handled.
+func roundTripDataAckPayload(t *testing.T, raw json.RawMessage) {
+	t.Helper()
+	var first DataAckPayload
+	if err := json.Unmarshal(raw, &first); err != nil {
+		t.Fatalf("DataAckPayload decode error = %v", err)
+	}
+	var wire struct {
+		Seq *uint64 `json:"seq"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("DataAckPayload wire decode error = %v", err)
+	}
+	if wire.Seq == nil {
+		t.Fatalf("data.ack fixture %s carries no `seq` — the watermark is the whole payload", raw)
+	}
+	if first.Seq != *wire.Seq {
+		t.Errorf("DataAckPayload.Seq = %d, want %d from the fixture %s", first.Seq, *wire.Seq, raw)
+	}
+	reencoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("DataAckPayload encode error = %v", err)
+	}
+	var second DataAckPayload
+	if err := json.Unmarshal(reencoded, &second); err != nil {
+		t.Fatalf("DataAckPayload re-decode error = %v", err)
+	}
+	if second.Seq != first.Seq {
+		t.Errorf("DataAckPayload round-trip mismatch: got %d, want %d", second.Seq, first.Seq)
+	}
+	// No omitempty: a watermark of 0 ("nothing handled yet on this
+	// connection") must stay on the wire as an explicit 0 rather than
+	// vanishing into an empty payload the receiver cannot distinguish from a
+	// malformed one.
+	if !strings.Contains(string(reencoded), `"seq":`) {
+		t.Errorf("re-encoded DataAckPayload %s omits `seq`", reencoded)
+	}
 }
 
 func roundTripTransportRekeyPayload(t *testing.T, raw json.RawMessage) {
@@ -288,7 +386,7 @@ func roundTripUpdateStatusPayload(t *testing.T, raw json.RawMessage) {
 	}
 }
 
-// roundTripHeartbeatPayload pins D-12's wire shape. Both the old-shaped `{}`
+// roundTripHeartbeatPayload pins the heartbeat wire shape. Both the old-shaped `{}`
 // heartbeat and the spool-reporting one must decode; re-encoding must always
 // emit both keys, zeros included, because an empty payload is reserved to
 // mean "this agent does not report spool state" (see HeartbeatPayload's doc
@@ -307,17 +405,67 @@ func roundTripHeartbeatPayload(t *testing.T, raw json.RawMessage) {
 	if err := json.Unmarshal(reencoded, &keys); err != nil {
 		t.Fatalf("HeartbeatPayload re-decode as map error = %v", err)
 	}
-	for _, key := range []string{"spool_depth", "spool_bytes"} {
+	// The eviction counters join the backlog pair under the same rule: an
+	// explicit 0 ("reports eviction state, destroyed nothing") must stay
+	// distinguishable from an absent key ("predates the field"), which is
+	// only true while none of them carries omitempty.
+	for _, key := range []string{
+		"spool_depth", "spool_bytes",
+		"spool_evicted_frames", "spool_evicted_bytes",
+		"spool_evicted_oldest_ts", "spool_evicted_newest_ts",
+	} {
 		if _, ok := keys[key]; !ok {
-			t.Errorf("re-encoded HeartbeatPayload %s omits %q — neither field may carry omitempty", reencoded, key)
+			t.Errorf("re-encoded HeartbeatPayload %s omits %q — none of these fields may carry omitempty", reencoded, key)
 		}
 	}
 	var second HeartbeatPayload
 	if err := json.Unmarshal(reencoded, &second); err != nil {
 		t.Fatalf("HeartbeatPayload re-decode error = %v", err)
 	}
-	if first != second {
+	if first.SpoolDepth != second.SpoolDepth || first.SpoolBytes != second.SpoolBytes ||
+		first.TLSPinSuccessorReady != second.TLSPinSuccessorReady ||
+		first.TLSPinSuccessorFingerprint != second.TLSPinSuccessorFingerprint {
 		t.Errorf("HeartbeatPayload round-trip mismatch: got %+v, want %+v", second, first)
+	}
+	compareEvictionFields(t, "HeartbeatPayload",
+		evictionFields{first.SpoolEvictedFrames, first.SpoolEvictedBytes, first.SpoolEvictedOldestTS, first.SpoolEvictedNewestTS},
+		evictionFields{second.SpoolEvictedFrames, second.SpoolEvictedBytes, second.SpoolEvictedOldestTS, second.SpoolEvictedNewestTS})
+}
+
+// evictionFields is the four-field spool-loss group hello and heartbeat both
+// carry, lifted into one shape so a single comparison covers both.
+type evictionFields struct {
+	frames int64
+	bytes  int64
+	oldest *time.Time
+	newest *time.Time
+}
+
+// compareEvictionFields checks a round trip of the spool-loss group. The
+// timestamps are pointers precisely so "nothing was destroyed" is a JSON
+// `null` rather than a year-1 instant the backend would persist as a real
+// observation time, so nil-vs-set is itself part of the contract and is
+// asserted rather than being tolerated.
+func compareEvictionFields(t *testing.T, what string, first, second evictionFields) {
+	t.Helper()
+	if first.frames != second.frames || first.bytes != second.bytes {
+		t.Errorf("%s eviction counters round-trip mismatch: got %d/%d, want %d/%d",
+			what, second.frames, second.bytes, first.frames, first.bytes)
+	}
+	for _, pair := range []struct {
+		name string
+		a, b *time.Time
+	}{
+		{"spool_evicted_oldest_ts", first.oldest, second.oldest},
+		{"spool_evicted_newest_ts", first.newest, second.newest},
+	} {
+		if (pair.a == nil) != (pair.b == nil) {
+			t.Errorf("%s.%s round-trip changed nil-ness: got %v, want %v", what, pair.name, pair.b, pair.a)
+			continue
+		}
+		if pair.a != nil && !pair.a.Equal(*pair.b) {
+			t.Errorf("%s.%s round-trip mismatch: got %v, want %v", what, pair.name, *pair.b, *pair.a)
+		}
 	}
 }
 
@@ -349,7 +497,27 @@ func roundTripKeyRotatePayload(t *testing.T, raw json.RawMessage) {
 	}
 }
 
-// roundTripProbeAssignPayload pins the §4 assignment shape. As in compareNetworkFacts above,
+func roundTripTLSPinRotatePayload(t *testing.T, raw json.RawMessage) {
+	t.Helper()
+	var first TLSPinRotatePayload
+	if err := json.Unmarshal(raw, &first); err != nil {
+		t.Fatalf("TLSPinRotatePayload decode error = %v", err)
+	}
+	reencoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("TLSPinRotatePayload encode error = %v", err)
+	}
+	var second TLSPinRotatePayload
+	if err := json.Unmarshal(reencoded, &second); err != nil {
+		t.Fatalf("TLSPinRotatePayload re-decode error = %v", err)
+	}
+	if first.Mode != second.Mode || first.SuccessorPin != second.SuccessorPin ||
+		!first.Expiry.Equal(second.Expiry) {
+		t.Errorf("TLSPinRotatePayload round-trip mismatch: got %+v, want %+v", second, first)
+	}
+}
+
+// roundTripProbeAssignPayload pins the assignment shape. As in compareNetworkFacts above,
 // every json tag is re-declared literally in a reference struct and asserted against what
 // ProbeAssignPayload actually decoded, because a mistyped tag leaves the field zero on *both*
 // sides of a first-vs-second comparison and reads as a clean round trip. `config` is the field
@@ -434,13 +602,13 @@ func roundTripProbeCancelPayload(t *testing.T, raw json.RawMessage) {
 	}
 }
 
-// probeOutcomes is the closed outcome vocabulary from §4, mirroring monitor_probe_runs.outcome.
+// probeOutcomes is the closed outcome vocabulary, mirroring monitor_probe_runs.outcome.
 // Anything else is a protocol violation the server rejects rather than a new kind of result.
 var probeOutcomes = map[string]bool{
 	"completed": true, "execution_error": true, "cancelled": true, "rejected": true,
 }
 
-// roundTripProbeResultPayload pins the §4 result shape, including the two properties this frame
+// roundTripProbeResultPayload pins the result shape, including the two properties this frame
 // cannot be trusted without: `samples` must survive by name (same silent-drop hazard as
 // probe.assign's config — losing them would feed the monitor state machine an empty result while
 // every round-trip comparison stays green), and `up` must be re-encoded even when false, since
@@ -792,7 +960,7 @@ func TestCorpus_HostTelemetrySummaryHasNoNulls(t *testing.T) {
 
 // grantExpectation is the expected post-ApplyGrants state of a capability.Gate for one corpus
 // entry carrying a grant object. hostConfig is nil when Gate.HostConfig() must report !ok.
-// faults names the capabilities ApplyGrants must report as GrantFaults (D-6) — empty for a
+// faults names the capabilities ApplyGrants must report as GrantFaults — empty for a
 // payload the decoder can honor verbatim.
 type grantExpectation struct {
 	allowed    map[string]bool
@@ -829,10 +997,17 @@ var corpusGrantExpectations = map[string]grantExpectation{
 		allowed:    map[string]bool{"host_telemetry": true, "remote_probe": false, "local_discovery": true},
 		hostConfig: &capability.HostConfig{IntervalS: 120, IncludeFilesystems: true, IncludeDisks: true, IncludeNetwork: true, IncludeTemperatures: true, IncludeVirtual: false, IncludeDocker: true},
 	},
-	// D-6 on the wire: host_telemetry.interval_s is below capability.MinHostInterval, so that
+	// The ack that negotiates acknowledged delivery still carries the
+	// authoritative grant set, and it must still apply: `data_ack` is an
+	// additive field on a frame that already had a job.
+	"hello.ack — link establishment, acknowledged delivery negotiated (data_ack)": {
+		allowed:    map[string]bool{"host_telemetry": true},
+		hostConfig: &capability.HostConfig{IntervalS: 30, IncludeFilesystems: true, IncludeDisks: true, IncludeNetwork: true, IncludeTemperatures: true},
+	},
+	// On the wire: host_telemetry.interval_s is below capability.MinHostInterval, so that
 	// one capability faults — it keeps the server's enabled flag and falls back to the package
 	// default config (this gate has no prior valid config to retain) — while remote_probe in
-	// the same frame still applies. Before Task 12 the whole payload was rejected and neither
+	// the same frame still applies. Rejecting the whole payload instead would drop neither
 	// capability landed.
 	"capabilities.set — invalid host_telemetry interval alongside a valid remote_probe grant": {
 		allowed:    map[string]bool{"host_telemetry": true, "remote_probe": true},
@@ -979,7 +1154,7 @@ func rawJSONMapString(m map[string]json.RawMessage) string {
 	return fmt.Sprintf("%v", out)
 }
 
-// discoveryKinds and discoveryOutcomes are the closed vocabularies from plan §4. Listing them
+// discoveryKinds and discoveryOutcomes are the closed vocabularies. Listing them
 // here rather than reaching for the constants is deliberate: the point is to catch a *renamed*
 // constant, which a test that reads the constant cannot do.
 var discoveryKinds = map[string]bool{"host": true, "summary": true}
@@ -1001,7 +1176,7 @@ func roundTripDiscoveryRequestPayload(t *testing.T, raw json.RawMessage) {
 		t.Error("ScanJobID is zero — a request always names the job it belongs to")
 	}
 	// The version is what lets the agent refuse a request whose authorization has moved since it
-	// was built (plan §2). A request without one cannot be checked at all.
+	// was built. A request without one cannot be checked at all.
 	if first.ScopeVersion == "" {
 		t.Error("ScopeVersion is empty — the agent could not detect an incompatible scope change")
 	}
@@ -1009,7 +1184,7 @@ func roundTripDiscoveryRequestPayload(t *testing.T, raw json.RawMessage) {
 		t.Error("DeadlineAt is zero — an undeadlined scan cannot be expired")
 	}
 	if len(first.Targets) > MaxDiscoveryTargets || len(first.TCPPorts) > MaxDiscoveryPorts {
-		t.Errorf("fixture exceeds the plan §4 bounds: %d targets, %d ports",
+		t.Errorf("fixture exceeds the wire bounds: %d targets, %d ports",
 			len(first.Targets), len(first.TCPPorts))
 	}
 
@@ -1096,7 +1271,7 @@ func roundTripDiscoveryFindingPayload(t *testing.T, raw json.RawMessage) {
 		t.Error("a host finding with no address describes nothing")
 	}
 	if len(first.OpenPorts) > MaxDiscoveryOpenPorts || len(first.Evidence) > MaxDiscoveryEvidence {
-		t.Errorf("fixture exceeds the plan §4 bounds: %d ports, %d evidence entries",
+		t.Errorf("fixture exceeds the wire bounds: %d ports, %d evidence entries",
 			len(first.OpenPorts), len(first.Evidence))
 	}
 	for _, port := range first.OpenPorts {
@@ -1167,7 +1342,7 @@ func TestCorpus_DiscoveryFindingCarriesTerminalFalseExplicitly(t *testing.T) {
 	}
 }
 
-// TestCorpus_ReadinessNetworksSurviveAnEmptyList is D-8's load-bearing half: an agent that has
+// TestCorpus_ReadinessNetworksSurviveAnEmptyList is the load-bearing half: an agent that has
 // lost every interface must be able to say so. With `omitempty` the empty list would vanish and
 // the server would keep standing on a stale, wider-than-reality scope forever.
 func TestCorpus_ReadinessNetworksSurviveAnEmptyList(t *testing.T) {
@@ -1184,12 +1359,12 @@ func TestCorpus_ReadinessNetworksSurviveAnEmptyList(t *testing.T) {
 	}
 }
 
-// TestCorpus_NetworkFactsCarryNothingButNameFlagsAndAddrs is D-8's other half, and it is a
+// TestCorpus_NetworkFactsCarryNothingButNameFlagsAndAddrs is the other half, and it is a
 // privacy guard rather than a wire-shape one.
 //
 // `networks` is the only structured host inventory the agent volunteers on a *periodic* frame, so
 // it is the field a future contributor will reach for when the UI wants "just one more thing"
-// about an interface. Plan §6 draws the line: no routing-table secrets, no Wi-Fi SSIDs, no DNS
+// about an interface. The line is drawn here: no routing-table secrets, no Wi-Fi SSIDs, no DNS
 // search domains, no interface counters — none of which any capability requires today. Nothing
 // else in the suite would fail if one of them were added, because an additive field round-trips
 // perfectly and every existing corpus entry keeps passing.
@@ -1212,7 +1387,7 @@ func TestCorpus_NetworkFactsCarryNothingButNameFlagsAndAddrs(t *testing.T) {
 		got = append(got, name)
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("NetworkFacts marshals %v, want exactly %v — plan §6 forbids reporting routing "+
+		t.Fatalf("NetworkFacts marshals %v, want exactly %v — reporting routing is forbidden: "+
 			"tables, SSIDs, DNS search domains and interface counters on this frame", got, want)
 	}
 

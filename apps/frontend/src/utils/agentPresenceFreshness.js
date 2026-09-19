@@ -1,37 +1,20 @@
 /**
- * isLivePushFresh(push, presenceFetchedAt, now)
+ * Whether a live WS presence push still beats the last bulk-presence poll.
  *
- * Decides whether a live WS presence-push event (from useAgentLive's
- * `statuses` map — `{ event_type, detail, ts }`, where `ts` is the client's
- * Date.now() at the moment the event was received) is still fresh enough to
- * override the last bulk-presence poll (Task 12's GET /agents/presence,
- * reflected here as `presenceFetchedAt`, the client's Date.now() when that
- * poll's response was applied).
+ * Two independent guards, either of which rejects the push:
  *
- * Two independent guards, either of which can reject the push:
+ *  1. Poll recency. A poll that landed after the push reflects the server's
+ *     view at a later moment and wins. This is what closes the reconnect gap:
+ *     the socket drops, the agent goes offline, the `disconnected` event never
+ *     arrives because the socket was down, and the next poll picks up
+ *     `online: false` even though nothing ever cleared the stale map entry.
  *
- *  1. Poll-recency guard: if a presence poll landed *after* the push event
- *     was received, the poll is strictly fresher information (it reflects
- *     the server's view as of a later moment) and wins. This is what closes
- *     the "missed disconnected event during a reconnect gap" gap: the WS
- *     drops, the agent goes offline, the disconnected event never arrives
- *     (or arrives late) because the socket was down, but the next presence
- *     poll (running independently of the WS) picks up `online: false`. Once
- *     that poll's timestamp is newer than the stale `connected` event still
- *     sitting in the live map, the poll wins even though nothing ever
- *     replaced/cleared the stale map entry.
+ *  2. Absolute staleness cap, for when no poll has landed or polling is failing
+ *     silently. A backstop, not the primary mechanism — it bounds how long a
+ *     live event can keep winning while polling is degraded.
  *
- *  2. Absolute staleness cap: even before any poll has landed (or if polling
- *     is failing silently — see AgentsPage/AgentDetailPage's presence fetch
- *     .catch(() => {})), a push event older than LIVE_EVENT_MAX_AGE_MS is
- *     treated as untrustworthy on its own. This is a backstop, not the
- *     primary mechanism — the poll-recency guard above is what handles the
- *     documented scenario — but it bounds how long a live event can keep
- *     winning if presence polling is degraded.
- *
- * LIVE_EVENT_MAX_AGE_MS is 45s: 1.5x AgentsPage's 30s presence-poll interval
- * (REFRESH_MS), giving one full poll cycle of slack before a push is
- * considered stale on its own, without waiting for two missed cycles.
+ * 45s is 1.5x the 30s presence-poll interval: one full cycle of slack before a
+ * push is stale on its own, without waiting for two missed cycles.
  */
 export const LIVE_EVENT_MAX_AGE_MS = 45000;
 

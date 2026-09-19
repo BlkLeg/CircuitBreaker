@@ -51,6 +51,40 @@ def list_compute_units(
     )
 
 
+@router.get("/page")
+def list_compute_units_page(
+    db: Session = Depends(get_db),
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    sort: str = Query("name"),
+    direction: str = Query("asc"),
+    kind: str | None = Query(None, max_length=100),
+    hardware_id: int | None = Query(None),
+    environment: str | None = Query(None, max_length=100),
+    environment_id: int | None = Query(None),
+    tag: str | None = Query(None, max_length=100),
+    q: str | None = Query(None, max_length=100),
+):
+    """Return a bounded compute-unit page for the inventory workspace."""
+    from app.schemas.inventory import PageRequest
+
+    if sort not in {"id", "name", "kind", "status", "created_at", "updated_at", "hardware_id"}:
+        raise HTTPException(status_code=422, detail="Unsupported sort field")
+    if direction not in {"asc", "desc"}:
+        raise HTTPException(status_code=422, detail="Unsupported sort direction")
+    page = PageRequest(limit=limit, offset=offset, sort=sort, direction=direction)
+    return compute_units_service.list_compute_units_page(
+        db,
+        page,
+        kind=kind,
+        hardware_id=hardware_id,
+        environment=environment,
+        environment_id=environment_id,
+        tag=tag,
+        q=q,
+    )
+
+
 @router.post("", response_model=ComputeUnit, status_code=201)
 def create_compute_unit(
     payload: ComputeUnitCreate,

@@ -1,4 +1,4 @@
-"""Phase 6 — Capabilities endpoint tests.
+"""Capabilities endpoint tests.
 
 Verifies:
   - GET /api/v1/capabilities returns the expected JSON shape

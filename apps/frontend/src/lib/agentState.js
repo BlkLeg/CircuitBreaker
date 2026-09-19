@@ -1,45 +1,32 @@
 /**
- * The one definition of what an agent's state IS (AGT-14, slice AGT-6 §1-§3).
+ * The one definition of what an agent's state IS.
  *
- * Before this module the fleet row and the detail header each decided for
- * themselves, from the same two fields, and neither could express anything
- * between "online" and "offline". An agent whose clock had drifted, whose
- * telemetry collector had stopped producing samples, whose queued update had
- * failed, or which had been granted nothing at all, all rendered as a green
- * dot and the word "online" — the failure mode the requirement names: guessing
- * green.
+ * Three properties this file guarantees:
  *
- * Three properties this file exists to guarantee:
+ *  1. Precedence. Contradictory inputs are normal — a revoked agent can still
+ *     have a stale sample and a failed update against it. `deriveAgentStates`
+ *     returns every state that holds, ordered, and `primaryAgentState` picks the
+ *     one that decides the row. The order is declared once in STATE_ORDER,
+ *     never emergent from `if` ordering in two components.
  *
- *  1. **Precedence.** Contradictory inputs are normal, not exceptional — a
- *     revoked agent can still have a stale sample and a failed update sitting
- *     against it. `deriveAgentStates` returns every state that holds, ordered,
- *     and `primaryAgentState` picks the one that decides the row. The order is
- *     declared once, in STATE_ORDER, rather than emerging from the order of
- *     `if` statements in two different components.
+ *  2. Absent input never becomes a healthy answer. Each rule fires only on
+ *     inputs actually present: a caller that cannot see readiness produces no
+ *     capability state, and one with no presence entry produces
+ *     `presence_unknown`, not `offline`. "We have not heard" and "it is down"
+ *     are different claims.
  *
- *  2. **Absent input never becomes a healthy answer.** Each rule is only
- *     evaluated when the input it needs is actually present; a caller that
- *     cannot see readiness simply produces no capability state, and one that
- *     has no presence entry produces `presence_unknown` rather than `offline`.
- *     "We have not heard" and "it is down" are different claims and the fleet
- *     table has always drawn them differently (a hollow ring vs a filled dot);
- *     this keeps that distinction from being flattened as more rules arrive.
+ *  3. Colour is never the signal. Every state carries a `label`, an `icon` key
+ *     (a distinct glyph, so states stay separable in greyscale), a `summary`
+ *     and an `action`. `tone` is for styling only — three states share
+ *     `critical` and remain unambiguous without it.
  *
- *  3. **Colour is never the signal.** Every state carries a `label` (visible
- *     text), an `icon` key (a distinct glyph, so the states remain separable in
- *     greyscale and to a colour-blind operator), a `summary` and — because the
- *     requirement asks for a documented operator action, not just a badge — an
- *     `action`. `tone` exists for styling and is deliberately last in that
- *     list; three states share `critical` and are still unambiguous without it.
- *
- * Pure and synchronous on purpose: `now` and the server-clock offset are
- * arguments, so every rule is testable at an exact instant, and the fleet
- * table, the detail page and the tests all evaluate the same function rather
- * than three approximations of it.
+ * Pure and synchronous: `now` and the server-clock offset are arguments, so
+ * every rule is testable at an exact instant and every surface evaluates the
+ * same function rather than an approximation of it.
  */
 
 import { serverNow } from '../utils/serverClock';
+import { SPOOL_READING_FRESH_SECONDS } from './constants';
 
 const MS_PER_SECOND = 1000;
 
@@ -95,6 +82,10 @@ const INFO = 'info';
  * states because someone is waiting on its outcome.
  */
 export const STATE_ORDER = [
+  // Above `revoked` because it is the more specific fact and it changes the
+  // instruction: the two are mutually exclusive, and only one of them leaves
+  // the operator with a host to deal with.
+  'uninstalled',
   'revoked',
   'rejected',
   'pending_approval',
@@ -107,7 +98,16 @@ export const STATE_ORDER = [
   'capability_degraded',
   'stale_telemetry',
   'never_reported',
+  'spool_evicted',
   'spool_pressure',
+  // Below spool_pressure, and the two are mutually exclusive by construction:
+  // a stale reading suppresses the pressure warning, because a warning derived
+  // from a number nobody can currently measure is a lie with extra steps. It
+  // sits below rather than above because it carries strictly less information
+  // than a live backlog does — but it is emphatically *not* below
+  // `spool_evicted`, which it cannot displace: destroyed history is a
+  // cumulative fact that stays true however fresh the current reading is.
+  'spool_unknown',
   'last_seen_lagging',
   'online',
 ];
@@ -125,6 +125,22 @@ const ORDER_INDEX = new Map(STATE_ORDER.map((code, index) => [code, index]));
  * testable without a DOM.
  */
 const DEFINITIONS = {
+  uninstalled: {
+    label: 'Uninstalled',
+    // Reuses `revoked`'s glyph on purpose: the credential state is the same
+    // fact, and two near-identical terminal chips with different icons read as
+    // two unrelated problems.
+    icon: 'Ban',
+    // INFO, not CRITICAL, and this is the whole point of the state: an agent
+    // that uninstalled itself did exactly what someone asked it to. Painting
+    // that red sends an operator looking for a fault that does not exist.
+    tone: INFO,
+    summary:
+      'This agent removed itself from its host, and its credential was revoked at that point.',
+    action:
+      'Nothing to clean up on the host — the agent did that. Delete this record when you no ' +
+      'longer need its history.',
+  },
   revoked: {
     label: 'Revoked',
     icon: 'Ban',
@@ -194,7 +210,10 @@ const DEFINITIONS = {
     icon: 'ShieldAlert',
     tone: WARN,
     summary: 'One or more collectors on this agent report themselves degraded or unavailable.',
-    action: 'Open the agent and read the collector’s own reason and remediation.',
+    // Not "open the agent": this renders on the agent's own detail page as
+    // well as in the fleet list, and there the instruction had already been
+    // followed. Naming the tab is the useful direction from both.
+    action: 'Read the collector’s own reason and remediation on the Telemetry tab.',
   },
   stale_telemetry: {
     label: 'Stale telemetry',
@@ -211,6 +230,28 @@ const DEFINITIONS = {
     summary: 'Host telemetry is granted but this agent has never delivered a sample.',
     action: 'Give it one cadence interval. If nothing arrives, check collector readiness.',
   },
+  // Ordered above spool_pressure deliberately. Backlog is a prediction —
+  // buffered data that will arrive late. This is the outcome that prediction
+  // was warning about, and it has already happened: the data is gone. They
+  // are also independent states rather than two points on one scale, and both
+  // can hold at once (a spool that has already overflowed usually still has a
+  // full backlog behind it), which is why deriveAgentStates pushes each on its
+  // own condition instead of choosing between them.
+  spool_evicted: {
+    label: 'History discarded',
+    icon: 'FileX2',
+    tone: CRITICAL,
+    summary:
+      'This agent’s local buffer could not keep some observations and permanently discarded them. That data is gone and cannot be recovered — it is a gap in this host’s history, not a delay.',
+    // Two causes, one counter. The size cap filling during an outage is the
+    // usual one; a spool that cannot write at all (a full disk, a read-only
+    // state directory) records the same loss, because every data frame is
+    // spooled before it can reach a socket. Naming only the cap would hand an
+    // operator with a read-only disk a remedy that cannot work, which is the
+    // kind of confidently-wrong reporting this state exists to replace.
+    action:
+      'Restore the link so the buffer can drain. If the agent’s spool filled, raise spool_cap_bytes in its agent.toml; if its log shows writes failing, free or remount the state directory.',
+  },
   spool_pressure: {
     label: 'Spool backlog',
     icon: 'Database',
@@ -219,6 +260,25 @@ const DEFINITIONS = {
       'Outbound telemetry the agent has buffered locally and not yet drained to the server. At its local cap it starts discarding.',
     action:
       'Check the link between the agent and this server; the backlog drains on its own once it is healthy.',
+  },
+  // The honest answer when the last reading is too old to be called current.
+  // An agent reports its backlog only while connected, so the stored number
+  // freezes for the whole of the outage in which the backlog is growing. The
+  // failure this replaces was not a wrong number, it was a number at all:
+  // `spool_depth = 0` on an agent with 1,195 undelivered frames on disk,
+  // rendered as "no backlog".
+  spool_unknown: {
+    label: 'Backlog unknown',
+    // `info`, not `warn`: nothing has been observed to be wrong. Saying "we
+    // cannot see this" in the same tone as "this is going wrong" would swap
+    // one wrong claim for another, and `info` is already this vocabulary's
+    // tone for an unknown (`presence_unknown` uses it).
+    icon: 'EyeOff',
+    tone: INFO,
+    summary:
+      'This agent reports its spool backlog only while it is connected, so the last value it sent is older than the reading is useful for. The real backlog is unknown, and it grows for as long as the link is down.',
+    action:
+      'Restore the agent’s link to this server. The next heartbeat replaces this with a real number.',
   },
   last_seen_lagging: {
     label: 'Check-in lagging',
@@ -270,6 +330,25 @@ export function lastSeenFreshness(lastSeenAt, now = Date.now()) {
 }
 
 /**
+ * Whether an agent's reported spool backlog is too old to be shown as current.
+ *
+ * The server answers this and ships the answer, so "is this number current"
+ * never depends on the viewer's clock. Pass whichever spelling the caller has.
+ *
+ * The timestamp fallback is for a rebuilt frontend against a server not yet
+ * restarted, and it fails towards "unknown": no timestamp means no basis for
+ * calling the number current.
+ *
+ * @param {{stale?: boolean, reportedAt?: string|null}} reading
+ * @param {number} [now] Client epoch ms; injectable for tests.
+ */
+export function spoolReadingIsStale({ stale, reportedAt } = {}, now = Date.now()) {
+  if (typeof stale === 'boolean') return stale;
+  const age = secondsSince(reportedAt, now);
+  return age == null || age > SPOOL_READING_FRESH_SECONDS;
+}
+
+/**
  * How long a host sample may go unreplaced before it is stale, in seconds.
  * `intervalSeconds` is the agent's configured cadence; when it is unknown the
  * floor alone applies, which is what the detail page already did.
@@ -285,12 +364,10 @@ export function staleSampleWindowSeconds(intervalSeconds) {
  * Resolve the update lifecycle from an agent's event list.
  *
  * The server records queue-time and each self-reported phase as distinct
- * `agent_events` rows (`update_queued`, `update_started`, `update_succeeded`,
- * `update_failed`, `update_rolled_back`, and `version_changed` once the new
- * binary actually reconnects). There is no `pending_update_version` field on
- * any REST response, so the newest event that belongs to the update lifecycle
- * IS the state — which is also the honest reading, since a terminal event
- * always postdates the queue event it resolves.
+ * `agent_events` rows. No REST response carries `pending_update_version`, so
+ * the newest event in the lifecycle IS the state — which is also the honest
+ * reading, since a terminal event always postdates the queue event it
+ * resolves.
  *
  * Returns `{state, version, at}` where state is 'pending' | 'failed' |
  * 'succeeded', or null when the agent has no update history at all.
@@ -330,13 +407,16 @@ export function updateStateFromEvents(events) {
  * Every state that currently holds for one agent, most-decisive first.
  *
  * Each field of `input` is optional and each rule fires only on the inputs it
- * actually has, so the fleet row (presence + grants only) and the detail page
- * (readiness, events, telemetry cadence as well) call the same function and
- * simply produce different-length answers. Nothing here infers a healthy state
- * from a missing input.
+ * has, so the fleet row and the detail page call the same function and produce
+ * different-length answers. Nothing infers a healthy state from a missing
+ * input.
  *
  * @param {object} input
  * @param {string} [input.status] agents.status — pending|active|revoked|rejected.
+ * @param {string|null} [input.revokedBy] Who revoked it: "agent" (a `cb-agent
+ *   uninstall`) or "operator". Absent on a record predating the field, which
+ *   reads as an operator revoke — the wording that assumes there is still a
+ *   host to deal with is the safe one to be wrong with.
  * @param {boolean|null} [input.online] Presence; null/undefined = not known.
  * @param {string} [input.lastSeenAt] ISO, server-produced.
  * @param {object} [input.capabilities] `{name: {enabled, config}}` as the API returns.
@@ -346,6 +426,12 @@ export function updateStateFromEvents(events) {
  * @param {Array} [input.readiness] AgentCapabilityReadiness rows.
  * @param {object|null} [input.update] From updateStateFromEvents.
  * @param {number|null} [input.spoolDepth]
+ * @param {boolean} [input.spoolStale] Server's verdict on whether spoolDepth is current.
+ * @param {string|null} [input.spoolReportedAt] ISO of when the agent last reported the depth.
+ * @param {number|null} [input.spoolEvictedFrames] Cumulative frames the agent destroyed; null = never reported.
+ * @param {number|null} [input.spoolEvictedBytes]
+ * @param {string|null} [input.spoolEvictedOldestAt] ISO bound of the destroyed window.
+ * @param {string|null} [input.spoolEvictedNewestAt] ISO bound of the destroyed window.
  * @param {number|null} [input.clockSkewSeconds] Signed browser-minus-server.
  * @param {number} [input.now] Client epoch ms; injectable for tests.
  * @returns {Array<object>} Ordered state descriptors.
@@ -353,6 +439,7 @@ export function updateStateFromEvents(events) {
 export function deriveAgentStates(input = {}) {
   const {
     status,
+    revokedBy,
     online,
     lastSeenAt,
     capabilities,
@@ -362,6 +449,12 @@ export function deriveAgentStates(input = {}) {
     readiness,
     update,
     spoolDepth,
+    spoolStale,
+    spoolReportedAt,
+    spoolEvictedFrames,
+    spoolEvictedBytes,
+    spoolEvictedOldestAt,
+    spoolEvictedNewestAt,
     clockSkewSeconds,
     now = Date.now(),
   } = input;
@@ -373,7 +466,7 @@ export function deriveAgentStates(input = {}) {
   };
 
   // ── Identity ────────────────────────────────────────────────────────────
-  if (status === 'revoked') push('revoked');
+  if (status === 'revoked') push(revokedBy === 'agent' ? 'uninstalled' : 'revoked');
   if (status === 'rejected') push('rejected');
   if (status === 'pending_approval' || status === 'pending') push('pending_approval');
 
@@ -446,7 +539,35 @@ export function deriveAgentStates(input = {}) {
     }
   }
 
-  if (Number.isFinite(spoolDepth) && spoolDepth >= SPOOL_PRESSURE_DEPTH) {
+  // Deliberately independent of online/offline and of the backlog rule below.
+  // Eviction happens while the agent is disconnected, so gating on a live link
+  // would hide it during the very outage that caused it; and it is a permanent
+  // fact, so a merely large or merely stale backlog reading must not displace
+  // it. An operator needs both claims at once.
+  //
+  // null means "never reported" and produces no state; an explicit 0 is a real
+  // report of no loss and equally produces none.
+  if (Number.isFinite(spoolEvictedFrames) && spoolEvictedFrames > 0) {
+    push('spool_evicted', {
+      frames: spoolEvictedFrames,
+      bytes: Number.isFinite(spoolEvictedBytes) ? spoolEvictedBytes : null,
+      oldestAt: spoolEvictedOldestAt ?? null,
+      newestAt: spoolEvictedNewestAt ?? null,
+    });
+  }
+
+  // The backlog reading, in its two moods. Only one fires: a stale number
+  // cannot support a warning about its own size, and a fresh one has no unknown
+  // to declare. Neither touches `spool_evicted` above, which is cumulative and
+  // stays true however old the current reading is — letting staleness swallow it
+  // would hide a permanent fact behind a temporary one.
+  //
+  // `spoolStale` is consulted only when there is a reading to qualify.
+  const backlogIsStale = Number.isFinite(spoolDepth) && spoolStale === true;
+  if (backlogIsStale) {
+    push('spool_unknown', { lastKnownDepth: spoolDepth, reportedAt: spoolReportedAt ?? null });
+  }
+  if (!backlogIsStale && Number.isFinite(spoolDepth) && spoolDepth >= SPOOL_PRESSURE_DEPTH) {
     push('spool_pressure', {
       depth: spoolDepth,
       severity: spoolDepth >= SPOOL_CRITICAL_DEPTH ? CRITICAL : WARN,
@@ -481,6 +602,9 @@ export function primaryAgentState(input = {}) {
 export function fleetRowStateInput(agent, { clockSkewSeconds = null, now = Date.now() } = {}) {
   return {
     status: agent?.status,
+    // Straight off the fleet row: the summary payload carries it so the table
+    // and the detail page cannot disagree about what a revoked agent means.
+    revokedBy: agent?.revoked_by,
     online: agent?.online,
     lastSeenAt: agent?.last_seen_at,
     capabilities: agent?.capabilities,
@@ -490,6 +614,18 @@ export function fleetRowStateInput(agent, { clockSkewSeconds = null, now = Date.
     hasTelemetryHistory: agent?.latest != null,
     telemetryIntervalSeconds: agent?.capabilities?.host_telemetry?.config?.interval_s,
     spoolDepth: agent?.spool_depth,
+    // The server's verdict when it sends one, the timestamp when it does not.
+    // Derived here rather than in FleetRow so the row's chip, the fleet filter
+    // counts and the detail page all read one answer.
+    spoolStale: spoolReadingIsStale(
+      { stale: agent?.spool_stale, reportedAt: agent?.spool_reported_at },
+      now
+    ),
+    spoolReportedAt: agent?.spool_reported_at ?? null,
+    spoolEvictedFrames: agent?.spool_evicted_frames,
+    spoolEvictedBytes: agent?.spool_evicted_bytes,
+    spoolEvictedOldestAt: agent?.spool_evicted_oldest_at,
+    spoolEvictedNewestAt: agent?.spool_evicted_newest_at,
     clockSkewSeconds,
     now,
   };
@@ -500,13 +636,12 @@ export function fleetRowStateInput(agent, { clockSkewSeconds = null, now = Date.
  * semver_key` uses: split on dots, read each component's leading run of digits,
  * and treat a component with no leading digit as 0.
  *
- * Mirrored rather than approximated because "which agent is behind" has to
- * mean the same thing on both sides. A plain lexicographic compare puts 0.10.0
- * before 0.9.0 and would mark the whole fleet as drifted exactly once per
- * minor bump — the moment an operator is looking at the column. This is
- * deliberately not full SemVer 2.0 precedence: the packaging step only ever
- * produces plain x.y.z tags, and inventing prerelease ordering the server does
- * not implement would be a second, disagreeing definition.
+ * Mirrored rather than approximated: "which agent is behind" must mean the same
+ * thing on both sides. A lexicographic compare puts 0.10.0 before 0.9.0 and
+ * would mark the whole fleet as drifted once per minor bump. Deliberately not
+ * full SemVer 2.0 precedence — packaging only produces plain x.y.z tags, and
+ * inventing prerelease ordering the server does not implement would be a second,
+ * disagreeing definition.
  */
 export function agentVersionKey(version) {
   if (typeof version !== 'string' || version === '') return null;

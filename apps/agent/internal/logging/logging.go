@@ -145,3 +145,28 @@ func Debugf(format string, args ...any) { emit(LevelDebug, format, args...) }
 func Infof(format string, args ...any)  { emit(LevelInfo, format, args...) }
 func Warnf(format string, args ...any)  { emit(LevelWarn, format, args...) }
 func Errorf(format string, args ...any) { emit(LevelError, format, args...) }
+
+// UseWriter redirects the log stream and pins a level for the duration of a
+// test, returning the restore function.
+//
+// It is exported only because packages *other* than this one need to assert
+// that a particular line actually reaches an operator at a particular
+// `log_level` — an unexported seam is invisible to them. internal/spool's
+// eviction warning is the case that forced it: that line is the only local
+// signal that observations were permanently destroyed, and a line which
+// silently vanishes at `log_level = "warn"` reproduces the exact
+// silent-data-loss defect that reporting exists to end. A comment asserting
+// "this is emitted at warn" is not a test; this makes it one.
+//
+// Not called by the daemon. Configure is the production entry point.
+func UseWriter(w io.Writer, l Level) func() {
+	mu.Lock()
+	previousOut, previousLevel := out, level
+	out, level = w, l
+	mu.Unlock()
+	return func() {
+		mu.Lock()
+		out, level = previousOut, previousLevel
+		mu.Unlock()
+	}
+}

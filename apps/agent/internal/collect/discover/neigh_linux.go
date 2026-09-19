@@ -15,8 +15,8 @@ import (
 )
 
 // x/sys/unix supplies the constants and the socket calls but no message parsing: NetlinkRIB,
-// ParseNetlinkMessage and ParseNetlinkRouteAttr live only in the frozen stdlib syscall package
-// (D-11). So the framing below is hand-written, and it is hand-written defensively — a netlink
+// ParseNetlinkMessage and ParseNetlinkRouteAttr live only in the frozen stdlib syscall package. So
+// the framing below is hand-written, and it is hand-written defensively — a netlink
 // socket is readable by anything on the host that can reach it, and every length in the stream is
 // attacker-influenced until it has been checked against the bytes actually present.
 
@@ -256,7 +256,7 @@ func neighborAddrLen(family uint8) (int, bool) {
 //
 // Only EUI-48 is accepted. NDA_LLADDR is whatever the link type uses — 4 bytes of IPv4 for an
 // IPIP tunnel, 20 for InfiniBand, 0 for a link with no addressing — and the backend's MAC
-// matcher (D-9) only understands 48-bit hardware addresses. An all-zero address is the kernel's
+// matcher only understands 48-bit hardware addresses. An all-zero address is the kernel's
 // placeholder and is dropped for the reason given on Neighbor.MAC.
 func neighborMAC(lladdr []byte) string {
 	if len(lladdr) != 6 {

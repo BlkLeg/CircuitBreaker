@@ -137,7 +137,7 @@ func recordsOf(t *testing.T, outcome Outcome) []string {
 	return records
 }
 
-// TestDNS_AllTenRecordTypesResolve pins every record type §5 names, and pins the record *string*
+// TestDNS_AllTenRecordTypesResolve pins every record type in the closed set, and pins the record *string*
 // form for each: these are what land in details and what expected_values is matched against, so
 // a drift from dnspython's str(rdata) silently breaks every expected-value assertion an operator
 // has already written. The four types after MX are also why github.com/miekg/dns is a dependency
@@ -380,7 +380,7 @@ func TestDNS_MessageStringsMatchBackendExactly(t *testing.T) {
 	})
 }
 
-// TestDNS_DetailsCarryStringifiedRecords pins D-8's audit payload: details is exactly
+// TestDNS_DetailsCarryStringifiedRecords pins the audit payload: details is exactly
 // {"records": [str(r) …]} and survives JSON encoding as an array of strings, because that is
 // what monitor_probe_runs.result_metadata stores and what the backend's own collector produces.
 func TestDNS_DetailsCarryStringifiedRecords(t *testing.T) {
@@ -408,7 +408,7 @@ func TestDNS_DetailsCarryStringifiedRecords(t *testing.T) {
 	}
 }
 
-// TestDNS_CustomResolverDestinationIsScopeChecked pins §3's "DNS resolver destinations are
+// TestDNS_CustomResolverDestinationIsScopeChecked pins the "DNS resolver destinations are
 // validated like other network targets". A monitor's resolver is an operator-supplied address the
 // agent is about to send packets to, so an unchecked one would be a hole straight through the
 // scope evaluator — point it at the metadata service and the agent dials it.
@@ -529,8 +529,8 @@ func TestDNS_DefaultsAreRecordTypeAPortFiftyThreeTimeoutFive(t *testing.T) {
 }
 
 // TestDNS_LookupFailureEmitsDNSErrorReason pins the per-sample annotation collect_dns attaches on
-// failure. error_reason is audit metadata that lives only in monitor_probe_runs.result_metadata
-// (D-8), and it is the only thing distinguishing "the resolver did not answer" from "the target
+// failure. error_reason is audit metadata that lives only in monitor_probe_runs.result_metadata,
+// and it is the only thing distinguishing "the resolver did not answer" from "the target
 // is DOWN" once the sample reaches the shared result service.
 func TestDNS_LookupFailureEmitsDNSErrorReason(t *testing.T) {
 	for _, tc := range []struct {

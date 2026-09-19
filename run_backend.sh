@@ -18,4 +18,4 @@ NATS_URL="${NATS_URL:-nats://localhost:4222}" \
 NATS_AUTH_TOKEN="${NATS_AUTH_TOKEN:-}" \
 CB_AUTO_MIGRATE=false \
 PYTHONPATH=src \
-  ../../.venv/bin/uvicorn app.main:app --port 8000 --host 127.0.0.1
+  ../../.venv/bin/uvicorn app.main:app --port 8000 --host 127.0.0.1 --no-proxy-headers

@@ -1,7 +1,7 @@
 """Self-update: binary manifest lookup and Redis-queued update triggers.
 
 The manifest and binaries themselves are populated by the packaging build
-step (apps/agent's Makefile target, Task 17) — this module only reads them."""
+step (apps/agent's Makefile target, the design) — this module only reads them."""
 
 from __future__ import annotations
 
@@ -48,6 +48,17 @@ def binary_path(version: str, os_name: str, arch: str) -> Path:
     return path
 
 
+def binary_signature_path(version: str, os_name: str, arch: str) -> Path:
+    """The detached signature beside the binary `binary_path` resolves.
+
+    Reuses `binary_path`'s traversal guard rather than repeating it: the
+    three segments reach here from an unauthenticated URL, and one guard with
+    two callers cannot drift the way two copies can.
+    """
+    path = binary_path(version, os_name, arch)
+    return path.with_name(path.name + ".sig")
+
+
 _SEMVER_COMPONENT = re.compile(r"\d+")
 
 
@@ -59,7 +70,7 @@ def semver_key(version: str) -> tuple[int, ...]:
     digits; a component with no leading digits (e.g. a "-rc1" suffix glued
     onto the last segment) contributes 0 for that position. This is
     deliberately not a full SemVer 2.0 precedence implementation (pre-release/
-    build-metadata ordering) — the packaging step (Task 17) only ever
+    build-metadata ordering) — the packaging step only ever
     produces plain x.y.z tags, so component-wise numeric comparison is
     sufficient."""
     return tuple(

@@ -121,7 +121,7 @@ async def _poll_one(
                 "data": {},
             },
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return (
             int(device["id"]),
             source,
@@ -187,7 +187,7 @@ async def collect_once(
                         source=source,
                         db=db,
                     )
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     db.rollback()
                     logger.warning("Telemetry write failed for hardware %d: %s", hardware_id, exc)
                     from app.core.worker_audit import log_worker_audit
@@ -231,7 +231,7 @@ async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
                         await collect_once(
                             interval_s=interval_s, timeout_s=timeout_s, max_parallel=max_parallel
                         )
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.error("Telemetry collector loop failure: %s", exc, exc_info=True)
             else:
                 logger.debug("Telemetry collector: another instance holds the lease")

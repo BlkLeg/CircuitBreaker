@@ -1,4 +1,4 @@
-"""Bootstrap fidelity for the remote-probe schema (Task 6, §1).
+"""Bootstrap fidelity for the remote-probe schema.
 
 `0001_init` does not replay later revisions — it rebuilds the whole current
 `Base.metadata` up front and every later `create_table` then short-circuits —

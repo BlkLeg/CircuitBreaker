@@ -31,7 +31,7 @@ def encrypt_for_upload(archive: Path, recipient: str | None) -> Path:
     encrypted = archive.with_name(archive.name + ".age")
     encrypted.unlink(missing_ok=True)
     try:
-        subprocess.run(  # noqa: S603
+        subprocess.run(
             [age, "--encrypt", "--recipient", recipient, "--output", str(encrypted), str(archive)],
             check=True,
             stdout=subprocess.DEVNULL,

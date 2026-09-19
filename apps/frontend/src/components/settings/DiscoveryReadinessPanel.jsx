@@ -1,6 +1,6 @@
 import React from 'react';
 import { useDiscoveryReadiness } from '../../hooks/useDiscoveryReadiness.js';
-import { Toggle } from '../../pages/settings/DiscoverySettingsPage.jsx';
+import SettingRowSwitch from '../common/SettingRowSwitch';
 
 // Structural (platform-level) capabilities that gate whether LAN discovery
 // can ever be turned on, regardless of the desired setting.
@@ -139,7 +139,7 @@ export default function DiscoveryReadinessPanel({
           </div>
         </div>
         <div style={{ flexShrink: 0, paddingTop: 2 }}>
-          <Toggle
+          <SettingRowSwitch
             checked={lanDiscoveryDesired}
             onChange={onToggleLanDiscovery}
             disabled={toggleDisabled}

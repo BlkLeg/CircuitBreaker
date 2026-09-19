@@ -11,6 +11,7 @@ import {
   MessageCircle,
 } from 'lucide-react';
 import { notificationsApi } from '../api/client';
+import DeliveryResult from '../components/notifications/DeliveryResult';
 import EntityTable from '../components/EntityTable';
 import { SkeletonTable } from '../components/common/SkeletonTable';
 import FormModal from '../components/common/FormModal';
@@ -31,7 +32,7 @@ const PROVIDER_ICONS = {
 };
 
 // The route field is a floor, not an exact match — say so where it is set,
-// because the old dispatcher behaved the other way round (INC-03).
+// because an equality compare would behave the other way round.
 const SEVERITY_HINT =
   'A floor, not an exact match: a route set to Warning also receives Critical alerts.';
 
@@ -44,7 +45,7 @@ const SEVERITY_COLORS = {
 
 // An email sink carries the recipient and nothing else: the server, credentials,
 // and sender address all come from the global SMTP settings, which is the only
-// place they are configured (INC-02).
+// place they are configured.
 const EMAIL_HINT =
   'Required for Email provider. Email sends through the SMTP server configured in Settings → SMTP.';
 const EMAIL_HINT_NO_SMTP =
@@ -90,6 +91,14 @@ function NotificationsPage() {
   const [showSinkForm, setShowSinkForm] = useState(false);
   const [showRouteForm, setShowRouteForm] = useState(false);
   const [editTarget, setEditTarget] = useState(null);
+  // Test state is kept apart from the sink list on purpose: a test result must
+  // never look like a change to saved configuration (plan 05, N5).
+  const [testingSinkId, setTestingSinkId] = useState(null);
+  const [testResult, setTestResult] = useState(null);
+  // Which destination the visible result belongs to. The provider name alone
+  // cannot identify one of several Slack destinations, and `testingSinkId` is
+  // cleared the moment the test finishes -- exactly when the result appears.
+  const [testedSink, setTestedSink] = useState(null);
   const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
   const [selectedSinkIds, setSelectedSinkIds] = useState([]);
   const [selectedRouteIds, setSelectedRouteIds] = useState([]);
@@ -215,16 +224,34 @@ function NotificationsPage() {
   };
 
   const handleTestSink = async (id) => {
+    // Repeated clicks must not stack tests against a provider that may already
+    // be rate-limiting us (plan 05, N6).
+    if (testingSinkId !== null) return;
+    // A test says nothing about saved configuration, so it never refetches or
+    // mutates the list -- the result is reported beside the table and nowhere
+    // else (plan 05, N5).
+    const target = sinks.find((sink) => sink.id === id) || null;
+    setTestingSinkId(id);
+    setTestResult(null);
+    setTestedSink(target);
     try {
-      toast.info('Sending test notification...');
       const res = await notificationsApi.testSink(id);
-      if (res.data.ok) {
-        toast.success('Test notification sent successfully.');
-      } else {
-        toast.error(`Test failed: ${res.data.error}`);
-      }
+      setTestResult(res.data);
+      // The toast reports that the test finished. What the provider actually
+      // said is in the panel, because "sent successfully" is the exact claim
+      // the backend can no longer make on a bare 2xx.
+      toast.info('Test finished. See the result below.');
     } catch (err) {
-      toast.error(err.message);
+      setTestResult({
+        state: 'terminal',
+        reason_code: 'request_failed',
+        message: err.message || 'The test request could not be sent.',
+        provider: target?.provider_type,
+        attempt_count: 0,
+      });
+      toast.error('The test request could not be sent.');
+    } finally {
+      setTestingSinkId(null);
     }
   };
 
@@ -447,6 +474,11 @@ function NotificationsPage() {
                     destinations.
                   </div>
                 )}
+                <DeliveryResult
+                  result={testResult}
+                  pending={testingSinkId !== null}
+                  destination={testedSink?.name}
+                />
                 <EntityTable
                   columns={sinkColumns}
                   data={sinks}

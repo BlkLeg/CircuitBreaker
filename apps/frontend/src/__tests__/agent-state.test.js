@@ -9,9 +9,11 @@ import {
   fleetRowStateInput,
   lastSeenFreshness,
   primaryAgentState,
+  spoolReadingIsStale,
   staleSampleWindowSeconds,
   updateStateFromEvents,
 } from '../lib/agentState';
+import { SPOOL_READING_FRESH_SECONDS } from '../lib/constants';
 import { __resetServerClock, recordServerDate, serverNow } from '../utils/serverClock';
 
 // A fixed instant so every assertion below is about a rule, never about how
@@ -412,6 +414,180 @@ describe('capability health and spool pressure', () => {
   });
 });
 
+describe('permanently destroyed history', () => {
+  const base = { status: 'active', online: true, lastSeenAt: iso(5), now: NOW };
+
+  it('raises a critical state naming the destroyed window', () => {
+    const state = deriveAgentStates({
+      ...base,
+      spoolEvictedFrames: 9412,
+      spoolEvictedBytes: 33554432,
+      spoolEvictedOldestAt: '2026-08-20T00:00:00Z',
+      spoolEvictedNewestAt: '2026-08-22T00:00:00Z',
+    }).find((s) => s.code === 'spool_evicted');
+
+    expect(state).toBeTruthy();
+    expect(state.tone).toBe('critical');
+    expect(state.detail.frames).toBe(9412);
+    expect(state.detail.oldestAt).toBe('2026-08-20T00:00:00Z');
+    expect(state.detail.newestAt).toBe('2026-08-22T00:00:00Z');
+  });
+
+  it('outranks spool pressure — a loss that already happened beats one predicted', () => {
+    const order = codes(deriveAgentStates({ ...base, spoolDepth: 5000, spoolEvictedFrames: 12 }));
+    expect(order.indexOf('spool_evicted')).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('spool_evicted')).toBeLessThan(order.indexOf('spool_pressure'));
+  });
+
+  it('coexists with the backlog state rather than replacing it', () => {
+    // They are different facts with different futures — the backlog drains and
+    // the loss does not — and an agent in trouble normally has both. Freshness
+    // adds a third (the reading is stale); none of them may overwrite another.
+    const held = codes(deriveAgentStates({ ...base, spoolDepth: 5000, spoolEvictedFrames: 12 }));
+    expect(held).toContain('spool_evicted');
+    expect(held).toContain('spool_pressure');
+  });
+
+  it('survives an offline agent — the loss happens during the outage', () => {
+    const held = codes(deriveAgentStates({ ...base, online: false, spoolEvictedFrames: 12 }));
+    expect(held).toContain('spool_evicted');
+  });
+
+  it('says nothing for an explicit zero or for an agent that never reported', () => {
+    expect(codes(deriveAgentStates({ ...base, spoolEvictedFrames: 0 }))).not.toContain(
+      'spool_evicted'
+    );
+    expect(codes(deriveAgentStates({ ...base, spoolEvictedFrames: null }))).not.toContain(
+      'spool_evicted'
+    );
+    expect(codes(deriveAgentStates({ ...base }))).not.toContain('spool_evicted');
+  });
+});
+
+describe('a backlog reading that is no longer current', () => {
+  const base = { status: 'active', online: true, lastSeenAt: iso(5), now: NOW };
+
+  it('says the backlog is unknown, carrying the last known value and when', () => {
+    const state = deriveAgentStates({
+      ...base,
+      spoolDepth: 0,
+      spoolStale: true,
+      spoolReportedAt: iso(3 * 3600),
+    }).find((s) => s.code === 'spool_unknown');
+
+    expect(state).toBeTruthy();
+    expect(state.detail.lastKnownDepth).toBe(0);
+    expect(state.detail.reportedAt).toBe(iso(3 * 3600));
+  });
+
+  it('suppresses the backlog warning rather than deriving it from a frozen number', () => {
+    // A depth of 5000 is well past SPOOL_CRITICAL_DEPTH, but nobody has
+    // measured it since the link dropped. Warning on it is a lie with extra
+    // steps: the real backlog may be far larger, or already drained.
+    const held = codes(
+      deriveAgentStates({ ...base, spoolDepth: 5000, spoolStale: true, spoolReportedAt: iso(9000) })
+    );
+
+    expect(held).not.toContain('spool_pressure');
+    expect(held).toContain('spool_unknown');
+  });
+
+  it('leaves the warning on a fresh reading exactly as it was', () => {
+    const held = codes(deriveAgentStates({ ...base, spoolDepth: 5000, spoolStale: false }));
+
+    expect(held).toContain('spool_pressure');
+    expect(held).not.toContain('spool_unknown');
+  });
+
+  it('has nothing to call unknown when the agent never reported a backlog', () => {
+    // Null is "this build predates spool reporting". There is no reading for
+    // staleness to be a property of, and a chip would imply one existed.
+    const held = codes(
+      deriveAgentStates({ ...base, spoolDepth: null, spoolStale: true, spoolReportedAt: null })
+    );
+
+    expect(held).not.toContain('spool_unknown');
+    expect(held).not.toContain('spool_pressure');
+  });
+
+  it('states destroyed history and an unknown backlog at the same time', () => {
+    // The coexistence phase 3 pinned, extended rather than collapsed. They are
+    // different claims about different things: "history was destroyed" is
+    // cumulative and stays true however stale the current reading is, while
+    // "the current backlog is unknown" says nothing about the past. An
+    // operator needs both, and an agent that has been gone long enough to
+    // overflow its spool normally has both.
+    const held = codes(
+      deriveAgentStates({
+        ...base,
+        online: false,
+        spoolDepth: 0,
+        spoolStale: true,
+        spoolReportedAt: iso(3 * 3600),
+        spoolEvictedFrames: 9412,
+      })
+    );
+
+    expect(held).toContain('spool_evicted');
+    expect(held).toContain('spool_unknown');
+    // …and the permanent fact still outranks the one about right now.
+    expect(held.indexOf('spool_evicted')).toBeLessThan(held.indexOf('spool_unknown'));
+  });
+});
+
+describe('fleetRowStateInput and the backlog reading', () => {
+  const row = (overrides) => ({
+    status: 'active',
+    online: true,
+    last_seen_at: iso(5),
+    capabilities: { host_telemetry: { enabled: true, config: { interval_s: 30 } } },
+    latest: { collected_at: iso(5) },
+    ...overrides,
+  });
+
+  it('carries a fresh reading through as a real backlog', () => {
+    const input = fleetRowStateInput(row({ spool_depth: 5000, spool_reported_at: iso(20) }), {
+      now: NOW,
+    });
+
+    expect(input.spoolStale).toBe(false);
+    expect(codes(deriveAgentStates(input))).toContain('spool_pressure');
+  });
+
+  it("prefers the server's spool_stale to its own reading of the clock", () => {
+    const input = fleetRowStateInput(
+      row({ spool_depth: 5000, spool_reported_at: iso(20), spool_stale: true }),
+      { now: NOW }
+    );
+
+    expect(input.spoolStale).toBe(true);
+    expect(codes(deriveAgentStates(input))).toContain('spool_unknown');
+    expect(codes(deriveAgentStates(input))).not.toContain('spool_pressure');
+  });
+});
+
+describe('spoolReadingIsStale', () => {
+  it("takes the server's verdict over the timestamp whenever it has one", () => {
+    // The server computes this so the answer never depends on the viewer's
+    // clock; a browser that disagrees must not overrule it in either
+    // direction.
+    expect(spoolReadingIsStale({ stale: true, reportedAt: iso(5) }, NOW)).toBe(true);
+    expect(spoolReadingIsStale({ stale: false, reportedAt: iso(99999) }, NOW)).toBe(false);
+  });
+
+  it('falls back to the timestamp for a server that sends no verdict', () => {
+    expect(spoolReadingIsStale({ reportedAt: iso(SPOOL_READING_FRESH_SECONDS) }, NOW)).toBe(false);
+    expect(spoolReadingIsStale({ reportedAt: iso(SPOOL_READING_FRESH_SECONDS + 1) }, NOW)).toBe(
+      true
+    );
+  });
+
+  it('answers "stale" when it has neither, rather than assuming current', () => {
+    expect(spoolReadingIsStale({}, NOW)).toBe(true);
+    expect(spoolReadingIsStale(undefined, NOW)).toBe(true);
+  });
+});
+
 describe('fleetRowStateInput', () => {
   it('maps a merged presence row onto the derivation input', () => {
     const row = {
@@ -424,6 +600,12 @@ describe('fleetRowStateInput', () => {
     };
     const input = fleetRowStateInput(row, { now: NOW });
     expect(input.telemetryIntervalSeconds).toBe(60);
+    // No `spool_reported_at` and no `spool_stale` on this row, so there is no
+    // basis for calling the depth current — the mapping resolves to "unknown"
+    // rather than inventing freshness.
+    expect(input.spoolStale).toBe(true);
+    // The eviction group rides the same presence row.
+    expect(input.spoolEvictedFrames).toBeUndefined();
     expect(input.hasTelemetryHistory).toBe(true);
     expect(codes(deriveAgentStates(input))).toContain('stale_telemetry');
   });
@@ -440,5 +622,56 @@ describe('fleetRowStateInput', () => {
       { now: NOW }
     );
     expect(codes(deriveAgentStates(input))).toContain('never_reported');
+  });
+});
+
+describe('a self-uninstalled agent', () => {
+  // `cb-agent uninstall` revokes the agent from the agent's own side, so the
+  // row and the detail page both land on status=revoked with nothing to say
+  // which of two very different things happened. The operator instruction for
+  // the two is opposite: an operator revoke leaves a live agent on a host that
+  // still has to be cleaned up, and an uninstall has already done that.
+  const uninstalled = { status: 'revoked', revokedBy: 'agent', online: false, now: NOW };
+
+  it('reads as uninstalled rather than revoked', () => {
+    const states = deriveAgentStates(uninstalled);
+
+    expect(states[0].code).toBe('uninstalled');
+    expect(codes(states)).not.toContain('revoked');
+  });
+
+  it('does not send the operator to clean up a host that cleaned itself up', () => {
+    const [state] = deriveAgentStates(uninstalled);
+
+    expect(state.action).not.toMatch(/once the host has been cleaned up/i);
+  });
+
+  it('still outranks liveness, exactly as revoked does', () => {
+    const states = deriveAgentStates({ ...uninstalled, lastSeenAt: iso(86400) });
+
+    expect(codes(states)).not.toContain('offline');
+  });
+
+  it('leaves an operator revoke alone', () => {
+    // Anything other than the agent itself — including an unknown initiator on
+    // a record from before the field existed — keeps the wording that assumes
+    // the host is still to be dealt with.
+    expect(deriveAgentStates({ status: 'revoked', revokedBy: 'operator', now: NOW })[0].code).toBe(
+      'revoked'
+    );
+    expect(deriveAgentStates({ status: 'revoked', now: NOW })[0].code).toBe('revoked');
+  });
+});
+
+describe('fleetRowStateInput', () => {
+  it('carries the revoke attribution so a row and the detail page agree', () => {
+    // The state exists only if something feeds it. A fleet table saying
+    // "Revoked" beside a detail page saying "Uninstalled" is two answers to
+    // one question, and the row is where an operator looks first.
+    const states = deriveAgentStates(
+      fleetRowStateInput({ status: 'revoked', revoked_by: 'agent' }, { now: NOW })
+    );
+
+    expect(states[0].code).toBe('uninstalled');
   });
 });

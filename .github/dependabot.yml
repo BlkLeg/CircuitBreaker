@@ -1,0 +1,120 @@
+# Dependabot configuration.
+#
+# Why this file exists: without it Dependabot runs on repo defaults, which means
+# every update opens against the *default* branch. This repo's default branch is
+# `main`, but `main` is the release branch and sits well behind `dev`, which is
+# where work actually integrates. The result was a standing backlog of PRs
+# proposing bumps that `dev` had already taken — nine of them at once in
+# September 2026, six already satisfied on `dev` and closed unmerged. Every
+# entry below therefore sets `target-branch: dev`.
+#
+# Grouping is the other half. Dependabot opens one PR per dependency by default,
+# which is what turned routine dev-dependency churn into a branch-cleanup chore.
+# Each ecosystem below batches minor and patch updates into a single PR, so a
+# quiet week is one PR to review rather than seven to close.
+#
+# Caveat worth knowing: `target-branch` governs *version* updates only.
+# Dependabot security updates are raised against the default branch, so a
+# security bump will still appear against `main`.
+
+version: 2
+
+updates:
+  # ── Frontend (React/Vite, apps/frontend) ────────────────────────────────
+  - package-ecosystem: "npm"
+    directory: "/apps/frontend"
+    target-branch: "dev"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      frontend-production:
+        dependency-type: "production"
+        update-types: ["minor", "patch"]
+      frontend-development:
+        dependency-type: "development"
+        update-types: ["minor", "patch"]
+
+  # ── Repo-root npm (tooling only: 1 dependency, 2 devDependencies) ───────
+  - package-ecosystem: "npm"
+    directory: "/"
+    target-branch: "dev"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      root-tooling:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # ── Backend (Python, apps/backend) ──────────────────────────────────────
+  #
+  # Dependabot edits `pyproject.toml` and `poetry.lock` and does NOT touch
+  # `apps/backend/requirements.txt`, which is generated from the lock by
+  # `scripts/gen_requirements.py` and is what every shipped image installs and
+  # what the security gate's pip-audit step audits. So a Dependabot backend PR
+  # arrives with the lock moved and the generated file stale, and
+  # `tests/build/test_backend_dependency_pins.py` fails it in the Lint job —
+  # correctly, because merging it as-is would move the lock while leaving the
+  # containers on the old pin.
+  #
+  # The fix on such a PR is one command, run on the PR branch before merging:
+  #
+  #     python3 scripts/gen_requirements.py
+  #
+  # Grouped and monthly because that reconciliation is manual: fewer, larger
+  # PRs mean fewer times anyone has to remember it.
+  - package-ecosystem: "pip"
+    directory: "/apps/backend"
+    target-branch: "dev"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      backend-python:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # ── Agent (Go, apps/agent) ──────────────────────────────────────────────
+  - package-ecosystem: "gomod"
+    directory: "/apps/agent"
+    target-branch: "dev"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      agent-go:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # ── GitHub Actions ──────────────────────────────────────────────────────
+  #
+  # Workflow actions are supply-chain surface that nothing else in the repo
+  # tracks: a pinned action is only as current as the last person who edited
+  # the workflow by hand.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "dev"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      github-actions:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

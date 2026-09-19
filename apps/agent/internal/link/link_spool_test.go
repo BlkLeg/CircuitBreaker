@@ -21,17 +21,21 @@ import (
 	"circuitbreaker.dev/cb-agent/internal/spool"
 )
 
-// TestRun_DataFramesFlowThroughLiveConnectionWithoutSpooling drives a full
-// Run() connection — real Noise handshake, real encrypted WS frames — and
-// pushes fake data frames (fakeDataFrameType — no real Slice 1 data frame
-// type exists to test with) through Options.DataFrames while heartbeats keep
-// ticking on their own schedule. It verifies, through the actually-wired
-// path (not just a direct dataFrameSender call):
-//   - live data frames reach the server over the connection;
-//   - the spool stays empty throughout, since every send here succeeds —
-//     spooling is a send-failure fallback, not a parallel duplicate path;
-//   - heartbeat frames flow independently and never touch the spool either.
-func TestRun_DataFramesFlowThroughLiveConnectionWithoutSpooling(t *testing.T) {
+// TestRun_DataFramesFlowThroughLiveConnection drives a full Run() connection
+// — real Noise handshake, real encrypted WS frames — and pushes fake data
+// frames (fakeDataFrameType — no real data frame type exists yet to test
+// with) through Options.DataFrames while heartbeats keep ticking on their own
+// schedule. It verifies, through the actually-wired path (not just a direct
+// dataFrameSender call):
+//   - live data frames reach the server over the connection, now by way of
+//     the spool rather than past it: every data frame is fsync'd before it can
+//     touch a socket, and the drain ticker is the only outbound data path;
+//   - the backlog still ends up empty, so routing through disk does not wedge
+//     the queue. This fake server predates `data.ack` (it never answers
+//     `data_ack`), so the agent commits on write here — the fallback path, and
+//     the one an operator on an old server still gets;
+//   - heartbeat frames flow independently and never touch the spool at all.
+func TestRun_DataFramesFlowThroughLiveConnection(t *testing.T) {
 	originalInterval := heartbeatInterval
 	heartbeatInterval = 100 * time.Millisecond
 	defer func() { heartbeatInterval = originalInterval }()
@@ -187,9 +191,40 @@ type spoolTestServer struct {
 	// before the recording goroutine starts (that goroutine exists so
 	// arrival *times* are meaningful, which the hello does not need).
 	hello json.RawMessage
+	// askedForAck records whether the last hello set `ack_data`, so a test
+	// can assert the agent half of the negotiation without decoding the
+	// payload itself.
+	askedForAck bool
+	// dataAcksSent counts the `data.ack` frames this fake server wrote.
+	dataAcksSent int
 }
 
+// dataAckMode is what a spoolTestServer does about delivery acknowledgement.
+// It exists so one harness can play all three peers the agent has to survive:
+// a server that predates the mechanism, one that negotiates and then stops
+// acknowledging, and a current one.
+type dataAckMode int
+
+const (
+	// ackUnsupported is a server predating `data.ack`: it never sets
+	// `data_ack` on the hello.ack and never sends an ack. The agent must fall
+	// back to commit-on-write rather than wedging its spool forever.
+	ackUnsupported dataAckMode = iota
+	// ackNegotiatedNever negotiates acknowledged delivery and then never
+	// acknowledges anything — a server whose ingest path has stalled while
+	// its socket keeps reading. Nothing the agent sends may leave the spool.
+	ackNegotiatedNever
+	// ackNegotiatedLive is a current server: it negotiates, and acknowledges
+	// every data frame it reads.
+	ackNegotiatedLive
+)
+
 func newSpoolTestServer(t *testing.T, ackDelay time.Duration) *spoolTestServer {
+	t.Helper()
+	return newSpoolTestServerMode(t, ackDelay, ackUnsupported)
+}
+
+func newSpoolTestServerMode(t *testing.T, ackDelay time.Duration, mode dataAckMode) *spoolTestServer {
 	t.Helper()
 	serverPriv, serverPub := generateTestKeypair(t)
 	s := &spoolTestServer{}
@@ -224,11 +259,26 @@ func newSpoolTestServer(t *testing.T, ackDelay time.Duration) *spoolTestServer {
 		var helloFrame struct {
 			Payload json.RawMessage `json:"payload"`
 		}
+		askedForAck := false
 		if err := json.Unmarshal(helloPT, &helloFrame); err == nil {
+			var payload frame.HelloPayload
+			if err := json.Unmarshal(helloFrame.Payload, &payload); err == nil {
+				askedForAck = payload.AckData
+			}
 			s.mu.Lock()
 			s.hello = helloFrame.Payload
+			s.askedForAck = askedForAck
 			s.mu.Unlock()
 		}
+		// A server only ever acks an agent that asked, so an old agent gets
+		// exactly today's protocol back.
+		acking := mode != ackUnsupported && askedForAck
+
+		// Sequence numbers the reader wants acknowledged, handed to the
+		// handler goroutine because gorilla forbids concurrent writers — the
+		// same constraint that makes the agent's own drain an arm of its one
+		// select.
+		ackReq := make(chan uint64, 512)
 
 		// Read continuously from here on, on its own goroutine, so anything
 		// the agent sends during the ack delay is timestamped when it
@@ -248,6 +298,7 @@ func newSpoolTestServer(t *testing.T, ackDelay time.Duration) *spoolTestServer {
 				}
 				var f struct {
 					Type    string          `json:"type"`
+					Seq     uint64          `json:"seq"`
 					Payload json.RawMessage `json:"payload"`
 				}
 				if err := json.Unmarshal(pt, &f); err != nil {
@@ -256,6 +307,12 @@ func newSpoolTestServer(t *testing.T, ackDelay time.Duration) *spoolTestServer {
 				s.mu.Lock()
 				s.frames = append(s.frames, recordedFrame{typ: f.Type, payload: f.Payload, at: time.Now()})
 				s.mu.Unlock()
+				if mode == ackNegotiatedLive && acking && frame.IsDataFrame(f.Type) {
+					select {
+					case ackReq <- f.Seq:
+					default:
+					}
+				}
 			}
 		}()
 
@@ -266,9 +323,13 @@ func newSpoolTestServer(t *testing.T, ackDelay time.Duration) *spoolTestServer {
 				return
 			}
 		}
+		ackPayload := map[string]any{"accepted": true, "agent_id": 1}
+		if acking {
+			ackPayload["data_ack"] = true
+		}
 		ack := map[string]any{
 			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
-			"payload": map[string]any{"accepted": true, "agent_id": 1},
+			"payload": ackPayload,
 		}
 		ackBytes, _ := json.Marshal(ack)
 		s.mu.Lock()
@@ -276,7 +337,29 @@ func newSpoolTestServer(t *testing.T, ackDelay time.Duration) *spoolTestServer {
 		s.mu.Unlock()
 		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(ackBytes))
 
-		<-done
+		// Acknowledge what the reader hands over, on the one goroutine that
+		// writes. ackReq never receives in the other two modes, so this is
+		// the same plain wait-for-close it replaces.
+		outSeq := uint64(0)
+		for {
+			select {
+			case <-done:
+				return
+			case seq := <-ackReq:
+				outSeq++
+				dataAck := map[string]any{
+					"v": 1, "type": frame.TypeDataAck, "seq": outSeq, "ts": time.Now().UTC(),
+					"payload": map[string]any{"seq": seq},
+				}
+				dataAckBytes, _ := json.Marshal(dataAck)
+				if err := conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(dataAckBytes)); err != nil {
+					return
+				}
+				s.mu.Lock()
+				s.dataAcksSent++
+				s.mu.Unlock()
+			}
+		}
 	}))
 	t.Cleanup(srv.Close)
 	s.url = "ws" + strings.TrimPrefix(srv.URL, "http")
@@ -312,6 +395,20 @@ func (s *spoolTestServer) helloPayload() json.RawMessage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.hello
+}
+
+// helloAskedForAck reports whether the last hello set `ack_data`.
+func (s *spoolTestServer) helloAskedForAck() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.askedForAck
+}
+
+// acksSent reports how many `data.ack` frames this server wrote.
+func (s *spoolTestServer) acksSent() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dataAcksSent
 }
 
 // payloadsOfType returns every recorded payload of the given frame type, in
@@ -372,6 +469,26 @@ func numberedDataFrame(n int) frame.Frame {
 // depend on live traffic.
 func (s *spoolTestServer) runAgainst(t *testing.T, sp *spool.Spool) (connected <-chan struct{}, stop func()) {
 	t.Helper()
+	return s.runAgainstReporting(t, sp, nil, nil)
+}
+
+// runAgainstWithProducer is runAgainst with a live data-frame producer wired
+// to Options.DataFrames, for the tests that care what happens to a frame
+// collected while the link is up rather than to a pre-existing backlog.
+func (s *spoolTestServer) runAgainstWithProducer(
+	t *testing.T, sp *spool.Spool, data <-chan frame.Frame,
+) (connected <-chan struct{}, stop func()) {
+	t.Helper()
+	return s.runAgainstReporting(t, sp, data, nil)
+}
+
+// runAgainstReporting is the full form: an optional producer and an optional
+// OnDisconnected observer, so a test can assert on the error that ended a
+// connection rather than only on what survived it.
+func (s *spoolTestServer) runAgainstReporting(
+	t *testing.T, sp *spool.Spool, data <-chan frame.Frame, onDisconnected func(error),
+) (connected <-chan struct{}, stop func()) {
+	t.Helper()
 	dir := t.TempDir()
 	key, err := enroll.LoadOrCreateDeviceKey(dir)
 	if err != nil {
@@ -380,11 +497,13 @@ func (s *spoolTestServer) runAgainst(t *testing.T, sp *spool.Spool) (connected <
 	connectedCh := make(chan struct{})
 	var once sync.Once
 	opts := Options{
-		Config:       &config.Config{ServerURL: s.url, ServerStaticPK: hex.EncodeToString(s.serverPub[:])},
-		Key:          key,
-		AgentVersion: "0.1.0-test",
-		Spool:        sp,
-		OnConnected:  func() { once.Do(func() { close(connectedCh) }) },
+		Config:         &config.Config{ServerURL: s.url, ServerStaticPK: hex.EncodeToString(s.serverPub[:])},
+		Key:            key,
+		AgentVersion:   "0.1.0-test",
+		Spool:          sp,
+		DataFrames:     data,
+		OnConnected:    func() { once.Do(func() { close(connectedCh) }) },
+		OnDisconnected: onDisconnected,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -410,12 +529,11 @@ func waitFor(t *testing.T, budget time.Duration, desc string, cond func() bool) 
 	t.Fatalf("timed out after %s waiting for %s", budget, desc)
 }
 
-// TestRun_CatchUpDrainsBacklogWithinBound is the core of D-5: a backlog
-// accumulated during an outage drains on its own, paced, with *no live
-// production at all*. Under the old 1:4 interleave this hung forever — a
-// drain only happened as a side effect of a successful live send, so a
-// disabled or failing collector meant the backlog sat until cap eviction
-// discarded it.
+// TestRun_CatchUpDrainsBacklogWithinBound pins that a backlog accumulated
+// during an outage drains on its own, paced, with no live production at all.
+// If a drain only happened as a side effect of a successful live send, a
+// disabled or failing collector would leave the backlog sitting until cap
+// eviction discarded it.
 func TestRun_CatchUpDrainsBacklogWithinBound(t *testing.T) {
 	originalTick := drainTickInterval
 	drainTickInterval = 5 * time.Millisecond
@@ -538,11 +656,11 @@ func freezeDrain(t *testing.T) {
 	t.Cleanup(func() { drainTickInterval = original })
 }
 
-// TestHelloCarriesSpoolDepthAtConnect pins the at-connect half of D-12: the
-// `hello` frame reports how many frames were still spooled when the
-// connection came up. internal/hostinfo stays spool-agnostic (the spool is
-// owned by the link, not by host collection), so internal/link is what
-// stamps HelloPayload.SpoolDepth from Options.Spool.
+// TestHelloCarriesSpoolDepthAtConnect pins the at-connect half of spool
+// reporting: the `hello` frame reports how many frames were still spooled when
+// the connection came up. internal/hostinfo stays spool-agnostic (the spool is
+// owned by the link, not by host collection), so internal/link is what stamps
+// HelloPayload.SpoolDepth from Options.Spool.
 func TestHelloCarriesSpoolDepthAtConnect(t *testing.T) {
 	freezeDrain(t)
 
@@ -578,10 +696,10 @@ func TestHelloCarriesSpoolDepthAtConnect(t *testing.T) {
 	}
 }
 
-// TestHeartbeatCarriesSpoolStats pins the live half of D-12: every heartbeat
-// carries the current spool depth and size, which is what lets the Agent
-// Detail catch-up indicator both appear *and* clear while a single
-// connection stays up. The payload used to be a hardcoded `{}`.
+// TestHeartbeatCarriesSpoolStats pins the live half of spool reporting: every
+// heartbeat carries the current spool depth and size, which is what lets the
+// Agent Detail catch-up indicator both appear and clear while a single
+// connection stays up.
 func TestHeartbeatCarriesSpoolStats(t *testing.T) {
 	freezeDrain(t)
 	originalHeartbeat := heartbeatInterval
@@ -630,7 +748,7 @@ func TestHeartbeatCarriesSpoolStats(t *testing.T) {
 	}
 
 	// The wire bytes themselves must carry both keys explicitly, even at
-	// zero — D-12: an empty `{}` heartbeat is reserved to mean "this agent
+	// zero: an empty `{}` heartbeat is reserved to mean "this agent
 	// predates spool reporting", which is what lets the backend keep its
 	// columns NULL for such an agent instead of writing a fake 0.
 	var keys map[string]json.RawMessage
@@ -664,8 +782,15 @@ func TestHeartbeatReportsAnEmptySpoolAsExplicitZeros(t *testing.T) {
 		return srv.countOfType(frame.TypeHeartbeat) > 0
 	})
 
-	payload := srv.payloadsOfType(frame.TypeHeartbeat)[0]
-	if got := string(payload); got != `{"spool_depth":0,"spool_bytes":0}` {
-		t.Errorf("heartbeat payload = %s, want {\"spool_depth\":0,\"spool_bytes\":0}", got)
+	// Asserted on the raw JSON rather than the decoded struct: the property
+	// under test is that the zeros are *present on the wire*, which a decode
+	// would supply from the zero value whether they were sent or not. Both
+	// keys are checked individually so an additive field elsewhere in the
+	// payload does not fail a test that is not about it.
+	payload := string(srv.payloadsOfType(frame.TypeHeartbeat)[0])
+	for _, want := range []string{`"spool_depth":0`, `"spool_bytes":0`} {
+		if !strings.Contains(payload, want) {
+			t.Errorf("heartbeat payload = %s, want it to contain %s", payload, want)
+		}
 	}
 }

@@ -1,6 +1,6 @@
 """Classified, rate-limited fault reporting for background listeners and streams.
 
-REL-07. Long-lived listeners (Redis pub/sub fan-out behind every WebSocket,
+the contract. Long-lived listeners (Redis pub/sub fan-out behind every WebSocket,
 the mDNS/SSDP discovery listeners, the NATS-backed SSE stream, the agent
 control-frame listener) must not die on a transient fault, which is why they
 are wrapped in broad handlers. The failure mode that requirement targets is the
@@ -86,7 +86,7 @@ _logger = logging.getLogger(__name__)
 # cannot grow with traffic, connections, or inventory size.
 _FAULT_COUNTER = Counter(
     "circuitbreaker_stream_faults_total",
-    "Faults observed by background listeners and streams, by component and class (REL-07).",
+    "Faults observed by background listeners and streams, by component and class.",
     ["component", "fault"],
     registry=slo_metrics.REGISTRY,
 )
@@ -233,7 +233,7 @@ def record_stream_fault(
 async def close_stream_socket(websocket: Any, *, component: str, code: int) -> None:
     """Close a WebSocket a listener can no longer feed, without raising.
 
-    REL-07's acceptance is that a stream "recovers or closes explicitly". A
+    the acceptance is that a stream "recovers or closes explicitly". A
     fan-out task that gives up while leaving its socket open is the failure this
     prevents: the client keeps receiving keep-alive pings and never learns that
     no events will follow, so it never reconnects. ``websocket`` is a Starlette
@@ -250,7 +250,7 @@ async def close_stream_socket(websocket: Any, *, component: str, code: int) -> N
             if websocket.client_state is WebSocketState.DISCONNECTED:
                 return
         await websocket.close(code=code)
-    except Exception as exc:  # noqa: BLE001 - counted below, never propagated
+    except Exception as exc:  # counted below, never propagated
         record_stream_fault(f"{component}.close", exc, fault=FAULT_PEER_GONE)
 
 

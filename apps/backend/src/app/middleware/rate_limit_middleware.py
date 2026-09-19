@@ -82,13 +82,13 @@ class TenantRateLimitMiddleware(BaseHTTPMiddleware):
         if request.url.path in _SKIP_PATHS:
             return await call_next(request)
 
-        from app.middleware.tenant_middleware import current_tenant_id  # noqa: PLC0415
+        from app.middleware.tenant_middleware import current_tenant_id
 
         tenant_id = current_tenant_id.get(None)
         if tenant_id is None:
             return await call_next(request)
 
-        from app.core.redis import get_redis  # noqa: PLC0415
+        from app.core.redis import get_redis
 
         redis = await get_redis()
         if redis is None:
@@ -107,7 +107,7 @@ class TenantRateLimitMiddleware(BaseHTTPMiddleware):
             script = redis.register_script(_SLIDING_WINDOW_LUA)
             result = await script(keys=[key], args=[now_ms, window_ms, _RATE_LIMIT_RPM])
             exceeded, value = int(result[0]), int(result[1])
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _logger.warning("Tenant rate limit check failed — rejecting request: %s", exc)
             return JSONResponse(
                 status_code=503,

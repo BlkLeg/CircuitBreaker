@@ -1,5 +1,15 @@
 # Verification Strategy — Local-First, Fleet-Backed — Design
 
+> **Active.** This is a programme, not one implementation plan, and it was
+> accepted as [ADR 0005](../adr/0005-verification-tiers-and-platform-support.md)
+> on 2026-08-28 — the `Status: Draft for review` line below is the status on the
+> day it was written, not today's. §11's Phase 1 and Phase 2 landed:
+> `scripts/ci/tier0-static.sh`, `scripts/ci/tier1-unit.sh` and `make verify` as
+> the `.husky/pre-push` hook, then `scripts/ci/fleet/` and `make verify-fleet`.
+> Phase 3 is part-done (see
+> [`2026-08-28-verification-phase3-plan.md`](./2026-08-28-verification-phase3-plan.md)).
+> Phases 4-6 have not started — there is no `tier2` script in `scripts/ci/`.
+
 **Date:** 2026-08-27
 **Status:** Draft for review
 **Scope:** `.github/workflows/*`, `scripts/ci/` (new), `Makefile` verify targets,

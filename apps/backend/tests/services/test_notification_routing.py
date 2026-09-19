@@ -1,4 +1,4 @@
-"""``process_alert`` honours a route's threshold, not an exact match (INC-03).
+"""``process_alert`` honours a route's threshold, not an exact match.
 
 The dispatcher compared ``route.alert_severity == severity``, so an operator who
 set a route to "Minimum Severity: Info" received info alerts and never saw the

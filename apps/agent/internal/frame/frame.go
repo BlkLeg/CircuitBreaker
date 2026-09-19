@@ -14,7 +14,7 @@ import (
 const FrameVersion = 1
 
 // Frame is the wire envelope for every agent<->server message, nested inside
-// the Noise-encrypted channel. v1 — see specs/2026-07-26-cb-agent-design.md §3.4.
+// the Noise-encrypted channel. v1.
 type Frame struct {
 	V       int             `json:"v"`
 	Type    string          `json:"type"`
@@ -53,7 +53,7 @@ const (
 	// TypeUpdateStatus reports one self-update transition point the server
 	// can't otherwise observe (download-start, swap-success, failure,
 	// rollback — queue-time is already server-side). Additive-only
-	// protocol-v1 addition (Task 24), mirroring
+	// protocol-v1 addition, mirroring
 	// apps/backend/src/app/schemas/agent_frame.py's TYPE_UPDATE_STATUS.
 	TypeUpdateStatus = "update.status"
 )
@@ -67,9 +67,23 @@ const (
 	TypeDiscoveryRequest = "discovery.request"
 	TypeDiscoveryCancel  = "discovery.cancel"
 	TypeKeyRotate        = "key.rotate"
-	TypeUpdate           = "update"
-	TypeDisconnect       = "disconnect"
-	TypePing             = "ping"
+	// TypeTLSPinRotate advertises the TLS trust policy this server is about
+	// to start serving, ahead of the certificate actually changing, so the
+	// agent can accept either the current or the successor leaf across the
+	// cutover. Distinct from TypeKeyRotate: that frame rotates Noise
+	// identity keys and its `kind` is closed over "device"/"server", while
+	// this one rotates the transport-layer trust policy underneath them.
+	TypeTLSPinRotate = "tls.pin.rotate"
+	TypeUpdate       = "update"
+	TypeDisconnect   = "disconnect"
+	TypePing         = "ping"
+	// TypeDataAck acknowledges *data* frames the server has terminally
+	// handled on this connection — see DataAckPayload. It is the frame that
+	// turns the outbound spool's guarantee from "at-least-once onto a
+	// socket" into "at-least-once into the database": before it existed the
+	// agent committed a spooled frame the instant conn.WriteMessage returned
+	// nil, which says nothing about whether the server ever read it.
+	TypeDataAck = "data.ack"
 )
 
 // Frame type constants — bidirectional (either side may send it about its own cipher).
@@ -102,22 +116,24 @@ var allFrameTypes = []string{
 	TypeDiscoveryRequest,
 	TypeDiscoveryCancel,
 	TypeKeyRotate,
+	TypeTLSPinRotate,
 	TypeUpdate,
 	TypeDisconnect,
 	TypePing,
+	TypeDataAck,
 	TypeTransportRekey,
 }
 
 // controlFrameTypes are the frame types that must never reach the outbound
 // spool (internal/spool): link-protocol control traffic, plus the heartbeat
 // liveness signal, none of which is host data the spool exists to buffer
-// through an outage (spec §4.4). This is deliberately a deny-list rather than
+// through an outage. This is deliberately a deny-list rather than
 // an allow-list of known data types: every type not named here — including
-// telemetry/probe/discovery/log payloads Slice 2+ has not introduced yet —
+// telemetry/probe/discovery/log payloads not introduced yet —
 // classifies as a data frame, so internal/link's spool wiring needs no code
 // change to pick up a future slice's new data frame type (Global
 // Constraints: "wire the mechanism ... so it activates automatically once
-// Slice 2+ introduces data frames").
+// data frames are introduced").
 var controlFrameTypes = map[string]bool{
 	TypeHello:               true,
 	TypeHeartbeat:           true,
@@ -130,10 +146,16 @@ var controlFrameTypes = map[string]bool{
 	TypeDiscoveryRequest:    true,
 	TypeDiscoveryCancel:     true,
 	TypeKeyRotate:           true,
+	TypeTLSPinRotate:        true,
 	TypeUpdate:              true,
 	TypeDisconnect:          true,
 	TypePing:                true,
-	TypeTransportRekey:      true,
+	// TypeDataAck is control traffic *about* data frames, never data
+	// itself. Spooling an ack would be circular — the agent would buffer,
+	// and try to deliver back to the server, the very frame that says the
+	// server already has what it buffered.
+	TypeDataAck:        true,
+	TypeTransportRekey: true,
 }
 
 // IsDataFrame reports whether typ is a data frame eligible for the outbound
@@ -152,7 +174,7 @@ func IsDataFrame(typ string) bool {
 // conformance_test.go pins their wire shape against apps/backend/src/app/schemas/agent_frame.py.
 
 // Readiness reports one collector's ability to run, carried in HelloPayload.Readiness and in
-// CapabilityReadinessPayload.Readiness — see specs/2026-07-26-cb-agent-design.md §4.3.
+// CapabilityReadinessPayload.Readiness.
 //
 // State is exactly one of ready | degraded | unavailable | disabled. That set is closed:
 // apps/backend/src/app/services/agent_telemetry.py's ingest_readiness is authoritative and rejects
@@ -171,7 +193,7 @@ type CapabilityGrant struct {
 }
 
 // NetworkFacts is one of the agent host's directly connected networks, carried in
-// HelloPayload.Networks (D-1). Addrs are CIDR strings taken straight from the interface's own
+// HelloPayload.Networks. Addrs are CIDR strings taken straight from the interface's own
 // addresses ("10.0.0.5/24", "fd00::1/64"), i.e. the host address *with* its prefix length —
 // that prefix is what makes the network "directly connected" and is the only input the slice-3
 // scope evaluator needs. Flags carries net.Flags' own vocabulary ("up", "broadcast",
@@ -186,8 +208,8 @@ type NetworkFacts struct {
 	Addrs []string `json:"addrs,omitempty"`
 }
 
-// HelloPayload is the agent -> server `hello` payload's structured shape
-// (specs/2026-07-26-cb-agent-design.md §3.4, §4.3, §4.6). Every field is optional so an
+// HelloPayload is the agent -> server `hello` payload's structured shape.
+// Every field is optional so an
 // old-shaped hello — including today's empty `{}` payload — still decodes: absent fields take
 // their Go zero value rather than failing decode.
 type HelloPayload struct {
@@ -203,11 +225,81 @@ type HelloPayload struct {
 	SpoolDepth       int            `json:"spool_depth,omitempty"`
 	CapabilitySchema int            `json:"capability_schema,omitempty"`
 	Networks         []NetworkFacts `json:"networks,omitempty"`
+
+	// SpoolEvicted* is the at-connect snapshot of what the outbound spool has
+	// permanently destroyed to stay inside its byte cap (see spool.EvictionStats).
+	// It rides hello as well as heartbeat because the loss happens overwhelmingly
+	// while the agent is disconnected, so the reconnect is the first moment the
+	// server can be told at all; waiting for the first heartbeat leaves a 20s
+	// window in which the server knows the agent is back but not that history is
+	// missing.
+	//
+	// These four carry no `omitempty` — see HeartbeatPayload below for why that
+	// break with the surrounding style is load-bearing. The timestamps are pointers
+	// so an agent that has evicted nothing sends an explicit `null` rather than a
+	// year-1 instant the server would persist as a real datetime.
+	SpoolEvictedFrames   int64      `json:"spool_evicted_frames"`
+	SpoolEvictedBytes    int64      `json:"spool_evicted_bytes"`
+	SpoolEvictedOldestTS *time.Time `json:"spool_evicted_oldest_ts"`
+	SpoolEvictedNewestTS *time.Time `json:"spool_evicted_newest_ts"`
+
+	// TLSPinKind reports which TLS trust policy this connection's handshake
+	// actually matched — "current" or "successor" — so the server can show
+	// an operator how much of the fleet has already accepted an advertised
+	// successor certificate. Purely observational, and omitted entirely by
+	// agents predating the tls.pin.rotate mechanism.
+	TLSPinKind string `json:"tls_pin_kind,omitempty"`
+
+	// TLSPinSuccessorReady reports whether this agent has durably persisted
+	// an advertised successor trust policy, and so would survive a cutover
+	// to it. Distinct from TLSPinKind, and it is this field the server's
+	// activation gate reads: until the server actually serves the successor
+	// every reachable agent matches the *current* policy, so convergence
+	// keyed on a successor match could never be reached before the change
+	// it is supposed to gate. Omitted by agents predating the mechanism.
+	TLSPinSuccessorReady bool `json:"tls_pin_successor_ready,omitempty"`
+
+	// TLSPinSuccessorFingerprint identifies *which* successor policy this
+	// agent holds. TLSPinSuccessorReady alone says only that it holds one,
+	// and an agent can hold a stale successor indefinitely — from a rotation
+	// the operator abandoned, which clears the server's state but sends no
+	// frame telling the agent to drop its copy. The server credited that
+	// agent as converged on the next rotation and the cutover stranded it.
+	// Omitted by agents predating the field, which the server treats as
+	// unconverged.
+	TLSPinSuccessorFingerprint string `json:"tls_pin_successor_fingerprint,omitempty"`
+
+	// ServerURL is the address this agent actually dialed. The server cannot
+	// observe it — it never connects to an agent — so an endpoint that no
+	// machine can reach is otherwise invisible.
+	ServerURL string `json:"server_url,omitempty"`
+
+	// AckData asks the server to acknowledge data frames on this connection
+	// (see TypeDataAck). A current agent always sets it; the server answers
+	// in HelloAckPayload.DataAck, and only if *both* say yes does the agent
+	// switch from commit-on-write to commit-on-ack.
+	//
+	// `omitempty` here, unlike the SpoolEvicted* group above, and the
+	// difference is not an inconsistency to be harmonised away. Those four
+	// need an explicit 0 to stay distinguishable from an absent key because
+	// absent means "this agent cannot report", which is a different fact
+	// from "nothing was destroyed". For this flag absent and false mean the
+	// same thing — "does not support acks" — which is exactly the safe
+	// default an old agent should get.
+	AckData bool `json:"ack_data,omitempty"`
+
+	// EnrollToken is a short-lived enrollment token that approves this agent
+	// without a human at the approval screen. Sent on the ENROLL hello only:
+	// internal/link builds its hello from this same struct, and a bearer
+	// credential has no business riding every heartbeat for the life of the
+	// agent. internal/enroll sets it after hostinfo.Collect returns, which is
+	// what keeps it off the link path. Omitted entirely by the attended flow,
+	// which is the default.
+	EnrollToken string `json:"enroll_token,omitempty"`
 }
 
 // HelloAckPayload is the server -> agent `hello.ack` payload's structured shape for the
-// post-enrollment link-establishment handshake (specs/2026-07-26-cb-agent-design.md §4.2: the
-// server "re-sends the authoritative set on every hello.ack"). The enrollment socket
+// post-enrollment link-establishment handshake. The enrollment socket
 // (WS /api/agents/enroll) also emits `hello.ack` frames for pairing-code/status messages with a
 // different, untyped payload shape (see ws_agents.py's `_ack_bytes`); this struct models only
 // the link ack. All fields are optional/zero-valued when absent.
@@ -217,12 +309,47 @@ type HelloAckPayload struct {
 	ServerTime   *time.Time                 `json:"server_time,omitempty"`
 	Capabilities map[string]json.RawMessage `json:"capabilities,omitempty"`
 	AgentID      int64                      `json:"agent_id,omitempty"`
+
+	// DataAck reports that this server will send `data.ack` frames on this
+	// connection. A new server sets it only when the agent's hello asked
+	// (HelloPayload.AckData), so the mode is a genuine negotiation rather
+	// than an assumption by either side.
+	//
+	// Absent — which is every ack a server predating the mechanism sends —
+	// decodes to false, and the agent then keeps today's commit-on-write
+	// behaviour and says so in its log. Same `omitempty` reasoning as
+	// HelloPayload.AckData: absent and false are the same fact here.
+	DataAck bool `json:"data_ack,omitempty"`
+}
+
+// DataAckPayload is the server -> agent `data.ack` payload: a delivery
+// watermark, not a receipt for one frame.
+//
+// Seq is the highest sequence number such that *every* frame this connection
+// carried with seq <= Seq has been terminally handled — ingested, deduped,
+// or deliberately refused and audited. "Terminally handled" rather than
+// "accepted" is load-bearing: the server drops some data frames it will
+// never accept (a capability gate that is switched off, an agent that is not
+// active, a payload its handler rejects), and each of those is recorded
+// against the agent. If the watermark only advanced on success, the spool
+// head would wedge forever behind such a frame and the agent would resend it
+// until the cap evicted everything queued behind it — turning a durability
+// fix into a data-loss bug.
+//
+// The watermark is per connection and never persisted on either side. The
+// agent's seq counter restarts at every reconnect, and anything uncommitted
+// when a socket dies is re-sent from the spool head with fresh seqs; the
+// server's uq_agent_host_sample (agent_id, sample_id, collected_at) dedupe
+// makes that replay harmless. Mirrors
+// apps/backend/src/app/schemas/agent_frame.py's DataAckPayload.
+type DataAckPayload struct {
+	Seq uint64 `json:"seq"`
 }
 
 // CapabilityReadinessPayload is the agent -> server `capability.readiness` payload.
 //
 // Networks is the same shape as HelloPayload.Networks and exists so an agent can refresh its
-// directly connected networks *mid-session* (Slice 4 D-8). Hello carries them only at connect,
+// directly connected networks *mid-session*. Hello carries them only at connect,
 // so without this a subnet that appeared on this host would not become discoverable until the
 // next reconnect — which may be days.
 //
@@ -236,31 +363,70 @@ type CapabilityReadinessPayload struct {
 	Networks  []NetworkFacts `json:"networks"`
 }
 
-// HeartbeatPayload is the agent -> server `heartbeat` payload (D-12),
-// mirroring apps/backend/src/app/schemas/agent_frame.py's HeartbeatPayload.
-// It reports the live outbound-spool backlog so the server — and the Agent
-// Detail catch-up indicator — can see a drain in progress and see it finish,
-// without waiting for a reconnect to refresh hello's at-connect snapshot.
+// HeartbeatPayload is the agent -> server `heartbeat` payload, mirroring
+// apps/backend/src/app/schemas/agent_frame.py's HeartbeatPayload. It reports
+// the live outbound-spool backlog so the server — and the Agent Detail catch-up
+// indicator — can see a drain in progress and see it finish, without waiting
+// for a reconnect to refresh hello's snapshot.
 //
-// Additive by design: an older server ignores the unknown keys, and an older
-// agent sends `{}`, which still validates on the server side (both fields
-// are optional-with-default there).
+// Additive by design: an older server ignores unknown keys, and an older agent
+// sends `{}`, which still validates server-side.
 //
-// Neither field carries `omitempty`, and that is load-bearing rather than an
-// oversight. A current agent must emit `{"spool_depth":0,"spool_bytes":0}`
-// once its backlog clears, or the server's columns stay pinned at the last
-// non-zero value and the indicator never clears. With `omitempty`, an empty
-// spool and an agent that predates this struct would both send `{}` — making
-// "clear the indicator" and "never invent a 0 for an old agent" mutually
-// exclusive. The empty payload is therefore reserved to mean exactly one
-// thing: this agent does not report spool state.
+// NO FIELD HERE MAY TAKE `omitempty`, and the same goes for the SpoolEvicted*
+// fields on hello. A current agent must emit an explicit 0 once its backlog
+// clears, or the server's columns stay pinned at the last non-zero value and
+// the indicator never clears. With `omitempty` an empty spool and an agent that
+// predates these fields both send `{}`, making "clear the indicator" and "never
+// invent a 0 for an old agent" mutually exclusive. The empty payload is
+// reserved to mean exactly one thing: this agent does not report spool state.
 //
-// HelloPayload.SpoolDepth keeps its `omitempty` for the opposite reason:
-// hello is the at-connect snapshot, and the heartbeat is what clears the
-// indicator.
+// HelloPayload.SpoolDepth keeps its `omitempty` for the opposite reason: hello
+// is the at-connect snapshot, and the heartbeat is what clears the indicator.
 type HeartbeatPayload struct {
 	SpoolDepth int   `json:"spool_depth"`
 	SpoolBytes int64 `json:"spool_bytes"`
+
+	// SpoolEvicted* reports what the spool has permanently destroyed to stay inside
+	// its byte cap, cumulatively for the life of the agent's state directory (see
+	// spool.EvictionStats).
+	//
+	// It rides the heartbeat rather than `capability.violation` or a readiness row,
+	// and that choice gets re-litigated often enough to record:
+	//
+	//   - The heartbeat already carries spool state and the server already gates
+	//     persistence on key presence, so nothing new is needed on either side.
+	//   - It re-asserts every 20s, so a heartbeat lost to a dropped connection
+	//     self-heals. A one-shot event frame would need its own retry to be
+	//     trustworthy, and trustworthiness is the whole point of the field.
+	//   - `capability.violation` has a closed vocabulary about scope refusals.
+	//     Eviction is not a refusal and not about scope.
+	//   - `capability.readiness` is about a collector's ability to run. The
+	//     collector ran fine — the buffer under it overflowed.
+	//
+	// No `omitempty`, and pointer timestamps, for the reasons given above.
+	SpoolEvictedFrames   int64      `json:"spool_evicted_frames"`
+	SpoolEvictedBytes    int64      `json:"spool_evicted_bytes"`
+	SpoolEvictedOldestTS *time.Time `json:"spool_evicted_oldest_ts"`
+	SpoolEvictedNewestTS *time.Time `json:"spool_evicted_newest_ts"`
+
+	// TLSPinSuccessorReady repeats hello's field of the same name on every
+	// heartbeat, and the repetition is the point.
+	//
+	// hello is sent once per connection, so an agent holding a live socket when a
+	// `tls.pin.rotate` arrives cannot say it applied the policy until it next
+	// reconnects, which may be days. The server's certificate-activation gate waits
+	// on exactly that signal, so without this the operator watches `unconverged`
+	// sit at the fleet size while every agent is in fact ready.
+	//
+	// Repeating rather than acking once is deliberate: an ack is one frame
+	// that can be lost with nothing to retry it, whereas this re-asserts the
+	TLSPinSuccessorReady bool `json:"tls_pin_successor_ready"`
+
+	// TLSPinSuccessorFingerprint repeats hello's field of the same name, for
+	// the same durability reason the readiness flag is repeated: the server's
+	// gate must be able to tell a live socket's agent apart from one holding a
+	// successor it was never sent.
+	TLSPinSuccessorFingerprint string `json:"tls_pin_successor_fingerprint,omitempty"`
 }
 
 type HostSummary struct {
@@ -308,7 +474,7 @@ type TransportRekeyPayload struct {
 }
 
 // UpdateStatusPayload is the agent -> server `update.status` payload's
-// structured shape (Task 24), mirroring
+// structured shape, mirroring
 // apps/backend/src/app/schemas/agent_frame.py's UpdateStatusPayload. Phase is
 // one of "started"/"succeeded"/"failed"/"rolled_back"; Error is only ever set
 // alongside "failed".
@@ -327,12 +493,24 @@ type KeyRotatePayload struct {
 	Expiry      time.Time `json:"expiry"`
 }
 
-// ProbeAssignPayload is the server -> agent `probe.assign` payload (§4): exactly one remote check,
+// TLSPinRotatePayload mirrors apps/backend/src/app/schemas/agent_frame.py's
+// TLSPinRotatePayload field-for-field: the TLS trust policy the server is
+// about to start serving. Mode is "self_signed" (SuccessorPin is the base64
+// SHA-256 SPKI digest of the successor leaf) or "public" (SuccessorPin is
+// empty and the agent falls back to the system CA store). Expiry bounds how
+// long both policies stay acceptable.
+type TLSPinRotatePayload struct {
+	Mode         string    `json:"mode"`
+	SuccessorPin string    `json:"successor_pin"`
+	Expiry       time.Time `json:"expiry"`
+}
+
+// ProbeAssignPayload is the server -> agent `probe.assign` payload: exactly one remote check,
 // fully specified, mirroring apps/backend/src/app/schemas/agent_frame.py's ProbeAssignPayload.
 //
 // RunID is the server-minted 32-hex token that is the *only* identifier a result may be posted
 // against — a leaked monitor id buys nothing. Config is the monitor's complete validated
-// configuration and therefore carries HTTP credentials when the monitor has them (D-10), which is
+// configuration and therefore carries HTTP credentials when the monitor has them, which is
 // why it is left as raw JSON rather than a typed struct: this package must not become somewhere
 // a secret can accidentally be logged, compared or persisted. The runtime holds it for the life
 // of the run and nothing else.
@@ -349,7 +527,7 @@ type ProbeAssignPayload struct {
 	DeadlineAt  time.Time       `json:"deadline_at"`
 }
 
-// ProbeCancelPayload is the server -> agent `probe.cancel` payload (§4), sent when a monitor is
+// ProbeCancelPayload is the server -> agent `probe.cancel` payload, sent when a monitor is
 // paused, deleted, reassigned, has its capability disabled, or the agent is revoked. Reason is
 // advisory: cancellation is best-effort and the backend stays authoritative, rejecting any result
 // that arrives for a run it has already closed.
@@ -362,14 +540,14 @@ type ProbeCancelPayload struct {
 // apps/backend/src/app/services/monitoring/collectors.Sample so a remote result reaches the
 // shared result service in the same shape a server-executed one does. ErrorReason is the
 // collectors' own per-sample annotation ("http_error", "dns_error"); it is audit metadata
-// persisted only in monitor_probe_runs.result_metadata (D-8), never in telemetry_timeseries.
+// persisted only in monitor_probe_runs.result_metadata, never in telemetry_timeseries.
 type ProbeSample struct {
 	Metric      string  `json:"metric"`
 	Value       float64 `json:"value"`
 	ErrorReason string  `json:"error_reason,omitempty"`
 }
 
-// ProbeResultPayload is the agent -> server `probe.result` payload (§4), mirroring
+// ProbeResultPayload is the agent -> server `probe.result` payload, mirroring
 // apps/backend/src/app/schemas/agent_frame.py's ProbeResultPayload.
 //
 // Outcome is closed: "completed" (a real target result, feed the state machine),
@@ -396,7 +574,7 @@ type ProbeResultPayload struct {
 	Details    map[string]any `json:"details,omitempty"`
 }
 
-// Slice 4 plan §4's bounds. Declared alongside the structs rather than left to the collector so
+// the wire bounds. Declared alongside the structs rather than left to the collector so
 // the encoder and the server's pydantic models are reading the same numbers — a bound only one
 // side knows about is one the other has no reason to respect.
 const (
@@ -425,7 +603,7 @@ const (
 	DiscoveryOutcomeRejected       = "rejected"
 )
 
-// DiscoveryRequestPayload is the server -> agent `discovery.request` payload (plan §4), mirroring
+// DiscoveryRequestPayload is the server -> agent `discovery.request` payload, mirroring
 // apps/backend/src/app/schemas/agent_frame.py's DiscoveryRequestPayload.
 //
 // One bounded, one-shot scan. Every limit here is *also* checked by the agent against its own
@@ -433,7 +611,7 @@ const (
 // independent checks on purpose, so a backend bug cannot widen what an agent will actually scan.
 //
 // ScopeVersion is the netscope.Scope.Version in force when the request was built. The agent
-// re-derives its own and refuses a mismatch: plan §2 requires an active request to be cancelled
+// re-derives its own and refuses a mismatch: an active request must be cancelled
 // when scope changes incompatibly, and a version is what makes that decidable without shipping
 // the whole CIDR list on every dispatch.
 type DiscoveryRequestPayload struct {
@@ -448,7 +626,7 @@ type DiscoveryRequestPayload struct {
 	DeadlineAt         time.Time `json:"deadline_at"`
 }
 
-// DiscoveryCancelPayload is the server -> agent `discovery.cancel` payload (plan §4), sent when
+// DiscoveryCancelPayload is the server -> agent `discovery.cancel` payload, sent when
 // the job is cancelled, its profile disabled, scope changed incompatibly, the capability
 // disabled, or the agent revoked. Reason is advisory: cancellation is best-effort and the
 // backend stays authoritative, rejecting any finding that arrives for a dispatch it has already
@@ -468,7 +646,7 @@ type DiscoveryOpenPort struct {
 	Banner   string `json:"banner,omitempty"`
 }
 
-// DiscoveryFindingPayload is the agent -> server `discovery.finding` payload (plan §4), mirroring
+// DiscoveryFindingPayload is the agent -> server `discovery.finding` payload, mirroring
 // apps/backend/src/app/schemas/agent_frame.py's DiscoveryFindingPayload.
 //
 // Kind is closed: "host" describes one discovered address, "summary" is the dispatch's single

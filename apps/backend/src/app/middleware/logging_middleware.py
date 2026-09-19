@@ -179,7 +179,7 @@ async def _read_body(request: Request) -> bytes:
     async def receive() -> dict:
         return {"type": "http.request", "body": body, "more_body": False}
 
-    request._receive = receive  # noqa: SLF001
+    request._receive = receive
     return body
 
 

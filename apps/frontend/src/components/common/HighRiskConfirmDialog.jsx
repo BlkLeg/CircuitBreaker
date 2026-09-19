@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
+import '../../styles/panels.css';
 
 /**
  * Confirmation for actions whose consequences are hard or impossible to undo.
@@ -47,73 +48,54 @@ function HighRiskConfirmDialog({
 
   return (
     <div
+      className="high-risk-confirm"
       role="dialog"
       aria-modal="true"
       aria-label={title}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 9999,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'rgba(0, 0, 0, 0.55)',
-      }}
       onClick={busy ? undefined : onCancel}
     >
-      <div
-        style={{
-          background: 'var(--color-surface)',
-          border: '1px solid var(--color-border, rgba(255,255,255,0.12))',
-          borderRadius: 10,
-          padding: '24px 28px',
-          maxWidth: 520,
-          width: '92%',
-          boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 style={{ marginTop: 0, fontSize: 16 }}>{title}</h2>
-        <div style={{ fontSize: 13, opacity: 0.85, marginBottom: 16 }}>{body}</div>
+      <div className="high-risk-confirm__panel" onClick={(e) => e.stopPropagation()}>
+        <h2 className="high-risk-confirm__title">{title}</h2>
+        <div className="high-risk-confirm__body">{body}</div>
 
         {error && (
-          <div role="alert" style={{ marginBottom: 12, color: 'var(--color-danger, #f85149)' }}>
+          <div role="alert" className="high-risk-confirm__error">
             {error}
           </div>
         )}
 
-        <label htmlFor="high-risk-phrase" style={{ display: 'block', fontSize: 12 }}>
+        <label htmlFor="high-risk-phrase" className="high-risk-confirm__label">
           {phraseLabel}
         </label>
         <input
           id="high-risk-phrase"
+          className="high-risk-confirm__input"
           value={typed}
           disabled={busy}
           autoComplete="off"
           onChange={(e) => setTyped(e.target.value)}
-          style={{ width: '100%', marginBottom: 12 }}
         />
 
         {reason && (
           <>
-            <label htmlFor="high-risk-reason" style={{ display: 'block', fontSize: 12 }}>
+            <label htmlFor="high-risk-reason" className="high-risk-confirm__label">
               {reason.label}
             </label>
             <textarea
               id="high-risk-reason"
+              className="high-risk-confirm__textarea"
               value={reasonText}
               disabled={busy}
               rows={3}
               onChange={(e) => setReasonText(e.target.value)}
-              style={{ width: '100%', marginBottom: 4 }}
             />
-            <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 12 }}>
+            <div className="high-risk-confirm__hint">
               At least {reason.minLength} characters. Recorded in the audit log.
             </div>
           </>
         )}
 
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <div className="high-risk-confirm__actions">
           <button type="button" className="btn btn-sm" disabled={busy} onClick={onCancel}>
             Cancel
           </button>

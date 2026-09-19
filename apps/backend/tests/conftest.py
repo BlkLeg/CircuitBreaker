@@ -10,12 +10,14 @@ Architecture notes:
 """
 
 import os
+import secrets
 import shutil
 import tempfile
 from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
+from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
@@ -40,9 +42,15 @@ def pytest_configure(config):
 
     # Settings() is a module-level singleton in config.py — set env before import
     os.environ["CB_DB_URL"] = _PG_CONTAINER.get_connection_url()
-    os.environ["CB_JWT_SECRET"] = "ci-test-jwt-secret-minimum-32-chars-xxxx"
-    os.environ["CB_VAULT_KEY"] = "hUQwP5Pb5SDdz_8mBBe0aPn7B6K1lItbytzXv7eaGLk="
-    os.environ["NATS_AUTH_TOKEN"] = "ci-test-nats-token"
+    # Generated per run, never committed. CLAUDE.md's rule against hardcoded
+    # signing material is unconditional and names fixtures explicitly, and these
+    # three were the real thing: a JWT signing secret, a working Fernet vault
+    # key, and a bus token, all readable by anyone with the repository. A fresh
+    # value each run also proves the suite never depends on a *particular*
+    # secret, which a committed one quietly permits.
+    os.environ["CB_JWT_SECRET"] = secrets.token_urlsafe(32)
+    os.environ["CB_VAULT_KEY"] = Fernet.generate_key().decode()
+    os.environ["NATS_AUTH_TOKEN"] = secrets.token_urlsafe(16)
     os.environ["CB_ALLOW_DEGRADED_DEPENDENCIES"] = "true"
     os.environ["CB_RATE_LIMIT_STORAGE_URL"] = "memory://"
     # The `setup_db` fixture builds schema directly via SQLAlchemy metadata
@@ -53,34 +61,23 @@ def pytest_configure(config):
     # shape and fail/cancel. Tests don't need it either way.
     os.environ["CB_AUTO_MIGRATE"] = "false"
 
-    # Upload root must live outside the working tree. Settings.uploads_dir
-    # defaults to the RELATIVE path "data/uploads", which resolves against the
-    # backend CWD, so every profile-photo test used to deposit real PNGs into
-    # apps/backend/data/uploads/profiles/. That residue makes `git status`
-    # useless as a review signal and has already prompted an agent to start
-    # deleting tracked files to "clean up". Redirect to a per-run temp dir here,
-    # before any app module is imported: uploads_dir is read at import time into
-    # module-level constants (auth_service._PROFILES_DIR, main._uploads_dir,
-    # api/assets._UPLOADS_DIR, ...), so a fixture-time monkeypatch would be too
-    # late to catch them.
+    # Upload root must live outside the working tree: Settings.uploads_dir
+    # defaults to the RELATIVE "data/uploads", which resolves against the backend
+    # CWD and deposits real files in the tree. Redirected here, before any app
+    # module is imported, because uploads_dir is read at import time into
+    # module-level constants and a fixture-time monkeypatch would be too late.
     global _UPLOADS_TMPDIR
     _UPLOADS_TMPDIR = tempfile.mkdtemp(prefix="cb-test-uploads-")
     os.environ["UPLOADS_DIR"] = _UPLOADS_TMPDIR
 
-    # Same problem as UPLOADS_DIR, one directory up, and worse in consequence
-    # (B37). `vault_service._data_dir()` is `CB_DATA_DIR or Path.cwd()/"data"`,
-    # and the suite's cwd is apps/backend -- so a run with CB_DATA_DIR unset
-    # generated a REAL Fernet key and wrote it to apps/backend/data/.env in the
-    # working tree. It is gitignored, so it never showed up in `git status`; it
-    # just sat there, 0600, indistinguishable from a developer's own key, and a
-    # later run would load it instead of generating a fresh one.
-    #
-    # The same variable now also decides where a snapshot stages its work
-    # (services/backup/snapshot._staging_root, default /var/lib/circuitbreaker)
-    # and where certificates and the CVE database land, so leaving it unset
-    # points several code paths at real system locations. One redirect covers
-    # all of them, and it has to happen here rather than in a fixture because
-    # these are read at import time into module-level constants.
+    # Same problem as UPLOADS_DIR and worse: `vault_service._data_dir()` is
+    # `CB_DATA_DIR or Path.cwd()/"data"`, so an unset CB_DATA_DIR writes a REAL
+    # Fernet key into the tree — gitignored, so invisible to `git status`, and a
+    # later run loads it instead of generating a fresh one. The same variable
+    # also decides where snapshots stage and where certificates and the CVE
+    # database land, so leaving it unset points several paths at real system
+    # locations. Set here, not in a fixture, because these are read at import
+    # time into module-level constants.
     global _DATA_TMPDIR
     _DATA_TMPDIR = tempfile.mkdtemp(prefix="cb-test-data-")
     os.environ["CB_DATA_DIR"] = _DATA_TMPDIR
@@ -167,11 +164,31 @@ def _reaped_models() -> tuple[type, ...]:
     """Tables tests legitimately commit outside the per-test transaction.
 
     Ordered so a child is deleted before whatever it points at: monitor rows
-    name a hardware target, and hardware and users can carry a tenant.
-    """
-    from app.db.models import Agent, Hardware, MonitorItem, Tenant, User
+    name a hardware target, agents name the enrollment token they came through,
+    and hardware and users can carry a tenant.
 
-    return (MonitorItem, Agent, Hardware, User, Tenant)
+    `Log` is here for a different reason than the rest, and it is the one row
+    type no test creates on purpose. `record_event` writes a hash-chained audit
+    entry for the security-relevant agent events, through whatever session is
+    handling the request — so a test that drives a real socket and causes, say,
+    a revoke leaves a committed `logs` row behind. Nothing rolled it back, and
+    the audit assertions elsewhere count rows by action across the whole table
+    (`test_cli_admin.py::_audit_entries` is the one that caught this): a single
+    leaked `agent_revoked` row makes "one chained entry per revocation" read 2,
+    in whichever shard happens to run both files. It has no dependents, so it
+    reaps first.
+    """
+    from app.db.models import (
+        Agent,
+        AgentEnrollmentToken,
+        Hardware,
+        Log,
+        MonitorItem,
+        Tenant,
+        User,
+    )
+
+    return (Log, MonitorItem, Agent, AgentEnrollmentToken, Hardware, User, Tenant)
 
 
 def _committed_ids() -> dict[str, set[int]]:
@@ -343,16 +360,27 @@ def ws_client(db_session):
 
     original_nats_connect = nats_client.connect
     old_data_dir = os.environ.get("CB_DATA_DIR")
+    old_topology = os.environ.get("CB_TOPOLOGY_MODE")
     with tempfile.TemporaryDirectory() as tmp_data_dir:
-        # All three pieces of shared/global state this fixture mutates —
-        # dependency override, NATS stub, CB_DATA_DIR — are set and torn down
-        # inside one try/finally so a mid-test exception (anywhere in the
-        # `with TestClient(app)` block below) can never leak any of them onto
-        # subsequent tests in the session.
+        # All four pieces of shared/global state this fixture mutates —
+        # dependency override, NATS stub, CB_DATA_DIR, CB_TOPOLOGY_MODE — are
+        # set and torn down inside one try/finally so a mid-test exception
+        # (anywhere in the `with TestClient(app)` block below) can never leak
+        # any of them onto subsequent tests in the session.
         try:
             app.dependency_overrides[get_db] = override_get_db
             nats_client.connect = AsyncMock(return_value=None)
             os.environ["CB_DATA_DIR"] = tmp_data_dir
+            # `api`, not the default `mono`: this is the one fixture that runs
+            # the real lifespan, and `mono` starts the notification, discovery,
+            # telemetry-ingest and integration loops in-process. There is no NATS
+            # broker here and the stub above only neuters `nats_client.connect`,
+            # so those loops spin and shutdown then owes them
+            # `shutdown_scheduler`'s 10s budget plus a 5s drain — most of this
+            # test's 30s timeout, paid for workers no test here uses.
+            #
+            # `api` leaves every route and the API-process scheduler intact.
+            os.environ["CB_TOPOLOGY_MODE"] = "api"
             # NB: agent rows a ws test commits outside the savepoint are
             # reaped by the db_session fixture, not here — see the comment on
             # _reap_agents_committed_outside_the_test for why the cleanup
@@ -366,6 +394,10 @@ def ws_client(db_session):
                 os.environ.pop("CB_DATA_DIR", None)
             else:
                 os.environ["CB_DATA_DIR"] = old_data_dir
+            if old_topology is None:
+                os.environ.pop("CB_TOPOLOGY_MODE", None)
+            else:
+                os.environ["CB_TOPOLOGY_MODE"] = old_topology
 
 
 # ── Model factories ───────────────────────────────────────────────────────────
@@ -546,3 +578,93 @@ def nmap_enabled(db_session):
     cfg.nmap_enabled = True
     db_session.flush()
     return cfg
+
+
+# ── Certificate fixtures (Slice 4.1: TLS trust rotation) ──────────────────────
+#
+# Shared here rather than under tests/services/ so a later task's tests/api/
+# suite (the activation route) can see the same two fixtures.
+
+
+def _leaf_pem() -> str:
+    """A freshly generated self-signed leaf. Generated per-test rather than
+    fixtured as a constant: Global Constraints forbid checked-in key
+    material, including in fixtures."""
+    import datetime as dt
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "cb-test")])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(dt.datetime.now(dt.UTC) - dt.timedelta(hours=1))
+        .not_valid_after(dt.datetime.now(dt.UTC) + dt.timedelta(hours=1))
+        .sign(key, hashes.SHA256())
+    )
+    return cert.public_bytes(serialization.Encoding.PEM).decode()
+
+
+def _leaf_key_pem() -> str:
+    """The private key paired with `_leaf_pem`'s convention — a fresh EC key
+    per call, never persisted or reused across fixtures."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    return key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+
+
+@pytest.fixture
+def self_signed_certificate(db_session):
+    """A `Certificate` row of type "selfsigned" (the model's wire value —
+    distinct from the "self_signed" mode string `_tls_mode_and_pin` returns
+    for it)."""
+    from datetime import timedelta
+
+    from app.core.time import utcnow
+    from app.db.models import Certificate
+
+    cert = Certificate(
+        domain="self-signed.cb-test.invalid",
+        type="selfsigned",
+        cert_pem=_leaf_pem(),
+        key_pem=_leaf_key_pem(),
+        expires_at=utcnow() + timedelta(hours=1),
+    )
+    db_session.add(cert)
+    db_session.flush()
+    return cert
+
+
+@pytest.fixture
+def letsencrypt_certificate(db_session):
+    """A `Certificate` row of type "letsencrypt" — the only type
+    `agent_install._tls_mode_and_pin` maps to the "public" mode with an
+    empty pin."""
+    from datetime import timedelta
+
+    from app.core.time import utcnow
+    from app.db.models import Certificate
+
+    cert = Certificate(
+        domain="letsencrypt.cb-test.invalid",
+        type="letsencrypt",
+        cert_pem=_leaf_pem(),
+        key_pem=_leaf_key_pem(),
+        expires_at=utcnow() + timedelta(hours=1),
+    )
+    db_session.add(cert)
+    db_session.flush()
+    return cert

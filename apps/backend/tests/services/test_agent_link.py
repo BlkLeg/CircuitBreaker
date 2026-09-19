@@ -465,7 +465,7 @@ async def test_receive_frame_then_dispatch_frame_pipeline(db_session, factories,
     refresh.assert_called_once()
 
 
-# ── key.rotate, kind="device" (Task 27) ─────────────────────────────────────
+# ── key.rotate, kind="device" ─────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -758,7 +758,7 @@ async def test_probe_result_without_the_grant_records_a_capability_violation(db_
 @pytest.mark.asyncio
 async def test_probe_result_dispatch_commits_exactly_once(db_session, factories):
     """Samples, state, the transition event and the run's completion have to
-    become durable together (§6): a reader must never be able to observe a
+    become durable together: a reader must never be able to observe a
     monitor that went DOWN while the run that says why is still open.
 
     Only commits that actually carry pending work are counted. `dispatch_frame`
@@ -1062,7 +1062,7 @@ async def test_self_audited_discovery_rejection_is_not_recorded_twice(
     assert len(_events_of_type(db_session, agent, "protocol_violation")) == 1
 
 
-# ── capability.violation: the agent's own scope-disagreement reports (§7) ─────
+# ── capability.violation: the agent's own scope-disagreement reports ─────
 
 
 def _capability_violation_payload(**overrides) -> dict:
@@ -1244,3 +1244,461 @@ async def test_hundred_capability_violations_in_one_minute_write_at_most_one_row
     serialized = json.dumps(detail)
     assert "leaked-banner-bytes" not in serialized
     assert "leaked-evidence-value" not in serialized
+
+
+# ── this server also destroys data, and now counts it ──────────────
+
+
+@pytest.mark.asyncio
+async def test_capability_gate_counts_the_frame_it_destroys(db_session, factories):
+    """The gate does not queue a frame from an ungranted agent — it drops it.
+    The audit row says that happened at least once; the counter says how much
+    was thrown away."""
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="host_telemetry", enabled=False)
+
+    for _ in range(3):
+        frame = AgentFrame(type="telemetry.host", ts="2026-07-27T12:00:00Z", payload={"cpu": 0.5})
+        await agent_link.dispatch_frame(db_session, agent, frame)
+
+    db_session.expire_all()
+    assert agent.refused_frames == 3
+    assert agent.refused_frames_last_reason == "capability_withheld"
+    assert agent.refused_frames_last_at is not None
+
+
+@pytest.mark.asyncio
+async def test_refused_host_telemetry_is_counted_even_when_the_event_is_throttled(
+    db_session, factories
+):
+    """`ingest_host_sample` rejects every sample from an agent whose status is
+    not `active` — an ordinary state an agent can sit in for days. The audit
+    row is rate-limited to one a minute on purpose, so it undercounts; the
+    counter must not."""
+    from app.db.models import AgentEvent
+
+    agent = factories.agent(status="pending")
+    factories.agent_capability_grant(agent, capability="host_telemetry", enabled=True)
+
+    for _ in range(25):
+        frame = AgentFrame(
+            type="telemetry.host",
+            ts="2026-07-27T12:00:00Z",
+            payload={"schema": 1, "sample_id": "a" * 32, "status": "healthy", "summary": {}},
+        )
+        await agent_link.dispatch_frame(db_session, agent, frame)
+
+    db_session.expire_all()
+    assert agent.refused_frames == 25
+    assert agent.refused_frames_last_reason == "invalid_host_telemetry"
+    # The throttled audit trail is exactly what the counter compensates for.
+    recorded = (
+        db_session.query(AgentEvent)
+        .filter_by(agent_id=agent.id, event_type="protocol_violation")
+        .count()
+    )
+    assert recorded < 25
+
+
+@pytest.mark.asyncio
+async def test_a_successfully_ingested_frame_is_not_counted_as_refused(db_session, factories):
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="host_telemetry", enabled=True)
+
+    from app.core.time import utcnow
+
+    frame = AgentFrame(
+        type="telemetry.host",
+        # Inside the retention window: an old fixture timestamp would be
+        # refused for a reason that has nothing to do with what is under test.
+        ts=utcnow().isoformat(),
+        payload={"schema": 1, "sample_id": "b" * 32, "status": "healthy", "summary": {}},
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    db_session.expire_all()
+    assert agent.refused_frames is None
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_persists_reported_evictions(db_session, factories):
+    agent = factories.agent(status="active")
+
+    frame = AgentFrame(
+        type="heartbeat",
+        ts="2026-09-06T12:00:00Z",
+        payload={
+            "spool_depth": 4096,
+            "spool_bytes": 67108864,
+            "spool_evicted_frames": 9412,
+            "spool_evicted_bytes": 33554432,
+            "spool_evicted_oldest_ts": "2026-09-01T00:00:00Z",
+            "spool_evicted_newest_ts": "2026-09-03T18:30:00Z",
+        },
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    db_session.expire_all()
+    assert agent.spool_evicted_frames == 9412
+    assert agent.spool_evicted_bytes == 33554432
+    assert agent.spool_evicted_oldest_at is not None
+    assert agent.spool_evicted_newest_at is not None
+
+
+@pytest.mark.asyncio
+async def test_an_old_heartbeat_leaves_the_eviction_columns_null(db_session, factories):
+    """Old agent -> new server. `{}` and a spool-only heartbeat both predate
+    the eviction group and must not have zeros invented for them."""
+    agent = factories.agent(status="active")
+
+    frame = AgentFrame(
+        type="heartbeat",
+        ts="2026-09-06T12:00:00Z",
+        payload={"spool_depth": 0, "spool_bytes": 0},
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    db_session.expire_all()
+    assert agent.spool_depth == 0
+    assert agent.spool_evicted_frames is None
+    assert agent.spool_evicted_reported_at is None
+
+
+@pytest.mark.asyncio
+async def test_refused_probe_result_is_counted(db_session, factories):
+    """The third of the four terminal refusals. A probe result that fails
+    ingest is destroyed exactly as a telemetry sample is, and the monitor it
+    belonged to simply never hears the answer."""
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="remote_probe", enabled=True)
+
+    frame = AgentFrame(type="probe.result", ts="2026-09-06T12:00:00Z", payload={})
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    db_session.expire_all()
+    assert agent.refused_frames == 1
+    assert agent.refused_frames_last_reason == "invalid_probe_result"
+    assert agent.refused_frames_last_at is not None
+
+
+@pytest.mark.asyncio
+async def test_refused_discovery_finding_is_counted(db_session, factories):
+    """The fourth. A refused finding is a host that was seen on the network and
+    will not reach the review queue."""
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="local_discovery", enabled=True)
+
+    frame = AgentFrame(type="discovery.finding", ts="2026-09-06T12:00:00Z", payload={})
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    db_session.expire_all()
+    assert agent.refused_frames == 1
+    assert agent.refused_frames_last_reason == "invalid_discovery_finding"
+
+
+def test_receive_frame_receipt_separates_terminal_rejections_from_untrustworthy_ones(
+    db_session, factories
+):
+    """The three-way outcome the delivery watermark reads — see `FrameReceipt`.
+
+    The distinction is not cosmetic. A rejection whose sequence number is
+    trustworthy has to be acknowledged, or the agent's spool head wedges
+    behind a frame this server will never accept and the agent resends it
+    until its cap destroys everything queued behind it. A rejection whose
+    sequence number is *not* trustworthy must not be acknowledged, because an
+    ack tells an agent to delete its only copy of an observation and this
+    server would be guessing about which one.
+    """
+    agent = factories.agent(status="active")
+
+    accepted = agent_link.receive_frame_receipt(db_session, agent, _raw(seq=4))
+    assert accepted.accepted
+    assert accepted.frame is not None
+    assert accepted.frame.seq == 4
+    # Never both: an accepted frame's sequence is only terminal once its
+    # handler has actually stored it, which is the caller's business.
+    assert accepted.terminal_seq is None
+
+    # Decodable and refused for good — the sequence number is real.
+    version = agent_link.receive_frame_receipt(db_session, agent, _raw(v=2, seq=11))
+    assert not version.accepted
+    assert version.terminal_seq == 11
+
+    session = agent_link.LinkSessionState()
+    assert agent_link.receive_frame_receipt(db_session, agent, _raw(seq=5), session).accepted
+    duplicate = agent_link.receive_frame_receipt(db_session, agent, _raw(seq=5), session)
+    assert not duplicate.accepted
+    assert duplicate.terminal_seq == 5
+    decreasing = agent_link.receive_frame_receipt(db_session, agent, _raw(seq=2), session)
+    assert not decreasing.accepted
+    assert decreasing.terminal_seq == 2
+
+    # …and the three shapes with nothing worth acknowledging.
+    for raw in (
+        b"not json at all",
+        _raw(type="", seq=7),
+        _raw(seq=-1),
+    ):
+        untrustworthy = agent_link.receive_frame_receipt(db_session, agent, raw)
+        assert not untrustworthy.accepted
+        assert untrustworthy.terminal_seq is None, raw
+
+
+def test_receive_frame_still_returns_the_frame_or_none(db_session, factories):
+    """The wrapper keeps its original shape, so every caller that only needs
+    "did this frame survive validation" is untouched by the receipt."""
+    agent = factories.agent(status="active")
+
+    frame = agent_link.receive_frame(db_session, agent, _raw(seq=1))
+    assert frame is not None and frame.seq == 1
+    assert agent_link.receive_frame(db_session, agent, b"not json at all") is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_uninstall_cancels_the_agents_discovery_dispatches(db_session, factories):
+    """The agent-initiated revoke owes the same D-14 cleanup the operator one does.
+
+    `api/agents.py::post_revoke` closes every discovery dispatch the revoked
+    agent still holds, for the reason recorded there: from the moment the
+    status flips, `dispatch_frame`'s grant gate drops the agent's own terminal
+    summary and nothing else would ever close them. `_handle_uninstall` ends
+    with the *same* agent revoked, so a job left open here is open for exactly
+    as long — until the reconciliation pass expires it — with no agent left in
+    existence to finish it. `cancel_agent_dispatches`' own docstring already
+    names `agent_link` as one of its callers; this is the test that makes that
+    true.
+    """
+    from app.core.time import utcnow_iso
+    from app.db.models import ScanJob
+    from app.services import agent_discovery
+
+    agent = factories.agent(status="active")
+    job = ScanJob(
+        scan_agent_id=agent.id,
+        target_cidr="10.88.0.0/24",
+        status="running",
+        dispatch_status=agent_discovery.DISPATCH_STATUS_DISPATCHED,
+        scan_types_json='["agent_connect"]',
+        source_type="agent",
+        created_at=utcnow_iso(),
+    )
+    db_session.add(job)
+    db_session.flush()
+    job_id = job.id
+
+    frame = AgentFrame(type="uninstall", ts="2026-07-27T12:00:00Z", payload={})
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    db_session.expire_all()
+    closed = db_session.get(ScanJob, job_id)
+    assert closed is not None
+    assert closed.status not in {"queued", "running"}, (
+        "an uninstalled agent's in-flight discovery job must not be left open — "
+        f"status is still {closed.status!r}"
+    )
+    assert closed.error_reason == agent_discovery.ERROR_AGENT_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_dispatch_uninstall_lands_in_the_chained_audit_log(db_session, factories):
+    """A self-service revoke must be findable in the audit log, not only the
+    agent timeline — and it must stay distinguishable from an operator's.
+
+    This pins behaviour rather than adding it, and it is here because the
+    opposite was very nearly built: `post_revoke` writes an explicit
+    `agent_revoke_authorized` row and `_handle_uninstall` writes none, which
+    reads like a gap until you follow `revoke_agent` → `record_event` →
+    `CHAINED_EVENT_TYPES`. `revoked` is in that set, so the hash-chained
+    `agent_revoked` row below is written for *both* paths and carries the
+    reason. Adding `agent_revoke_authorized` here would have made a search for
+    operator authorizations return self-service uninstalls instead.
+    """
+    from app.db.models import Log
+
+    agent = factories.agent(status="active")
+    agent_id = agent.id
+
+    frame = AgentFrame(type="uninstall", ts="2026-07-27T12:00:00Z", payload={})
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    db_session.expire_all()
+    rows = db_session.query(Log).filter(Log.entity_type == "agent", Log.entity_id == agent_id).all()
+    assert [r.action for r in rows] == ["agent_revoked"], (
+        f"expected the chained agent_revoked row and nothing else, got {[r.action for r in rows]}"
+    )
+    assert json.loads(rows[0].diff or "{}") == {"reason": "uninstalled by agent"}
+    # No operator authorized this one, and the audit trail has to say so.
+    assert rows[0].actor == "system"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_uninstall_pushes_the_revoked_status_to_watching_operators(
+    db_session, factories, monkeypatch
+):
+    """The Agents page already renders this push; nothing was sending it.
+
+    `AgentsPage.jsx` folds an `event_type: "revoked"` presence push straight
+    into the row's status, which is how an operator watching the list sees
+    `post_revoke` land without reloading. The agent-initiated path never
+    called `broadcast_presence`, so an agent that uninstalled itself sat on
+    screen as `active` until something else refreshed the page.
+    """
+    from unittest.mock import AsyncMock
+
+    agent = factories.agent(status="active")
+    agent_id = agent.id
+    broadcast = AsyncMock()
+    monkeypatch.setattr("app.services.agent_registry.broadcast_presence", broadcast)
+
+    frame = AgentFrame(type="uninstall", ts="2026-07-27T12:00:00Z", payload={})
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    broadcast.assert_awaited_once_with(agent_id, "revoked")
+
+
+@pytest.mark.asyncio
+async def test_dispatch_update_status_repeated_succeeded_is_idempotent(db_session, factories):
+    """§8.4 (docs/design/2026-09-16-agent-deployment-connection-plan.md): a
+    succeeded update can legitimately be reported twice — once live by the
+    process that swapped the binary, once replayed by the re-exec'd process
+    from its durable pending-outcome record, because a local WebSocket write
+    is not an acknowledgement. The repeated report must not duplicate the
+    timeline event or regress the update state machine, and — the half the
+    dedupe rule exists to preserve — a genuinely *new* attempt at the same
+    version must still be recorded.
+    """
+    from app.db.models import AgentEvent
+    from app.services import agent_registry
+
+    agent = factories.agent(status="active", pending_update_version="0.9.0")
+    # A live update's normal prefix: queued by post_update (detail key
+    # `target_version`), started by the agent.
+    agent_registry.record_event(
+        db_session, agent.id, "update_queued", detail={"target_version": "0.9.0"}
+    )
+    agent_registry.record_event(db_session, agent.id, "update_started", detail={"version": "0.9.0"})
+
+    frame = AgentFrame(
+        type="update.status",
+        ts="2026-09-16T12:00:00Z",
+        payload={"version": "0.9.0", "phase": "succeeded"},
+    )
+
+    async def dispatched_events():
+        return [
+            e.event_type
+            for e in db_session.query(AgentEvent)
+            .filter_by(agent_id=agent.id)
+            .order_by(AgentEvent.id)
+        ]
+
+    await agent_link.dispatch_frame(db_session, agent, frame)  # the live send
+    await agent_link.dispatch_frame(db_session, agent, frame)  # the replay after reconnect
+
+    assert await dispatched_events() == [
+        "update_queued",
+        "update_started",
+        "update_succeeded",
+    ], "the replayed succeeded must not add a second timeline event"
+
+    # pending_update_version is the pre-hello state machine's only column, and
+    # a succeeded replay must not touch it: version_changed owns the success
+    # transition (update_hello_metadata), and a duplicate report regressing or
+    # duplicating that bookkeeping would be worse than the duplicate event.
+    db_session.expire_all()
+    from app.db.models import Agent as AgentModel
+
+    assert db_session.get(AgentModel, agent.id).pending_update_version == "0.9.0"
+
+    # The dedupe must not outlive its attempt: a re-issued update to the same
+    # version queues a new attempt, and its outcome is recorded again even
+    # though it is byte-identical to the first one.
+    agent_registry.record_event(
+        db_session, agent.id, "update_queued", detail={"target_version": "0.9.0"}
+    )
+    agent_registry.record_event(db_session, agent.id, "update_started", detail={"version": "0.9.0"})
+    await agent_link.dispatch_frame(db_session, agent, frame)
+    assert await dispatched_events() == [
+        "update_queued",
+        "update_started",
+        "update_succeeded",
+        "update_queued",
+        "update_started",
+        "update_succeeded",
+    ], "a new attempt's identical outcome must still be recorded"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_update_status_repeated_failed_is_idempotent_and_keeps_state_cleared(
+    db_session, factories
+):
+    """The replay rule is per terminal phase, not succeeded-specific: a
+    failed outcome can also be delivered twice, and the second arrival must
+    neither duplicate the event nor resurrect the pending_update_version the
+    first one cleared."""
+    from app.db.models import AgentEvent
+    from app.services import agent_registry
+
+    agent = factories.agent(status="active", pending_update_version="0.9.0")
+    agent_registry.record_event(
+        db_session, agent.id, "update_queued", detail={"target_version": "0.9.0"}
+    )
+    agent_registry.record_event(db_session, agent.id, "update_started", detail={"version": "0.9.0"})
+
+    frame = AgentFrame(
+        type="update.status",
+        ts="2026-09-16T12:00:00Z",
+        payload={"version": "0.9.0", "phase": "failed", "error": "update: download timeout"},
+    )
+
+    await agent_link.dispatch_frame(db_session, agent, frame)
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    events = [
+        e.event_type
+        for e in db_session.query(AgentEvent).filter_by(agent_id=agent.id).order_by(AgentEvent.id)
+    ]
+    assert events.count("update_failed") == 1, "the replayed failure must not duplicate the event"
+    db_session.expire_all()
+    from app.db.models import Agent as AgentModel
+
+    assert db_session.get(AgentModel, agent.id).pending_update_version is None, (
+        "the replay must not resurrect the pending target the first report cleared"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_update_status_outcomes_for_other_versions_are_never_deduped(
+    db_session, factories
+):
+    """The dedupe scan is per version: an update to 0.9.0 that already
+    succeeded must not suppress a first-ever report about 0.10.0."""
+    from app.db.models import AgentEvent
+    from app.services import agent_registry
+
+    agent = factories.agent(status="active")
+    agent_registry.record_event(
+        db_session, agent.id, "update_queued", detail={"target_version": "0.9.0"}
+    )
+    agent_registry.record_event(db_session, agent.id, "update_started", detail={"version": "0.9.0"})
+    succeeded = AgentFrame(
+        type="update.status",
+        ts="2026-09-16T12:00:00Z",
+        payload={"version": "0.9.0", "phase": "succeeded"},
+    )
+    await agent_link.dispatch_frame(db_session, agent, succeeded)
+
+    other = AgentFrame(
+        type="update.status",
+        ts="2026-09-16T12:00:01Z",
+        payload={"version": "0.10.0", "phase": "succeeded"},
+    )
+    await agent_link.dispatch_frame(db_session, agent, other)
+
+    events = [
+        e.event_type
+        for e in db_session.query(AgentEvent).filter_by(agent_id=agent.id).order_by(AgentEvent.id)
+    ]
+    assert events.count("update_succeeded") == 2, (
+        "a different version's first outcome must be recorded"
+    )

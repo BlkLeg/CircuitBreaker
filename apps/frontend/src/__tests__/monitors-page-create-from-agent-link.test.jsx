@@ -3,7 +3,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
-// The receiving half of Slice 3 §7's "Create monitor from this agent": Agent
+// The receiving half of "Create monitor from this agent": Agent
 // Detail links to /monitors?new=1&…, and this page has to turn that into an
 // open CREATE form seeded with the device and the agent vantage.
 //
@@ -80,7 +80,7 @@ describe('MonitorsPage — the "Create monitor from this agent" deep link', () =
     expect(typeof props.prefill.probe_agent_id).toBe('number');
     expect(typeof props.prefill.target_id).toBe('number');
     // The seed stops there — check type, interval and alert policy stay the
-    // operator's, which is what §7 requires.
+    // operator's, which is what the contract requires.
     expect(props.prefill.check_type).toBeUndefined();
     expect(props.prefill.interval_secs).toBeUndefined();
   });

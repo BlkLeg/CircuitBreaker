@@ -52,8 +52,8 @@ from app.services import (
     agent_registry,
     agent_telemetry,
     discovery_bootstrap,
+    discovery_dispatch,
     discovery_profiles_service,
-    discovery_service,
 )
 
 ACTOR = "test-admin"
@@ -363,7 +363,7 @@ async def test_start_after_delay_defers_the_scan_off_the_reporting_path(
 ):
     started: list[int] = []
     monkeypatch.setattr(
-        discovery_service, "schedule_discovery_scan_job", lambda job_id: started.append(job_id)
+        discovery_dispatch, "schedule_discovery_scan_job", lambda job_id: started.append(job_id)
     )
 
     deferred_starts.real(4242, 0)
@@ -671,7 +671,7 @@ async def test_a_failing_bootstrap_never_escapes_its_task(monkeypatch):
     await discovery_bootstrap._bootstrap_in_session(1)
 
 
-# ── Task 25: the recurring cadence, and the three pause scopes ────────────────
+# ── the recurring cadence, and the three pause scopes ────────────────
 #
 # Plan §3 step 5 gives an automatic profile a six-hourly cron, and plan §3's
 # closing paragraph says "the central UI can pause automatic discovery globally,
@@ -717,7 +717,7 @@ def app_settings(db_session):  # type: ignore[no-untyped-def]
     whole test to keep the identity map from collecting it — scaffolding that
     could not have failed if the column were dropped, which is precisely how the
     global scope stayed unstorable behind six green tests. It now writes the
-    column `discovery_service.global_agent_discovery_paused` reads.
+    column `discovery_admission.global_agent_discovery_paused` reads.
     """
     from app.services.settings_service import get_or_create_settings
 
@@ -781,7 +781,7 @@ async def test_the_system_profiles_cadence_is_what_the_discovery_status_reports(
     db_session, factories, running_scheduler
 ):
     """End to end onto the field the UI renders: the derived six-hourly cron
-    (D-7) becomes an APScheduler fire time, and `next_scheduled` is it."""
+    becomes an APScheduler fire time, and `next_scheduled` is it."""
     from app.api.discovery import _compute_discovery_status
 
     agent = _agent(db_session, factories)
@@ -852,7 +852,7 @@ async def test_a_global_pause_holds_the_agents_profile_and_not_the_servers(
 
 
 async def test_a_per_agent_pause_stops_only_that_agents_profiles(db_session, factories):
-    """`local_discovery.auto_discovery_paused` (Task 3). One agent held, the
+    """`local_discovery.auto_discovery_paused`. One agent held, the
     fleet beside it untouched."""
     from app.core.scheduler import reload_discovery_jobs
 
@@ -872,7 +872,7 @@ async def test_a_per_agent_pause_stops_only_that_agents_profiles(db_session, fac
 
 
 async def test_a_per_subnet_pause_stops_only_that_subnet(db_session, factories):
-    """`discovery_profiles.paused_at` (Task 4). The agent's other segment keeps
+    """`discovery_profiles.paused_at`. The agent's other segment keeps
     its cadence, which is the whole reason the column is per profile."""
     from app.core.scheduler import reload_discovery_jobs
     from app.core.time import utcnow

@@ -19,7 +19,7 @@ Circuit Breaker 1.0.0 ships in English and offers no language selection. See
 
 - Theme and branding
 - Icon behavior
-- Dock and quick-navigation options
+- Dock and navigator options
 - Map display defaults and visibility options
 
 ### The dock
@@ -35,6 +35,12 @@ Map, Monitors, Logs, and Settings. An installation upgraded from a release befor
 setting existed keeps the dock it already had, including anything it had hidden.
 
 Preferences are stored per-installation in the `dock_order` setting.
+
+### The navigator
+
+Select **Navigate** in the header, or press **Ctrl+K** (**Cmd+K** on macOS), to search all destinations available to your role. Settings results link directly to their real tab, such as `?tab=security` or `?tab=integrations`; older valid `?section=` bookmarks are normalized automatically. Invalid or unauthorized tab links safely fall back to an allowed Settings tab.
+
+Navigator pins and recent pages are personal browser-local shortcuts. They are separate from the dock, so pinning a destination does not add it to the dock or change the dock's order. Shortcuts are isolated by deployment and user and are rechecked against current permissions before display or activation.
 
 ### Inventory helpers (Resources tab)
 
@@ -72,6 +78,14 @@ Categories are not managed here — they are created inline while editing hardwa
 - Auto-Discovery settings (the same panel as Discovery → Scan Settings)
 - Discovery Engine v2 (always-on mDNS/SSDP listener)
 - External Access — the App URL used in invite links
+- Agent Endpoints — the addresses agents dial, chosen per agent at install time. Separate from
+  the App URL on purpose: the address that reaches your server from an agent is often not the
+  one that reaches it from a browser. Scheme and host only, no path. See
+  [cb-agent → Install](agent.md#choose-the-address-the-agent-will-dial).
+- Enrollment Tokens — short-lived credentials that let a machine enrol with nobody at the
+  approval screen. Lists what has been minted, how many agents came through each, and revokes any
+  that is still live. Mint them from **Agents → Add agent**; the value itself is shown once and
+  never stored. See [cb-agent → Unattended enrollment](agent.md#unattended-enrollment).
 
 ### Email Notifications & SMTP
 
@@ -84,7 +98,7 @@ Categories are not managed here — they are created inline while editing hardwa
 - Network threat intelligence
 - Docker integration (container discovery)
 - Privacy & threat intelligence
-- CVE feed sync
+- CVE feed sync — powers the [vulnerability assessment](business_intelligence.md#vulnerability-assessment-honestly) panels
 - Notification sinks and routing rules
 - Proxmox VE and OPNsense (both configured from the Discovery page)
 - Service integrations (for example Uptime Kuma)
@@ -95,13 +109,14 @@ Categories are not managed here — they are created inline while editing hardwa
 
 ### System actions
 
-- Full backup (Download Backup)
+- Inventory transfer — portable export, previewed import (merge), and snapshot entry point
 - Clear lab data
 - Database and host diagnostics (admins only)
 - Backup & Recovery — S3 target configuration and test upload (admins only)
 - Factory reset (Reset to Defaults)
 
-Restoring a backup is an API operation, not a Settings control. See [Backup & Restore](backup-restore.md).
+Importing an inventory file is a previewed Settings operation; whole-instance restore is
+still offline. See [Backup & Restore](backup-restore.md).
 
 ---
 

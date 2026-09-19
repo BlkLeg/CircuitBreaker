@@ -26,13 +26,14 @@ from app.schemas.discovery import ScanResultOut
 from app.services.discovery_fingerprint import _kb_oui_lookup
 from app.services.discovery_network import PORT_SERVICE_MAP, _norm_mac
 from app.services.discovery_proxmox_merge import _merge_proxmox_result
+from app.services.discovery_result_service import classify_result, lock_review_queue
 from app.services.discovery_scheduler import main_loop
 from app.services.log_service import write_log
 from app.services.stream_faults import record_stream_fault
 
 logger = logging.getLogger(__name__)
 
-# REL-07 fault-metric identity for the discovery review fan-out.
+# Fault-metric identity for the discovery review fan-out.
 _COMPONENT = "discovery_merge"
 
 
@@ -113,10 +114,10 @@ def schedule_result_processed_event(result_id: int, status: str) -> None:
     `pending_count` the frame carries — the badge's authoritative number, which
     the client cannot recompute — silently drifted and never recovered.
 
-    `discovery_service.schedule_discovery_scan_job` is the model: use the
+    `discovery_dispatch.schedule_discovery_scan_job` is the model: use the
     running loop when there is one, otherwise the loop `main.py`'s lifespan
     registered, and close the coroutine rather than abandon it unawaited when
-    there is neither (REL-08).
+    there is neither.
     """
     coro = _emit_result_processed_in_session(result_id, status)
 
@@ -254,8 +255,13 @@ def _auto_merge_result(db: Session, result: ScanResult, actor: str = "system") -
     Attempt to automatically merge a scan result into the system without manual intervention.
     Called when discovery_auto_merge is true, or via API bulk action.
     """
+    lock_review_queue(db, result.tenant_id)
+    db.flush()
+    db.refresh(result)
     if result.merge_status != "pending":
         return
+    if result.state == "new" and result.source_type not in {"docker", "proxmox"}:
+        classify_result(db, result)
 
     now = utcnow_iso()
 
@@ -285,6 +291,7 @@ def _auto_merge_result(db: Session, result: ScanResult, actor: str = "system") -
         # For simplicity, default to server.
         hw = Hardware(
             name=name,
+            tenant_id=result.tenant_id,
             role="server",
             ip_address=result.ip_address,
             mac_address=result.mac_address,
@@ -448,6 +455,22 @@ def merge_scan_result(
         if result.source_type == "proxmox":
             return _merge_proxmox_result(db, result, overrides, actor, now)
 
+        lock_review_queue(db, result.tenant_id)
+        db.flush()
+        db.refresh(result)
+        if result.merge_status != "pending":
+            raise HTTPException(status_code=409, detail="Result was already processed")
+        if result.state == "new" and result.source_type != "docker":
+            classify_result(db, result)
+            if result.state == "conflict":
+                db.commit()
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Device identity changed since this scan; refresh and review the conflict"
+                    ),
+                )
+
         # CB-CASCADE-005: wrap accept branch in a savepoint for atomicity
         sp = db.begin_nested()
         try:
@@ -468,7 +491,7 @@ def merge_scan_result(
                     )
                 hw.last_seen = now
                 hw.status = "online"
-                # CB-REL-001: link scan result to hardware
+                # CB-the contract: link scan result to hardware
                 hw.source_scan_result_id = result.id
                 if not hw.mac_address and norm_mac:
                     hw.mac_address = norm_mac
@@ -520,6 +543,7 @@ def merge_scan_result(
 
                 hw = Hardware(
                     name=name,
+                    tenant_id=result.tenant_id,
                     role=role,
                     ip_address=result.ip_address,
                     mac_address=norm_mac,
@@ -528,7 +552,7 @@ def merge_scan_result(
                     source="discovery",
                     discovered_at=now,
                     last_seen=now,
-                    source_scan_result_id=result.id,  # CB-REL-001
+                    source_scan_result_id=result.id,  # CB-the contract
                     created_at=datetime.fromisoformat(now) if "T" in now else datetime.now(),
                     updated_at=datetime.fromisoformat(now) if "T" in now else datetime.now(),
                 )

@@ -1,15 +1,15 @@
-"""Expiry, staleness, and retention for remote probe runs (§8, D-4, D-5).
+"""Expiry, staleness, and retention for remote probe runs.
 
 The backend stays the authority even when the executor goes quiet. A run is a
-lease, and §1's partial unique index means an unreturned lease is not merely
+lease, andthe partial unique index means an unreturned lease is not merely
 untidy — it holds `(monitor_id) WHERE status IN ('queued','dispatched')` and
 blocks every future run for that monitor. One silent agent would therefore wedge
 its assignments permanently, which is the exact failure
 `tests/integration/test_monitor_engine_e2e.py::test_restart_self_heals_no_wedged_items`
 exists to prevent on the server path. Expiry is what buys the remote path the
-same property, and it is also what makes best-effort `probe.cancel` safe (§4).
+same property, and it is also what makes best-effort `probe.cancel` safe.
 
-This runs at the top of `workers/monitor_scheduler.py::tick` (D-5) — no new
+This runs at the top of `workers/monitor_scheduler.py::tick` — no new
 worker, no `supervisord` entry, and no second advisory lock. `monitor_scheduler`
 is already the single active clock, already holds the `monitor_scheduler`
 advisory lock, and already opens a session per tick; anything else would need
@@ -22,19 +22,19 @@ Three passes, in this order and for this reason:
    its monitor becomes `unavailable`/`result_timeout`. The grace matches the
    window `services/agent_probe.py` gives a late result, so the two can never
    disagree about whether a result was still allowed to land.
-2. **Stale (D-4).** A vantage that is active, online, granted and readiness-fresh
+2. **Stale.** A vantage that is active, online, granted and readiness-fresh
    but has produced no accepted result within `2 x interval_secs` is `stale`:
    nothing is visibly wrong, and results are still not arriving. It is
    deliberately the *lower*-priority signal — `unavailable` always names a
    specific cause, so a monitor already carrying one is left alone, and so is a
    monitor with a run still in flight. Without that precedence the two passes
    would alternate every interval and write an event each time.
-3. **Purge.** §1's seven-day retention, scheduled separately from the tick
+3. **Purge.**the seven-day retention, scheduled separately from the tick
    because it is a daily job, not a per-second one.
 
 Nothing here writes an availability sample, touches `consecutive_failures`, or
 moves `last_status` or `next_due_at`. An unavailable vantage is not a down
-target (§2, D-12); the monitor simply tries again on its normal interval.
+target; the monitor simply tries again on its normal interval.
 """
 
 from __future__ import annotations
@@ -54,14 +54,14 @@ from app.services.monitoring import probe_eligibility, result_service
 
 logger = logging.getLogger(__name__)
 
-# §4 gives a late result `deadline_at + 30s`, and a run is written off at exactly
+# Gives a late result `deadline_at + 30s`, and a run is written off at exactly
 # that moment — derived from the ingest path's own constant rather than restated,
 # so a result can never be simultaneously "still acceptable" over there and
 # attached to a run already expired over here.
 RESULT_TIMEOUT_GRACE_S = int(agent_probe.LATE_RESULT_GRACE.total_seconds())
-# D-4's threshold: no accepted result within two whole intervals.
+# the threshold: no accepted result within two whole intervals.
 STALE_INTERVAL_MULTIPLIER = 2
-# §1. Long-term availability lives in `telemetry_timeseries` and the monitor
+# Long-term availability lives in `telemetry_timeseries` and the monitor
 # rollups; a run row is audit for a check the server did not perform itself.
 PROBE_RUN_RETENTION_DAYS = int(os.getenv("CB_MONITOR_PROBE_RETENTION_DAYS", "7"))
 
@@ -99,7 +99,7 @@ _EXPIRE_SQL = text(
     """
 )
 
-# Everything D-4 can ask of the database. Readiness freshness and agent presence
+# Everything the contract can ask of the database. Readiness freshness and agent presence
 # are answered in Python afterwards, against `probe_eligibility`'s own
 # definitions, so this module never grows a second copy of them.
 _STALE_CANDIDATES_SQL = text(
@@ -116,7 +116,7 @@ _STALE_CANDIDATES_SQL = text(
       AND m.probe_agent_id IS NOT NULL
       AND a.status = 'active'
       -- NULL is not stale: a monitor that has never produced a result has not
-      -- stopped producing them, and D-4 is written against a real last result.
+      -- stopped producing them, and the contract is written against a real last result.
       AND m.probe_last_result_at IS NOT NULL
       AND m.probe_last_result_at
           < :now - make_interval(secs => :multiplier * m.interval_secs)
@@ -244,7 +244,7 @@ def _fresh_readiness(db: Session, agent_ids: set[int], moment: datetime) -> set[
             AgentCapabilityReadiness.collector,
         ).where(
             AgentCapabilityReadiness.agent_id.in_(agent_ids),
-            # Reached into deliberately: §2's readiness vocabulary is defined
+            # Reached into deliberately:the readiness vocabulary is defined
             # once, in the eligibility evaluator, and a second copy here would
             # be free to drift from the one dispatch actually enforces.
             AgentCapabilityReadiness.state.in_(probe_eligibility._USABLE_READINESS_STATES),
@@ -256,7 +256,7 @@ def _fresh_readiness(db: Session, agent_ids: set[int], moment: datetime) -> set[
 
 
 def purge_probe_runs(db: Session, *, now: datetime | None = None) -> int:
-    """Delete probe runs past §1's seven-day retention. Owns its commit."""
+    """Delete probe runs pastthe seven-day retention. Owns its commit."""
     cutoff = (now or utcnow()) - timedelta(days=PROBE_RUN_RETENTION_DAYS)
     result = db.execute(delete(MonitorProbeRun).where(MonitorProbeRun.created_at < cutoff))
     deleted = int(result.rowcount or 0)  # type: ignore[attr-defined]

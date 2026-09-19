@@ -11,22 +11,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Any
 
 from app.core.job_lock import _lock_id_for, advisory_unlock, try_advisory_lock
 from app.core.nats_client import nats_client
+from app.core.worker_heartbeat import touch_heartbeat
 from app.services.monitoring import probe_reconcile
 from app.services.monitoring.scheduler import enqueue_due
 
 logger = logging.getLogger(__name__)
 
-_HEALTHY_FILE = Path("/data/worker-monitor-scheduler.healthy")
 _TICK_S = float(os.getenv("CB_MONITOR_SCHED_TICK_S", "1.0"))
 _BATCH = int(os.getenv("CB_MONITOR_SCHED_BATCH", "200"))
-# D-2 fair sharing: no vantage (the server, or any one agent) may take more
+# Fair sharing: no vantage (the server, or any one agent) may take more
 # than _PER_VANTAGE of a tick, and the claim locks _OVERSAMPLE rows so the
 # ranking has every vantage to rank before the global _BATCH cap applies.
 _PER_VANTAGE = int(os.getenv("CB_MONITOR_SCHED_PER_VANTAGE", "50"))
@@ -35,11 +33,7 @@ _LOCK_NAME = "monitor_scheduler"
 
 
 def _touch_healthy() -> None:
-    try:
-        _HEALTHY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _HEALTHY_FILE.write_text(str(time.time()))
-    except OSError:
-        pass
+    touch_heartbeat("worker-monitor-scheduler")
 
 
 async def tick(
@@ -48,7 +42,7 @@ async def tick(
 ) -> int:
     db = db_factory()
     try:
-        # D-5: remote-probe reconciliation rides this tick rather than a worker
+        # Remote-probe reconciliation rides this tick rather than a worker
         # of its own — this is already the single active clock, under the
         # `monitor_scheduler` advisory lock, with a session open. It runs first
         # so an expired run has released the partial unique index before the
@@ -59,7 +53,7 @@ async def tick(
         # is the one failure the whole engine is built to make impossible.
         try:
             await probe_reconcile.reconcile(db)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.error("monitor-scheduler reconcile failed: %s", exc, exc_info=True)
             db.rollback()
         return await enqueue_due(
@@ -101,7 +95,7 @@ async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
             if have_lock:
                 try:
                     await tick(SessionLocal, nats_client.js_publish)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.error("monitor-scheduler tick failed: %s", exc, exc_info=True)
             _touch_healthy()
             try:

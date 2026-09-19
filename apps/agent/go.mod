@@ -1,6 +1,6 @@
 module circuitbreaker.dev/cb-agent
 
-go 1.25.13
+go 1.26.8
 
 require (
 	github.com/BurntSushi/toml v1.4.0
@@ -9,7 +9,7 @@ require (
 	// v1.1.63 remains sufficient for the agent's DNS record queries.
 	// SOA and CAA are the reason for the dependency at all: net.Resolver cannot query them.
 	github.com/miekg/dns v1.1.63
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 )
 
 // The x/sys version follows the security-supported x/crypto and x/net graph.

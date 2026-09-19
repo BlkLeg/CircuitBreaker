@@ -85,7 +85,7 @@ def backup_postgres() -> None:
         # obvious "just add stderr=PIPE" is that deadlock, and a hung daily job is a
         # backup that silently stops existing.
         with err_path.open("wb") as errf:
-            proc = subprocess.Popen(  # noqa: S603
+            proc = subprocess.Popen(
                 ["pg_dump", "--no-password"],
                 env=_pg_env_from_url(db_url),
                 stdout=subprocess.PIPE,

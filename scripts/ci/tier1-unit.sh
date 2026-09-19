@@ -6,7 +6,7 @@
 # satisfied.
 set -euo pipefail
 
-# REL-20: both workflows pin this at workflow level (ci.yml, dev-ci.yml) and
+# Both workflows pin this at workflow level (ci.yml, dev-ci.yml) and
 # tests/build/test_ci_evidence_retention.py enforces it there. Exporting it
 # here too means the local gate removes the same source of run-to-run
 # nondeterminism (per-process str/bytes hash salting) that CI does, instead of
@@ -57,7 +57,7 @@ cb::section "Frontend unit tests"
 # Deliberately NOT `npm test` (= `vitest run --passWithNoTests`). That flag is
 # exactly the defect commit 05350354 exists to fix: it is green on zero
 # collected tests, so it can pass by not running (design P2/goal 4). It also
-# skips the REL-15 coverage thresholds in vitest.config.ts, which CI enforces
+# skips the coverage thresholds in vitest.config.ts, which CI enforces
 # and which this gate must mirror to be worth calling a gate. This block is
 # copied from dev-ci.yml's "Frontend tests with coverage" step (the one CI
 # actually runs) rather than from package.json's "test" script — do not

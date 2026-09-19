@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 
 const mockToast = { success: vi.fn(), error: vi.fn(), info: vi.fn() };
 vi.mock('../components/common/Toast', () => ({ useToast: () => mockToast }));
@@ -14,7 +14,14 @@ vi.mock('../api/tokens', () => ({
   revokeToken: vi.fn(),
 }));
 
-import { listTokens, getScopeCatalog, createToken, rotateToken, revokeToken } from '../api/tokens';
+import {
+  listTokens,
+  getScopeCatalog,
+  createToken,
+  createServiceAccount,
+  rotateToken,
+  revokeToken,
+} from '../api/tokens';
 import AccessTokensManager from '../components/settings/AccessTokensManager.jsx';
 
 const CATALOG = {
@@ -56,6 +63,17 @@ const TOKENS = [
     created_by_name: 'shawnji',
     is_service_account: false,
   },
+  {
+    id: 3,
+    label: null,
+    created_at: '2026-08-01T00:00:00Z',
+    expires_at: null,
+    last_used_at: null,
+    scopes: ['read:*'],
+    created_by: 1,
+    created_by_name: 'shawnji',
+    is_service_account: false,
+  },
 ];
 
 beforeEach(() => {
@@ -64,11 +82,17 @@ beforeEach(() => {
   getScopeCatalog.mockResolvedValue({ data: CATALOG });
 });
 
+function issueCreateButton() {
+  // Page chrome may also render a Create token control; the form CTA is inside Issue credential.
+  const panel = screen.getByRole('region', { name: /issue credential/i });
+  return within(panel).getByRole('button', { name: /create token/i });
+}
+
 describe('AccessTokensManager', () => {
   it('lists tokens with their scopes and creator', async () => {
     render(<AccessTokensManager />);
     await waitFor(() => expect(screen.getByText('ci-deploy')).toBeInTheDocument());
-    expect(screen.getByText('read:*')).toBeInTheDocument();
+    expect(screen.getAllByText('read:*').length).toBeGreaterThan(0);
     expect(screen.getAllByText('shawnji').length).toBeGreaterThan(0);
   });
 
@@ -86,13 +110,13 @@ describe('AccessTokensManager', () => {
     expect(screen.getByTestId('token-row-2')).toHaveTextContent(/user token/i);
   });
 
-  it('switches between own and install-wide inventory', async () => {
+  it('defaults to fleet inventory and switches to mine', async () => {
     render(<AccessTokensManager />);
-    await waitFor(() => expect(listTokens).toHaveBeenCalledWith('mine'));
+    await waitFor(() => expect(listTokens).toHaveBeenCalledWith('all'));
 
-    fireEvent.change(screen.getByLabelText(/inventory/i), { target: { value: 'all' } });
+    fireEvent.click(screen.getByRole('button', { name: /my tokens/i }));
 
-    await waitFor(() => expect(listTokens).toHaveBeenLastCalledWith('all'));
+    await waitFor(() => expect(listTokens).toHaveBeenLastCalledWith('mine'));
   });
 
   it('offers presets from the server, never a hardcoded list', async () => {
@@ -108,13 +132,34 @@ describe('AccessTokensManager', () => {
     render(<AccessTokensManager />);
     await waitFor(() => expect(screen.getByLabelText('Read-only')).toBeInTheDocument());
 
-    fireEvent.change(screen.getByLabelText(/^label$/i), { target: { value: 'ci' } });
+    fireEvent.change(screen.getByLabelText(/credential label/i), { target: { value: 'ci' } });
     fireEvent.click(screen.getByLabelText('Full access'));
-    fireEvent.click(screen.getByRole('button', { name: /create token/i }));
+    fireEvent.click(issueCreateButton());
 
     await waitFor(() =>
       expect(createToken).toHaveBeenCalledWith(
         expect.objectContaining({ label: 'ci', scopes: ['*:*'] })
+      )
+    );
+  });
+
+  it('creates a service account when identity is service account', async () => {
+    createServiceAccount.mockResolvedValue({
+      data: { id: 11, token: 'sa_secret', label: '[Service Account] collector' },
+    });
+
+    render(<AccessTokensManager />);
+    await waitFor(() => expect(screen.getByLabelText('Read-only')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText(/credential label/i), {
+      target: { value: 'collector' },
+    });
+    fireEvent.change(screen.getByLabelText(/^identity$/i), { target: { value: 'service' } });
+    fireEvent.click(issueCreateButton());
+
+    await waitFor(() =>
+      expect(createServiceAccount).toHaveBeenCalledWith(
+        expect.objectContaining({ label: 'collector', scopes: ['read:*'] })
       )
     );
   });
@@ -124,16 +169,16 @@ describe('AccessTokensManager', () => {
 
     render(<AccessTokensManager />);
     await waitFor(() => expect(screen.getByLabelText('Read-only')).toBeInTheDocument());
-    fireEvent.change(screen.getByLabelText(/^label$/i), { target: { value: 'ci' } });
-    fireEvent.click(screen.getByRole('button', { name: /create token/i }));
+    fireEvent.change(screen.getByLabelText(/credential label/i), { target: { value: 'ci' } });
+    fireEvent.click(issueCreateButton());
 
     await waitFor(() => expect(screen.getByText('cb_secret_value')).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /stored it/i }));
 
     await waitFor(() => expect(screen.queryByText('cb_secret_value')).not.toBeInTheDocument());
-    fireEvent.change(screen.getByLabelText(/inventory/i), { target: { value: 'all' } });
-    await waitFor(() => expect(listTokens).toHaveBeenLastCalledWith('all'));
+    fireEvent.click(screen.getByRole('button', { name: /my tokens/i }));
+    await waitFor(() => expect(listTokens).toHaveBeenLastCalledWith('mine'));
     expect(screen.queryByText('cb_secret_value')).not.toBeInTheDocument();
   });
 
@@ -155,6 +200,24 @@ describe('AccessTokensManager', () => {
     await waitFor(() => expect(revokeToken).toHaveBeenCalledWith(1));
   });
 
+  it('requires ROTATE for an unlabeled token', async () => {
+    rotateToken.mockResolvedValue({ data: { id: 30, token: 'cb_new', label: null } });
+
+    render(<AccessTokensManager />);
+    await waitFor(() => expect(screen.getByTestId('token-row-3')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rotate token #3' }));
+    fireEvent.click(screen.getByRole('button', { name: /^confirm$/i }));
+    expect(rotateToken).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText(/type rotate to confirm/i), {
+      target: { value: 'ROTATE' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^confirm$/i }));
+
+    await waitFor(() => expect(rotateToken).toHaveBeenCalledWith(3));
+  });
+
   it('reveals the replacement secret after a rotation', async () => {
     rotateToken.mockResolvedValue({ data: { id: 10, token: 'cb_rotated', label: 'ci-deploy' } });
 
@@ -168,6 +231,26 @@ describe('AccessTokensManager', () => {
     fireEvent.click(screen.getByRole('button', { name: /^confirm$/i }));
 
     await waitFor(() => expect(screen.getByText('cb_rotated')).toBeInTheDocument());
+  });
+
+  it('filters the inventory by search text', async () => {
+    render(<AccessTokensManager />);
+    await waitFor(() => expect(screen.getByTestId('token-row-1')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText(/search credentials/i), {
+      target: { value: 'legacy' },
+    });
+
+    expect(screen.queryByTestId('token-row-1')).not.toBeInTheDocument();
+    expect(screen.getByTestId('token-row-2')).toBeInTheDocument();
+  });
+
+  it('renders posture counts for the loaded inventory', async () => {
+    render(<AccessTokensManager />);
+    await waitFor(() => expect(screen.getByLabelText(/token posture/i)).toBeInTheDocument());
+    const posture = screen.getByLabelText(/token posture/i);
+    expect(posture).toHaveTextContent('Active credentials');
+    expect(posture).toHaveTextContent('3');
   });
 
   it('renders an error with retry rather than an empty inventory', async () => {

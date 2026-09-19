@@ -18,6 +18,7 @@ vi.mock('../api/discovery.js', () => ({
   cancelJob: vi.fn(),
   enrichOpnsenseJob: vi.fn(),
   getPendingResults: vi.fn().mockResolvedValue({ data: [] }),
+  getEnrichedResults: vi.fn().mockResolvedValue({ data: [] }),
   mergeResult: vi.fn().mockResolvedValue({ data: { entity_type: 'hardware', entity_id: 31 } }),
   enhancedBulkMerge: vi.fn().mockResolvedValue({ data: {} }),
   getDiscoveryStatus: vi.fn().mockResolvedValue({ data: { pending_results: 0, active_jobs: [] } }),
@@ -150,8 +151,8 @@ describe('DiscoveryHistoryPage — execution location', () => {
   });
 });
 
-describe('DiscoveryHistoryPage — the D-4 failure vocabulary', () => {
-  it('renders a human label for each D-4 error_reason the server can send', async () => {
+describe('DiscoveryHistoryPage — the failure vocabulary', () => {
+  it('renders a human label for each error_reason the server can send', async () => {
     const reasons = [
       'agent_unavailable',
       'agent_disconnected',
@@ -216,7 +217,7 @@ describe('DiscoveryHistoryPage — the D-4 failure vocabulary', () => {
     expect(rows.queryByText(/partial results/i)).not.toBeInTheDocument();
   });
 
-  it('filters the history by a D-4 error reason from the status filter', async () => {
+  it('filters the history by an error reason from the status filter', async () => {
     renderHistory([
       agentJob({ id: 801, status: 'failed', error_reason: 'agent_unavailable' }),
       agentJob({
@@ -379,6 +380,20 @@ describe('useDiscoveryStream — the pending badge', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it('counts only pending observations, excluding duplicate and enriched history', async () => {
+    const { result } = renderHook(() => useDiscoveryStream());
+    const socket = socketInstances[socketInstances.length - 1];
+    await act(async () => {});
+    act(() => {
+      socket.emitOpen();
+      socket.emitMessage({ status: 'connected' });
+      for (const [id, status] of ['pending', 'duplicate', 'auto_updated', 'accepted'].entries()) {
+        socket.emitMessage({ type: 'result_added', result: { id, merge_status: status } });
+      }
+    });
+    expect(result.current.pendingCount).toBe(1);
   });
 
   it("replaces its optimistic count with the server's pending_count", async () => {

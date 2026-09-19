@@ -1,12 +1,12 @@
-"""Remote-probe dispatch worker: `mon.probe.remote` -> `probe.assign` (Slice 3 §2).
+"""Remote-probe dispatch worker: `mon.probe.remote` -> `probe.assign`.
 
 The scheduler puts nothing but a `run_id` on NATS. Everything the agent needs —
 the host, the monitor's complete validated configuration, and any HTTP
 credentials it carries — is loaded here, immediately before encrypted delivery
-over the live /link socket (D-10), so no credential ever sits in a JetStream
+over the live /link socket, so no credential ever sits in a JetStream
 message.
 
-Its own durable on its own stream (D-3): a blocked agent must not be able to
+Its own durable on its own stream: a blocked agent must not be able to
 delay server-executed checks, and JetStream forbids two work-queue consumers
 with overlapping subject filters anyway.
 
@@ -21,9 +21,7 @@ import asyncio
 import json
 import logging
 import os
-import time
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -32,6 +30,7 @@ from sqlalchemy.orm import Session
 from app.core.nats_client import nats_client
 from app.core.subjects import MONITOR_PROBE_REMOTE
 from app.core.time import utcnow
+from app.core.worker_heartbeat import touch_heartbeat
 from app.db.models import MonitorItem, MonitorProbeRun
 from app.schemas.agent_frame import TYPE_PROBE_ASSIGN
 from app.services import agent_registry
@@ -39,12 +38,11 @@ from app.services.monitoring import probe_eligibility
 
 logger = logging.getLogger(__name__)
 
-_HEALTHY_FILE = Path("/data/worker-monitor-probe-dispatch.healthy")
 _FETCH_BATCH = int(os.getenv("CB_MONITOR_PROBE_FETCH", "50"))
 _JS_STREAM = "MONITOR_PROBE"
 _JS_DURABLE = "monitor_probe_dispatchers"
 
-# §8 vocabulary: a control frame that could not be published is a dispatch
+# Vocabulary: a control frame that could not be published is a dispatch
 # failure, not a target failure and not an agent-side execution error.
 _DISPATCH_FAILED = "dispatch_failed"
 # A run whose lease has no end. Nothing but a caller bug produces one, and it is
@@ -56,11 +54,7 @@ _INVALID_RUN = "invalid_run"
 
 
 def _touch_healthy() -> None:
-    try:
-        _HEALTHY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _HEALTHY_FILE.write_text(str(time.time()))
-    except OSError:
-        pass
+    touch_heartbeat("worker-monitor-probe-dispatch")
 
 
 async def dispatch_run(db: Session, run_id: str) -> bool:
@@ -117,7 +111,7 @@ async def dispatch_run(db: Session, run_id: str) -> bool:
             "monitor_id": monitor.id,
             "check_type": monitor.check_type,
             "host": monitor.host,
-            # The complete stored configuration, credentials included (D-10).
+            # The complete stored configuration, credentials included.
             # The agent holds it in memory for the life of the run only.
             "config": dict(monitor.params or {}),
             # `.isoformat()`, never the raw datetime: publish_agent_control_frame
@@ -160,7 +154,7 @@ def _close_unavailable(
     """Retire the run and record why the vantage could not run the check.
 
     No `avail` sample and no retry-counter change: an unavailable vantage is not
-    a down target (§2, D-12). `next_due_at` is left where the scheduler put it,
+    a down target. `next_due_at` is left where the scheduler put it,
     so the monitor simply tries again on its normal interval.
 
     `outcome` stays NULL deliberately. It records what the *agent* reported, and
@@ -214,7 +208,7 @@ async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
     while not (shutdown_event and shutdown_event.is_set()):
         try:
             msgs = await psub.fetch(_FETCH_BATCH, timeout=1.0)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             if "Timeout" not in type(exc).__name__:
                 logger.warning("monitor-probe-dispatch fetch error: %s", exc)
             _touch_healthy()
@@ -236,7 +230,7 @@ async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
         if run_ids:
             try:
                 await process_messages(run_ids, SessionLocal)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.error("monitor-probe-dispatch batch failed: %s", exc, exc_info=True)
                 for m in msgs:
                     await _safe_nak(m)

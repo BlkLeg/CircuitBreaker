@@ -1,5 +1,4 @@
-// Package probe executes server-assigned monitor checks on the agent (§5 of
-// plans/2026-08-04-cbi-agent-slice3-remote-probe.md).
+// Package probe executes server-assigned monitor checks on the agent.
 //
 // The backend stays the authoritative scheduler: it decides what is due, mints a run id, and
 // pushes exactly one fully-specified `probe.assign` control frame per check. This package holds
@@ -13,7 +12,7 @@
 // the result has to travel back over. So Assign and Cancel validate and enqueue only: no dialing,
 // no resolving, no blocking on a consumer, no waiting on a checker.
 //
-// Scope is enforced here as well as server-side, and that duplication is the point (§3): a
+// Scope is enforced here as well as server-side, and that duplication is the point: a
 // backend-approved assignment whose destination is outside *this agent's own* derived scope is
 // still refused, before anything touches the network. The evaluator is internal/netscope, shared
 // with the backend and pinned to one corpus — this package must never grow a CIDR opinion of its
@@ -35,7 +34,7 @@ import (
 	"circuitbreaker.dev/cb-agent/internal/netscope"
 )
 
-// QueueCapacity is §2's bound on how many assignments one agent holds. Past it, an assignment is
+// QueueCapacity is the bound on how many assignments one agent holds. Past it, an assignment is
 // *rejected* rather than dropped: the backend would otherwise wait out the run's entire deadline
 // for a result that was never coming, and the operator would see a silent gap instead of a
 // capacity problem.
@@ -50,7 +49,7 @@ const (
 	MaxDetailsBytes = 64 << 10
 )
 
-// The closed outcome set (§4). Only OutcomeCompleted says anything about the target; the other
+// The closed outcome set. Only OutcomeCompleted says anything about the target; the other
 // three preserve its last known state, which is why none of them ever carries samples.
 const (
 	OutcomeCompleted      = "completed"
@@ -83,7 +82,7 @@ const slotPollInterval = 20 * time.Millisecond
 // grantable concurrency so a stalled consumer never reaches back into a caller.
 const resultBufferSize = 2 * QueueCapacity
 
-// Errors Assign returns. They are sentinels because link logs them and Task 20's daemon wiring
+// Errors Assign returns. They are sentinels because link logs them and the daemon wiring
 // distinguishes them; the corresponding probe.result is emitted regardless, so the caller never
 // has to translate one into a frame.
 var (
@@ -242,7 +241,7 @@ func (r *Runtime) Stop() {
 }
 
 // Configure installs a new effective scope and concurrency limit, and (re-)enables execution.
-// This is the whole of Task 20's grant-change path: nothing needs restarting, and a raised
+// This is the whole of the grant-change path: nothing needs restarting, and a raised
 // concurrency limit is picked up by the dispatcher within one slotPollInterval.
 func (r *Runtime) Configure(scope netscope.Scope, maxConcurrent int) {
 	r.mu.Lock()
@@ -326,7 +325,7 @@ func (r *Runtime) Assign(payload json.RawMessage) error {
 	}
 }
 
-// Cancel applies one best-effort `probe.cancel` payload (§4). An unknown run id is not an error:
+// Cancel applies one best-effort `probe.cancel` payload. An unknown run id is not an error:
 // cancellation races completion by design, and the backend stays authoritative either way.
 func (r *Runtime) Cancel(payload json.RawMessage) error {
 	var cancel frame.ProbeCancelPayload
@@ -407,7 +406,7 @@ func (r *Runtime) currentScope() netscope.Scope {
 }
 
 // dispatch pulls assignments off the queue as capacity allows. One goroutine per running check,
-// started only once a slot is free, is what enforces §2's per-agent concurrency limit.
+// started only once a slot is free, is what enforces the per-agent concurrency limit.
 func (r *Runtime) dispatch(ctx context.Context) {
 	for {
 		if !r.waitForSlot(ctx) {
@@ -553,7 +552,7 @@ func (r *Runtime) runCheck(entry *run, started time.Time) result {
 			msg:     fmt.Sprintf("the check did not finish before its %s deadline", assign.DeadlineAt.Format(time.RFC3339)),
 		}
 	case checkErr != nil:
-		// The checker could not perform the probe at all (§5's `icmp_unavailable` case). This
+		// The checker could not perform the probe at all. This
 		// says nothing about the target, so the monitor keeps its last known state.
 		return result{outcome: OutcomeExecutionError, msg: checkErr.Error()}
 	}

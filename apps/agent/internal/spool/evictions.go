@@ -1,0 +1,278 @@
+// apps/agent/internal/spool/evictions.go
+package spool
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	"circuitbreaker.dev/cb-agent/internal/frame"
+	"circuitbreaker.dev/cb-agent/internal/logging"
+)
+
+// evictedFilename records, cumulatively and for the life of the state
+// directory, what the drop-oldest policy has destroyed. It is a separate
+// file from queue.jsonl for the same reason queue.head is: the queue is
+// rewritten by compaction and truncated by delivery, and a record of
+// permanently lost history must outlive both.
+const evictedFilename = "queue.evicted"
+
+// EvictionStats is the permanent record of observations this spool destroyed to
+// stay inside its byte cap.
+//
+// The policy itself is deliberate — when the disk buffer fills during a long
+// outage, recent observations matter more than old ones, so the oldest go. This
+// type exists so the policy does not run silently: with no counter, no log line
+// and no event, the only visible symptom is the reported spool depth ceasing to
+// rise, and an operator cannot tell a drained backlog from a destroyed one.
+//
+// A bare count is not enough either. The trust-relevant fact is which window of
+// history is gone, so the two timestamps are widened from the dropped frames'
+// own Frame.TS — the instant each observation describes — never from wall-clock
+// now. LastEvictedAt is the one wall-clock field, answering when the
+// destruction last happened.
+//
+// Cumulative and never reset by the agent: a counter the producer can zero is a
+// counter an operator cannot trust. Only deleting the state directory clears
+// it, and the server treats a decrease as exactly that (see
+// agent_registry.record_spool_evictions).
+type EvictionStats struct {
+	Frames          int64     `json:"frames"`
+	Bytes           int64     `json:"bytes"`
+	OldestDroppedTS time.Time `json:"oldest_dropped_ts"`
+	NewestDroppedTS time.Time `json:"newest_dropped_ts"`
+	LastEvictedAt   time.Time `json:"last_evicted_at"`
+	// LastDestroyedCause names what destroyed data most recently, as a code:
+	// CauseSizeCap or CauseWriteFailed. The two causes fold into one counter
+	// on purpose — "this host's history has a hole in it" is the same fact
+	// either way — but their remedies are opposite, so `cb-agent status`
+	// branches on this to print the right one.
+	//
+	// A code and not the sentence, because it is control flow. Branching on
+	// the operator-facing prose would mean a reword silently reclassified
+	// every already-persisted record and handed an operator the opposite
+	// remedy. Empty in a record predating this field, which the
+	// status output reads as "unknown" and answers by listing both.
+	LastDestroyedCause string `json:"last_destroyed_cause,omitempty"`
+	// LastDestroyedReason is the human detail behind LastDestroyedCause: the
+	// underlying write error, or the cap's own phrasing. Display copy only —
+	// nothing branches on it.
+	LastDestroyedReason string `json:"last_destroyed_reason,omitempty"`
+}
+
+// The causes recorded in EvictionStats.LastDestroyedCause. Codes, deliberately
+// unreadable as copy, so nobody edits one as though it were a message.
+const (
+	CauseSizeCap     = "size_cap"
+	CauseWriteFailed = "write_failed"
+)
+
+// CapEvictionReason is the drop-oldest policy's own phrasing, stored as
+// EvictionStats.LastDestroyedReason. Exported so `cb-agent status` and the
+// tests share one wording. Safe to reword: it is displayed, never matched.
+const CapEvictionReason = "the spool hit its size cap during an outage"
+
+// widen folds one dropped frame's own timestamp into the destroyed window.
+// A zero ts (a frame that carried none) is ignored rather than dragging the
+// window back to year 1 — the frame is still counted, only its instant is
+// unknown.
+func (e *EvictionStats) widen(ts time.Time) {
+	if ts.IsZero() {
+		return
+	}
+	if e.OldestDroppedTS.IsZero() || ts.Before(e.OldestDroppedTS) {
+		e.OldestDroppedTS = ts
+	}
+	if e.NewestDroppedTS.IsZero() || ts.After(e.NewestDroppedTS) {
+		e.NewestDroppedTS = ts
+	}
+}
+
+// destroyedReportInterval bounds how often RecordDestroyed writes a log line.
+//
+// The line only. The condition driving these losses is by nature sustained — a
+// full disk stays full — so an unthrottled line per sample would be a log storm
+// layered on a storage failure. The first loss in a window always reports
+// immediately, so an isolated failure is never silent.
+//
+// The record itself must be written through on every call, never batched.
+// Batching loses up to a window's worth of losses outright across a restart —
+// and a full disk usually ends with an operator freeing it and restarting. The
+// permanent record would then go down, and the server reads any decrease as the
+// state directory having been recreated, writing an audit event that says so: a
+// confidently wrong claim about data loss, on top of real data loss.
+//
+// The cost is one failing write syscall per destroyed observation on a disk
+// already refusing writes — cheap for a counter that survives a restart.
+const destroyedReportInterval = time.Minute
+
+// RecordDestroyed folds one observation this spool could not buffer at all
+// into the same permanent loss record cap eviction writes to, and says so at
+// error level.
+//
+// The cap is the dominant reason a spool destroys an observation, but it is
+// not the only one: a full disk, a read-only /var, or a state directory that
+// vanished all make Enqueue fail, and since every data frame is now spooled
+// *before* it can reach a socket, a refused write is the end of that
+// observation. Counting it here rather than inventing a second counter is
+// deliberate — the operator-facing fact is identical ("this host's history
+// has a hole in it, and nothing will backfill it"), the fleet view and the
+// Telemetry tab already read this record, and a loss that is real but
+// invisible is the exact failure this whole effort exists to end. `reason`
+// separates the causes in the log, which is where an operator goes next.
+//
+// Callers must already know the frame is gone: this records a loss, it does
+// not cause one.
+func (s *Spool) RecordDestroyed(f frame.Frame, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data, err := frame.Encode(f)
+	size := int64(0)
+	if err == nil {
+		size = int64(len(data)) + 1
+	}
+	s.evicted.Frames++
+	s.evicted.Bytes += size
+	s.evicted.widen(f.TS)
+	s.evicted.LastEvictedAt = time.Now().UTC()
+	// Every caller of this is a spool that could not accept the write, so
+	// the cause is set here rather than taken from the caller — a caller-set
+	// code is a caller that can get it wrong.
+	s.evicted.LastDestroyedCause = CauseWriteFailed
+	s.evicted.LastDestroyedReason = reason
+
+	s.destroyedPending.Frames++
+	s.destroyedPending.Bytes += size
+	s.destroyedPending.widen(f.TS)
+
+	windowOpen := s.lastDestroyedReport.IsZero() ||
+		time.Since(s.lastDestroyedReport) >= destroyedReportInterval
+
+	// Written through, never batched — see destroyedReportInterval.
+	//
+	// A failure to write it is reported when the run of failures *begins*,
+	// and then at the same one-per-window rate as the loss line. Reporting it
+	// only at window boundaries would hide a failure that started just after
+	// one for up to a minute and then blame a later sample for it; reporting
+	// every sample would be the log storm the window exists to prevent.
+	if err := s.persistEvictionsLocked(); err != nil {
+		if !s.persistFailing || windowOpen {
+			logging.Errorf("cb-agent: spool: could not persist the eviction record: %v", err)
+		}
+		s.persistFailing = true
+	} else {
+		s.persistFailing = false
+	}
+
+	if !windowOpen {
+		return
+	}
+	pending := s.destroyedPending
+	s.destroyedPending = EvictionStats{}
+	s.lastDestroyedReport = time.Now()
+
+	// Errorf, not Warnf: cap eviction is a policy working as designed, while
+	// this is the spool failing to do its job at all — and unlike eviction it
+	// will keep happening, silently, for as long as the underlying condition
+	// lasts.
+	//
+	// Both ends of the window, oldest first. Printing the triggering frame's
+	// timestamp — the newest of the batch — followed by ".." told an operator
+	// the hole started where it in fact ended.
+	logging.Errorf(
+		"cb-agent: spool: WARNING permanently lost %d observation(s) (%d bytes) covering %s..%s that "+
+			"could not be buffered (%s) — there is no other copy; cumulative loss for this agent is "+
+			"%d observation(s) / %d bytes.",
+		pending.Frames, pending.Bytes,
+		formatEvictedTS(pending.OldestDroppedTS), formatEvictedTS(pending.NewestDroppedTS),
+		reason, s.evicted.Frames, s.evicted.Bytes,
+	)
+}
+
+// EvictionStats returns a snapshot of what this spool has permanently
+// destroyed since its state directory was created.
+func (s *Spool) EvictionStats() EvictionStats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.evicted
+}
+
+// loadEvictions reads the persisted record. A missing file means "nothing has
+// ever been evicted", which is the honest reading for a fresh state
+// directory. A corrupt one is reported as an error rather than silently reset
+// to zero: this file is the audit trail for destroyed data, and quietly
+// starting it over is the precise failure this whole mechanism exists to
+// prevent.
+func (s *Spool) loadEvictions() error {
+	data, err := os.ReadFile(s.evictedPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("spool: read %s: %w", s.evictedPath, err)
+	}
+	var stats EvictionStats
+	if err := json.Unmarshal(data, &stats); err != nil {
+		return fmt.Errorf("spool: decode %s: %w", s.evictedPath, err)
+	}
+	s.evicted = stats
+	return nil
+}
+
+// persistEvictionsLocked writes the record atomically — temp file at 0600,
+// then rename over the destination — exactly as writeHeadMarker does, so a
+// concurrent reader (or a restart mid-write) sees either the previous
+// complete record or the new one. A torn eviction record must never be
+// readable: it would understate the loss, which is worse than no record at
+// all because it looks authoritative.
+func (s *Spool) persistEvictionsLocked() error {
+	data, err := json.Marshal(s.evicted)
+	if err != nil {
+		return fmt.Errorf("spool: encode evictions: %w", err)
+	}
+	tmp := s.evictedPath + ".tmp"
+	// Written, fsynced, then renamed, and the directory fsynced after —
+	// appendLine already does this for queue.jsonl, and a record of what was
+	// permanently destroyed has no business being less durable than the queue
+	// it audits. Without the syncs a power cut can leave the rename visible
+	// and the bytes not, or neither, and lose exactly the counts this file
+	// exists to carry across a restart.
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("spool: write %s: %w", tmp, err)
+	}
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		f.Close()
+		return fmt.Errorf("spool: write %s: %w", tmp, err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return fmt.Errorf("spool: sync %s: %w", tmp, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("spool: close %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, s.evictedPath); err != nil {
+		return fmt.Errorf("spool: rename %s: %w", tmp, err)
+	}
+	return syncDir(filepath.Dir(s.evictedPath))
+}
+
+// syncDir fsyncs a directory so a rename into it is durable. A directory that
+// cannot be opened for reading is reported rather than ignored: it means the
+// state directory has gone, which is one of the conditions this whole record
+// exists to survive.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("spool: open %s: %w", dir, err)
+	}
+	if err := d.Sync(); err != nil {
+		d.Close()
+		return fmt.Errorf("spool: sync %s: %w", dir, err)
+	}
+	return d.Close()
+}

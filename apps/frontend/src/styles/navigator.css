@@ -1,0 +1,516 @@
+/* Global navigator — all colors resolve through the active application theme. */
+.navigator-trigger {
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  color: var(--color-text-muted);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.navigator-trigger:hover {
+  color: var(--color-text);
+  border-color: var(--color-primary);
+}
+
+.navigator-trigger:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.navigator-trigger kbd {
+  padding: 2px 5px;
+  color: var(--color-text-muted);
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 9px;
+}
+
+.navigator-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-start;
+  padding: calc(var(--header-height, 52px) + 12px) 16px 16px;
+  background: color-mix(in srgb, var(--color-bg) 55%, transparent);
+}
+
+.navigator-panel {
+  width: min(924px, calc(100vw - 32px));
+  height: min(824px, calc(100dvh - var(--header-height, 52px) - 28px));
+  min-height: 480px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  box-shadow: 0 18px 48px color-mix(in srgb, var(--color-bg) 74%, transparent);
+}
+
+.navigator-titlebar,
+.navigator-search-row,
+.navigator-footer {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.navigator-titlebar {
+  min-height: 68px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+}
+
+.navigator-titlebar h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 750;
+  letter-spacing: 0.01em;
+}
+
+.navigator-titlebar p {
+  margin: 3px 0 0;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.navigator-close {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.navigator-search-row {
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  color: var(--color-text-muted);
+}
+
+.navigator-input {
+  min-width: 0;
+  flex: 1;
+  padding: 8px 0;
+  color: var(--color-text);
+  background: transparent;
+  border: 0;
+  outline: 0;
+  font-size: 14px;
+}
+
+.navigator-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.navigator-hint,
+.navigator-footer kbd {
+  padding: 2px 6px;
+  color: var(--color-text-muted);
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 10px;
+}
+
+.navigator-controls {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.navigator-modes,
+.navigator-categories {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 8px 12px;
+}
+
+.navigator-modes {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.navigator-modes button,
+.navigator-categories button,
+.navigator-pinned button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 5px 10px;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.navigator-modes button.is-active,
+.navigator-categories button.is-active {
+  color: var(--color-primary-fg);
+  background: var(--color-primary);
+  border-color: var(--color-primary-hover);
+}
+
+.navigator-pinned {
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.navigator-pinned > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.navigator-pinned > div {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+}
+
+.navigator-pinned button {
+  min-height: 36px;
+  color: var(--color-text);
+  background: var(--color-surface-alt);
+  border-color: var(--color-border);
+}
+
+.navigator-pinned em {
+  align-self: center;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.navigator-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 8px 14px;
+  font-size: 12px;
+}
+
+.navigator-banner--error {
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-danger) 35%, transparent);
+}
+
+.navigator-retry {
+  margin-left: auto;
+  padding: 4px 9px;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.navigator-results {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px;
+}
+
+.navigator-groups--columns {
+  columns: 3;
+  column-gap: 8px;
+}
+
+.navigator-group {
+  break-inside: avoid;
+  margin: 0 0 8px;
+}
+
+.navigator-group-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px 5px;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.navigator-group-count {
+  margin-left: auto;
+  letter-spacing: 0;
+}
+
+.navigator-row {
+  display: flex;
+  align-items: stretch;
+  min-height: 48px;
+  margin-bottom: 2px;
+  overflow: hidden;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+
+.navigator-row--active {
+  background: var(--color-surface-alt);
+  border-color: var(--color-primary);
+  /* A bar that is either there or not, as well as a colour change: plan 01
+     requires the selected row to be distinguishable without relying on colour,
+     and background plus border-colour were both colour. Inset, so appearing
+     costs no layout shift. */
+  box-shadow: inset 3px 0 0 0 var(--color-primary);
+}
+
+/* The pointer and the keyboard drive the same highlight, so a row does not get
+   a second, competing hover treatment. This rule exists to say that out loud:
+   hovering *is* selecting here. */
+@media (hover: hover) {
+  .navigator-row:hover {
+    cursor: pointer;
+  }
+}
+
+.navigator-row-main {
+  min-width: 0;
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: 20px minmax(90px, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  padding: 7px 8px;
+  color: var(--color-text);
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.navigator-row-icon {
+  display: flex;
+  align-items: center;
+  color: var(--color-text-muted);
+}
+
+.navigator-row-label {
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.navigator-row-desc {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.navigator-current {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 4px;
+  color: var(--color-text);
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.navigator-type-badge {
+  padding: 1px 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.navigator-row-pin {
+  width: 40px;
+  min-height: 40px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+/* main.css sets `*:focus-visible { outline: ... !important }` as an app-wide
+   baseline, so the search field drew a ring the navigator never asked for and
+   could not switch off without matching that !important.
+   
+   The field is focused the instant the overlay opens, and a text input matches
+   :focus-visible whenever it is focused, so that ring was permanently on --
+   read as a border drawn around the box rather than as a focus cue, which is
+   the opposite of what a focus indicator is for. The caret does that job for a
+   text field, and it is the only element here that has one. */
+.navigator-input:focus-visible {
+  outline: none !important;
+}
+
+/* Every control below has no caret, so the ring is the only indicator they
+   have and it stays. */
+.navigator-close:focus-visible,
+.navigator-modes button:focus-visible,
+.navigator-categories button:focus-visible,
+.navigator-pinned button:focus-visible,
+.navigator-row-main:focus-visible,
+.navigator-row-pin:focus-visible,
+.navigator-retry:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
+.navigator-empty,
+.navigator-footnote {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 96px;
+  padding: 16px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.navigator-footnote {
+  min-height: auto;
+  justify-content: flex-start;
+  border-top: 1px solid var(--color-border);
+}
+
+.navigator-footer {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 14px;
+  color: var(--color-text-muted);
+  border-top: 1px solid var(--color-border);
+  border-bottom: 0;
+  font-size: 10px;
+}
+
+.navigator-footer > span:last-child {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.navigator-spin {
+  animation: navigator-spin 1s linear infinite;
+}
+
+@keyframes navigator-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 900px) {
+  .navigator-panel {
+    width: min(760px, calc(100vw - 24px));
+  }
+
+  .navigator-groups--columns {
+    columns: 2;
+  }
+}
+
+@media (max-width: 640px) {
+  .navigator-trigger span,
+  .navigator-trigger kbd {
+    display: none;
+  }
+  .navigator-overlay {
+    padding: 0;
+  }
+
+  .navigator-panel,
+  .navigator-panel--mobile {
+    width: 100vw;
+    max-width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    min-height: 100dvh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .navigator-titlebar {
+    min-height: 62px;
+  }
+
+  .navigator-groups--columns {
+    columns: 1;
+  }
+
+  .navigator-pinned {
+    grid-template-columns: 1fr;
+  }
+
+  .navigator-row-main {
+    grid-template-columns: 20px minmax(0, 1fr);
+  }
+
+  .navigator-row-desc {
+    grid-column: 2;
+  }
+
+  .navigator-footer > span:last-child {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .navigator-spin {
+    animation: none;
+  }
+}

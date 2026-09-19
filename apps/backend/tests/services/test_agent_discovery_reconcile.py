@@ -46,7 +46,7 @@ from app.services import (
     agent_discovery,
     agent_discovery_reconcile,
     agent_registry,
-    discovery_service,
+    discovery_dispatch,
 )
 
 _SUBNET = "10.61.0.0/24"
@@ -187,7 +187,7 @@ def handed_off(monkeypatch):  # type: ignore[no-untyped-def]
     """
     handled: list[int] = []
     monkeypatch.setattr(
-        discovery_service, "schedule_discovery_scan_job", lambda job_id: handled.append(job_id)
+        discovery_dispatch, "schedule_discovery_scan_job", lambda job_id: handled.append(job_id)
     )
     return handled
 
@@ -353,7 +353,7 @@ async def test_an_expired_lease_fails_as_agent_disconnected_and_keeps_its_findin
     assert job.status == "failed"
     assert job.error_reason == agent_discovery.ERROR_AGENT_DISCONNECTED
     assert job.dispatch_status == agent_discovery_reconcile.DISPATCH_STATUS_EXPIRED
-    # The counters the ingest path accumulated are not rewritten either (D-10).
+    # The counters the ingest path accumulated are not rewritten either.
     assert (job.hosts_found, job.finding_count) == (2, 2)
     surviving = db_session.query(ScanResult).filter(ScanResult.scan_job_id == job.id).all()
     assert {r.id for r in surviving} == {r.id for r in kept}
@@ -653,7 +653,7 @@ def test_two_real_workers_expire_one_dead_lease_exactly_once(setup_db, monkeypat
     nothing to do.
     """
     barrier = threading.Barrier(2)
-    original = discovery_service.finalize_agent_job
+    original = discovery_dispatch.finalize_agent_job
 
     async def barriered(db, job, status, **kwargs):  # type: ignore[no-untyped-def]
         # Inside the pass, after selection and before the compare-and-set: the
@@ -662,8 +662,8 @@ def test_two_real_workers_expire_one_dead_lease_exactly_once(setup_db, monkeypat
         barrier.wait(timeout=10)
         return await original(db, job, status, **kwargs)
 
-    monkeypatch.setattr(discovery_service, "finalize_agent_job", barriered)
-    monkeypatch.setattr(discovery_service, "schedule_discovery_scan_job", lambda job_id: None)
+    monkeypatch.setattr(discovery_dispatch, "finalize_agent_job", barriered)
+    monkeypatch.setattr(discovery_dispatch, "schedule_discovery_scan_job", lambda job_id: None)
     monkeypatch.setattr(agent_registry, "is_agent_online", AsyncMock(return_value=False))
     monkeypatch.setattr(agent_registry, "get_agent_connection_owner", AsyncMock(return_value=None))
     monkeypatch.setattr(
@@ -717,7 +717,7 @@ def test_two_real_workers_retry_one_parked_job_exactly_once(setup_db, monkeypatc
 
     monkeypatch.setattr(agent_discovery, "derive_discovery_scope", barriered_derive)
     monkeypatch.setattr(agent_registry, "publish_agent_control_frame", AsyncMock(side_effect=spy))
-    monkeypatch.setattr(discovery_service, "schedule_discovery_scan_job", lambda job_id: None)
+    monkeypatch.setattr(discovery_dispatch, "schedule_discovery_scan_job", lambda job_id: None)
     monkeypatch.setattr(agent_registry, "is_agent_online", AsyncMock(return_value=True))
     monkeypatch.setattr(
         agent_registry, "get_agent_connection_owner", AsyncMock(return_value="worker-1")
@@ -757,7 +757,7 @@ async def test_the_scheduled_pass_runs_on_the_event_loop_holding_its_own_lock(
     """Both halves of the registration contract, in one pass.
 
     **On the loop**, because the drain calls
-    `discovery_service.schedule_discovery_scan_job`, which starts the
+    `discovery_dispatch.schedule_discovery_scan_job`, which starts the
     server-scan executor with `asyncio.create_task` — that raises where there is
     no running loop, and it is a live defect on the neighbouring path
     (`_scan_finalize` calls the same drain from a `run_in_executor` worker
@@ -850,12 +850,12 @@ def test_the_interval_job_is_registered_in_the_lifespan_and_not_in_reload_discov
     write and *first removes every job it registered*, so anything registered
     there is silently unregistered the next time an administrator saves a
     profile — the failure mode has no symptom until a dispatch is never
-    expired. The lifespan registers it once, under its own advisory lock.
+    expired. Startup registers it once, under its own advisory lock.
     """
     backend = Path(__file__).resolve().parents[2]
-    main_py = (backend / "src/app/main.py").read_text()
+    jobs_py = (backend / "src/app/startup/jobs.py").read_text()
     scheduler_py = (backend / "src/app/core/scheduler.py").read_text()
 
-    assert f'id="{agent_discovery_reconcile.LOCK_NAME}"' in main_py
-    assert "run_agent_discovery_reconciliation" in main_py
+    assert f'id="{agent_discovery_reconcile.LOCK_NAME}"' in jobs_py
+    assert "run_agent_discovery_reconciliation" in jobs_py
     assert "agent_discovery_reconcile" not in scheduler_py

@@ -58,9 +58,30 @@ reaches every route rather than being dropped.
 - Verify the destination URL (or recipient address) on the sink.
 - Confirm a route exists whose minimum severity is at or below the one you expect, and that both
   sink and route are enabled.
-- Use the sink's **Test** action and read the error it returns — this is the only delivery diagnostic; there
-  is no delivery log or history view. **Test** sends down the same path as a real alert, so a green
-  test means delivery works.
+- Use the sink's **Test** action and read the result panel it returns — this is the only delivery
+  diagnostic; there is no delivery log or history view.
+
+### What a Test actually establishes
+
+**Test** sends down the same path as a real alert and classifies the provider's response the same
+way, so the two agree. What it proves is bounded, and the result panel is worded to match:
+
+| Result | What it means | What it does **not** mean |
+|---|---|---|
+| **Accepted by _provider_** | The provider returned a 2xx and took the request | That a person saw it. The provider can still drop, filter, or delay the message downstream |
+| **… did not accept it** (terminal) | The request was refused and will not be retried — bad credentials, a rejected URL, missing configuration | That the destination is unreachable in general; fix the named cause and test again |
+| **… did not accept it** (retrying) | A transient failure — rate limit, timeout, provider outage. Bounded retries apply | That it will eventually succeed |
+
+The panel reports the attempt count, the HTTP status, and any `Retry-After` window the provider
+asked for. A rejected response is never reported as success: acceptance, configuration being saved,
+and a human reading the message are three separate events.
+
+The result also names **which destination** answered. The provider name alone cannot tell two Slack
+destinations apart, and an outcome you cannot attribute is not one you can act on.
+
+Where the outcome has a known next action, the panel states it — re-enter credentials that could not
+be decrypted, wait out a rate-limit window, complete a half-configured destination. An outcome the
+UI does not recognise is reported with the server's own reason and no invented advice.
 - For Email sinks, check **Settings → SMTP**, since the sink sends through it.
 - If a sink starts failing right after a vault key change, re-save its webhook URL — the stored
   ciphertext can no longer be decrypted with the current key.

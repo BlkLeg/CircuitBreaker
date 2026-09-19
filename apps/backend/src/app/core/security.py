@@ -18,10 +18,16 @@ from typing import Any
 import bcrypt
 import jwt
 from fastapi import Depends, HTTPException
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from starlette.requests import HTTPConnection
 
-from app.core.constants import CLIENT_HASH_PBKDF2_ITERATIONS, CLIENT_HASH_V2_PREFIX
+from app.core.constants import (
+    API_TOKEN_LAST_USED_LOCK_TIMEOUT_MS,
+    API_TOKEN_LAST_USED_TOUCH_SECONDS,
+    CLIENT_HASH_PBKDF2_ITERATIONS,
+    CLIENT_HASH_V2_PREFIX,
+)
 from app.core.time import utcnow
 from app.db.models import User
 from app.db.session import get_db
@@ -307,7 +313,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 def gravatar_hash(email: str) -> str:
     # MD5 is required by the Gravatar protocol and is intentionally limited to this helper.
-    return hashlib.md5(email.strip().lower().encode(), usedforsecurity=False).hexdigest()  # noqa: S324
+    return hashlib.md5(email.strip().lower().encode(), usedforsecurity=False).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -421,18 +427,15 @@ def _is_user_accessible(db: Session, user_id: int) -> bool:
 #: Routes that may act as the admin sentinel while the app is unbootstrapped.
 #:
 #: Before the first admin exists there is nobody to authenticate, so first-run
-#: has to run as *something*. It used to run as an admin on every route, which
-#: meant anyone who could reach the port during the setup window could rewrite
-#: settings and OAuth providers — and so hand themselves the operator's account
-#: at the moment it was created. The setup token (SEC-09) guarded only the
-#: account creation itself, not the configuration around it.
+#: must act as something — but NOT as an admin on every route: that lets anyone
+#: reaching the port during the setup window rewrite settings and OAuth providers
+#: and hand themselves the operator's account as it is created. The setup token
+#: guards account creation, not the configuration around it.
 #:
-#: This is the surface the OOBE wizard actually touches before it flips
-#: `auth_enabled`: the bootstrap endpoints (themselves setup-token gated), the
-#: auth routes, the settings read that renders the wizard, and the OAuth write
-#: the provider step performs before an account can exist. Everything else —
-#: inventory, monitors, agents, admin, uploads, docs — answers 401 until an
-#: admin exists, which is what it would have done anyway had auth been on.
+#: This is the surface the OOBE wizard touches before it flips `auth_enabled`:
+#: the setup-token-gated bootstrap endpoints, the auth routes, the settings read
+#: that renders the wizard, and the OAuth write the provider step performs.
+#: Everything else answers 401 until an admin exists.
 #:
 #: `(prefix, methods)`; `methods` of None means any method.
 _PRE_BOOTSTRAP_SETUP_SURFACE: tuple[tuple[str, frozenset[str] | None], ...] = (
@@ -455,6 +458,64 @@ def _is_pre_bootstrap_setup_surface(request: HTTPConnection) -> bool:
     return False
 
 
+def touch_api_token_last_used(row: Any) -> None:
+    """Stamp ``last_used_at`` on an APIToken, on a connection of its own.
+
+    Deliberately does *not* write through the caller's session. Auth runs inside
+    whatever transaction the request already holds, and an UPDATE there keeps a
+    row-level write lock on the token until that transaction ends -- which is
+    the whole request. Two consequences made that untenable: concurrent callers
+    sharing one automation token serialised on a single row, and under the test
+    suite's SAVEPOINT isolation ``commit()`` only releases a savepoint, so the
+    lock outlived the stamp and deadlocked the monitor-stream handshake against
+    the stream's own connection.
+
+    A short-lived session sidesteps both, and ``lock_timeout`` bounds the write
+    so a contended row is skipped rather than waited on. The stamp is advisory:
+    losing the race costs an imprecise ``last_used_at``, while blocking here
+    costs the request.
+
+    The trade-off, recorded because the earlier design chose the other side of
+    it: a token row created inside a test's uncommitted SAVEPOINT is invisible
+    to this connection, so the stamp no-ops under those fixtures. The throttle
+    therefore reads committed state -- which is what the next request loads
+    anyway -- rather than an in-memory value.
+    """
+    token_id = getattr(row, "id", None)
+    if token_id is None:
+        return
+
+    now = utcnow()
+    previous = getattr(row, "last_used_at", None)
+    if previous is not None and (now - previous).total_seconds() < (
+        API_TOKEN_LAST_USED_TOUCH_SECONDS
+    ):
+        return
+
+    from app.db.session import SessionLocal
+
+    try:
+        with SessionLocal() as writer:
+            # SET LOCAL is scoped to this transaction, so it cannot leak onto
+            # the pooled connection once the commit below ends it.
+            writer.execute(
+                text("SET LOCAL lock_timeout = :timeout"),
+                {"timeout": f"{API_TOKEN_LAST_USED_LOCK_TIMEOUT_MS}ms"},
+            )
+            writer.execute(
+                text("UPDATE api_tokens SET last_used_at = :now WHERE id = :token_id"),
+                {"now": now, "token_id": token_id},
+            )
+            writer.commit()
+    except Exception as exc:
+        _logger.debug(
+            "[security] last_used_at touch skipped for token %s: %s",
+            token_id,
+            exc,
+            exc_info=True,
+        )
+
+
 def service_account_token_is_live(db: Session, raw_token: str) -> bool:
     """True when `raw_token` still matches an unexpired APIToken row.
 
@@ -469,6 +530,7 @@ def service_account_token_is_live(db: Session, raw_token: str) -> bool:
         if verify_salted_api_token_hash(raw_token, candidate.token_hash or ""):
             if candidate.expires_at and candidate.expires_at <= utcnow():
                 return False
+            touch_api_token_last_used(candidate)
             return True
     return False
 
@@ -533,15 +595,13 @@ def resolve_optional_user_id_sync(db: Session, request: HTTPConnection) -> int |
             if uid_int == 0:
                 # A service-account JWT is live only while its APIToken row is.
                 # `_is_user_accessible` returns True unconditionally for the
-                # sentinel, so without this the JWT authenticated on signature
-                # alone: revoking the row, or rotating it, left the credential
-                # working until its own `exp` — a year by default.
+                # sentinel, so without this the JWT would authenticate on
+                # signature alone and survive revocation until its own `exp`.
                 #
                 # The scan verifies rather than looks up, because the salt is
-                # per-token random. It costs the same scan opaque tokens already
-                # pay, and only on a cache miss: `_session_cache` holds the
-                # answer for 10s and `invalidate_token_cache()` runs on revoke
-                # and rotate, so a withdrawal is visible within that window.
+                # per-token random. Same cost opaque tokens already pay, and only
+                # on a cache miss: `_session_cache` holds the answer 10s and
+                # `invalidate_token_cache()` runs on revoke and rotate.
                 if not service_account_token_is_live(db, raw_token):
                     return None
                 token_scopes = _normalise_token_scopes(payload.get("scopes"))
@@ -572,19 +632,19 @@ def resolve_optional_user_id_sync(db: Session, request: HTTPConnection) -> int |
         if _is_user_accessible(db, uid):
             token_scopes = _normalise_token_scopes(api_token_row.scopes)
             if token_scopes == ():
-                # D9 back-compat, and INC-04's fix for existing rows.
-                # APIToken.scopes is `mapped_column(JSONB, default=list)`, so every
-                # token created through the UI before scopes were settable stored
-                # [] — not NULL. Treating that as "no scopes granted" is what makes
-                # those tokens 403 on every require_scope route today. None means
-                # "unscoped: fall through to the creating user's own permissions",
-                # which is what they have always effectively had.
+                # APIToken.scopes is `mapped_column(JSONB, default=list)`, so
+                # tokens created before scopes were settable stored [], not NULL.
+                # Treating that as "no scopes granted" 403s them on every
+                # require_scope route; None means "unscoped: fall through to the
+                # creating user's own permissions", which is what they have
+                # always effectively had.
                 #
-                # Deliberately NOT done inside _normalise_token_scopes: the
-                # `uid == 0` service-account branch above calls it too, and a
-                # service account has no real creator — inheriting there would
-                # promote an empty-scoped service account to superuser.
+                # Deliberately NOT inside _normalise_token_scopes: the `uid == 0`
+                # service-account branch calls it too, and a service account has
+                # no real creator — inheriting there would promote an
+                # empty-scoped service account to superuser.
                 token_scopes = None
+            touch_api_token_last_used(api_token_row)
             _session_cache_set(token_hash, uid, token_scopes)
             _set_request_token_scopes(request, token_scopes)
             return uid
@@ -593,19 +653,37 @@ def resolve_optional_user_id_sync(db: Session, request: HTTPConnection) -> int |
     return None
 
 
-async def get_optional_user(request: HTTPConnection, db: Session = Depends(get_db)) -> int | None:
+def get_optional_user(request: HTTPConnection, db: Session = Depends(get_db)) -> int | None:
     """Return the authenticated user_id, or None if absent/invalid.
 
     Returns 0 (service-account sentinel) when the LegacyTokenMiddleware
     has flagged the request (CB_LEGACY_AUTH rollback).  Never raises.
+
+    Sync on purpose. It awaits nothing and its body is entirely
+    blocking: `resolve_optional_user_id_sync` reads AppSettings through
+    `get_or_create_settings`, then does a synchronous Redis MGET, and on a cache
+    miss falls through to a full `APIToken` scan with a per-row HMAC verify —
+    all of it on the event loop, on *every* request, because `async def` makes
+    FastAPI await the dependency inline.
+
+    Declared `def`, FastAPI runs it in the threadpool instead. This matters more
+    than any single handler conversion: slice 2.5 moved five nav endpoints off
+    the loop while this ran ahead of all of them, so the loop-lag delta that
+    slice was meant to demonstrate would have read as roughly nothing, and the
+    conclusion would have been "de-asyncing did not help" rather than "the auth
+    prologue was never converted".
     """
     return resolve_optional_user_id_sync(db, request)
 
 
-async def require_write_auth(
+def require_write_auth(
     user_id: int | None = Depends(get_optional_user), db: Session = Depends(get_db)
 ) -> int | None:
-    """Raise 401/403 when write access is not authorised."""
+    """Raise 401/403 when write access is not authorised.
+
+    Sync for the same reason as `get_optional_user` above: `db.get(User, ...)`
+    and `_is_user_accessible` are blocking reads that ran on the event loop.
+    """
     from app.core.rbac import _effective_role, effective_scopes, has_scope
 
     if user_id is None:
@@ -624,10 +702,14 @@ async def require_write_auth(
     return user_id
 
 
-async def require_auth_always(
+def require_auth_always(
     user_id: int | None = Depends(get_optional_user), db: Session = Depends(get_db)
 ) -> int:
-    """Validates JWT and raises 401 if no authenticated user."""
+    """Validates JWT and raises 401 if no authenticated user.
+
+    Sync for the same reason as `get_optional_user` above — `_is_user_accessible`
+    is a blocking read, and this dependency guards most of the API.
+    """
     if user_id is None:
         raise HTTPException(status_code=401, detail="Authentication required")
     if user_id != 0 and not _is_user_accessible(db, user_id):

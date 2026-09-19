@@ -22,6 +22,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # cannot drift.
 _JSON_MANIFESTS = ("package.json", "apps/frontend/package.json")
 
+# The lockfiles carry the project's own version too, in two places each: the
+# top-level "version" and packages[""].version, which npm keeps in step with
+# the manifest beside it. Registered separately from _JSON_MANIFESTS because
+# writing one means writing both copies, and because every other "version" in
+# the file belongs to a dependency and must never be touched — the root
+# lockfile sat two releases behind package.json precisely because nothing here
+# was looking at it.
+_LOCKFILES = ("package-lock.json", "apps/frontend/package-lock.json")
+
 # A semver-ish token, used to capture the version out of running prose. The
 # prerelease part requires each dot to be followed by another character, so a
 # sentence-ending period after "1.0.0-rc.3" is left where it belongs.
@@ -47,7 +56,7 @@ _DOC_VERSION_REFS: tuple[tuple[str, str], ...] = (
 
 def collect_versions(root: Path) -> dict[str, str]:
     versions = {"VERSION": (root / "VERSION").read_text().strip()}
-    for rel in _JSON_MANIFESTS:
+    for rel in (*_JSON_MANIFESTS, *_LOCKFILES):
         path = root / rel
         if path.exists():
             versions[rel] = json.loads(path.read_text())["version"]
@@ -99,16 +108,134 @@ def check_doc_versions(root: Path, expected: str | None = None) -> list[str]:
     return problems
 
 
+def _rewrite_manifest(path: Path, current: str, canonical: str) -> None:
+    """Replace only the top-level "version" value, leaving the file otherwise byte-identical.
+
+    Not json.loads/json.dumps: a package.json is hand-maintained, and reflowing
+    the whole file to change four characters would bury the one edit that
+    matters in a diff nobody can review. The old value is read out of the
+    parsed document first, so the string being replaced is known exactly rather
+    than guessed at by pattern — a dependency pinned to the same version is
+    left alone.
+    """
+    text = path.read_text(encoding="utf-8")
+    needle = f'"version": "{current}"'
+    if needle not in text:
+        # Unusual spacing. Fall back to a targeted pattern rather than
+        # rewriting the document.
+        pattern = r'("version"\s*:\s*)"' + re.escape(current) + r'"'
+        updated, count = re.subn(pattern, lambda m: f'{m.group(1)}"{canonical}"', text, count=1)
+    else:
+        updated, count = text.replace(needle, f'"version": "{canonical}"', 1), 1
+    if count != 1:
+        raise ValueError(f"{path}: could not locate the version field to rewrite")
+    path.write_text(updated, encoding="utf-8")
+
+
+def _rewrite_lockfile(path: Path, canonical: str) -> None:
+    """Set both copies of the project's own version, leaving dependencies alone.
+
+    A full JSON round-trip here rather than a textual substitution, because a
+    lockfile is full of dependency versions and some of them legitimately equal
+    this project's. npm writes these as JSON.stringify(obj, null, 2) followed
+    by a newline, which json.dumps(indent=2) reproduces byte for byte, so the
+    diff is the two lines that changed and not the whole 600 KB file.
+    """
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["version"] = canonical
+    root_package = document.get("packages", {}).get("")
+    if root_package is not None and "version" in root_package:
+        root_package["version"] = canonical
+    path.write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _rewrite_doc(path: Path, pattern: str, canonical: str) -> int:
+    """Replace the captured version inside each match, leaving the prose alone."""
+    text = path.read_text(encoding="utf-8")
+
+    def repl(match: re.Match[str]) -> str:
+        whole = match.group(0)
+        start = match.start(1) - match.start()
+        end = match.end(1) - match.start()
+        return whole[:start] + canonical + whole[end:]
+
+    updated, count = re.subn(pattern, repl, text, flags=re.MULTILINE)
+    if count and updated != text:
+        path.write_text(updated, encoding="utf-8")
+    return count
+
+
+def sync_versions(root: Path, expected: str | None = None) -> list[str]:
+    """Rewrite every registered version source to match VERSION. Returns what changed.
+
+    The point of GOV-09 is that VERSION is the only hand-edited version, and
+    for apps/backend/pyproject.toml that is literally true — hatch reads the
+    file. A package.json cannot, and neither can a sentence in a README, so
+    for those "derives from VERSION" has to mean generated from it and gated on
+    it. This is the generator; check_parity and check_doc_versions are the gate.
+
+    It shares _JSON_MANIFESTS and _DOC_VERSION_REFS with them deliberately. A
+    separate list of places to write would be one more thing that can fall out
+    of step with the list of places to check, which is the class of bug this
+    whole module exists to prevent.
+
+    Only mechanical edits are made. A document whose wording changed so its
+    pattern no longer matches is left untouched for a human, and the gate then
+    reports it — sync never invents a sentence.
+    """
+    canonical = (expected or (root / "VERSION").read_text()).strip()
+    changed: list[str] = []
+
+    version_file = root / "VERSION"
+    if version_file.read_text().strip() != canonical:
+        version_file.write_text(canonical + "\n")
+        changed.append(f"VERSION -> {canonical}")
+
+    for rel, current in collect_versions(root).items():
+        if rel == "VERSION" or current == canonical:
+            continue
+        if rel in _LOCKFILES:
+            _rewrite_lockfile(root / rel, canonical)
+        else:
+            _rewrite_manifest(root / rel, current, canonical)
+        changed.append(f"{rel}: {current} -> {canonical}")
+
+    for rel, pattern in _DOC_VERSION_REFS:
+        path = root / rel
+        if not path.exists():
+            continue
+        before = re.findall(pattern, path.read_text(encoding="utf-8"), re.MULTILINE)
+        stale = [v for v in before if v != canonical]
+        if not stale:
+            continue
+        _rewrite_doc(path, pattern, canonical)
+        changed.extend(f"{rel}: {value} -> {canonical}" for value in stale)
+
+    return changed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Assert every version source agrees with VERSION.")
     parser.add_argument(
         "--expected", default=None, help="Version the caller (e.g. a git tag) expects"
     )
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        help="Rewrite every version source to match VERSION instead of only reporting drift",
+    )
     args = parser.parse_args()
+
+    if args.write:
+        for line in sync_versions(REPO_ROOT, expected=args.expected):
+            print(f"  {line}")
 
     problems = check_parity(REPO_ROOT, expected=args.expected)
     problems += check_doc_versions(REPO_ROOT, expected=args.expected)
     if problems:
+        # After --write these are the edits sync could not make mechanically:
+        # a registered document that has been reworded or deleted. Both need a
+        # person, and both are reported rather than passed over.
         print("version parity FAILED:", file=sys.stderr)
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)

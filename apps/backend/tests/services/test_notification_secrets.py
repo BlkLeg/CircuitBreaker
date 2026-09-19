@@ -1,4 +1,4 @@
-"""Notification sink secret handling (INC-06).
+"""Notification sink secret handling.
 
 A Slack/Discord/Teams incoming-webhook URL is a bearer credential: whoever
 holds it can post into the channel. These tests pin the three directions the

@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import FleetRow from '../components/agents/FleetRow';
 
 /**
- * FleetRow's four variants (design §5): online, offline, telemetry-off and
+ * FleetRow's four variants: online, offline, telemetry-off and
  * pending-pinned. They exist because the same eleven columns have to answer
  * four different questions, and each variant has a specific way of lying:
  *
@@ -67,6 +67,11 @@ const ONLINE_AGENT = {
   hardware: null,
   latest: LATEST,
   spool_depth: 0,
+  // A depth with no report time is a shape no server produces, and since the
+  // row treats "we do not know when this was measured" as "we do not know the
+  // backlog", omitting it here would describe an agent whose reading is
+  // unknown rather than the healthy one these cases are about.
+  spool_reported_at: RECENT_ISO,
   series: { cpu_pct: [40, 55, 62], mem_pct: [44, 44, 44], net_rx_bps: [1, 2, 3] },
 };
 
@@ -153,6 +158,10 @@ describe('FleetRow offline variant', () => {
     connected_since: null,
     last_seen_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
     spool_depth: 118,
+    // Reported seconds ago: an agent that has only just dropped still has a
+    // reading worth stating as current. The stale-reading cases below are the
+    // other side of that, and they are where the row stops saying "118".
+    spool_reported_at: RECENT_ISO,
   };
 
   it('collapses the metric columns into how long it has been gone', () => {
@@ -183,7 +192,7 @@ describe('FleetRow offline variant', () => {
 });
 
 describe('FleetRow telemetry-off variant', () => {
-  // Design §4 and §1.3, stated twice in the design because it is the row's
+  // Stated twice in the design because it is the row's
   // worst failure: `latest: null` is a real state and must NEVER render as 0%.
   const NO_TELEMETRY_AGENT = {
     ...ONLINE_AGENT,
@@ -210,6 +219,19 @@ describe('FleetRow telemetry-off variant', () => {
     // host telemetry, and losing it would make a healthy agent look absent.
     expect(rowOf()).toHaveAttribute('data-state', 'online');
     expect(screen.getByText('online')).toBeInTheDocument();
+  });
+
+  it('states the absence for a metric this sample does not carry', () => {
+    // A partial sample is ordinary: a host with no exposed sensor reports no
+    // temperature while everything else is fine. The cell is an em dash, the
+    // same convention KeyValue and StatTile use on the detail page — a blank
+    // cell here is indistinguishable from a row that failed to render.
+    renderRow({ ...ONLINE_AGENT, latest: { collected_at: RECENT_ISO, cpu_pct: 62 } });
+
+    expect(screen.getByText('62%')).toBeInTheDocument();
+    // Uptime, Mem, Disk, Net and Temp: everything this sample left out.
+    expect(screen.getAllByText('—')).toHaveLength(5);
+    expect(screen.queryByText('0°C')).not.toBeInTheDocument();
   });
 
   it('still prints a real zero when the agent actually reported one', () => {
@@ -275,7 +297,7 @@ describe('FleetRow pending-pinned variant', () => {
 
 describe('FleetRow spool backlog', () => {
   it('flags an online agent that is quietly buffering', () => {
-    // Design §4: the one signal that predicts trouble before anything goes red.
+    // The one signal that predicts trouble before anything goes red.
     // The agent is up, green and reporting — and none of it is reaching us.
     renderRow({ ...ONLINE_AGENT, spool_depth: 42 });
 
@@ -292,6 +314,85 @@ describe('FleetRow spool backlog', () => {
 
     renderRow({ ...ONLINE_AGENT, spool_depth: null });
     expect(screen.queryByText(/spool/)).not.toBeInTheDocument();
+  });
+});
+
+describe('FleetRow backlog reading freshness', () => {
+  // Hours old: the agent has not been able to report its spool since the link
+  // dropped, which is the whole of the window in which the backlog grows.
+  const STALE_ISO = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+  const GONE_AGENT = {
+    ...ONLINE_AGENT,
+    online: false,
+    connected_since: null,
+    last_seen_at: STALE_ISO,
+  };
+
+  it('never renders a stale zero as "no backlog" — the bug this fixes', () => {
+    // Observed on a live install: an agent offline for hours with 1,195
+    // undelivered frames in queue.jsonl, whose row read spool_depth = 0. The
+    // table rendered no chip at all, which reads as "nothing buffered". It was
+    // not a small number, it was no information, displayed as a measurement.
+    renderRow({ ...GONE_AGENT, spool_depth: 0, spool_reported_at: STALE_ISO });
+
+    const chip = screen.getByText(/spool \?/);
+    expect(chip).toBeInTheDocument();
+    // The specific failure: a bare zero anywhere in that chip.
+    expect(chip.textContent).not.toMatch(/spool 0/);
+    expect(chip).toHaveAttribute('title', expect.stringMatching(/only while it is connected/i));
+  });
+
+  it('quotes the last known value as last-known rather than as current', () => {
+    renderRow({ ...GONE_AGENT, spool_depth: 118, spool_reported_at: STALE_ISO });
+
+    // The number is still shown — withholding it would replace one wrong
+    // answer with no answer — but never as a bare `spool 118`.
+    expect(screen.getByText(/spool \? \(last known 118\)/)).toBeInTheDocument();
+    expect(screen.queryByText(/^spool 118/)).not.toBeInTheDocument();
+  });
+
+  it('says nothing at all for an agent that has never reported a backlog', () => {
+    // Predates the field. There is no last known value to qualify, and a
+    // question mark would imply a reading that was never taken.
+    renderRow({ ...GONE_AGENT, spool_depth: null, spool_reported_at: null });
+
+    expect(screen.queryByText(/spool/)).not.toBeInTheDocument();
+  });
+
+  it('leaves a fresh reading exactly as it was', () => {
+    renderRow({ ...ONLINE_AGENT, spool_depth: 42, spool_reported_at: RECENT_ISO });
+
+    expect(screen.getByText(/spool 42/)).toHaveAttribute('data-tone', 'warn');
+    expect(screen.queryByText(/spool \?/)).not.toBeInTheDocument();
+  });
+
+  it("takes the server's verdict over its own arithmetic", () => {
+    // `spool_stale` is computed server-side precisely so the answer does not
+    // depend on this browser's clock; the timestamp is only the fallback for
+    // an older server. A recent timestamp must not override an explicit True.
+    renderRow({
+      ...ONLINE_AGENT,
+      spool_depth: 7,
+      spool_reported_at: RECENT_ISO,
+      spool_stale: true,
+    });
+
+    expect(screen.getByText(/spool \? \(last known 7\)/)).toBeInTheDocument();
+  });
+
+  it('states the unknown backlog and the destroyed history at the same time', () => {
+    // The two facts are independent: history that is already
+    // gone stays gone however stale the current reading is. One suppressing
+    // the other is exactly how a loss stays invisible.
+    renderRow({
+      ...GONE_AGENT,
+      spool_depth: 0,
+      spool_reported_at: STALE_ISO,
+      spool_evicted_frames: 9412,
+    });
+
+    expect(screen.getByText(/spool \?/)).toBeInTheDocument();
+    expect(screen.getByText(/lost 9412/)).toBeInTheDocument();
   });
 });
 

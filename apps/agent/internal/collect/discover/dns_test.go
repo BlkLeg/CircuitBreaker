@@ -71,7 +71,7 @@ func answering(names ...string) *stubResolver {
 // some other positive timeout would leave every constant true and every real lookup wrong.
 func TestReverseDNSLimitsMatchThePlanAndTheWireContract(t *testing.T) {
 	if DefaultReverseDNSTimeout != 2*time.Second {
-		t.Errorf("DefaultReverseDNSTimeout = %s, want plan §1's 2s", DefaultReverseDNSTimeout)
+		t.Errorf("DefaultReverseDNSTimeout = %s, want 2s", DefaultReverseDNSTimeout)
 	}
 	if MaxHostnameLen != 253 {
 		t.Errorf("MaxHostnameLen = %d, want the DNS wire limit 253", MaxHostnameLen)

@@ -1,8 +1,8 @@
-"""Self-healing reconciliation for discovery readiness (Phase 2).
+"""Self-healing reconciliation for discovery readiness.
 
 Runs on a schedule (wired into APScheduler in main.py). Class-1 capabilities
 (nmap_present, nmap_raw) are healed unconditionally on drift — no user
-consent needed, matching Phase 1's own "should just always be true"
+consent needed, matching the own "should just always be true"
 philosophy. Class-2 (LAN discovery) converges actual state toward the
 persisted lan_discovery_desired setting, which only the user's explicit
 toggle changes — the reconciler never enables LAN discovery on its own

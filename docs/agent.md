@@ -29,7 +29,24 @@ instructions — travels inside that single encrypted session.
 
 **You do not need an inbound firewall rule.** The agent binds no listening socket at all; there
 is nothing on the host for anything to connect *to*. If the connection drops, the agent
-reconnects on exponential backoff with jitter, starting at 1 second and capping at 5 minutes.
+classifies *why* and picks a reconnect schedule from that.
+
+| What happened | Schedule |
+|---|---|
+| The server is coming back — a restart, a warming worker, a graceful close, a rate-limit refusal, or anything that answered at all | 0.25s, 0.5s, 1s, 2s, 4s, 8s, then **every 15s for as long as it takes** |
+| The host or the network is genuinely gone — no route, DNS failure, sixty seconds of silence | 1s doubling to a 5-minute ceiling, as before |
+| The server refused this identity | 30s while waiting for approval; 5 minutes if it does not recognise the device; 30 minutes if the enrolment was revoked or rejected |
+
+Both schedules carry up to 25% jitter so a fleet does not reconnect in lockstep.
+The distinction matters more than it sounds: with one escalating schedule for
+every failure, recovery from a planned restart was decided by whichever rung the
+agent happened to have climbed to, which in practice meant anywhere from thirty
+seconds to twenty minutes for the same restart. A server that is answering now
+gets asked again within fifteen seconds, indefinitely.
+
+Any accepted `hello.ack` resets the schedule. A link that is accepted and then
+dropped three times inside five seconds is treated as flapping and falls back to
+the slower one.
 
 What it does while connected:
 
@@ -49,28 +66,139 @@ All three are capability grants the server issues. None of them can be turned on
 
 ## Install
 
+### Choose the address the agent will dial
+
+An agent dials one address, forever. It is written into `server_url` in
+`/etc/circuit-breaker/agent.toml` at install time and the agent never derives another one, so
+choosing it is the first install decision — not an afterthought.
+
+**It is not the address you browse.** The address that reaches your server from a laptop on the
+LAN is frequently not the address that reaches it from a VPS, a VLAN with its own DNS, or the
+far side of a tunnel. Circuit Breaker therefore asks you which address this agent should use
+rather than guessing from the browser's request.
+
+Declare the addresses your agents can reach under **Settings → Connectivity → Agent Endpoints**.
+Each is a label and a base URL:
+
+| Label | URL |
+|---|---|
+| `LAN` | `https://192.168.0.51` |
+| `Public` | `https://cb.example.com` |
+
+The URL must be a scheme and host only — `https://example.com/cb` is rejected when you save it,
+because every fetch is built as `{url}/install-agent.sh` or `{url}/api/v1/...` and a base with a
+path produces a 404 you would otherwise only discover on the target machine. A trailing slash is
+fine and is stripped.
+
+This is deliberately **not** the *App URL* field beside it. That one is browser-facing and goes
+into invite links; the address an agent uses can legitimately differ from the one a person uses.
+
+The panel shows how many agents enrolled through each endpoint, counted by URL — so an endpoint
+you delete still accounts for the agents that came through it, which keep dialing that address
+regardless.
+
+**With no endpoints declared**, the install command falls back to the address your browser used.
+That is correct on a single-network homelab and wrong everywhere else; declaring one endpoint is
+what makes it right on purpose rather than by accident.
+
+### Unattended enrollment
+
+The default flow is *attended*: the machine prints a fingerprint, and you approve it in the UI.
+That is the only flow in which **no bearer secret exists at all**, and it stays the default.
+
+For a machine nobody will be sitting at — a VM from a launch template, a container image, a
+provisioning script — you can mint an **enrollment token** instead. Go to **Agents → Add agent**,
+choose *Unattended*, and press **Generate token**. The command it produces enrols the machine and
+approves it in one step.
+
+**A token is a bearer credential.** Anything that presents it enrols, with the capabilities you
+scoped it to, until it is used up or expires. That is a real reduction in security posture and it
+is why every bound below is required rather than optional:
+
+| Bound | Default | Maximum |
+|---|---|---|
+| Time to live | 1 hour | 24 hours |
+| Uses | 1 | — |
+| Endpoint | the one you picked | one, always |
+| Capabilities | the ones you scoped | — |
+
+Tokens look like `cbe_` followed by 43 characters. The prefix exists so secret scanners and log
+redaction have something stable to match; this repo's own scanner has a rule for it.
+
+**It is shown once.** The server stores only a SHA-256 of it, so there is no way to read it back —
+if you lose it, mint another and revoke the first.
+
+**Deliver it through the environment, never as an argument.** The command already does this:
+
+```sh
+CB_ENROLL_TOKEN='cbe_…' sudo -E sh "$cb_installer"
+```
+
+`sudo -E` is load-bearing — `sudo` scrubs the environment by default, and without it the token
+never reaches the script and the machine falls back to waiting for a human. Arguments are visible
+in `ps`, and land in shell history and cloud-init logs; the token is never passed as one, and is
+never baked into the script itself, which an unauthenticated route serves.
+
+**What the machine does with it.** The installer writes it to `/etc/circuit-breaker/enroll-token`,
+mode `0600`, owned by `cb-agent`. The agent sends it inside the Noise-encrypted enrollment channel
+— never in plaintext on the wire, even to something terminating TLS — and unlinks the file once
+the server confirms the enrolment. A spent token left on disk is a stale secret with no purpose.
+
+**Revoking.** **Settings → Connectivity → Enrollment Tokens** lists every token with its remaining
+uses and how many agents came through it, and revokes any that is still live. Revoking does not
+disturb agents that already enrolled through it — they hold their own device identity and never
+present the token again. Tokens are never deleted, so an agent can always name the one it came
+from.
+
+**Multi-use tokens.** `max_uses` above 1 exists because a single-use token breaks the case that
+motivates the feature: one token in a launch template, N instances booting, only the first
+enrolling. It is also the widest version of the trade above — the credential enrols anything
+presenting it, N times, for its whole TTL. Prefer a short TTL over a large `max_uses`.
+
 ### Get the command
 
-Go to **Agents → Add agent**. The panel generates the install command for you and shows two
-things you are meant to check before running it: which TLS mode it was built for, and the
-SHA-256 of the script it pipes.
+Go to **Agents → Add agent**. Pick the endpoint this machine should dial, and the panel
+regenerates the command for it. It also shows two things you are meant to check before running
+it: which TLS mode it was built for, and the SHA-256 of the script it pipes.
 
 The command comes in one of two forms depending on your server's certificate.
 
 **Publicly trusted certificate (e.g. Let's Encrypt):**
 
 ```sh
-curl -fsSL https://your-server/install-agent.sh | sudo sh
+curl -fsSL 'https://cb.example.com/install-agent.sh?endpoint=<id>' | sudo sh
 ```
 
 **Self-signed certificate** — the command downloads first, verifies the digest, and only then
 runs it, because `-k` skips certificate verification for the download:
 
 ```sh
-curl -fsSLk https://your-server/install-agent.sh -o /tmp/cb-agent-install.sh && \
-  echo "<script_sha256>  /tmp/cb-agent-install.sh" | sha256sum -c && \
-  sudo sh /tmp/cb-agent-install.sh
+cb_installer="${TMPDIR:-/var/tmp}/cb-agent-install.sh"; \
+  curl -fsSL --insecure --pinnedpubkey "sha256//<tls_pin>" \
+    'https://cb.example.com/install-agent.sh?endpoint=<id>' -o "$cb_installer" && \
+  echo "<script_sha256>  $cb_installer" | sha256sum -c && \
+  sudo sh "$cb_installer"
 ```
+
+`--insecure` and `--pinnedpubkey` are a pair, not a contradiction: curl enforces the pin
+independently of `--insecure`, so together they mean "skip the CA chain, require exactly this
+key" — the same check the agent's own TLS stack makes. The digest check that follows is a second,
+independent check rather than the only one.
+
+The script is staged in `${TMPDIR:-/var/tmp}` rather than `/tmp`. `/tmp` is frequently a small
+tmpfs and is the first filesystem on a busy host to fill; `/var/tmp` is persistent storage. Set
+`TMPDIR` if your host wants it somewhere else.
+
+The `?endpoint=<id>` is not cosmetic and must not be edited out. The command runs on the *target*
+machine, and that machine's `curl` is the only thing `GET /install-agent.sh` ever sees — the id
+is what tells it which address to bake in. Drop it and the route falls back to deriving one from
+its own request, which is the guess the endpoint exists to replace; the published
+`script_sha256` is computed over the endpoint variant, so `sha256sum -c` would also fail and read
+as tampering. Copy the command whole. With no endpoints declared the command carries no
+`?endpoint=` at all, which is the documented fallback rather than a defect.
+
+Deleting an endpoint invalidates its install commands: the URL 404s rather than quietly
+producing a command for a different address.
 
 The `<script_sha256>` is filled in by the panel. Compare it against what the panel shows before
 you run the script. `GET /install-agent.sh` is unauthenticated by design — it embeds only the
@@ -91,14 +219,39 @@ The script maps `uname -m` itself:
 
 Running as root, in order:
 
-1. Creates the service user if it does not exist:
+1. **Checks it can reach the server**, with `GET {server_url}/api/v1/health` through the same TLS
+   trust the agent itself will use — pinning the same SPKI under a self-signed certificate. This
+   runs before anything on the host is touched, so a wrong address costs nothing and says so:
+
+   ```
+   Cannot reach https://cb.example.com from this machine.
+   The agent would dial that address forever and never appear in the UI.
+   ```
+
+   The server cannot make this check for you: it never dials an agent, so the target machine is
+   the first thing that can answer "is this address reachable from here?".
+2. Creates the service user if it does not exist:
    `useradd --system --no-create-home --shell /usr/sbin/nologin cb-agent`.
-2. Downloads the binary from `${SERVER_URL}/api/v1/agents/binary/<version>/linux/<arch>` and
-   verifies it against a SHA-256 digest embedded in the script itself (`sha256sum -c`).
-3. Installs it to `/var/lib/cb-agent/versions/<version>/cb-agent`, points
+3. **Picks somewhere to stage the download**, then downloads the binary from
+   `${SERVER_URL}/api/v1/agents/binary/<version>/linux/<arch>` and verifies it against a SHA-256
+   digest embedded in the script itself (`sha256sum -c`). Candidates are tried in order —
+   `$CB_AGENT_DOWNLOAD_DIR`, `/var/lib/cb-agent/.staging`, `$TMPDIR`, `/tmp`, `/var/tmp` — and the
+   first that can be created, accepts a write, and has at least 64 MB free wins. `/tmp` is
+   deliberately not first: it is frequently a small tmpfs, and a full one used to fail the install
+   with an error naming neither the filesystem nor the fix. If none qualifies the installer says
+   so and lists what each had free:
+
+   ```
+   No directory can hold the agent binary download (65536 KB needed):
+     /var/lib/cb-agent/.staging: 12040 KB free, needs 65536 KB
+     /tmp: 208 KB free, needs 65536 KB
+   ```
+
+   Set `CB_AGENT_DOWNLOAD_DIR` to a directory with room, or free space on one of them.
+4. Installs it to `/var/lib/cb-agent/versions/<version>/cb-agent`, points
    `/var/lib/cb-agent/current` at it, and points `/usr/local/bin/cb-agent` at *that*. The
    two-level symlink is what makes self-update and rollback atomic.
-4. Writes `/etc/circuit-breaker/agent.toml`:
+5. Writes `/etc/circuit-breaker/agent.toml`:
 
    ```toml
    server_url = "https://your-server"
@@ -108,14 +261,23 @@ Running as root, in order:
    spool_cap_bytes = 67108864
    ```
 
-5. Adds `cb-agent` to the `docker` group **only if** `docker` is already on the host.
-6. Appends `net.ipv4.ping_group_range = 0 2147483647` to `/etc/sysctl.conf` if that setting is
-   not already there, and applies it. This is what lets the agent send ICMP without
-   `CAP_NET_RAW`.
-7. Writes `/etc/systemd/system/cb-agent.service` and runs `systemctl daemon-reload`.
-8. Runs `sudo -u cb-agent /usr/local/bin/cb-agent enroll`, which prints the device fingerprint
-   and pairing code and waits for you to approve.
-9. Runs `systemctl enable --now cb-agent`.
+6. Writes `/etc/circuit-breaker/enroll-token` (mode `0600`, owned by `cb-agent`) **only if**
+   `CB_ENROLL_TOKEN` is set in its environment. See *Unattended enrollment* above. The agent
+   erases this file after a successful enrolment.
+7. Adds `cb-agent` to the `docker` group **only if** `docker` is already on the host.
+8. Widens `net.ipv4.ping_group_range` to include the `cb-agent` group, if it does not already.
+   This is what lets the agent send ICMP without `CAP_NET_RAW`. It reads the *effective* value
+   rather than looking for a line, and widens as a **union** — groups your host already allowed
+   keep their ping. A host sitting on the kernel default `1 0` ("no group may") becomes exactly
+   the `cb-agent` group, not everyone. A range that already covers `cb-agent` is left untouched.
+9. Writes `/etc/systemd/system/cb-agent.service`, and — if `CB_AGENT_DOWNLOAD_DIR` was set —
+   a `10-download-dir.conf` drop-in carrying that directory as both `Environment=` and
+   `ReadWritePaths=`, so the agent's own update downloads can use it under
+   `ProtectSystem=strict`. Then runs `systemctl daemon-reload`.
+10. Runs `sudo -u cb-agent /usr/local/bin/cb-agent enroll`. Attended, this prints the device
+    fingerprint and pairing code and waits for you to approve. With a token present it sends the
+    token instead, is approved immediately, erases the token file, and returns.
+11. Runs `systemctl enable --now cb-agent`.
 
 ---
 
@@ -279,10 +441,11 @@ publishes.
 
 | Purpose | URL | Protocol |
 |---|---|---|
-| Enrollment | `wss://your-server/api/v1/agents/enroll` | WebSocket over TLS |
+| Enrollment | `wss://your-server/api/v1/agents/enroll` | WebSocket over TLS (carries the enrollment token, inside Noise) |
 | Live link | `wss://your-server/api/v1/agents/link` | WebSocket over TLS |
 | Self-update download | `https://your-server/api/v1/agents/binary/{version}/{os}/{arch}` | HTTPS GET |
-| Installer fetch (once, by `curl`) | `https://your-server/install-agent.sh` | HTTPS GET |
+| Reachability preflight (once, by `curl`) | `https://your-server/api/v1/health` | HTTPS GET |
+| Installer fetch (once, by `curl`) | `https://your-server/install-agent.sh?endpoint=<id>` | HTTPS GET |
 
 If `server_url` uses `http://`, the WebSocket scheme becomes `ws://` — the agent rewrites only
 the scheme, never the host or port.
@@ -347,8 +510,10 @@ things — running the installer, and running `cb-agent uninstall`.
 
 There is exactly one, and it is not a Linux capability:
 
-- **`net.ipv4.ping_group_range`**, set system-wide by the installer to `0 2147483647`. This lets
-  unprivileged processes open ICMP *datagram* sockets. It is what avoids granting the agent
+- **`net.ipv4.ping_group_range`**, widened system-wide by the installer to include the
+  `cb-agent` group — as a union with whatever the host already allowed, never a replacement, and
+  not at all when the existing range already covers it. This lets unprivileged processes in that
+  range open ICMP *datagram* sockets. It is what avoids granting the agent
   `CAP_NET_RAW` — the agent has **no** `CAP_NET_RAW` and cannot craft or capture raw packets.
   Without this sysctl, ICMP probes report themselves as unavailable rather than failing
   silently.
@@ -370,10 +535,11 @@ There is exactly one, and it is not a Linux capability:
 |---|---|---|
 | `/var/lib/cb-agent/` | created by the installer under its umask, then `chown`ed; the agent creates it `0700` if it is missing | `cb-agent` |
 | `/var/lib/cb-agent/versions/<v>/` | `0755` | `cb-agent` |
+| `/var/lib/cb-agent/.staging/` | created by whoever gets there first — the installer under its umask, then `chown`ed, or the agent `0700` | `cb-agent` |
 | `/var/lib/cb-agent/device.key` | `0600` | `cb-agent` |
 | `/var/lib/cb-agent/grants.json` | `0600` | `cb-agent` |
 | `/var/lib/cb-agent/status.json` | `0600` | `cb-agent` |
-| `/var/lib/cb-agent/queue.jsonl`, `queue.head` | `0600` | `cb-agent` |
+| `/var/lib/cb-agent/queue.jsonl`, `queue.head`, `queue.evicted` | `0600` | `cb-agent` |
 | `/etc/circuit-breaker/agent.toml` | written by the installer as root under its umask — it holds no secret, only the server's public key and TLS pin | root |
 
 At every daemon start the agent audits `device.key`, `grants.json` and `status.json` plus the
@@ -398,15 +564,65 @@ that push is missed, the agent picks it up from a Redis-queued fallback the link
 ### What the agent does
 
 1. Downloads from `https://your-server/api/v1/agents/binary/{version}/{os}/{arch}` through the
-   same pinned-TLS transport the link uses. Responses larger than 256 MiB are rejected.
+   same pinned-TLS transport the link uses. Responses larger than 256 MiB are rejected. The
+   download is staged in `/var/lib/cb-agent/.staging` where it can be — same filesystem as the
+   install target, so step 4's swap is a rename rather than a cross-mount copy, and real disk
+   rather than the RAM-backed `/tmp` the unit's `PrivateTmp=` provides. `$CB_AGENT_DOWNLOAD_DIR`
+   overrides it; `$TMPDIR` and `/var/tmp` are the fallbacks if the state directory cannot take it.
+   Downloads abandoned by a crash are swept on the next update, 24 hours after they were written.
 2. Verifies the SHA-256 against the digest that arrived over the encrypted channel, using a
-   constant-time comparison. **The channel is the trust anchor** — there is no separate release
-   signing key.
-3. Writes a durable marker, `fsync`s the new binary into
+   constant-time comparison.
+3. Fetches the detached signature from the same URL with a `.sig` suffix and verifies it against
+   a public key embedded in the agent at build time. See **Signed updates** below.
+4. Writes a durable marker, `fsync`s the new binary into
    `/var/lib/cb-agent/versions/<version>/cb-agent`, atomically re-points
    `/var/lib/cb-agent/current`, and re-execs itself.
-4. Reports `started`, then `succeeded` / `failed` / `rolled_back` back to the server as
+5. Reports `started`, then `succeeded` / `failed` / `rolled_back` back to the server as
    `update.status` frames, which appear in the agent's event log.
+
+### Signed updates
+
+The SHA-256 above proves the download matches what **the server said**. That is worth nothing
+if the server itself is compromised: whoever controls it can serve any binary along with a
+matching digest, and every agent in the fleet would install it. Agent binaries are therefore
+signed with an Ed25519 key that lives only in the release pipeline.
+
+The verifying public key is compiled into the agent with an `-ldflags -X` at build time. It is
+deliberately **not** configurable at runtime, not delivered by the server, and not read from
+disk — a key the server can influence would reproduce exactly the problem signing solves. The
+private half never exists in the application runtime, in this repository, or in any container
+image.
+
+**This release verifies in warn mode.** A binary that fails verification is installed, and the
+agent logs a warning naming the reason. That is the migration, not the destination: agents
+running today have no embedded key and binaries built before this change carry no signature at
+all, so defaulting to refusal would break every in-flight fleet. Enforcement becomes the
+default in **0.6.0**.
+
+To enforce now, set on the agent host:
+
+```
+CB_AGENT_UPDATE_ENFORCE_SIGNATURE=1
+```
+
+An update whose signature does not verify is then refused before anything is written: no
+rollback marker, no swap, and an `update.status` of `failed` naming the reason.
+
+**Agents you built yourself are unsigned by default.** `make build-from-source` has no access
+to the release private key, so it produces a warn-mode binary with no embedded key — and a
+binary with no embedded key stays in warn mode *even with the flag set*, because it has nothing
+to verify against. Refusing there would strand every self-built agent the moment enforcement
+defaults on. To sign your own builds:
+
+```
+make agent-signing-key                    # writes a private key, prints the public one
+cd apps/agent && make build-all SIGNING_PUBKEY=<the printed key>
+make verify-signing-key SIGNING_PUBKEY=<the printed key>   # proves the ldflag landed
+```
+
+Then set `AGENT_SIGNING_PRIVATE_KEY` when generating the manifest, and keep the private key in
+your own secret store. `cb-agent signing-key` prints whichever key a given binary carries, or
+nothing for a warn-mode build.
 
 ### Automatic rollback
 
@@ -460,16 +676,29 @@ sudo cb-agent uninstall
 
 Root is required. In order, it:
 
-1. Best-effort notifies the server, which revokes the row with reason *"uninstalled by agent"*
-   and performs the same run cancellation the admin-initiated revoke does. A server that cannot
-   be reached is reported and the uninstall continues.
+1. Notifies the server and **waits for it to confirm**, which revokes the row with reason
+   *"uninstalled by agent"* and performs the same probe-run and discovery-dispatch cancellation
+   the admin-initiated revoke does. The confirmation is the server's own delivery
+   acknowledgement for that frame, so "Notified the server (agent record marked revoked)" means
+   the revoke is committed — not merely that a packet left the host. Three outcomes:
+
+   | Printed | Meaning | Exit |
+   |---|---|---|
+   | `Notified the server (agent record marked revoked).` | Confirmed. Nothing left to do. | unaffected |
+   | `No enrolled agent found on this host; the server has nothing to be told.` | No config or no `device.key` — a second run, or a host that was never enrolled. | unaffected |
+   | `cb-agent: the server did NOT confirm this uninstall: …` | Unreachable, refused, or unacknowledged. The agent may still be listed as active; revoke it in **Settings → Agents**. | non-zero |
+
+   Removal continues in every case: an unreachable or already-decommissioned server must never
+   stop you removing an agent from your own host. The exit status is what makes the third case
+   visible to a script decommissioning a fleet.
 2. Runs `systemctl disable --now cb-agent`.
 3. Removes:
    - `/etc/systemd/system/cb-agent.service`
    - `/usr/local/bin/cb-agent`
    - `/etc/circuit-breaker/agent.toml`
    - `/var/lib/cb-agent/` in full — `device.key`, `grants.json`, `status.json`, the spool
-     (`queue.jsonl` / `queue.head`), and every versioned binary under `versions/`
+     (`queue.jsonl` / `queue.head`) and its permanent-loss record (`queue.evicted`), and every
+     versioned binary under `versions/`
 4. Removes `/etc/circuit-breaker/` **only if removing `agent.toml` left it empty**. On a host
    that also runs the Circuit Breaker server, that directory holds the server's own
    `config.toml` and `circuit-breaker.env` (which carries `CB_VAULT_KEY`) — removing it would
@@ -488,8 +717,11 @@ non-zero if anything failed.
   that other software may now depend on.
 - **`/etc/circuit-breaker/`** when it still holds the server's own files (see above).
 - **The agent's row in the database.** It is left `revoked` so its history, events and audit
-  trail survive. Delete it explicitly (`DELETE /api/v1/agents/{id}`) if you want it gone —
-  which is refused with a 409 while monitors or discovery profiles are still assigned to it.
+  trail survive. The fleet table and the agent page show it as **Uninstalled** rather than
+  *Revoked* — the same credential state, but it tells you the host has already been cleaned up,
+  which an operator-initiated revoke does not. Delete it explicitly
+  (`DELETE /api/v1/agents/{id}`) if you want it gone — which is refused with a 409 while
+  monitors or discovery profiles are still assigned to it.
 
 Because uninstall removes `device.key`, reinstalling on the same host generates a **new**
 identity and appears as a **new** pending agent. That is intentional: it is the clean path back
@@ -510,6 +742,80 @@ journalctl -u cb-agent -f
 `cb-agent status` reads `/var/lib/cb-agent/status.json`. If it says *"no status recorded yet"*,
 the daemon has never run or has not reached its first link attempt — that is a service problem,
 not a connection problem. Check `systemctl status cb-agent`.
+
+### The installer has nowhere to put the download
+
+```
+No directory can hold the agent binary download (65536 KB needed):
+  /var/lib/cb-agent/.staging: 12040 KB free, needs 65536 KB
+  /tmp: 208 KB free, needs 65536 KB
+  /var/tmp: 12040 KB free, needs 65536 KB
+```
+
+Every candidate was tried and each is listed with what it actually had. Nothing on the host was
+changed. Either free space on one of them, or point the installer somewhere with room:
+
+```sh
+CB_AGENT_DOWNLOAD_DIR=/mnt/data/cb-staging sudo -E sh "$cb_installer"
+```
+
+`sudo -E`, or the variable never reaches the script. Setting it at install time also settles it
+for the running agent: the installer writes
+`/etc/systemd/system/cb-agent.service.d/10-download-dir.conf` carrying both `Environment=` and
+`ReadWritePaths=` for that directory, so the agent's own update downloads go there too. Both
+directives are needed — `ProtectSystem=strict` makes everything outside `/var/lib/cb-agent`
+read-only, so without the second the agent would find the directory unwritable and fall back to
+the tmpfs, silently.
+
+On an agent installed before this existed, `systemctl edit cb-agent` and add the same two lines.
+
+A related symptom with no error at all: updates that never complete on a host whose
+`/var/lib/cb-agent/.staging` is owned by root. The agent runs as `cb-agent`, silently falls back
+to `$TMPDIR`, and lands on the tmpfs the staging directory exists to avoid. `chown cb-agent:cb-agent
+/var/lib/cb-agent/.staging` fixes it.
+
+### The installer says it cannot reach the server
+
+```
+Cannot reach https://cb.example.com from this machine.
+```
+
+The reachability preflight refused before touching the host, so there is nothing to undo — no
+`cb-agent` user, no binary, no unit. The address in the command is not reachable *from this
+machine*, which is a different question from whether it works from your browser.
+
+| Check | How |
+|---|---|
+| The address is right for **this** network | Would you have picked the LAN endpoint for a VPS? |
+| DNS resolves it here | `getent hosts cb.example.com` |
+| Outbound is permitted | `curl -fsSLk https://cb.example.com/api/v1/health` |
+| The certificate is the one the pin expects | A pin mismatch fails the preflight too — see *TLS pin mismatch* |
+
+Fix the address by picking a different endpoint in **Agents → Add agent** (or declaring one under
+**Settings → Connectivity → Agent Endpoints**) and re-copying the command. Editing the URL inside
+the command by hand does not work: the `?endpoint=` id is what the server reads, and the
+`script_sha256` is computed over that variant.
+
+### An unattended install never appears in the UI
+
+The installer succeeded and the service is running, but the agent is not in the fleet. The
+enrolment was refused, and it is refused the same way for every cause — deliberately, so that the
+enrolment endpoint cannot be used to find out which tokens are live. Check in this order:
+
+| Check | Where |
+|---|---|
+| Was the token spent? | **Settings → Connectivity → Enrollment Tokens** — uses against max |
+| Had it expired? | same screen; the default life is one hour |
+| Was it revoked? | same screen |
+| Did the token reach the script at all? | `sudo` without `-E` scrubs it; the command uses `sudo -E` for exactly this |
+| Did you edit the command? | the token must stay an environment assignment, not an argument |
+
+`journalctl -u cb-agent` on the host shows the dial and the refusal. The server logs the refusal
+with the client IP and never the token.
+
+The fix is always a fresh token: mint another in **Agents → Add agent** and re-run the command it
+gives you. A refused enrolment leaves nothing behind on the server, so there is nothing to clean
+up first.
 
 ### Agent shows offline in the UI
 
@@ -578,7 +884,8 @@ Fix the *agent's* clock first — but if several agents report skew at once, sus
 ### Spool pressure
 
 While disconnected, data frames are written to `/var/lib/cb-agent/queue.jsonl` (with
-`/var/lib/cb-agent/queue.head` marking how much has already been delivered), capped at 64 MiB by
+`/var/lib/cb-agent/queue.head` marking how much has already been delivered, and
+`/var/lib/cb-agent/queue.evicted` recording what has been permanently discarded), capped at 64 MiB by
 default (`spool_cap_bytes` in `agent.toml`, `67108864` as installed). When the cap is reached
 the **oldest** frames are dropped. Control frames are never spooled — replaying a stale probe
 assignment is worse than losing it.
@@ -590,18 +897,127 @@ spool: depth=1284 bytes=3947160
 ```
 
 Depth is also reported to the server on every heartbeat, so the fleet view shows backlog
-without waiting for a reconnect.
+without waiting for a reconnect — but **only while the agent is connected**. The moment the
+link drops, the number stored on the server freezes at whatever it was, and it stays frozen
+for the whole of the outage, which is precisely the stretch during which the real backlog is
+growing.
+
+The server therefore ages the reading: a depth last reported more than two minutes ago is
+marked stale, and the UI stops presenting it as a measurement. The fleet row shows `spool ?`
+(or `spool ? (last known N)`) and the Telemetry tab replaces its live "Catching up" indicator
+with a last-known value and the time it was reported. This matters most in the case that looks
+harmless: an agent that went offline with a drained spool keeps `depth=0` on the server, and
+rendering that as "no backlog" while `queue.jsonl` fills up is not a small number — it is no
+number at all, shown as if it were one.
+
+Staleness is computed on the server so the answer does not depend on the clock of the browser
+looking at it. It is deliberately independent of both presence (a reading can be stale while
+the agent is still connected — a very quiet fleet, a slow heartbeat) and of the eviction
+counters below: "history was destroyed" and "the current backlog is unknown" are different
+facts, and an agent that has been gone long enough usually has both.
 
 | Observation | Meaning |
 |---|---|
 | Depth grows while `link: connected` | The link is flapping — check for a reconnect loop in the journal |
-| Depth stays flat at the cap | Frames are being evicted; the outage is longer than the buffer |
+| Depth stays flat at the cap | Frames are being evicted; the outage is longer than the buffer. The loss is reported explicitly — see below |
 | Depth falls slowly after reconnect | Normal. Catch-up is deliberately paced at 4 frames (or 256 KiB) per 100 ms so a backlog cannot stall live telemetry |
 | Depth never falls | The drain is failing — look for send errors in the journal |
+| UI shows `spool ?` or "Backlog unknown" | The agent has not reported a depth recently, usually because it is offline. Run `cb-agent status` on the host for the real number |
+
+### When the spool discards data
+
+Eviction is not silent. Every eviction batch writes a `WARNING` line to the agent's log naming
+what was destroyed, the record is persisted to `/var/lib/cb-agent/queue.evicted` (cumulative for
+the life of the state directory — the agent never resets it), and `cb-agent status` reports it
+whenever it is non-zero:
+
+```
+spool loss: 9412 observation(s) (33554432 bytes) were permanently discarded — the spool could not keep them
+  destroyed window: 2026-09-01T00:00:00Z .. 2026-09-03T18:30:00Z (this data is gone and cannot be recovered)
+  most recently discarded: 2026-09-03T18:30:05Z
+  most recent cause: the spool hit its size cap during an outage and dropped its oldest observations
+    remedy: raise spool_cap_bytes in agent.toml so a longer outage fits, then restart the agent
+  this counter also records observations the spool could not write at all, if any earlier ones were
+```
+
+Two causes share the counter, and their remedies are opposite. The size cap is the usual one. The
+other is a spool that could not accept the write at all — a full disk, a read-only
+`/var/lib/cb-agent` — which since acknowledged delivery ends the observation, because every data
+frame is spooled before it can reach a socket and there is no live path around it. When that is
+what happened most recently, the same block names it instead, carrying the underlying error, and
+does not offer a size cap as the fix:
+
+```
+  most recent cause: the spool could not write at all (spool write failed: open /var/lib/cb-agent/spool/queue.jsonl: read-only file system)
+    remedy: free or remount this agent's state directory, then restart the agent
+  raising spool_cap_bytes will not help this: the observations never reached the buffer
+```
+
+The count is exact either way, the loss is reported to the server identically, and an agent
+upgraded from a version that predates the recorded cause simply lists both possibilities until
+its next loss. The record is written through on every loss, never batched, so a restart — which
+is what an operator does after freeing the disk — finds the same total the running agent was
+reporting. Only the log line is rate-limited, to one per minute, since the conditions that cause
+this are sustained by nature, and a failure to write the record is reported when the run of
+failures begins rather than only at the next window. The record is fsynced and renamed the same
+way `queue.jsonl` is, so it survives a power cut and not only a clean stop.
+
+The same four numbers ride `hello` and every `heartbeat`, so the server records them on the
+agent's row, writes a permanent `spool_evicted` audit event each time the reported total rises,
+and the fleet table and Telemetry tab both show the loss as its own critical state. It is
+deliberately kept apart from the catch-up indicator: a backlog drains, and this does not.
+
+A **decrease** in the reported total is recorded as `spool_eviction_counter_reset` rather than
+being ignored. The agent never resets the counter itself, so a decrease means the record went
+backwards: usually the state directory was recreated, and otherwise the agent could not persist
+the record at all — which happens when the disk holding it is the same one destroying the
+observations. Either way it is worth knowing, and the event's detail carries both totals.
+
+The server counts its own losses too. Frames it refuses on ingest — because the capability is
+switched off, or the agent is not approved — are counted on the agent's row and shown on the
+Telemetry tab. The matching audit events are rate-limited to one a minute; the counter is not,
+so it is the honest total.
 
 Every spooled frame carries its original timestamp, so recovered data lands in the right time
 bucket rather than bunching at the reconnect moment. Delivery is at-least-once by construction;
 the server deduplicates on ingest.
+
+### Acknowledged delivery
+
+Every data frame is written to the spool — fsync'd — *before* it is sent, and is discarded only
+when the server says it has terminally handled it: stored, deduplicated, or deliberately refused
+and counted. The server sends a `data.ack` frame carrying a watermark ("everything up to sequence
+N is handled"), coalesced to one ack per four frames or per second.
+
+This closes a gap the older behaviour had. A spooled frame used to be discarded the moment
+`WriteMessage` returned — but that only means the local kernel accepted the bytes, not that the
+server read them. A server restarting mid-catch-up, or a connection blackholed by a firewall rule
+or a stale NAT entry, destroyed everything already written while the agent believed it delivered.
+The guarantee was at-least-once *onto a socket*; it is now at-least-once **into the database**.
+
+Practical consequences:
+
+- Up to 64 frames (4 MiB) may be in flight unacknowledged at once. A connection that dies with a
+  full window re-sends at most those 64, which the server deduplicates.
+- If the server keeps reading but stops acknowledging for 45 seconds, the agent ends the
+  connection and reconnects on the fast ladder. Nothing was committed, so nothing was lost. The
+  45 seconds measure the unacknowledged *stretch*: it starts when frames go in flight with no
+  stretch already running, restarts whenever an acknowledgement releases at least one frame, and
+  ends when one releases the last of them. Nothing else touches it. Frames the size cap destroys
+  while they are in flight neither restart it nor end it — they were not delivered either — and
+  whether any frames happen to be outstanding at the instant of the check is not part of the
+  condition. At the cap the head of the spool *is* the in-flight window, so any version of this
+  that depended on the window's contents stopped working in precisely the state the timeout
+  exists for.
+- During a real backlog, the newest sample now queues *behind* the backlog rather than jumping it.
+  That is more honest, not less: the old order landed a fresh sample in the middle of an
+  hours-long hole, so the chart read current while the history was missing.
+
+The mode is negotiated at connect: the agent sets `ack_data` on its `hello`, and the server
+answers `data_ack` on the `hello.ack`. **Against a server too old to answer, the agent falls back
+to the old commit-on-write behaviour** and logs, once per connection, that it is doing so — and
+the Telemetry tab shows the same warning for an agent too old to ask. Neither side needs the
+other to upgrade first, and nothing has to happen in a particular order.
 
 ### Duplicate agent after a host clone
 
@@ -619,7 +1035,13 @@ The second case is the one that corrupts data. See [Runbook 3](#3-duplicate-agen
 
 ## Recovery runbooks
 
-These are the six scenarios AGT-18 requires. Each is written to be followed as-is.
+The six scenarios AGT-18 requires, plus the Redis-outage behaviour route finding F16 asks be
+stated plainly to operators. Each is written to be followed as-is.
+
+For the two fleet-wide rotations, see [Agent Server-Key
+Rotation](agent-key-rotation.md) and [Agent TLS Trust Rotation](tls-trust-rotation.md). They are
+independent of each other, and neither is a recovery step — both are planned operations with a
+timed window.
 
 > **On evidence:** AGT-18 counts a runbook as evidence only once it has been exercised in a
 > tabletop or automated scenario. This page is the prerequisite for that exercise, not a record
@@ -816,13 +1238,47 @@ Work through these in order — each is independently able to break every agent:
    publicly trusted certificate are unaffected.
 4. **Redis state is not restored, and does not need to be.** Presence keys (60 s TTL), pairing
    codes, rate-limit counters and queued update instructions all live only in Redis. Agents show
-   offline until each reconnects on its own backoff — up to 5 minutes for one that had been
-   failing for a while. Any pairing code minted before the restore is gone; mint a new one.
+   offline until each reconnects on its own schedule — within about fifteen seconds for an
+   agent that can reach the server, longer only for one that genuinely cannot. Any pairing code
+   minted before the restore is gone; mint a new one.
 5. **Server URL.** If the restored server is reachable at a different address, edit `server_url`
    in `/etc/circuit-breaker/agent.toml` on each agent and restart. Agents cannot be told this
    over the link — they have to reach the server to be told anything.
 6. **Verify** once agents are back: presence green in the fleet view, `cb-agent status` showing
    `link: connected` with a recent `last connected`, and spool depths falling toward zero.
+
+### 7. Redis is down
+
+**Symptom.** No agent can enroll and no agent can reconnect. The fleet goes offline together,
+within about a minute, and nothing in the agents' own logs explains it — they are being refused
+before a single Noise handshake byte is read.
+
+**This is deliberate, and it is the one dependency the agent plane does not degrade around.**
+`/enroll` and `/link` are the anonymous, adversarial-by-default surface, and their per-IP and
+global attempt caps are Redis-backed. If Redis is unreachable those caps cannot be evaluated, so
+the endpoints **fail closed** — reject — rather than silently admitting unlimited attempts. The
+alternative would quietly remove the only guarantee protecting them at exactly the moment
+something is going wrong.
+
+Two consequences worth knowing before it happens:
+
+- **Redis is a hard dependency for the agent plane specifically.** The rest of the product
+  degrades when Redis is down; agent enrollment and reconnection do not.
+- **Presence is Redis-backed too** (60 s TTL), so the fleet view will show everything offline —
+  which in this case is accurate rather than misleading.
+
+**Recovery.** Bring Redis back; nothing else is required. Agents reconnect on their own
+schedule, within about fifteen seconds each — a `close 1013` from the rate gate while Redis is
+still starting is classified as "the server is coming back", so it does not push an agent onto
+the slow schedule. No re-enrollment, no key
+rotation, and no agent-side action: their identity lives in `/var/lib/cb-agent` and in the
+server's database, neither of which Redis touches. Telemetry gathered during the outage is
+spooled on each agent and drains on reconnect; watch the spool depths fall to confirm.
+
+If Redis is going to be down for a planned window, expect the fleet to be offline for its
+duration and to come back within about fifteen seconds of Redis returning. The 5-minute ceiling
+applies only to agents that genuinely cannot reach the server, so it is no longer the number to
+size a maintenance window against.
 
 ---
 

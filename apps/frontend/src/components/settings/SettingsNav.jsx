@@ -1,77 +1,7 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import {
-  Settings,
-  Palette,
-  Layers,
-  Globe,
-  ShieldCheck,
-  Database,
-  Search,
-  X,
-  Plug,
-  Server,
-  BookOpen,
-} from 'lucide-react';
-
-export const SETTINGS_TABS = [
-  {
-    id: 'general',
-    label: 'General',
-    icon: Settings,
-    description: 'Basic app configuration and defaults.',
-  },
-  {
-    id: 'appearance',
-    label: 'Appearance',
-    icon: Palette,
-    description: 'Themes, branding, and visual preferences.',
-  },
-  {
-    id: 'resources',
-    label: 'Resources',
-    icon: Layers,
-    description: 'Manage environments, categories, and locations.',
-  },
-  {
-    id: 'device-roles',
-    label: 'Device Roles',
-    icon: Server,
-    description: 'Hardware classification and topology ranking.',
-  },
-  {
-    id: 'connectivity',
-    label: 'Connectivity',
-    icon: Globe,
-    description: 'Auto-discovery and API settings.',
-  },
-  {
-    id: 'integrations',
-    label: 'Integrations',
-    icon: Plug,
-    description: 'NATS, Docker, and external service controls.',
-  },
-  {
-    id: 'kb',
-    label: 'Knowledge Base',
-    icon: BookOpen,
-    description: 'Vendor and hostname hints that discovery uses for naming.',
-    adminOnly: true,
-  },
-
-  {
-    id: 'security',
-    label: 'Security',
-    icon: ShieldCheck,
-    description: 'Authentication and session management.',
-  },
-  {
-    id: 'system',
-    label: 'System',
-    icon: Database,
-    description: 'Backups, maintenance, and advanced tools.',
-  },
-];
+import { Search, X } from 'lucide-react';
+import { SETTINGS_TABS } from '../../data/settingsDestinations';
 
 const S = {
   container: {

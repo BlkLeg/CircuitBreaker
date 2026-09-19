@@ -38,6 +38,10 @@ vi.mock('../api/discovery.js', () => ({
   getJobs: vi.fn().mockResolvedValue({ data: [] }),
   cancelJob: vi.fn(),
   getPendingResults: vi.fn().mockResolvedValue({ data: { total: 0 } }),
+  // The review queue fetches the enriched set alongside the pending one. This
+  // factory is exhaustive, so an omission here is an undefined call at mount
+  // rather than a missing assertion.
+  getEnrichedResults: vi.fn().mockResolvedValue({ data: [] }),
   getJobLogs: vi.fn().mockResolvedValue({ data: [] }),
   startAdHocScan: vi.fn(),
   syncDocker: vi.fn(),

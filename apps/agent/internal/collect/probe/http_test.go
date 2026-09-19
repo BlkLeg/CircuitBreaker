@@ -632,7 +632,7 @@ func TestHTTPChecker_TransportErrorEmitsAvailZeroWithHTTPErrorReasonAndNoLatency
 }
 
 // ---------------------------------------------------------------------------
-// Security invariants (§5, D-10)
+// Security invariants
 // ---------------------------------------------------------------------------
 
 func TestHTTPChecker_RejectsNonHTTPSchemeBeforeResolving(t *testing.T) {

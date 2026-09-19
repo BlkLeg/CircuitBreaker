@@ -117,6 +117,16 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Both live in a bodyless Panel, so they take the padding the missing
+   body would have given them. Bodyless and not padded, because the filter bar
+   sets its own dense spacing and a body would inset it into a second box. */
+.cb-panel .agents-page__filters {
+  padding: var(--space-2) var(--panel-pad) 0;
+}
+.cb-panel .agents-page__summary {
+  padding: var(--space-1) var(--panel-pad) var(--space-2);
+}
+
 .agents-page__empty {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -146,7 +156,7 @@
    a background/padding baseline is wrong for a control the browser draws
    itself, and AgentIdentityComparison renders inside this subtree. */
 
-:where(.agents-page, .add-agent, .fleet) :where(button) {
+:where(.agents-page, .agent-detail-page, .add-agent, .fleet) :where(button) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -164,16 +174,18 @@
     border-color 0.15s,
     color 0.15s;
 }
-:where(.agents-page, .add-agent, .fleet) :where(button:hover:not(:disabled)) {
+:where(.agents-page, .agent-detail-page, .add-agent, .fleet) :where(button:hover:not(:disabled)) {
   background: var(--color-border);
   border-color: var(--color-primary);
 }
-:where(.agents-page, .add-agent, .fleet) :where(button:disabled) {
+:where(.agents-page, .agent-detail-page, .add-agent, .fleet) :where(button:disabled) {
   opacity: 0.45;
   cursor: not-allowed;
 }
 
-:where(.agents-page, .add-agent) :where(select, input:not([type='checkbox']):not([type='radio'])) {
+:where(.agents-page, .agent-detail-page, .add-agent)
+  :where(select, input:not([type='checkbox']):not([type='radio'])) {
+  color-scheme: dark;
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--color-bg) 72%, var(--color-surface));
@@ -185,10 +197,10 @@
     border-color 0.15s,
     box-shadow 0.15s;
 }
-:where(.agents-page, .add-agent) :where(input)::placeholder {
+:where(.agents-page, .agent-detail-page, .add-agent) :where(input)::placeholder {
   color: var(--color-text-muted);
 }
-:where(.agents-page, .add-agent)
+:where(.agents-page, .agent-detail-page, .add-agent)
   :where(select, input:not([type='checkbox']):not([type='radio'])):focus {
   outline: none;
   border-color: var(--color-primary);
@@ -201,10 +213,13 @@
    `.filter-input` / `.filter-select`. Wrapped in `:where()` too, so it stays a
    floor: it ties with the baseline above and is resolved by source order,
    and still loses to every class rule. */
-:where([data-theme='light']) :where(.agents-page, .add-agent, .fleet) :where(button),
 :where([data-theme='light'])
-  :where(.agents-page, .add-agent)
+  :where(.agents-page, .agent-detail-page, .add-agent, .fleet)
+  :where(button),
+:where([data-theme='light'])
+  :where(.agents-page, .agent-detail-page, .add-agent)
   :where(select, input:not([type='checkbox']):not([type='radio'])) {
+  color-scheme: light;
   background: color-mix(in srgb, var(--color-surface) 92%, #ffffff);
 }
 
@@ -342,7 +357,7 @@
 }
 
 /* Install failures render here, where the operator is already looking; the
-   toast alone scrolls away before it is read (design §4). */
+   toast alone scrolls away before it is read. */
 .add-agent__error {
   border: 1px solid color-mix(in srgb, var(--color-danger) 45%, transparent);
   border-left: 3px solid var(--color-danger);
@@ -352,6 +367,37 @@
   margin: 6px 0;
   color: var(--color-text);
   font-size: 0.76rem;
+}
+
+/* Advisories, not failures. Same shape as .add-agent__error above — frame,
+   left accent, tinted ground — because an operator should read severity off
+   the colour and not have to re-learn the layout. Both uses are things that
+   will bite later rather than now: a command built from the browsed address
+   because no endpoint is declared, and a machine that has not checked in.
+
+   Warning rather than danger is the honest reading. Neither has failed yet,
+   and rendering them in red beside a real install failure would flatten the
+   difference between "this may be wrong for the target machine" and "this did
+   not work". */
+.add-agent__warning {
+  border: 1px solid color-mix(in srgb, var(--color-warning) 45%, transparent);
+  border-left: 3px solid var(--color-warning);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--color-warning) 10%, transparent);
+  padding: 8px 10px;
+  margin: 6px 0;
+  color: var(--color-text);
+  font-size: 0.76rem;
+}
+
+/* The address is the actionable half of the check-in warning, so it reads as a
+   value rather than as prose. Matches .agent-probes__scope-mode code. */
+.add-agent__warning code {
+  background: color-mix(in srgb, var(--color-warning) 16%, transparent);
+  border-radius: 4px;
+  padding: 0 0.25rem;
+  font-family: ui-monospace, 'SFMono-Regular', 'Menlo', monospace;
+  overflow-wrap: anywhere;
 }
 
 .add-agent__pairing {
@@ -390,6 +436,83 @@
 /* macOS and Windows are rendered disabled rather than omitted: the operator
    should see that the platform exists and is simply not built yet, instead of
    wondering whether we forgot it. */
+/* The approval mode stays a <fieldset>: that is what names the radio group for
+   a screen reader. The browser's default fieldset border and inset legend are
+   the only reason it read as pasted on — stripped here and rebuilt as a quiet
+   labelled row matching the Endpoint control above it.
+
+   Deliberately not a second segmented control like .add-agent__platforms
+   below: two of them stacked would compete, and this choice is a property of
+   the whole step while that one only re-skins the command. */
+.add-agent__mode {
+  margin: 0 0 10px;
+  padding: 0;
+  border: 0;
+  min-inline-size: 0;
+}
+
+.add-agent__mode legend {
+  padding: 0;
+  margin-bottom: 5px;
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+}
+
+.add-agent__mode-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+}
+
+.add-agent__mode-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.72rem;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.add-agent__mode-options input {
+  accent-color: var(--color-primary);
+  margin: 0;
+  cursor: pointer;
+}
+
+/* The token is a bearer credential shown exactly once, so it gets the same
+   frame the install command gets — an operator is meant to copy it, and the
+   prose around it is what tells them it will not be shown again. */
+.add-agent__token {
+  margin: 0 0 10px;
+  padding: 9px 10px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.add-agent__token p {
+  margin: 0 0 6px;
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+}
+
+.add-agent__token p:last-child {
+  margin-bottom: 0;
+}
+
+.add-agent__token-value {
+  display: block;
+  margin: 0 0 6px;
+  padding: 6px 8px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  font-family: ui-monospace, 'SFMono-Regular', 'Menlo', monospace;
+  font-size: 0.72rem;
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+
 .add-agent__platforms {
   display: inline-flex;
   align-items: center;
@@ -491,13 +614,16 @@
   background: color-mix(in srgb, var(--color-surface) 86%, var(--color-bg));
 }
 
-/* Sticky offset is `--header-height`, not 0: the page scrolls inside
-   `.page-content`, whose scrollport starts underneath the fixed app header,
-   so `top: 0` would park the header row behind it. Same reason
-   `.settings-sidebar` offsets by `--header-height` (main.css:2050). */
+/* `top: 0`. The comment here used to claim the offset had to be
+   `--header-height` or the row would park behind the fixed app header. That is
+   wrong: `.page-content` is the scrollport and its own
+   `padding-top: calc(var(--header-height) + 16px)` already clears the chrome,
+   and a sticky offset is measured from the content box inside that padding.
+   Adding the chrome again pinned this row 60px too low. Same defect, same
+   cause, as `.cb-detail-head` in panels.css. */
 .fleet__th {
   position: sticky;
-  top: var(--header-height);
+  top: calc(-1 * var(--page-top-gap));
   z-index: 2;
   height: 28px;
   padding: 0 var(--fleet-cell-pad-x);
@@ -893,92 +1019,1444 @@
   }
 }
 
-/* INC-13: server-key rotation panel. Sits between the page header and the
-   add-agent panel; admin-only, and absent entirely when no admin is viewing. */
-.agents-page__key-panel {
-  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
-  border-radius: 8px;
-  padding: 12px 14px;
-  margin-bottom: 14px;
-  background: var(--color-surface);
+/* Server-key rotation panel. Sits between the page header and the
+   add-agent panel; admin-only, and absent entirely when no admin is viewing.
+   The surface, its head and its label/value list are Panel and
+   KeyValue now, so what is left here is the rotation-specific content — the
+   adoption buckets and the two notes that qualify them. */
+
+/* Fingerprints are compared character by character against what the agent
+   printed on the machine, which proportional digits make needlessly hard. */
+.agents-page__key-panel-values dd {
+  font-family: var(--font-mono);
 }
 
-.agents-page__key-panel dl {
+.agents-page__key-adoption {
+  margin-top: var(--space-3);
+}
+
+.agents-page__key-buckets {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  list-style: none;
+  padding: 0;
   margin: 0;
 }
 
-.agents-page__key-panel dt {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+.agents-page__key-pending {
+  margin: var(--space-2) 0 0;
 }
 
-.agents-page__key-panel dd {
-  margin: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+.agents-page__key-note {
+  margin: var(--space-2) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--fs-xs);
 }
 
-/* ── Agent detail: the state summary (AGT-14) ───────────────────────────────
+/* ── Agent detail: the state surface (AGT-14) ───────────────────────────────
    The requirement asks for a distinct, unambiguous treatment per state *and*
-   for each state to carry a documented operator action. Those are two
-   different readings — one at a glance, one when something is wrong — so this
-   block renders both: a chip row that is scannable, and a definition list
-   underneath that says what each chip means and what to do about it.
+   for each state to carry a documented operator action. Those
+   are two places rather than one block: the primary state is an
+   AgentStateBanner (panels.css `.cb-banner`), and every other holding state is
+   a chip in the detail header.
 
    Chips reuse `.fleet-chip`'s tone ladder rather than defining a second colour
    vocabulary for the same states; the detail page imports agents.css for
    exactly that. Nothing here depends on colour: the glyph and the label are
-   inside the chip, and the reason and remedy are in the list below it. */
-.agent-detail-page__states {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 8px 0 4px;
-}
+   inside the chip, and the reason and remedy are in its accessible text. */
 
-.agent-detail-page__state-chips {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
+/* The tab body. Focusable, because `panelPropsFor` gives every panel
+   tabIndex=0 so the tablist's own arrow keys can hand focus down into it. */
+.agent-detail-page__panel {
+  padding: var(--space-4);
 }
-
-/* Two columns on anything wider than a phone, one below it. The label column
-   is capped rather than sized to content so a long state name cannot push the
-   explanation off the right edge. */
-.agent-detail-page__state-list {
-  display: grid;
-  grid-template-columns: minmax(8rem, 12rem) 1fr;
-  gap: 2px 12px;
-  margin: 0;
-  font-size: 0.78rem;
-}
-.agent-detail-page__state-list dt {
-  font-weight: 600;
-  color: var(--color-text);
-}
-.agent-detail-page__state-list dd {
-  margin: 0;
-  color: var(--color-text-muted);
-}
-/* The action is the actionable half, so it is the half that is not muted. */
-.agent-detail-page__state-list dd em {
-  color: var(--color-text);
-  font-style: normal;
-}
-
-@media (max-width: 640px) {
-  .agent-detail-page__state-list {
-    grid-template-columns: 1fr;
-  }
-  .agent-detail-page__state-list dd {
-    margin-bottom: 6px;
-  }
+.agent-detail-page__panel:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
 }
 
 .agent-detail-page__last-seen {
   margin: 0;
   color: var(--color-text-muted);
   font-size: 0.72rem;
+}
+
+/* AGT: the pending row's detail cell. Each field is its own element and the
+   separator is an adjacent-sibling rule, so adding a field cannot reintroduce
+   the run-together defect — a bare text node simply will not match. */
+.fleet-pending {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.fleet-pending__item + .fleet-pending__item::before {
+  content: '·';
+  margin: 0 6px;
+  color: var(--color-border);
+}
+
+/* ── Detail-page live strip ─────────────────────────────────────────────────
+   This sits in DetailHeader's shared strip slot, so it is present
+   on every tab — including Discovery and Events, which carry no telemetry of
+   their own. */
+
+.agent-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  width: 100%;
+}
+
+.agent-strip[data-dimmed='true'] .agent-strip__spark polyline {
+  opacity: 0.35;
+}
+
+.agent-strip__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.09em;
+  font-weight: 700;
+  flex: none;
+  color: var(--color-success);
+}
+
+.agent-strip__pill::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.agent-strip__pill[data-animate='true']::before {
+  animation: agent-strip-pulse 1.6s ease-in-out infinite;
+}
+
+.agent-strip[data-level='lagging'] .agent-strip__pill,
+.agent-strip[data-level='stale'] .agent-strip__pill {
+  color: var(--color-warning);
+}
+.agent-strip[data-level='offline'] .agent-strip__pill {
+  color: var(--color-text-muted);
+}
+
+@keyframes agent-strip-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+}
+
+.agent-strip__metric {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+}
+
+.agent-strip__label {
+  font-size: var(--fs-micro);
+  letter-spacing: 0.09em;
+  color: var(--color-text-muted);
+  font-weight: 700;
+  width: 32px;
+}
+
+.agent-strip__spark {
+  width: 78px;
+  height: 22px;
+  display: block;
+}
+
+.agent-strip__spark polyline {
+  fill: none;
+  stroke: var(--color-info);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.agent-strip__value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  min-width: 46px;
+}
+
+.agent-strip__metric[data-hot='true'] .agent-strip__spark polyline {
+  stroke: var(--color-danger);
+}
+.agent-strip__metric[data-hot='true'] .agent-strip__value {
+  color: var(--color-danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-strip__pill[data-animate='true']::before {
+    animation: none;
+  }
+}
+
+/* The discovery groups are bodyless Panels so their tables meet the
+   panel border. Their hint paragraphs are not tables, so they take the padding
+   the missing body would have given them. */
+.cb-panel .agent-discovery__hint,
+.cb-panel .agent-discovery__history-link {
+  margin: 0;
+  padding: var(--space-2) var(--panel-pad);
+}
+
+/* ── Agent operations language ──────────────────────────────────────────────
+   Overview, probes, discovery and events share this situation strip and the
+   same dense workbench rhythm as Telemetry. These are derived readings of
+   existing payloads, not a second source of operational truth. */
+
+.agent-ops-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface-raised);
+}
+
+.agent-ops-strip__item {
+  --agent-ops-tone: var(--color-text);
+  position: relative;
+  min-width: 0;
+  min-height: 64px;
+  padding: 7px 10px 6px;
+  border-right: 1px solid var(--color-border);
+}
+
+.agent-ops-strip__item:last-child {
+  border-right: 0;
+}
+
+.agent-ops-strip__item::after {
+  content: '';
+  position: absolute;
+  inset: auto 9px 0;
+  height: 1px;
+  background: color-mix(in srgb, var(--agent-ops-tone) 55%, transparent);
+}
+
+.agent-ops-strip__item[data-tone='ok'] {
+  --agent-ops-tone: var(--color-success);
+}
+
+.agent-ops-strip__item[data-tone='warn'] {
+  --agent-ops-tone: var(--color-warning);
+}
+
+.agent-ops-strip__item[data-tone='danger'] {
+  --agent-ops-tone: var(--color-danger);
+}
+
+.agent-ops-strip__item[data-tone='info'] {
+  --agent-ops-tone: var(--color-info);
+}
+
+.agent-ops-strip__item[data-tone='muted'] {
+  --agent-ops-tone: var(--color-text-muted);
+}
+
+.agent-ops-strip__label,
+.agent-ops-strip__detail {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-ops-strip__label {
+  color: var(--color-text-muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.agent-ops-strip__value {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--agent-ops-tone);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-ops-strip__value i {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 16%, transparent);
+}
+
+.agent-ops-strip__detail {
+  margin-top: 2px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.025em;
+}
+
+/* ── Overview: situation board ─────────────────────────────────────────── */
+
+.agent-overview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-detail-page__connected-since {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.03em;
+}
+
+.agent-overview__grid .cb-panel-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 6px;
+  align-items: stretch;
+}
+
+.agent-overview__panel {
+  grid-column: span 3;
+  min-width: 0;
+}
+
+.agent-overview__panel[data-panel='events'],
+.agent-overview__panel[data-panel='enrollment'] {
+  grid-column: span 6;
+}
+
+.agent-overview__panel > .cb-panel,
+.agent-overview__panel > .agent-events-workbench,
+.agent-overview__panel > .agent-events-workbench > .cb-panel {
+  height: 100%;
+}
+
+.agent-overview .cb-panel__head {
+  min-height: 31px;
+}
+
+.agent-overview .cb-panel__body {
+  padding: 9px 10px;
+}
+
+.agent-overview .cb-empty {
+  min-height: 82px;
+  padding: 14px 8px;
+}
+
+/* ── Assigned probes: execution board + policy rail ───────────────────── */
+
+.agent-probes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 0;
+}
+
+.agent-probes__workbench {
+  display: grid;
+  grid-template-columns: minmax(0, 2.4fr) minmax(286px, 0.9fr);
+  gap: 6px;
+  min-width: 0;
+}
+
+.agent-probes__workbench[data-has-policy='false'] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.agent-probes__assignments,
+.agent-probes__policy {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-surface-raised) 78%, transparent);
+}
+
+.agent-probes__assignments > .cb-banner {
+  margin: 6px;
+}
+
+.agent-probes__assignments > .cb-empty {
+  display: grid;
+  min-height: 326px;
+  place-content: center;
+}
+
+.agent-probes__assignments .data-table,
+.agent-probes__policy {
+  font-size: var(--fs-xs);
+}
+
+.agent-probes__assignments .data-table th,
+.agent-probes__assignments .data-table td {
+  padding-block: 6px;
+}
+
+.agent-probes__policy .agent-probes__config {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 10px;
+}
+
+.agent-probes__policy .agent-probes__config legend {
+  color: var(--color-primary);
+  font-size: var(--fs-micro);
+}
+
+.agent-probes__policy .agent-probes__config input {
+  width: 100%;
+  max-width: none;
+}
+
+/* ── Discovery: bounded, navigable operations workspace ───────────────── */
+
+.agent-discovery {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 0;
+}
+
+.agent-discovery__eligibility {
+  min-height: 26px;
+  margin: 0;
+  padding: 5px 8px;
+  border-left: 2px solid var(--color-success);
+  background: color-mix(in srgb, var(--color-success) 5%, transparent);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+}
+
+.agent-discovery__eligibility[data-eligible='false'] {
+  border-left-color: var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 6%, transparent);
+}
+
+.agent-discovery__pause input[type='checkbox'] {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--color-primary);
+  color-scheme: dark;
+}
+
+[data-theme='light'] .agent-discovery__pause input[type='checkbox'] {
+  color-scheme: light;
+}
+
+.agent-discovery__workbench {
+  display: grid;
+  grid-template-columns: 142px minmax(0, 1fr);
+  gap: 6px;
+  min-width: 0;
+}
+
+.agent-discovery__section-nav {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  align-self: start;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface-raised);
+}
+
+.agent-discovery__section-nav::before {
+  content: 'Workspace';
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.agent-discovery__section-nav a {
+  padding: 7px 9px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 62%, transparent);
+  color: var(--color-text-muted);
+  font-size: var(--fs-xs);
+  text-decoration: none;
+}
+
+.agent-discovery__section-nav a::before {
+  content: '›';
+  margin-right: 6px;
+  color: var(--color-primary);
+}
+
+.agent-discovery__section-nav a:hover,
+.agent-discovery__section-nav a:focus-visible {
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+  color: var(--color-primary);
+}
+
+.agent-discovery__section-nav span {
+  margin-top: 14px;
+  padding: 8px 9px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  overflow-wrap: anywhere;
+}
+
+.agent-discovery__workbench-body {
+  display: flex;
+  max-height: 620px;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+  scroll-behavior: smooth;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.agent-discovery__section,
+.agent-discovery__settings {
+  min-width: 0;
+  scroll-margin-top: 4px;
+}
+
+.agent-discovery__section > .cb-panel + .cb-panel {
+  margin-top: 6px;
+}
+
+.agent-discovery__readiness-grid {
+  display: grid;
+  grid-template-columns: minmax(250px, 0.75fr) minmax(0, 1.8fr);
+  gap: 6px;
+}
+
+.agent-discovery__readiness-grid > aside {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.agent-discovery__jobs-grid {
+  display: grid;
+  grid-template-columns: minmax(215px, 0.55fr) minmax(0, 2fr);
+  gap: 6px;
+}
+
+.agent-discovery__workbench .cb-panel__head {
+  min-height: 29px;
+}
+
+.agent-discovery__workbench .cb-panel__body {
+  padding: 8px 9px;
+}
+
+.agent-discovery__workbench .data-table {
+  font-size: var(--fs-xs);
+}
+
+.agent-discovery__workbench .data-table th,
+.agent-discovery__workbench .data-table td {
+  padding-block: 5px;
+}
+
+.agent-discovery__settings .agent-discovery__config {
+  margin: 0;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-surface-raised) 76%, transparent);
+}
+
+/* ── Event history: chronological audit stream ────────────────────────── */
+
+.agent-events-workbench {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-events {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: var(--fs-sm);
+}
+
+.agent-events__head,
+.agent-events-workbench[data-compact='false'] .agent-events li {
+  display: grid;
+  grid-template-columns: 64px 142px minmax(132px, 0.75fr) minmax(220px, 2fr) 92px;
+  column-gap: 10px;
+  align-items: center;
+}
+
+.agent-events__head {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.agent-events li {
+  min-width: 0;
+  padding: 8px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 58%, transparent);
+}
+
+.agent-events li:last-child {
+  border-bottom: 0;
+}
+
+.agent-events li[data-event='connected'] {
+  box-shadow: inset 2px 0 var(--color-success);
+}
+
+.agent-events li[data-event='disconnected'] {
+  box-shadow: inset 2px 0 var(--color-danger);
+}
+
+.agent-events time,
+.agent-events__sequence,
+.agent-events__kind {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-events__detail {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-events__kind {
+  display: inline-flex;
+  width: fit-content;
+  padding: 1px 6px;
+  border: 1px dashed var(--color-border);
+  border-radius: 999px;
+}
+
+.agent-events li[data-event='connected'] .agent-events__kind {
+  border-color: var(--color-success);
+  color: var(--color-success);
+}
+
+.agent-events li[data-event='disconnected'] .agent-events__kind {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.agent-events__privacy {
+  margin: 0;
+  padding: 7px 10px;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+}
+
+.agent-events-workbench[data-compact='true'] .agent-events li {
+  display: flex;
+  gap: var(--space-3);
+  padding-block: 5px;
+}
+
+.agent-events-workbench[data-compact='true'] .agent-events time {
+  width: 132px;
+  flex: none;
+}
+
+.agent-events-workbench[data-compact='true'] .agent-events strong {
+  min-width: 92px;
+}
+
+.agent-events-workbench[data-compact='true'] .agent-events__detail {
+  flex: 1;
+}
+
+@media (max-width: 1100px) {
+  .agent-overview__panel,
+  .agent-overview__panel[data-panel='events'],
+  .agent-overview__panel[data-panel='enrollment'] {
+    grid-column: span 6;
+  }
+
+  .agent-probes__workbench,
+  .agent-discovery__readiness-grid,
+  .agent-discovery__jobs-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .agent-discovery__readiness-grid > aside {
+    grid-column: auto;
+  }
+
+  .agent-events__head,
+  .agent-events-workbench[data-compact='false'] .agent-events li {
+    grid-template-columns: 58px 132px minmax(120px, 0.7fr) minmax(180px, 1.5fr) 82px;
+  }
+}
+
+@media (max-width: 720px) {
+  .agent-overview__panel,
+  .agent-overview__panel[data-panel='events'],
+  .agent-overview__panel[data-panel='enrollment'] {
+    grid-column: 1 / -1;
+  }
+
+  .agent-discovery__workbench {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .agent-discovery__section-nav {
+    position: static;
+    flex-direction: row;
+    overflow-x: auto;
+  }
+
+  .agent-discovery__section-nav::before,
+  .agent-discovery__section-nav span {
+    display: none;
+  }
+
+  .agent-discovery__section-nav a {
+    flex: none;
+    border-right: 1px solid var(--color-border);
+    border-bottom: 0;
+  }
+
+  .agent-events__head {
+    display: none;
+  }
+
+  .agent-events-workbench[data-compact='false'] .agent-events li {
+    display: grid;
+    grid-template-columns: 56px minmax(0, 1fr) auto;
+  }
+
+  .agent-events-workbench[data-compact='false'] .agent-events li time,
+  .agent-events-workbench[data-compact='false'] .agent-events__detail {
+    grid-column: 2 / -1;
+  }
+
+  .agent-events-workbench[data-compact='true'] .agent-events li {
+    display: grid;
+    grid-template-columns: minmax(110px, max-content) minmax(0, 1fr);
+  }
+}
+
+/* ── Detail-page telemetry tab ──────────────────────────────────────────────
+   The tab's own shell. Its panels arrived with no rhythm between them and its
+   two status lines with no styling at all, so a page of real telemetry ran
+   together into one block of text. */
+
+.agent-telemetry {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  --telemetry-line-info: var(--color-info);
+  --telemetry-line-primary: var(--color-primary);
+  --telemetry-line-warning: var(--color-warning);
+  --telemetry-line-danger: var(--color-danger);
+}
+
+/* Collector faults lead the workbench, but as a compact operations rail—not
+   a second page header. The existing Banner remains the semantic owner. */
+.agent-telemetry__faults .cb-banner {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  align-items: center;
+  column-gap: var(--space-3);
+  padding: 6px var(--space-3);
+  margin: 0;
+  border-radius: 3px;
+}
+
+.agent-telemetry__faults .cb-banner__title {
+  font-size: var(--fs-xs);
+}
+
+.agent-telemetry__faults .cb-banner__body {
+  margin: 0;
+  font-size: var(--fs-xs);
+  max-width: none;
+}
+
+/* "Live · Last sample … · Cadence 30s · Agent only" — provenance for every
+   number above it, and deliberately quieter than any of them. */
+.agent-telemetry__status {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  min-height: 26px;
+  margin: 0;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--color-surface-raised) 74%, transparent);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.agent-telemetry__status > strong {
+  display: inline-flex;
+  align-items: center;
+}
+
+.agent-telemetry__status strong {
+  color: var(--color-success);
+}
+
+.agent-telemetry__status strong[data-state='stale'] {
+  color: var(--color-warning);
+}
+
+/* Eight readings become one continuous instrument strip. Keeping StatTile
+   inside each cell preserves its shared value/spark behaviour and tests while
+   the telemetry page gets a denser, purpose-built composition. */
+.agent-telemetry__metrics {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(112px, 1fr));
+  gap: 0;
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface-raised);
+}
+
+.agent-telemetry__metric {
+  position: relative;
+  min-width: 112px;
+  border-right: 1px solid var(--color-border);
+}
+
+.agent-telemetry__metric:last-child {
+  border-right: 0;
+}
+
+.agent-telemetry__metric-state {
+  position: absolute;
+  z-index: 1;
+  top: 7px;
+  right: 8px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.agent-telemetry__metric[data-state='watch'] .agent-telemetry__metric-state {
+  color: var(--color-warning);
+}
+
+.agent-telemetry__metric[data-state='critical'] .agent-telemetry__metric-state,
+.agent-telemetry__metric[data-state='offline'] .agent-telemetry__metric-state {
+  color: var(--color-danger);
+}
+
+.agent-telemetry__metric .cb-tile {
+  height: 72px;
+  padding: 6px 9px 3px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.agent-telemetry__metric .cb-tile__label {
+  max-width: calc(100% - 50px);
+  overflow: hidden;
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-telemetry__metric .cb-tile__value {
+  margin: 2px 0 0;
+  font-size: 18px;
+}
+
+.agent-telemetry__metric .cb-tile svg {
+  height: 20px;
+}
+
+.agent-telemetry__metric .cb-tile polyline {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ── Synchronized SOC workbench ───────────────────────────────────────── */
+.agent-telemetry__workbench {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(246px, 1fr);
+  gap: 6px;
+  min-width: 0;
+}
+
+.agent-telemetry__trace-panel,
+.agent-telemetry__ops-panel {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface-raised);
+}
+
+.agent-telemetry__trace-head,
+.agent-telemetry__ops-panel > header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 34px;
+  padding: 5px 9px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.agent-telemetry__trace-head h3,
+.agent-telemetry__ops-panel h3 {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.agent-telemetry__trace-head p {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 8px;
+}
+
+.agent-telemetry__history-count {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.agent-telemetry__range {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-muted);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.agent-telemetry__range select {
+  min-width: 58px;
+  height: 24px;
+  padding: 1px 20px 1px 7px;
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.agent-telemetry__trace {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 390px;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 3px,
+      rgba(var(--color-primary-rgb), 0.012) 3px,
+      rgba(var(--color-primary-rgb), 0.012) 4px
+    ),
+    #2b2928;
+  outline: none;
+  cursor: crosshair;
+}
+
+.agent-telemetry__trace:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--color-primary);
+}
+
+.agent-telemetry__lane {
+  fill: #2b2928;
+}
+
+.agent-telemetry__lane[data-alternate='true'] {
+  fill: #302d2b;
+}
+
+.agent-telemetry__lane-rule,
+.agent-telemetry__grid-major,
+.agent-telemetry__grid {
+  stroke: var(--color-border);
+  vector-effect: non-scaling-stroke;
+}
+
+.agent-telemetry__lane-rule,
+.agent-telemetry__grid-major {
+  stroke-width: 0.7;
+  opacity: 0.9;
+}
+
+.agent-telemetry__grid {
+  stroke-width: 0.45;
+  stroke-dasharray: 1 4;
+  opacity: 0.72;
+}
+
+.agent-telemetry__axis-label,
+.agent-telemetry__axis-value,
+.agent-telemetry__time-label,
+.agent-telemetry__missing-label {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-telemetry__axis-label,
+.agent-telemetry__time-label,
+.agent-telemetry__missing-label {
+  fill: var(--color-text-muted);
+  font-size: 8px;
+  letter-spacing: 0.03em;
+}
+
+.agent-telemetry__axis-value {
+  fill: var(--color-text);
+  font-size: 9px;
+}
+
+.agent-telemetry__threshold {
+  stroke: var(--color-warning);
+  stroke-width: 0.75;
+  stroke-dasharray: 5 5;
+  opacity: 0.45;
+  vector-effect: non-scaling-stroke;
+}
+
+.agent-telemetry__trace-line {
+  fill: none;
+  stroke-width: 1.55;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.agent-telemetry__trace-line[data-tone='info'] {
+  stroke: var(--telemetry-line-info);
+}
+
+.agent-telemetry__trace-line[data-tone='primary'] {
+  stroke: var(--telemetry-line-primary);
+}
+
+.agent-telemetry__trace-line[data-tone='warning'] {
+  stroke: var(--telemetry-line-warning);
+}
+
+.agent-telemetry__trace-line[data-tone='danger'] {
+  stroke: var(--telemetry-line-danger);
+}
+
+.agent-telemetry__missing-line {
+  stroke: var(--color-border);
+  stroke-width: 1;
+  stroke-dasharray: 5 6;
+  vector-effect: non-scaling-stroke;
+}
+
+.agent-telemetry__cursor-band {
+  fill: var(--color-warning);
+  opacity: 0.035;
+}
+
+.agent-telemetry__cursor {
+  stroke: var(--color-primary);
+  stroke-width: 0.8;
+  stroke-dasharray: 2 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.agent-telemetry__ops {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  gap: 6px;
+  min-width: 0;
+}
+
+.agent-telemetry__ops-panel > header {
+  min-height: 29px;
+  padding: 4px 8px;
+}
+
+.agent-telemetry__ops-panel > header time,
+.agent-telemetry__ops-panel > header strong {
+  margin-left: auto;
+  color: var(--color-primary);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.agent-telemetry__inspection {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin: 0;
+}
+
+.agent-telemetry__inspection > div {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 5px 8px;
+  border-right: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+  font-size: 9px;
+}
+
+.agent-telemetry__inspection > div:nth-child(even) {
+  border-right: 0;
+}
+
+.agent-telemetry__inspection dt {
+  color: var(--color-text-muted);
+}
+
+.agent-telemetry__inspection dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-telemetry__ops-panel > p {
+  margin: 0;
+  padding: 5px 8px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 8px;
+}
+
+.agent-telemetry__signal-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-telemetry__signal-list li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  border-bottom: 1px solid rgba(80, 73, 69, 0.7);
+  font-size: 9px;
+}
+
+.agent-telemetry__signal-list li::before,
+.agent-telemetry__collector-grid span::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  flex: none;
+  background: var(--color-success);
+}
+
+.agent-telemetry__signal-list li[data-state='watch']::before {
+  background: var(--color-warning);
+}
+
+.agent-telemetry__signal-list li[data-state='critical']::before,
+.agent-telemetry__signal-list li[data-state='offline']::before,
+.agent-telemetry__collector-grid span[data-state='offline']::before {
+  background: var(--color-danger);
+}
+
+.agent-telemetry__signal-list b {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.agent-telemetry__collector-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--color-border);
+}
+
+.agent-telemetry__collector-grid span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 5px 8px;
+  overflow: hidden;
+  background: var(--color-surface-raised);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-telemetry__collector-foot {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px var(--space-2);
+  padding: 7px 8px;
+  color: var(--color-text-muted);
+  font-size: 9px;
+}
+
+.agent-telemetry__collector-foot b {
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 500;
+  text-align: right;
+}
+
+/* A backlog draining is the one thing on this line that is not provenance but
+   a condition, so it is the one thing that carries a colour. */
+.agent-telemetry__catchup {
+  display: inline-block;
+  padding: 1px var(--space-2);
+  border: 1px solid var(--color-warning);
+  border-radius: 999px;
+  color: var(--color-warning);
+  font-size: var(--fs-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: help;
+}
+
+/* The same slot when the backlog reading is too old to be current. It keeps
+   the shape and loses the amber and the uppercase: the catch-up pill reads as
+   live motion, and a last-known value is not motion — nothing is being
+   observed to happen. Muted, not warning-toned, because "we cannot see this"
+   is not the same claim as "this is going wrong". */
+.agent-telemetry__last-known {
+  display: inline-block;
+  padding: 1px var(--space-2);
+  border: 1px dashed var(--color-border);
+  border-radius: 999px;
+  color: var(--color-text-muted);
+  font-size: var(--fs-micro);
+  cursor: help;
+}
+
+.agent-telemetry__cadence,
+.agent-telemetry__collectors label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-sm);
+}
+
+.agent-telemetry__cadence input {
+  width: 5rem;
+}
+
+/* Two columns at most: these are short phrases ("docker", "filesystems"), and
+   one per line down a wide panel is a column of whitespace. */
+.agent-telemetry__collectors {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: var(--space-1) var(--space-4);
+}
+
+.agent-telemetry__collectors legend {
+  padding: 0 var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+/* ── Detail-page device tables ──────────────────────────────────────────────
+   Filesystems, disks, interfaces, temperatures and containers. These shipped
+   with a class hook and no rules at all, so they rendered as browser-default
+   tables: no cell padding, so the size columns ran together into one string,
+   and no numeric alignment, so nothing could be compared down a column.
+
+   The rows are free-form maps from the collector, which is why this is one
+   rule set keyed off `data-numeric` rather than a per-column layout — the
+   stylesheet cannot know which columns a host will report. */
+
+/* No margin: the section above is a flex column and owns the gap between its
+   children. A margin here would add to it rather than replace it. */
+.agent-telemetry__device-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  min-width: 0;
+}
+
+.agent-telemetry__device-grid:empty {
+  display: none;
+}
+
+.agent-telemetry__device-grid .agent-telemetry__table:first-child {
+  grid-column: 1 / -1;
+}
+
+.agent-telemetry__table {
+  min-width: 0;
+}
+
+/* One host reports a single filesystem; another reports forty hwmon sensors.
+   Capping the scroller stops one collector from owning the page, and the count
+   in the panel head says how much is below the fold. */
+.agent-telemetry__scroll {
+  max-width: 100%;
+  max-height: 22rem;
+  overflow: auto;
+}
+
+.agent-telemetry__grid {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+
+.agent-telemetry__grid th,
+.agent-telemetry__grid td {
+  text-align: left;
+  padding: var(--space-1) var(--panel-pad);
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.agent-telemetry__grid tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* Sticky because the scroller above means the header can leave the viewport
+   while its own rows are still on screen. */
+.agent-telemetry__grid th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--color-surface-raised);
+  color: var(--color-text-muted);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+/* Right-aligned and tabular so digits stack into place columns: this is the
+   difference between reading four sizes and comparing them. The header follows
+   its own column — left-aligned over right-aligned numbers, it sits above the
+   gap and labels the column beside it. */
+.agent-telemetry__grid th[data-numeric='true'],
+.agent-telemetry__grid td[data-numeric='true'] {
+  text-align: right;
+}
+
+.agent-telemetry__grid td[data-numeric='true'] {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The device, mount point and interface names are identifiers an operator
+   copies into a shell, so they read in the same font they will be typed in. */
+.agent-telemetry__grid td:first-child {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+.agent-telemetry__subtitle {
+  margin: var(--space-3) 0 var(--space-1);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--color-text-muted);
+}
+
+@media (max-width: 1100px) {
+  .agent-telemetry__workbench {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-telemetry__ops {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .agent-telemetry__faults .cb-banner {
+    display: block;
+  }
+
+  .agent-telemetry__faults .cb-banner__body {
+    margin-top: var(--space-1);
+  }
+
+  .agent-telemetry__trace-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .agent-telemetry__history-count {
+    margin-left: 0;
+  }
+
+  .agent-telemetry__range {
+    margin-left: auto;
+  }
+
+  .agent-telemetry__ops,
+  .agent-telemetry__device-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-telemetry__device-grid .agent-telemetry__table:first-child {
+    grid-column: auto;
+  }
 }

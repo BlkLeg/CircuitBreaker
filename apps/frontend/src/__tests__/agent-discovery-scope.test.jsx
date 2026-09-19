@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import AgentDetailPage from '../pages/AgentDetailPage';
 
-// Slice 4 Task 27, cloned from agent-assigned-probes.test.jsx. Same discipline:
+// Cloned from agent-assigned-probes.test.jsx. Same discipline:
 // every default implementation lives in this hoisted object and is re-applied in
 // beforeEach, because vi.clearAllMocks() clears call records but leaves
 // implementations installed — a mockResolvedValue set by one test would
@@ -251,7 +251,7 @@ vi.mock('../api/discovery', () => ({
   updateProfile: vi.fn(apiDefaults.updateProfile),
   pauseProfile: vi.fn(apiDefaults.pauseProfile),
   resumeProfile: vi.fn(apiDefaults.resumeProfile),
-  // The section's "Devices found by this agent" list (Slice 3 §7's "Create
+  // The section's "Devices found by this agent" list (the "Create
   // monitor from this agent"). Empty here: these tests are about scope.
   getAgentDiscoveredDevices: vi.fn(() => Promise.resolve({ data: [] })),
 }));
@@ -287,6 +287,8 @@ function renderDetail() {
 // the readiness table (GET /agents/{id}/discovery) and the config editor
 // (GET /agents/capability-defaults) — is what makes the rest synchronous.
 async function scopeSection() {
+  // The section is a tab now, so asking for it starts by selecting it.
+  fireEvent.click(await screen.findByRole('tab', { name: 'Discovery' }));
   const section = await screen.findByRole('region', { name: 'Discovery scope' });
   await within(section).findByRole('table', { name: 'Collector readiness' });
   await within(section).findByRole('group', { name: 'Local discovery settings' });
@@ -330,6 +332,66 @@ describe('Agent Detail — discovery scope', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  // The overview card reads the same payload the Discovery tab does, and used
+  // to read fields the payload has never had (`config.mode`, `subnets`) — so it
+  // could only ever render "—" and 0 no matter what the agent reported. The
+  // API sends `limits.scope_mode` and `scope[]` (schemas/discovery.py's
+  // AgentDiscoveryRead).
+  const kv = (scope, label) => scope.getByText(label).nextElementSibling.textContent;
+
+  it('reports the real scope mode and count on the overview card', async () => {
+    renderDetail();
+    const panel = await screen.findByRole('region', { name: 'Discovery' });
+
+    expect(kv(within(panel), 'Scope mode')).toBe('direct_private');
+    // Two of the fixture's six entries are effective; the rest are excluded,
+    // over-wide, or a tunnel. "In scope" is what the agent will actually scan.
+    expect(kv(within(panel), 'Networks in scope')).toBe('2');
+  });
+
+  it('counts the same scope in the overview summary strip', async () => {
+    renderDetail();
+    const strip = await screen.findByRole('group', { name: 'Agent situation summary' });
+
+    expect(within(strip).getByText('2 in scope')).toBeInTheDocument();
+    expect(within(strip).getByText('direct_private')).toBeInTheDocument();
+    expect(within(strip).queryByText('scope unresolved')).toBeNull();
+  });
+
+  it('keeps the disabled-discovery wording exactly as written', async () => {
+    // This sentence lives in a Banner. It is the only place the page
+    // says that nothing is lost by disabling — subnets, results and history
+    // all survive — so the assertion is byte for byte.
+    const { getAgent } = await import('../api/agents');
+    getAgent.mockResolvedValue({
+      data: {
+        ...apiDefaults.agent,
+        capabilities: { ...apiDefaults.agent.capabilities, local_discovery: false },
+      },
+    });
+    renderDetail();
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Discovery' }));
+    const section = await screen.findByRole('region', { name: 'Discovery scope' });
+    expect(
+      within(section).getByText(
+        'Local discovery is disabled for this agent. Its subnets stay configured and its results and job history are retained; nothing is scanned from here until it is re-enabled.'
+      )
+    ).toBeInTheDocument();
+  });
+
+  it('is reachable as a region by its heading', async () => {
+    renderDetail();
+    // Panel names the region from its own title, and each of the section's
+    // groups is a panel of its own now, so the whole thing stays navigable by
+    // heading.
+    const section = await scopeSection();
+    expect(section).toBeInTheDocument();
+    expect(
+      within(section).getByRole('region', { name: 'Collector readiness' })
+    ).toBeInTheDocument();
   });
 
   it('renders automatic subnets, central exclusions and routed overrides with different provenance', async () => {
@@ -612,6 +674,8 @@ describe('Agent Detail — discovery scope', () => {
     renderDetail();
     await scopeSection();
 
+    // The capability toggle itself is on Overview, one tab back.
+    fireEvent.click(await screen.findByRole('tab', { name: 'Overview' }));
     fireEvent.click(await screen.findByLabelText('Local discovery'));
 
     const dialog = await screen.findByRole('dialog');

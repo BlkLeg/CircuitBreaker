@@ -1,5 +1,5 @@
 # apps/backend/tests/services/test_monitor_probe_stream.py
-"""D-3: `mon.probe.remote` rides its own MONITOR_PROBE work-queue stream.
+"""`mon.probe.remote` rides its own MONITOR_PROBE work-queue stream.
 
 `ensure_monitor_poll_stream()` swallows "already in use" at debug level, so adding a
 subject to MONITOR_POLL's list would silently never apply to an already-deployed

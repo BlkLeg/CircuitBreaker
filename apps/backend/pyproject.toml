@@ -58,6 +58,16 @@ dependencies = [
     "apscheduler>=3.10",
     "dnspython>=2.6",
     "httpx>=0.27",
+    # Floor: 4.14.2 is the fixed release for CVE-2026-63374 (IDNA 2003 host
+    # encoding in TLSStream), CVE-2026-64847 and CVE-2026-63349. CI installs
+    # from this file, not requirements.txt, so the floor — not the lock — is
+    # what keeps a vulnerable anyio out of the environment tests run in.
+    # Ceiling: anyio 4.15.0+ deprecates anyio.abc.BlockingPortal; starlette
+    # 1.6.0's TestClient still references that alias at import time. With
+    # filterwarnings=error that becomes a collection failure across the
+    # backend/integration suites.
+    # Remove the upper bound when starlette stops using anyio.abc.BlockingPortal.
+    "anyio>=4.14.2,<4.15",
     "fastapi-users[sqlalchemy]>=13.0.0",
     "nats-py>=2.9.0",
     "zeroconf>=0.149.16",
@@ -116,7 +126,6 @@ dev = [
     "pip-audit>=2.7.0",
     # Security floors for transitive packages retained in the all-groups lock.
     "msgpack>=1.2.1",
-    "nltk>=3.10.0",
     "pip>=26.1.2",
     "pymdown-extensions>=11.0.1",
     "setuptools>=83.0.0",
@@ -125,11 +134,10 @@ security = [
     "bandit>=1.7.0",
     "semgrep>=1.50.0",
     "pip-audit>=2.7.0",
-    "safety>=3.0.0",
 ]
 docs = [
     "zensical>=0.0.24",
-    "mkdocs-material>=9.7.3",
+    "mkdocs-material>=9.7.7",
 ]
 
 [tool.hatch.version]

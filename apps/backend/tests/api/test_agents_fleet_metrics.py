@@ -246,7 +246,7 @@ async def test_presence_latest_is_the_newest_sample_for_each_agent(
     assert latest_a["uptime_s"] == 7200
     assert datetime.fromisoformat(latest_a["collected_at"]) == newest_a
     # The backend does not judge staleness — it hands the client the stamp and
-    # lets the client decide (design §1.3), so this must be tz-aware.
+    # lets the client decide, so this must be tz-aware.
     assert datetime.fromisoformat(latest_a["collected_at"]).tzinfo is not None
     # Columns the sample never carried stay null rather than becoming 0.0.
     assert latest_a["max_temp_c"] is None
@@ -285,7 +285,7 @@ async def test_presence_carries_the_spool_backlog_with_null_distinct_from_zero(
     client, factories, viewer_headers, monkeypatch
 ):
     """Spool depth is "the one signal that predicts trouble before anything
-    goes red" (design §4), so it rides the presence row straight off the
+    goes red", so it rides the presence row straight off the
     already-loaded `Agent` — no extra query.
 
     `None` (the agent has never reported a spool) and `0` (it reported, and the
@@ -322,6 +322,53 @@ async def test_presence_carries_the_spool_backlog_with_null_distinct_from_zero(
     assert silent_row["spool_depth"] is None
     assert silent_row["spool_bytes"] is None
     assert silent_row["spool_reported_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_presence_marks_a_backlog_reading_stale_once_it_stops_being_current(
+    client, factories, viewer_headers, monkeypatch
+):
+    """The fleet table must never state a frozen number as a measurement.
+
+    An agent reports its spool only while connected, so the row keeps its
+    pre-outage value for the entire outage. Observed live: an agent offline for
+    hours with 1,195 undelivered frames on disk, rendered by the table as
+    "no backlog" because the stored depth was 0. `spool_stale` is what lets the
+    row say "unknown" instead, and it is computed here rather than in the
+    browser so the answer does not depend on the viewer's clock.
+    """
+    _offline_redis(monkeypatch)
+    fresh = factories.agent(
+        status="active",
+        spool_depth=42,
+        spool_bytes=8192,
+        spool_reported_at=utcnow() - timedelta(seconds=20),
+    )
+    # The observed shape: a stored 0 that nobody has been able to refresh.
+    frozen_zero = factories.agent(
+        status="active",
+        spool_depth=0,
+        spool_bytes=0,
+        spool_reported_at=utcnow() - timedelta(hours=3),
+    )
+    never_reported = factories.agent(status="active")
+
+    resp = await client.get("/api/v1/agents/presence", headers=viewer_headers)
+
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert _row_for(body, fresh)["spool_stale"] is False
+    assert _row_for(body, frozen_zero)["spool_stale"] is True
+    # The depth itself is still shipped: the last known value is information,
+    # and it is the pairing with `spool_stale` — not withholding it — that
+    # stops it reading as current.
+    assert _row_for(body, frozen_zero)["spool_depth"] == 0
+
+    # Never reported has no reading for freshness to be a property of. The row
+    # renders nothing for it (`spool_depth is None`), so this only has to not
+    # claim the absent number is current.
+    assert _row_for(body, never_reported)["spool_stale"] is True
 
 
 # ── `GET /agents/metrics/series` — bucketing, cap and scope ──────────────────
@@ -484,7 +531,7 @@ async def test_series_never_selects_the_raw_jsonb_column(
     assert len(points) <= _SERIES_MAX_POINTS
 
 
-# ── Shared rules (design §1.3) ───────────────────────────────────────────────
+# ── Shared rules ───────────────────────────────────────────────
 
 
 @pytest.mark.asyncio

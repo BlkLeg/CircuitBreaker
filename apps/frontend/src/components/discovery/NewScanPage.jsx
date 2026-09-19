@@ -109,7 +109,7 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
   const [availableVlans, setAvailableVlans] = useState([]);
   const [vlansLoading, setVlansLoading] = useState(false);
 
-  // Plan §3's execution location: `null` is the existing server discovery
+  // The execution location: `null` is the existing server discovery
   // engine, an id dispatches this ad hoc scan to that agent.
   const [scanAgentId, setScanAgentId] = useState(null);
   const [selectedProfileId, setSelectedProfileId] = useState('');
@@ -217,7 +217,7 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
 
   // Moving the execution location rewrites both the mode and the scan-type
   // list. The two vocabularies are disjoint (`core/discovery_scan_types`), and
-  // §3 forbids sending a server-only type to an agent outright, so an agent
+  // The spec forbids sending a server-only type to an agent outright, so an agent
   // scan is always the connect sweep and always from the Safe mode's fields —
   // no nmap arguments, no SNMP community, no Docker socket.
   const handleScanAgentChange = (next) => {
@@ -365,7 +365,7 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
           gap: 20,
         }}
       >
-        {/* Execution location — plan §6's "Scan from" */}
+        {/* Execution location — the "Scan from" picker */}
         <ScanFromSelect
           selectId="ns-scan-agent"
           value={scanAgentId}
@@ -378,7 +378,7 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
           {SCAN_MODES.map(({ key, label, Icon, color, bg, desc }) => {
             const isDocker = key === 'docker';
             const requiresNmap = key === 'full' || key === 'deep_dive';
-            // §3: an agent runs the connect sweep and nothing else. Every other
+            // An agent runs the connect sweep and nothing else. Every other
             // mode is server-only, so it is disabled rather than hidden while an
             // agent is the execution location — same treatment nmap and Docker
             // already get when the server cannot run them.

@@ -5,6 +5,7 @@ import {
   HEALTH_POLL_INTERVAL_STOPPING_MS,
   HEALTH_POLL_INTERVAL_OFFLINE_MS,
   HEALTH_REQUEST_TIMEOUT_MS,
+  HEALTH_FAILURES_BEFORE_OFFLINE,
 } from '../lib/constants.js';
 
 const POLL_INTERVALS = {
@@ -55,13 +56,31 @@ export function useServerLifecycle() {
 
   const timerRef = useRef(null);
   const currentState = useRef('checking');
+  const failureCount = useRef(0);
 
   const scheduleNext = useCallback((nextState) => {
     if (timerRef.current) clearTimeout(timerRef.current);
 
     timerRef.current = setTimeout(async () => {
       const health = await fetchHealth();
-      const resolved = health?.state ?? 'offline';
+      const rawResolved = health?.state ?? 'offline';
+
+      if (rawResolved === 'offline') {
+        failureCount.current += 1;
+      } else {
+        // Any successful poll — including a legitimate 'starting'/'stopping'
+        // report — clears the failure streak and takes effect immediately.
+        failureCount.current = 0;
+      }
+
+      // A single failed poll (timeout, refusal, or network error) is not
+      // conclusive on its own — require several consecutive failures before
+      // the visible state is allowed to flip to 'offline'. This gate applies
+      // only to the failure path; it never delays a successful response.
+      const resolved =
+        rawResolved === 'offline' && failureCount.current < HEALTH_FAILURES_BEFORE_OFFLINE
+          ? currentState.current
+          : rawResolved;
 
       if (resolved !== currentState.current) {
         if (currentState.current !== 'checking') {
@@ -79,7 +98,7 @@ export function useServerLifecycle() {
 
       if (health?.checks) setChecks(health.checks);
 
-      scheduleNext(resolved);
+      scheduleNext(rawResolved);
     }, getPollInterval(nextState));
   }, []);
 

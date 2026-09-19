@@ -1,8 +1,54 @@
 import axios from 'axios';
 import logger from '../utils/logger';
-import { safeSet } from '../utils/safeAccess';
 import { hashPasswordForAuth } from '../utils/passwordHash';
 import { recordServerDate } from '../utils/serverClock';
+import { recordRequest } from '../lib/diagnosticsBuffer';
+import { buildUserMessage as shapeUserMessage, decorateApiError } from '../lib/apiErrors';
+
+// The server mints a UUID4 for any inbound `X-Request-ID` that doesn't
+// pass its filter (<=64 chars of [A-Za-z0-9_.-]); a crypto.randomUUID() value
+// passes unchanged, so the ID minted here is the one that comes back on the
+// response and lands in server logs / slow-query warnings.
+function generateRequestId() {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+  } catch {
+    // Fall through to the manual fallback below.
+  }
+  // Math.random-based RFC4122-ish v4 fallback for jsdom / older browsers
+  // without crypto.randomUUID.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+function now() {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+}
+
+// Records one *logical* request (post-retries) into the diagnostics ring
+// buffer. Never called from inside a retry branch — only at a terminal point
+// of the response interceptor — so a request retried N times still produces
+// exactly one entry, with `retryCount: N`, not one entry per attempt.
+function recordCompletedRequest(config, status) {
+  const startedAt = config?._startedAt;
+  const durationMs = typeof startedAt === 'number' ? now() - startedAt : null;
+  recordRequest({
+    requestId: config?._requestId,
+    method: config?.method,
+    path: config?.url,
+    status,
+    durationMs,
+    retryCount: config?._retryCount ?? 0,
+    wasRateLimited: Boolean(config?._retried429),
+  });
+}
 
 const AUTH_ROUTE_PREFIXES = [
   '/auth/login',
@@ -21,32 +67,16 @@ function isSessionExpiryCandidate(error) {
 }
 
 function buildUserMessage(status, data, error) {
+  const message = shapeUserMessage(status, data, error);
   if (status >= 500) {
     logger.error(`API ${status}:`, data);
-    const detail = typeof data?.detail === 'string' ? data.detail : null;
-    return detail || 'A server error occurred. Please try again or contact support.';
+    return message;
   }
-  const detail = data?.detail;
-  const message = Array.isArray(detail)
-    ? detail.map((e) => e.msg || JSON.stringify(e)).join('; ')
-    : detail || error.message;
-
   if (status === 401 && !isSessionExpiryCandidate(error)) {
     return message;
   }
-
   logger.error(`API ${status}:`, message);
   return message;
-}
-
-function extractFieldErrors(status, data) {
-  if (status !== 422 || !Array.isArray(data?.detail)) return null;
-  const fieldErrors = {};
-  data.detail.forEach((e) => {
-    const fieldName = e.field ?? (Array.isArray(e.loc) ? e.loc[e.loc.length - 1] : null);
-    if (fieldName && e.msg) safeSet(fieldErrors, String(fieldName), e.msg);
-  });
-  return Object.keys(fieldErrors).length > 0 ? fieldErrors : null;
 }
 
 const client = axios.create({
@@ -91,6 +121,18 @@ client.interceptors.request.use((config) => {
     if (csrf) config.headers['X-CSRF-Token'] = csrf;
   }
 
+  // Stamp a request ID and start timestamp once per logical request. A retry
+  // re-enters this interceptor with the *same* config object (see the
+  // `_retryCount` / `_retried429` convention below), so both are only
+  // generated the first time through — reused, not replaced, across retries.
+  if (!config._requestId) {
+    config._requestId = generateRequestId();
+  }
+  if (typeof config._startedAt !== 'number') {
+    config._startedAt = now();
+  }
+  config.headers['X-Request-ID'] = config._requestId;
+
   return config;
 });
 
@@ -104,9 +146,17 @@ client.interceptors.response.use(
     // already flowing past here — recording it costs no request. See
     // utils/serverClock.js.
     recordServerDate(response.headers);
+    recordCompletedRequest(response.config, response.status);
     return response;
   },
   async (error) => {
+    // A cancelled request is this app superseding itself, not a failure.
+    // Everything below reads it as one: `!error.response` holds for an abort,
+    // so the retry branch re-issues it twice with backoff — on every keystroke
+    // of a debounced search — and the network branch then swaps the
+    // CanceledError for "Cannot reach the server." Rethrow it untouched.
+    if (axios.isCancel(error)) throw error;
+
     // A 4xx/5xx is still a response from the server and still carries `Date`;
     // an offset measured from one is exactly as valid as one measured from a
     // 200, and refusing it would leave a deployment whose reads are failing
@@ -127,8 +177,14 @@ client.interceptors.response.use(
       return client(config);
     }
 
-    // Single auto-retry for 429 after retry-after delay (before surfacing to user)
-    if (error.response?.status === 429 && !config._retried429) {
+    // Single auto-retry for 429 after retry-after delay (before surfacing to user).
+    // Background pollers (e.g. the map's telemetry batch poll) opt out via
+    // `_noRateLimitRetry`: a hidden multi-second sleep inside the client is
+    // the wrong handler for those callers — they already run their own
+    // per-node backoff and need the 429 immediately to drive it. The opt-out
+    // only skips this sleep-and-retry; the `status === 429` branch further
+    // down still runs and still records exactly one ring-buffer entry.
+    if (error.response?.status === 429 && !config._retried429 && !config._noRateLimitRetry) {
       const retryAfter = Number.parseInt(error.response.headers?.['retry-after'] || '5', 10);
       config._retried429 = true;
       await new Promise((r) => setTimeout(r, retryAfter * 1000));
@@ -137,6 +193,7 @@ client.interceptors.response.use(
 
     // Network / timeout — backend unreachable
     if (!error.response) {
+      recordCompletedRequest(config, 0);
       const networkErr = new Error('Cannot reach the server. Check your network connection.');
       networkErr.isNetworkError = true;
       logger.error('Network error:', error.message);
@@ -159,6 +216,7 @@ client.interceptors.response.use(
 
     // Rate limited — surface retry-after info
     if (status === 429) {
+      recordCompletedRequest(config, status);
       const retryAfter = error.response.headers?.['retry-after'];
       const msg = retryAfter
         ? `Too many requests. Try again in ${retryAfter} seconds.`
@@ -170,20 +228,16 @@ client.interceptors.response.use(
     }
 
     const message = buildUserMessage(status, data, error);
-    const err = new Error(message);
-    err.statusCode = status;
-    err.errorCode = data?.error_code ?? null;
-    err.response = error.response;
+    const err = decorateApiError(new Error(message), status, data, error);
 
-    const fieldErrors = extractFieldErrors(status, data);
-    if (fieldErrors) err.fieldErrors = fieldErrors;
-
+    recordCompletedRequest(config, status);
     throw err;
   }
 );
 
 export const hardwareApi = {
   list: (params) => client.get('/hardware', { params }),
+  page: (params) => client.get('/hardware/page', { params }),
   get: (id) => client.get(`/hardware/${id}`),
   create: (data) => client.post('/hardware', data),
   update: (id, data) => client.patch(`/hardware/${id}`, data),
@@ -196,8 +250,14 @@ export const hardwareApi = {
     client.delete(`/hardware-connections/${connId}`).then((r) => r.data),
 };
 
+/** Bounded inventory selectors shared across pickers and association UIs. */
+export const inventoryApi = {
+  options: (params) => client.get('/inventory/options', { params }),
+};
+
 export const computeUnitsApi = {
   list: (params) => client.get('/compute-units', { params }),
+  page: (params) => client.get('/compute-units/page', { params }),
   get: (id) => client.get(`/compute-units/${id}`),
   getNetworks: (id) => client.get(`/compute-units/${id}/networks`),
   create: (data) => client.post('/compute-units', data),
@@ -227,6 +287,7 @@ export const computeUnitsApi = {
 
 export const servicesApi = {
   list: (params) => client.get('/services', { params }),
+  page: (params) => client.get('/services/page', { params }),
   get: (id) => client.get(`/services/${id}`),
   create: (data) => client.post('/services', data),
   update: (id, data) => client.patch(`/services/${id}`, data),
@@ -249,6 +310,7 @@ export const servicesApi = {
 
 export const storageApi = {
   list: (params) => client.get('/storage', { params }),
+  page: (params) => client.get('/storage/page', { params }),
   get: (id) => client.get(`/storage/${id}`),
   create: (data) => client.post('/storage', data),
   update: (id, data) => client.patch(`/storage/${id}`, data),
@@ -279,6 +341,7 @@ export const networksApi = {
 
 export const miscApi = {
   list: (params) => client.get('/misc', { params }),
+  page: (params) => client.get('/misc/page', { params }),
   get: (id) => client.get(`/misc/${id}`),
   create: (data) => client.post('/misc', data),
   update: (id, data) => client.patch(`/misc/${id}`, data),
@@ -327,7 +390,15 @@ export const graphApi = {
 };
 
 export const searchApi = {
+  // Kept for any caller still on the flat list. The navigator uses searchPage,
+  // which states whether the backend truncated rather than leaving the UI to
+  // guess from a full-looking page.
   search: (q) => client.get('/search', { params: { q } }),
+  searchPage: (q, { limit, signal } = {}) =>
+    client.get('/search/page', {
+      params: limit ? { q, limit } : { q },
+      signal,
+    }),
 };
 
 export const settingsApi = {
@@ -363,8 +434,6 @@ export const timezonesApi = {
 
 export const adminApi = {
   export: () => client.get('/admin/export'),
-  import: (data, wipeBeforeImport = false) =>
-    client.post('/admin/import', { wipe_before_import: wipeBeforeImport, data }),
   recentChanges: (limit = 10) => client.get('/admin/recent-changes', { params: { limit } }),
   clearLab: () => client.post('/admin/clear-lab'),
   dbHealth: () => client.get('/admin/db/health'),
@@ -434,6 +503,7 @@ export const logsApi = {
 
 export const externalNodesApi = {
   list: (params) => client.get('/external-nodes', { params }),
+  page: (params) => client.get('/external-nodes/page', { params }),
   get: (id) => client.get(`/external-nodes/${id}`),
   create: (data) => client.post('/external-nodes', data),
   update: (id, d) => client.patch(`/external-nodes/${id}`, d),
@@ -456,6 +526,18 @@ export const telemetryApi = {
   pollNow: (id) => client.post(`/hardware/${id}/telemetry/poll`).then((r) => r.data),
   getEntity: (entityType, entityId) =>
     client.get(`/telemetry/entity/${entityType}/${entityId}`).then((r) => r.data),
+  // One request for N nodes instead of one per node. `_noRateLimitRetry`
+  // opts this background-poll call out of the client's silent Retry-After
+  // sleep on 429 — the caller's own backoff (useMapRealTimeUpdates) is the
+  // right handler, and it needs the 429 immediately to drive that backoff
+  // rather than have it hidden inside a multi-second sleep here.
+  getBatch: (ids) =>
+    client
+      .get('/hardware/telemetry/batch', {
+        params: { hardware_ids: ids.join(',') },
+        _noRateLimitRetry: true,
+      })
+      .then((r) => r.data),
 };
 
 export const categoriesApi = {
@@ -483,9 +565,21 @@ export const ipCheckApi = {
 
 export const cveApi = {
   search: (params) => client.get('/cve/search', { params }),
+  fleet: () => client.get('/cve/fleet'),
   forEntity: (type, id) => client.get(`/cve/entity/${type}/${id}`),
+  updateIdentity: (type, id, data) => client.put(`/cve/entity/${type}/${id}/identity`, data),
   triggerSync: () => client.post('/cve/sync'),
   status: () => client.get('/cve/status'),
+};
+
+// Parked JetStream work (route F14). All three routes are admin-only. The list
+// deliberately carries no payload -- api/failed_messages.py keeps the raw bytes
+// out of the response because a message that parked for being malformed has no
+// encoding that is both honest and safe to hand a browser.
+export const failedMessagesApi = {
+  list: (params) => client.get('/failed-messages', { params }),
+  requeue: (id) => client.post(`/failed-messages/${id}/requeue`),
+  discard: (id) => client.post(`/failed-messages/${id}/discard`),
 };
 
 export const capabilitiesApi = {
@@ -563,19 +657,6 @@ export const eventsApi = {
   status: () => client.get('/events/status'),
 };
 
-export const discoveryApi = {
-  getJobs: (params) => client.get('/discovery/jobs', { params }),
-  getJob: (id) => client.get(`/discovery/jobs/${id}`),
-  getResultsWithInference: (jobId) =>
-    client.get(`/discovery/jobs/${jobId}/results`, { params: { with_inference: true } }),
-  batchImport: (jobId, items) => client.post(`/discovery/jobs/${jobId}/batch-import`, { items }),
-  importAsNetwork: (jobId, payload) =>
-    client.post(`/discovery/jobs/${jobId}/import-as-network`, payload),
-  lldpEnrich: (payload) => client.post('/discovery/lldp-enrich', payload),
-  lldpJobResults: (jobId) => client.get(`/discovery/lldp-jobs/${jobId}/results`),
-  lldpApply: (jobId, payload) => client.post(`/discovery/lldp-jobs/${jobId}/apply`, payload),
-};
-
 export const certificatesApi = {
   list: (params) => client.get('/certificates', { params }),
   get: (id) => client.get(`/certificates/${id}`),
@@ -596,6 +677,19 @@ export const notificationsApi = {
   listRoutes: () => client.get('/notifications/routes'),
   createRoute: (data) => client.post('/notifications/routes', data),
   deleteRoute: (id) => client.delete(`/notifications/routes/${id}`),
+};
+
+// Metric alert rules. Mounted at /monitors/alert-rules (api/routing.py:419-424);
+// create, update, delete and preview are admin-only, list and get are not.
+export const metricAlertsApi = {
+  catalog: () => client.get('/monitors/alert-rules/catalog'),
+  list: () => client.get('/monitors/alert-rules'),
+  get: (id) => client.get(`/monitors/alert-rules/${id}`),
+  create: (data) => client.post('/monitors/alert-rules', data),
+  update: (id, data) => client.put(`/monitors/alert-rules/${id}`, data),
+  remove: (id) => client.delete(`/monitors/alert-rules/${id}`),
+  preview: (rule, windowSeconds) =>
+    client.post('/monitors/alert-rules/preview', { rule, window_seconds: windowSeconds }),
 };
 
 export const deviceRolesApi = {

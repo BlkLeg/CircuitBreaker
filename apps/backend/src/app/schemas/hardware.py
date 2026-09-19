@@ -246,3 +246,5 @@ class Hardware(HardwareBase):
     # v2: manual status override
     status_override: str | None = None
     documents: list[LinkedDocument] = []
+    ip_conflict: bool = False
+    ip_conflict_details: list[dict[str, Any]] = []

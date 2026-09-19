@@ -10,7 +10,7 @@
  *   GET /agents/metrics/series  sparkline shape only               120s
  *
  * Two endpoints rather than one flagged endpoint because the costs differ by
- * an order of magnitude (design §1.2). A 30-minute sparkline is visually
+ * an order of magnitude. A 30-minute sparkline is visually
  * identical whether it is fresh or two minutes old; the head value printed
  * beside it is what has to stay current. Folding them together would mean
  * paying the series cost on every fast tick.
@@ -55,7 +55,7 @@ function readHeadValue(latest, field) {
  * One agent's four columns, with the current head value appended as the final
  * point of each.
  *
- * Series/head coherence (design §3): the 120s series lags the 30s head by up
+ * Series/head coherence: the 120s series lags the 30s head by up
  * to a tick, so without this the row would render "81%" beside a line whose
  * right edge sits at 74%. Appending the head makes the last pixel of the
  * sparkline agree with the number printed next to it, always.
@@ -120,7 +120,7 @@ export function useFleetMetrics() {
         setRawPointsById(toPointsByAgent(data));
       })
       .catch(() => {
-        // Deliberately invisible (design §4): the sparkline is decoration over
+        // Deliberately invisible: the sparkline is decoration over
         // the head value, so a failed series fetch keeps the previous shape and
         // surfaces nothing. Head values, presence and the table are unaffected,
         // and there is no state worth flagging to the operator.

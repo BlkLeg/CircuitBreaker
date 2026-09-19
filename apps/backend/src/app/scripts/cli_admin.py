@@ -1,7 +1,7 @@
 """The administration journeys SRV-06 requires of ``cb``: migrations, tokens, users, agents.
 
 Every function here is the *second* caller of something the server already
-owns — ``app.main.run_alembic_upgrade`` for migrations,
+owns — ``app.startup.schema.run_alembic_upgrade`` for migrations,
 ``app.core.security``'s hashing for tokens, ``app.core.token_scopes`` for what
 a scope is, ``app.services.agent_registry`` for agent lifecycle — for the
 reason ``app.cli``'s docstring gives about second copies. A CLI that approved
@@ -180,36 +180,15 @@ def _audit(
 def alembic_ini_path() -> Path:
     """The alembic.ini ``run_alembic_upgrade`` would use, resolved the same way.
 
-    The private helpers are imported from ``app.main`` rather than reimplemented
-    because the layouts they cover (repo checkout, mono container, PyInstaller
-    bundle, deb/rpm share tree) are exactly the ones a packaged `cb migrate` has
-    to work in, and a second list of them would be right until the day the
-    packaging changed. ``test_cli_migrate`` asserts this returns the same file
-    ``run_alembic_upgrade`` hands to Alembic, so the two cannot drift silently.
+    Literally the same way: both call ``startup.paths.alembic_ini_candidates``.
+    The layouts it covers (repo checkout, mono container, PyInstaller bundle,
+    deb/rpm share tree) are exactly the ones a packaged ``cb migrate`` has to
+    work in, and a second copy of that list would be right only until the next
+    packaging change. ``test_cli_migrate`` asserts the two agree.
     """
-    import os
+    from app.startup.paths import alembic_ini_candidates, resolve_existing_path
 
-    import app.main as app_main
-    from app.main import (
-        _ALEMBIC_INI_FILENAME,
-        _bundle_share_candidate,
-        _meipass_candidate,
-        _resolve_existing_path,
-        _share_dir_candidate,
-    )
-
-    main_path = Path(app_main.__file__).resolve()
-    candidates: list[str | Path | None] = [
-        os.environ.get("ALEMBIC_CONFIG"),
-        os.environ.get("CB_ALEMBIC_INI"),
-        _share_dir_candidate("backend", _ALEMBIC_INI_FILENAME),
-        _bundle_share_candidate("backend", _ALEMBIC_INI_FILENAME),
-        _meipass_candidate("backend", _ALEMBIC_INI_FILENAME),
-        main_path.parent.parent.parent / _ALEMBIC_INI_FILENAME,
-    ]
-    if len(main_path.parents) > 4:
-        candidates.append(main_path.parents[4] / "apps" / "backend" / _ALEMBIC_INI_FILENAME)
-    resolved = _resolve_existing_path(*candidates)
+    resolved = resolve_existing_path(*alembic_ini_candidates())
     if resolved is None:
         raise AdminError(
             "Could not locate alembic.ini. Set CB_ALEMBIC_INI to its path — the mono "
@@ -250,7 +229,7 @@ def migration_status() -> MigrationStatus:
         with engine.connect() as connection:
             context = MigrationContext.configure(connection)
             current = tuple(context.get_current_heads())
-    except Exception as exc:  # noqa: BLE001 - the CLI is the boundary
+    except Exception as exc:  # the CLI is the boundary
         raise AdminError(f"Could not read the database's migration state: {exc}") from exc
 
     if set(current) == set(heads):
@@ -267,7 +246,7 @@ def migration_status() -> MigrationStatus:
 def apply_migrations() -> None:
     """Run pending migrations through the server's own upgrade path.
 
-    ``app.main.run_alembic_upgrade`` is called rather than
+    ``app.startup.schema.run_alembic_upgrade`` is called rather than
     ``alembic upgrade head``, so this shares three things with a server start
     that a bare Alembic invocation would not: the alembic.ini resolution above,
     the legacy-database stamp pre-check, and — through ``migrations/env.py`` —
@@ -275,11 +254,11 @@ def apply_migrations() -> None:
     lock is the reason `cb migrate upgrade` can be run while the stack is
     coming up without racing the API's own auto-migrate phase.
     """
-    from app.main import run_alembic_upgrade
+    from app.startup.schema import run_alembic_upgrade
 
     try:
         run_alembic_upgrade()
-    except Exception as exc:  # noqa: BLE001 - the CLI is the boundary
+    except Exception as exc:  # the CLI is the boundary
         raise AdminError(f"Migration failed: {exc}") from exc
 
 
@@ -777,15 +756,12 @@ def approve_agent(db: Session, actor: Any, agent_id: int) -> AgentSummary:
     agent = _require_agent(db, agent_id)
     if agent.status == "active":
         raise AdminError(f"Agent {agent_id} is already active.", EXIT_USAGE)
-    approved = agent_registry.approve_agent(db, agent_id, approving_user_id=actor.id)
-    _audit(
-        db,
-        actor,
-        "agent_approved",
-        entity_type="agent",
-        entity_id=agent_id,
-        entity_name=approved.name or approved.hostname or "",
-    )
+    # No `_audit` call beside this one. `agent_registry.approve_agent` routes
+    # the approval through `record_event`, which writes
+    # the hash-chained audit entry for *every* surface — so auditing here too
+    # would put two rows in the chain for one decision. The `via="cli"`
+    # provenance is threaded into that single entry instead.
+    approved = agent_registry.approve_agent(db, agent_id, approving_user_id=actor.id, via="cli")
     db.commit()
     return _agent_summary(approved)
 
@@ -794,15 +770,11 @@ def revoke_agent(db: Session, actor: Any, agent_id: int, reason: str | None = No
     from app.services import agent_registry
 
     _require_agent(db, agent_id)
-    revoked = agent_registry.revoke_agent(db, agent_id, actor_user_id=actor.id, reason=reason)
-    _audit(
-        db,
-        actor,
-        "agent_revoked",
-        entity_type="agent",
-        entity_id=agent_id,
-        entity_name=revoked.name or revoked.hostname or "",
-        details={"reason": reason},
+    # One chained entry per revocation, written by record_event for every
+    # surface — see approve_agent above for why this no longer audits
+    # separately.
+    revoked = agent_registry.revoke_agent(
+        db, agent_id, actor_user_id=actor.id, reason=reason, via="cli"
     )
     db.commit()
     return _agent_summary(revoked)

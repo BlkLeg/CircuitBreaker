@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import AgentDetailPage from '../pages/AgentDetailPage';
 
-// Slice 3 Task 21. Same discipline as agent-detail-page.test.jsx: every default
+// Same discipline as agent-detail-page.test.jsx: every default
 // implementation lives in this hoisted object and is re-applied in beforeEach,
 // because vi.clearAllMocks() clears call records but leaves implementations
 // installed — a mockResolvedValue set by one test would otherwise become the
@@ -47,7 +47,7 @@ const apiDefaults = vi.hoisted(() => {
         enabled: true,
         // Target state and execution condition side by side. The agent is
         // offline, so the last known target state is still `up` — that is the
-        // whole point of §7's separation.
+        // whole point of the separation.
         status: 'up',
         probe_execution_status: 'unavailable',
         probe_execution_reason: 'agent_offline',
@@ -180,7 +180,7 @@ vi.mock('../api/agents', () => ({
   revokeAgent: vi.fn(apiDefaults.revokeAgent),
   triggerAgentUpdate: vi.fn(apiDefaults.triggerAgentUpdate),
   listProbeEligibleAgents: vi.fn(apiDefaults.listProbeEligibleAgents),
-  // Slice 4 Task 27: AgentDetailPage now also loads GET /agents/{id}/discovery
+  // AgentDetailPage now also loads GET /agents/{id}/discovery
   // for the Discovery scope section. Plain functions rather than vi.fn(): these
   // tests assert nothing about discovery, and a stub with no implementation
   // would throw inside the page's loader.
@@ -215,8 +215,19 @@ function renderDetail() {
   );
 }
 
+/**
+ * The probes section is a tab, so it is only in the DOM once its tab
+ * is selected. Selecting it is part of asking for the section.
+ */
 async function probesSection() {
+  fireEvent.click(await screen.findByRole('tab', { name: 'Probes' }));
   return screen.findByRole('region', { name: 'Assigned probes' });
+}
+
+/** …and the capability toggles live on Overview, one tab back. */
+async function openOverview() {
+  fireEvent.click(await screen.findByRole('tab', { name: 'Overview' }));
+  return screen.findByRole('region', { name: 'Capabilities' });
 }
 
 describe('Agent Detail — assigned probes', () => {
@@ -254,7 +265,7 @@ describe('Agent Detail — assigned probes', () => {
     expect(within(row).getByText('10.0.0.1')).toBeInTheDocument();
     expect(within(row).getByText('60s')).toBeInTheDocument();
     // Target state is the last known one, untouched by the execution
-    // condition beside it — the load-bearing rule of §7.
+    // condition beside it — the load-bearing rule.
     expect(within(row).getByText('up')).toBeInTheDocument();
     expect(within(row).getByText(/Probe unavailable — agent offline/)).toBeInTheDocument();
 
@@ -271,6 +282,35 @@ describe('Agent Detail — assigned probes', () => {
     expect(
       within(section).getByText(/2 of 20 concurrent checks in use · 2 assigned/)
     ).toBeInTheDocument();
+  });
+
+  it('keeps the disabled-probing wording exactly as written', async () => {
+    // This sentence lives in a Banner. It is the operator's only
+    // explanation of why assignments are listed but nothing is running, so
+    // the assertion is byte for byte: a later tidy-up fails here rather than
+    // drifting.
+    const { getAgent } = await import('../api/agents');
+    getAgent.mockResolvedValue({
+      data: {
+        ...apiDefaults.agent,
+        capabilities: { ...apiDefaults.agent.capabilities, remote_probe: false },
+      },
+    });
+    renderDetail();
+
+    const section = await probesSection();
+    expect(
+      within(section).getByText(
+        'Remote probing is disabled for this agent. Assigned monitors keep their last known target state and stay probe-unavailable until it is re-enabled.'
+      )
+    ).toBeInTheDocument();
+  });
+
+  it('is reachable as a region by its heading', async () => {
+    renderDetail();
+    // Panel names the region from its own title, so the section stays
+    // navigable by heading rather than by an aria-label a refactor can drop.
+    expect(await probesSection()).toBeInTheDocument();
   });
 
   it('offers open, check now, reassign and return-to-server actions', async () => {
@@ -305,6 +345,7 @@ describe('Agent Detail — assigned probes', () => {
     renderDetail();
 
     await probesSection();
+    await openOverview();
     fireEvent.click(await screen.findByLabelText('Remote probe'));
 
     const dialog = await screen.findByRole('dialog');
@@ -330,6 +371,7 @@ describe('Agent Detail — assigned probes', () => {
     const section = await probesSection();
     await within(section).findByText(/0 of 20 concurrent checks in use/);
 
+    await openOverview();
     fireEvent.click(await screen.findByLabelText('Remote probe'));
     await waitFor(() =>
       expect(setAgentCapabilities).toHaveBeenCalledWith('3', { remote_probe: false })

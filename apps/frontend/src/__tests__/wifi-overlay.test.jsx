@@ -19,7 +19,7 @@ vi.mock('framer-motion', () => ({
   },
 }));
 
-import WifiOverlay from '../components/map/WifiOverlay';
+import WifiOverlay from '../features/map/components/WifiOverlay';
 
 describe('WifiOverlay', () => {
   it('renders when node is missing positionAbsolute', () => {

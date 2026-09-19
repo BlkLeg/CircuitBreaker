@@ -1,4 +1,4 @@
-"""Notification sink API — secret handling at the HTTP boundary (INC-06).
+"""Notification sink API — secret handling at the HTTP boundary.
 
 The finding this file exists for: ``GET /notifications/sinks`` used to return
 ``provider_config`` verbatim, so anyone who could reach the surface read every

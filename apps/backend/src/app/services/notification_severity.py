@@ -4,8 +4,8 @@ The route field is labelled **"Minimum Severity"** and rendered under a
 **"Severity Threshold"** column, but the dispatcher compared it for equality
 (``route.alert_severity == severity``). A route set to ``info`` therefore
 received info alerts and silently discarded warning and critical ones — the
-opposite of what the label promises, and a failure in the dangerous direction
-(INC-03). Severity is the only routing key ``NotificationRoute`` has, so when it
+opposite of what the label promises, and a failure in the dangerous direction. Severity is the only
+routing key ``NotificationRoute`` has, so when it
 filters wrongly there is nothing else to catch the alert.
 
 This module is the single place that decides what a threshold admits, so the

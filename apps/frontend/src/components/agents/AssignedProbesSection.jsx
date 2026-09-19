@@ -6,10 +6,14 @@ import { runCheck, updateMonitor } from '../../api/monitor';
 // AGT-15: no agent surface echoes a server `detail` unredacted — lib/agentErrors.js.
 import { operatorErrorMessage, redactSensitive } from '../../lib/agentErrors';
 import { useToast } from '../common/Toast';
+import Panel from '../common/Panel';
+import Banner from '../common/Banner';
+import EmptyState from '../common/EmptyState';
+import AgentOpsStrip from './AgentOpsStrip';
 
 // `monitor_items.probe_execution_status` (db/models.py:272) — the *vantage's*
 // condition, which is orthogonal to `last_status` (whether the target is up).
-// Rendering these two in separate cells is the load-bearing rule of §7: the
+// Rendering these two in separate cells is the load-bearing rule: the
 // UP/DOWN pill shows target state only, and a monitor whose agent went offline
 // keeps its last known target state while turning probe-unavailable here.
 const EXECUTION_LABELS = {
@@ -44,7 +48,7 @@ function ExecutionCondition({ assignment }) {
 ExecutionCondition.propTypes = { assignment: PropTypes.object.isRequired };
 
 /**
- * §7's Assigned Probes section on Agent Detail.
+ * The Assigned Probes section on Agent Detail.
  *
  * Extracted rather than inlined: AgentDetailPage is already far past the
  * 150-line component budget, and this is a self-contained surface with its own
@@ -54,7 +58,14 @@ ExecutionCondition.propTypes = { assignment: PropTypes.object.isRequired };
  * the whole vantage story — what the agent is responsible for, and the limits
  * it runs under — lives behind one `aria-label`.
  */
-export default function AssignedProbesSection({ agentId, probes, granted, onChanged, children }) {
+export default function AssignedProbesSection({
+  agentId,
+  probes,
+  granted,
+  scopeMode = null,
+  onChanged,
+  children,
+}) {
   const toast = useToast();
   const [reassignFor, setReassignFor] = useState(null);
   const [candidates, setCandidates] = useState([]);
@@ -71,7 +82,7 @@ export default function AssignedProbesSection({ agentId, probes, granted, onChan
     }
   };
 
-  // D-14: the agent path answers 409 with the machine-readable eligibility
+  // The agent path answers 409 with the machine-readable eligibility
   // reason rather than silently accepting a check it cannot run, so the detail
   // is the message worth showing.
   const handleCheckNow = (assignment) =>
@@ -119,7 +130,7 @@ export default function AssignedProbesSection({ agentId, probes, granted, onChan
       }
     });
 
-  // §7 acceptance 10: a monitor returns to server execution only through an
+  // A monitor returns to server execution only through an
   // explicit user action — never as an automatic fallback when the agent is
   // unavailable.
   const handleReturnToServer = (assignment) =>
@@ -135,119 +146,159 @@ export default function AssignedProbesSection({ agentId, probes, granted, onChan
       }
     });
 
+  // The concurrency envelope, which is what the section is a reading of: how
+  // much of this vantage's capacity is committed.
+  const summary = probes
+    ? `${probes.active_runs} of ${probes.max_concurrent} concurrent checks in use · ${assignments.length} assigned`
+    : 'Loading assigned probes…';
+  const available = probes ? Math.max(0, probes.max_concurrent - probes.active_runs) : null;
+
   return (
-    <section aria-label="Assigned probes" className="agent-probes">
-      <h2>Assigned probes</h2>
-      {!granted && (
-        <p className="agent-probes__disabled">
-          Remote probing is disabled for this agent. Assigned monitors keep their last known target
-          state and stay probe-unavailable until it is re-enabled.
-        </p>
-      )}
-      <p className="agent-probes__concurrency">
-        {probes ? (
-          <>
-            {probes.active_runs} of {probes.max_concurrent} concurrent checks in use ·{' '}
-            {assignments.length} assigned
-          </>
-        ) : (
-          'Loading assigned probes…'
-        )}
-      </p>
-      {probes && assignments.length === 0 && (
-        <p>
-          No monitors run from this agent. Assign one with &ldquo;Run from&rdquo; on a
-          monitor&apos;s form.
-        </p>
-      )}
-      {assignments.length > 0 && (
-        <div className="table-scroll">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Monitor</th>
-                <th>Type</th>
-                <th>Target</th>
-                <th>Interval</th>
-                <th>Target state</th>
-                <th>Execution</th>
-                <th>Last result</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {assignments.map((assignment) => (
-                <tr key={assignment.monitor_id}>
-                  <td>
-                    <Link to={`/monitors/${assignment.monitor_id}`}>{assignment.name}</Link>
-                  </td>
-                  <td>{assignment.check_type}</td>
-                  <td>{assignment.host}</td>
-                  <td>{assignment.interval_secs}s</td>
-                  {/* Target state, straight from `last_status`. Never merged
-                      with the execution condition beside it. */}
-                  <td>
-                    <span className="agent-probes__status" data-status={assignment.status}>
-                      {assignment.status}
-                    </span>
-                  </td>
-                  <td>
-                    <ExecutionCondition assignment={assignment} />
-                  </td>
-                  <td>{formatTimestamp(assignment.probe_last_result_at)}</td>
-                  <td className="agent-probes__actions">
-                    <Link to={`/monitors/${assignment.monitor_id}`}>Open</Link>
-                    <button
-                      type="button"
-                      disabled={busyMonitorId === assignment.monitor_id}
-                      onClick={() => handleCheckNow(assignment)}
-                    >
-                      Check now
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busyMonitorId === assignment.monitor_id}
-                      onClick={() => handleOpenReassign(assignment)}
-                    >
-                      Reassign
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busyMonitorId === assignment.monitor_id}
-                      onClick={() => handleReturnToServer(assignment)}
-                    >
-                      Return to server
-                    </button>
-                    {reassignFor === assignment.monitor_id && (
-                      <select
-                        aria-label={`Reassign ${assignment.name}`}
-                        value=""
-                        onChange={(event) => handleReassign(assignment, Number(event.target.value))}
-                      >
-                        <option value="" disabled>
-                          {candidates.length ? 'Choose an agent…' : 'No other agents'}
-                        </option>
-                        {candidates.map((candidate) => (
-                          <option
-                            key={candidate.agent_id}
-                            value={candidate.agent_id}
-                            disabled={!candidate.eligible}
+    <Panel title="Assigned probes" summary={summary}>
+      <div className="agent-probes">
+        <AgentOpsStrip
+          label="Remote probe execution summary"
+          items={[
+            {
+              label: 'Execution capacity',
+              value: probes
+                ? `${probes.active_runs} of ${probes.max_concurrent} in use`
+                : 'Loading',
+              detail: available === null ? 'capacity unresolved' : `${available} available`,
+              tone: probes && probes.active_runs >= probes.max_concurrent ? 'warn' : 'ok',
+            },
+            {
+              label: 'Assignments',
+              value: probes ? `${assignments.length} assigned` : 'Loading',
+              detail: assignments.length ? 'remote execution' : 'no monitors',
+              tone: assignments.length ? 'info' : 'default',
+            },
+            {
+              label: 'Remote probe grant',
+              value: granted ? 'Enabled' : 'Disabled',
+              detail: granted ? 'operator granted' : 'execution unavailable',
+              tone: granted ? 'ok' : 'warn',
+              marker: true,
+            },
+            {
+              label: 'Scope mode',
+              value: scopeMode ?? 'Unresolved',
+              detail: 'derived network policy',
+              tone: scopeMode ? 'info' : 'muted',
+            },
+          ]}
+        />
+        <div className="agent-probes__workbench" data-has-policy={String(Boolean(children))}>
+          <div className="agent-probes__assignments">
+            {!granted && (
+              <Banner
+                tone="warn"
+                title="Remote probing is disabled"
+                body="Remote probing is disabled for this agent. Assigned monitors keep their last known target state and stay probe-unavailable until it is re-enabled."
+              />
+            )}
+            {probes && assignments.length === 0 && (
+              <EmptyState
+                icon="◎"
+                message="No monitors run from this agent."
+                hint="Assign one with “Run from” on a monitor’s form."
+              />
+            )}
+            {assignments.length > 0 && (
+              <div className="table-scroll">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Monitor</th>
+                      <th>Type</th>
+                      <th>Target</th>
+                      <th>Interval</th>
+                      <th>Target state</th>
+                      <th>Execution</th>
+                      <th>Last result</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {assignments.map((assignment) => (
+                      <tr key={assignment.monitor_id}>
+                        <td>
+                          <Link to={`/monitors/${assignment.monitor_id}`}>{assignment.name}</Link>
+                        </td>
+                        <td>{assignment.check_type}</td>
+                        <td>{assignment.host}</td>
+                        <td>{assignment.interval_secs}s</td>
+                        {/* Target state, straight from `last_status`. Never merged
+                            with the execution condition beside it. */}
+                        <td>
+                          <span className="agent-probes__status" data-status={assignment.status}>
+                            {assignment.status}
+                          </span>
+                        </td>
+                        <td>
+                          <ExecutionCondition assignment={assignment} />
+                        </td>
+                        <td>{formatTimestamp(assignment.probe_last_result_at)}</td>
+                        <td className="agent-probes__actions">
+                          <Link to={`/monitors/${assignment.monitor_id}`}>Open</Link>
+                          <button
+                            type="button"
+                            disabled={busyMonitorId === assignment.monitor_id}
+                            onClick={() => handleCheckNow(assignment)}
                           >
-                            {candidate.name ?? `Agent ${candidate.agent_id}`}
-                            {candidate.eligible ? '' : ` — ${humanizeReason(candidate.reason)}`}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                            Check now
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busyMonitorId === assignment.monitor_id}
+                            onClick={() => handleOpenReassign(assignment)}
+                          >
+                            Reassign
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busyMonitorId === assignment.monitor_id}
+                            onClick={() => handleReturnToServer(assignment)}
+                          >
+                            Return to server
+                          </button>
+                          {reassignFor === assignment.monitor_id && (
+                            <select
+                              aria-label={`Reassign ${assignment.name}`}
+                              value=""
+                              onChange={(event) =>
+                                handleReassign(assignment, Number(event.target.value))
+                              }
+                            >
+                              <option value="" disabled>
+                                {candidates.length ? 'Choose an agent…' : 'No other agents'}
+                              </option>
+                              {candidates.map((candidate) => (
+                                <option
+                                  key={candidate.agent_id}
+                                  value={candidate.agent_id}
+                                  disabled={!candidate.eligible}
+                                >
+                                  {candidate.name ?? `Agent ${candidate.agent_id}`}
+                                  {candidate.eligible
+                                    ? ''
+                                    : ` — ${humanizeReason(candidate.reason)}`}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+          {children ? <aside className="agent-probes__policy">{children}</aside> : null}
         </div>
-      )}
-      {children}
-    </section>
+      </div>
+    </Panel>
   );
 }
 
@@ -255,6 +306,7 @@ AssignedProbesSection.propTypes = {
   agentId: PropTypes.oneOfType([PropTypes.number, PropTypes.string]).isRequired,
   probes: PropTypes.object,
   granted: PropTypes.bool,
+  scopeMode: PropTypes.string,
   onChanged: PropTypes.func,
   children: PropTypes.node,
 };

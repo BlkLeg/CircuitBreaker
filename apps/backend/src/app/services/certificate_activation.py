@@ -1,6 +1,6 @@
 """Write the active certificate to disk and reload the TLS server.
 
-INC-22. `nginx.mono.conf:81-82` serves $CB_DATA_DIR/tls/{fullchain,privkey}.pem. Those files
+the contract. `nginx.mono.conf:81-82` serves $CB_DATA_DIR/tls/{fullchain,privkey}.pem. Those files
 were written once by `docker/entrypoint-mono.sh` at first boot, only when absent, and never
 again. `certificate_service.py` never wrote there at all — so creating, importing, renewing
 or auto-renewing a certificate changed a database row and nothing else.
@@ -31,6 +31,22 @@ _KEY_NAME = "privkey.pem"
 # nginx.mono.conf:5 — `pid /tmp/nginx.pid;`. The container root filesystem is read-only,
 # so the pidfile lives on the /tmp tmpfs, and nginx's master writes it as `breaker`.
 _DEFAULT_NGINX_PID_FILE = "/tmp/nginx.pid"
+
+
+class ActivationBlocked(Exception):
+    """Activating this certificate would strand agents that cannot be reached to fix.
+
+    Raised by `activate_certificate` rather than checked by its callers. The
+    gate began life in the admin route, which left the scheduled renewal path
+    — the one that runs with no operator present — activating a freshly
+    generated self-signed keypair, and therefore a new pin, straight past it.
+    That is a trust rotation with nobody watching, so the check belongs at the choke point
+    every caller already goes through.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 @dataclass
@@ -127,7 +143,7 @@ def _reload_tls() -> tuple[bool, str]:
 
         try:
             call_helper("reload_nginx", {})
-        except Exception as exc:  # noqa: BLE001 — reported, not raised: the write succeeded
+        except Exception as exc:  # reported, not raised: the write succeeded
             return False, f"host helper could not reload nginx: {exc}"
         return True, "nginx reloaded via cb-helperd"
 
@@ -138,13 +154,24 @@ def _reload_tls() -> tuple[bool, str]:
     )
 
 
-def activate_certificate(db: Session, cert: Certificate) -> ActivationResult:
+def activate_certificate(
+    db: Session, cert: Certificate, *, force: bool = False
+) -> ActivationResult:
     """Make *cert* the certificate this install serves.
 
-    Raises if the key cannot be decrypted or the files cannot be written. A reload failure
-    is reported in the result rather than raised: the bytes are on disk and the operator
-    needs to know both facts separately.
+    Raises `ActivationBlocked` when the activation is a trust change the fleet
+    has not been prepared for, unless *force* is set — see that exception for
+    why the check lives here rather than in the caller. Also raises if the key
+    cannot be decrypted or the files cannot be written. A reload failure is
+    reported in the result rather than raised: the bytes are on disk and the
+    operator needs to know both facts separately.
     """
+    from app.services import agent_tls_pin
+
+    blocked = agent_tls_pin.activation_block_reason(db, cert)
+    if blocked is not None and not force:
+        raise ActivationBlocked(blocked)
+
     key_plaintext = _decrypt_key(cert.key_pem)
 
     directory = tls_dir()

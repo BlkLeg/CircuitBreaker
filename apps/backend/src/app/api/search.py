@@ -1,47 +1,35 @@
+"""Authenticated, bounded entity search endpoints."""
+
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import ComputeUnit, ExternalNode, Hardware, MiscItem, Network, Service, Storage
+from app.core.rbac import require_scope
 from app.db.session import get_db
+from app.schemas.inventory import MAX_QUERY_LENGTH, MAX_SEARCH_LIMIT, EntityType
+from app.schemas.search import SearchPage, SearchResult
+from app.services.inventory_queries import FULL_INVENTORY_ACCESS
+from app.services.search_service import search_entities
 
-router = APIRouter(tags=["search"])
-
-
-class SearchResult(BaseModel):
-    id: str
-    type: str
-    title: str
-    description: str | None = None
-    action_url: str
-
-
-SOURCES = [
-    (Hardware, "hardware", "/hardware", "notes"),
-    (ComputeUnit, "compute", "/compute-units", "notes"),
-    (Service, "service", "/services", "description"),
-    (Storage, "storage", "/storage", "notes"),
-    (Network, "network", "/networks", "description"),
-    (MiscItem, "misc", "/misc", "description"),
-    (ExternalNode, "external", "/external-nodes", "notes"),
-]
+router = APIRouter(tags=["search"], dependencies=[require_scope("read", "*")])
 
 
 @router.get("", response_model=list[SearchResult])
-def search(q: str = Query(..., min_length=1), db: Session = Depends(get_db)) -> list[SearchResult]:
-    results: list[SearchResult] = []
-    term = f"%{q}%"
-    for Model, type_key, action_url, desc_field in SOURCES:
-        rows = db.execute(select(Model).where(Model.name.ilike(term))).scalars().all()  # type: ignore[attr-defined]
-        for row in rows:
-            results.append(
-                SearchResult(
-                    id=f"{type_key}-{row.id}",  # type: ignore[attr-defined]
-                    type=type_key,
-                    title=row.name,  # type: ignore[attr-defined]
-                    description=getattr(row, desc_field, None),
-                    action_url=action_url,
-                )
-            )
-    return results[:20]
+def search(
+    q: Annotated[str, Query(min_length=1, max_length=MAX_QUERY_LENGTH, pattern=r"\S")],
+    db: Annotated[Session, Depends(get_db)],
+) -> list[SearchResult]:
+    """Preserve the legacy result list while adding canonical entity identity."""
+    return search_entities(db, q, FULL_INVENTORY_ACCESS, MAX_SEARCH_LIMIT).items
+
+
+@router.get("/page", response_model=SearchPage)
+def search_page(
+    q: Annotated[str, Query(min_length=1, max_length=MAX_QUERY_LENGTH, pattern=r"\S")],
+    db: Annotated[Session, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=MAX_SEARCH_LIMIT)] = MAX_SEARCH_LIMIT,
+    types: Annotated[list[EntityType] | None, Query()] = None,
+) -> SearchPage:
+    """Return bounded entity results with an explicit truncation signal."""
+    return search_entities(db, q, FULL_INVENTORY_ACCESS, limit, types)
