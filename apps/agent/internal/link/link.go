@@ -1140,7 +1140,15 @@ func runOnce(ctx context.Context, opts Options) (outcome runOutcome, err error) 
 				// malformed to name one.
 				if err := opts.OnUpdate(f.Payload); err != nil {
 					log.Printf("link: update instruction refused: %v", err)
-					_ = sendUpdateStatus(instructionVersion(f.Payload), "failed", err.Error())
+					// A duplicate of the instruction already in flight is not
+					// dropped work — the server delivers every update twice by
+					// design and the running attempt reports its own outcome.
+					// Calling it "failed" makes the server clear
+					// pending_update_version, and the successful reconnect that
+					// follows then records no version_changed at all.
+					if !errors.Is(err, ErrUpdateAlreadyRunning) {
+						_ = sendUpdateStatus(instructionVersion(f.Payload), "failed", err.Error())
+					}
 				}
 			case frame.TypeKeyRotate:
 				handleKeyRotate(opts, f.Payload)

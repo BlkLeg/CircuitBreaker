@@ -190,3 +190,81 @@ async def test_get_binary_rejects_path_traversal(client, tmp_path, monkeypatch):
 
     resp = await client.get("/api/v1/agents/binary/..%2F..%2Fetc/linux/passwd")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_queues_a_pinned_version_rather_than_the_latest(
+    client, factories, auth_headers, monkeypatch, tmp_path
+):
+    """A caller-supplied `version` must win over auto-selection.
+
+    Every other test in this file posts `json={}`, so until this one the
+    `payload.version` branch had no coverage at all — which is how a 500 on
+    exactly that path survived nine nightly E2E runs. The manifest below holds
+    a newer version than the one requested precisely so auto-selection and the
+    pin disagree: asserting on "0.9.0" would pass even if the pin were ignored.
+    """
+    import json
+    from unittest.mock import AsyncMock
+
+    from app.services import agent_registry, agent_update
+
+    monkeypatch.setattr(agent_update, "AGENT_BINARIES_DIR", tmp_path)
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "0.9.0": {"linux-amd64": "newer-sha"},
+                "9.9.9-e2e-rollback": {"linux-amd64": "pinned-sha"},
+            }
+        )
+    )
+    agent = factories.agent(status="active", os="linux", arch="amd64")
+
+    request_update = AsyncMock()
+    monkeypatch.setattr(agent_update, "request_update", request_update)
+    monkeypatch.setattr(agent_registry, "publish_agent_control_frame", AsyncMock(return_value=True))
+
+    resp = await client.post(
+        f"/api/v1/agents/{agent.id}/update",
+        json={"version": "9.9.9-e2e-rollback"},
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"status": "queued", "version": "9.9.9-e2e-rollback"}
+    request_update.assert_called_once_with(
+        agent.id,
+        version="9.9.9-e2e-rollback",
+        sha256="pinned-sha",
+        arch="amd64",
+        os_name="linux",
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_with_a_pinned_version_absent_from_the_manifest_is_404_not_500(
+    client, factories, auth_headers, monkeypatch, tmp_path
+):
+    """An unknown pinned version is a client error, and must stay one.
+
+    The distinction matters because the E2E injects a version into the
+    manifest before pinning it; if that injection ever silently fails, this
+    endpoint must say which version it could not find rather than surfacing an
+    opaque 500.
+    """
+    import json
+
+    from app.services import agent_update
+
+    monkeypatch.setattr(agent_update, "AGENT_BINARIES_DIR", tmp_path)
+    (tmp_path / "manifest.json").write_text(json.dumps({"0.9.0": {"linux-amd64": "abc"}}))
+    agent = factories.agent(status="active", os="linux", arch="amd64")
+
+    resp = await client.post(
+        f"/api/v1/agents/{agent.id}/update",
+        json={"version": "1.2.3-never-published"},
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 404
+    assert "1.2.3-never-published" in resp.json()["detail"]

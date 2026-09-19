@@ -486,6 +486,34 @@ def _is_replayed_update_status(db: Session, agent: Agent, event_type: str, versi
     return False
 
 
+# Every update is delivered twice by design: `api/agents.py:post_update` queues
+# it in Redis *and* publishes an immediate control frame, so the second arrival
+# is routine rather than exceptional. An agent that is already applying that
+# exact version refuses the duplicate, and agents up to and including 0.4.2
+# report that refusal as `phase="failed"` — the only phase the wire had for it.
+#
+# Taking that at face value is a real defect: the clear below drops
+# `pending_update_version`, so when the updated binary reconnects and reports
+# the target version, `agent_registry.update_hello_metadata` matches nothing and
+# records no `version_changed`. A successful update silently loses its audit
+# event, and the fleet's version history has a hole exactly where an update
+# worked.
+#
+# Newer agents suppress the status entirely (`link.ErrUpdateAlreadyRunning`), so
+# this match exists for agents already in the field — self-hosters upgrade on
+# their own schedule, and the server has to keep telling the truth about a fleet
+# that has not. Matched on the message because that is what those agents send;
+# the string is their wire contract and must not be "tidied".
+_DUPLICATE_INSTRUCTION_REFUSAL = "update already in progress"
+
+
+def _is_duplicate_instruction_refusal(payload: UpdateStatusPayload) -> bool:
+    """Whether a `failed` report is really "I am already doing this"."""
+    if payload.phase != "failed":
+        return False
+    return (payload.error or "").startswith(_DUPLICATE_INSTRUCTION_REFUSAL)
+
+
 async def _handle_update_status(db: Session, agent: Agent, frame: AgentFrame) -> None:
     try:
         payload = UpdateStatusPayload.model_validate(frame.payload)
@@ -507,6 +535,12 @@ async def _handle_update_status(db: Session, agent: Agent, frame: AgentFrame) ->
     # stays None), so ordering it first can never regress, while ordering it
     # second would leave the recovery path hostage to the dedupe scan.
     is_terminal_failure = payload.phase in ("failed", "rolled_back")
+    if is_terminal_failure and _is_duplicate_instruction_refusal(payload):
+        # Not this attempt's resolution: the agent refused a *duplicate* of an
+        # instruction it is already applying. Clearing the target here is what
+        # made a successful update record no `version_changed` at all — see
+        # the constant's comment.
+        is_terminal_failure = False
     if is_terminal_failure and agent.pending_update_version == payload.version:
         # This attempt is never going to reconnect at the target version — a
         # failed download/verify/swap, or a confirmed rollback to the prior

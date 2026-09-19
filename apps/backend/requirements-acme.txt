@@ -10,6 +10,6 @@
 # is absent — the same argument INC-16 makes about the integration connection test.
 # Adding a third means adding it here *and* to services/acme_secrets.py's SECRET_KEYS
 # *and* to acme_service._dns_argv; the tests fail if only some of those happen.
-certbot==5.7.0
-certbot-dns-cloudflare==5.7.0
-certbot-dns-rfc2136==5.7.0
+certbot==5.8.0
+certbot-dns-cloudflare==5.8.0
+certbot-dns-rfc2136==5.8.0
