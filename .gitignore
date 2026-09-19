@@ -73,6 +73,10 @@ docker/data/
 data/audit/
 circuitbreaker-data/
 e2e-data/
+# Written by the e2e harness (CB_E2E_DIAGNOSTICS_DIR) and by `make e2e-local`:
+# per-run compose logs and the run manifest. Useful after a failure, never
+# source.
+diagnostics/
 /data/
 dump.rdb
 
