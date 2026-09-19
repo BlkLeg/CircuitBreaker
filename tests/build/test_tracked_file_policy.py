@@ -65,6 +65,51 @@ def test_no_ide_or_tool_output_is_tracked():
     assert not offenders, f"IDE/tool output tracked: {offenders}"
 
 
+# Magic numbers for the executable formats a `go build`/`cc` accident can
+# leave in a working tree. Images, fonts and archives are deliberately absent:
+# those are legitimate tracked assets, and matching on them would turn this
+# rule into a nuisance that gets skipped rather than fixed.
+_EXECUTABLE_MAGIC: dict[bytes, str] = {
+    b"\x7fELF": "ELF",
+    b"MZ": "PE/DOS",
+    b"\xcf\xfa\xed\xfe": "Mach-O 64",
+    b"\xfe\xed\xfa\xce": "Mach-O 32",
+    b"\xca\xfe\xba\xbe": "Mach-O fat",
+}
+
+
+def test_no_compiled_executables_are_tracked():
+    """A 12.6 MB ELF (`apps/agent/cb-agent`) was tracked in September 2026.
+
+    `go build ./cmd/cb-agent` with no `-o` writes the binary into the current
+    directory, named after the package directory, and nothing in the build
+    path wants it there — the Makefile's targets all write to `$(DIST)`. The
+    cost of the accident is permanent: a blob that size stays in every clone's
+    history forever, and source archives ship a stale, unsigned agent.
+
+    Matched on content rather than filename because the offending file had no
+    extension and a name (`cb-agent`) that looks entirely like a source path.
+    """
+    offenders = []
+    for name in tracked_files():
+        path = ROOT / name
+        try:
+            with path.open("rb") as handle:
+                head = handle.read(4)
+        except OSError:
+            # Broken symlink or a path the checkout does not materialise.
+            continue
+        for magic, label in _EXECUTABLE_MAGIC.items():
+            if head.startswith(magic):
+                offenders.append(f"{name} ({label}, {path.stat().st_size:,} bytes)")
+                break
+
+    assert not offenders, (
+        "compiled executables tracked — build output belongs in $(DIST), "
+        f"not the index: {offenders}"
+    )
+
+
 def test_root_npm_manifest_stays_private():
     """NPM-02: the repository root must never be publishable."""
     manifest = json.loads((ROOT / "package.json").read_text())
