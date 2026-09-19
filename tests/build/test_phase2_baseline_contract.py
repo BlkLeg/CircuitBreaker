@@ -170,6 +170,21 @@ def test_nightly_workflow_is_non_blocking_scheduled_and_retained() -> None:
     assert trigger["schedule"][0]["cron"] == "17 5 * * *"
     job = _baseline_job()
     assert job["continue-on-error"] is True
+    # continue-on-error reports the workflow green when the job failed, so a
+    # run that collected nothing has to say so itself.
+    annunciator = next(
+        (
+            step
+            for step in job["steps"]
+            if step.get("if") == "failure()" and "::error" in str(step.get("run", ""))
+        ),
+        None,
+    )
+    assert annunciator is not None, (
+        "the baseline job is non-blocking with no step that announces a failed "
+        "run — a nightly that collects nothing while reporting success is how "
+        "Phase 4.5 waits weeks for evidence that was never gathered"
+    )
     upload = next(
         step
         for step in job["steps"]
