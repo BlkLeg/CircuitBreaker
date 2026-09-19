@@ -582,3 +582,43 @@ def test_no_secret_env_var_is_assigned_a_literal() -> None:
         "openssl rand) or inject it from the secret store. CLAUDE.md's rule covers "
         "tests, fixtures, examples and CI workflows."
     )
+
+
+#: Names, not values — a generated secret can look like anything.
+_SECRET_VAR_HINTS = ("secret", "token", "password", "vault_key", "_key")
+
+#: `echo "NAME=...$var..." >> "$GITHUB_ENV"` / `"$GITHUB_OUTPUT"`.
+_WORKFLOW_EXPORT = re.compile(
+    r"""echo\s+"(?P<key>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>[^"]*)"\s*>>\s*"\$(?:GITHUB_ENV|GITHUB_OUTPUT)"""
+)
+_SHELL_VAR = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")
+
+
+def test_generated_secrets_are_masked_before_they_reach_the_job_environment() -> None:
+    """GitHub masks `secrets.*` and nothing else, so a credential generated in
+    a step prints in full in the env block of every later step. Generating it
+    at runtime is only half the rule; masking it is the other half."""
+    workflows = sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml"))
+    assert workflows, "no workflows found — the glob is wrong, not the repo"
+
+    offenders: list[str] = []
+    for path in workflows:
+        text = path.read_text(encoding="utf-8")
+        masked = set(_SHELL_VAR.findall(" ".join(
+            line for line in text.splitlines() if "::add-mask::" in line
+        )))
+        for match in _WORKFLOW_EXPORT.finditer(text):
+            key, value = match.group("key"), match.group("value")
+            for var in _SHELL_VAR.findall(value):
+                looks_secret = any(
+                    hint in key.lower() or hint in var.lower() for hint in _SECRET_VAR_HINTS
+                ) or key in _SECRET_ENV_NAMES
+                if looks_secret and var not in masked:
+                    offenders.append(f"{path.name}: {key}=${var} exported without ::add-mask::${var}")
+
+    assert not offenders, (
+        "A runtime-generated credential is written into the job environment "
+        "without being masked first, so it prints in clear text in the log of "
+        "every later step. Add `echo \"::add-mask::$var\"` before the export:\n  "
+        + "\n  ".join(sorted(set(offenders)))
+    )
