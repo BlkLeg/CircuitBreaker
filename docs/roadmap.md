@@ -18,6 +18,9 @@ Circuit Breaker is actively evolving. This page shows what is already available 
 - IPAM center for IP addresses, subnets, VLANs, and sites, with per-network IP scanning.
 - Multiple saved topology maps with a map switcher.
 - Certificate manager for tracking certificates and triggering renewals.
+- **Intelligence**: fleet vulnerability console with one assessment state per hardware, compute unit, and service, plus an Operations tab for capacity forecasts, right-sizing, and flapping-asset history.
+- **Alert rules**: metric alert rules on the Monitors page — create, edit, and preview a rule against stored samples before switching it on, with the reason a rule is not yet evaluating shown on the rule itself.
+- Dependency impact analysis showing the typed, provenance-tagged path connecting each affected asset, with connectivity listed separately from impact.
 
 ---
 
@@ -32,10 +35,6 @@ Circuit Breaker is actively evolving. This page shows what is already available 
 ### 2) Physical Context Enhancements
 
 - Improve planning views for hardware placement and capacity.
-
-### 3) Topology Insights
-
-- Better impact views for dependency chains.
 
 ---
 
