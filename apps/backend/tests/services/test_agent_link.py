@@ -375,6 +375,71 @@ async def test_dispatch_update_status_non_terminal_phase_leaves_pending_version(
 
 
 @pytest.mark.asyncio
+async def test_dispatch_update_status_duplicate_refusal_leaves_pending_version(
+    db_session, factories
+):
+    """A "failed" that only means "I am already applying this" is not terminal.
+
+    Every update is delivered twice by design — `post_update` queues it in Redis
+    *and* publishes an immediate control frame — so an agent mid-update refuses
+    the second copy. Agents up to 0.4.2 report that refusal as phase="failed",
+    the only phase the wire had for it.
+
+    Taking it at face value cleared `pending_update_version`, so when the
+    updated binary reconnected and reported the target version,
+    `update_hello_metadata` matched nothing and recorded no `version_changed`:
+    a successful update losing its own audit event. Newer agents suppress the
+    status (`link.ErrUpdateAlreadyRunning`); this keeps the server honest about
+    the agents already in the field, which self-hosters upgrade on their own
+    schedule.
+    """
+    agent = factories.agent(status="active", pending_update_version="0.2.0")
+
+    frame = AgentFrame(
+        type="update.status",
+        ts="2026-08-04T12:00:00Z",
+        payload={
+            "version": "0.2.0",
+            "phase": "failed",
+            "error": "update already in progress",
+        },
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    assert agent.pending_update_version == "0.2.0", (
+        "a duplicate-instruction refusal cleared the pending target, so the "
+        "reconnect that follows will record no version_changed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_update_status_real_failure_still_clears_pending_version(
+    db_session, factories
+):
+    """The guard above must not swallow genuine failures.
+
+    A download/verify/swap error carries its own message and really does end
+    the attempt, so the target must still clear — otherwise a broken update
+    would block the next one and leave `version_changed` armed for a binary
+    that never ran.
+    """
+    agent = factories.agent(status="active", pending_update_version="0.2.0")
+
+    frame = AgentFrame(
+        type="update.status",
+        ts="2026-08-04T12:00:00Z",
+        payload={
+            "version": "0.2.0",
+            "phase": "failed",
+            "error": "update: verify: sha256 mismatch",
+        },
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    assert agent.pending_update_version is None
+
+
+@pytest.mark.asyncio
 async def test_dispatch_update_status_mismatched_version_leaves_pending_version(
     db_session, factories
 ):

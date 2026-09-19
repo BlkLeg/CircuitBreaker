@@ -441,6 +441,14 @@ verify-fleet-upgrade: ## Tier 3 — upgrade N-1→N and roll back (CB_CANDIDATE=
 # host-side client. A runner in its own network namespace resolves localhost to
 # itself and every test dies on "Connection refused" long before it asserts
 # anything.
+#
+# The git safe.directory vars are what let `go build` keep VCS stamping on.
+# `_build_test_agent_binary` compiles a tagged agent from the worktree, and Go
+# shells out to git to stamp it; git refuses a repository owned by another uid
+# ("dubious ownership"), which surfaces only as "error obtaining VCS status:
+# exit status 128". Marking the path safe is better than -buildvcs=false here:
+# it fixes the ownership objection instead of building something different
+# from what CI builds.
 E2E_DIR           := apps/agent/e2e
 E2E_RUNNER_IMAGE  := cb-e2e-localrunner
 E2E_RUNNER_UID    := 1001
@@ -495,6 +503,9 @@ e2e-local: e2e-local-image ## Run the composed agent E2E here as uid 1001 (E2E_A
 	  -v $(CURDIR):$(CURDIR) \
 	  -w $(CURDIR)/$(E2E_DIR) \
 	  -e HOME=/tmp/e2e-home \
+	  -e GIT_CONFIG_COUNT=1 \
+	  -e GIT_CONFIG_KEY_0=safe.directory \
+	  -e GIT_CONFIG_VALUE_0=$(CURDIR) \
 	  -e CB_E2E_SEED=20260826 \
 	  -e PYTHONHASHSEED=0 \
 	  -e CB_E2E_DIAGNOSTICS_DIR=$(CURDIR)/diagnostics \

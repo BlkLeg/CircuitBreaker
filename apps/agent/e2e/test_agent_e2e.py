@@ -761,113 +761,124 @@ def _enroll_agent(
         cwd=E2E_DIR,
         env=env,
     )
-    # Every line the agent printed, kept so a failure here can say WHY. Without
-    # it the only thing this helper can report is "no pairing code in 30s",
-    # which is the symptom of every possible enroll failure — a bad tls_pin, a
-    # config file Docker turned into a directory, an already-enrolled state
-    # volume that makes the server answer "active" instead of issuing a code —
-    # and distinguishes none of them. The output is on this pipe and nowhere
-    # else: `stderr=STDOUT` means it never reaches pytest's captured output.
-    transcript: list[str] = []
-    pairing_code = None
-    deadline = time.monotonic() + 30
-    # `for line in proc.stdout` blocks until a line arrives, so the deadline
-    # below is only reached if the agent is talking. A silent agent — one that
-    # died before its first write, or one waiting on something that will never
-    # come — would hang this loop forever. The watchdog turns that into the
-    # same diagnosable assertion failure as every other enroll fault.
-    watchdog = threading.Timer(35, proc.kill)
-    watchdog.daemon = True
-    watchdog.start()
+    # The reaping below is a `finally`, not a tail. `enroll.Run` blocks until
+    # the agent stops being pending, so the process is still writing long after
+    # the pairing code was read, and every assertion between here and the
+    # `wait()` used to be able to abandon it: the orphan then surfaced as
+    # `ResourceWarning: subprocess N is still running` plus an unclosed pipe,
+    # which pytest's unraisableexception plugin escalates and attributes to
+    # whichever test the collector happened to interrupt. That is a failure in
+    # a test that did nothing wrong, reported against a line that has nothing
+    # to do with it — and it is why the nightly's failing set reshuffled.
     try:
-        for line in proc.stdout:
-            transcript.append(line.rstrip())
-            m = re.search(r"pairing code:\s*(\S+)", line)
-            if m:
-                pairing_code = m.group(1)
-                break
-            if time.monotonic() > deadline:
-                break
+        # Every line the agent printed, kept so a failure here can say WHY. Without
+        # it the only thing this helper can report is "no pairing code in 30s",
+        # which is the symptom of every possible enroll failure — a bad tls_pin, a
+        # config file Docker turned into a directory, an already-enrolled state
+        # volume that makes the server answer "active" instead of issuing a code —
+        # and distinguishes none of them. The output is on this pipe and nowhere
+        # else: `stderr=STDOUT` means it never reaches pytest's captured output.
+        transcript: list[str] = []
+        pairing_code = None
+        deadline = time.monotonic() + 30
+        # `for line in proc.stdout` blocks until a line arrives, so the deadline
+        # below is only reached if the agent is talking. A silent agent — one that
+        # died before its first write, or one waiting on something that will never
+        # come — would hang this loop forever. The watchdog turns that into the
+        # same diagnosable assertion failure as every other enroll fault.
+        watchdog = threading.Timer(35, proc.kill)
+        watchdog.daemon = True
+        watchdog.start()
+        try:
+            for line in proc.stdout:
+                transcript.append(line.rstrip())
+                m = re.search(r"pairing code:\s*(\S+)", line)
+                if m:
+                    pairing_code = m.group(1)
+                    break
+                if time.monotonic() > deadline:
+                    break
+        finally:
+            watchdog.cancel()
+        assert pairing_code, (
+            f"`cb-agent enroll` ({service}) printed no pairing code within 30s. It said:\n"
+            + ("\n".join(transcript) if transcript else "(nothing at all)")
+        )
+
+        lookup = client.post(
+            "/api/v1/agents/pairing/lookup", json={"code": pairing_code}, headers=headers
+        )
+        assert lookup.status_code == 200, lookup.text
+        agent_id = lookup.json()["agent_id"]
+
+        # Step 3's actual assertion: the /agents/stream viewer connected BEFORE
+        # enroll ran must have seen this exact agent_id's "enrolled" event pushed
+        # to it live — never by polling GET /agents or /agents/pending.
+        _wait_until(lambda: stream.has_event(agent_id, "enrolled"), timeout=15)
+
+        # Step 4: approve with default grants (no `capabilities` in the body — the
+        # server applies its own CAPABILITY_DEFINITIONS registry, all three
+        # enabled) and an explicit host-link selection ("unlinked" is a real,
+        # UI-supported selection — the AgentApprovalModal — not a
+        # null/omitted value).
+        approve = client.post(
+            f"/api/v1/agents/{agent_id}/approve",
+            json={"host_link_action": "unlinked"},
+            headers=headers,
+        )
+        assert approve.status_code == 200, approve.text
+        # `AgentRead.capabilities` is the canonical structured wire shape
+        # (`{name: {enabled, config}}` with server-normalized config), never a bare
+        # boolean — see the "Canonical capability wire shape" Global Constraint.
+        assert approve.json()["capabilities"] == {
+            "host_telemetry": {
+                "enabled": True,
+                "config": {
+                    "interval_s": 30,
+                    "include_filesystems": True,
+                    "include_disks": True,
+                    "include_network": True,
+                    "include_temperatures": True,
+                    "include_virtual": False,
+                    "include_docker": False,
+                },
+            },
+            "remote_probe": {
+                "enabled": True,
+                "config": {
+                    "max_concurrent": 20,
+                    "scope_mode": "direct_private",
+                    "excluded_cidrs": [],
+                    "additional_cidrs": [],
+                    "additional_hostnames": [],
+                },
+            },
+            "local_discovery": {
+                "enabled": True,
+                "config": {
+                    "scope_mode": "direct_private",
+                    "excluded_cidrs": [],
+                    "additional_cidrs": [],
+                    "max_addresses_per_job": 1024,
+                    "max_concurrent_hosts": 64,
+                    "tcp_ports": [22, 53, 80, 443, 445, 3389, 8000, 8080, 8443],
+                    "host_timeout_ms": 1500,
+                    "job_timeout_seconds": 300,
+                    "auto_discovery_paused": False,
+                },
+            },
+        }, "approve did not apply the server's default capability grants"
+
+        assert proc.wait(timeout=15) == 0, "enroll process did not exit 0 after approval"
+        return agent_id, stream
     finally:
-        watchdog.cancel()
-    assert pairing_code, (
-        f"`cb-agent enroll` ({service}) printed no pairing code within 30s. It said:\n"
-        + ("\n".join(transcript) if transcript else "(nothing at all)")
-    )
-
-    lookup = client.post(
-        "/api/v1/agents/pairing/lookup", json={"code": pairing_code}, headers=headers
-    )
-    assert lookup.status_code == 200, lookup.text
-    agent_id = lookup.json()["agent_id"]
-
-    # Step 3's actual assertion: the /agents/stream viewer connected BEFORE
-    # enroll ran must have seen this exact agent_id's "enrolled" event pushed
-    # to it live — never by polling GET /agents or /agents/pending.
-    _wait_until(lambda: stream.has_event(agent_id, "enrolled"), timeout=15)
-
-    # Step 4: approve with default grants (no `capabilities` in the body — the
-    # server applies its own CAPABILITY_DEFINITIONS registry, all three
-    # enabled) and an explicit host-link selection ("unlinked" is a real,
-    # UI-supported selection — the AgentApprovalModal — not a
-    # null/omitted value).
-    approve = client.post(
-        f"/api/v1/agents/{agent_id}/approve",
-        json={"host_link_action": "unlinked"},
-        headers=headers,
-    )
-    assert approve.status_code == 200, approve.text
-    # `AgentRead.capabilities` is the canonical structured wire shape
-    # (`{name: {enabled, config}}` with server-normalized config), never a bare
-    # boolean — see the "Canonical capability wire shape" Global Constraint.
-    assert approve.json()["capabilities"] == {
-        "host_telemetry": {
-            "enabled": True,
-            "config": {
-                "interval_s": 30,
-                "include_filesystems": True,
-                "include_disks": True,
-                "include_network": True,
-                "include_temperatures": True,
-                "include_virtual": False,
-                "include_docker": False,
-            },
-        },
-        "remote_probe": {
-            "enabled": True,
-            "config": {
-                "max_concurrent": 20,
-                "scope_mode": "direct_private",
-                "excluded_cidrs": [],
-                "additional_cidrs": [],
-                "additional_hostnames": [],
-            },
-        },
-        "local_discovery": {
-            "enabled": True,
-            "config": {
-                "scope_mode": "direct_private",
-                "excluded_cidrs": [],
-                "additional_cidrs": [],
-                "max_addresses_per_job": 1024,
-                "max_concurrent_hosts": 64,
-                "tcp_ports": [22, 53, 80, 443, 445, 3389, 8000, 8080, 8443],
-                "host_timeout_ms": 1500,
-                "job_timeout_seconds": 300,
-                "auto_discovery_paused": False,
-            },
-        },
-    }, "approve did not apply the server's default capability grants"
-
-    assert proc.wait(timeout=15) == 0, "enroll process did not exit 0 after approval"
-    # The pipe outlives the loop above on purpose: `enroll.Run` blocks until the
-    # agent stops being pending, so the process is still writing long after the
-    # pairing code was read. It can only be closed once the approval has landed
-    # and `wait()` returned. Left to the garbage collector it raises
-    # `ResourceWarning: unclosed file`, which `filterwarnings = error` turns into
-    # a failure attributed to whichever test triggered the collection.
-    proc.stdout.close()
-    return agent_id, stream
+        # Reap unconditionally. `wait()` above is the success path; this is
+        # every other path, including an assertion that fired mid-enrol.
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+        if proc.stdout is not None:
+            proc.stdout.close()
 
 
 def _device_key(service: str, env: dict | None = None) -> str:
@@ -2506,13 +2517,30 @@ def test_agent_black_hole_partition_is_detected_and_spools():
                     detected_after = time.monotonic() - partition_start
 
                     status = _agent_status()
-                    # The link went down for the RIGHT reason. A partition
-                    # detected via some other error would mean the read
-                    # deadline is still not doing its job, and this test
+                    # The link went down for the RIGHT reason: silence. A
+                    # partition detected via some other error would mean the
+                    # silence detectors are not doing their job and this test
                     # would be passing for the wrong reason.
-                    assert "read deadline" in status.get("last_error", ""), (
-                        "link dropped during the partition, but not on the "
-                        f"read deadline: last_error={status.get('last_error')!r}"
+                    #
+                    # Two signals qualify, and which one wins is a race this
+                    # test does not control. `errReadTimeout` is the 60s
+                    # steady-state read deadline — nothing arrived at all.
+                    # `errAckStall` is 45s of data frames sitting unacknowledged,
+                    # added deliberately in 2026-09-06's "classify why the link
+                    # failed": internal/link/failure.go documents it as the
+                    # shorter of the two so a server that is still reading but
+                    # no longer acknowledging is caught first. Host telemetry is
+                    # enabled above, so frames ARE in flight when the route
+                    # drops and the ack stall usually reaches the conclusion
+                    # first. Both mean "the server went quiet"; neither is an
+                    # incidental error.
+                    _silence_signals = ("read deadline", "stopped acknowledging data frames")
+                    assert any(
+                        signal in status.get("last_error", "") for signal in _silence_signals
+                    ), (
+                        "link dropped during the partition, but not on either silence "
+                        f"detector ({' / '.join(_silence_signals)}): "
+                        f"last_error={status.get('last_error')!r}"
                     )
                     # A floor as well as a ceiling: dropping the link far
                     # sooner than the deadline would mean something other
@@ -3951,10 +3979,23 @@ _FINDING_REJECTION_EVENTS = frozenset({"protocol_violation", "capability_violati
 
 
 def _finding_rejections(client: httpx.Client, agent_id: int) -> list[int]:
-    return sorted(
-        e["id"] for e in _agent_events(client, agent_id)
+    return sorted(e["id"] for e in _finding_rejection_events(client, agent_id))
+
+
+def _finding_rejection_events(client: httpx.Client, agent_id: int) -> list[dict]:
+    """The rejection events themselves, for assertion messages.
+
+    Comparing ids is the right assertion — it cannot be fooled by two rejections
+    that happen to carry the same reason — but an id alone says only *that* the
+    server refused a frame, never why. Recovering the reason afterwards means
+    re-running against a stack that no longer exists, so the failure has to
+    carry it.
+    """
+    return [
+        e
+        for e in _agent_events(client, agent_id)
         if e["event_type"] in _FINDING_REJECTION_EVENTS
-    )
+    ]
 
 
 @pytest.mark.e2e
@@ -4423,10 +4464,37 @@ def test_agent_zero_configuration_discovery_import_and_replay():
                     "the dispatch closed during the replay — the replayed findings would have "
                     f"been refused as late rather than deduplicated: {after}"
                 )
-                assert _finding_rejections(client, agent_id) == rejections_before, (
+                _rejections_now = _finding_rejection_events(client, agent_id)
+                _new_rejections = [
+                    e for e in _rejections_now if e["id"] not in rejections_before
+                ]
+                # Rejections for a dispatch that has legitimately closed are
+                # correct and expected here, and this assertion used to forbid
+                # them outright. The replay rewinds the commit marker to zero
+                # and re-delivers the WHOLE spool — a single append-only file
+                # spanning every job the agent has ever spooled for, observed as
+                # jobs [1, 2, 3] while only 3 was open — so frames belonging to
+                # jobs that finished long ago are re-sent and the server refuses
+                # them as late. That is the server being right.
+                #
+                # The idempotency claim is about the job that is still open, and
+                # the assertion just above has already established that
+                # `replay_job_id` is one of those: any rejection naming a closed
+                # dispatch therefore cannot be about it.
+                _unexpected = [
+                    e
+                    for e in _new_rejections
+                    if not str((e.get("detail") or {}).get("reason", "")).startswith(
+                        "dispatch_closed"
+                    )
+                ]
+                assert not _unexpected, (
                     "the server audited a rejection while the replay was draining, so the "
                     "frames were refused rather than absorbed by uq_scan_results_job_finding "
-                    "— the idempotency claim this step exists for does not hold"
+                    f"— the idempotency claim this step exists for does not hold. "
+                    f"Unexpected rejections: {_unexpected}. All new: {_new_rejections}. "
+                    f"replay_job_id={replay_job_id}; job ids present in the replayed "
+                    f"spool={sorted({(f.get('payload') or {}).get('scan_job_id') for f in replayed_on_disk if f.get('type') == 'discovery.finding'})}"
                 )
                 assert _job_results(client, replay_job_id) == delivered, (
                     "replaying the agent's own findings changed the job's result rows"
@@ -5489,19 +5557,26 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
                 "itself — the acceptance flow requires an agent-authored row to reach the inventory only "
                 "when a user accepts it"
             )
-            # The current contract, stated as such. The acceptance flow's step 11 also asks
-            # for an unchanged known device to be auto-updated out of the queue
-            # with a refreshed `last_seen`; `_auto_merge_known_devices` is
-            # reachable only from `_scan_finalize`, and an agent job is closed
-            # by `finalize_agent_job`, which never calls it. If this assertion
-            # ever fails, that decision has changed and this test should assert
-            # the refresh instead of pinning its absence.
-            assert known["merge_status"] == "pending", (
-                "an agent-executed recurring scan auto-updated a known unchanged device out "
-                "of the review queue. That is what step 11 asks for, and it is NOT "
-                "what `finalize_agent_job` does today (it documents never calling "
-                "`_auto_merge_known_devices` at any setting). Something has changed on "
-                f"purpose: update this test rather than reverting it. Row: {known}"
+            # Step 11's refresh, asserted rather than pinned absent.
+            #
+            # This assertion used to require "pending", because
+            # `_auto_merge_known_devices` is reachable only from
+            # `_scan_finalize` and `finalize_agent_job` still never calls it —
+            # so an agent-executed sweep left a known device in the queue. Its
+            # own comment said that if the assertion ever failed, the decision
+            # had changed and the test should assert the refresh instead.
+            #
+            # It changed: `discovery_enrich` (2026-09-06, "enrich re-found
+            # devices instead of re-queueing them") runs on the agent path and
+            # writes `ENRICHED_MERGE_STATUS`, deliberately reusing the value
+            # `_auto_merge_known_devices` has always written so the review
+            # queue's "recently enriched" list does not end up split across two
+            # vocabularies. An unchanged known device is now refreshed out of
+            # the queue, which is what the acceptance flow asked for all along.
+            assert known["merge_status"] == "auto_updated", (
+                "a re-found known device was left in the review queue. Step 11 asks for it "
+                "to be refreshed out of the queue, and `discovery_enrich` does that on the "
+                f"agent path — so this is a regression, not a pin. Row: {known}"
             )
 
             # ---- STEP 11b: an untrusted hostname never renames inventory ----
