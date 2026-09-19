@@ -339,6 +339,18 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 async def unhandled_error_handler(request: Request, exc: Exception):
     from app.schemas.errors import ErrorCodes
 
+    # Log before responding, always. The client is told only "Internal server
+    # error" outside dev_mode, which is correct — but for a long time nothing
+    # wrote the traceback anywhere either, so a 500 in production or CI left no
+    # evidence at all. Nine consecutive nightly E2E runs failed on a 500 from
+    # `POST /agents/{id}/update` whose cause had to be reconstructed from file
+    # ownership, because the exception that produced it was discarded here.
+    #
+    # `exc_info=exc` rather than `logger.exception(...)`: this handler is not
+    # inside an `except` block, so there is no ambient exception for
+    # `sys.exc_info()` to find.
+    _logger.error("unhandled exception on %s %s", request.method, request.url.path, exc_info=exc)
+
     if settings.dev_mode:
         import traceback
 

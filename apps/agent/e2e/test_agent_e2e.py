@@ -161,6 +161,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from conftest import register_http_client
 
 BASE_URL = "https://localhost:8443"
 WS_BASE_URL = "wss://localhost:8443"
@@ -381,7 +382,11 @@ def _new_client() -> httpx.Client:
     # and this harness never leaves localhost. Do not carry this pattern into
     # any production code path — agent_install.py's tls_pin mechanism
     # is the real integrity anchor for actual installs.
-    return httpx.Client(base_url=BASE_URL, verify=False, timeout=30.0)
+    #
+    # Registered rather than returned bare: conftest's autouse fixture closes
+    # it when the test ends. See `register_http_client` for why an unclosed
+    # client does not fail the test that leaked it.
+    return register_http_client(httpx.Client(base_url=BASE_URL, verify=False, timeout=30.0))
 
 
 def _up_server(env: dict | None = None) -> None:
@@ -390,7 +395,17 @@ def _up_server(env: dict | None = None) -> None:
     # `cb-agent-state` volume holds an enrolled device key, so the next enroll is
     # answered "already active" and never prints a pairing code. Both failures
     # surface minutes later as an unrelated-looking timeout.
-    _down(env)
+    leftovers = _down(env)
+    # The assertion lives here, not in `_down`, so it fails the test that is
+    # about to be misled rather than the one that just finished. Fatal on
+    # purpose: every downstream failure would otherwise be attributed to the
+    # product, and the whole run becomes unreadable.
+    if leftovers:
+        raise RuntimeError(
+            f"{_E2E_DATA_DIR} still holds {leftovers} after teardown. This test "
+            "would boot on the previous test's Postgres, OOBE marker and vault "
+            "key. See _purge_data_dir for why the directory resists removal."
+        )
     subprocess.run(
         [*COMPOSE, "up", "-d", "--build", "circuitbreaker"],
         check=True,
@@ -441,13 +456,84 @@ def _dump_compose_logs(env: dict | None = None) -> None:
         print(f"[e2e] could not capture compose logs for {name}: {exc}")
 
 
-def _down(env: dict | None = None) -> None:
+def _purge_data_dir(env: dict | None = None) -> list[str]:
+    """Empty the bind-mounted CB_DATA_DIR, and report whatever survived.
+
+    Returns the entries still present afterwards — empty when the purge
+    worked. Callers treat a non-empty return as fatal, because what survives
+    here is a whole Postgres cluster, the OOBE marker and the vault key.
+
+    This used to be a bare `shutil.rmtree(..., ignore_errors=True)`, and that
+    one keyword is why sixteen tests shared a database for months. The mono
+    runtime deliberately starts as root (Dockerfile.mono), so everything under
+    `/data` is container-owned; CI's `runner` cannot unlink it, `rmtree` raises
+    `PermissionError`, and `ignore_errors=True` throws that away. The suite
+    then reported "Existing Postgres data directory detected at /data/pgdata,
+    skipping init" on *every* test and nobody saw it, because the only thing
+    that ever looked was the line that had just swallowed the error.
+
+    The tell in a failing run is ids spaced by a constant: a fleet of
+    `[267, 234, 201, 199, 166, 133, 100, 67, 34, 1]` is one sequence shared by
+    ten tests, not ten agents. Left in place it produces failures that all
+    look like product defects — "already active" enrollments with no pairing
+    code, spools non-empty before a partition is induced, and
+    `409 A TLS pin rotation is already active`.
+    """
+    if not _E2E_DATA_DIR.exists():
+        return []
+
+    # Host side first: free, and sufficient on a developer box whose own uid
+    # owns the tree (or where the tests last ran rootless).
+    shutil.rmtree(_E2E_DATA_DIR, ignore_errors=True)
+    if not _E2E_DATA_DIR.exists():
+        return []
+
+    # Still here, so it is container-owned. Delete it from inside a container,
+    # which runs as root and can. `run --rm --no-deps` rather than `exec`:
+    # this is called after `down -v`, so there is nothing left to exec into,
+    # and it must work identically whether or not the stack came up at all.
+    subprocess.run(
+        [
+            *COMPOSE,
+            "run",
+            "--rm",
+            "--no-deps",
+            "-T",
+            "--entrypoint",
+            "sh",
+            "circuitbreaker",
+            "-c",
+            "rm -rf /data/..?* /data/.[!.]* /data/* 2>/dev/null; exit 0",
+        ],
+        cwd=E2E_DIR,
+        env=env,
+        check=False,
+        capture_output=True,
+    )
+
+    try:
+        return sorted(entry.name for entry in _E2E_DATA_DIR.iterdir())
+    except OSError as exc:  # an unreadable directory is itself a leftover
+        return [f"<could not list {_E2E_DATA_DIR}: {exc}>"]
+
+
+def _down(env: dict | None = None) -> list[str]:
+    """Tear the stack down and empty its data directory.
+
+    Returns `_purge_data_dir`'s leftovers so `_up_server` can refuse to start
+    the next test on a dirty tree. Reported rather than raised: `_down` runs
+    in every test's `finally`, and raising here would replace the failure the
+    test was actually reporting with a cleanup error.
+    """
     _dump_compose_logs(env)
     subprocess.run([*COMPOSE, "down", "-v"], cwd=E2E_DIR, env=env)
-    # See _E2E_DATA_DIR's comment: `down -v` alone leaves this bind-mounted
-    # directory (and its Postgres data / OOBE marker / vault key) in place,
-    # which would otherwise leak into the next test function's "fresh" run.
-    shutil.rmtree(_E2E_DATA_DIR, ignore_errors=True)
+    # `down -v` removes *named* volumes. CB_DATA_DIR is a bind mount (the
+    # repo-root compose file maps `${CB_DATA_DIR}:/data:z`), so it survives
+    # untouched and has to be emptied separately.
+    leftovers = _purge_data_dir(env)
+    if leftovers:
+        print(f"[e2e] WARNING: {_E2E_DATA_DIR} still holds {leftovers} after teardown")
+    return leftovers
 
 
 # The host side of the agents' /etc/circuit-breaker. A DIRECTORY mount, never a
@@ -1573,6 +1659,31 @@ def _build_test_agent_binary(version: str, dest: Path) -> Path:
     return out
 
 
+def _cp_into_container(container: str, src: Path | str, dest: str, *, mode: str) -> None:
+    """`docker cp` a host file into `container`, then fix its mode.
+
+    The chmod is not decoration. `docker cp` reproduces the *host* file's
+    numeric uid and mode inside the container, and every caller here stages
+    its payload through `tempfile.NamedTemporaryFile`, which is 0600 by
+    construction. The mono image runs backend-api as `breaker` (uid 1000 —
+    supervisord-e2e.conf), so a file that lands as 0600 owned by the host user
+    is unreadable to the server unless the host happens to also be uid 1000:
+    true on some developer machines, never on CI's `runner`.
+
+    The failure that taught us this is worth naming, because it does not look
+    like a permissions problem from the outside. An unreadable manifest.json
+    makes `agent_update.load_manifest()` raise, which surfaces as a bare
+    `500 INTERNAL_SERVER_ERROR` from `POST /agents/{id}/update` — and only on
+    the *second* call in a test, because the first runs before the injection.
+    It reads exactly like a server bug in the pinned-version code path, and it
+    is not one. The binary copy below already carried a `chmod 755`; the
+    manifest and the detached signature did not, and that asymmetry is what
+    this helper exists to make impossible.
+    """
+    subprocess.run(["docker", "cp", str(src), f"{container}:{dest}"], check=True)
+    subprocess.run(["docker", "exec", container, "chmod", mode, dest], check=True)
+
+
 def _inject_binary_version(version: str, binary_path: Path) -> str:
     """Copies binary_path into the running circuitbreaker container's
     AGENT_BINARIES_DIR under `version`, and adds a matching manifest.json
@@ -1610,29 +1721,22 @@ def _inject_binary_version(version: str, binary_path: Path) -> str:
         ],
         check=True,
     )
-    subprocess.run(
-        ["docker", "cp", str(binary_path), f"{container}:/opt/circuitbreaker/agent-binaries/{version}/cb-agent-linux-amd64"],
-        check=True,
-    )
-    subprocess.run(
-        [
-            "docker",
-            "exec",
-            container,
-            "chmod",
-            "755",
-            f"/opt/circuitbreaker/agent-binaries/{version}/cb-agent-linux-amd64",
-        ],
-        check=True,
+    _cp_into_container(
+        container,
+        binary_path,
+        f"/opt/circuitbreaker/agent-binaries/{version}/cb-agent-linux-amd64",
+        mode="755",
     )
 
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tmp:
         json.dump(manifest, tmp)
         tmp_path = tmp.name
     try:
-        subprocess.run(
-            ["docker", "cp", tmp_path, f"{container}:/opt/circuitbreaker/agent-binaries/manifest.json"],
-            check=True,
+        _cp_into_container(
+            container,
+            tmp_path,
+            "/opt/circuitbreaker/agent-binaries/manifest.json",
+            mode="644",
         )
     finally:
         os.unlink(tmp_path)
@@ -5816,15 +5920,11 @@ def _inject_signature(version: str, signature: bytes) -> None:
         tmp.write(signature)
         tmp_path = tmp.name
     try:
-        subprocess.run(
-            [
-                "docker",
-                "cp",
-                tmp_path,
-                f"{container}:/opt/circuitbreaker/agent-binaries/{version}/"
-                f"cb-agent-linux-amd64.sig",
-            ],
-            check=True,
+        _cp_into_container(
+            container,
+            tmp_path,
+            f"/opt/circuitbreaker/agent-binaries/{version}/cb-agent-linux-amd64.sig",
+            mode="644",
         )
     finally:
         os.unlink(tmp_path)
