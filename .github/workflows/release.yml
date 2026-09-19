@@ -160,7 +160,7 @@ jobs:
             docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # The private key reaches the build as a BuildKit secret written to a
       # file, NEVER as --build-arg: build args land in image metadata and are
@@ -251,7 +251,7 @@ jobs:
             docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Create manifest list
         id: merge
@@ -355,7 +355,7 @@ jobs:
       # combined by `image-merge`. This job consumes the published manifest list
       # and never builds an image itself.
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # Prove both architectures are in the published manifest rather than
       # trusting that the merge did what it was asked.
