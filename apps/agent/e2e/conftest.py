@@ -8,6 +8,7 @@ the implementation lives there rather than inline.
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, TypeVar
 
 import pytest
@@ -88,3 +89,38 @@ def close_registered_http_clients() -> Iterator[None]:
             # Reported rather than silently dropped: a swallowed cleanup error
             # is the exact shape of bug this fixture exists to undo.
             print(f"[e2e] could not close {client!r}: {exc}")
+
+
+# The uid supervisord drops the mono image's application processes to;
+# Dockerfile.mono creates `breaker` as 1000. Named here because what matters
+# below is a *collision* with it, not the number itself.
+BREAKER_UID = 1000
+
+
+def pytest_report_header(config: pytest.Config) -> list[str]:
+    """Say, in the header, whether this run can see uid-coupling bugs at all.
+
+    `docker cp` reproduces the host file's numeric uid inside the container,
+    and the harness stages payloads through `tempfile.NamedTemporaryFile`
+    (0600). So when the host uid happens to equal `breaker`'s, files injected
+    into the server arrive owned by the very account that reads them, and a
+    whole class of bug becomes invisible — locally green, red on CI.
+
+    That is not hypothetical: it is exactly how an unreadable
+    `agent-binaries/manifest.json` produced nine nightly `500`s from
+    `POST /agents/{id}/update` that no developer box could reproduce.
+
+    A warning rather than a hard failure, because running as uid 1000 is still
+    worth doing — it just proves less, and the run must say so rather than let
+    a green result be read as CI-faithful. `make e2e-local` runs the suite as
+    uid 1001 specifically to clear this.
+    """
+    host_uid = os.getuid()
+    if host_uid != BREAKER_UID:
+        return [f"e2e host uid: {host_uid} (≠ breaker's {BREAKER_UID}) — uid-coupling bugs visible"]
+    return [
+        f"e2e host uid: {host_uid} — COLLIDES with the container's `breaker` user.",
+        "  Files injected via `docker cp` will arrive owned by the account that reads",
+        "  them, so permission bugs that fail on CI cannot fail here. A green run does",
+        "  NOT mean CI will pass. Use `make e2e-local`, which runs this suite as uid 1001.",
+    ]

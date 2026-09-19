@@ -1,0 +1,51 @@
+# Runs the composed agent E2E on a developer machine under a uid that is NOT
+# the mono container's `breaker` (1000).
+#
+# Why this image exists at all, rather than "just run pytest":
+#
+# `docker cp` reproduces the host file's numeric uid inside the container, and
+# the harness stages its injected binaries and manifests through
+# `tempfile.NamedTemporaryFile`, which is 0600. On a developer box whose own
+# uid is 1000 those files land owned by `breaker` itself — the account the
+# server runs as — so every permission bug in that path is invisible locally
+# and fails only on CI, where the runner is uid 1001. That asymmetry cost nine
+# nightly runs and a 500 nobody could reproduce. Running the suite as 1001
+# makes this machine faithful to CI.
+#
+# Docker-out-of-docker, not docker-in-docker: the host's socket is mounted in,
+# so every container the suite starts is a *sibling* on the host daemon. That
+# is what lets the compose bind mounts work — which is also why the Makefile
+# target mounts the repository at the same absolute path it has on the host.
+# A different path inside this container would make the daemon resolve
+# `./e2e-data` against a directory that does not exist.
+FROM python:3.12-slim-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl gnupg git \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg \
+        -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] \
+https://download.docker.com/linux/debian bookworm stable" \
+        > /etc/apt/sources.list.d/docker.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        docker-ce-cli docker-compose-plugin \
+    && rm -rf /var/lib/apt/lists/*
+
+# `_build_test_agent_binary` shells out to `go build`, so the toolchain has to
+# be here too. Pinned to the agent's go.mod floor; bump both together.
+ARG GO_VERSION=1.26.8
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+    | tar -C /usr/local -xz
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+# Matches e2e.yml's "Install test deps" step. Kept in lockstep with it: a
+# dependency that exists here and not there turns a CI failure into a local
+# green, which is the whole thing this image is trying to prevent.
+RUN pip install --no-cache-dir \
+        pytest pytest-timeout httpx websockets cryptography
+
+# The suite never runs as root here — the Makefile passes --user. This only
+# names a default so an ad-hoc `docker run` of this image is not root either.
+USER 1001

@@ -420,3 +420,53 @@ verify-fleet-upgrade: ## Tier 3 — upgrade N-1→N and roll back (CB_CANDIDATE=
 	  echo "  pass without having upgraded anything."; \
 	  exit 2; }
 	scripts/ci/fleet/dispatch.sh "$(or $(CB_ROW),fedora-rpm-amd64-upgrade)" "$(CB_CANDIDATE)" "$(CB_CANDIDATE_PREVIOUS)"
+
+# ── Composed agent E2E, locally ───────────────────────────────────────────────
+#
+# Runs apps/agent/e2e's composed journey on this machine, as uid 1001.
+#
+# The uid is the entire point. `docker cp` reproduces the host file's numeric
+# uid inside the container, and the harness stages injected binaries and
+# manifests through tempfile.NamedTemporaryFile (0600). A developer whose own
+# uid is 1000 is `breaker` as far as the mono image is concerned, so files
+# arrive owned by the account that reads them and permission bugs in that path
+# simply cannot fail locally. They fail on CI, where the runner is 1001. That
+# gap is why an unreadable agent-binaries/manifest.json surfaced as nine
+# nightly 500s that no developer box could reproduce.
+#
+# conftest.py prints which side of that line a run is on, in the pytest header.
+E2E_DIR           := apps/agent/e2e
+E2E_RUNNER_IMAGE  := cb-e2e-localrunner
+E2E_RUNNER_UID    := 1001
+E2E_DOCKER_GID    := $(shell getent group docker | cut -d: -f3)
+
+.PHONY: e2e-local e2e-local-image
+e2e-local-image: ## Build the local E2E runner image (docker CLI + Go + test deps)
+	docker build -t $(E2E_RUNNER_IMAGE) -f $(E2E_DIR)/Dockerfile.localrunner $(E2E_DIR)
+
+e2e-local: e2e-local-image ## Run the composed agent E2E here as uid 1001 (E2E_ARGS='-k name' to filter)
+	@test -n "$(E2E_DOCKER_GID)" || { \
+	  echo "ERROR: no 'docker' group on this host — cannot grant the runner access"; \
+	  echo "  to /var/run/docker.sock. Check 'getent group docker'."; \
+	  exit 2; }
+	@# The suite writes .env, agent-etc/, the junit xml and e2e-data/ back into
+	@# the tree as uid 1001. It runs with this user's gid, so group-write on
+	@# just those two directories is enough — no recursive chmod of the repo.
+	chmod g+w . $(E2E_DIR)
+	@mkdir -p diagnostics && chmod g+w diagnostics
+	@# label=disable rather than :z — SELinux is enforcing on this host and
+	@# relabelling the whole worktree for a dev-only container is both slow and
+	@# a side effect nobody asked for.
+	docker run --rm \
+	  --user $(E2E_RUNNER_UID):$(shell id -g) \
+	  --group-add $(E2E_DOCKER_GID) \
+	  --security-opt label=disable \
+	  -v /var/run/docker.sock:/var/run/docker.sock \
+	  -v $(CURDIR):$(CURDIR) \
+	  -w $(CURDIR)/$(E2E_DIR) \
+	  -e HOME=/tmp/e2e-home \
+	  -e CB_E2E_SEED=20260826 \
+	  -e PYTHONHASHSEED=0 \
+	  -e CB_E2E_DIAGNOSTICS_DIR=$(CURDIR)/diagnostics \
+	  $(E2E_RUNNER_IMAGE) \
+	  sh -c 'mkdir -p "$$HOME" && exec pytest test_agent_e2e.py -v --timeout=3600 $(E2E_ARGS)'
