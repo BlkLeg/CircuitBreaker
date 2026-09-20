@@ -50,6 +50,27 @@ aCOLOUR=(
   '\e[33m'        # [4] yellow
 )
 
+# ─── Progress rendering ──────────────────────────────────────────────────────
+#
+# Same renderer as the installer. The bundle's copy at
+# /opt/circuitbreaker/deploy/lib/ui.sh is authoritative; a standalone
+# uninstall.sh downloaded on its own (this script is also served raw and
+# curl-piped — docs/installation/uninstalling.md:98) has no bundle to read, and
+# every call below goes through _cb_phase so that absence degrades to plain
+# Show() output rather than a missing-command error.
+if [[ -r /opt/circuitbreaker/deploy/lib/ui.sh ]]; then
+  # shellcheck source=deploy/lib/ui.sh
+  source /opt/circuitbreaker/deploy/lib/ui.sh
+  cb_ui_init
+  cb_ui_use_weights CB_PHASE_WEIGHTS_UNINSTALL
+fi
+
+# Calls a ui.sh function only if the library was sourced above. Keeps every
+# phase/teardown call site identical whether or not the bundle is present, so
+# a bare `curl ... | bash` uninstall (no /opt/circuitbreaker) still runs clean
+# with no renderer at all.
+_cb_phase() { declare -f "$1" >/dev/null 2>&1 && "$@"; return 0; }
+
 Show() {
   case $1 in
     0) echo -e "${aCOLOUR[2]}[${COLOUR_RESET}${aCOLOUR[0]} OK ${COLOUR_RESET}${aCOLOUR[2]}]${COLOUR_RESET} $2" ;;
@@ -64,6 +85,8 @@ echo -e "${aCOLOUR[0]}───────────────────�
 echo -e " ${aCOLOUR[1]}Circuit Breaker Uninstaller${COLOUR_RESET}"
 echo -e "${aCOLOUR[0]}─────────────────────────────────────────────────────${COLOUR_RESET}"
 echo ""
+
+_cb_phase cb_phase_begin preflight "Pre-flight checks"
 
 # Verify Docker is available
 if ! command -v docker >/dev/null 2>&1; then
@@ -122,6 +145,10 @@ if ! true 2>/dev/null < /dev/tty; then
   Show 1 "Uninstall aborted. Nothing was removed."
 fi
 
+_cb_phase cb_phase_end preflight
+
+_cb_phase cb_phase_begin stop "Stopping the container"
+
 # Stop the container
 if docker ps --format '{{.Names}}' | grep -q "^${CB_CONTAINER}$"; then
   Show 2 "Stopping container: $CB_CONTAINER"
@@ -130,6 +157,10 @@ if docker ps --format '{{.Names}}' | grep -q "^${CB_CONTAINER}$"; then
 else
   Show 3 "Container '$CB_CONTAINER' is not running."
 fi
+
+_cb_phase cb_phase_end stop
+
+_cb_phase cb_phase_begin remove "Removing the container"
 
 # Remove the container
 if docker ps -a --format '{{.Names}}' | grep -q "^${CB_CONTAINER}$"; then
@@ -155,6 +186,14 @@ if docker ps -a --format '{{.Names}}' | grep -q "^${CB_CONTAINER}-prev$"; then
   docker rm -f "${CB_CONTAINER}-prev" >/dev/null
   Show 0 "Rollback container removed."
 fi
+
+_cb_phase cb_phase_end remove
+
+_cb_phase cb_phase_begin cleanup "Removing data"
+# The data-volume prompt below is extracted verbatim by
+# tests/build/test_uninstall_volume_prompt.py, so nothing is inserted between
+# here and its closing `esac` — the teardown call has to sit outside that span.
+_cb_phase cb_ui_teardown
 
 # Remove the data volume
 echo ""
@@ -201,10 +240,13 @@ case "$REPLY" in
     ;;
 esac
 
+_cb_phase cb_phase_end cleanup
+
 # Remove the Docker image
 echo ""
 Show 3 "Docker image: $CB_IMAGE"
 echo ""
+_cb_phase cb_ui_teardown
 printf "  Remove Docker image '%s'? [Y/n] " "$CB_IMAGE"
 read -r REPLY < /dev/tty
 echo ""
@@ -273,6 +315,7 @@ if [[ "$TLS_DETECTED" == "1" ]]; then
   # ── Caddy Docker image ──
   if docker image inspect caddy:2-alpine >/dev/null 2>&1; then
     echo ""
+    _cb_phase cb_ui_teardown
     printf "  Remove Caddy Docker image 'caddy:2-alpine'? [Y/n] "
     read -r REPLY < /dev/tty
     echo ""
@@ -296,6 +339,7 @@ if [[ "$TLS_DETECTED" == "1" ]]; then
   echo -e "    • Remove CA certificate from system trust store"
   echo -e "    • Remove '${CB_HOSTNAME}' from /etc/hosts"
   echo ""
+  _cb_phase cb_ui_teardown
   printf "  Proceed with CA cleanup? [Y/n] "
   read -r REPLY < /dev/tty
   echo ""
@@ -391,6 +435,7 @@ if [ -f /usr/local/bin/circuit-breaker ] || [ -f /etc/systemd/system/circuit-bre
   # Config and data (ask first)
   echo ""
   if [ -d /etc/circuit-breaker ]; then
+    _cb_phase cb_ui_teardown
     printf "  Remove config (/etc/circuit-breaker)? [y/N] "
     read -r REPLY < /dev/tty
     case "$REPLY" in
@@ -400,6 +445,7 @@ if [ -f /usr/local/bin/circuit-breaker ] || [ -f /etc/systemd/system/circuit-bre
   fi
 
   if [ -d /var/lib/circuit-breaker ]; then
+    _cb_phase cb_ui_teardown
     printf "  Remove data (/var/lib/circuit-breaker)? [y/N] "
     read -r REPLY < /dev/tty
     case "$REPLY" in
@@ -424,6 +470,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
     Show 0 "launchd agent removed."
 
     if [ -d "$HOME/Library/Application Support/CircuitBreaker" ]; then
+      _cb_phase cb_ui_teardown
       printf "  Remove app data? [y/N] "
       read -r REPLY < /dev/tty
       case "$REPLY" in
@@ -433,6 +480,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
     fi
 
     if [ -d "$HOME/.config/circuitbreaker" ]; then
+      _cb_phase cb_ui_teardown
       printf "  Remove config (~/.config/circuitbreaker)? [y/N] "
       read -r REPLY < /dev/tty
       case "$REPLY" in

@@ -35,8 +35,12 @@ def _used_phase_keys(script: Path) -> set[str]:
     # Anchored to the start of a (whitespace-stripped) line: a real call sits
     # alone on its line, but prose describing one does not, e.g.
     # "# poll. cb_phase_end supplies the final weight a moment later." would
-    # otherwise be misread as a phase named "supplies".
-    return set(re.findall(r"^\s*cb_phase_(?:begin|end)\s+([a-z_]+)", text, re.MULTILINE))
+    # otherwise be misread as a phase named "supplies". uninstall.sh calls
+    # through the `_cb_phase` guard (the library may be absent there), so the
+    # optional leading "_cb_phase " is part of a real call site too.
+    return set(
+        re.findall(r"^\s*(?:_cb_phase\s+)?cb_phase_(?:begin|end)\s+([a-z_]+)", text, re.MULTILINE)
+    )
 
 
 @pytest.mark.parametrize("table", sorted(TABLES))
