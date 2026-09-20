@@ -1504,10 +1504,22 @@ stage0_download_bundle() {
   fi
 
   # Extract bundle
+  #
+  # --no-same-owner --no-same-permissions: as real root, GNU tar defaults to
+  # --same-owner/--same-permissions, replicating the *build host's* uid/gid
+  # and exact mode bits onto this machine. That is wrong on its own merits —
+  # bundle contents should end up owned by whatever stage0_install_bundle
+  # below decides (root:root, 755), never by whatever uid happened to build
+  # the tarball — and it is also fragile: some rootful-container filesystems
+  # refuse the redundant directory chmod tar issues to restore that exact
+  # archived mode ("Cannot change mode to rwxr-xr-x: Operation not
+  # permitted"), which otherwise aborts extraction outright. Dropping both is
+  # safe because stage0_install_bundle unconditionally chowns/chmods every
+  # subtree it copies from here.
   cb_step "Extracting bundle"
   rm -rf /tmp/cb-bundle
   mkdir -p /tmp/cb-bundle
-  tar -xzf "$CB_BUNDLE_TARBALL" -C /tmp/cb-bundle \
+  tar -xzf "$CB_BUNDLE_TARBALL" -C /tmp/cb-bundle --no-same-owner --no-same-permissions \
     || cb_fail "Bundle extraction failed" "Tarball may be corrupted: $CB_BUNDLE_TARBALL — re-run to re-download"
   CB_BUNDLE_DIR="/tmp/cb-bundle"
   if [[ ! -f "${CB_BUNDLE_DIR}/circuit-breaker" ]]; then
