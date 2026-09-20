@@ -91,3 +91,80 @@ jobs:
           [ ! -e "${path}" ] || { echo "::error::uninstall left ${path} behind"; exit 1; }
         done
         echo "uninstall clean"
+
+  tarball-smoke:
+    name: Smoke the tarball (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: amd64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Download candidate packages
+        uses: actions/download-artifact@v5
+        with:
+          name: packages-${{ matrix.arch }}
+          path: dist/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The tarball is what `curl ... install.sh | bash` installs. It is the
+      # path quick-install.md leads with, and until this job existed it was
+      # verified by nothing at any tier: artifact-smoke tested only the .deb,
+      # and matrix.yaml's four rows are all deb or rpm.
+      - name: Unpack the candidate tarball
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          TARBALL="dist/circuit-breaker_${VERSION}_linux_${{ matrix.arch }}.tar.gz"
+          [ -f "${TARBALL}" ] || {
+            echo "::error::no tarball at ${TARBALL}"
+            find dist -name '*.tar.gz' -print
+            exit 1
+          }
+          mkdir -p unpacked
+          tar -xzf "${TARBALL}" -C unpacked
+          if [ -f "unpacked/circuit-breaker" ]; then
+            echo "BUNDLE=$PWD/unpacked" >> "$GITHUB_ENV"
+          else
+            echo "BUNDLE=$(find "$PWD/unpacked" -maxdepth 1 -mindepth 1 -type d | head -1)" >> "$GITHUB_ENV"
+          fi
+
+      # install.sh reads exactly these paths out of the bundle. A layout change
+      # that breaks them breaks every curl|bash install, and does so after
+      # publication, because nothing else looks.
+      - name: Assert the bundle layout install.sh depends on
+        run: |
+          set -euo pipefail
+          for path in \
+            circuit-breaker \
+            deploy/setup.sh \
+            share/VERSION \
+            manifest.json; do
+            [ -e "${BUNDLE}/${path}" ] || {
+              echo "::error::bundle is missing ${path}; install.sh reads it"
+              exit 1
+            }
+          done
+          echo "bundle layout OK"
+
+      - name: Assert the shipped VERSION matches the candidate
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          SHIPPED="$(cat "${BUNDLE}/share/VERSION")"
+          [ "${SHIPPED}" = "${VERSION}" ] \
+            || { echo "::error::bundle VERSION is '${SHIPPED}', expected '${VERSION}'"; exit 1; }
+
+      # The assertion v0.4.2 needed. Every check above is satisfied by a bundle
+      # whose binary contains no application.
+      - name: Assert the bundled binary can load the application it serves
+        run: |
+          set -euo pipefail
+          "${BUNDLE}/circuit-breaker" --selftest
+
