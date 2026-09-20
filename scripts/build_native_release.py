@@ -299,6 +299,49 @@ def _collect_dynamic_import_hidden_imports() -> list[str]:
     return sorted(set(found))
 
 
+def assert_binary_contains_application(binary_path: Path) -> None:
+    """Refuse to stage a binary that cannot import the application it serves.
+
+    PyInstaller builds from a static import graph, so a module reached only
+    through a runtime string is dropped silently. The three collectors above
+    exist to re-declare the ones we know about; this asserts the outcome rather
+    than trusting the inputs, which is the difference between a mitigation and
+    a gate.
+
+    v0.4.2 is what its absence costs: a binary with no `app.main` inside it was
+    signed, attested, SBOM'd, version-parity-checked and published, and died on
+    every native install. `--version` — the only thing any gate executed —
+    resolves from an embedded VERSION file and returns before the application is
+    imported, so it cannot observe the defect by construction.
+
+    Runs in seconds, needs no services, and gates every package format at once:
+    the tarball, deb, rpm, apk, AppImage and pkg.tar.zst all wrap this binary.
+
+    Raises:
+        SystemExit: if the binary reports a self-test failure or cannot be run.
+    """
+    print(f"Verifying {binary_path.name} contains its application...")
+    completed = subprocess.run(
+        [str(binary_path), "--selftest"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+        env={**os.environ, "CB_DB_URL": "postgresql://fake:fake@localhost/fake"},
+    )
+    output = (completed.stdout + completed.stderr).strip()
+    if completed.returncode != 0:
+        raise SystemExit(
+            f"{binary_path.name} failed its self-test (exit {completed.returncode}).\n"
+            f"{output}\n\n"
+            "The frozen binary cannot import something it needs at runtime — "
+            "almost always a module named only by a string, which PyInstaller's "
+            "static import graph cannot see. Add it to hidden_imports in "
+            "build_binary(), or to the collector that should have found it.\n"
+            "Refusing to stage a bundle that would fail on every install."
+        )
+    print(f"  {output}")
+
 def build_binary(target_os: str, work_dir: Path) -> Path:
     dist_dir = work_dir / "pyinstaller-dist"
     build_dir = work_dir / "pyinstaller-build"
@@ -356,6 +399,7 @@ def build_binary(target_os: str, work_dir: Path) -> Path:
     binary_path = dist_dir / binary_name(target_os)
     if not binary_path.exists():
         raise SystemExit(f"Expected PyInstaller output missing: {binary_path}")
+    assert_binary_contains_application(binary_path)
     return binary_path
 
 
