@@ -92,6 +92,13 @@ These exist because each one has already been broken here, at cost.
    proving it.** Proof is reproducing it, or running the same check on a clean
    tree at an older commit and showing it fails identically. "Those runs
    predate the fix" is a hypothesis, not a finding.
+
+   A red required check has exactly two permitted outcomes: it is **fixed**, or
+   it is **quarantined** with a row in
+   `specs/1.0.0/release-control/quarantine-register.csv` naming an owner, a
+   tracking item and an expiry no more than 90 days out. There is no third
+   outcome. "Probably flaky" is not an outcome, and
+   `tests/build/test_quarantine_register.py` fails the build on an expired row.
 3. **Push only after the covering suite passes locally.** CI is for
    confirmation, not discovery. Pushing to find out costs ~40 minutes per
    round and burns someone else's time.
@@ -103,6 +110,10 @@ These exist because each one has already been broken here, at cost.
    `tests/build/test_playwright_image_matches_package.py` enforces it. When a
    bump breaks a pairing like this, add the guard rather than only fixing the
    instance.
+6. **A binary that answers `--version` has not been shown to run.** Version
+   parity is an identity check. The only evidence that an artifact works is
+   something importing or starting the application inside it — `circuit-breaker
+   --selftest` at minimum, a boot and a `/readyz` probe where the suite allows.
 
 ## Skills
 
