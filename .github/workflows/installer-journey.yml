@@ -1,0 +1,171 @@
+name: Installer Journey
+
+# The first time install.sh has ever been executed by CI. Until now pages.yml
+# published it, release.yml attached it, and tests/build/ grepped its text —
+# so every defect in the most prominently documented install path was found by
+# users.
+#
+# scheduled-ref: not applicable — this workflow has no schedule trigger.
+on:
+  pull_request:
+    paths:
+      - 'install.sh'
+      - 'uninstall.sh'
+      - 'deploy/**'
+      - 'scripts/build_native_release.py'
+      - 'scripts/ci/installer-journey.sh'
+      - '.github/workflows/installer-journey.yml'
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: 'Consecutive runs, for measuring the flake rate'
+        required: false
+        default: '1'
+
+permissions:
+  contents: read
+
+jobs:
+  journey:
+    name: Install from a staged bundle (${{ matrix.distro }})
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [ubuntu2204, debian12]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+
+      - name: Install build dependencies
+        run: bash scripts/install-build-deps.sh
+
+      - name: Build the candidate bundle
+        run: |
+          set -euo pipefail
+          python3 -m venv .venv
+          .venv/bin/pip install -r apps/backend/requirements.txt
+          .venv/bin/pip install pyinstaller
+          cd apps/frontend && npm ci && npm run build && cd -
+          .venv/bin/python scripts/build_native_release.py --version "$(cat VERSION)"
+          ls -lh dist/native/
+
+      # systemd as PID 1, which install.sh needs and a default runner container
+      # does not have. podman rather than docker because it runs systemd inside
+      # a container without the privileged/cgroup contortions docker needs.
+      #
+      # The alternative is a nested VM, which is slower and heavier. The choice
+      # is recorded in docs/evidence/2026-09-20-installer-journey-flake-rate.md.
+      #
+      # Two things this step does that a first draft of it did not:
+      #
+      # 1. The stock docker.io/library/ubuntu:22.04 and debian:12 images ship
+      #    no init system at all — not even the systemd package, so /sbin/init
+      #    does not exist and `podman run ... /sbin/init` fails before the
+      #    container even starts (crun: executable file `/sbin/init` not
+      #    found). There is no way to `apt-get install systemd` after the
+      #    container is up, because the container never comes up without an
+      #    entrypoint that exists. So this step boots the base image with a
+      #    keep-alive command, installs systemd + systemd-sysv (which creates
+      #    the /sbin/init -> /lib/systemd/systemd symlink) and the tools
+      #    install.sh needs, commits that as a local image, and only then
+      #    starts the real systemd container from it. Confirmed locally: the
+      #    brief's original one-step `/sbin/init` invocation fails 100% of the
+      #    time, deterministically, with the error above — not a flake.
+      #
+      # 2. --cap-add=NET_ADMIN,NET_RAW. deploy/setup.sh runs
+      #    `setcap cap_net_raw+ep` on the installed binary (for SNMP/ICMP
+      #    telemetry without running the whole process as root), and
+      #    circuitbreaker-backend.service declares
+      #    `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN`. A container whose
+      #    capability bounding set lacks a capability a binary's file
+      #    capabilities request cannot exec that binary at all — the kernel
+      #    returns EPERM on the execve() itself (confirmed locally: `Failed to
+      #    execute /opt/circuitbreaker/bin/circuit-breaker: Operation not
+      #    permitted`, systemd status 203/EXEC), and the AmbientCapabilities=
+      #    line would separately fail to apply. Neither capability is
+      #    privileged enough to need --privileged; both are addable in an
+      #    ordinary rootful (and rootless, with delegation) podman container.
+      - name: Start a systemd container
+        env:
+          DISTRO: ${{ matrix.distro }}
+        run: |
+          set -euo pipefail
+          case "${DISTRO}" in
+            ubuntu2204) IMAGE=docker.io/library/ubuntu:22.04 ;;
+            debian12)   IMAGE=docker.io/library/debian:12 ;;
+            *) echo "::error::unknown distro ${DISTRO}"; exit 1 ;;
+          esac
+
+          # Bootstrap: give the base image an init system before it can be
+          # started with one as its entrypoint. systemd-sysv provides the
+          # /sbin/init symlink via update-alternatives; without it, --systemd
+          # has nothing to run.
+          sudo podman run -d --name cb-journey-bootstrap "${IMAGE}" sleep infinity
+          sudo podman exec cb-journey-bootstrap bash -c '
+            set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq systemd systemd-sysv curl jq openssl ca-certificates
+          '
+          sudo podman commit cb-journey-bootstrap cb-journey-base >/dev/null
+          sudo podman rm -f cb-journey-bootstrap
+
+          sudo podman run -d --name cb-journey \
+            --systemd=always \
+            --cgroupns=host \
+            --cap-add=NET_ADMIN,NET_RAW \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v "$PWD:/workspace:ro" \
+            -p 8088:8088 \
+            cb-journey-base /sbin/init
+          # Give systemd inside the container a moment to reach a stable
+          # target before anything execs into it; a unit list taken mid-boot
+          # is not evidence of anything.
+          for _ in $(seq 1 30); do
+            sudo podman exec cb-journey systemctl is-system-running 2>/dev/null | grep -qE 'running|degraded' && break
+            sleep 1
+          done
+          sudo podman exec cb-journey systemctl is-system-running || true
+
+      - name: Run the installer journey
+        run: |
+          set -euo pipefail
+          BUNDLE="$(ls dist/native/circuit-breaker_*_linux_amd64.tar.gz | head -1)"
+          sudo podman exec cb-journey bash -c "
+            set -euo pipefail
+            mkdir -p /candidate
+            cp '/workspace/${BUNDLE}' /candidate/
+            cp /workspace/install.sh /candidate/
+            cd /candidate
+            bash /workspace/scripts/ci/installer-journey.sh \
+              \"/candidate/\$(basename '${BUNDLE}')\"
+          "
+
+      - name: Collect evidence
+        if: always()
+        run: |
+          sudo podman exec cb-journey bash -c \
+            'tar -czf /tmp/journey-evidence.tar.gz /tmp/installer-journey 2>/dev/null' || true
+          sudo podman cp cb-journey:/tmp/journey-evidence.tar.gz . || true
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: installer-journey-${{ matrix.distro }}
+          path: journey-evidence.tar.gz
+          if-no-files-found: warn
+
+      - name: Tear down
+        if: always()
+        run: |
+          sudo podman rm -f cb-journey || true
+          sudo podman rmi -f cb-journey-base || true
