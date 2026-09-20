@@ -16,11 +16,6 @@ on:
       - 'scripts/ci/installer-journey.sh'
       - '.github/workflows/installer-journey.yml'
   workflow_dispatch:
-    inputs:
-      runs:
-        description: 'Consecutive runs, for measuring the flake rate'
-        required: false
-        default: '1'
 
 permissions:
   contents: read
