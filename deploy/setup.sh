@@ -910,6 +910,21 @@ stage3_configure_nginx() {
   # Write Nginx configuration
   cb_step "Writing Nginx configuration"
 
+  # Debian's and the PGDG/dnf-family nginx packages both create /etc/nginx/conf.d
+  # and ship a stock nginx.conf that already `include`s it, so this has never been
+  # needed on those branches. Arch's pacman nginx package does neither — its
+  # /etc/nginx/nginx.conf hardcodes one inline `server {}` block and never
+  # mentions conf.d at all — so cb_render_template below fails outright ("No such
+  # file or directory") the first time this runs on Arch, and even a pre-created
+  # directory would leave the rendered file silently unread by nginx. Make both
+  # true unconditionally rather than assuming the package did it: harmless where
+  # it already holds (Debian/Fedora/RHEL family), load-bearing on Arch.
+  mkdir -p /etc/nginx/conf.d
+  if [[ -f /etc/nginx/nginx.conf ]] \
+     && ! grep -q 'conf\.d/\*\.conf' /etc/nginx/nginx.conf; then
+    sed -i '/^http[[:space:]]*{/a\    include /etc/nginx/conf.d/*.conf;' /etc/nginx/nginx.conf
+  fi
+
   # Build server_name directive
   local server_name="${CB_FQDN:-_}"
   local cert_ip
