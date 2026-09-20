@@ -30,19 +30,26 @@ MARKER = "# scheduled-ref: default-branch-intentional"
 
 
 def _scheduled_workflows() -> list[Path]:
-    """Workflow files carrying a `schedule:` trigger."""
+    """Workflow files carrying a `schedule:` trigger.
+
+    Globs both `*.yml` and `*.yaml` — GitHub Actions accepts either extension
+    for a workflow file, and a `.yaml` workflow with a `schedule:` trigger is
+    exactly as capable of silently characterising a stale default branch as a
+    `.yml` one.
+    """
     found: list[Path] = []
-    for path in sorted(WORKFLOW_DIR.glob("*.yml")):
-        # yaml parses the bare `on:` key as the boolean True, which is a YAML 1.1
-        # quirk and exactly why this is read from the parsed document rather than
-        # grepped: `on:` and `"on":` must behave identically.
-        document = yaml.safe_load(path.read_text(encoding="utf-8"))
-        if not isinstance(document, dict):
-            continue
-        triggers = document.get("on", document.get(True))
-        if isinstance(triggers, dict) and "schedule" in triggers:
-            found.append(path)
-    return found
+    for pattern in ("*.yml", "*.yaml"):
+        for path in sorted(WORKFLOW_DIR.glob(pattern)):
+            # yaml parses the bare `on:` key as the boolean True, which is a YAML
+            # 1.1 quirk and exactly why this is read from the parsed document
+            # rather than grepped: `on:` and `"on":` must behave identically.
+            document = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if not isinstance(document, dict):
+                continue
+            triggers = document.get("on", document.get(True))
+            if isinstance(triggers, dict) and "schedule" in triggers:
+                found.append(path)
+    return sorted(found)
 
 
 def _checkout_steps(document: dict) -> list[dict]:
@@ -55,6 +62,24 @@ def _checkout_steps(document: dict) -> list[dict]:
             if isinstance(step, dict) and str(step.get("uses", "")).startswith("actions/checkout"):
                 steps.append(step)
     return steps
+
+
+def _reusable_workflow_calls(document: dict) -> list[dict]:
+    """Every job that calls a reusable workflow via a job-level `uses:`.
+
+    A job shaped this way (`jobs.<id>.uses: ./.github/workflows/other.yml`)
+    has no `steps` at all, so `_checkout_steps` never sees it — but it still
+    checks out whatever the CALLED workflow's own checkout step resolves to,
+    on the schedule-triggered run's default-branch checkout of the CALLING
+    workflow. A `uses:` that is itself a relative local path with no `ref:`
+    input pinning the call is exactly the same class of blind spot as an
+    unpinned `actions/checkout`.
+    """
+    jobs: list[dict] = []
+    for job in (document.get("jobs") or {}).values():
+        if isinstance(job, dict) and "uses" in job:
+            jobs.append(job)
+    return jobs
 
 
 def test_at_least_one_scheduled_workflow_exists() -> None:
@@ -78,6 +103,36 @@ def test_scheduled_workflows_pin_a_ref_or_declare_intent() -> None:
         unpinned = [step for step in steps if "ref" not in (step.get("with") or {})]
         if unpinned:
             offenders.append(f"{path.name} ({len(unpinned)} of {len(steps)} checkouts unpinned)")
+
+        # A job-level `uses:` (a reusable-workflow call) has no `steps`, so
+        # `_checkout_steps` never sees it — but a local `./`-relative call
+        # always runs at the caller's ref, so whatever the called workflow's
+        # own checkout resolves to is exactly as unpinned as the caller's
+        # would be. An external `owner/repo/...@ref` call pins its own ref via
+        # `@ref` and is out of scope here.
+        for job in _reusable_workflow_calls(document):
+            uses = str(job.get("uses", ""))
+            if not uses.startswith("./") and not uses.startswith("../"):
+                continue
+            called_path = (path.parent / uses).resolve()
+            if not called_path.exists():
+                offenders.append(
+                    f"{path.name} calls reusable workflow {uses!r} which does not exist"
+                )
+                continue
+            called_text = called_path.read_text(encoding="utf-8")
+            if MARKER in called_text:
+                continue
+            called_document = yaml.safe_load(called_text)
+            called_steps = _checkout_steps(called_document)
+            called_unpinned = [
+                step for step in called_steps if "ref" not in (step.get("with") or {})
+            ]
+            if called_unpinned:
+                offenders.append(
+                    f"{called_path.name} (called by {path.name} via job-level `uses:`, "
+                    f"{len(called_unpinned)} of {len(called_steps)} checkouts unpinned)"
+                )
     assert not offenders, (
         "These workflows can be triggered by `schedule` but check out without an "
         f"explicit ref: {offenders}. A scheduled run loads this file from the "

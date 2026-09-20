@@ -44,12 +44,17 @@ def _changelog_entry(version: str, repo_root: Path) -> ChecklistRow:
     if not changelog.exists():
         return ChecklistRow("changelog_entry", False, "CHANGELOG.md is missing")
     text = changelog.read_text(encoding="utf-8")
-    if version in text:
-        return ChecklistRow("changelog_entry", True, f"CHANGELOG.md mentions {version}")
+    # A bare substring test lets "0.4.2" match "0.4.20" or a URL containing the
+    # digits. Require the version to head its own "## [x.y.z]" entry instead.
+    heading = re.compile(rf"^##\s*\[{re.escape(version)}\]", re.M)
+    if heading.search(text):
+        return ChecklistRow(
+            "changelog_entry", True, f"CHANGELOG.md has a heading for {version}"
+        )
     return ChecklistRow(
         "changelog_entry",
         False,
-        f"CHANGELOG.md has no entry for {version}",
+        f"CHANGELOG.md has no '## [{version}]' heading",
     )
 
 
@@ -61,12 +66,21 @@ def _quarantine_register_current(repo_root: Path) -> ChecklistRow:
             "quarantine_register_current", False, f"{register} is missing"
         )
     today = date.today()
+    expired: list[str] = []
     with register.open(encoding="utf-8", newline="") as handle:
-        expired = [
-            f"{row['quarantine_id']} ({row['check']}) expired {row['expiry']}"
-            for row in csv.DictReader(handle)
-            if date.fromisoformat(row["expiry"]) < today
-        ]
+        for row in csv.DictReader(handle):
+            try:
+                is_expired = date.fromisoformat(row["expiry"]) < today
+            except ValueError:
+                return ChecklistRow(
+                    "quarantine_register_current",
+                    False,
+                    f"{row['quarantine_id']} has a malformed expiry: {row['expiry']!r}",
+                )
+            if is_expired:
+                expired.append(
+                    f"{row['quarantine_id']} ({row['check']}) expired {row['expiry']}"
+                )
     if expired:
         return ChecklistRow(
             "quarantine_register_current",
@@ -107,7 +121,7 @@ def _version_parity(version: str, repo_root: Path) -> ChecklistRow:
     if not script.exists():
         return ChecklistRow("version_parity", False, f"{script} is missing")
     completed = subprocess.run(
-        [sys.executable, str(script)],
+        [sys.executable, str(script), "--expected", version],
         capture_output=True,
         text=True,
         cwd=repo_root,
@@ -119,7 +133,9 @@ def _version_parity(version: str, repo_root: Path) -> ChecklistRow:
             False,
             (completed.stdout + completed.stderr).strip()[:400],
         )
-    return ChecklistRow("version_parity", True, f"parity green for {version}")
+    return ChecklistRow(
+        "version_parity", True, f"every version source matches candidate {version}"
+    )
 
 
 def evaluate(version: str, repo_root: Path) -> list[ChecklistRow]:

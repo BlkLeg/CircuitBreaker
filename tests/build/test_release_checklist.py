@@ -65,6 +65,58 @@ def test_an_expired_quarantine_fails_the_checklist(tmp_path: Path) -> None:
     assert "QUAR-001" in rows["quarantine_register_current"].detail
 
 
+def test_a_wrong_candidate_version_fails_version_parity() -> None:
+    """version_parity must compare against the candidate, not just self-consistency.
+
+    scripts/release_checklist.py used to run check_version_parity.py with no
+    --expected, so it only asserted the tree agreed with itself and then
+    reported parity for a candidate version it never compared against.
+    """
+    from release_checklist import evaluate
+
+    rows = {row.name: row for row in evaluate(version="9.9.9", repo_root=REPO_ROOT)}
+    assert not rows["version_parity"].satisfied
+    assert "9.9.9" in rows["version_parity"].detail
+
+
+def test_changelog_entry_does_not_match_a_longer_version(tmp_path: Path) -> None:
+    """"0.4.2" must not match a changelog that only ever mentions "0.4.20"."""
+    from release_checklist import evaluate
+
+    fake_root = tmp_path / "repo"
+    (fake_root / "specs" / "1.0.0" / "release-control").mkdir(parents=True)
+    (fake_root / "VERSION").write_text("0.4.2\n")
+    (fake_root / "CHANGELOG.md").write_text(
+        "## [0.4.20] — 2026-09-01\n\n- entry\n\nSee https://example.test/0.4.2/notes\n"
+    )
+    (fake_root / "specs" / "1.0.0" / "release-control" / "quarantine-register.csv").write_text(
+        "quarantine_id,check,scope,reason,owner,tracking,opened,expiry,notes\n"
+    )
+    rows = {row.name: row for row in evaluate(version="0.4.2", repo_root=fake_root)}
+    assert not rows["changelog_entry"].satisfied
+
+
+def test_malformed_expiry_produces_a_blocking_row_not_an_exception(tmp_path: Path) -> None:
+    """A bad `expiry` value must fail the checklist row, not raise into the caller."""
+    from release_checklist import evaluate
+
+    fake_root = tmp_path / "repo"
+    (fake_root / "specs" / "1.0.0" / "release-control").mkdir(parents=True)
+    (fake_root / "VERSION").write_text("9.9.9\n")
+    (fake_root / "CHANGELOG.md").write_text("## [9.9.9] — 2026-09-20\n\n- entry\n")
+    (fake_root / "specs" / "1.0.0" / "release-control" / "quarantine-register.csv").write_text(
+        "quarantine_id,check,scope,reason,owner,tracking,opened,expiry,notes\n"
+        "QUAR-002,Some Check,tests/x.py,reason,shawnji (release),RISK-011,"
+        "2026-01-01,not-a-date,note\n"
+    )
+    rows = {
+        row.name: row for row in evaluate(version="9.9.9", repo_root=fake_root)
+    }
+    assert not rows["quarantine_register_current"].satisfied
+    assert "QUAR-002" in rows["quarantine_register_current"].detail
+    assert "not-a-date" in rows["quarantine_register_current"].detail
+
+
 def test_cli_exits_non_zero_when_a_row_is_unsatisfied(tmp_path: Path) -> None:
     fake_root = tmp_path / "repo"
     (fake_root / "specs" / "1.0.0" / "release-control").mkdir(parents=True)
