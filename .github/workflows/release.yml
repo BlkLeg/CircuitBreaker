@@ -83,7 +83,7 @@ jobs:
 
       - name: Upload gate evidence
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: release-gate-evidence
           path: |
@@ -160,7 +160,7 @@ jobs:
             docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # The private key reaches the build as a BuildKit secret written to a
       # file, NEVER as --build-arg: build args land in image metadata and are
@@ -199,7 +199,7 @@ jobs:
       # The digest is the whole handoff to the merge job: the filename is the
       # digest, so the job below needs no parsing and cannot mix the two up.
       - name: Export digest
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: image-digest-${{ matrix.arch }}
           path: /tmp/digests/*
@@ -213,7 +213,7 @@ jobs:
       # the build options actually used.
       - name: Upload image build diagnostics
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: image-build-diagnostics-${{ matrix.arch }}
           path: /tmp/build-metadata.json
@@ -251,7 +251,7 @@ jobs:
             docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Create manifest list
         id: merge
@@ -294,7 +294,7 @@ jobs:
       # since moved.
       - name: Upload manifest descriptor
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: image-manifest-descriptor
           path: /tmp/manifest-descriptor.json
@@ -355,7 +355,7 @@ jobs:
       # combined by `image-merge`. This job consumes the published manifest list
       # and never builds an image itself.
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # Prove both architectures are in the published manifest rather than
       # trusting that the merge did what it was asked.

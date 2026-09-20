@@ -32,6 +32,11 @@ build/
 .cursor/
 .vscode/
 .cache/
+# Agent-tooling scratch state. Same class as .claude/ above, and it has to
+# be excluded rather than merely gitignored: the directory is mode 0700, so
+# a build run by any uid but its owner fails the context scan outright with
+# "can't stat" before a single instruction executes.
+.superpowers/
 *.swp
 *.swo
 

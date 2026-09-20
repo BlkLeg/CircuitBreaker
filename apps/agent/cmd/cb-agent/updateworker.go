@@ -79,6 +79,20 @@ type updateWorker struct {
 	// idle states, queue slot or not.
 	busy atomic.Bool
 
+	// inFlightVersion names the instruction `busy` is currently gating.
+	//
+	// A refusal has to say *which* refusal it is. The server delivers every
+	// update twice by design (an immediate control-frame push and a
+	// Redis-queued entry the link poll picks up), so a second instruction for
+	// the version already running is routine and the running attempt owns the
+	// outcome. A second instruction for a *different* version is genuinely
+	// dropped work the server is still waiting on. Only the first may be
+	// reported as anything other than a failure — see link.ErrUpdateAlreadyRunning.
+	//
+	// Written under the same CAS that sets `busy`, so it is never read for an
+	// instruction that was not admitted.
+	inFlightVersion atomic.Value // string
+
 	// execute performs one whole update (download, verify, marker, swap,
 	// persist outcome, report, re-exec). A construction-time seam, for the
 	// same reason watchForRollback takes reExec as a parameter: tests must
@@ -154,8 +168,15 @@ func (w *updateWorker) enqueue(payload json.RawMessage) error {
 	// check-and-admit one atomic step, so two instructions arriving
 	// together cannot both win.
 	if !w.busy.CompareAndSwap(false, true) {
+		running, _ := w.inFlightVersion.Load().(string)
+		if running != "" && running == instr.Version {
+			// The dual-delivery duplicate. Not dropped work: the attempt
+			// already running will report its own terminal outcome.
+			return link.ErrUpdateAlreadyRunning
+		}
 		return errUpdateInProgress
 	}
+	w.inFlightVersion.Store(instr.Version)
 	select {
 	case w.jobC <- updateJob{instr: instr}:
 		return nil

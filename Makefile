@@ -420,3 +420,99 @@ verify-fleet-upgrade: ## Tier 3 — upgrade N-1→N and roll back (CB_CANDIDATE=
 	  echo "  pass without having upgraded anything."; \
 	  exit 2; }
 	scripts/ci/fleet/dispatch.sh "$(or $(CB_ROW),fedora-rpm-amd64-upgrade)" "$(CB_CANDIDATE)" "$(CB_CANDIDATE_PREVIOUS)"
+
+# ── Composed agent E2E, locally ───────────────────────────────────────────────
+#
+# Runs apps/agent/e2e's composed journey on this machine, as uid 1001.
+#
+# The uid is the entire point. `docker cp` reproduces the host file's numeric
+# uid inside the container, and the harness stages injected binaries and
+# manifests through tempfile.NamedTemporaryFile (0600). A developer whose own
+# uid is 1000 is `breaker` as far as the mono image is concerned, so files
+# arrive owned by the account that reads them and permission bugs in that path
+# simply cannot fail locally. They fail on CI, where the runner is 1001. That
+# gap is why an unreadable agent-binaries/manifest.json surfaced as nine
+# nightly 500s that no developer box could reproduce.
+#
+# conftest.py prints which side of that line a run is on, in the pytest header.
+#
+# --network host is not optional either. BASE_URL is https://localhost:8443 and
+# the compose file publishes 8443 on the *host*, so the suite is written for a
+# host-side client. A runner in its own network namespace resolves localhost to
+# itself and every test dies on "Connection refused" long before it asserts
+# anything.
+#
+# The git safe.directory vars are what let `go build` keep VCS stamping on.
+# `_build_test_agent_binary` compiles a tagged agent from the worktree, and Go
+# shells out to git to stamp it; git refuses a repository owned by another uid
+# ("dubious ownership"), which surfaces only as "error obtaining VCS status:
+# exit status 128". Marking the path safe is better than -buildvcs=false here:
+# it fixes the ownership objection instead of building something different
+# from what CI builds.
+E2E_DIR           := apps/agent/e2e
+E2E_RUNNER_IMAGE  := cb-e2e-localrunner
+E2E_RUNNER_UID    := 1001
+E2E_DOCKER_GID    := $(shell getent group docker | cut -d: -f3)
+
+.PHONY: e2e-local e2e-local-image e2e-local-prep
+e2e-local-image: ## Build the local E2E runner image (docker CLI + Go + test deps)
+	docker build -t $(E2E_RUNNER_IMAGE) -f $(E2E_DIR)/Dockerfile.localrunner $(E2E_DIR)
+
+# Exactly the host paths the harness writes, enumerated rather than discovered
+# one failure at a time: e2e-data/ (the bind-mounted CB_DATA_DIR), diagnostics/,
+# apps/agent/e2e/ (.env, __pycache__, the junit xml) and agent-etc/ (agent.toml
+# and the unattended-enrollment token).
+E2E_WRITABLE_DIRS := . $(E2E_DIR) $(E2E_DIR)/agent-etc diagnostics
+
+.PHONY: e2e-local-prep
+e2e-local-prep: ## Make the worktree writable by the uid-1001 runner
+	@mkdir -p $(E2E_DIR)/agent-etc diagnostics e2e-data
+	@# The runner shares this user's gid, so group-write on just these
+	@# directories is enough — no recursive chmod of the worktree.
+	chmod g+w $(E2E_WRITABLE_DIRS)
+	@# Anything the mono container left behind is root-owned, and the runner
+	@# cannot unlink it. agent-etc/enroll-token is the one that bites: the
+	@# unattended-enrollment test writes and then removes that exact path, so a
+	@# stale root-owned copy fails the test for a reason that has nothing to do
+	@# with enrollment. Both directories are gitignored and hold only per-run
+	@# artifacts, so emptying them is safe.
+	@if find $(E2E_DIR)/agent-etc e2e-data -uid 0 -print -quit 2>/dev/null | grep -q .; then \
+	  echo "e2e-local-prep: clearing root-owned leftovers from an earlier run"; \
+	  docker run --rm --user 0 --security-opt label=disable \
+	    -v $(CURDIR)/$(E2E_DIR)/agent-etc:/agent-etc \
+	    -v $(CURDIR)/e2e-data:/e2e-data \
+	    $(E2E_RUNNER_IMAGE) \
+	    sh -c 'find /agent-etc /e2e-data -mindepth 1 -delete'; \
+	fi
+
+e2e-local: e2e-local-image ## Run the composed agent E2E here as uid 1001 (E2E_ARGS='-k name' to filter)
+	@test -n "$(E2E_DOCKER_GID)" || { \
+	  echo "ERROR: no 'docker' group on this host — cannot grant the runner access"; \
+	  echo "  to /var/run/docker.sock. Check 'getent group docker'."; \
+	  exit 2; }
+	$(MAKE) e2e-local-prep
+	@# label=disable rather than :z — SELinux is enforcing on this host and
+	@# relabelling the whole worktree for a dev-only container is both slow and
+	@# a side effect nobody asked for.
+	docker run --rm \
+	  --user $(E2E_RUNNER_UID):$(shell id -g) \
+	  --group-add $(E2E_DOCKER_GID) \
+	  --security-opt label=disable \
+	  --network host \
+	  -v /var/run/docker.sock:/var/run/docker.sock \
+	  -v $(CURDIR):$(CURDIR) \
+	  -w $(CURDIR)/$(E2E_DIR) \
+	  -e HOME=/tmp/e2e-home \
+	  -e GIT_CONFIG_COUNT=1 \
+	  -e GIT_CONFIG_KEY_0=safe.directory \
+	  -e GIT_CONFIG_VALUE_0=$(CURDIR) \
+	  -e CB_E2E_SEED=20260826 \
+	  -e PYTHONHASHSEED=0 \
+	  -e CB_E2E_DIAGNOSTICS_DIR=$(CURDIR)/diagnostics \
+	  $(E2E_RUNNER_IMAGE) \
+	  sh -c 'mkdir -p "$$HOME" && exec pytest test_agent_e2e.py -v --timeout=3600 \
+	    -p no:cacheprovider $(E2E_ARGS)'
+# -p no:cacheprovider: the runner is uid 1001 and .pytest_cache in the worktree
+# belongs to the developer, so pytest's end-of-session cache write dies with
+# EACCES *after* every test has already run — turning a completed run into a
+# traceback and a non-zero exit. Nothing here wants a cross-run cache anyway.
