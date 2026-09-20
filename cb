@@ -592,16 +592,18 @@ print(json.dumps({
     docker exec "$1" sh -c '[ -n "$CB_VAULT_KEY" ] || grep -qs "^CB_VAULT_KEY=" "'"$2"'/.env"'
   }
   _probe_psql_url() { psql "$1" -tAc 'SELECT 1' >/dev/null; }
+  _probe_selftest() { [[ -x "$1" ]] && "$1" --selftest; }
 
   # $1=name $2=hint $3=component $4=diag_cmd_or_empty; remaining argv = probe
   _run_check() {
     local name=$1 hint=$2 component=$3 diag=${4:-}
     shift 4
-    if "$@" &>/dev/null; then
+    local out=""
+    if out="$("$@" 2>&1)"; then
       if [[ "$as_json" -eq 0 ]]; then
         printf "  ${G}✓${R}  %-30s OK\n" "$name"
       fi
-      _doctor_add "$component" "$name" pass info "ok" "" true
+      _doctor_add "$component" "$name" pass info "${out:-ok}" "" true
     else
       if [[ "$as_json" -eq 0 ]]; then
         printf "  ${RED}✗${R}  %-30s FAILED\n" "$name"
@@ -624,17 +626,30 @@ print(json.dumps({
   if [[ -z "$CB_MODE" ]]; then
     _doctor_add identity present fail critical "install-identity.json not found" \
       "Re-run the installer so install-identity.json is written, then: cb info" true
+    if [[ "$as_json" -eq 0 ]]; then
+      echo ""
+      echo -e "$LINE"
+      echo -e " ${B}Circuit Breaker — Health Check${R}"
+      echo -e "$LINE"
+      echo ""
+      printf "  ${RED}✗${R}  %-30s FAILED\n" "Install identity"
+      echo "     → Re-run the installer so install-identity.json is written, then: cb info"
+    fi
+    local bin="${CB_BINARY:-/usr/local/bin/circuit-breaker}"
+    [[ -x "$bin" ]] || bin="${CB_NATIVE_BIN:-/opt/circuitbreaker/bin/circuit-breaker}"
+    # The same assertion the release gate runs. v0.4.2 shipped a binary with no
+    # application in it and every gate was green, because the only thing any of them
+    # executed was --version. An operator who can run this gets the answer in one
+    # command instead of a support thread.
+    _run_check "selftest" \
+      "The installed binary cannot load its application — run '$bin --selftest' for the traceback." \
+      binary \
+      "$bin --selftest" \
+      _probe_selftest "$bin"
     if [[ "$as_json" -eq 1 ]]; then
       _doctor_emit_json
       return 1
     fi
-    echo ""
-    echo -e "$LINE"
-    echo -e " ${B}Circuit Breaker — Health Check${R}"
-    echo -e "$LINE"
-    echo ""
-    printf "  ${RED}✗${R}  %-30s FAILED\n" "Install identity"
-    echo "     → Re-run the installer so install-identity.json is written, then: cb info"
     echo ""
     return 1
   fi
@@ -736,6 +751,17 @@ print(json.dumps({
       ;;
 
     binary)
+      # The same assertion the release gate runs. v0.4.2 shipped a binary with no
+      # application in it and every gate was green, because the only thing any of them
+      # executed was --version. An operator who can run this gets the answer in one
+      # command instead of a support thread.
+      local bin="${CB_BINARY:-/usr/local/bin/circuit-breaker}"
+      _run_check "selftest" \
+        "The installed binary cannot load its application — run '$bin --selftest' for the traceback." \
+        binary \
+        "$bin --selftest" \
+        _probe_selftest "$bin"
+
       _run_check "systemd unit" \
         "Start it: sudo systemctl start circuit-breaker" \
         service \
@@ -782,6 +808,17 @@ print(json.dumps({
       ;;
 
     native)
+      # The same assertion the release gate runs. v0.4.2 shipped a binary with no
+      # application in it and every gate was green, because the only thing any of them
+      # executed was --version. An operator who can run this gets the answer in one
+      # command instead of a support thread.
+      local bin="${CB_NATIVE_BIN:-/opt/circuitbreaker/bin/circuit-breaker}"
+      _run_check "selftest" \
+        "The installed binary cannot load its application — run '$bin --selftest' for the traceback." \
+        native \
+        "$bin --selftest" \
+        _probe_selftest "$bin"
+
       local svc
       for svc in circuitbreaker-postgres circuitbreaker-redis circuitbreaker-nats circuitbreaker-backend; do
         _run_check "systemd ${svc}" \
