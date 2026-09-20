@@ -67,17 +67,21 @@ Never lower the coverage gate to make a build green.
 ### What the gates do NOT cover
 
 `make verify` and `make verify-full` run unit suites, lint, and the security
-gate. **Neither runs a browser and neither runs the agent.** Two whole suites
-sit outside them:
+gate. **Neither runs a browser, the agent, the installer, or the packaged
+binary itself.** Four whole suites sit outside them:
 
 | Suite | Covers | How to run it |
 |---|---|---|
 | Browser E2E (Playwright) | the real frontend in a real browser | `cd apps/frontend && npx playwright test` |
 | Composed Agent E2E | the agent against the mono image | `make e2e-local` |
+| Installer journey | `install.sh` end to end on a real host | `bash install.sh --local-bundle <tarball> --unattended --no-tls` |
+| Artifact self-test | that the packaged binary contains the application | `circuit-breaker --selftest` |
 
 A green `verify-full` therefore says nothing about a frontend dependency bump,
-a Playwright change, an agent change, or anything about rendering, routing or
-enrollment.
+a Playwright change, an agent change, a packaging change, or anything about
+rendering, routing, enrollment or whether the built binary contains the
+application at all. v0.4.2 shipped an empty binary through a fully green
+pipeline.
 
 ### Rules for claiming something is verified
 
