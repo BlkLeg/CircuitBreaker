@@ -16,7 +16,8 @@ import pytest
 from app.startup.selftest import SelfTestResult, format_result, run_selftest
 
 
-def test_selftest_passes_on_a_correct_tree() -> None:
+def test_selftest_passes_on_a_correct_tree(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CB_DB_URL", "postgresql://fake:fake@localhost/fake")
     result = run_selftest()
     assert result.ok, f"self-test failed on a correct tree: {result.failure}"
     assert result.failure is None
@@ -67,3 +68,42 @@ def test_format_result_is_one_line_and_names_the_counts() -> None:
     line = format_result(result)
     assert "\n" not in line
     assert "2" in line
+
+
+def test_cli_selftest_exits_zero_and_prints_one_line(capsys: pytest.CaptureFixture[str]) -> None:
+    from app.start import main
+
+    code = main(["--selftest"])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out.strip().startswith("selftest OK")
+    assert captured.out.strip().count("\n") == 0
+
+
+def test_cli_selftest_exits_one_and_reports_to_stderr(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("app.startup.selftest.ASGI_TARGET", "app.definitely_not_here:app")
+    from app.start import main
+
+    code = main(["--selftest"])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "selftest FAILED" in captured.err
+    assert "app.definitely_not_here" in captured.err
+
+
+def test_cli_selftest_runs_before_config_is_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--selftest must not need a config file, a database URL or a data dir.
+
+    It runs inside a build container and on a freshly installed host before any
+    of those exist. If configure_runtime is reached, the flag is wired too late.
+    """
+
+    def _explode(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("configure_runtime must not run under --selftest")
+
+    monkeypatch.setattr("app.start.configure_runtime", _explode)
+    from app.start import main
+
+    assert main(["--selftest"]) == 0
