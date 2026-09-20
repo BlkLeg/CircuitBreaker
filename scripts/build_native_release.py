@@ -401,6 +401,15 @@ def build_binary(target_os: str, work_dir: Path, packaging_mode: str = "onefile"
             "PyInstaller",
             "--onedir" if packaging_mode == "onedir" else "--onefile",
             "--clean",
+            # --clean wipes the WORK directory, not the dist directory. Without
+            # --noconfirm, a dist path left behind by a different packaging mode
+            # stops the build dead: an --onedir run creates
+            # pyinstaller-dist/circuit-breaker as a DIRECTORY, and the next
+            # --onefile build then fails with "The output directory ... is not
+            # empty" because it wants to write a FILE of that name. Found by
+            # running a normal build in a tree where the packaging benchmark had
+            # run once — which is every developer's tree after step 4.
+            "--noconfirm",
             "--distpath",
             str(dist_dir),
             "--workpath",
