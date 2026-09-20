@@ -23,10 +23,25 @@ wait_port() {
 
 wait_port "pgbouncer"  127.0.0.1 6432
 
-# Redis: authenticated PING — port-open is not enough when requirepass is set
+# Redis: authenticated PING — port-open is not enough when requirepass is set.
+#
+# The client is resolved here, at every backend start, rather than baked in when
+# the installer wrote this file. RHEL/Rocky/AlmaLinux 10 ship Valkey instead of
+# Redis and provide only valkey-cli, so a hardcoded redis-cli made this loop
+# spin until MAX_WAIT and then kill the backend with "Redis did not accept
+# authenticated connections within 60s" — while the redis unit itself was
+# running fine and `cb doctor` reported it OK, which made the real cause
+# invisible. Resolving at runtime also means an operator who later installs the
+# other client does not have to re-run the installer for this to keep working.
+REDIS_CLI="$(command -v redis-cli 2>/dev/null || command -v valkey-cli 2>/dev/null || true)"
+if [[ -z "$REDIS_CLI" ]]; then
+  echo "FATAL: neither redis-cli nor valkey-cli is installed; cannot verify Redis" >&2
+  exit 1
+fi
+
 echo "Waiting for Redis to accept authenticated connections..."
 elapsed=0
-while ! redis-cli -h 127.0.0.1 -p 6379 -a "${CB_REDIS_PASSWORD}" --no-auth-warning PING 2>/dev/null | grep -q PONG; do
+while ! "$REDIS_CLI" -h 127.0.0.1 -p 6379 -a "${CB_REDIS_PASSWORD}" --no-auth-warning PING 2>/dev/null | grep -q PONG; do
   sleep $INTERVAL
   elapsed=$((elapsed + INTERVAL))
   if [[ $elapsed -ge $MAX_WAIT ]]; then

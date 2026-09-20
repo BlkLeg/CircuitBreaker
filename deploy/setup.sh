@@ -1215,6 +1215,12 @@ stage4_write_systemd_units() {
     CB_REDIS_USER="redis"
   elif id _redis &>/dev/null; then
     CB_REDIS_USER="_redis"
+  elif id valkey &>/dev/null; then
+    # RHEL 10 and its rebuilds ship Valkey in place of Redis; its package creates
+    # a 'valkey' account. Checked before the self-heal below so those distros do
+    # not get a warning about a "partially installed" package that is in fact
+    # correctly installed under a different name.
+    CB_REDIS_USER="valkey"
   else
     cb_warn "Redis system user missing (redis-server may be only partially installed) — creating it"
     useradd -r -s /usr/sbin/nologin -d /nonexistent -c "Redis" redis >> "$LOG_FILE" 2>&1 || true
