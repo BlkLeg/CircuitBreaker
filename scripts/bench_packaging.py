@@ -151,12 +151,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--configurations",
         nargs="+",
-        default=["onefile", "onedir", "pbs"],
+        # "pbs" is excluded from the default: build_binary raises SystemExit for
+        # it today, so including it here means every default invocation runs
+        # two full PyInstaller builds and then dies before printing anything.
+        # Pass --configurations onefile onedir pbs explicitly once pbs builds.
+        default=["onefile", "onedir"],
         choices=["onefile", "onedir", "pbs"],
+        help="Configurations to measure (default: onefile onedir; pbs is excluded "
+        "because build_binary currently raises SystemExit for it)",
     )
     args = parser.parse_args(argv)
 
-    results = [measure(configuration, args.version) for configuration in args.configurations]
+    results: list[Measurement] = []
+    for configuration in args.configurations:
+        result = measure(configuration, args.version)
+        results.append(result)
+        # Emitted as each measurement completes, not only at the end, so a
+        # later configuration's failure cannot discard earlier results.
+        print(json.dumps(asdict(result), indent=2))
+
     print(json.dumps([asdict(result) for result in results], indent=2))
     return 0
 

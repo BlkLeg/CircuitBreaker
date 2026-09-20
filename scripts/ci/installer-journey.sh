@@ -81,7 +81,7 @@ deadline=$(( SECONDS + READY_BUDGET ))
 code=000
 while [ "$SECONDS" -lt "$deadline" ]; do
   code="$(curl -s -o "$EVIDENCE/readyz.json" -w '%{http_code}' \
-    "http://127.0.0.1:${PORT}/api/v1/readyz" || echo 000)"
+    "http://127.0.0.1:${PORT}/api/v1/readyz")" || code=000
   [ "$code" = "200" ] && break
   sleep 2
 done
