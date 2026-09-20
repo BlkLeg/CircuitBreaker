@@ -22,6 +22,7 @@ services, and on an air-gapped host.
 from __future__ import annotations
 
 import importlib
+import os
 from dataclasses import dataclass
 
 from app.start import ASGI_TARGET
@@ -67,6 +68,7 @@ def run_selftest() -> SelfTestResult:
     Returns:
         A SelfTestResult naming the first failure, or listing what resolved.
     """
+    os.environ.setdefault("CB_DB_URL", "postgresql://selftest:dummy@localhost/selftest")
     checked: list[str] = []
 
     failure = _resolve_asgi_target(ASGI_TARGET, checked)
