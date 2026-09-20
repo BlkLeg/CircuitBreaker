@@ -175,19 +175,31 @@ def test_upgrade_rows_reuse_an_install_row_platform():
 
 def test_phase_3_ships_the_slices_that_are_built():
     """Upgrade and rollback run on the Fedora row; the deb rows
-    added the deb family. arm64 and the tier 3 formats are slices 3 and 4, and a
-    row added here without its fixture and its format support is a claim the tier
-    cannot honour."""
+    added the deb family, and the tarball rows added the format
+    `curl ... install.sh | bash` actually installs -- tier 3 today, per the
+    tarball rows' own comment in matrix.yaml, because a row's existence does not
+    move ADR 0005's table. arm64 is slice 4, and a row added here without its
+    fixture and its format support is a claim the tier cannot honour."""
     rows = {row["id"]: row for row in _rows()}
     assert set(rows) == {
         "fedora-rpm-amd64",
         "fedora-rpm-amd64-upgrade",
         "debian-deb-amd64",
         "debian-deb-amd64-upgrade",
+        "debian-tarball-amd64",
+        "debian-tarball-amd64-upgrade",
     }, f"unexpected matrix rows: {sorted(rows)}"
     for row in rows.values():
         assert row["arch"] == "amd64", "arm64 is slice 4"
         assert row["runner"] == "local/qemu"
+
+
+# format names that are not their own file extension. "tarball" is a semantic
+# name for the row -- the artifact tier3-artifact.sh actually dispatches on is
+# a .tar.gz, and a bare `${VAR##*.}` would see only "gz" (it strips one dot),
+# which is exactly why tier3-artifact.sh matches the compound suffix in a case
+# pattern rather than deriving it from the format string.
+_FORMAT_EXTENSIONS = {"tarball": "tar.gz"}
 
 
 def test_every_declared_format_is_one_the_tier_script_can_install():
@@ -197,7 +209,8 @@ def test_every_declared_format_is_one_the_tier_script_can_install():
     tier = (MATRIX.parent.parent / "tier3-artifact.sh").read_text(encoding="utf-8")
     for row in _rows():
         fmt = row["format"]
-        assert f"*.{fmt})" in tier, (
+        ext = _FORMAT_EXTENSIONS.get(fmt, fmt)
+        assert f"*.{ext})" in tier, (
             f"row {row['id']} declares format {fmt}, which tier3-artifact.sh does not "
             f"dispatch on"
         )
