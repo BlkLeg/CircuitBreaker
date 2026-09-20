@@ -183,6 +183,63 @@ def _collect_migration_hidden_imports() -> list[str]:
     return sorted(found)
 
 
+def _collect_asgi_target_hidden_imports() -> list[str]:
+    """The API server is named in a string, so nothing imports it.
+
+    `start.py` ends in `uvicorn.run("app.main:app", ...)`. uvicorn resolves that
+    with `importlib.import_module`, which PyInstaller's static graph cannot see,
+    so `app.main` — the entire application — only ever entered the frozen binary
+    because a line above it happened to read `from app.main import
+    run_alembic_upgrade`. Splitting that helper out into `app.startup.schema`
+    removed the last static reference and 0.4.2 shipped a binary with no
+    application in it: migrations ran, then every native install died on
+
+        ERROR: Error loading ASGI app. Could not import module "app.main".
+
+    Reading the name back out of the call keeps the hidden import tied to what
+    the entrypoint actually serves, so a future rename of `main.py` moves it
+    instead of silently emptying the binary again.
+    """
+    tree = ast.parse(
+        BACKEND_ENTRYPOINT.read_text(encoding="utf-8"), filename=str(BACKEND_ENTRYPOINT)
+    )
+    found: set[str] = set()
+    launches = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        func = node.func
+        if not (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "uvicorn"
+            and func.attr in {"run", "Config"}
+        ):
+            continue
+        launches += 1
+        target = node.args[0]
+        if not (isinstance(target, ast.Constant) and isinstance(target.value, str)):
+            # An application object rather than an import string: whatever
+            # defines it is reached by the static graph already.
+            continue
+        module_str, separator, _ = target.value.partition(":")
+        if not separator or not module_str:
+            raise SystemExit(
+                f"{BACKEND_ENTRYPOINT.name} passes uvicorn the ASGI target "
+                f"{target.value!r}, which is not in uvicorn's required "
+                '"<module>:<attribute>" form. The binary would fail to boot.'
+            )
+        found.add(module_str)
+    if not launches:
+        raise SystemExit(
+            f"Found no uvicorn launch in {BACKEND_ENTRYPOINT.name}, so the ASGI "
+            "application it serves cannot be declared as a hidden import. "
+            "PyInstaller drops modules named only in strings; a binary that boots "
+            "straight into ImportFromStringError is worse than no binary."
+        )
+    return sorted(found)
+
+
 # Third-party packages that reach part of themselves through a runtime string
 # rather than an `import` statement. PyInstaller builds its bundle from a static
 # import graph, so anything named only by a string is invisible to it and gets
@@ -259,6 +316,7 @@ def build_binary(target_os: str, work_dir: Path) -> Path:
         "app.workers.telemetry_collector",
         "app.workers.monitor_scheduler",
         "app.workers.monitor_poll_worker",
+        *_collect_asgi_target_hidden_imports(),
         *_collect_migration_hidden_imports(),
         *_collect_dynamic_import_hidden_imports(),
     ]
