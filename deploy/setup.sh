@@ -1839,15 +1839,21 @@ stage2_dependencies() {
 }
 
 run_upgrade() {
+  cb_phase_begin preflight "Pre-flight checks"
+
   cb_header
   cb_section "Upgrade Mode"
   cb_ok "Detected existing installation"
-  
+
   # Source environment variables
   source /etc/circuitbreaker/.env
 
   ensure_hosts_entry
-  
+
+  cb_phase_end preflight
+
+  cb_phase_begin backup "Creating pre-upgrade backup"
+
   # Backup before upgrade (while services are still running)
   cb_step "Creating pre-upgrade backup"
   local backup_file="${CB_DATA_DIR}/backups/pre-upgrade-$(date +%Y%m%d-%H%M%S).sql"
@@ -1898,7 +1904,11 @@ run_upgrade() {
   else
     cb_warn "Database not running - skipping backup"
   fi
-  
+
+  cb_phase_end backup
+
+  cb_phase_begin bundle "Installing new version"
+
   # Stop services after backup
   cb_step "Stopping services"
   systemctl stop circuitbreaker.target >> "$LOG_FILE" 2>&1 || true
@@ -1984,6 +1994,10 @@ run_upgrade() {
   fi
   rm -f /etc/caddy/Caddyfile 2>/dev/null || true
 
+  cb_phase_end bundle
+
+  cb_phase_begin apply "Applying configuration and migrations"
+
   # Self-heal: (re)configure and verify each backing service rather than
   # assuming a prior install that reached this point fully configured
   # them. Each stage is internally idempotent (initdb/config-write skip
@@ -2005,6 +2019,10 @@ run_upgrade() {
   # Restart services
   stage9_install_cb_cli
 
+  cb_phase_end apply
+
+  cb_phase_begin start "Restarting Circuit Breaker"
+
   # Reuse the fresh-install startup routine — required-file preflight,
   # docker-proxy, backend + health wait, per-worker start, nginx
   # restart+verify — instead of a blanket target-start that can silently
@@ -2016,4 +2034,6 @@ run_upgrade() {
 
   stage9_write_install_identity
   stage10_final_output
+
+  cb_phase_end start
 }
