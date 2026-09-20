@@ -11,20 +11,27 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UI = REPO_ROOT / "deploy" / "lib" / "ui.sh"
-INSTALLER = REPO_ROOT / "install.sh"
+
+TABLES = {
+    "CB_PHASE_WEIGHTS_INSTALL": REPO_ROOT / "install.sh",
+    "CB_PHASE_WEIGHTS_UPGRADE": REPO_ROOT / "deploy" / "setup.sh",
+    "CB_PHASE_WEIGHTS_UNINSTALL": REPO_ROOT / "uninstall.sh",
+}
 
 
-def _declared_weights() -> dict[str, int]:
+def _declared_weights(table: str) -> dict[str, int]:
     text = UI.read_text(encoding="utf-8")
-    block = re.search(r"declare -gA CB_PHASE_WEIGHTS=\((.*?)\)", text, re.DOTALL)
-    assert block, "CB_PHASE_WEIGHTS not found in deploy/lib/ui.sh"
+    block = re.search(rf"declare -gA {table}=\((.*?)\)", text, re.DOTALL)
+    assert block, f"{table} not found in deploy/lib/ui.sh"
     return {key: int(value) for key, value in re.findall(r"\[(\w+)\]=(\d+)", block.group(1))}
 
 
-def _used_phase_keys() -> set[str]:
-    text = INSTALLER.read_text(encoding="utf-8")
+def _used_phase_keys(script: Path) -> set[str]:
+    text = script.read_text(encoding="utf-8")
     # Anchored to the start of a (whitespace-stripped) line: a real call sits
     # alone on its line, but prose describing one does not, e.g.
     # "# poll. cb_phase_end supplies the final weight a moment later." would
@@ -32,27 +39,30 @@ def _used_phase_keys() -> set[str]:
     return set(re.findall(r"^\s*cb_phase_(?:begin|end)\s+([a-z_]+)", text, re.MULTILINE))
 
 
-def test_weights_sum_to_one_hundred() -> None:
-    weights = _declared_weights()
+@pytest.mark.parametrize("table", sorted(TABLES))
+def test_weights_sum_to_one_hundred(table: str) -> None:
+    weights = _declared_weights(table)
     total = sum(weights.values())
-    assert total == 100, f"phase weights sum to {total}, not 100: {weights}"
+    assert total == 100, f"{table} sums to {total}, not 100: {weights}"
 
 
-def test_every_runtime_phase_is_declared() -> None:
-    declared = set(_declared_weights())
-    used = _used_phase_keys()
-    assert used, "no cb_phase_begin/end calls found in install.sh"
+@pytest.mark.parametrize("table,script", sorted(TABLES.items()))
+def test_every_runtime_phase_is_declared(table: str, script: Path) -> None:
+    declared = set(_declared_weights(table))
+    used = _used_phase_keys(script)
+    assert used, f"no cb_phase_begin/end calls found in {script.name}"
     undeclared = used - declared
     assert not undeclared, (
-        f"install.sh opens phases {sorted(undeclared)} that CB_PHASE_WEIGHTS "
-        "does not declare, so they contribute no weight and the bar jumps."
+        f"{script.name} opens phases {sorted(undeclared)} that {table} does not "
+        "declare, so they contribute no weight and the bar jumps."
     )
 
 
-def test_every_declared_phase_is_used() -> None:
-    declared = set(_declared_weights())
-    unused = declared - _used_phase_keys()
+@pytest.mark.parametrize("table,script", sorted(TABLES.items()))
+def test_every_declared_phase_is_used(table: str, script: Path) -> None:
+    declared = set(_declared_weights(table))
+    unused = declared - _used_phase_keys(script)
     assert not unused, (
-        f"CB_PHASE_WEIGHTS declares {sorted(unused)}, which install.sh never "
-        "opens, so the bar can never reach 100%."
+        f"{table} declares {sorted(unused)}, which {script.name} never opens, "
+        "so the bar can never reach 100%."
     )

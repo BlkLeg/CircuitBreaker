@@ -87,23 +87,41 @@ _CB_DONE_WEIGHT=0
 _CB_LAST_ETA=-1
 _CB_ETA_TEXT=""
 
-# Phase weights, as percentages of a whole install. They must sum to 100 and
-# every key used at runtime must appear here; tests/build/test_installer_phase_model.py
-# asserts both.
+# Phase weights, as percentages of a whole flow. They must sum to 100 and every
+# key used at runtime must appear here; tests/build/test_installer_phase_model.py
+# asserts both, per table.
 #
 # These are ratios of measured medians. A phase is a unit of elapsed time a user
-# can FEEL, not a unit of implementation, which is why the 21 old sections
-# collapse unevenly: "Writing Service Scripts" was instant and
+# can FEEL, not a unit of implementation, which is why the 21 old install
+# sections collapse unevenly: "Writing Service Scripts" was instant and
 # "Installing Dependencies" is most of the wall clock.
-declare -gA CB_PHASE_WEIGHTS=(
-  [preflight]=2
-  [bundle]=12
-  [files]=6
-  [deps]=45
-  [database]=15
-  [services]=12
-  [start]=8
+#
+# One table per flow. A phase is a unit of elapsed time a user can feel, so the
+# three flows weight differently: an uninstall is dominated by stopping services
+# and removing a data directory, an upgrade by its pre-upgrade backup.
+declare -gA CB_PHASE_WEIGHTS_INSTALL=(
+  [preflight]=2 [bundle]=12 [files]=6 [deps]=45 [database]=15 [services]=12 [start]=8
 )
+declare -gA CB_PHASE_WEIGHTS_UPGRADE=(
+  [preflight]=5 [backup]=40 [bundle]=20 [apply]=20 [start]=15
+)
+declare -gA CB_PHASE_WEIGHTS_UNINSTALL=(
+  [preflight]=10 [stop]=30 [remove]=40 [cleanup]=20
+)
+
+# The live table. cb_ui_use_weights swaps it; the renderer only ever reads this.
+declare -gA CB_PHASE_WEIGHTS=()
+
+cb_ui_use_weights() {
+  local table="$1" key
+  local -n _source="$table"
+  CB_PHASE_WEIGHTS=()
+  for key in "${!_source[@]}"; do
+    CB_PHASE_WEIGHTS["$key"]="${_source[$key]}"
+  done
+  _cb_log "ui: weights=${table}"
+}
+
 declare -ga CB_PHASE_ORDER=(preflight bundle files deps database services start)
 
 # Completed phases, for the ledger: "key|headline|seconds".
@@ -1665,6 +1683,12 @@ main() {
 
   cb_require_native_root "$@"
   cb_ui_init
+
+  if [[ "${UPGRADE_MODE}" == "true" ]]; then
+    cb_ui_use_weights CB_PHASE_WEIGHTS_UPGRADE
+  else
+    cb_ui_use_weights CB_PHASE_WEIGHTS_INSTALL
+  fi
 
   cb_phase_begin preflight "Pre-flight checks"
   stage0_bootstrap_preflight
