@@ -669,10 +669,28 @@ cb_run_diagnostics() {
 }
 
 cb_fail() {
+  # Tear the live region down FIRST. Diagnostics interleaved with a redrawing
+  # bar are unreadable, and this is the one moment the output has to be perfect.
+  if declare -f cb_ui_teardown >/dev/null 2>&1; then
+    cb_ui_teardown
+  fi
+
   echo -e "\n  ${RED}✗  ERROR: $1${RESET}"
   if [[ -n "${2:-}" ]]; then
     echo -e "  ${YELLOW}→  $2${RESET}"
   fi
+
+  # The context the quiet screen withheld, at the only moment it matters.
+  if declare -f cb_ui_ledger >/dev/null 2>&1; then
+    cb_ui_ledger
+  fi
+
+  # The subprocess output quiet mode hid. Before the armed diagnostics, because
+  # it is the most likely place the actual cause is written.
+  if declare -f cb_ui_log_tail >/dev/null 2>&1; then
+    cb_ui_log_tail 30
+  fi
+
   cb_run_diagnostics
   if [[ ${#CB_STAGE_HINTS[@]} -gt 0 ]]; then
     echo -e "\n  ${BOLD}Next steps:${RESET}"
@@ -682,6 +700,12 @@ cb_fail() {
       (( _hint_i++ ))
     done
   fi
+
+  # Named explicitly, as the last two lines. An operator should never have to
+  # know to go and find these.
+  echo ""
+  echo -e "  ${BOLD}Full log:${RESET}  ${LOG_FILE:-/tmp/cb-bootstrap.log}"
+  echo -e "  ${BOLD}Re-run with full output:${RESET}  bash install.sh --verbose"
   echo ""
   exit 1
 }
