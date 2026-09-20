@@ -20,7 +20,7 @@
 - **Air-gap is first-class.** `cb diag bundle` makes no outbound call and never uploads anything. It writes a file and prints its path.
 - Commits: `feat:` / `fix:` / `chore:` / `docs:`.
 - This plan does not touch `apps/backend/src/app`, so `make verify` is the gate. It does not execute `uninstall.sh` against a real install; see "What this plan does NOT cover".
-- `uninstall.sh` runs under `set -euo pipefail`.
+- `uninstall.sh` runs under **`set -e`** (not `set -euo pipefail`) — check before relying on pipefail semantics.
 
 ## Background an implementer needs
 
@@ -217,10 +217,17 @@ This is not optional. A question drawn under a redrawing bar is a hung uninstall
 
 Wrap the script's existing work:
 
-- `preflight` — "Pre-flight checks": root check, install detection, confirmation prompts
-- `stop` — "Stopping services": `systemctl stop`/`disable` of every unit
-- `remove` — "Removing files": binaries, units, config, CLI
-- `cleanup` — "Cleaning up": data directory handling, user removal, `systemctl daemon-reload`
+**`uninstall.sh` is Docker-only.** It requires `docker` (line 69), targets the
+container `circuit-breaker` and the volume `circuit-breaker-data`, and contains no
+`systemctl` calls at all — `docs/installation/uninstalling.md:83` states this
+outright. The native uninstaller is a different program
+(`deploy/cli/cb:1889` execs `/usr/local/bin/uninstall-circuit-breaker`) and is NOT
+in scope here. Phase the script for what it does:
+
+- `preflight` — "Pre-flight checks": docker availability, container detection, confirmation prompt
+- `stop` — "Stopping the container": `docker stop`
+- `remove` — "Removing the container": `docker rm` of the container and its `-prev` sibling
+- `cleanup` — "Removing data": `docker volume rm`, behind the existing prompt
 
 - [ ] **Step 5: Verify**
 

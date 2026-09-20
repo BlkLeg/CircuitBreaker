@@ -38,7 +38,9 @@ Two existing helpers must be reused, not reimplemented: `cb_term_at_least` (whic
 | File | Responsibility |
 |---|---|
 | `deploy/lib/ui.sh` | The event API, mode resolution, all three renderers, the phase table and the ETA. Sourced by `install.sh` and re-sourced by `deploy/setup.sh`. |
-| `install.sh` | Sources `ui.sh`; adds `--verbose`; declares phase boundaries in `main`. |
+| `install.sh` | Carries an inlined byte-identical copy of `ui.sh` (it is served raw from `main`, so it cannot source at runtime); adds `--verbose`; declares phase boundaries in `main`. |
+| `scripts/ci/sync_installer_ui.py` | Regenerates that inlined block from the library. |
+| `tests/build/test_installer_ui_inline_matches_library.py` | Fails the build if the pair drifts. |
 | `deploy/setup.sh` | Declares phase boundaries inside the stage functions. |
 | `tests/build/test_installer_phase_model.py` | Weights sum to 100; every runtime phase key is declared. |
 | `tests/build/test_installer_render_modes.py` | Mode selection, no ANSI in plain, log completeness, warnings always visible. |
@@ -527,32 +529,28 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Consumes: everything Task 1 produced.
 - Produces: `CB_VERBOSE` and `--verbose`; `phases preflight`, `bundle`, `files` opened and closed.
 
-- [ ] **Step 1: Source the library, keeping the bootstrap case working**
+- [ ] **Step 1: Inline the library into `install.sh` — do NOT source it at runtime**
 
-`install.sh` is downloaded and run alone — `deploy/lib/ui.sh` does not exist on the host until the bundle is extracted. Add near the top, after the colour codes:
+`install.sh` is served **raw from the `main` branch**. `pages.yml:60` is a bare
+`cp install.sh _site/install.sh`, its own comment says "every documented command
+curls raw.githubusercontent.com", and `docs/installation/quick-install.md:12` is
+`curl -fsSL .../main/install.sh | bash`. **There is no assembly step on the
+documented install path.** An `install.sh` that sources `deploy/lib/ui.sh` at
+runtime therefore breaks every `curl | bash` install the moment it reaches main —
+the bundle that would carry the library is exactly what has not been downloaded yet.
+
+So the installer stays self-contained, which is what it already is. Add these two
+markers to `install.sh`, immediately after the colour-code block:
 
 ```sh
-# The library lives in the bundle, which does not exist yet on a fresh host, so
-# install.sh ships with its own copy appended by the release job and falls back
-# to the extracted one when re-sourced by setup.sh. Sourcing is attempted from
-# the bundle first so an upgrade always runs the shipped renderer, not a stale
-# inlined one.
-_cb_source_ui() {
-  local candidate
-  for candidate in \
-    /opt/circuitbreaker/deploy/lib/ui.sh \
-    "$(dirname "${BASH_SOURCE[0]}")/deploy/lib/ui.sh"; do
-    if [[ -r "$candidate" ]]; then
-      # shellcheck source=deploy/lib/ui.sh
-      source "$candidate"
-      return 0
-    fi
-  done
-  return 1
-}
+# --- BEGIN INLINED deploy/lib/ui.sh — regenerate with scripts/ci/sync_installer_ui.py ---
+# --- END INLINED deploy/lib/ui.sh ---
 ```
 
-**Packaging requirement:** `release.yml` already assembles the standalone `install.sh` it publishes (see its `cp install.sh setup.sh` step). The published single-file installer must have `deploy/lib/ui.sh` **inlined** at that point, because a `curl | bash` user has no bundle. Add that to the release job in Task 5 of this plan — do not leave the fallback as the only path.
+`deploy/lib/ui.sh` stays the source of truth: `deploy/setup.sh` and `uninstall.sh`
+source it from `/opt/circuitbreaker/deploy/lib/ui.sh`, which the bundle ships and
+which exists by the time either runs. `install.sh` gets a byte-identical copy
+between the markers, kept in sync by Task 5. Do not write `_cb_source_ui`.
 
 - [ ] **Step 2: Add the `--verbose` flag**
 
@@ -592,10 +590,11 @@ In `show_help`, after the `--unattended` line:
 In `main`, immediately after `cb_require_native_root "$@"`:
 
 ```sh
-  _cb_source_ui || cb_fail "Installer rendering library not found" \
-    "The published install.sh inlines deploy/lib/ui.sh; a checkout runs it from deploy/lib/"
   cb_ui_init
 ```
+
+The renderer is already defined: it was inlined between the markers at the top of
+this same file, so there is nothing to source and nothing that can fail to load.
 
 Then wrap the three bootstrap stages:
 
@@ -886,78 +885,61 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 5: Inline the library into the published installer
+### Task 5: Keep the inlined copy and the library byte-identical
 
 **Files:**
-- Modify: `.github/workflows/release.yml` — the step that assembles the published `install.sh`
+- Create: `scripts/ci/sync_installer_ui.py`
+- Create: `tests/build/test_installer_ui_inline_matches_library.py`
 
-- [ ] **Step 1: Find the assembly step**
+**Why a pair, and why pinned.** `install.sh` must be self-contained (Task 2 Step 1),
+and `deploy/setup.sh`/`uninstall.sh` need the same renderer from the installed
+bundle. That is two copies, and CLAUDE.md rule 5 is explicit: dependencies pinned
+in two places move together, and the guard goes in rather than only the fix.
+`tests/build/test_playwright_image_matches_package.py` is the existing precedent.
 
-```bash
-sed -n '478,510p' .github/workflows/release.yml
-```
+**No workflow changes.** `release.yml` and `pages.yml` are untouched — the whole
+point of inlining at rest rather than at release time is that the documented
+`curl | bash` path runs no assembly step.
 
-- [ ] **Step 2: Inline `deploy/lib/ui.sh` into the published copy**
+- [ ] **Step 1: Write the sync script**
 
-Before the existing `cp install.sh setup.sh` line, insert the library at the marker. Add to `install.sh` a marker comment where the inline belongs:
+`scripts/ci/sync_installer_ui.py` reads `deploy/lib/ui.sh`, replaces everything
+between the two markers in `install.sh` with it, and writes `install.sh` back.
+`--check` reports drift and exits 1 without writing. Full type annotations and a
+docstring on every public function; mypy runs with `disallow_untyped_defs`.
 
-```sh
-# --- BEGIN INLINED deploy/lib/ui.sh (release build replaces this marker) ---
-# --- END INLINED deploy/lib/ui.sh ---
-```
-
-and in the workflow:
-
-```yaml
-          # A `curl | bash` user has no bundle, so the published single-file
-          # installer carries the renderer inside it. The checkout path still
-          # sources deploy/lib/ui.sh, so development and release use the same
-          # file rather than a copy that can drift.
-          python3 - <<'PY'
-          import pathlib
-          installer = pathlib.Path("install.sh")
-          library = pathlib.Path("deploy/lib/ui.sh").read_text()
-          text = installer.read_text()
-          begin = "# --- BEGIN INLINED deploy/lib/ui.sh (release build replaces this marker) ---"
-          end = "# --- END INLINED deploy/lib/ui.sh ---"
-          start_at = text.index(begin) + len(begin)
-          end_at = text.index(end)
-          installer.write_text(text[:start_at] + "\n" + library + "\n" + text[end_at:])
-          PY
-          grep -c 'cb_phase_begin' install.sh
-```
-
-- [ ] **Step 3: Test the inlining locally**
-
-Run the same Python against a copy and confirm the result still parses:
+- [ ] **Step 2: Run it and confirm `install.sh` still parses**
 
 ```bash
-cp install.sh /tmp/install-inlined.sh
-cd /tmp && python3 - <<'PY'
-import pathlib
-installer = pathlib.Path("/tmp/install-inlined.sh")
-library = pathlib.Path("/home/shawnji/project/CircuitBreaker/deploy/lib/ui.sh").read_text()
-text = installer.read_text()
-begin = "# --- BEGIN INLINED deploy/lib/ui.sh (release build replaces this marker) ---"
-end = "# --- END INLINED deploy/lib/ui.sh ---"
-start_at = text.index(begin) + len(begin)
-end_at = text.index(end)
-installer.write_text(text[:start_at] + "\n" + library + "\n" + text[end_at:])
-PY
-bash -n /tmp/install-inlined.sh && echo "inlined installer parses"
+.venv/bin/python scripts/ci/sync_installer_ui.py
+bash -n install.sh && echo "syntax OK"
+.venv/bin/python scripts/ci/sync_installer_ui.py --check && echo "in sync"
 ```
 
-Expected: `inlined installer parses`.
+Expected: `syntax OK` then `in sync`.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Write the byte-identity test**
+
+`tests/build/test_installer_ui_inline_matches_library.py` extracts the block
+between the markers in `install.sh` and asserts it equals `deploy/lib/ui.sh`
+exactly. The failure message must name the sync command. Include a test that the
+markers exist at all, so the suite cannot pass vacuously if someone deletes them.
+
+- [ ] **Step 4: Prove it has teeth**
+
+Append a line to `deploy/lib/ui.sh`, run the test, confirm it fails naming the
+sync command, then re-run the sync and confirm green.
+
+- [ ] **Step 5: Commit**
 
 ```bash
-git add install.sh .github/workflows/release.yml
-git commit -m "feat: inline the renderer into the published installer
+git add scripts/ci/sync_installer_ui.py tests/build/test_installer_ui_inline_matches_library.py install.sh
+git commit -m "feat: pin the installer's inlined renderer to the library
 
-A curl|bash user has no bundle, so the single-file installer carries the
-library. The checkout path still sources deploy/lib/ui.sh, so there is one file
-rather than a copy that drifts.
+install.sh is served raw from main — pages.yml does a bare cp and the documented
+command curls raw.githubusercontent.com — so it cannot source the renderer at
+runtime without breaking every curl|bash install. It carries an inlined copy
+instead, and a byte-identity test fails the build if the pair drifts.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
@@ -1208,6 +1190,8 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - [ ] `bash -n install.sh`, `bash -n deploy/setup.sh`, `bash -n deploy/lib/ui.sh` all clean.
 - [ ] The three-mode demo (Task 1 Step 3) behaves correctly in tty, plain and verbose.
 - [ ] `grep -r REPLACE_WITH tests/` returns nothing.
+- [ ] `.venv/bin/python scripts/ci/sync_installer_ui.py --check` exits 0.
+- [ ] `install.sh` still parses after inlining, and contains no `source`/`.` of `deploy/lib/ui.sh`.
 - [ ] The four pre-existing suites that stub `cb_step`/`cb_ok` pass **unedited**.
 - [ ] `cb_logo` is byte-identical — the banner test passes against the hash computed from the current tree.
 
