@@ -506,7 +506,7 @@ jobs:
 
   post-publish:
     name: Verify the published release
-    needs: [version, publish]
+    needs: [version, release]
     runs-on: ubuntu-22.04
     permissions:
       contents: read
