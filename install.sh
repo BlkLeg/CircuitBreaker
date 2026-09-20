@@ -631,18 +631,6 @@ cb_header() {
   echo -e "${RESET}"
 }
 
-cb_step() {
-  echo -e "  ${CYAN}▸${RESET} $1..."
-}
-
-cb_ok() {
-  echo -e "  ${GREEN}✓${RESET}  $1"
-}
-
-cb_warn() {
-  echo -e "  ${YELLOW}⚠${RESET}  $1"
-}
-
 # Read-only diagnostics run automatically by cb_fail, populated before each
 # major stage alongside CB_STAGE_HINTS. Format: "Label::shell command".
 # Nothing here may mutate state — these run unattended on the failure path, so
@@ -761,11 +749,6 @@ cb_arm_service_start_diagnostics() {
     "All Circuit Breaker logs::journalctl -u 'circuitbreaker-*' --no-pager -n 50"
     "nginx config test::nginx -t"
   )
-}
-
-cb_section() {
-  echo -e "\n  ${BOLD}$1${RESET}"
-  echo "  $(printf '─%.0s' {1..42})"
 }
 
 # The names a template asks the installer to fill in: ${NAME}, braced, nothing else.
