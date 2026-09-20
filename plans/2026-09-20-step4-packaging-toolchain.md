@@ -185,8 +185,12 @@ def measure(configuration: str, version: str) -> Measurement:
         unpacked.mkdir()
         with tarfile.open(archive) as handle:
             handle.extractall(unpacked, filter="data")
-        bundles = [item for item in unpacked.iterdir() if item.is_dir()]
-        binary = bundles[0] / "bin" / "circuit-breaker"
+        # The archive is FLAT: `circuit-breaker`, `deploy/`, `share/` and
+        # `manifest.json` all sit at the root, with no bundle subdirectory and
+        # no `bin/`. Verified against a real artifact with `tar -tzf`.
+        binary = unpacked / "circuit-breaker"
+        if not binary.exists():
+            raise SystemExit(f"no circuit-breaker at the bundle root of {archive}")
 
         _drop_caches()
         cold = _time_selftest(binary, runs=1)[0]
@@ -196,7 +200,7 @@ def measure(configuration: str, version: str) -> Measurement:
             configuration=configuration,
             build_seconds=round(build_seconds, 1),
             compressed_bytes=archive.stat().st_size,
-            installed_bytes=_tree_size(bundles[0]),
+            installed_bytes=_tree_size(unpacked),
             cold_selftest_seconds=round(cold, 3),
             warm_selftest_seconds=round(warm_runs[len(warm_runs) // 2], 3),
         )
@@ -419,16 +423,21 @@ In `scripts/build_native_release.py::parse_args`, change the `--packaging` defau
 
 - [ ] **Step 4: Update the bundle staging**
 
-`stage_bundle()` currently copies one file to `bin/circuit-breaker`. It must now copy the PyInstaller output **directory** so the bundle contains `bin/circuit-breaker` and `bin/_internal/`. Read `stage_bundle` and make the copy recursive, preserving the executable bit on the launcher.
+`stage_bundle()` currently copies one file to the bundle root as `circuit-breaker` (the bundle has no `bin/`; that directory only exists after install.sh stages it into /opt). It must now copy the PyInstaller output **directory** so the bundle contains `bin/circuit-breaker` and `bin/_internal/`. Read `stage_bundle` and make the copy recursive, preserving the executable bit on the launcher.
 
 Verify with:
 
 ```bash
 .venv/bin/python scripts/build_native_release.py --version "$(cat VERSION)"
-tar -tzf dist/native/circuit-breaker_*_linux_amd64.tar.gz | grep -E 'bin/(circuit-breaker$|_internal/)' | head
+tar -tzf dist/native/circuit-breaker_*_linux_amd64.tar.gz | grep -E '^(circuit-breaker|_internal/)' | head
 ```
 
-Expected: both the launcher and `_internal/` entries appear.
+Expected: the launcher and `_internal/` entries appear **at the bundle root**.
+The bundle is flat — `circuit-breaker`, `deploy/`, `share/`, `manifest.json` all
+sit at the top level, and there is no `bin/` inside the tarball. Keep it that way:
+`install.sh:996` copies `${CB_BUNDLE_DIR}/circuit-breaker` into
+`/opt/circuitbreaker/bin/`, so the *installed* path is unaffected by this and must
+not be changed.
 
 - [ ] **Step 5: Remove the `_MEI` cleanup from both units**
 

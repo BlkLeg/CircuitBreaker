@@ -717,7 +717,13 @@ Replace the sequence from `stage1_bootstrap` through `stage8_start_services` wit
     cb_phase_end deps
 
     cb_phase_begin database "Preparing database"
-    cb_phase_steps 2
+    cb_phase_steps 3
+    # stage4 FIRST, because that is where it already is (install.sh:1256, before
+    # postgres). Phases are assigned without moving any call: a rendering change
+    # must not reorder installation steps, and writing the unit files after the
+    # database is configured would do exactly that.
+    stage4_write_systemd_units
+    cb_phase_tick
     # ... existing postgres hints/diags ...
     stage3_configure_postgres
     cb_phase_tick
@@ -729,8 +735,7 @@ Replace the sequence from `stage1_bootstrap` through `stage8_start_services` wit
     cb_phase_end database
 
     cb_phase_begin services "Services and networking"
-    cb_phase_steps 9
-    stage4_write_systemd_units; cb_phase_tick
+    cb_phase_steps 8
     # ... existing redis hints/diags ...
     stage3_configure_redis; cb_phase_tick
     CB_STAGE_HINTS=(); CB_STAGE_DIAGS=()

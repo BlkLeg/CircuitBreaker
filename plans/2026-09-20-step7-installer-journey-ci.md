@@ -76,6 +76,12 @@ Create `scripts/ci/installer-journey.sh`:
 set -euo pipefail
 
 BUNDLE="${1:?usage: installer-journey.sh <bundle.tar.gz>}"
+# 8088 is nginx's front port (install.sh:40 CB_PORT), and nginx proxies
+# `location /api/` to the backend on 127.0.0.1:8000
+# (deploy/systemd/circuitbreaker-backend.service:39 forces --port 8000).
+# Health routes live under the v1 prefix (api/routing.py:522), so the paths
+# below are /api/v1/..., not bare. NOTE: the PACKAGED deb/rpm unit uses 8080
+# instead — do not copy this port into that gate, or that one into this.
 PORT="${CB_JOURNEY_PORT:-8088}"
 READY_BUDGET="${CB_JOURNEY_READY_BUDGET:-180}"
 EVIDENCE="${CB_JOURNEY_EVIDENCE:-/tmp/installer-journey}"
@@ -127,10 +133,10 @@ done
 
 section "Wait for /livez"
 for _ in $(seq 1 60); do
-  curl -fsS "http://127.0.0.1:${PORT}/livez" >/dev/null 2>&1 && break
+  curl -fsS "http://127.0.0.1:${PORT}/api/v1/livez" >/dev/null 2>&1 && break
   sleep 2
 done
-curl -fsS "http://127.0.0.1:${PORT}/livez" > "$EVIDENCE/livez.json" \
+curl -fsS "http://127.0.0.1:${PORT}/api/v1/livez" > "$EVIDENCE/livez.json" \
   || fail "service never answered /livez"
 
 section "Wait for /readyz"
@@ -138,7 +144,7 @@ deadline=$(( SECONDS + READY_BUDGET ))
 code=000
 while [ "$SECONDS" -lt "$deadline" ]; do
   code="$(curl -s -o "$EVIDENCE/readyz.json" -w '%{http_code}' \
-    "http://127.0.0.1:${PORT}/readyz" || echo 000)"
+    "http://127.0.0.1:${PORT}/api/v1/readyz" || echo 000)"
   [ "$code" = "200" ] && break
   sleep 2
 done
