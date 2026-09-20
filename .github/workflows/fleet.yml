@@ -1,0 +1,53 @@
+name: Fleet (Tier 3)
+
+# Tier 3 boots a real VM per row and takes minutes. It gates nothing — ADR 0005
+# is explicit that wiring it to a gate is separate work needing a hosted fleet.
+#
+# What this changes is that it stops being invisible. Before, tier3-artifact.sh
+# was reachable only from scripts/ci/fleet/dispatch.sh, run by hand, and the
+# newest evidence under artifacts/diagnostics/ was from v0.4.0. A release
+# candidate can now request the run and the evidence lands as an artifact.
+on:
+  workflow_dispatch:
+    inputs:
+      row:
+        description: 'matrix.yaml row id (e.g. debian-deb-amd64)'
+        required: true
+      candidate:
+        description: 'Path or URL to the candidate package'
+        required: true
+      previous:
+        description: 'N-1 package, required for a mode: upgrade row'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  fleet:
+    name: Tier 3 — ${{ inputs.row }}
+    runs-on: [self-hosted, qemu]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Dispatch the row
+        # Inputs land in the environment rather than interpolated straight into
+        # the run: script — workflow_dispatch text is still attacker-shaped
+        # once it reaches a shell, and env: plus a quoted "$VAR" is what keeps
+        # a row id or candidate path from being read as shell syntax.
+        env:
+          ROW: ${{ inputs.row }}
+          CANDIDATE: ${{ inputs.candidate }}
+          PREVIOUS: ${{ inputs.previous }}
+        run: |
+          set -euo pipefail
+          bash scripts/ci/fleet/dispatch.sh "$ROW" "$CANDIDATE" ${PREVIOUS:+"$PREVIOUS"}
+
+      - name: Upload row evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tier3-${{ inputs.row }}
+          path: artifacts/diagnostics/tier3-${{ inputs.row }}
+          if-no-files-found: warn
