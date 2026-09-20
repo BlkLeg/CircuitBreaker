@@ -1839,7 +1839,7 @@ stage2_dependencies() {
 }
 
 run_upgrade() {
-  cb_phase_begin preflight "Pre-flight checks"
+  cb_phase_begin upgrade_check "Pre-flight checks"
 
   cb_header
   cb_section "Upgrade Mode"
@@ -1850,7 +1850,7 @@ run_upgrade() {
 
   ensure_hosts_entry
 
-  cb_phase_end preflight
+  cb_phase_end upgrade_check
 
   cb_phase_begin backup "Creating pre-upgrade backup"
 
@@ -1907,7 +1907,7 @@ run_upgrade() {
 
   cb_phase_end backup
 
-  cb_phase_begin bundle "Installing new version"
+  cb_phase_begin apply_bundle "Installing new version"
 
   # Stop services after backup
   cb_step "Stopping services"
@@ -1994,7 +1994,7 @@ run_upgrade() {
   fi
   rm -f /etc/caddy/Caddyfile 2>/dev/null || true
 
-  cb_phase_end bundle
+  cb_phase_end apply_bundle
 
   cb_phase_begin apply "Applying configuration and migrations"
 

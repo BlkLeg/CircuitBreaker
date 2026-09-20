@@ -102,8 +102,21 @@ _CB_ETA_TEXT=""
 declare -gA CB_PHASE_WEIGHTS_INSTALL=(
   [preflight]=2 [bundle]=12 [files]=6 [deps]=45 [database]=15 [services]=12 [start]=8
 )
+# The upgrade path runs through two functions in the same shell: install.sh's
+# main() does its own preflight/download/stage-the-bundle before handing off to
+# run_upgrade(), which then does its own checks, backup, apply and restart. All
+# eight phases below are opened exactly once across that combined sequence —
+# main()'s preflight/bundle/files are distinct keys from run_upgrade's
+# upgrade_check/apply_bundle, precisely so the two functions' phases never
+# collide on the same key and double-count weight. (They used to: main()'s
+# preflight+bundle and run_upgrade's own preflight+bundle shared keys, so the
+# live table summed to 125 for one run and the bar hit 100% before the upgrade
+# actually finished. tests/build/test_installer_phase_model.py's
+# test_upgrade_sequence_has_no_duplicate_keys and
+# test_upgrade_sequence_sums_to_one_hundred pin the fix.)
 declare -gA CB_PHASE_WEIGHTS_UPGRADE=(
-  [preflight]=5 [backup]=40 [bundle]=20 [apply]=20 [start]=15
+  [preflight]=3 [bundle]=12 [files]=5
+  [upgrade_check]=5 [backup]=35 [apply_bundle]=15 [apply]=15 [start]=10
 )
 declare -gA CB_PHASE_WEIGHTS_UNINSTALL=(
   [preflight]=10 [stop]=30 [remove]=40 [cleanup]=20
