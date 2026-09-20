@@ -429,6 +429,19 @@ Collect into a temporary directory, then tar it:
 | `env.redacted` | `cb_env_redacted` output |
 | `manifest.txt` | version, OS, arch, date, and the bundle's own file list |
 
+**Do NOT reuse `_redact_evidence` verbatim.** Read `deploy/cli/cb:72` first. It
+truncates to 500 characters (`print(text[:500])`, and `${text:0:500}` in the
+fallback) because it is built for short doctor evidence tails — piping a 500-line
+log through it yields the first 500 *characters*. Worse, its fallback when
+`python3` is absent redacts **nothing**; it only truncates, which on a file meant
+for a public issue is a secret leak.
+
+Implement `_redact_stream` instead: the same four substitution patterns plus the
+same env-value replacement, reading stdin and writing stdout, **with no
+truncation**. It must **fail closed** — if `python3` is unavailable, `cb diag
+bundle` refuses to produce a bundle and says why. A missing interpreter must never
+downgrade to shipping logs in the clear.
+
 Include this comment above the function:
 
 ```sh
@@ -441,7 +454,9 @@ Include this comment above the function:
 # handing over a file should be the one who decides where it goes.
 ```
 
-Redact `install.log` and `journal.txt` through the same `sed` expression `cb_env_redacted` uses — those are the two that carry planted values in the test.
+Redact `install.log` and `journal.txt` through `_redact_stream` — those are the
+two that carry planted values in the test, and both are far longer than 500
+characters.
 
 - [ ] **Step 5: Add it to `cb_fail`'s hints**
 
