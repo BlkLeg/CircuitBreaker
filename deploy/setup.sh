@@ -356,6 +356,21 @@ stage1_bootstrap() {
   # the rendered redis.conf and every redis-cli call below work unchanged against
   # it — only the executable names differ. Exported because
   # deploy/systemd/circuitbreaker-redis.service renders ${CB_REDIS_SERVER_BIN}.
+  # pgbouncer and docker live in different directories per distro, and both are
+  # named by absolute path in their systemd units. Debian and Arch ship
+  # pgbouncer in /usr/sbin; Fedora and RHEL/Rocky/Alma ship it in /usr/bin, so a
+  # hardcoded /usr/sbin/pgbouncer dies with "Failed at step EXEC ... 203/EXEC"
+  # — the unit starts, systemd cannot find the binary, and the only symptom the
+  # installer sees is "pgbouncer not listening on port 6432".
+  #
+  # Resolved rather than guessed, and defaulted to the historical path so a
+  # distro that ships neither still renders a unit whose failure names a real
+  # location. Exported because the units render ${CB_PGBOUNCER_BIN} and
+  # ${CB_DOCKER_BIN}.
+  export CB_PGBOUNCER_BIN CB_DOCKER_BIN
+  CB_PGBOUNCER_BIN="$(command -v pgbouncer 2>/dev/null || echo /usr/sbin/pgbouncer)"
+  CB_DOCKER_BIN="$(command -v docker 2>/dev/null || echo /usr/bin/docker)"
+
   export CB_REDIS_SERVER_BIN CB_REDIS_CLI_BIN
   CB_REDIS_SERVER_BIN="$(command -v redis-server 2>/dev/null || command -v valkey-server 2>/dev/null || echo /usr/bin/redis-server)"
   CB_REDIS_CLI_BIN="$(command -v redis-cli 2>/dev/null || command -v valkey-cli 2>/dev/null || echo redis-cli)"
@@ -1842,6 +1857,8 @@ stage2_dependencies() {
 
   # Re-resolve now that the packages are on disk: the binaries did not exist when
   # stage0_preflight first looked.
+  CB_PGBOUNCER_BIN="$(command -v pgbouncer 2>/dev/null || echo /usr/sbin/pgbouncer)"
+  CB_DOCKER_BIN="$(command -v docker 2>/dev/null || echo /usr/bin/docker)"
   CB_REDIS_SERVER_BIN="$(command -v redis-server 2>/dev/null || command -v valkey-server 2>/dev/null || echo /usr/bin/redis-server)"
   CB_REDIS_CLI_BIN="$(command -v redis-cli 2>/dev/null || command -v valkey-cli 2>/dev/null || echo redis-cli)"
   if id valkey &>/dev/null && ! id redis &>/dev/null; then
