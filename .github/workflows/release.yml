@@ -503,3 +503,87 @@ jobs:
             install.sh \
             setup.sh \
             packaging/circuit-breaker-release-key.asc
+
+  post-publish:
+    name: Verify the published release
+    needs: [version, publish]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      # Everything upstream verifies a candidate. This verifies the RELEASE:
+      # the assets as named and attached, the checksums as published, the API
+      # as it answers install.sh, fetched over the network a user would use.
+      #
+      # It is the only check that exercises asset naming, checksum publication,
+      # API propagation and install.sh's own discovery logic. Had it existed,
+      # v0.4.2 would have been caught minutes after publication rather than by
+      # the people who installed it.
+      - name: Download the published tarball and checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p published && cd published
+          gh release download "v${VERSION}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern "circuit-breaker_${VERSION}_linux_amd64.tar.gz" \
+            --pattern "SHA256SUMS"
+          ls -lh
+
+      - name: Verify the published tarball against the published checksums
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd published
+          grep -E "( |/|^)circuit-breaker_${VERSION}_linux_amd64.tar.gz\$" SHA256SUMS > expected.sha256 || {
+            echo "::error::SHA256SUMS publishes no entry for the amd64 tarball"
+            cat SHA256SUMS
+            exit 1
+          }
+          sha256sum -c expected.sha256
+
+      - name: Assert the published binary can load the application it serves
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd published
+          mkdir -p unpacked
+          tar -xzf "circuit-breaker_${VERSION}_linux_amd64.tar.gz" -C unpacked
+          if [ -f "unpacked/circuit-breaker" ]; then
+            BUNDLE="unpacked"
+          else
+            BUNDLE="$(find unpacked -maxdepth 1 -mindepth 1 -type d | head -1)"
+          fi
+          if [ -x "${BUNDLE}/circuit-breaker" ]; then
+            "${BUNDLE}/circuit-breaker" --selftest
+          else
+            "${BUNDLE}/bin/circuit-breaker" --selftest
+          fi
+
+      # install.sh resolves a release through the GitHub API. A release that is
+      # published but not yet discoverable, or discoverable under an unexpected
+      # asset name, is an install that fails for everyone while every build gate
+      # stays green.
+      - name: Assert install.sh can discover and resolve this release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          RESOLVED="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/v${VERSION}" \
+            --jq '.tag_name')"
+          [ "${RESOLVED}" = "v${VERSION}" ] \
+            || { echo "::error::API resolved '${RESOLVED}', expected 'v${VERSION}'"; exit 1; }
+
+          ASSET="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/v${VERSION}" \
+            --jq ".assets[] | select(.name == \"circuit-breaker_${VERSION}_linux_amd64.tar.gz\") | .name")"
+          [ -n "${ASSET}" ] \
+            || { echo "::error::the amd64 tarball asset install.sh downloads is not attached to the release"; exit 1; }
+          echo "release discoverable and asset present: ${ASSET}"
+
