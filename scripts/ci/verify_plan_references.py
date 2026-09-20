@@ -50,8 +50,14 @@ _FILES_LINE = re.compile(
 _BACKTICKED = re.compile(r"`([^`\s]+)`")
 _FENCE = re.compile(r"^```")
 _NEEDS = re.compile(r"^\s*needs:\s*(.+)$")
-_SCRIPT_FLAGS = re.compile(r"(scripts/[\w/\-]+\.py)((?:\s+--[\w-]+)+)")
-_FLAG = re.compile(r"--[\w-]+")
+#
+# The flag itself must start with a letter after its dashes. Without that, a
+# marker comment like "...sync_installer_ui.py ---" (a plain ASCII separator,
+# not a flag) parses as the script being invoked with a flag literally named
+# "---", which no argparse ever declares — a false "unknown-flag" finding on
+# prose that never invoked anything.
+_SCRIPT_FLAGS = re.compile(r"(scripts/[\w/\-]+\.py)((?:\s+--[A-Za-z][\w-]*)+)")
+_FLAG = re.compile(r"--[A-Za-z][\w-]*")
 
 
 @dataclass(frozen=True)
