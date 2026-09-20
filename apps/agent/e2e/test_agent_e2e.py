@@ -752,9 +752,22 @@ def _enroll_agent(
     token = client.headers.get("Authorization") or headers["Authorization"]
     stream = _AgentStreamListener(token.removeprefix("Bearer "))
 
+    # --no-deps, and it is load-bearing. `cb-agent` declares
+    # `depends_on: [circuitbreaker]` with no condition, so `compose run` is
+    # entitled to (re)create the server before starting the agent — and does,
+    # whenever it decides the running container is out of date. That kills the
+    # server this test already brought up and waited for, and the agent then
+    # dials a port nothing is listening on yet:
+    #
+    #   Container circuitbreaker  Recreated
+    #   cb-agent: enroll: dial wss://circuitbreaker:8443/...: connection refused
+    #
+    # which surfaces as "printed no pairing code within 30s" — a timeout that
+    # names none of that. Every caller runs `_up_server()` first, so the
+    # dependency is already satisfied and compose has no reason to touch it.
     subprocess.run([*COMPOSE, "build", service], check=True, cwd=E2E_DIR, env=env)
     proc = subprocess.Popen(
-        [*COMPOSE, "run", "--rm", service, "enroll"],
+        [*COMPOSE, "run", "--rm", "--no-deps", service, "enroll"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -2510,13 +2523,35 @@ def test_agent_black_hole_partition_is_detected_and_spools():
                 with _cut_agent_network():
                     partition_start = time.monotonic()
 
+                    # Every distinct `last_error` seen while waiting, not just
+                    # whichever one happens to be current when the wait ends.
+                    #
+                    # `last_error` is a single slot that the agent overwrites,
+                    # and dropping the link is immediately followed by trying to
+                    # rebuild it. On a cut network that redial fails too, so by
+                    # the time a separate `_agent_status()` call runs, the
+                    # reason the link went down has already been replaced by the
+                    # reason the *reconnect* failed:
+                    #
+                    #   last_error='link: dial: dial tcp: lookup circuitbreaker
+                    #               on 127.0.0.11:53: server misbehaving'
+                    #
+                    # which says nothing about whether the silence detectors
+                    # ever fired. Recording the sequence removes the race
+                    # instead of narrowing it.
+                    seen_errors: list[str] = []
+
                     def _link_down() -> bool:
-                        return _agent_status()["link_state"] == "disconnected"
+                        snapshot = _agent_status()
+                        error = snapshot.get("last_error") or ""
+                        if error and (not seen_errors or seen_errors[-1] != error):
+                            seen_errors.append(error)
+                        return snapshot["link_state"] == "disconnected"
 
-                    _wait_until(_link_down, timeout=_PARTITION_DETECT_BUDGET_S)
+                    _wait_until(
+                        _link_down, timeout=_PARTITION_DETECT_BUDGET_S, interval=0.5
+                    )
                     detected_after = time.monotonic() - partition_start
-
-                    status = _agent_status()
                     # The link went down for the RIGHT reason: silence. A
                     # partition detected via some other error would mean the
                     # silence detectors are not doing their job and this test
@@ -2536,11 +2571,11 @@ def test_agent_black_hole_partition_is_detected_and_spools():
                     # incidental error.
                     _silence_signals = ("read deadline", "stopped acknowledging data frames")
                     assert any(
-                        signal in status.get("last_error", "") for signal in _silence_signals
+                        signal in error for error in seen_errors for signal in _silence_signals
                     ), (
-                        "link dropped during the partition, but not on either silence "
-                        f"detector ({' / '.join(_silence_signals)}): "
-                        f"last_error={status.get('last_error')!r}"
+                        "the link went down during the partition, but no silence detector "
+                        f"({' / '.join(_silence_signals)}) was ever the reason. Errors "
+                        f"observed, oldest first: {seen_errors}"
                     )
                     # A floor as well as a ceiling: dropping the link far
                     # sooner than the deadline would mean something other
@@ -4515,8 +4550,47 @@ def test_agent_zero_configuration_discovery_import_and_replay():
                     assert after[counter] == before[counter], (
                         f"the replay incremented {counter}: {before[counter]} -> {after[counter]}"
                     )
-                assert _job_results(client, job_id) == imported_results, (
-                    "the replay disturbed the first scan's results"
+                # The first scan's rows are still the same rows, and nothing
+                # that was already known about them changed.
+                #
+                # Byte-equality was the original assertion and it was wrong: a
+                # pending row is not frozen once its job closes.
+                # `discovery_enrich.enrich_pending_results` sweeps every
+                # `merge_status == "pending"` row — the query carries no job
+                # filter, by design, so that hosts which enter inventory later
+                # are re-matched — and `deduplicate_pending_result` collapses
+                # compatible observations of one address onto the OLDEST row,
+                # backfilling fields it did not have:
+                #
+                #     if not getattr(canonical, attr) and getattr(row, attr):
+                #         setattr(canonical, attr, getattr(row, attr))
+                #
+                # So the second sweep of 10.77.0.1 legitimately gives the first
+                # scan's row the MAC it could not see the first time. That is
+                # the feature working; it is also not the replay's doing, since
+                # `imported_results` is snapshotted before the replay job even
+                # exists.
+                #
+                # What this step is actually about survives intact: the replay
+                # must not add rows, drop rows, or contradict anything already
+                # recorded. Only None -> value is tolerated.
+                after_first_scan = _job_results(client, job_id)
+                assert [r["id"] for r in after_first_scan] == [
+                    r["id"] for r in imported_results
+                ], (
+                    "the replay changed which rows belong to the first scan: "
+                    f"{[r['id'] for r in after_first_scan]} != "
+                    f"{[r['id'] for r in imported_results]}"
+                )
+                _overwritten = [
+                    (row["id"], field, was, row[field])
+                    for row, before_row in zip(after_first_scan, imported_results)
+                    for field, was in before_row.items()
+                    if was is not None and row[field] != was
+                ]
+                assert not _overwritten, (
+                    "the replay overwrote values the first scan had already recorded "
+                    f"(id, field, was, now): {_overwritten}"
                 )
                 assert [h["id"] for h in _hardware_with_ip(client, _PROBE_TARGET_IP)] == [
                     hardware_id
@@ -6157,7 +6231,7 @@ def test_agent_enrolls_unattended_from_a_token_and_the_token_is_spent():
 
         subprocess.run([*COMPOSE, "build", "cb-agent"], check=True, cwd=E2E_DIR)
         first = subprocess.run(
-            [*COMPOSE, "run", "--rm", "-v", mount, "cb-agent", "enroll"],
+            [*COMPOSE, "run", "--rm", "--no-deps", "-v", mount, "cb-agent", "enroll"],
             cwd=E2E_DIR,
             capture_output=True,
             text=True,
@@ -6192,7 +6266,7 @@ def test_agent_enrolls_unattended_from_a_token_and_the_token_is_spent():
         # "already enrolled" before it ever looks at the token. A restart must
         # not quietly spend a use.
         again = subprocess.run(
-            [*COMPOSE, "run", "--rm", "-v", mount, _AGENT_SERVICE, "enroll"],
+            [*COMPOSE, "run", "--rm", "--no-deps", "-v", mount, _AGENT_SERVICE, "enroll"],
             cwd=E2E_DIR,
             capture_output=True,
             text=True,
@@ -6210,7 +6284,7 @@ def test_agent_enrolls_unattended_from_a_token_and_the_token_is_spent():
         before = len(client.get("/api/v1/agents", headers=headers).json())
         subprocess.run([*COMPOSE, "build", _AGENT_2_SERVICE], check=True, cwd=E2E_DIR)
         second = subprocess.run(
-            [*COMPOSE, "run", "--rm", "-v", mount, _AGENT_2_SERVICE, "enroll"],
+            [*COMPOSE, "run", "--rm", "--no-deps", "-v", mount, _AGENT_2_SERVICE, "enroll"],
             cwd=E2E_DIR,
             capture_output=True,
             text=True,
