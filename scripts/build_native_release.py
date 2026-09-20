@@ -64,6 +64,29 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Delete the work directory before building.",
     )
+    parser.add_argument(
+        "--packaging",
+        choices=["onefile", "onedir", "pbs"],
+        default="onefile",
+        help=(
+            "PyInstaller packaging mode. 'onefile' (default) is today's single "
+            "self-extracting executable that re-extracts itself on every "
+            "process start. 'onedir' emits a directory with the binary and its "
+            "dependencies alongside it, so no extraction happens at run time. "
+            "'pbs' (python-build-standalone) is not implemented yet: it is "
+            "gated on the benchmark this flag exists to support."
+        ),
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=REPO_ROOT / "dist" / "native",
+        help=(
+            "Directory to write the archive, checksums, manifest, and any "
+            "Linux packages into. Defaults to dist/native, the existing "
+            "location, so callers that do not pass this flag are unaffected."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -342,7 +365,14 @@ def assert_binary_contains_application(binary_path: Path) -> None:
         )
     print(f"  {output}")
 
-def build_binary(target_os: str, work_dir: Path) -> Path:
+def build_binary(target_os: str, work_dir: Path, packaging_mode: str = "onefile") -> Path:
+    if packaging_mode == "pbs":
+        raise SystemExit(
+            "--packaging pbs is not implemented yet. It lands with Task 3b of "
+            "plans/2026-09-20-step4-packaging-toolchain.md, which is executed "
+            "only if the benchmark's decision rule selects it."
+        )
+
     dist_dir = work_dir / "pyinstaller-dist"
     build_dir = work_dir / "pyinstaller-build"
     spec_dir = work_dir / "pyinstaller-spec"
@@ -369,7 +399,7 @@ def build_binary(target_os: str, work_dir: Path) -> Path:
             sys.executable,
             "-m",
             "PyInstaller",
-            "--onefile",
+            "--onedir" if packaging_mode == "onedir" else "--onefile",
             "--clean",
             "--distpath",
             str(dist_dir),
@@ -396,7 +426,11 @@ def build_binary(target_os: str, work_dir: Path) -> Path:
             str(BACKEND_ENTRYPOINT),
         ]
     )
-    binary_path = dist_dir / binary_name(target_os)
+    if packaging_mode == "onedir":
+        # PyInstaller emits dist/<name>/<name> plus dist/<name>/_internal/.
+        binary_path = dist_dir / binary_name(target_os) / binary_name(target_os)
+    else:
+        binary_path = dist_dir / binary_name(target_os)
     if not binary_path.exists():
         raise SystemExit(f"Expected PyInstaller output missing: {binary_path}")
     assert_binary_contains_application(binary_path)
@@ -563,6 +597,7 @@ def stage_bundle(
     target_arch: str,
     frontend_dir: Path,
     work_dir: Path,
+    packaging_mode: str = "onefile",
 ) -> tuple[Path, dict[str, object]]:
     bundle_dir = work_dir / f"bundle-{target_os}-{target_arch}"
     if bundle_dir.exists():
@@ -573,7 +608,19 @@ def stage_bundle(
     bundle_dir.mkdir(parents=True, exist_ok=True)
     backend_share.mkdir(parents=True, exist_ok=True)
 
-    shutil.copy2(binary_path, bundle_dir / binary_path.name)
+    if packaging_mode == "onedir":
+        # PyInstaller's onedir output is binary_path's parent directory: the
+        # executable plus _internal/ beside it. Both must land at the bundle
+        # root together — the executable cannot run with _internal/ missing —
+        # so the whole directory is copied rather than just the binary file.
+        for item in binary_path.parent.iterdir():
+            destination = bundle_dir / item.name
+            if item.is_dir():
+                shutil.copytree(item, destination, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, destination)
+    else:
+        shutil.copy2(binary_path, bundle_dir / binary_path.name)
     shutil.copy2(VERSION_FILE, share_dir / "VERSION")
     _write_build_info(share_dir, version, target_os, target_arch)
     shutil.copy2(DOCS_SEED_FILE, share_dir / "DocsPage.md")
@@ -990,7 +1037,7 @@ def main() -> int:
     args = parse_args()
     target_os, target_arch = detect_target()
     version = sanitize_version(args.version)
-    output_dir = REPO_ROOT / "dist" / "native"
+    output_dir = args.output_dir
     work_dir = REPO_ROOT / "build" / "native-release" / f"{target_os}-{target_arch}"
     frontend_dir = FRONTEND_DIST
 
@@ -1003,7 +1050,7 @@ def main() -> int:
     if target_os == "linux":
         ensure_go_available()
         build_agent_binaries(version, work_dir)
-    binary_path = build_binary(target_os, work_dir)
+    binary_path = build_binary(target_os, work_dir, args.packaging)
     bundle_dir, manifest = stage_bundle(
         binary_path=binary_path,
         version=version,
@@ -1011,6 +1058,7 @@ def main() -> int:
         target_arch=target_arch,
         frontend_dir=frontend_dir,
         work_dir=work_dir,
+        packaging_mode=args.packaging,
     )
     archive_path = create_archive(bundle_dir, version, target_os, target_arch, output_dir)
     write_metadata(output_dir, manifest, archive_path)
