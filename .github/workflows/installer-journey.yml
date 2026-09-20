@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        distro: [ubuntu2204, debian12]
+        distro: [ubuntu2204, debian12, fedora, archlinux, rockylinux]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -68,12 +68,31 @@ jobs:
       #    found). There is no way to `apt-get install systemd` after the
       #    container is up, because the container never comes up without an
       #    entrypoint that exists. So this step boots the base image with a
-      #    keep-alive command, installs systemd + systemd-sysv (which creates
-      #    the /sbin/init -> /lib/systemd/systemd symlink) and the tools
-      #    install.sh needs, commits that as a local image, and only then
-      #    starts the real systemd container from it. Confirmed locally: the
-      #    brief's original one-step `/sbin/init` invocation fails 100% of the
-      #    time, deterministically, with the error above — not a flake.
+      #    keep-alive command, installs systemd (plus whatever makes
+      #    /sbin/init exist on that family — see the per-distro bootstrap
+      #    below) and the tools install.sh needs, commits that as a local
+      #    image, and only then starts the real systemd container from it.
+      #    Confirmed locally: the brief's original one-step `/sbin/init`
+      #    invocation fails 100% of the time, deterministically, with the
+      #    error above — not a flake.
+      #
+      #    The fix is NOT the same shape on every family, confirmed by
+      #    actually running each one (podman rootless, locally, see
+      #    docs/evidence/2026-09-20-installer-platform-coverage.md):
+      #      - apt (Debian family): `systemd-sysv` creates the /sbin/init ->
+      #        /lib/systemd/systemd symlink via update-alternatives.
+      #      - dnf on Fedora 44: installing the bare `systemd` package does
+      #        NOT create /sbin/init (no matching `dnf provides /sbin/init`
+      #        either) — it has to be linked by hand.
+      #      - dnf on Rocky 10 (EL10-family): installing `systemd` DOES
+      #        create /sbin/init on its own — same package manager, same
+      #        package name, different postinstall behaviour, which is why
+      #        the bootstrap below still runs the same
+      #        `[ -e /sbin/init ] || ln -sf ...` on both: a no-op on Rocky, load-
+      #        bearing on Fedora.
+      #      - pacman (Arch): the base archlinux image already ships systemd
+      #        with /sbin/init present — nothing to bootstrap beyond the
+      #        tools install.sh needs.
       #
       # 2. --cap-add=NET_ADMIN,NET_RAW. deploy/setup.sh runs
       #    `setcap cap_net_raw+ep` on the installed binary (for SNMP/ICMP
@@ -96,20 +115,48 @@ jobs:
           case "${DISTRO}" in
             ubuntu2204) IMAGE=docker.io/library/ubuntu:22.04 ;;
             debian12)   IMAGE=docker.io/library/debian:12 ;;
+            fedora)     IMAGE=docker.io/library/fedora:44 ;;
+            archlinux)  IMAGE=docker.io/library/archlinux:latest ;;
+            # Rocky 9 ships glibc 2.34 — BELOW this job's own build floor
+            # (ubuntu-22.04 is glibc 2.35, scripts/build_native_release.py's
+            # documented floor), so a bundle this job just built could never
+            # run there regardless of install.sh's correctness. Rocky 10
+            # (glibc 2.39) clears that floor; chosen for that reason, not by
+            # default.
+            rockylinux) IMAGE=docker.io/rockylinux/rockylinux:10 ;;
             *) echo "::error::unknown distro ${DISTRO}"; exit 1 ;;
           esac
 
           # Bootstrap: give the base image an init system before it can be
-          # started with one as its entrypoint. systemd-sysv provides the
-          # /sbin/init symlink via update-alternatives; without it, --systemd
-          # has nothing to run.
+          # started with one as its entrypoint, plus the tools install.sh
+          # needs before it can install its own (curl/jq/openssl/ca-certs).
+          # See the two numbered notes above this step for why each family's
+          # commands differ.
           sudo podman run -d --name cb-journey-bootstrap "${IMAGE}" sleep infinity
-          sudo podman exec cb-journey-bootstrap bash -c '
-            set -euo pipefail
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update -qq
-            apt-get install -y -qq systemd systemd-sysv curl jq openssl ca-certificates
-          '
+          case "${DISTRO}" in
+            ubuntu2204|debian12)
+              sudo podman exec cb-journey-bootstrap bash -c '
+                set -euo pipefail
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get update -qq
+                apt-get install -y -qq systemd systemd-sysv curl jq openssl ca-certificates
+              '
+              ;;
+            fedora|rockylinux)
+              sudo podman exec cb-journey-bootstrap bash -c '
+                set -euo pipefail
+                dnf install -y -q systemd curl jq openssl ca-certificates
+                [ -e /sbin/init ] || ln -sf /usr/lib/systemd/systemd /sbin/init
+              '
+              ;;
+            archlinux)
+              sudo podman exec cb-journey-bootstrap bash -c '
+                set -euo pipefail
+                pacman -Sy --noconfirm
+                pacman -S --noconfirm --needed curl jq openssl ca-certificates
+              '
+              ;;
+          esac
           sudo podman commit cb-journey-bootstrap cb-journey-base >/dev/null
           sudo podman rm -f cb-journey-bootstrap
 
