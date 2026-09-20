@@ -581,7 +581,7 @@ jobs:
     # and the @playwright/test version in package.json shows up as
     # unexplainable screenshot diffs.
     container:
-      image: mcr.microsoft.com/playwright:v1.62.1-noble
+      image: mcr.microsoft.com/playwright:v1.63.0-noble
     # Steps in a container run as root, but the runner mounts $HOME at
     # /github/home owned by the image's `pwuser`. Firefox refuses to start in
     # that situation ("Running Nightly as root in a regular user's session is
@@ -620,7 +620,7 @@ jobs:
             echo "workflow=${GITHUB_WORKFLOW}"
             echo "job=browser-e2e"
             echo "shard=${{ matrix.shard }}/${{ strategy.job-total }}"
-            echo "image=mcr.microsoft.com/playwright:v1.62.1-noble"
+            echo "image=mcr.microsoft.com/playwright:v1.63.0-noble"
             echo "node=$(node -v)"
             echo "playwright=$(cd apps/frontend && npx playwright --version)"
             echo "CB_TEST_SEED=${CB_TEST_SEED}"
