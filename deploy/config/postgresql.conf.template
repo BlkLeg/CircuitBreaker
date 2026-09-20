@@ -2,6 +2,19 @@
 # Circuit Breaker custom settings
 listen_addresses = '127.0.0.1'
 port = 5432
+# Pinned rather than left to each distro package's compiled-in default: apt's
+# postgresql-common and the PGDG dnf packages both create /run/postgresql and
+# default to it, but Arch's pacman postgresql package does neither — its
+# tmpfiles.d rule only touches /var/lib/postgres, so a postgres started
+# without this setting (and without the matching RuntimeDirectory= in
+# circuitbreaker-postgres.service) fails immediately: "could not create lock
+# file /run/postgresql/.s.PGSQL.5432.lock: No such file or directory". Pinning
+# it here, backed by RuntimeDirectory=postgresql in the unit, makes the
+# directory's existence this project's responsibility on every distro instead
+# of an assumption about packaging behavior. pg_hba.conf's `local` lines
+# (peer-auth bootstrap of the breaker role/database) depend on this socket
+# existing; all other connections use TCP on 127.0.0.1 and are unaffected.
+unix_socket_directories = '/run/postgresql'
 max_connections = 100
 shared_buffers = 128MB
 effective_cache_size = 512MB
