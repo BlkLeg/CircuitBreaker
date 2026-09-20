@@ -50,6 +50,7 @@ _CB_OPEN_TICKS=0
 _CB_OPEN_TICKS_DONE=0
 _CB_DONE_WEIGHT=0
 _CB_LAST_ETA=-1
+_CB_ETA_TEXT=""
 
 # Phase weights, as percentages of a whole install. They must sum to 100 and
 # every key used at runtime must appear here; tests/build/test_installer_phase_model.py
@@ -179,7 +180,14 @@ _cb_human_duration() {
 #   * "taking longer than expected" — not a number — once the open phase has run
 #     past twice its weighted budget. A slow Debian mirror degrades to honest
 #     silence rather than to a confident wrong number.
-_cb_render_eta() {
+#
+# Written as a state update, not a printer: the monotone clamp needs to persist
+# _CB_LAST_ETA across calls, and a function invoked as `$(...)` runs in a
+# subshell, so any assignment it makes dies with that subshell. This function
+# is therefore always called directly (never inside a command substitution),
+# and _cb_render_eta below is left as a pure printer of the text it leaves in
+# _CB_ETA_TEXT.
+_cb_update_eta() {
   local pct elapsed remaining open_weight budget open_elapsed
   pct="$(_cb_overall_percent)"
   elapsed=$(( $(date +%s) - _CB_START_EPOCH ))
@@ -191,13 +199,13 @@ _cb_render_eta() {
     # implied by elapsed time so far. Doubling it is the overrun threshold.
     budget=$(( (elapsed * open_weight) / 100 + 1 ))
     if (( open_elapsed > budget * 2 )); then
-      printf 'taking longer than expected'
+      _CB_ETA_TEXT='taking longer than expected'
       return 0
     fi
   fi
 
   if (( pct < 5 )); then
-    printf 'estimating...'
+    _CB_ETA_TEXT='estimating...'
     return 0
   fi
 
@@ -206,7 +214,13 @@ _cb_render_eta() {
     remaining="${_CB_LAST_ETA}"
   fi
   _CB_LAST_ETA="$remaining"
-  printf '~%s remaining' "$(_cb_human_duration "$remaining")"
+  _CB_ETA_TEXT="~$(_cb_human_duration "$remaining") remaining"
+}
+
+# Pure printer: prints whatever _cb_update_eta last computed. Safe to call
+# from inside a command substitution because it writes nothing.
+_cb_render_eta() {
+  printf '%s' "${_CB_ETA_TEXT}"
 }
 
 _cb_render_live() {
@@ -235,6 +249,10 @@ _cb_render_live() {
 _cb_live_draw() {
   [[ "${CB_UI_MODE}" == "tty" ]] || return 0
   local rendered
+  # _cb_update_eta must run here, in the current shell: _cb_render_live below
+  # is captured with $(...), and anything a subshell assigns is gone the
+  # instant that subshell exits.
+  _cb_update_eta
   rendered="$(_cb_render_live)"
   [[ "$rendered" == "${_CB_LAST_RENDER}" ]] && return 0
   _cb_live_clear
