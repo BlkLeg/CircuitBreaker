@@ -1,19 +1,12 @@
 name: Artifact Smoke
-
-# GOV-20 / ACC-17: a package is not publishable until it has been installed on
-# a clean host from the exact built candidate — not from a source checkout.
-# Nothing in the pipeline did this: release.yml downloaded the build artifacts
-# and uploaded them straight to a GitHub Release.
 on:
   workflow_call:
     inputs:
       version:
         required: true
         type: string
-
 permissions:
   contents: read
-
 jobs:
   deb-install:
     name: Install .deb (${{ matrix.arch }})
@@ -21,91 +14,80 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
-            arch: amd64
-          - os: ubuntu-22.04-arm
-            arch: arm64
+        - os: ubuntu-22.04
+          arch: amd64
+        - os: ubuntu-22.04-arm
+          arch: arm64
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Download candidate packages
-        uses: actions/download-artifact@v5
-        with:
-          name: packages-${{ matrix.arch }}
-          path: dist/
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Download candidate packages
+      uses: actions/download-artifact@v5
+      with:
+        name: packages-${{ matrix.arch }}
+        path: dist/
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Install the candidate .deb on a clean host
+      run: |
+        # Absolute paths throughout: that is what makes apt treat these as
+        # files to install rather than as names to look up in a repository.
 
-      # The candidate SET, not one file out of it. Two things made the old
-      # `find dist -name '*.deb' | head -1` wrong once the release started
-      # shipping a companion broker deb: it picks whichever name sorts first,
-      # which is `circuit-breaker-nats`, so the gate would have asserted the
-      # application's version against a package that is not the application.
-      #
-      # And installing the application deb alone is not what a user gets. It
-      # depends on `nats-server | circuit-breaker-nats`; these runners are
-      # ubuntu-22.04, which packages no nats-server in any component, so apt can
-      # satisfy that only from the companion shipped beside it. That is exactly
-      # how v0.4.0 failed here — after every package and image had been built.
-      #
-      # On a distro that does package a broker (Debian 12, Ubuntu 24.04) apt
-      # prefers the distro's copy when it is not handed ours on the command
-      # line, which is the arrangement nfpm.yaml explains and wants.
-      - name: Install the candidate .deb on a clean host
-        run: |
-          # Absolute paths throughout: that is what makes apt treat these as
-          # files to install rather than as names to look up in a repository.
-          APP_DEB=$(find "$PWD/dist" -name 'circuit-breaker_*.deb' | head -1)
-          [ -n "${APP_DEB}" ] || { echo "::error::no application .deb in packages-${{ matrix.arch }}"; exit 1; }
-          echo "Application package: ${APP_DEB}"
-          echo "Installing the full candidate set:"
-          find "$PWD/dist" -name '*.deb' -print
-          sudo apt-get update
-          find "$PWD/dist" -name '*.deb' -print0 | xargs -0 sudo apt-get install -y
+        APP_DEB=$(find "$PWD/dist" -name 'circuit-breaker_*.deb' | head -1)
 
-      # GOV-09 parity, measured at the far end of the pipeline: the artifact a
-      # user receives must identify itself as the version being released.
-      # Paths come from nfpm.yaml, not from assumption.
-      - name: Assert the installed binary reports the candidate version
-        env:
-          VERSION: ${{ inputs.version }}
-        run: |
-          INSTALLED=$(/usr/local/bin/circuit-breaker --version)
-          echo "installed binary reports: ${INSTALLED}"
-          [ "${INSTALLED}" = "${VERSION}" ] \
-            || { echo "::error::binary reports '${INSTALLED}', expected '${VERSION}'"; exit 1; }
+        [ -n "${APP_DEB}" ] || { echo "::error::no application .deb in packages-${{ matrix.arch }}"; exit 1; }
 
-          SHIPPED=$(cat /usr/local/share/circuit-breaker/VERSION)
-          echo "shipped VERSION file reports: ${SHIPPED}"
-          [ "${SHIPPED}" = "${VERSION}" ] \
-            || { echo "::error::shipped VERSION is '${SHIPPED}', expected '${VERSION}'"; exit 1; }
+        echo "Application package: ${APP_DEB}"
 
-      - name: Assert the package shipped its unit and support files
-        run: |
-          for path in \
-            /lib/systemd/system/circuit-breaker.service \
-            /usr/local/share/circuit-breaker/frontend \
-            /usr/local/share/circuit-breaker/backend; do
-            [ -e "${path}" ] || { echo "::error::package did not install ${path}"; exit 1; }
-          done
-          echo "package contents present"
+        echo "Installing the full candidate set:"
 
-      # The dependency, asserted as the property rather than as a package name.
-      # `validate_core_dependencies` refuses to start without a broker, so an
-      # install that resolved without one is an install that cannot boot — and
-      # which of the two alternatives satisfied it is the distro's business, not
-      # this gate's.
-      - name: Assert the install resolved a message broker
-        run: |
-          command -v nats-server >/dev/null 2>&1 \
-            || { echo "::error::no nats-server on PATH after install; the broker dependency resolved to nothing and the service would refuse to start"; exit 1; }
-          echo "broker present: $(command -v nats-server)"
+        find "$PWD/dist" -name '*.deb' -print
 
-      - name: Assert uninstall removes what it installed
-        run: |
-          sudo apt-get remove -y circuit-breaker circuit-breaker-nats
-          for path in \
-            /usr/local/bin/circuit-breaker \
-            /usr/local/bin/nats-server \
-            /lib/systemd/system/circuit-breaker.service; do
-            [ ! -e "${path}" ] || { echo "::error::uninstall left ${path} behind"; exit 1; }
-          done
-          echo "uninstall clean"
+        sudo apt-get update
+
+        find "$PWD/dist" -name '*.deb' -print0 | xargs -0 sudo apt-get install -y
+    - name: Assert the installed binary reports the candidate version
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        INSTALLED=$(/usr/local/bin/circuit-breaker --version)
+        echo "installed binary reports: ${INSTALLED}"
+        [ "${INSTALLED}" = "${VERSION}" ] || { echo "::error::binary reports '${INSTALLED}', expected '${VERSION}'"; exit 1; }
+
+        SHIPPED=$(cat /usr/local/share/circuit-breaker/VERSION)
+        echo "shipped VERSION file reports: ${SHIPPED}"
+        [ "${SHIPPED}" = "${VERSION}" ] || { echo "::error::shipped VERSION is '${SHIPPED}', expected '${VERSION}'"; exit 1; }
+    - name: Assert the installed binary can load the application it serves
+      run: |
+        # ADR 0005: a gate may not pass by not asking. Every assertion above is an
+        # identity check — they all pass on a binary with no application in it,
+        # because `--version` resolves from an embedded VERSION file and exits
+        # before `app.main` is ever imported. That is exactly how v0.4.2 shipped:
+        # signed, attested, SBOM'd, version-parity-checked, and empty.
+        #
+        # This is the cheapest execution that can disprove publishability. No
+        # database, no broker, no network, seconds of runtime, and it runs on both
+        # the amd64 and the ubuntu-22.04-arm legs of this matrix.
+        /usr/local/bin/circuit-breaker --selftest
+    - name: Assert the package shipped its unit and support files
+      run: |
+        for path in \
+          /lib/systemd/system/circuit-breaker.service \
+          /usr/local/share/circuit-breaker/frontend \
+          /usr/local/share/circuit-breaker/backend; do
+          [ -e "${path}" ] || { echo "::error::package did not install ${path}"; exit 1; }
+        done
+        echo "package contents present"
+    - name: Assert the install resolved a message broker
+      run: |
+        command -v nats-server >/dev/null 2>&1 \
+          || { echo "::error::no nats-server on PATH after install; the broker dependency resolved to nothing and the service would refuse to start"; exit 1; }
+        echo "broker present: $(command -v nats-server)"
+    - name: Assert uninstall removes what it installed
+      run: |
+        sudo apt-get remove -y circuit-breaker circuit-breaker-nats
+        for path in \
+          /usr/local/bin/circuit-breaker \
+          /usr/local/bin/nats-server \
+          /lib/systemd/system/circuit-breaker.service; do
+          [ ! -e "${path}" ] || { echo "::error::uninstall left ${path} behind"; exit 1; }
+        done
+        echo "uninstall clean"
