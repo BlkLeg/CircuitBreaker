@@ -194,6 +194,7 @@ class TestDynamicImportHiddenImports:
             out.write_bytes(b"\x7fELF")
 
         monkeypatch.setattr(br, "run", fake_run)
+        monkeypatch.setattr(br, "assert_binary_contains_application", lambda _path: None)
         br.build_binary("linux", tmp_path)
 
         assert "--hidden-import=proxmoxer.backends.https" in captured["cmd"]
@@ -248,6 +249,7 @@ class TestAsgiTargetHiddenImport:
             out.write_bytes(b"\x7fELF")
 
         monkeypatch.setattr(br, "run", fake_run)
+        monkeypatch.setattr(br, "assert_binary_contains_application", lambda _path: None)
         br.build_binary("linux", tmp_path)
 
         assert "--hidden-import=app.main" in captured["cmd"]
