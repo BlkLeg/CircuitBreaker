@@ -732,11 +732,12 @@ cb_fail() {
     done
   fi
 
-  # Named explicitly, as the last two lines. An operator should never have to
+  # Named explicitly, as the last lines. An operator should never have to
   # know to go and find these.
   echo ""
   echo -e "  ${BOLD}Full log:${RESET}  ${LOG_FILE:-/tmp/cb-bootstrap.log}"
   echo -e "  ${BOLD}Re-run with full output:${RESET}  bash install.sh --verbose"
+  echo -e "  ${BOLD}Collect everything for an issue:${RESET}  cb diag bundle"
   echo ""
   exit 1
 }
