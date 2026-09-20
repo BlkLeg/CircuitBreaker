@@ -160,9 +160,32 @@ jobs:
           sudo podman commit cb-journey-bootstrap cb-journey-base >/dev/null
           sudo podman rm -f cb-journey-bootstrap
 
+          # 3. --security-opt seccomp=unconfined. fchmodat2() is syscall 452,
+          #    added in kernel 6.6 (2023). Modern coreutils on glibc 2.39+ —
+          #    fedora:44, rockylinux:10, archlinux — use it for RECURSIVE chmod
+          #    traversal, so install.sh's `chmod -R 755 /opt/circuitbreaker/share`
+          #    goes through it. The runner ships podman 3.4.4 (2021), whose
+          #    bundled seccomp profile cannot list a syscall that did not exist
+          #    yet and, being of that vintage, denies unknown syscalls with
+          #    SCMP_ACT_ERRNO -> EPERM rather than the modern ENOSYS that glibc
+          #    would transparently fall back from.
+          #
+          #    The evidence this is the syscall and not a permission problem:
+          #    the container runs as real root with CAP_FOWNER and no user
+          #    namespace (uid_map "0 0 4294967295"), and a NON-recursive
+          #    `chmod 600` on /, /opt and /tmp all succeed — only `chmod -R`
+          #    fails. debian:12 and ubuntu:22.04 pass because their older
+          #    coreutils still call plain fchmodat().
+          #
+          #    This is a harness artifact, not an install.sh defect: a real user
+          #    on Fedora or Arch is not inside a container governed by a
+          #    four-year-old seccomp profile. Relaxing seccomp for a throwaway
+          #    test container is the honest fix; contorting the shipped
+          #    installer to avoid chmod -R would be papering over the harness.
           sudo podman run -d --name cb-journey \
             --systemd=always \
             --cgroupns=host \
+            --security-opt seccomp=unconfined \
             --cap-add=NET_ADMIN,NET_RAW \
             -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
             -v "$PWD:/workspace:ro" \
@@ -182,69 +205,6 @@ jobs:
       # debian12/ubuntu2204 pass on the identical flags and tarball; this
       # gathers the facts needed to tell a harness defect (fix the workflow)
       # from a real install.sh gap (fix the installer) before touching either.
-      - name: DIAGNOSTIC — chmod EPERM investigation
-        if: always()
-        env:
-          DISTRO: ${{ matrix.distro }}
-        run: |
-          set +e
-          echo "### host: podman version"
-          sudo podman version
-          echo "### host: podman info storage driver"
-          sudo podman info --format '{{.Store.GraphDriverName}}'
-          sudo podman info --format '{{.Store.GraphOptions}}'
-          echo "### host: podman info (full, storage section only)"
-          sudo podman info --format '{{.Store}}'
-
-          echo "### container (${DISTRO}): id"
-          sudo podman exec cb-journey id
-
-          echo "### container (${DISTRO}): capsh --print (fallback: raw /proc/self/status Cap lines)"
-          sudo podman exec cb-journey bash -c '
-            if command -v capsh >/dev/null 2>&1; then
-              capsh --print
-            else
-              echo "capsh not present on this image; raw capability sets:"
-              grep -E "^Cap(Inh|Prm|Eff|Bnd|Amb):" /proc/self/status
-              effhex=$(awk "/^CapEff:/ {print \$2}" /proc/self/status)
-              bndhex=$(awk "/^CapBnd:/ {print \$2}" /proc/self/status)
-              # CAP_FOWNER is bit 3 (mask 0x8).
-              eff_fowner=$(( 0x$effhex & 8 ? 1 : 0 ))
-              bnd_fowner=$(( 0x$bndhex & 8 ? 1 : 0 ))
-              echo "CAP_FOWNER in CapEff: ${eff_fowner} | in CapBnd: ${bnd_fowner}"
-            fi
-          '
-
-          echo "### container (${DISTRO}): uid_map / gid_map (userns?)"
-          sudo podman exec cb-journey bash -c '
-            echo "--- uid_map ---"; cat /proc/self/uid_map
-            echo "--- gid_map ---"; cat /proc/self/gid_map
-          '
-
-          echo "### container (${DISTRO}): systemd version (PID 1)"
-          sudo podman exec cb-journey bash -c 'systemctl --version | head -1'
-
-          echo "### container (${DISTRO}): mount (/, /opt, /tmp) + storage driver in play"
-          sudo podman exec cb-journey bash -c '
-            mount | grep -E " on / | on /opt | on /tmp "
-            echo "--- /proc/mounts overlay lines ---"
-            grep overlay /proc/mounts || echo "no overlay lines in /proc/mounts"
-          '
-
-          echo "### container (${DISTRO}): live touch+chmod probe on / /opt /tmp"
-          sudo podman exec cb-journey bash -c '
-            for d in / /opt /tmp; do
-              f="${d%/}/cb-diag-probe-$$"
-              echo "--- probing $d ($f) ---"
-              touch "$f"; rc_touch=$?
-              stat -c "before: %u %g %a %n" "$f" 2>&1
-              chmod 600 "$f"; rc_chmod=$?
-              echo "touch rc=$rc_touch chmod rc=$rc_chmod"
-              stat -c "after:  %u %g %a %n" "$f" 2>&1
-              rm -f "$f"
-            done
-          '
-
       - name: Run the installer journey
         run: |
           set -euo pipefail
