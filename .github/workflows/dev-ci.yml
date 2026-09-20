@@ -75,7 +75,7 @@ jobs:
 
       - name: Upload lint evidence
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: lint-evidence
           path: artifacts/
@@ -213,7 +213,7 @@ jobs:
       # directories and the gate would measure nothing.
       - name: Upload backend shard evidence
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: backend-shard-${{ matrix.shard }}
           path: artifacts/
@@ -281,7 +281,7 @@ jobs:
 
       - name: Upload combined coverage
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: backend-coverage-combined
           path: artifacts/
@@ -385,7 +385,7 @@ jobs:
 
       - name: Upload fresh-install evidence
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: fresh-install-migrations
           path: artifacts/
@@ -446,7 +446,7 @@ jobs:
 
       - name: Upload frontend coverage
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: frontend-coverage
           path: apps/frontend/coverage/
@@ -519,7 +519,7 @@ jobs:
 
       - name: Upload test evidence
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: unit-test-evidence
           path: artifacts/
@@ -560,7 +560,7 @@ jobs:
         run: ./scripts/security_scan.sh --gate
 
       - name: Upload scan report
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: security-scan-report
@@ -615,7 +615,7 @@ jobs:
         run: ls -lh dist/native/
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: dev-packages-amd64
           path: dist/native/
@@ -871,7 +871,7 @@ jobs:
 
       - name: Upload smoke diagnostics
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: docker-smoke-diagnostics
           path: artifacts/diagnostics/
@@ -903,7 +903,7 @@ jobs:
     # and the @playwright/test version in package.json shows up as
     # unexplainable screenshot diffs.
     container:
-      image: mcr.microsoft.com/playwright:v1.62.1-noble
+      image: mcr.microsoft.com/playwright:v1.63.0-noble
     # Steps in a container run as root, but the runner mounts $HOME at
     # /github/home owned by the image's `pwuser`. Firefox refuses to start in
     # that situation ("Running Nightly as root in a regular user's session is
@@ -945,7 +945,7 @@ jobs:
             echo "workflow=${GITHUB_WORKFLOW}"
             echo "job=browser-e2e"
             echo "shard=${{ matrix.shard }}/${{ strategy.job-total }}"
-            echo "image=mcr.microsoft.com/playwright:v1.62.1-noble"
+            echo "image=mcr.microsoft.com/playwright:v1.63.0-noble"
             echo "node=$(node -v)"
             echo "playwright=$(cd apps/frontend && npx playwright --version)"
             echo "CB_TEST_SEED=${CB_TEST_SEED}"
@@ -975,7 +975,7 @@ jobs:
       # the two paths below cover every artifact class this job produces.
       - name: Upload Playwright report
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-report-shard-${{ matrix.shard }}
           path: |

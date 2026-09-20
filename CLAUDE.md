@@ -64,6 +64,46 @@ If the change touches `apps/backend/src/app`, run `make verify-full` instead —
 
 Never lower the coverage gate to make a build green.
 
+### What the gates do NOT cover
+
+`make verify` and `make verify-full` run unit suites, lint, and the security
+gate. **Neither runs a browser and neither runs the agent.** Two whole suites
+sit outside them:
+
+| Suite | Covers | How to run it |
+|---|---|---|
+| Browser E2E (Playwright) | the real frontend in a real browser | `cd apps/frontend && npx playwright test` |
+| Composed Agent E2E | the agent against the mono image | `make e2e-local` |
+
+A green `verify-full` therefore says nothing about a frontend dependency bump,
+a Playwright change, an agent change, or anything about rendering, routing or
+enrollment.
+
+### Rules for claiming something is verified
+
+These exist because each one has already been broken here, at cost.
+
+1. **Name the suite that exercises the change, and run it.** Do not offer a
+   gate's exit code as evidence for a change that gate does not execute. A
+   frontend dependency bump needs the browser E2E; an agent or harness change
+   needs `make e2e-local`. If the covering suite was not run, say so plainly
+   rather than reporting the gate that was.
+2. **Never dismiss a red check as stale, flaky, or pre-existing without
+   proving it.** Proof is reproducing it, or running the same check on a clean
+   tree at an older commit and showing it fails identically. "Those runs
+   predate the fix" is a hypothesis, not a finding.
+3. **Push only after the covering suite passes locally.** CI is for
+   confirmation, not discovery. Pushing to find out costs ~40 minutes per
+   round and burns someone else's time.
+4. **Never dispatch CI against a ref you have not confirmed is on the remote.**
+   Check the push actually landed — `git ls-remote` — before triggering a
+   workflow, or the run tests code nobody can fetch.
+5. **Dependencies that are pinned in two places move together.** The Playwright
+   container tag and `@playwright/test` are the known pair;
+   `tests/build/test_playwright_image_matches_package.py` enforces it. When a
+   bump breaks a pairing like this, add the guard rather than only fixing the
+   instance.
+
 ## Skills
 
 Four skills carry the detail — consult them rather than reconstructing conventions:

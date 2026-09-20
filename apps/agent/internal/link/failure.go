@@ -58,6 +58,24 @@ var errHelloAckTimeout = errors.New("link: no accepted hello.ack within the hell
 // one.
 var errAckStall = errors.New("link: server stopped acknowledging data frames")
 
+// ErrUpdateAlreadyRunning is what Options.OnUpdate returns when the arriving
+// `update` instruction names the update that is *already in flight*.
+//
+// Exported because the event loop has to tell it apart from every other
+// refusal. A dropped instruction (malformed, worker shutting down, a
+// different target refused while one runs) leaves the server waiting and must
+// be reported as `update.status{phase:"failed"}`. A duplicate of the running
+// instruction is not dropped work at all: the server sends every update twice
+// by design — an immediate control-frame push and a Redis-queued entry the
+// link poll picks up — so the second arrival is routine, and the attempt
+// already running owns the outcome and will report it.
+//
+// Reporting that duplicate as "failed" is what cost the fleet its
+// `version_changed` audit events: the server treats a same-version failure as
+// terminal and clears `pending_update_version`, so the successful reconnect
+// that follows no longer matches anything and records nothing.
+var ErrUpdateAlreadyRunning = errors.New("update already in progress for the instruction in flight")
+
 // The reasons a server can refuse an identity, as sentinels so the ladder can
 // tell "approve me" from "you are not welcome here". The wire values are the
 // `reason` string on a hello.ack with accepted:false.

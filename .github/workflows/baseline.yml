@@ -24,6 +24,8 @@ permissions:
 jobs:
   baseline:
     runs-on: ubuntu-22.04
+    # Non-blocking until 4.5 promotes the gate; the failure step below keeps
+    # that from also meaning silent.
     continue-on-error: true
     timeout-minutes: 45
     env:
@@ -48,6 +50,12 @@ jobs:
           jwt_secret=$(openssl rand -hex 32)
           vault_key=$(openssl rand -base64 32 | tr -d '\n')
           baseline_password="Aa1!$(openssl rand -hex 16)"
+          # GitHub redacts only `secrets.*`; a value generated here prints in
+          # the env block of every later step unless it is masked first.
+          echo "::add-mask::$db_password"
+          echo "::add-mask::$jwt_secret"
+          echo "::add-mask::$vault_key"
+          echo "::add-mask::$baseline_password"
           echo "CB_DB_URL=postgresql://breaker:${db_password}@127.0.0.1:5432/circuitbreaker_loadgen" >> "$GITHUB_ENV"
           echo "CB_JWT_SECRET=${jwt_secret}" >> "$GITHUB_ENV"
           echo "CB_VAULT_KEY=${vault_key}" >> "$GITHUB_ENV"
@@ -72,8 +80,11 @@ jobs:
       - name: Bootstrap baseline operator
         id: auth
         run: |
+          # Only GET /bootstrap/status mints the token file read below.
+          curl -fsS http://127.0.0.1:8000/api/v1/bootstrap/status > /dev/null
           setup_token=$(tr -d '\r\n' < /tmp/cb-baseline/bootstrap-setup-token)
           token=$(curl -fsS -H 'Content-Type: application/json' -d "{\"setup_token\":\"$setup_token\",\"email\":\"baseline@example.test\",\"password\":\"$CB_BASELINE_PASSWORD\",\"theme_preset\":\"gruvbox-dark\"}" http://127.0.0.1:8000/api/v1/bootstrap/initialize | python -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+          echo "::add-mask::$token"
           echo "token=$token" >> "$GITHUB_OUTPUT"
       # All three tiers, not just A and B. Route §5's two defensible targets are
       # both Tier C claims — topology load "at 500 entities" and monitor lag "at
@@ -92,9 +103,21 @@ jobs:
       - name: Baseline summary
         if: always()
         run: python scripts/loadgen/summarize.py artifacts/baselines >> "$GITHUB_STEP_SUMMARY"
+      - name: Report a broken harness loudly
+        if: failure()
+        shell: bash
+        run: |
+          echo "::error title=Nightly baseline did not collect evidence::The baseline harness failed before producing tier results. Phase 4.4 gets no data from this run and Phase 4.5's window does not advance."
+          {
+            echo "## Baseline harness FAILED"
+            echo
+            echo "No tier evidence was produced by this run. This job is non-blocking by design,"
+            echo "so nothing else went red — but the baseline series did not advance."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload baseline evidence
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: phase2-baselines
           path: |

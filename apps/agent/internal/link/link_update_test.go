@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -178,6 +179,112 @@ func TestRun_RefusedUpdateInstructionReportsExplicitFailedStatus(t *testing.T) {
 	want := statusEntry{"0.2.0", "failed", "update already in progress"}
 	if got[0] != want {
 		t.Errorf("refusal status = %+v, want %+v — the refused instruction must be reported, not dropped", got[0], want)
+	}
+}
+
+// A duplicate of the instruction already in flight is NOT reported, and the
+// distinction from the test above is the whole point. The server delivers every
+// update twice by design — `api/agents.py:post_update` queues it in Redis *and*
+// publishes an immediate control frame — so the second arrival is routine.
+//
+// Reporting it as "failed" made the server treat the attempt as terminal and
+// clear `pending_update_version`, after which the successful reconnect at the
+// target version matched nothing and recorded no `version_changed`: a
+// successful update quietly losing its own audit event.
+//
+// The sibling above covers the other half — a refusal that really is dropped
+// work (queue full, malformed, worker stopping) must still be reported, or the
+// server waits forever on an instruction nobody is applying.
+func TestRun_DuplicateOfInFlightUpdateIsNotReportedAsFailed(t *testing.T) {
+	serverPriv, serverPub := generateTestKeypair(t)
+
+	var mu atomicStatusList
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		resp := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := resp.ReadHandshakeMessage(msg1)
+		if err != nil {
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+		_, helloCt, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		if _, err := resp.Decrypt(helloCt); err != nil {
+			return
+		}
+		ack, _ := json.Marshal(map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"accepted": true, "agent_id": 1},
+		})
+		conn.WriteMessage(websocket.BinaryMessage, resp.Encrypt(ack))
+		instr, _ := json.Marshal(map[string]any{
+			"v": 1, "type": "update", "seq": 1, "ts": time.Now().UTC(),
+			"payload": map[string]string{"version": "0.2.0", "sha256": "abc123", "arch": "amd64", "os": "linux"},
+		})
+		conn.WriteMessage(websocket.BinaryMessage, resp.Encrypt(instr))
+
+		for {
+			_, ct, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			pt, err := resp.Decrypt(ct)
+			if err != nil {
+				return
+			}
+			var f struct {
+				Type    string          `json:"type"`
+				Payload json.RawMessage `json:"payload"`
+			}
+			if err := json.Unmarshal(pt, &f); err != nil {
+				return
+			}
+			if f.Type == "update.status" {
+				var st statusEntry
+				if err := json.Unmarshal(f.Payload, &st); err != nil {
+					return
+				}
+				mu.add(st.Version, st.Phase, st.Error)
+			}
+		}
+	}))
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	opts := Options{
+		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
+		Key:    key, AgentVersion: "0.1.0-test",
+		OnUpdate: func(json.RawMessage) error {
+			// Wrapped rather than returned bare, so what is under test is the
+			// errors.Is path and not an accidental identity comparison.
+			return fmt.Errorf("enqueue refused: %w", ErrUpdateAlreadyRunning)
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = Run(ctx, opts)
+
+	if got := mu.snapshot(); len(got) != 0 {
+		t.Errorf("observed %d update.status frames, want 0: %+v — a duplicate of the "+
+			"in-flight instruction must not be reported as failed; the attempt already "+
+			"running owns the outcome", len(got), got)
 	}
 }
 

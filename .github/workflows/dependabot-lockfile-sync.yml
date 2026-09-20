@@ -1,0 +1,88 @@
+name: Dependabot lockfile sync
+
+# `apps/backend/requirements.txt` is generated from `apps/backend/poetry.lock`
+# by `scripts/gen_requirements.py`, and
+# `tests/build/test_backend_dependency_pins.py` fails the Tier 0 gate whenever
+# the two disagree. Dependabot updates the lock but cannot run the generator,
+# so *every* Python dependency PR failed Lint by construction — six of them
+# were open and red at once in September 2026, none for a reason that had
+# anything to do with the dependency being bumped.
+#
+# Regenerating and pushing the result is the only fix that keeps the gate
+# honest. Relaxing the gate for `dependabot/*` branches would mean the images
+# (`pip install -r requirements.txt`) and the pip-audit step stop speaking for
+# the lock exactly when a dependency moves, which is the one moment the check
+# is load-bearing.
+
+on:
+  pull_request_target:
+    branches:
+      - dev
+    paths:
+      - "apps/backend/poetry.lock"
+
+# `pull_request_target` runs in the base repo's context, so GITHUB_TOKEN is
+# writable. That is the whole reason for it: a `pull_request` run triggered by
+# Dependabot gets a read-only token and cannot push the regenerated file back
+# to the branch.
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    name: Regenerate requirements.txt
+    # Dependabot's branches live in this repository, not in a fork, so this is
+    # not the "untrusted fork" shape of `pull_request_target`. The guard is
+    # still explicit: on a `synchronize` event `github.actor` is whoever
+    # pushed, so a human pushing to a `dependabot/*` branch does not get a
+    # writable token through this job.
+    if: github.actor == 'dependabot[bot]' && startsWith(github.head_ref, 'dependabot/')
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The PR branch, because that is what the commit has to land on.
+          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: true
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # The generator that runs is the BASE branch's copy, never the PR's.
+      # `pull_request_target` hands out a writable token, so executing code
+      # from the head ref would be the classic privilege-escalation footgun
+      # even with the actor guard above. The PR supplies data (poetry.lock),
+      # this repository supplies the code that reads it.
+      #
+      # Left modified in the working tree on purpose: the commit below names
+      # its path explicitly, so the restored generator is never staged and
+      # never pushed.
+      - name: Restore the generator from the base commit
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: git restore --source="$BASE_SHA" -- scripts/gen_requirements.py
+
+      - name: Regenerate apps/backend/requirements.txt
+        run: python3 scripts/gen_requirements.py
+
+      # Every `${{ }}` value reaches the shell through `env:` and is quoted on
+      # use. A branch name is attacker-supplied in the general case, and
+      # interpolating one straight into a `run:` block is how a workflow
+      # injection starts — the actor guard on this job is not a reason to also
+      # get the quoting wrong.
+      - name: Push the result if the generator moved it
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if git diff --quiet -- apps/backend/requirements.txt; then
+            echo "requirements.txt already matches poetry.lock — nothing to push"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Only this path: the restored generator above is still modified in
+          # the working tree and must not ride along.
+          git commit -m "chore(deps): regenerate requirements.txt from poetry.lock" \
+            -- apps/backend/requirements.txt
+          git push origin "HEAD:refs/heads/$HEAD_REF"

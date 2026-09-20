@@ -56,6 +56,12 @@ frontend/.env.*.local
 # container) and unlinked again in each test's `finally`. Never a source file.
 apps/agent/e2e/agent.toml
 apps/agent/e2e/agent-etc/
+
+# GOV-12: `go build ./cmd/cb-agent` with no -o writes the binary here, named
+# after the package directory. A 12.6 MB ELF was tracked this way. The
+# Makefile's build targets all write to $(DIST) instead, so nothing in the
+# build path needs this path to exist.
+apps/agent/cb-agent
 .envrc
 .github/workflows/.env
 .github/workflows/.env.*
@@ -67,6 +73,10 @@ docker/data/
 data/audit/
 circuitbreaker-data/
 e2e-data/
+# Written by the e2e harness (CB_E2E_DIAGNOSTICS_DIR) and by `make e2e-local`:
+# per-run compose logs and the run manifest. Useful after a failure, never
+# source.
+diagnostics/
 /data/
 dump.rdb
 
