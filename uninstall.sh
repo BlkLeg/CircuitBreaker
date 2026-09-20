@@ -503,6 +503,13 @@ if [ -f /usr/local/bin/cb ]; then
   Show 0 "Removed cb command."
 fi
 
+# Tear the live region down before this trailing banner block. cleanup is the
+# last phase this script opens, and cb_phase_end re-arms the live region on
+# its way out (it ends with a redraw) — so without this, the renderer's blind
+# two-line rewind eats the first two lines printed below on its very next
+# call, exactly like every other raw-output block above it.
+_cb_phase cb_ui_teardown
+
 echo ""
 echo -e "${aCOLOUR[0]}─────────────────────────────────────────────────────${COLOUR_RESET}"
 echo -e " Circuit Breaker has been uninstalled."

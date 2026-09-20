@@ -1397,6 +1397,12 @@ stage9_write_install_identity() {
 }
 
 stage10_final_output() {
+  # Defensive: this is reachable from more than one path (fresh install and
+  # upgrade), and both are expected to call it after the enclosing phase has
+  # already ended — but the caller is what enforces that ordering, not this
+  # function, so tear the live region down here too rather than trust every
+  # call site forever.
+  declare -f cb_ui_teardown >/dev/null 2>&1 && cb_ui_teardown
   source /etc/circuitbreaker/.env
   local detected_ip=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[^ ]+' || echo "localhost")
   local version=$(cat /opt/circuitbreaker/share/VERSION 2>/dev/null || echo "unknown")
@@ -2039,7 +2045,15 @@ run_upgrade() {
   CB_STAGE_DIAGS=()
 
   stage9_write_install_identity
-  stage10_final_output
 
+  # cb_phase_end must close the "start" phase before stage10_final_output
+  # prints the success banner: cb_phase_end re-arms the live region (it ends
+  # with _cb_live_draw), so a raw echo/printf after it — never before — is
+  # safe from _cb_live_clear's blind two-line rewind. install.sh's
+  # equivalent sequence follows the same order; see the comment on
+  # _cb_live_clear in deploy/lib/ui.sh for why the renderer itself cannot
+  # enforce this.
   cb_phase_end start
+
+  stage10_final_output
 }

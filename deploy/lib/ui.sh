@@ -175,6 +175,21 @@ _cb_live_clear() {
   # Cursor sits at the end of the timer line. Clear it, step up to the bar line,
   # clear that. Never `clear`, and never absolute positioning: this runs inside
   # somebody's scrollback, not on a screen we own.
+  #
+  # This assumes the two lines directly above the cursor are still the bar and
+  # timer this renderer drew — there is no way to confirm that from here. A
+  # terminal has no read-back for "what did I last print", so this function
+  # cannot detect foreign output (a raw `echo`/`printf`, `clear`, a banner)
+  # that landed between the last draw and this call; if that happened, this
+  # rewind erases real output instead of its own. There is no general fix for
+  # that inside the renderer — no heuristic here can distinguish "my own
+  # redraw" from "somebody else's line that happens to be two lines up". The
+  # only honest fix is at the call sites: anything that emits raw output after
+  # a phase is open MUST call cb_ui_teardown first (cb_header, the
+  # stage10_final_output banner, uninstall.sh's closing block all do).
+  # tests/build/test_installer_live_region_discipline.py is the guard that
+  # keeps those call sites honest; it is not a substitute for this function
+  # being able to protect itself, because it can't.
   printf '\r\033[K'
   printf '\033[1A\r\033[K'
   _CB_LIVE_ON=false
