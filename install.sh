@@ -1699,6 +1699,8 @@ main() {
     fi
 
     # Full Fresh Install Flow
+    cb_phase_begin deps "System dependencies"
+    cb_phase_steps 2
     CB_STAGE_HINTS=(
       "Full log: tail -50 ${CB_DATA_DIR}/logs/install.log"
       "Retry: bash install.sh --unattended"
@@ -1708,6 +1710,7 @@ main() {
       "Disk space::df -h ${CB_DATA_DIR} /opt /var"
     )
     stage1_bootstrap
+    cb_phase_tick
     CB_STAGE_HINTS=()
     CB_STAGE_DIAGS=()
 
@@ -1738,10 +1741,19 @@ main() {
       )
     fi
     stage2_dependencies
+    cb_phase_tick
     CB_STAGE_HINTS=()
     CB_STAGE_DIAGS=()
+    cb_phase_end deps
 
+    cb_phase_begin database "Preparing database"
+    cb_phase_steps 3
+    # stage4 FIRST, because that is where it already is (install.sh:1720, before
+    # postgres). Phases are assigned without moving any call: a rendering change
+    # must not reorder installation steps, and writing the unit files after the
+    # database is configured would do exactly that.
     stage4_write_systemd_units
+    cb_phase_tick
 
     CB_STAGE_HINTS=(
       "Full log: tail -50 ${CB_DATA_DIR}/logs/install.log"
@@ -1757,6 +1769,7 @@ main() {
       "Disk space::df -h ${CB_DATA_DIR}"
     )
     stage3_configure_postgres
+    cb_phase_tick
     CB_STAGE_HINTS=()
     CB_STAGE_DIAGS=()
 
@@ -1771,9 +1784,13 @@ main() {
       "Install log (tail)::tail -n 40 ${LOG_FILE}"
     )
     stage3_configure_pgbouncer
+    cb_phase_tick
     CB_STAGE_HINTS=()
     CB_STAGE_DIAGS=()
+    cb_phase_end database
 
+    cb_phase_begin services "Services and networking"
+    cb_phase_steps 8
     CB_STAGE_HINTS=(
       "Full log: tail -50 ${CB_DATA_DIR}/logs/install.log"
       "Redis status: systemctl status circuitbreaker-redis"
@@ -1787,6 +1804,7 @@ main() {
       "Install log (tail)::tail -n 40 ${LOG_FILE}"
     )
     stage3_configure_redis
+    cb_phase_tick
     CB_STAGE_HINTS=()
     CB_STAGE_DIAGS=()
 
@@ -1803,21 +1821,31 @@ main() {
       "Install log (tail)::tail -n 40 ${LOG_FILE}"
     )
     stage3_configure_nats
+    cb_phase_tick
     CB_STAGE_HINTS=()
     CB_STAGE_DIAGS=()
 
     stage3_configure_nginx
+    cb_phase_tick
     stage3_configure_docker_proxy
+    cb_phase_tick
     write_wait_for_services_script
+    cb_phase_tick
     write_service_scripts
+    cb_phase_tick
     stage6_apply_binary
+    cb_phase_tick
     stage9_install_cb_cli
+    cb_phase_tick
     stage9_write_install_identity
+    cb_phase_end services
 
+    cb_phase_begin start "Starting Circuit Breaker"
     cb_arm_service_start_diagnostics
     stage8_start_services
     CB_STAGE_HINTS=()
     CB_STAGE_DIAGS=()
+    cb_phase_end start
 
     stage10_final_output
   else

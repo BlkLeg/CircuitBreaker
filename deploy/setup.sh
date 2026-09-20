@@ -11,6 +11,13 @@ export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 export NEEDRESTART_SUSPEND=1
 
+# install.sh already sourced this, but setup.sh is also sourced directly by the
+# upgrade path. The library guards against double-sourcing with _CB_UI_LOADED.
+if [[ -r /opt/circuitbreaker/deploy/lib/ui.sh ]]; then
+  # shellcheck source=lib/ui.sh
+  source /opt/circuitbreaker/deploy/lib/ui.sh
+fi
+
 cb_resolve_env_template() {
   local setup_dir
   setup_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
