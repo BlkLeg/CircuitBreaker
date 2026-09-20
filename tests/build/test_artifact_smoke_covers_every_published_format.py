@@ -61,3 +61,21 @@ def test_every_smoke_job_executes_the_application() -> None:
             "Every assertion short of that is an identity check, and identity "
             "checks all passed on v0.4.2."
         )
+
+
+def test_a_boot_job_exists_for_the_tier_two_promise() -> None:
+    """ADR 0005 Tier 2 is "install and boot", and it enters force only when a
+    job proves boot. --selftest proves the application imports, which is a real
+    advance over --version and still not boot."""
+    jobs = _jobs()
+    assert "deb-boot" in jobs, (
+        "artifact-smoke.yml has no boot job. ADR 0005 records Tier 2 as not in "
+        "force because 'that job still asserts only that the binary prints a "
+        "version'. A self-test does not discharge that promise."
+    )
+    rendered = yaml.safe_dump(jobs["deb-boot"])
+    assert "readyz" in rendered, (
+        "the boot job never polls /readyz, so it proves the unit started but "
+        "not that the service became ready — which is the half that catches a "
+        "failed migration, an unreachable broker or a bad config."
+    )

@@ -168,3 +168,153 @@ jobs:
           set -euo pipefail
           "${BUNDLE}/circuit-breaker" --selftest
 
+  deb-boot:
+    name: Boot the .deb (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: amd64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+
+    # ADR 0005's Tier 2 promise is "install and boot". Until this job existed
+    # that row read "not in force" with the reason recorded in the ADR itself:
+    # "That job still asserts only that the binary prints a version." A
+    # self-test proves the application imports; it does not prove the service
+    # starts, migrations apply, or the broker is reachable.
+    #
+    # A subset of scripts/ci/tier3-artifact.sh's contract, on a hosted runner:
+    # start, wait for /livez, wait for /readyz. The dependencies are service
+    # containers rather than the packaged units, because this gate is about the
+    # application booting, not about the vendored Postgres layout — which the
+    # fleet tier already covers.
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: circuitbreaker
+          POSTGRES_DB: circuitbreaker
+          POSTGRES_PASSWORD: ${{ env.CB_DB_PASSWORD }}
+        options: >-
+          --health-cmd "pg_isready -U circuitbreaker"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+        ports:
+          - 6379:6379
+
+    steps:
+      # Ephemeral, per-run, never stored. ::add-mask:: is registered before any
+      # value is written anywhere, so a later step dumping the environment is
+      # redacted rather than leaked. Same idiom as dev-ci.yml's smoke run.
+      - name: Mint ephemeral secrets for the boot run
+        run: |
+          set -euo pipefail
+          hexgen() { python3 -c 'import secrets; print(secrets.token_hex(32))'; }
+          DB_PASSWORD="$(hexgen)"
+          JWT_SECRET="$(hexgen)"
+          NATS_TOKEN="$(hexgen)"
+          VAULT_KEY="$(python3 -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
+          for secret in "${DB_PASSWORD}" "${JWT_SECRET}" "${NATS_TOKEN}" "${VAULT_KEY}"; do
+            echo "::add-mask::${secret}"
+          done
+          {
+            echo "CB_DB_PASSWORD=${DB_PASSWORD}"
+            echo "CB_JWT_SECRET=${JWT_SECRET}"
+            echo "CB_NATS_TOKEN=${NATS_TOKEN}"
+            echo "CB_VAULT_KEY=${VAULT_KEY}"
+          } >> "$GITHUB_ENV"
+
+      - name: Download candidate packages
+        uses: actions/download-artifact@v5
+        with:
+          name: packages-${{ matrix.arch }}
+          path: dist/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install the candidate set
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          find "$PWD/dist" -name '*.deb' -print0 | xargs -0 sudo apt-get install -y
+
+      # circuit-breaker.service and circuit-breaker-nats.service share this one
+      # EnvironmentFile (see packaging/circuit-breaker.service and
+      # packaging/circuit-breaker-nats.service), so NATS_AUTH_TOKEN has to be
+      # the same value the broker is told to require *and* the value the app
+      # authenticates with — one line serves both units.
+      - name: Point the service at the ephemeral dependencies
+        run: |
+          set -euo pipefail
+          sudo install -d -m 0750 /etc/circuit-breaker
+          sudo tee /etc/circuit-breaker/circuit-breaker.env >/dev/null <<EOF
+          CB_DB_URL=postgresql://circuitbreaker:${CB_DB_PASSWORD}@127.0.0.1:5432/circuitbreaker
+          CB_REDIS_URL=redis://127.0.0.1:6379/0
+          CB_JWT_SECRET=${CB_JWT_SECRET}
+          CB_VAULT_KEY=${CB_VAULT_KEY}
+          NATS_AUTH_TOKEN=${CB_NATS_TOKEN}
+          EOF
+          sudo chmod 0640 /etc/circuit-breaker/circuit-breaker.env
+
+      # Neither postinstall script starts anything — both only `enable`. And
+      # /readyz (apps/backend/src/app/api/health.py) is 200 only when Postgres,
+      # Redis AND NATS all report "ok", so the broker has to be up before the
+      # application unit is, or /readyz would spend its whole budget waiting on
+      # a dependency that was never going to come up on its own.
+      - name: Start the service
+        run: |
+          set -euo pipefail
+          sudo systemctl daemon-reload
+          sudo systemctl start circuit-breaker-nats
+          sudo systemctl start circuit-breaker
+
+      - name: Wait for /livez
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8080/api/v1/livez >/dev/null 2>&1 && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/api/v1/livez
+
+      # The half that catches a failed migration, an unreachable dependency or
+      # a bad config — all of which leave the unit "active" and the service
+      # useless.
+      - name: Wait for /readyz
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 90); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/readyz)"
+            [ "${code}" = "200" ] && break
+            sleep 2
+          done
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/readyz)"
+          if [ "${code}" != "200" ]; then
+            echo "::error::service never became ready (last /readyz was ${code})"
+            curl -s http://127.0.0.1:8080/api/v1/readyz || true
+            sudo journalctl -u circuit-breaker --no-pager -n 100
+            sudo journalctl -u circuit-breaker-nats --no-pager -n 100
+            exit 1
+          fi
+          curl -fsS http://127.0.0.1:8080/api/v1/readyz
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        run: |
+          sudo systemctl status circuit-breaker --no-pager -l || true
+          sudo systemctl status circuit-breaker-nats --no-pager -l || true
+          sudo journalctl -u circuit-breaker --no-pager -n 200 || true
+          sudo journalctl -u circuit-breaker-nats --no-pager -n 200 || true
+
