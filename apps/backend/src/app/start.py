@@ -57,6 +57,21 @@ socket.socketpair = _safe_socketpair
 
 import uvicorn  # noqa: E402
 
+# The ASGI application this binary serves, as uvicorn's import string.
+#
+# Duplicated deliberately rather than passed as a variable to uvicorn.run
+# below: scripts/build_native_release.py::_collect_asgi_target_hidden_imports
+# parses this file's AST and requires that call's first argument to be a string
+# literal, raising SystemExit otherwise, because PyInstaller's static import
+# graph cannot see a module named by a variable any more than by a string.
+#
+# The duplication is safe because it is pinned:
+# tests/build/test_selftest_targets_match_runtime.py fails if this constant and
+# that literal ever disagree. Both are needed — the literal so the build can
+# find the module, this constant so --selftest can load it at runtime, where
+# there is no source tree to parse.
+ASGI_TARGET = "app.main:app"
+
 from app.core.config import resolve_app_version  # noqa: E402
 
 

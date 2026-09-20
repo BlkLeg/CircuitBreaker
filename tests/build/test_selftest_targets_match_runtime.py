@@ -64,3 +64,51 @@ def test_worker_modules_covers_every_dispatch_branch() -> None:
         f"WORKER_MODULES lists {sorted(extra)}, which _dispatch cannot dispatch. "
         "Remove them, or add the dispatch branch."
     )
+
+START_PY = BACKEND_SRC / "app" / "start.py"
+
+
+def _uvicorn_target_literal() -> str:
+    """The ASGI target string literally handed to uvicorn.run in start.py."""
+    tree = ast.parse(START_PY.read_text(encoding="utf-8"), filename=str(START_PY))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "uvicorn"
+            and func.attr == "run"
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            return node.args[0].value
+    raise AssertionError(
+        "No `uvicorn.run(\"<module>:<attr>\", ...)` call with a string literal "
+        "was found in start.py. scripts/build_native_release.py's "
+        "_collect_asgi_target_hidden_imports requires that literal and raises "
+        "SystemExit without it, so the build is already broken if this fires."
+    )
+
+
+def test_asgi_target_constant_matches_what_uvicorn_is_given() -> None:
+    from app.start import ASGI_TARGET
+
+    literal = _uvicorn_target_literal()
+    assert ASGI_TARGET == literal, (
+        f"ASGI_TARGET is {ASGI_TARGET!r} but uvicorn.run is given {literal!r}. "
+        "--selftest would verify a different application from the one the "
+        "binary serves, which is a gate passing for the wrong reason — exactly "
+        "the v0.4.2 shape."
+    )
+
+
+def test_asgi_target_is_in_uvicorn_import_string_form() -> None:
+    from app.start import ASGI_TARGET
+
+    module, separator, attribute = ASGI_TARGET.partition(":")
+    assert separator and module and attribute, (
+        f"ASGI_TARGET {ASGI_TARGET!r} is not in uvicorn's required "
+        '"<module>:<attribute>" form.'
+    )
