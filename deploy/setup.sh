@@ -348,6 +348,30 @@ stage1_bootstrap() {
   export CB_DATA_DIR
 }
 
+# Total RAM in MiB, without depending on free(1).
+#
+# free(1) ships in procps-ng, which minimal Fedora, Rocky and AlmaLinux images do
+# NOT install — and nothing in this installer's dependency lists pulls it in. Two
+# call sites used it, and they failed differently, which is why only one was ever
+# visible: the pre-flight check assigns with `local ram_mb=$(free -m ...)`, and a
+# `local` declaration's exit status is the declaration's, not the command
+# substitution's, so `set -e` let it through and merely printed
+# "Low RAM detected: MB (< 1GB)" with an empty value. The Redis sizing call was a
+# bare assignment, so `set -e` saw the 127 and aborted the whole install at
+# "Services and networking".
+#
+# /proc/meminfo is part of procfs, present on every Linux the installer supports,
+# and needs no package. Falls back to 0 rather than empty so the numeric
+# comparisons at the call sites can never be fed a non-integer.
+cb_total_ram_mb() {
+  local kb=""
+  if [[ -r /proc/meminfo ]]; then
+    kb="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || true)"
+  fi
+  [[ "$kb" =~ ^[0-9]+$ ]] || kb=0
+  printf '%s' "$(( kb / 1024 ))"
+}
+
 stage0_preflight() {
   cb_header
   cb_section "Pre-flight Checks"
@@ -425,7 +449,8 @@ stage0_preflight() {
   fi
   cb_ok "Disk space: ${free_disk_gb}GB free"
   
-  local ram_mb=$(free -m | awk '/^Mem:/{print $2}')
+  local ram_mb
+  ram_mb="$(cb_total_ram_mb)"
   if [[ "$ram_mb" -lt 1024 ]]; then
     cb_warn "Low RAM detected: ${ram_mb}MB (< 1GB). Performance may be limited."
   else
@@ -720,7 +745,7 @@ stage3_configure_redis() {
   mkdir -p /etc/redis
 
   local ram_mb
-  ram_mb=$(free -m | awk '/^Mem:/{print $2}')
+  ram_mb="$(cb_total_ram_mb)"
   local redis_maxmem="256mb"
   [[ "$ram_mb" -lt 2048 ]] && redis_maxmem="128mb"
 
