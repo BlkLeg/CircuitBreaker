@@ -441,7 +441,13 @@ stage0_preflight() {
     cb_ok "No existing installation — fresh install"
   fi
 
-  # Initialize log directory early
+  # Initialize log directory early. install.sh's caller-side merge step
+  # ("Merge bootstrap log into final install log", right after this function
+  # returns) appends /tmp/cb-bootstrap.log — where the "preflight" phase
+  # logged before this permanent file existed — onto what gets written here,
+  # so truncating this file is safe: nothing durable has been written to it
+  # yet, and the bootstrap phase's own records live at the other path until
+  # that merge step runs.
   mkdir -p "${CB_DATA_DIR}/logs"
   LOG_FILE="${CB_DATA_DIR}/logs/install.log"
   echo "=== Circuit Breaker Installation Log ===" > "$LOG_FILE"

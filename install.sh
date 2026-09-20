@@ -1679,6 +1679,16 @@ main() {
   fi
 
   cb_require_native_root "$@"
+
+  # Set and truncate before cb_ui_init: _cb_log no-ops on an empty LOG_FILE,
+  # and cb_ui_init's own "ui: mode=" line plus everything stage0_bootstrap_
+  # preflight logs during the "preflight" phase below would otherwise reach
+  # no file at all. This must not be re-truncated later — the handover to
+  # ${CB_DATA_DIR}/logs/install.log in stage0_preflight (deploy/setup.sh)
+  # folds this file's contents in rather than dropping them.
+  LOG_FILE="/tmp/cb-bootstrap.log"
+  echo "=== Bootstrap Log ===" > "$LOG_FILE"
+
   cb_ui_init
 
   if [[ "${UPGRADE_MODE}" == "true" ]]; then
@@ -1690,9 +1700,6 @@ main() {
   cb_phase_begin preflight "Pre-flight checks"
   stage0_bootstrap_preflight
   cb_phase_end preflight
-
-  LOG_FILE="/tmp/cb-bootstrap.log"
-  echo "=== Bootstrap Log ===" > "$LOG_FILE"
 
   cb_phase_begin bundle "Downloading bundle"
   stage0_download_bundle
