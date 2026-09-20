@@ -314,3 +314,235 @@ named.
   is untouched. This patched artifact was used only for local re-verification; nothing
   under `dist/` is committed, and CI builds its own bundle from source on every run
   regardless.
+
+## Addendum (same day) — Debian 12 and Ubuntu 22.04 re-run against the Arch fixes
+
+The two genuine defects found and fixed above (commits `90fba73b`,
+`8d54a69f`) touch `deploy/systemd/circuitbreaker-postgres.service`,
+`deploy/config/postgresql.conf.template` and `deploy/setup.sh` — all three used by
+every distro, not only Arch. This addendum closes the gap the rest of this document
+left open: **Debian 12 and Ubuntu 22.04 — "already covered; not re-run" above — are
+now re-run against the fix-patched tree**, on a properly glibc-compatible bundle
+(not the patched-tarball workaround used for the Arch/Fedora re-runs above).
+
+### Build: `scripts/build-in-release-image.sh`
+
+Ran to completion, via `docker` (auto-selected ahead of `podman` per the script's own
+`for candidate in docker podman` probe order — docker was present and usable on this
+host; podman was only needed, and used, for the systemd-in-a-container journey legs
+below). Output bundle:
+
+```
+$ ls -lh dist/native/circuit-breaker_0.4.2_linux_amd64.tar.gz
+-rw-r--r--. 1 shawnji shawnji 175M Sep 20 12:29 dist/native/circuit-breaker_0.4.2_linux_amd64.tar.gz
+
+$ cat dist/native/bundle/share/build-info.json
+{
+  "version": "0.4.2", "os": "linux", "arch": "amd64", "built_by": "local",
+  "glibc": "2.35", "distro": "ubuntu-22.04", "python": "3.12.13",
+  "ci_run": "", "ci_workflow": "", "commit": ""
+}
+```
+
+`glibc: "2.35"` — the same floor `.github/workflows/build.yml` produces, confirmed
+below to be below both target distros' own glibc.
+
+### glibc-floor confirmation
+
+`objdump -T` on the outer PyInstaller bootloader ELF only shows symbols up to
+`GLIBC_2.14` — the onefile bootloader's own direct imports, not the embedded
+interpreter's, so that check alone is not informative for a onefile build. The
+direct proof is executing the binary on each target distro:
+
+```
+$ podman run --rm -v ".../circuit-breaker:/circuit-breaker:ro,z" docker.io/library/debian:12 \
+    /circuit-breaker --selftest
+CORS: no valid origins configured — same-origin only.
+selftest OK — 10 targets resolved
+
+$ podman run --rm -v ".../circuit-breaker:/circuit-breaker:ro,z" docker.io/library/ubuntu:22.04 \
+    /circuit-breaker --selftest
+tzlocal/unix.py:208: UserWarning: Can not find any timezone configuration, defaulting to UTC.
+CORS: no valid origins configured — same-origin only.
+selftest OK — 10 targets resolved
+```
+
+(The `:ro,z` SELinux relabel on the bind mount is a sandbox necessity on this
+enforcing-SELinux Fedora host — the first attempt without it failed every exec with
+`Permission denied`, not a glibc problem. Recorded as another local-repro-only
+deviation, same category as the `sudo podman` one above.)
+
+Both distros execute the binary and pass `--selftest` cleanly: the 2.35 floor
+clears Debian 12's glibc 2.36 and Ubuntu 22.04's own glibc 2.35.
+
+### Debian 12 — full output, "Journey complete"
+
+Bootstrap identical in shape to the Fedora/Arch runs above and to
+`.github/workflows/installer-journey.yml`'s apt branch: base `debian:12` image has no
+init at all, so `apt-get install systemd systemd-sysv curl jq openssl ca-certificates`
+first (creates `/sbin/init` via `update-alternatives`, the apt-family behavior the
+workflow file's own comments already document), commit as a base image, then start the
+real systemd container from it with `--cap-add=NET_ADMIN,NET_RAW`.
+
+```
+=== Install from the staged bundle ===
+[19:32:34] Pre-flight checks
+[19:32:34] Pre-flight checks — done in 0s
+[19:32:34] Downloading bundle
+[19:32:34] Downloading bundle — done in 0s (approx.)
+[19:32:34] Installing files
+[19:32:34] Installing files — done in 0s (approx.)
+[19:32:34] System dependencies
+    Application: /opt/circuitbreaker
+    Data: /var/lib/circuitbreaker
+    Config: /etc/circuitbreaker
+    Binary path: /usr/lib/postgresql/15/bin
+    Install path: /usr/local/bin/nats-server
+[19:33:16] System dependencies — done in 42s
+[19:33:16] Preparing database
+    Data directory: /var/lib/circuitbreaker/postgres (postgres:postgres 700)
+    Pool port: 6432, Backend: PostgreSQL 5432
+[19:33:27] Preparing database — done in 11s
+[19:33:27] Services and networking
+    Redis data: /var/lib/circuitbreaker/redis (redis:redis)
+    Port: 6379, Max memory: 256MB, Policy: allkeys-lru
+    Port: 4222, Store: /var/lib/circuitbreaker/nats
+[19:33:35] warning: Could not pull docker-socket-proxy image — container telemetry disabled
+[19:33:35] warning: Enable it later: docker pull tecnativa/docker-socket-proxy && bash install.sh --upgrade
+[19:33:35] Services and networking — done in 8s
+[19:33:35] Starting Circuit Breaker
+[19:33:53] Starting Circuit Breaker — done in 18s
+  Installation complete! Open the HTTPS URL above to get started.
+
+=== Assert the installer reported every phase ===
+=== Wait for /livez ===
+=== Wait for /readyz ===
+{"ready":true,"state":"ready","checks":{"db":"ok","redis":"ok"},"health":"ready","degraded":[],"writes_permitted":true}
+=== Assert the installed binary contains its application ===
+selftest OK — 10 targets resolved
+
+=== Journey complete ===
+```
+
+`journey exit code for debian12: 0`. Same `Could not pull docker-socket-proxy image`
+harness limitation already classified above (nested-container Docker), nothing new.
+
+### Ubuntu 22.04 — full output, "Journey complete"
+
+```
+=== Install from the staged bundle ===
+[19:35:07] Pre-flight checks
+[19:35:07] Pre-flight checks — done in 0s
+[19:35:07] Downloading bundle
+[19:35:08] Downloading bundle — done in 1s
+[19:35:08] Installing files
+[19:35:09] Installing files — done in 1s
+[19:35:09] System dependencies
+    Binary path: /usr/lib/postgresql/15/bin
+    Install path: /usr/local/bin/nats-server
+[19:36:00] System dependencies — done in 51s
+[19:36:00] Preparing database
+    Data directory: /var/lib/circuitbreaker/postgres (postgres:postgres 700)
+    Pool port: 6432, Backend: PostgreSQL 5432
+[19:36:11] Preparing database — done in 11s
+[19:36:11] Services and networking
+    Redis data: /var/lib/circuitbreaker/redis (redis:redis)
+    Port: 6379, Max memory: 256MB, Policy: allkeys-lru
+    Port: 4222, Store: /var/lib/circuitbreaker/nats
+[19:36:20] warning: Could not pull docker-socket-proxy image — container telemetry disabled
+[19:36:20] warning: Enable it later: docker pull tecnativa/docker-socket-proxy && bash install.sh --upgrade
+[19:36:21] Services and networking — done in 10s
+[19:36:21] Starting Circuit Breaker
+[19:36:38] Starting Circuit Breaker — done in 17s
+  Installation complete! Open the HTTPS URL above to get started.
+
+=== Assert the installer reported every phase ===
+=== Wait for /livez ===
+=== Wait for /readyz ===
+{"ready":true,"state":"ready","checks":{"db":"ok","redis":"ok"},"health":"ready","degraded":[],"writes_permitted":true}
+=== Assert the installed binary contains its application ===
+selftest OK — 10 targets resolved
+
+=== Journey complete ===
+```
+
+`journey exit code for ubuntu2204: 0`. Same harness-limitation warning, no new
+findings.
+
+**Conclusion: the two Arch fixes did not regress the apt path.** Both apt-family
+legs — the two distros this document's original table listed as "unchanged, not
+re-run" — now have their own direct evidence: **re-run, both green, on a
+glibc-2.35-floor bundle built the same way CI builds its own.** The table above is
+superseded by this addendum for those two rows; nothing else in this document
+changes.
+
+### `RuntimeDirectory=postgresql` / `/run/postgresql` shared-ownership check
+
+Investigated per explicit instruction before touching anything, because
+`RuntimeDirectory=` makes systemd remove that directory when the owning unit stops,
+and Debian's `postgresql-common` package also manages `/run/postgresql` via its own
+persistent `systemd-tmpfiles.d` rule (`d /run/postgresql 2775 postgres postgres`,
+confirmed by reading `/usr/lib/tmpfiles.d/postgresql-common.conf` directly in a
+`debian:12` container) — a directory that predates and is independent of any single
+systemd unit's `RuntimeDirectory=` tracking.
+
+Built a synthetic reproduction first (a throwaway `cb-test-postgres.service` in a
+scratch systemd container, `RuntimeDirectory=postgresql`, no relation to this repo)
+to confirm systemd's actual behavior in isolation: starting it removed and recreated
+`/run/postgresql` under systemd's ownership (root:root 0755, losing
+`postgresql-common`'s `2775`/setgid); stopping it **deleted `/run/postgresql`
+entirely** until the unit started again. `RuntimeDirectoryPreserve=yes` on the same
+synthetic unit confirmed to prevent the deletion on stop while still creating the
+directory on start if absent — so the removal-on-stop behavior, and the proposed
+remedy, are both real as systemd primitives. No repository file was touched for this
+synthetic test.
+
+Whether that primitive is actually a hazard **in Circuit Breaker's own deployment
+model** turns on whether anything else is still using `/run/postgresql` when
+`circuitbreaker-postgres` stops on an installed host. It is not, and the two apt
+journey runs above prove it directly rather than by inspection alone —
+`deploy/setup.sh:490-491` and `:1747-1748` stop **and disable** the distro's own
+PostgreSQL service before `circuitbreaker-postgres` ever starts, and pin each
+detected cluster's `start.conf` to `manual` so the `postgresql-common` boot-time
+generator won't restart it either. Checked directly in both completed installs
+above:
+
+```
+# Debian 12, after "Journey complete":
+$ systemctl is-active postgresql    → inactive
+$ systemctl is-enabled postgresql   → disabled
+$ cat /etc/postgresql/15/main/start.conf → manual
+$ systemctl is-active circuitbreaker-postgres → active
+$ systemctl is-enabled circuitbreaker-postgres → enabled
+
+# Ubuntu 22.04, after "Journey complete": identical — inactive / disabled / manual /
+# active / enabled.
+```
+
+**Finding: not a hazard in this deployment model, no change made.**
+`circuitbreaker-postgres` is the sole consumer of `/run/postgresql` on an installed
+host in both apt-family runs actually exercised here — the distro's own PostgreSQL
+is neutralized (stopped, disabled, and its generator-driven autostart pinned off)
+before Circuit Breaker's instance ever touches that directory, so systemd removing
+`/run/postgresql` when `circuitbreaker-postgres` stops cannot pull it out from under
+anything that is actually running on a Circuit Breaker host. `deploy/systemd/
+circuitbreaker-postgres.service` is unchanged; `RuntimeDirectoryPreserve=yes` was not
+added. The only residual is an operator who deliberately re-enables the distro
+PostgreSQL afterwards, which contradicts what the installer itself set up and is out
+of scope for this check.
+
+### Verification gates
+
+```
+$ .venv/bin/python -m pytest tests/build -q
+766 passed in 104.42s
+
+$ .venv/bin/python scripts/ci/sync_installer_ui.py --check
+install.sh is in sync with deploy/lib/ui.sh
+
+$ sha256sum of cb_logo's body in install.sh
+dc85b6b9501fbad91dac6a3988857365b772530967af2456e6dfc4857a5db36d   (unchanged, matches required hash)
+```
+
+No commits were made for this addendum — no `install.sh`, `deploy/`, or systemd unit
+file changed. `git status` is clean before and after.
