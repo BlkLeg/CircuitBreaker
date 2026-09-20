@@ -31,9 +31,14 @@ So this document specifies:
   than it returns, what replaces it, and the measurements that decide.
 - **Part III — release verification.** Why v0.4.2 shipped a binary with no
   application inside it and passed every blocking gate while doing so.
+- **Part IV — review against industry practice.** Added after Parts I–III were
+  reviewed: the verdict, the systemic pattern behind six documented incidents,
+  and the seven work items that review added.
 
-Part III is the load-bearing one. Parts I and II are improvements; Part III is
-the reason the other two are worth doing.
+Part III looked load-bearing while Parts I–III were being written. Part IV
+concluded it is not: the load-bearing item is signal trust (§16.1), without
+which Part III's new gates add noise rather than confidence. Parts I and II are
+improvements; §17 carries the authoritative order.
 
 ---
 
@@ -599,6 +604,9 @@ constraint stated at the outset.
 
 ## 12. Sequencing
 
+> **Superseded by §17.** The review in Part IV reordered this: signal trust
+> (§16.1, §16.3) precedes every gate added here. §17 is the authoritative order.
+
 Each numbered step below is a separate implementation plan. This document is
 too large for one plan, and the parts have no shared state: Part III changes CI
 and one entrypoint flag, Part II changes the build script and packaging
@@ -631,3 +639,184 @@ Steps 1 and 2 are worth doing even if nothing else in this document ships.
 4. §3's weights are placeholders by construction. They are resolved by the
    §9-adjacent calibration run, not by judgement — the implementation plan must
    not let them ship unmeasured.
+
+---
+
+# Part IV — Review against industry practice
+
+Parts I–III were reviewed against supply-chain and release-engineering norms
+(SLSA build provenance, NIST SSDF verification practice, standard release-gate
+and flake-management discipline) and against this project's own release
+history. This part records the verdict and the work it added.
+
+## 14. Verdict
+
+**Supply-chain integrity and governance are already enterprise-grade. Functional
+verification and signal reliability are not.**
+
+The pipeline is unusually strong at proving *what* was built and *that it is
+authentic*:
+
+| Practice | State |
+|---|---|
+| Artifact signing | cosign keyless via OIDC |
+| SBOM | syft, CycloneDX **and** SPDX, backend and frontend |
+| Build provenance | buildx `--provenance=true --sbom=true` |
+| Vulnerability scan before signing | Trivy on the image, deliberately ordered before cosign |
+| Pre-release channel discipline | `release_channel.py` — an RC can never move `latest` (GOV-20) |
+| Version parity | `check_version_parity.py`, asserted end-to-end in `artifact-smoke` |
+| Requirement governance | `specs/1.0.0/release-control/` — requirement ledger, blocker register, exception register, validated by `validate_v1_release_control.py` |
+| Pinned inputs | `matrix.yaml` pins distributor-published image digests, with a written rationale for refusing locally computed ones |
+
+Very little of that is typical for a self-hosted project. It is the work of
+someone who has thought hard about supply chain.
+
+And it is orthogonal to why releases hurt. **Every one of those controls can
+pass on an artifact that does not run.** v0.4.2 was signed, attested,
+SBOM'd, scanned, version-parity-checked, and empty.
+
+## 15. The systemic finding
+
+The request framed v0.4.2 as one bad release in a pattern. The pattern is real,
+and it is narrower than "not enough testing". Six documented incidents:
+
+| # | Incident | What it actually was |
+|---|---|---|
+| 1 | v0.4.2 shipped a binary with no application | Gate green for the wrong reason (§1.5) |
+| 2 | v0.4.0 failed `artifact-smoke` after every package and image had been built — recorded in that workflow's own comments | Cheap disproof ordered after expensive work |
+| 3 | Nightly E2E characterised three-week-old `main` for nine-plus consecutive runs, because `schedule` loads workflow YAML from the default branch | The signal measured the wrong code |
+| 4 | Roughly eight of ten composed-agent E2E failures traced to one harness bug — a bind-mounted Postgres that never reset — so failures read as product defects | The signal cried wolf |
+| 5 | PR #141: `make verify-full` offered as evidence for a Playwright bump that gate never executes, and a genuinely red Browser E2E written off as "stale runs" | A true signal discounted |
+| 6 | `security_scan.sh` truncates a fixed report path with no lock, so two concurrent gate runs interleave into one garbled artifact | Evidence unreliable even when the decision was right |
+
+These are not six unrelated bugs. Incidents 3, 4 and 6 destroy trust in
+signals. Incident 5 is what trained distrust produces. Incidents 1 and 2 are
+gates that return green without having asked the question.
+
+**The through-line: signals here are not reliably trustworthy, and an untrusted
+signal is operationally equivalent to no signal.**
+
+This has a direct and uncomfortable consequence for Part III. **Part III adds
+five new gates to a system where red is routinely discounted.** Gates added on
+top of unreliable signals do not raise confidence; they add noise, lengthen the
+pipeline, and give the discounting habit more to feed on. Part III is
+necessary. It is not sufficient, and on its own it is not even clearly safe.
+
+Signal trust is therefore prioritised ahead of gate count in §17.
+
+## 16. Additional work this review identified
+
+### 16.1 A flake and quarantine policy
+
+There is none today. No quarantine list, no rerun policy, no flake tracking; a
+single `continue-on-error` in `baseline.yml` is the entire mechanism.
+
+Required:
+
+- A red required check is **fixed, or explicitly quarantined with an owner and
+  an expiry date.** Never left red and never talked past. The exception
+  register under `specs/1.0.0/release-control/` already models exactly this
+  shape for requirements; flake exceptions adopt it.
+- Quarantine is a file in the repo, not a habit of mind. `tests/QUARANTINE.md`
+  lists suite, reason, owner, expiry. A test asserts no entry is past expiry.
+- CLAUDE.md's rule 2 ("never dismiss a red check as stale, flaky, or
+  pre-existing without proving it") gains teeth: the proof, or the quarantine
+  entry, is the only two permitted outcomes.
+
+This is the highest-priority item in the entire document. Incidents 3–5 do not
+recur without it, and Part III is not safe to land before it.
+
+### 16.2 Cheapest disproof first
+
+State the ordering principle and apply it: a gate that can disprove publishability
+runs before any gate that costs more. §9.2 (`--selftest` inside the build,
+before staging) is one instance; incident 2 is what its absence costs.
+
+Concretely: `artifact-smoke` currently runs after `build` and in parallel with
+`image`. The `--selftest` in §9.2 moves the cheapest possible disproof to the
+earliest possible point — inside the job that produced the binary.
+
+### 16.3 A guard against the scheduled-workflow ref hazard
+
+Incident 3 is silent, recurring, and invisible in the run log unless someone
+reads the checkout line. CLAUDE.md's rule 5 ("when a bump breaks a pairing like
+this, add the guard rather than only fixing the instance") applies directly.
+
+Add `tests/build/test_scheduled_workflows_pin_their_ref.py`: any workflow with a
+`schedule:` trigger must either check out an explicit `ref`, or carry a
+documented marker comment declaring default-branch execution intentional.
+
+### 16.4 Post-publication verification
+
+Nothing verifies the artifacts *after* they are published, from the URLs users
+actually fetch. Add a job that runs after `publish`:
+
+- downloads the tarball from the GitHub Release download URL,
+- verifies it against the published `SHA256SUMS`,
+- runs `--selftest` on the binary inside it,
+- runs `install.sh --version <candidate>` in `--dry-run`-equivalent form to
+  confirm release discovery resolves the new version.
+
+It is the last line of defence and the only one that tests the real
+distribution path. Had it existed, v0.4.2 would have been caught within minutes
+of publication rather than by users.
+
+### 16.5 Rollback coverage for the tarball path
+
+`tier3-artifact.sh` exercises upgrade **and documented rollback** for deb and
+rpm. The tarball path has `run_upgrade` with a pre-upgrade backup and no test
+that restoring it works. Add a tarball upgrade-and-rollback row wherever §9.5
+lands.
+
+### 16.6 A diagnostic bundle command
+
+§5 improves what a failed install prints. The enterprise norm is that an
+operator can hand over one redacted file. Add `cb diag bundle`: install log,
+`cb doctor --json`, unit states, recent journal for `circuitbreaker-*`, the
+install identity record, and `cb_env_redacted` output, as a single tarball with
+secrets stripped by the existing redaction helpers.
+
+### 16.7 Per-release control, not just per-1.0.0
+
+`specs/1.0.0/release-control/` is strong governance that applies to one future
+milestone. v0.4.2 shipped with no equivalent. Add a short per-release checklist
+— generated, not hand-written — asserting for the candidate: all required
+checks green or quarantined with unexpired entries; `--selftest` passed on
+every published artifact; tier 3 evidence commit recorded or explicitly waived;
+CHANGELOG entry present. The gap between the rigour of `specs/1.0.0/` and how
+0.4.2 actually shipped **is** the disjointedness being reported.
+
+## 17. Revised sequencing
+
+§12's ordering is superseded. Signal trust comes first; gates second.
+
+| Step | Work | Rationale |
+|---|---|---|
+| 0 | §16.1 flake and quarantine policy; §16.3 scheduled-ref guard | Without these, added gates add noise. Non-negotiable prerequisite |
+| 1 | §9.1 `--selftest` + `cb doctor` check; §9.2 build-time gate; §9.3 smoke gate | Closes the v0.4.2 class at three points. Small and independent |
+| 2 | §9.4 tarball smoke row; §16.4 post-publication verification; §9.7 CLAUDE.md correction | First coverage of the flagship path |
+| 3 | §16.7 per-release control checklist; §16.6 `cb diag bundle` | Makes release readiness assertable rather than felt |
+| 4 | §8 packaging benchmark, then §7.1 or §7.2 by the stated decision rule | Removes the hazard class at source |
+| 5 | Part I §4 — `ui.sh` and the native install path | The originally requested change |
+| 6 | Part I §6 — upgrade and uninstall |  |
+| 7 | §9.5 installer journey in CI; §9.6 tier 3 dispatch; §16.5 tarball rollback | Largest and most flake-prone; lands on a foundation that can tell flake from failure |
+
+The requested work is step 5. That is not a demotion of it — it is the
+observation that a quiet installer is only trustworthy on top of a pipeline
+whose signals mean something, and that steps 0–2 are small, cheap, and
+independently valuable.
+
+## 18. Answer to the question asked
+
+**Is this an enterprise-grade solution?**
+
+Parts I–III as originally written: **no.** Part III fixes the specific defect
+that produced v0.4.2 and materially improves the situation, but it adds gates
+to a system whose existing gates are not consistently believed, and it leaves
+untouched the mechanisms behind four of the six documented incidents.
+
+Parts I–IV together, executed in §17's order: **yes**, for this product's
+threat and operating model. The supply-chain half already exceeds the norm. The
+missing half was never more testing — it was trustworthy signals, cheap
+disproof ordered first, verification of the real distribution path, and release
+readiness that is asserted rather than assumed.
