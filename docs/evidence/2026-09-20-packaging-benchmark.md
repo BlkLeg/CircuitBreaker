@@ -143,3 +143,68 @@ plans/2026-09-20-step4-packaging-toolchain.md, which is executed only if the
 benchmark's decision rule selects it.
 (exit 1)
 ```
+
+---
+
+## Decision (2026-09-20)
+
+**The rule, fixed in the design spec §21 before any measurement existed:**
+
+> Adopt §20.2 (python-build-standalone) unless it regresses compressed artifact
+> size by more than 40% or build wall-clock by more than 50%; otherwise adopt
+> §20.1 (`--onedir`). Either way, `--onefile` does not survive.
+
+**Measured, amd64:**
+
+| metric | onefile | onedir | change |
+|---|---:|---:|---:|
+| compressed artifact | 301.5 MiB | 506.9 MiB | **+68.1%** |
+| build wall-clock | 77.7 s | 89.4 s | +15.1% |
+| warm start to `--selftest` | 2.849 s | 2.421 s | −15.0% (0.428 s/process) |
+
+**Outcome: neither alternative is adopted. `--onefile` survives, contrary to the
+rule's "either way" clause.**
+
+The reasoning, recorded because the conclusion contradicts the plan that
+commissioned the measurement:
+
+1. **`onedir` fails the rule's own disqualifier.** The rule applies a >40%
+   compressed-size threshold to python-build-standalone. `onedir` regresses
+   compressed size by **68.1%**. It was exempted from that test only because the
+   plan assumed `onedir` was roughly size-neutral — an assumption these numbers
+   refute. Applying the same standard even-handedly disqualifies it.
+
+2. **What the regression buys is small.** 0.428 s per process start. Across the
+   backend and six workers that is **3.0 s at boot**, against **+205 MiB on every
+   download**, for a self-hosted product whose users fetch over home connections.
+
+3. **The central premise is unproven, not merely unmet.** The argument for
+   abandoning `--onefile` was that `_MEI` extraction is paid at every process
+   start. Cold and warm figures here are indistinguishable (2.856/2.849 and
+   2.418/2.421) because the page cache could not be dropped without root, so the
+   *cold* extraction cost has not been measured at all. The 0.428 s delta is a
+   warm-start figure.
+
+**Consequences, stated rather than left implicit:**
+
+- `specs/1.0.0/slices/agt-3-pyinstaller-containment.md` stays live. The `_MEI`
+  containment burden is a real, ongoing cost that this measurement does not
+  remove, and the slice should not be closed.
+- The hidden-import hazard (three collectors in `build_native_release.py`,
+  including an AST parser) also stays. `--onedir` would not have fixed it either;
+  only python-build-standalone would.
+- `--selftest` (shipped in step 1) is what actually guards the v0.4.2 failure
+  class, and it is independent of packaging. That protection is already in place.
+
+**What would change this answer**, in priority order:
+
+1. A **root-enabled cold-start measurement**. If cold extraction costs materially
+   more than warm, the trade shifts. This is the cheapest missing input.
+2. A **python-build-standalone prototype**, measured. It is the only candidate
+   that removes the extraction tax *and* the hidden-import hazard, and it is the
+   one the rule was actually written for. It remains unevaluated.
+3. **arm64 figures.** Unmeasured here; no arm64 host was available. Not
+   extrapolated from amd64, deliberately.
+
+The tooling to answer all three is committed (`scripts/bench_packaging.py`,
+`--packaging`, `--output-dir`). The default packaging mode is unchanged.

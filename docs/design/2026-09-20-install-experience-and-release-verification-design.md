@@ -630,6 +630,29 @@ architectures:
 wall-clock by more than 50%; otherwise adopt §20.1. Either way, `--onefile`
 does not survive.
 
+> **Measured 2026-09-20 — the rule's last clause was wrong, and the rule caught it.**
+> See `docs/evidence/2026-09-20-packaging-benchmark.md`. On amd64, `--onedir`
+> regresses compressed artifact size by **68.1%** (301.5 → 506.9 MiB) to save
+> **0.428 s per process start** — 3.0 s across the backend and six workers. It
+> therefore fails the >40% disqualifier the rule applies to §20.2; it was exempt
+> from that test only because this document assumed `--onedir` was roughly
+> size-neutral, which the measurement refutes.
+>
+> **Neither alternative was adopted. `--onefile` survives.** Adding 205 MiB to
+> every download of a self-hosted product to save three seconds at boot is a bad
+> trade, and the cold-extraction cost that motivated the whole section remains
+> *unmeasured* — the page cache could not be dropped without root, so cold and
+> warm figures are indistinguishable.
+>
+> Two consequences this document must not leave implicit: AGT-3's `_MEI`
+> containment burden **stays live** and its slice should not be closed, and the
+> hidden-import hazard **stays** too (`--onedir` would not have fixed it; only
+> §20.2 would). What does guard the v0.4.2 failure class is `--selftest` from
+> Part II, which is independent of packaging and already shipped.
+>
+> The cheapest missing input is a root-enabled cold-start measurement; after
+> that, a §20.2 prototype. The tooling for both is committed.
+
 Note that §9 is independent of this decision and protects whichever is chosen.
 
 ---
