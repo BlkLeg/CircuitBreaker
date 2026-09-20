@@ -76,57 +76,15 @@ _info() { echo -e "${GR}[${R}${G} INFO ${R}${GR}]${R} $*" >&2; }
 _warn() { echo -e "${GR}[${R}${Y}NOTICE${R}${GR}]${R} $*" >&2; }
 _fail() { echo -e "${GR}[${R}${RED}ERROR${R}${GR}]${R} $*" >&2; exit 1; }
 
-_redact_evidence() {
-  # Bound + redact operator-facing evidence for doctor JSON/human tails.
-  local text="${1:-}"
-  if command -v python3 >/dev/null 2>&1; then
-    CB_EVIDENCE_IN="$text" python3 -c '
-import os, re
-text = os.environ.get("CB_EVIDENCE_IN") or ""
-text = re.sub(r"(?i)(PASSWORD|TOKEN|SECRET|VAULT_KEY|JWT)=\S+", r"\1=[REDACTED]", text)
-text = re.sub(
-    r"(?i)(postgresql|mysql|redis|nats)://([^:/@]+):([^@/\s]+)@",
-    r"\1://\2:[REDACTED]@",
-    text,
-)
-for key in ("CB_VAULT_KEY", "CB_JWT_SECRET", "CB_DB_PASSWORD", "NATS_AUTH_TOKEN"):
-    val = os.environ.get(key) or ""
-    if len(val) >= 4 and val in text:
-        text = text.replace(val, "[REDACTED]")
-print(text[:500], end="")
-' 2>/dev/null || printf '%s' "${text:0:500}"
-  else
-    printf '%s' "${text:0:500}"
-  fi
-}
-
-# Everything here is written to be pasted into a public issue, so every source
-# goes through the redaction that source already has — cb_env_redacted for the
-# env file, the CLI's own masking for doctor output — and nothing is added
-# without a matching assertion in tests/build/test_diag_bundle_redaction.py.
-#
-# Never uploads. The air-gap contract forbids an outbound call, and an operator
-# handing over a file should be the one who decides where it goes.
-_redact_stream() {
-  # Same substitution patterns as _redact_evidence — the (PASSWORD|TOKEN|
-  # SECRET|VAULT_KEY|JWT)= form, the scheme://user:pass@ form, and the
-  # env-value replacement — but reading stdin to stdout whole, with NO
-  # truncation. _redact_evidence exists for short doctor evidence tails and
-  # cuts everything to 500 characters; install.log and journal.txt run to
-  # hundreds of lines, and piping either through that would ship the first
-  # 500 characters as "redacted" while the rest — including any secret past
-  # that point — goes out verbatim.
-  #
-  # Fails closed: if python3 is unavailable, nothing is written to stdout and
-  # this returns non-zero. The caller MUST treat that as fatal to the whole
-  # bundle. A missing interpreter must never degrade into shipping a stream
-  # unredacted — that is exactly the failure `cb diag bundle` exists to avoid.
-  if ! command -v python3 >/dev/null 2>&1; then
-    return 1
-  fi
-  python3 -c '
-import os, re, sys
-text = sys.stdin.read()
+# Single source of truth for the substitution patterns _redact_stream and
+# _redact_evidence both apply. Emits Python source that operates on a
+# variable named `text` already bound in the caller's scope — never define
+# these regexes a third time inline; add or change a pattern here only.
+# test_redact_functions_share_pattern_set (tests/build/test_diag_bundle_redaction.py)
+# asserts both functions embed exactly this output, so a future edit to one
+# and not the other fails the build instead of shipping a silent gap.
+_redact_pattern_source() {
+  cat <<'PY'
 # Key pattern: unanchored, full identifier ([A-Za-z0-9_]* on both sides of the
 # alternation) so CB_REDIS_PASSWORD, CB_JWT_SECRET and an inline
 # "... CB_JWT_SECRET=x" occurrence in a log line all match — not just a
@@ -150,6 +108,58 @@ text = re.sub(
     r"\1[REDACTED]:[REDACTED]@",
     text,
 )
+PY
+}
+
+_redact_evidence() {
+  # Bound + redact operator-facing evidence for doctor JSON/human tails.
+  # Uses the exact same substitution patterns as _redact_stream, via
+  # _redact_pattern_source — only the 500-character truncation below is
+  # unique to this function, deliberately, for short doctor evidence tails.
+  local text="${1:-}"
+  if command -v python3 >/dev/null 2>&1; then
+    CB_EVIDENCE_IN="$text" CB_REDACT_PATTERNS="$(_redact_pattern_source)" python3 -c '
+import os, re
+text = os.environ.get("CB_EVIDENCE_IN") or ""
+exec(os.environ["CB_REDACT_PATTERNS"])
+for key in ("CB_VAULT_KEY", "CB_JWT_SECRET", "CB_DB_PASSWORD", "NATS_AUTH_TOKEN"):
+    val = os.environ.get(key) or ""
+    if len(val) >= 4 and val in text:
+        text = text.replace(val, "[REDACTED]")
+print(text[:500], end="")
+' 2>/dev/null || printf '%s' "${text:0:500}"
+  else
+    printf '%s' "${text:0:500}"
+  fi
+}
+
+# Everything here is written to be pasted into a public issue, so every source
+# goes through the redaction that source already has — cb_env_redacted for the
+# env file, the CLI's own masking for doctor output — and nothing is added
+# without a matching assertion in tests/build/test_diag_bundle_redaction.py.
+#
+# Never uploads. The air-gap contract forbids an outbound call, and an operator
+# handing over a file should be the one who decides where it goes.
+_redact_stream() {
+  # Same substitution patterns as _redact_evidence, via _redact_pattern_source
+  # — but reading stdin to stdout whole, with NO truncation. _redact_evidence
+  # exists for short doctor evidence tails and cuts everything to 500
+  # characters; install.log and journal.txt run to hundreds of lines, and
+  # piping either through that would ship the first 500 characters as
+  # "redacted" while the rest — including any secret past that point — goes
+  # out verbatim.
+  #
+  # Fails closed: if python3 is unavailable, nothing is written to stdout and
+  # this returns non-zero. The caller MUST treat that as fatal to the whole
+  # bundle. A missing interpreter must never degrade into shipping a stream
+  # unredacted — that is exactly the failure `cb diag bundle` exists to avoid.
+  if ! command -v python3 >/dev/null 2>&1; then
+    return 1
+  fi
+  CB_REDACT_PATTERNS="$(_redact_pattern_source)" python3 -c '
+import os, re, sys
+text = sys.stdin.read()
+exec(os.environ["CB_REDACT_PATTERNS"])
 for key in ("CB_VAULT_KEY", "CB_JWT_SECRET", "CB_DB_PASSWORD", "NATS_AUTH_TOKEN"):
     val = os.environ.get(key) or ""
     if len(val) >= 4 and val in text:
@@ -668,7 +678,12 @@ print(json.dumps({
       if [[ "$as_json" -eq 0 ]]; then
         printf "  ${G}✓${R}  %-30s OK\n" "$name"
       fi
-      _doctor_add "$component" "$name" pass info "${out:-ok}" "" true
+      # Redacted the same way the fail branch below redacts its diag output —
+      # a passing probe's stdout/stderr is just as likely to echo a
+      # connection string or an env var back (e.g. a DB ping printing the DSN
+      # it connected with), and this evidence lands in doctor.json, which
+      # cmd_diag_bundle copies into the bundle verbatim.
+      _doctor_add "$component" "$name" pass info "$(_redact_evidence "${out:-ok}")" "" true
     else
       if [[ "$as_json" -eq 0 ]]; then
         printf "  ${RED}✗${R}  %-30s FAILED\n" "$name"
@@ -2034,8 +2049,9 @@ cmd_diag_bundle() {
     echo "(install.log not found)" > "${work}/install.log"
   fi
 
-  # ── doctor.json — cb doctor already redacts its own evidence via
-  # _redact_evidence, so this is taken as-is ──
+  # ── doctor.json — cb doctor redacts every evidence field it writes via
+  # _redact_evidence, both the pass branch and the fail branch, so this is
+  # taken as-is ──
   bash "${BASH_SOURCE[0]}" doctor --json > "${work}/doctor.json" 2>/dev/null || true
   [[ -s "${work}/doctor.json" ]] || echo '[]' > "${work}/doctor.json"
 
