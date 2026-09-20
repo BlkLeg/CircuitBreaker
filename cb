@@ -127,10 +127,27 @@ _redact_stream() {
   python3 -c '
 import os, re, sys
 text = sys.stdin.read()
-text = re.sub(r"(?i)(PASSWORD|TOKEN|SECRET|VAULT_KEY|JWT)=\S+", r"\1=[REDACTED]", text)
+# Key pattern: unanchored, full identifier ([A-Za-z0-9_]* on both sides of the
+# alternation) so CB_REDIS_PASSWORD, CB_JWT_SECRET and an inline
+# "... CB_JWT_SECRET=x" occurrence in a log line all match — not just a
+# key that is exactly one of the listed words. Over-redaction (e.g. a
+# variable that merely contains KEY) is accepted; missing a real secret is
+# not.
 text = re.sub(
-    r"(?i)(postgresql|mysql|redis|nats)://([^:/@]+):([^@/\s]+)@",
-    r"\1://\2:[REDACTED]@",
+    r"(?i)([A-Za-z0-9_]*(?:SECRET|PASSWORD|PASSWD|TOKEN|KEY|CREDENTIAL)[A-Za-z0-9_]*)=\S+",
+    r"\1=[REDACTED]",
+    text,
+)
+# URL pattern: scheme-agnostic (any "word://", not a fixed list — this is
+# what missed http/https entirely) and empty-userinfo tolerant (`*` on the
+# userinfo class, not `+` — this is what missed "redis://:pw@", which is
+# exactly what deploy/setup.sh writes for CB_REDIS_URL). Also handles a
+# compound scheme like "postgresql+asyncpg://", which the async session DSN
+# is rewritten to and which a fixed alternation of scheme names cannot
+# match. Both the userinfo and the password are redacted.
+text = re.sub(
+    r"(?i)([a-z][a-z0-9+.\-]*://)([^:/@\s]*):([^@/\s]+)@",
+    r"\1[REDACTED]:[REDACTED]@",
     text,
 )
 for key in ("CB_VAULT_KEY", "CB_JWT_SECRET", "CB_DB_PASSWORD", "NATS_AUTH_TOKEN"):

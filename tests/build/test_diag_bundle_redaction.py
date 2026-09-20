@@ -25,6 +25,7 @@ Three things are asserted, because each one has failed differently before:
 from __future__ import annotations
 
 import os
+import re
 import stat
 import subprocess
 import tarfile
@@ -98,6 +99,83 @@ def test_no_planted_secret_appears_in_the_bundle(tmp_path: Path) -> None:
         "the diagnostic bundle contains unredacted secrets: "
         + "; ".join(leaked)
         + ". This file is meant to be pasted into a public issue."
+    )
+
+
+# Shapes that escaped both `_redact_stream` regexes before this fix, plus one
+# key-only canary. Each one was chosen because the *old* regex provably could
+# not match it — this is why the pre-existing three tests above all passed
+# on the unpatched code: they only ever planted shapes the old regex already
+# handled (a plain `postgresql://user:pass@` URL and a key that was exactly
+# CB_JWT_SECRET/CB_VAULT_KEY/CB_DB_PASSWORD), so the suite never exercised the
+# escape routes below.
+URL_SHAPE_PLANTED = {
+    # Empty userinfo: `[^:/@]+` in the old URL regex required at least one
+    # userinfo character. deploy/setup.sh writes exactly this shape
+    # (`redis://:${CB_REDIS_PASSWORD}@...`) into /etc/circuitbreaker/.env.
+    "CB_REDIS_URL": "redis://:PLANTEDREDISPW@127.0.0.1:6379/0",
+    # Compound scheme: the old alternation demanded `://` immediately after
+    # one of a fixed list of scheme names, so "postgresql+asyncpg://" (what
+    # apps/backend/src/app/db/async_session.py rewrites the DSN to) missed
+    # entirely.
+    "CB_DB_URL": (
+        "postgresql+asyncpg://breaker:PLANTEDDBPW@127.0.0.1:5432/circuitbreaker"
+    ),
+    # http/https were not in the old scheme alternation at all.
+    "CB_EGRESS_PROXY_URL": "http://proxyuser:PLANTEDPROXYPW@proxy.example:3128",
+}
+
+# A key-only canary: the old key regex's alternation was exactly
+# (PASSWORD|TOKEN|SECRET|VAULT_KEY|JWT), so a key literally named
+# CB_REDIS_PASSWORD *did* match it (it contains "PASSWORD"). This canary
+# exists to guard the widened regex against a regression that narrows the
+# alternation back down or breaks the unanchored, full-identifier match.
+KEY_SHAPE_PLANTED_VALUE = "PLANTEDREDISPASSWORDVALUE"
+
+
+def test_url_and_key_shapes_that_escaped_the_old_regex_are_redacted(
+    tmp_path: Path,
+) -> None:
+    """Canaries for the three URL shapes CLAUDE-reviewed as escaping
+    `_redact_stream`'s old regexes, plus a plain key=value canary.
+
+    Mirrors the manual repro: plant all four shapes in the fake install's
+    .env, run `cb diag bundle`, extract, and grep every file in the bundle
+    for the `PLANTED[A-Z]+` token embedded in each planted value. None may
+    survive.
+    """
+    root = tmp_path / "root"
+    etc = root / "etc" / "circuitbreaker"
+    etc.mkdir(parents=True)
+    env_lines = [f"{key}={value}" for key, value in URL_SHAPE_PLANTED.items()]
+    env_lines.append(f"CB_REDIS_PASSWORD={KEY_SHAPE_PLANTED_VALUE}")
+    (etc / ".env").write_text("\n".join(env_lines) + "\n")
+
+    logs = root / "var" / "lib" / "circuitbreaker" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "install.log").write_text(
+        "connection failed: " + URL_SHAPE_PLANTED["CB_DB_URL"] + "\n"
+    )
+
+    output = tmp_path / "bundle.tar.gz"
+    completed = _run_bundle(root, output)
+    assert output.exists(), (
+        "cb diag bundle produced no file:\n" + completed.stdout + completed.stderr
+    )
+
+    survivors: list[str] = []
+    with tarfile.open(output) as handle:
+        for member in handle.getmembers():
+            if not member.isfile():
+                continue
+            extracted = handle.extractfile(member)
+            assert extracted is not None
+            content = extracted.read().decode("utf-8", errors="replace")
+            for hit in re.findall(r"PLANTED[A-Z]+", content):
+                survivors.append(f"{hit} in {member.name}")
+    assert not survivors, (
+        "a credential shape that escapes the old _redact_stream regex "
+        "survived into the bundle: " + "; ".join(survivors)
     )
 
 
