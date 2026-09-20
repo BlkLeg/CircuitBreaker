@@ -25,7 +25,7 @@
 
 ## Background an implementer needs
 
-`install.sh` (1341 lines) bootstraps and then sources `deploy/setup.sh` (2012 lines). Between them: 269 calls to `cb_step`/`cb_ok`/`cb_warn`/`cb_info` under 21 `cb_section` headers.
+`install.sh` (1341 lines) bootstraps and then sources `deploy/setup.sh` (2012 lines). Between them: 269 calls to `cb_step`/`cb_ok`/`cb_warn` under 21 `cb_section` headers. (There is no `cb_info` in this repo — do not add an alias for it.)
 
 Every subprocess is already silenced — each `apt-get`, `initdb`, `systemctl start`, `nginx -t` and `openssl req` redirects to `$LOG_FILE`. **The noise is entirely our own narration**, which is why this is a rendering change and not a plumbing change.
 
@@ -458,13 +458,12 @@ cb_ui_log_tail() {
 
 # ── Backward-compatible aliases ──────────────────────────────────────────────
 #
-# 269 call sites across install.sh and deploy/setup.sh use these names, and four
+# 269 call sites across install.sh and deploy/setup.sh use these three names, and four
 # suites in tests/build/ stub them and assert on the stubbed output. Keeping the
 # names as the semantic API is the entire migration strategy: nothing else has
 # to change at once, and no existing test needs editing.
 cb_step() { cb_detail "$1"; }
 cb_ok()   { cb_detail "$1"; }
-cb_info() { cb_detail "$1"; }
 cb_warn() { cb_note "$1"; }
 cb_section() { cb_detail "section: $1"; }
 ```

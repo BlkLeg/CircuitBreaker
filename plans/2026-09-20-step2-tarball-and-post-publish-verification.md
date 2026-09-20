@@ -27,14 +27,14 @@
 
 The tarball is named `circuit-breaker_<version>_linux_<arch>.tar.gz` (see `archive_name()` in `scripts/build_native_release.py`) and unpacks to a bundle directory containing `bin/circuit-breaker` — confirm the exact internal layout with `tar -tzf` in Task 1 Step 1 rather than assuming it.
 
-`release.yml`'s `publish` job generates `SHA256SUMS`, attaches assets, and creates the GitHub Release. `install.sh` discovers releases through `https://api.github.com/repos/BlkLeg/CircuitBreaker/releases`.
+`release.yml`'s **`release`** job (display name "Publish Release" — the id is `release`, and confusing the two is how a broken `needs:` shipped) generates `SHA256SUMS`, attaches assets, and creates the GitHub Release. `install.sh` discovers releases through `https://api.github.com/repos/BlkLeg/CircuitBreaker/releases`.
 
 ## File Structure
 
 | File | Responsibility |
 |---|---|
 | `.github/workflows/artifact-smoke.yml` | Gains a `tarball-smoke` job beside `deb-install`. |
-| `.github/workflows/release.yml` | Gains a `post-publish` job that runs after `publish`. |
+| `.github/workflows/release.yml` | Gains a `post-publish` job that runs after the `release` job. |
 | `tests/build/test_artifact_smoke_covers_every_published_format.py` | Asserts the smoke workflow tests the tarball as well as the deb, so a future format cannot be added silently untested. |
 | `CLAUDE.md` | "What the gates do NOT cover" gains two rows. |
 
@@ -217,13 +217,13 @@ Append to the `jobs:` map in `.github/workflows/artifact-smoke.yml`. Replace the
 
 - [ ] **Step 5: Wire it into the release gate**
 
-`release.yml` calls `artifact-smoke.yml` via `uses:` and already blocks `image-merge` and `publish` on `needs: [.., artifact-smoke, ..]`. A reusable workflow fails if **any** job in it fails, so the new job is blocking with no change to `release.yml`. Confirm rather than assume:
+`release.yml` calls `artifact-smoke.yml` via `uses:` and already blocks `image-merge` and `release` on `needs: [.., artifact-smoke, ..]`. A reusable workflow fails if **any** job in it fails, so the new job is blocking with no change to `release.yml`. Confirm rather than assume:
 
 ```bash
 grep -n 'artifact-smoke' .github/workflows/release.yml
 ```
 
-Expected: `artifact-smoke` appears in the `needs:` of both `image-merge` and `publish`. If it does not, add it.
+Expected: `artifact-smoke` appears in the `needs:` of both `image-merge` and `release`. If it does not, add it.
 
 - [ ] **Step 6: Run the test to verify it passes**
 
@@ -268,7 +268,8 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: the published GitHub Release and its `SHA256SUMS` asset.
-- Produces: a `post-publish` job gated on `needs: [version, publish]`.
+- Produces: a `post-publish` job gated on `needs: [version, release]`.
+- **The publishing job's id is `release`.** Its `name:` is "Publish Release"; there is no job called `publish`. GitHub rejects a `needs:` naming an unknown job and fails the ENTIRE workflow, so this exact confusion once blocked every release. Verify with the job-graph guard before committing.
 
 **Why this is the highest-leverage job in the plan.** It is the only check that exercises the real distribution path: asset naming, checksum publication, API propagation, and `install.sh`'s own discovery logic. Had it existed, v0.4.2 would have been caught minutes after publication even with every other change here absent.
 
@@ -288,7 +289,7 @@ Append to `.github/workflows/release.yml`'s `jobs:` map. Adjust the tag format t
 ```yaml
   post-publish:
     name: Verify the published release
-    needs: [version, publish]
+    needs: [version, release]
     runs-on: ubuntu-22.04
     permissions:
       contents: read
@@ -370,12 +371,13 @@ import yaml, pathlib
 d = yaml.safe_load(pathlib.Path('.github/workflows/release.yml').read_text())
 job = d['jobs']['post-publish']
 print('needs:', job['needs'])
-assert 'publish' in job['needs'], 'post-publish must run after publish'
+assert 'release' in job['needs'], 'post-publish must run after the release job'
+assert set(job['needs']) <= set(d['jobs']), 'post-publish needs an undeclared job'
 print('OK')
 "
 ```
 
-Expected: `needs: ['version', 'publish']` then `OK`.
+Expected: `needs: ['version', 'release']` then `OK`.
 
 - [ ] **Step 4: Confirm no secret is introduced**
 
@@ -472,7 +474,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - [ ] `make lint` and `make verify` pass.
 - [ ] Both workflow files parse under `yaml.safe_load`.
 - [ ] `tarball-smoke` exists for amd64 and arm64 and executes `--selftest`.
-- [ ] `post-publish` is gated on `needs: [version, publish]`.
+- [ ] `post-publish` is gated on `needs: [version, release]`, and `pytest tests/build/test_workflow_job_graph.py` passes.
 - [ ] `scripts/security_scan.sh --gate` passes.
 - [ ] CLAUDE.md's coverage table has four rows.
 

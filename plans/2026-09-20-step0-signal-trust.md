@@ -30,6 +30,8 @@
 | `tests/build/test_scheduled_workflows_pin_their_ref.py` | Policy test over `.github/workflows/*.yml`: a `schedule:` trigger pins a ref or declares intent. |
 | `docs/adr/0005-verification-tiers-and-platform-support.md` | Gains the fourth repo-wide rule. |
 | `CLAUDE.md` | Rule 2 gains the two-permitted-outcomes clause. |
+| `scripts/ci/verify_plan_references.py` | Resolves a plan's named references against the tree before anyone implements it. |
+| `tests/build/test_plan_references.py` | Runs that checker over every plan in `plans/`. |
 
 ---
 
@@ -488,6 +490,53 @@ check, and adds rule 6: --version is an identity check, never evidence that an
 artifact functions.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Task 4: The reference-verification pass
+
+**Status: implemented 2026-09-20** (`scripts/ci/verify_plan_references.py`,
+`tests/build/test_plan_references.py`). Recorded here because the plan set is the
+record, and a task done outside its plan is how a plan stops describing the tree.
+
+**Why it exists.** Five defects were found in the steps 2-7 plans, all one shape:
+a thing in an existing system was *named* without being *read*. A job id inferred
+from a display name (`publish`; the id is `release`) reached a commit and would
+have failed every future Release workflow. A CLI flag was invented for a parser
+that never declared it. Health routes were placed at the root when they are
+mounted under `/api/v1`. Reviewing the prose caught none of them.
+
+**What it checks:** `Modify:`/`Read:` paths exist; `Create:` paths do not already
+exist (reported, not fatal — it means the task landed); `needs:` entries in
+embedded workflow snippets name a job the real workflow declares; `--flag`s passed
+to repo Python scripts exist in that script's argparse unless the plan adds them.
+
+**What it cannot check, and must never be trusted for:** a reference that resolves
+to the *wrong* thing. A real URL with a wrong prefix, a real unit file that is the
+wrong one of two, an incomplete dependency set. Two of the five defects were
+exactly that. Reading the code is still the only thing that catches them.
+
+- [x] **Step 1: Write the checker** — `scripts/ci/verify_plan_references.py`.
+- [x] **Step 2: Run it against the plan set, and fix what it finds.** Its first
+  run reported 20 items, of which **three classes were bugs in the checker
+  itself**: symbol names cited beside their file (`build_parser`, `cb_fail`) read
+  as missing paths; cross-plan forward dependencies (step 6 modifies the `ui.sh`
+  step 5 creates) read as missing; and already-landed `Create:` paths treated as
+  failures rather than information. Fixed all three.
+- [x] **Step 3: Write `tests/build/test_plan_references.py`** — parametrised over
+  every plan, plus a regression test pinning the `needs: [version, publish]`
+  defect and one pinning the symbol-vs-path false positive.
+- [x] **Step 4: Prove it has teeth** — a deliberately bad `Modify:` path fails the
+  suite naming the file; restored, green.
+- [x] **Step 5: Confirm it is warning-clean.** `pytest.ini` sets
+  `filterwarnings = error`, so a `SyntaxWarning` in the checker would fail the
+  whole root suite. Verified with `python -W error`.
+
+**Run it before dispatching any implementer:**
+
+```bash
+.venv/bin/python scripts/ci/verify_plan_references.py plans/2026-09-20-step*.md
 ```
 
 ---

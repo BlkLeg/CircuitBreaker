@@ -227,7 +227,18 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: Add the `--packaging` and `--output-dir` flags to the build script**
 
-`bench_packaging.py` calls `build_native_release.py --packaging <mode>`. That flag does not exist yet. Add it to `parse_args()` with choices `onefile`, `onedir`, `pbs`, defaulting to `onefile` so nothing changes for existing callers, and thread it into `build_binary`. `onedir` and `pbs` are implemented in Tasks 3a/3b respectively — until the corresponding task runs, the unimplemented mode must **fail loudly**:
+`bench_packaging.py` calls `build_native_release.py --packaging <mode> --output-dir <path>`.
+**Neither flag exists yet** — `parse_args()` today declares only `--version` and `--clean`
+(verified against the tree). Both must be added, and `--output-dir` is not optional
+decoration: without it every configuration writes to `dist/native/` and the benchmark
+measures whichever build ran last.
+
+`--output-dir` takes a path, defaults to the current `dist/native/` location so existing
+callers are unaffected, and replaces that directory everywhere the script writes an
+archive, a package or a manifest. Thread it through `create_archive`, `write_metadata`
+and `create_linux_packages`.
+
+`--packaging`: Add it to `parse_args()` with choices `onefile`, `onedir`, `pbs`, defaulting to `onefile` so nothing changes for existing callers, and thread it into `build_binary`. `onedir` and `pbs` are implemented in Tasks 3a/3b respectively — until the corresponding task runs, the unimplemented mode must **fail loudly**:
 
 ```python
     if packaging_mode == "pbs":

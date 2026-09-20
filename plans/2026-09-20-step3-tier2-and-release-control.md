@@ -65,6 +65,21 @@ grep -n 'BASE_URL\|8080\|listen' scripts/ci/tier3-artifact.sh | head
 
 Record: the exact readiness URL and port the packaged service listens on, the poll budget, and the secret-minting block verbatim.
 
+**Already verified for you — do not re-derive, but do re-confirm if the tree has moved:**
+- Health routes are mounted under the v1 prefix (`apps/backend/src/app/api/routing.py:522`,
+  `app.include_router(health_router, prefix=_V1)`), so the URLs are
+  `http://127.0.0.1:8080/api/v1/livez` and `.../api/v1/readyz` — **not** the bare paths.
+  `scripts/ci/tier3-artifact.sh:26` uses the same base and is the independent confirmation.
+- Port 8080 is `start.py`'s default; the shipped unit sets no `CB_PORT`.
+- nfpm ships `packaging/circuit-breaker.service` (native:
+  `ExecStart=/usr/local/bin/circuit-breaker`). **Ignore `packaging/systemd/circuit-breaker.service`** —
+  that tree is Docker-based (`ExecStart=/usr/bin/docker run`) and is not what the deb installs.
+- `/readyz` returns 200 only when `all(v == "ok" for v in checks.values())`
+  (`apps/backend/src/app/api/health.py:127`), so **Postgres, Redis AND NATS must all be healthy.**
+- Neither postinstall starts anything. `packaging/postinstall.sh:160` and
+  `packaging/nats-postinstall.sh:15` only `enable`. Start `circuit-breaker-nats` first,
+  then `circuit-breaker`.
+
 - [ ] **Step 2: Write the failing policy test**
 
 Append to `tests/build/test_artifact_smoke_covers_every_published_format.py` (created in Step 2):
@@ -193,20 +208,32 @@ Append to `.github/workflows/artifact-smoke.yml`'s `jobs:` map. Replace the port
           EOF
           sudo chmod 0640 /etc/circuit-breaker/circuit-breaker.env
 
-      - name: Start the service
+      # NATS first. /readyz is 200 only when every dependency check is "ok", and
+      # the broker is one of them. The companion circuit-breaker-nats deb installs
+      # the unit but deliberately does not start it — nats-postinstall.sh:15 only
+      # enables it and prints the start command for an operator.
+      - name: Start the message broker
         run: |
           set -euo pipefail
           sudo systemctl daemon-reload
+          sudo systemctl start circuit-breaker-nats
+          systemctl is-active --quiet circuit-breaker-nats \
+            || { echo "::error::broker did not start; /readyz can never reach 200"; \
+                 sudo journalctl -u circuit-breaker-nats --no-pager -n 50; exit 1; }
+
+      - name: Start the service
+        run: |
+          set -euo pipefail
           sudo systemctl start circuit-breaker
 
       - name: Wait for /livez
         run: |
           set -euo pipefail
           for _ in $(seq 1 60); do
-            curl -fsS http://127.0.0.1:8080/livez >/dev/null 2>&1 && break
+            curl -fsS http://127.0.0.1:8080/api/v1/livez >/dev/null 2>&1 && break
             sleep 2
           done
-          curl -fsS http://127.0.0.1:8080/livez
+          curl -fsS http://127.0.0.1:8080/api/v1/livez
 
       # The half that catches a failed migration, an unreachable dependency or
       # a bad config — all of which leave the unit "active" and the service
@@ -215,18 +242,18 @@ Append to `.github/workflows/artifact-smoke.yml`'s `jobs:` map. Replace the port
         run: |
           set -euo pipefail
           for _ in $(seq 1 90); do
-            code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/readyz)"
+            code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/readyz)"
             [ "${code}" = "200" ] && break
             sleep 2
           done
-          code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/readyz)"
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/readyz)"
           if [ "${code}" != "200" ]; then
             echo "::error::service never became ready (last /readyz was ${code})"
-            curl -s http://127.0.0.1:8080/readyz || true
+            curl -s http://127.0.0.1:8080/api/v1/readyz || true
             sudo journalctl -u circuit-breaker --no-pager -n 100
             exit 1
           fi
-          curl -fsS http://127.0.0.1:8080/readyz
+          curl -fsS http://127.0.0.1:8080/api/v1/readyz
 
       - name: Collect diagnostics on failure
         if: failure()
@@ -578,7 +605,7 @@ Expected: four `[PASS]` lines and `exit=0`, or a named failing row.
 
 - [ ] **Step 6: Wire it into `release.yml` before publish**
 
-In `.github/workflows/release.yml`, in the `publish` job, immediately after the `actions/checkout@v5` step:
+In `.github/workflows/release.yml`, in the **`release`** job (its `name:` is "Publish Release"; there is no job whose id is `publish`), immediately after the `actions/checkout@v5` step:
 
 ```yaml
       # specs/1.0.0/release-control/ governs a future milestone. Nothing
@@ -607,7 +634,7 @@ git commit -m "feat: assert release readiness before publishing
 Generated rather than hand-written: a hand-written checklist is one more signal
 that can be waved through. Asserts a CHANGELOG entry, no expired quarantine,
 an explicit state for every ADR 0005 tier, and version parity. Runs in the
-publish job before anything is attached to a Release.
+release job before anything is attached to a Release.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
@@ -754,7 +781,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - [ ] `python3 scripts/release_checklist.py --version "$(cat VERSION)"` exits 0.
 - [ ] `mkdocs build --strict` is clean.
 - [ ] `artifact-smoke.yml` parses and contains `deb-install`, `tarball-smoke`, `deb-boot`.
-- [ ] `release.yml`'s `publish` job runs the checklist before attaching anything.
+- [ ] `release.yml`'s `release` job runs the checklist before attaching anything, and `pytest tests/build/test_workflow_job_graph.py` passes.
 - [ ] **ADR 0005's Tier 2 row is unchanged.** It is updated only by the later commit that records a green `deb-boot` run against a real candidate (Task 1 Step 8).
 
 ## What this plan does NOT cover
