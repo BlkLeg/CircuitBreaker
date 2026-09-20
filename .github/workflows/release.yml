@@ -190,7 +190,17 @@ jobs:
 
       - name: Shred the staged signing key
         if: always()
-        run: shred -u /tmp/agent-signing-key 2>/dev/null || rm -f /tmp/agent-signing-key
+        run: |
+          shred -u /tmp/agent-signing-key 2>/dev/null || rm -f /tmp/agent-signing-key
+
+      # Kept separate from the shred above, and NOT `if: always()`. Folding the
+      # two together once cost a release: as a plain scalar the continuation
+      # lines joined onto the `shred ... || rm -f ...` line, so a successful
+      # shred short-circuited the `||` and the digest was never written — while
+      # the step still exited 0. tests/build/test_workflow_run_blocks.py guards
+      # the shape; this step stays on its own so there is no `||` to swallow it.
+      - name: Record the image digest
+        run: |
           DIGEST=$(python3 -c "import json;print(json.load(open('/tmp/build-metadata.json'))['containerimage.digest'])")
           echo "built ${{ matrix.arch }} -> ${DIGEST}"
           mkdir -p /tmp/digests
