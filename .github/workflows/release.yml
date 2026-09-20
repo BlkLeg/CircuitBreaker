@@ -309,6 +309,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # specs/1.0.0/release-control/ governs a future milestone. Nothing
+      # governed v0.4.2. This is the per-release equivalent, and it runs before
+      # anything is attached to a Release.
+      - name: Assert release readiness
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: python3 scripts/release_checklist.py --version "${VERSION}"
+
       - name: Download all package artifacts
         uses: actions/download-artifact@v5
         with:
