@@ -254,25 +254,43 @@ _cb_human_duration() {
 # and _cb_render_eta below is left as a pure printer of the text it leaves in
 # _CB_ETA_TEXT.
 _cb_update_eta() {
-  local pct elapsed remaining open_weight budget open_elapsed
+  local pct elapsed remaining open_weight open_elapsed projected_total expected_phase
   pct="$(_cb_overall_percent)"
   elapsed=$(( $(date +%s) - _CB_START_EPOCH ))
+
+  # Below 5% overall, the divisor behind any estimate — including the overrun
+  # budget below — is noise: one phase's early seconds dominate `elapsed`
+  # before anything has finished. Every run starts here, so the overrun check
+  # must run AFTER this guard, not before it — otherwise the pessimistic
+  # message is the first thing a TTY user ever sees, a few seconds into
+  # preflight, every single time.
+  if (( pct < 5 )); then
+    _CB_ETA_TEXT='estimating...'
+    return 0
+  fi
 
   if [[ -n "${_CB_OPEN_PHASE}" ]]; then
     open_weight="${CB_PHASE_WEIGHTS[${_CB_OPEN_PHASE}]:-0}"
     open_elapsed=$(( $(date +%s) - _CB_OPEN_START ))
-    # The budget a phase "should" take, if the whole install ran at the rate
-    # implied by elapsed time so far. Doubling it is the overrun threshold.
-    budget=$(( (elapsed * open_weight) / 100 + 1 ))
-    if (( open_elapsed > budget * 2 )); then
+    # The budget a phase "should" take, projected from a whole-run estimate
+    # rather than from elapsed-so-far. Budgeting off raw `elapsed` collapses
+    # for the phase currently open: elapsed is almost entirely that phase's
+    # own time, so "elapsed * open_weight / 100" is roughly open_elapsed
+    # itself and the overrun ratio trips almost immediately regardless of the
+    # phase's actual weight. Projecting the total run length from the rate
+    # observed so far (elapsed * 100 / pct) and taking this phase's share of
+    # THAT projected total gives a budget that reflects the whole flow, not
+    # just what has happened inside this one phase.
+    projected_total=$(( (elapsed * 100) / pct ))
+    expected_phase=$(( (projected_total * open_weight) / 100 + 1 ))
+    # An absolute floor alongside the relative one: a low-weight phase has a
+    # small expected_phase, so the 2x ratio alone can still trip within a
+    # couple of seconds of ordinary noise. Nothing is reported "taking longer
+    # than expected" before the open phase itself has run at least 30s.
+    if (( open_elapsed >= 30 )) && (( open_elapsed > expected_phase * 2 )); then
       _CB_ETA_TEXT='taking longer than expected'
       return 0
     fi
-  fi
-
-  if (( pct < 5 )); then
-    _CB_ETA_TEXT='estimating...'
-    return 0
   fi
 
   remaining=$(( (elapsed * (100 - pct)) / pct ))
