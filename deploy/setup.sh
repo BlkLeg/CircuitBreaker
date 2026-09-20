@@ -338,13 +338,27 @@ stage1_bootstrap() {
     set -u
   fi
 
-  # Detect Redis user (Arch uses 'redis', Debian uses 'redis', some RHEL might use '_redis')
+  # Detect the Redis service account. Arch and Debian use 'redis'; some RHEL
+  # builds use '_redis'; RHEL/Rocky/Alma 10 ship Valkey instead of Redis (Redis
+  # was relicensed away from OSI terms in 2024 and Red Hat replaced it), whose
+  # package creates a 'valkey' account.
   export CB_REDIS_USER="redis"
   if id redis &>/dev/null; then
     CB_REDIS_USER="redis"
   elif id _redis &>/dev/null; then
     CB_REDIS_USER="_redis"
+  elif id valkey &>/dev/null; then
+    CB_REDIS_USER="valkey"
   fi
+
+  # The server and client binaries, resolved the same way and for the same
+  # reason. Valkey is a fork of Redis 7.2 and is wire- and config-compatible, so
+  # the rendered redis.conf and every redis-cli call below work unchanged against
+  # it — only the executable names differ. Exported because
+  # deploy/systemd/circuitbreaker-redis.service renders ${CB_REDIS_SERVER_BIN}.
+  export CB_REDIS_SERVER_BIN CB_REDIS_CLI_BIN
+  CB_REDIS_SERVER_BIN="$(command -v redis-server 2>/dev/null || command -v valkey-server 2>/dev/null || echo /usr/bin/redis-server)"
+  CB_REDIS_CLI_BIN="$(command -v redis-cli 2>/dev/null || command -v valkey-cli 2>/dev/null || echo redis-cli)"
   export CB_DATA_DIR
 }
 
@@ -775,7 +789,7 @@ stage3_configure_redis() {
   
   # Verify Redis
   cb_step "Verifying Redis connection"
-  if ! redis-cli -a "$CB_REDIS_PASSWORD" --no-auth-warning PING 2>/dev/null | grep -q PONG; then
+  if ! "$CB_REDIS_CLI_BIN" -a "$CB_REDIS_PASSWORD" --no-auth-warning PING 2>/dev/null | grep -q PONG; then
     cb_fail "Redis not responding" "Check: journalctl -u circuitbreaker-redis -n 50"
   fi
   cb_ok "Redis connection verified"
@@ -1615,9 +1629,11 @@ cb_airgap_verify_dependencies() {
   # Services. nats-server has no distro package on Ubuntu 22.04 or Fedora, which
   # is exactly why the circuit-breaker-nats companion package is published beside
   # the tarball — name it explicitly rather than leaving the operator to guess.
-  for tool in pgbouncer redis-server nginx nmap nats-server; do
+  for tool in pgbouncer nginx nmap nats-server; do
     command -v "$tool" &>/dev/null || missing+=("$tool")
   done
+  command -v redis-server &>/dev/null || command -v valkey-server &>/dev/null \
+    || missing+=("redis-server (or valkey-server on RHEL 10+)")
 
   if ! PG_BIN_DIR="$(cb_airgap_find_pg_bin_dir)"; then
     PG_BIN_DIR=""
@@ -1812,17 +1828,39 @@ stage2_dependencies() {
   elif [[ "$PKG_MGR" == "pacman" ]]; then
     pacman -S --noconfirm --needed pgbouncer redis nginx >> "$LOG_FILE" 2>&1
   else
-    $PKG_MGR install -y -q pgbouncer redis nginx >> "$LOG_FILE" 2>&1
+    # RHEL/Rocky/AlmaLinux 10 dropped the redis package for valkey, so asking
+    # for redis there fails with "Unable to find a match: redis" and takes the
+    # whole install down. Try redis first (8/9 still have it), fall back to
+    # valkey, and only fail if neither exists.
+    if ! $PKG_MGR install -y -q pgbouncer redis nginx >> "$LOG_FILE" 2>&1; then
+      cb_detail "redis unavailable from ${PKG_MGR}; trying valkey (RHEL 10+ ships it instead)"
+      $PKG_MGR install -y -q pgbouncer valkey nginx >> "$LOG_FILE" 2>&1 \
+        || cb_fail "Could not install pgbouncer, Redis/Valkey and Nginx" \
+                   "Check: tail -40 ${LOG_FILE}"
+    fi
+  fi
+
+  # Re-resolve now that the packages are on disk: the binaries did not exist when
+  # stage0_preflight first looked.
+  CB_REDIS_SERVER_BIN="$(command -v redis-server 2>/dev/null || command -v valkey-server 2>/dev/null || echo /usr/bin/redis-server)"
+  CB_REDIS_CLI_BIN="$(command -v redis-cli 2>/dev/null || command -v valkey-cli 2>/dev/null || echo redis-cli)"
+  if id valkey &>/dev/null && ! id redis &>/dev/null; then
+    CB_REDIS_USER="valkey"
   fi
 
   # Stop nginx immediately — package auto-starts with default config
   systemctl stop nginx >> "$LOG_FILE" 2>&1 || true
 
-  for bin in pgbouncer redis-server redis-cli nginx; do
-    if ! command -v "$bin" &>/dev/null && ! command -v "${bin%-*}" &>/dev/null; then
+  for bin in pgbouncer nginx; do
+    if ! command -v "$bin" &>/dev/null; then
       cb_fail "$bin not found after install" "Check: $PKG_MGR install logs"
     fi
   done
+  # Redis or Valkey, whichever this distro ships — see CB_REDIS_SERVER_BIN.
+  command -v redis-server &>/dev/null || command -v valkey-server &>/dev/null \
+    || cb_fail "no redis-server or valkey-server found after install" "Check: $PKG_MGR install logs"
+  command -v redis-cli &>/dev/null || command -v valkey-cli &>/dev/null \
+    || cb_fail "no redis-cli or valkey-cli found after install" "Check: $PKG_MGR install logs"
   cb_ok "pgbouncer, Redis, Nginx installed"
 
   # Group 5: NATS Server binary
