@@ -952,7 +952,7 @@ cb_install_docker_if_missing() {
     "${root_prefix[@]}" apt-get update -y -q >/dev/null 2>&1
     "${root_prefix[@]}" apt-get install -y -q ca-certificates curl gnupg >/dev/null 2>&1
     "${root_prefix[@]}" install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL "https://download.docker.com/linux/${ID}/gpg" | "${root_prefix[@]}" gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 "https://download.docker.com/linux/${ID}/gpg" | "${root_prefix[@]}" gpg --dearmor -o /etc/apt/keyrings/docker.gpg
     "${root_prefix[@]}" chmod a+r /etc/apt/keyrings/docker.gpg
     echo \
       "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${ID} ${VERSION_CODENAME} stable" \
@@ -1083,7 +1083,7 @@ stage_docker_deploy() {
   do
     local remote="${asset%%:*}"
     local dest="${asset#*:}"
-    if ! curl -fsSL "${base_url}/${remote}" -o "${dest}"; then
+    if ! curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 "${base_url}/${remote}" -o "${dest}"; then
       if [[ -n "${version}" ]]; then
         cb_fail "Could not download ${remote} at ref ${ref}" \
                 "Is v${version} a published release? Check https://github.com/${CB_GITHUB_REPO}/releases, or drop --version to install from main."
@@ -1384,7 +1384,7 @@ cb_verify_bundle_checksum() {
       "The release publishes none, or the API response could not be parsed. Refusing to install a bundle that cannot be verified — pass --skip-checksum only for a bundle you already trust"
   fi
 
-  curl -fsSL -o /tmp/cb-SHA256SUMS "$checksum_url" \
+  curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 -o /tmp/cb-SHA256SUMS "$checksum_url" \
     || cb_fail "Could not download SHA256SUMS for release v${CB_VERSION}" \
                "Check internet connectivity and re-run, or pass --skip-checksum only for a bundle you already trust"
 
@@ -1433,13 +1433,13 @@ stage0_download_bundle() {
     cb_step "Querying GitHub for release"
     local release_json
     if [[ -n "$CB_VERSION" ]]; then
-      release_json=$(curl -fsSL "${CB_RELEASE_API}/tags/v${CB_VERSION}" 2>/dev/null) \
+      release_json=$(curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 "${CB_RELEASE_API}/tags/v${CB_VERSION}" 2>/dev/null) \
         || cb_fail "Release v${CB_VERSION} not found" "Check: https://github.com/${CB_GITHUB_REPO}/releases"
     else
       # Select from the release list rather than trusting the badge -- see
       # cb_pick_release for why /releases/latest cannot be used here.
       local releases_json
-      releases_json=$(curl -fsSL "${CB_RELEASE_API}" 2>/dev/null) \
+      releases_json=$(curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 "${CB_RELEASE_API}" 2>/dev/null) \
         || cb_fail "Failed to fetch the release list" "Check internet connectivity or specify --version <version>"
       release_json=$(printf '%s' "$releases_json" | cb_pick_release)
       if [[ -z "$release_json" ]] || [[ "$release_json" == "null" ]]; then
@@ -1479,7 +1479,7 @@ stage0_download_bundle() {
     asset_size="$(printf '%s' "$release_json" \
       | jq -r --arg n "$tarball_name" '.assets[] | select(.name==$n) | .size')"
 
-    curl -fsSL "$tarball_url" -o "/tmp/${tarball_name}" &
+    curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 "$tarball_url" -o "/tmp/${tarball_name}" &
     local curl_pid=$!
     if [[ "$asset_size" =~ ^[0-9]+$ ]] && (( asset_size > 0 )); then
       while kill -0 "$curl_pid" 2>/dev/null; do

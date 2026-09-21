@@ -7,12 +7,17 @@ const mockGetNetworkThreatAlerts = vi.fn();
 const mockGetNetworkPrivacyScore = vi.fn();
 
 vi.mock('../api/client', () => ({
+  hardwareApi: { list: vi.fn().mockResolvedValue({ data: [] }) },
+}));
+
+// Its own module, not a key on the client mock: client.jsx no longer re-exports
+// windscribeApi — that re-export closed an import cycle Rollup warned about.
+vi.mock('../api/windscribe', () => ({
   windscribeApi: {
     getNetworkThreatAlerts: (...args) => mockGetNetworkThreatAlerts(...args),
     getNetworkPrivacyScore: (...args) => mockGetNetworkPrivacyScore(...args),
     getDeviceThreatProfile: vi.fn(),
   },
-  hardwareApi: { list: vi.fn().mockResolvedValue({ data: [] }) },
 }));
 
 vi.mock('../hooks/useDiscoveryStream', () => ({

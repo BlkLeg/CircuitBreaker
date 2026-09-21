@@ -192,3 +192,30 @@ describe('useMapDataLoad Cloud View', () => {
     expect(groupNodesIntoCloud).not.toHaveBeenCalled();
   });
 });
+
+describe('useMapDataLoad viewport timer cleanup', () => {
+  it('does not touch the viewport after the hook unmounts', async () => {
+    graphApi.topology.mockResolvedValue(topologyOf('n1'));
+    const fitView = vi.fn();
+    const setViewport = vi.fn();
+    // unmountedRef stays false on purpose: it is optional in the hook's
+    // signature (`unmountedRef?.current`), so the hook has to cancel its own
+    // timers rather than rely on a caller to raise a flag. A timer that
+    // survives unmount calls into a ReactFlow instance that is gone, and under
+    // test teardown it runs after jsdom is torn down — which is how it took
+    // down the whole frontend gate with "localStorage is not defined".
+    const { args } = makeArgs({ fitView, setViewport, unmountedRef: { current: false } });
+
+    const { result, unmount } = renderHook(() => useMapDataLoad(args));
+    await act(async () => {
+      await result.current.fetchData();
+    });
+
+    unmount();
+    // Longer than the 50ms viewport-restore delay fetchData schedules.
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    expect(fitView).not.toHaveBeenCalled();
+    expect(setViewport).not.toHaveBeenCalled();
+  });
+});

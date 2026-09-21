@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { graphApi } from '../../../api/client';
 import { normalizeMapLabel, normalizeBoundaryName } from '../model/mapConstants';
 import { applyEdgeSides, parseLayoutData } from '../../../utils/mapGeometryUtils';
@@ -68,6 +68,34 @@ export function useMapDataLoad({
   fitViewRef.current = fitView;
   const setViewportRef = useRef(setViewport);
   setViewportRef.current = setViewport;
+
+  // Viewport-restore timers scheduled by fetchData: one at 50ms, and a nested
+  // one at 900ms for the Proxmox hypervisor fit. Both outlive the request that
+  // scheduled them, so leaving the map inside that window left a callback
+  // reaching for a ReactFlow instance that had already gone away. The
+  // `unmountedRef?.current` guards inside them only shrink the blast radius,
+  // and only for callers that pass the ref — it is optional in this hook's
+  // signature, and the timer still fires either way. Under a test runner that
+  // tears down jsdom at the end of a file, "still fires" meant a stray
+  // `localStorage is not defined` that failed the whole frontend gate while
+  // every test passed. Hold the handles and cancel them on unmount.
+  const viewportTimersRef = useRef(new Set());
+
+  const scheduleViewportTimer = useCallback((callback, delayMs) => {
+    const timerId = setTimeout(() => {
+      viewportTimersRef.current.delete(timerId);
+      callback();
+    }, delayMs);
+    viewportTimersRef.current.add(timerId);
+  }, []);
+
+  useEffect(() => {
+    const timers = viewportTimersRef.current;
+    return () => {
+      timers.forEach(clearTimeout);
+      timers.clear();
+    };
+  }, []);
 
   // Cloud View is a transformation of the loaded document, not an input to the
   // query. Reading it through a latest-value ref keeps fetchData's identity
@@ -224,7 +252,7 @@ export function useMapDataLoad({
         nodesForProxmox = initialNodes;
       }
 
-      setTimeout(() => {
+      scheduleViewportTimer(() => {
         if (unmountedRef?.current) return;
         const saved = localStorage.getItem('cb_map_viewport');
         if (saved && !hasRestoredViewport.current) {
@@ -246,7 +274,7 @@ export function useMapDataLoad({
           if (nodesForProxmox && proxmoxClusterDetected(nodesForProxmox)) {
             const hypervisorNodes = nodesForProxmox.filter((n) => n.data?.role === 'hypervisor');
             if (hypervisorNodes.length > 0) {
-              setTimeout(() => {
+              scheduleViewportTimer(() => {
                 if (unmountedRef?.current) return;
                 fitViewRef.current({
                   nodes: hypervisorNodes,
@@ -269,6 +297,7 @@ export function useMapDataLoad({
     mapId,
     containerRef,
     unmountedRef,
+    scheduleViewportTimer,
     envFilter,
     includeTypes,
     getLayoutName,

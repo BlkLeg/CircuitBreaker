@@ -33,7 +33,7 @@ import TelemetryPanel from '../TelemetryPanel';
 import VulnerabilityPanel from './VulnerabilityPanel';
 import BlastRadiusPanel from './BlastRadiusPanel';
 import PortEditor from './PortEditor';
-import { windscribeApi } from '../../api/client';
+import { windscribeApi } from '../../api/windscribe';
 import HardwareThreatProfile from './HardwareThreatProfile';
 
 function HardwareDetail({ hardware, isOpen, onClose }) {

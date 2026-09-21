@@ -20,6 +20,11 @@ const mockGetAttackSurface = vi.fn();
 const mockHardwareList = vi.fn();
 
 vi.mock('../api/client', () => ({
+  hardwareApi: { list: (...args) => mockHardwareList(...args) },
+}));
+
+// See privacy-components.test.jsx: windscribeApi has its own module again.
+vi.mock('../api/windscribe', () => ({
   windscribeApi: {
     getIgnoredFindings: (...args) => mockGetIgnoredFindings(...args),
     ignoreFinding: (...args) => mockIgnoreFinding(...args),
@@ -28,7 +33,6 @@ vi.mock('../api/client', () => ({
     getNetworkPrivacyScoreHistory: (...args) => mockGetNetworkPrivacyScoreHistory(...args),
     getAttackSurface: (...args) => mockGetAttackSurface(...args),
   },
-  hardwareApi: { list: (...args) => mockHardwareList(...args) },
 }));
 
 vi.mock('../api/discovery', () => ({ startAdHocScan: vi.fn() }));
