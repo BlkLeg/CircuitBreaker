@@ -599,6 +599,12 @@ def _write_build_info(share_dir: Path, version: str, target_os: str, target_arch
     (share_dir / "build-info.json").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
 
 
+# Build-host bytecode never belongs in a release artifact: it is compiled by
+# whatever interpreter ran this script, so it is stale for any target on a
+# different Python and is read by nothing that ships here.
+_NO_BYTECODE = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo")
+
+
 def stage_bundle(
     binary_path: Path,
     version: str,
@@ -634,7 +640,16 @@ def stage_bundle(
     _write_build_info(share_dir, version, target_os, target_arch)
     shutil.copy2(DOCS_SEED_FILE, share_dir / "DocsPage.md")
     shutil.copy2(BACKEND_ROOT / "alembic.ini", backend_share / "alembic.ini")
-    shutil.copytree(BACKEND_ROOT / "migrations", backend_share / "migrations", dirs_exist_ok=True)
+    # ignore=_NO_BYTECODE: the build host's __pycache__ is not the target's.
+    # 131 of the v0.4.3 tarball's members were .pyc files compiled by whatever
+    # interpreter happened to run this script — stale on any host with a
+    # different Python, and read by nothing: Alembic imports the .py sources.
+    shutil.copytree(
+        BACKEND_ROOT / "migrations",
+        backend_share / "migrations",
+        dirs_exist_ok=True,
+        ignore=_NO_BYTECODE,
+    )
     shutil.copytree(frontend_dir, frontend_share, dirs_exist_ok=True)
 
     agent_binaries_src = work_dir / "agent-dist"
@@ -670,7 +685,7 @@ def stage_bundle(
     for subdir in ("config", "systemd", "nginx", "cli", "misc", "scripts", "helper", "lib"):
         src = deploy_src / subdir
         if src.exists():
-            shutil.copytree(src, deploy_dst / subdir, dirs_exist_ok=True)
+            shutil.copytree(src, deploy_dst / subdir, dirs_exist_ok=True, ignore=_NO_BYTECODE)
     shutil.copy2(deploy_src / "setup.sh", deploy_dst / "setup.sh")
     installer_src = REPO_ROOT / "install.sh"
     if installer_src.exists():
@@ -731,7 +746,22 @@ def create_archive(bundle_dir: Path, version: str, target_os: str, target_arch: 
     else:
         with tarfile.open(archive_path, "w:gz") as archive:
             for file_path in sorted(bundle_dir.rglob("*")):
-                archive.add(file_path, arcname=file_path.relative_to(bundle_dir))
+                # recursive=False is load-bearing. tarfile.add() recurses into a
+                # directory by default, so adding every rglob result — which
+                # includes directories — wrote each subtree once for the
+                # directory and then again, entry by entry, as the loop reached
+                # its children. Nested directories compounded it: the v0.4.3
+                # bundle carried 4012 members for 864 distinct paths, every
+                # duplicate a second compressed copy of the same bytes. It
+                # extracted correctly only because the later copy happened to
+                # overwrite the earlier one. The ZipFile branch above never had
+                # the bug because it skips anything that is not a file; this
+                # keeps the directory entries and adds each exactly once.
+                archive.add(
+                    file_path,
+                    arcname=file_path.relative_to(bundle_dir),
+                    recursive=False,
+                )
     return archive_path
 
 
