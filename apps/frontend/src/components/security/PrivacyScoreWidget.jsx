@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Shield, ShieldAlert, ShieldCheck } from 'lucide-react';
-import { windscribeApi } from '../../api/client';
+import { windscribeApi } from '../../api/windscribe';
 import { discoveryEmitter } from '../../hooks/useDiscoveryStream';
 
 const GOOD_SCORE_MIN = 80;

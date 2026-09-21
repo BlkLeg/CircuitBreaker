@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { AlertTriangle, ShieldAlert } from 'lucide-react';
-import { windscribeApi } from '../../api/client';
+import { windscribeApi } from '../../api/windscribe';
 
 const SEVERITY_STYLES = {
   warning: {

@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertTriangle, Info, RefreshCw, ShieldCheck, ShieldQuestion } from 'lucide-react';
-import { windscribeApi, hardwareApi } from '../api/client';
+import { hardwareApi } from '../api/client';
+import { windscribeApi } from '../api/windscribe';
 import { startAdHocScan } from '../api/discovery';
 import { PRIVACY_REFRESH_INTERVAL_MS } from '../lib/constants';
 import PrivacyScoreCard from '../components/privacy/PrivacyScoreCard';

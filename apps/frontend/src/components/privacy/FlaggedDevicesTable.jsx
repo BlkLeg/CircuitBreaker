@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Monitor } from 'lucide-react';
-import { windscribeApi } from '../../api/client';
+import { windscribeApi } from '../../api/windscribe';
 
 const SEVERITY_COLORS = {
   critical: 'var(--color-danger, #ef4444)',

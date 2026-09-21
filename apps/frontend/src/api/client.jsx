@@ -699,6 +699,12 @@ export const deviceRolesApi = {
   delete: (id) => client.delete(`/settings/roles/${id}`).then((r) => r.data),
 };
 
-export { windscribeApi } from './windscribe';
+// windscribeApi is NOT re-exported here, deliberately. windscribe.js imports
+// this module's default client, so re-exporting it back through client.jsx
+// closed an import cycle, and Rollup warned on every production build that the
+// two ended up in different chunks and would "likely lead to broken execution
+// order". Nothing in the unit suite can see that — it is a bundler-only
+// failure. Import it from './windscribe' directly; the HTTP still goes through
+// the axios client, which is what the convention is actually about.
 
 export default client;

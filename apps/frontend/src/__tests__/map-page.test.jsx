@@ -88,13 +88,18 @@ vi.mock('../api/client', () => {
     deviceRolesApi: {
       list: vi.fn().mockResolvedValue([]),
     },
-    windscribeApi: {
-      getNetworkPrivacyScore: vi.fn().mockResolvedValue({ data: { score: 100 } }),
-      getNetworkThreatAlerts: vi.fn().mockResolvedValue({ data: {} }),
-      getDeviceThreatProfile: vi.fn().mockResolvedValue({ data: { score: 100 } }),
-    },
   };
 });
+
+// client.jsx no longer re-exports windscribeApi — the re-export closed an
+// import cycle Rollup warned about on every production build.
+vi.mock('../api/windscribe', () => ({
+  windscribeApi: {
+    getNetworkPrivacyScore: vi.fn().mockResolvedValue({ data: { score: 100 } }),
+    getNetworkThreatAlerts: vi.fn().mockResolvedValue({ data: {} }),
+    getDeviceThreatProfile: vi.fn().mockResolvedValue({ data: { score: 100 } }),
+  },
+}));
 
 vi.mock('../api/monitor.js', () => ({
   createTargetMonitor: vi.fn().mockResolvedValue({ data: {} }),
