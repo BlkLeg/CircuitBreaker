@@ -187,24 +187,15 @@ jobs:
     # starts, migrations apply, or the broker is reachable.
     #
     # A subset of scripts/ci/tier3-artifact.sh's contract, on a hosted runner:
-    # start, wait for /livez, wait for /readyz. The dependencies are service
-    # containers rather than the packaged units, because this gate is about the
+    # start, wait for /livez, wait for /readyz. The dependencies are containers
+    # rather than the packaged units, because this gate is about the
     # application booting, not about the vendored Postgres layout — which the
     # fleet tier already covers.
+    #
+    # Only Redis is a `services:` container. Postgres is started by a step
+    # instead, because it needs the minted password — see that step for why a
+    # service container cannot have it.
     services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: circuitbreaker
-          POSTGRES_DB: circuitbreaker
-          POSTGRES_PASSWORD: ${{ env.CB_DB_PASSWORD }}
-        options: >-
-          --health-cmd "pg_isready -U circuitbreaker"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
-        ports:
-          - 5432:5432
       redis:
         image: redis:7
         options: >-
@@ -236,6 +227,43 @@ jobs:
             echo "CB_NATS_TOKEN=${NATS_TOKEN}"
             echo "CB_VAULT_KEY=${VAULT_KEY}"
           } >> "$GITHUB_ENV"
+
+      # Postgres cannot be a `services:` container in this job. GitHub creates
+      # service containers during job setup, before the first step runs, so
+      # `${{ env.CB_DB_PASSWORD }}` there expands to the empty string and
+      # postgres:15 refuses to initialize without a non-empty POSTGRES_PASSWORD
+      # ("Database is uninitialized and superuser password is not specified").
+      # Nothing a step writes to $GITHUB_ENV can reach its own job's services
+      # block, so the container has to start after the minting step instead.
+      # Same shape as dev-ci.yml's smoke run, which brings its own dependencies
+      # up after minting for exactly this reason.
+      - name: Start Postgres with the minted password
+        run: |
+          set -euo pipefail
+          # -e by name rather than by value: the password is passed through this
+          # process's environment and never appears in its argv, where `ps`
+          # would expose it to anything else on the runner.
+          POSTGRES_PASSWORD="${CB_DB_PASSWORD}" docker run -d \
+            --name cb-boot-postgres \
+            -e POSTGRES_USER=circuitbreaker \
+            -e POSTGRES_DB=circuitbreaker \
+            -e POSTGRES_PASSWORD \
+            -p 5432:5432 \
+            postgres:15
+
+          # The gate the service container's --health-* options used to provide,
+          # on the same budget: 12 attempts, 5s apart. Without it the units
+          # below would start against a Postgres still initializing.
+          for _ in $(seq 1 12); do
+            if docker exec cb-boot-postgres pg_isready -U circuitbreaker >/dev/null 2>&1; then
+              echo "postgres ready"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::postgres never became ready within 60s"
+          docker logs cb-boot-postgres || true
+          exit 1
 
       - name: Download candidate packages
         uses: actions/download-artifact@v5
@@ -317,4 +345,5 @@ jobs:
           sudo systemctl status circuit-breaker-nats --no-pager -l || true
           sudo journalctl -u circuit-breaker --no-pager -n 200 || true
           sudo journalctl -u circuit-breaker-nats --no-pager -n 200 || true
+          docker logs --tail 200 cb-boot-postgres || true
 
