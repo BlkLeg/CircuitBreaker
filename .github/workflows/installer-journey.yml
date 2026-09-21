@@ -200,11 +200,12 @@ jobs:
           done
           sudo podman exec cb-journey systemctl is-system-running || true
 
-      # TEMPORARY — remove once the chmod EPERM in stage0_install_bundle is
-      # diagnosed. fedora/rockylinux/archlinux fail there while
-      # debian12/ubuntu2204 pass on the identical flags and tarball; this
-      # gathers the facts needed to tell a harness defect (fix the workflow)
-      # from a real install.sh gap (fix the installer) before touching either.
+      # The gate itself, and permanent. It once carried a TEMPORARY marker left
+      # over from the diagnostic step that chased the chmod EPERM on
+      # fedora/rockylinux/archlinux; note 3 on the container step above records
+      # how that was resolved (a four-year-old seccomp profile denying
+      # fchmodat2, not an install.sh defect). The marker outlived the
+      # investigation and invited deletion of the only job that runs install.sh.
       - name: Run the installer journey
         run: |
           set -euo pipefail
