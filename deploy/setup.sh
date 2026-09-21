@@ -1314,6 +1314,27 @@ stage6_apply_binary() {
   fi
   cb_ok "Frontend assets verified"
 
+  # Prove the binary contains the application, here, before anything is
+  # configured around it.
+  #
+  # v0.4.2 shipped a signed, attested, SBOM'd, version-parity-checked binary
+  # with no `app.main` inside it, and every native install of it died much
+  # later at "Backend failed to start" pointing the operator at journalctl —
+  # a stage that had nothing to do with the real defect. --selftest imports the
+  # ASGI target, every worker module and the Alembic environment, touching no
+  # database, no broker, no network and nothing outside the bundle, so it is
+  # safe here and on an air-gapped host, and it costs ~3 seconds. A binary that
+  # answers --version has not been shown to run; this is the check that shows it.
+  cb_step "Verifying the binary contains the application"
+  local _selftest_out
+  if _selftest_out="$(/opt/circuitbreaker/bin/circuit-breaker --selftest 2>&1)"; then
+    cb_ok "Binary self-test passed"
+  else
+    echo "$_selftest_out" >> "$LOG_FILE" 2>&1 || true
+    cb_fail "The installed binary failed its self-test" \
+      "The bundle is incomplete or corrupt — this is a packaging fault, not a configuration one. Re-run the installer to download it again; if it fails twice, report the version at https://github.com/BlkLeg/circuitbreaker/issues. Detail: ${_selftest_out##*$'\n'}"
+  fi
+
   # Verify database connectivity (migrations run automatically on binary startup)
   cb_step "Verifying database connectivity"
   if PGPASSWORD="${CB_DB_PASSWORD}" psql -h 127.0.0.1 -p 6432 -U breaker -d circuitbreaker -c '\q' >> "$LOG_FILE" 2>&1; then
@@ -1567,7 +1588,14 @@ stage10_final_output() {
   echo -e "    journalctl -u circuitbreaker-redis    (cache)"
   echo -e "    journalctl -u circuitbreaker-nats     (messaging)"
   echo ""
-  echo -e "  ${GREEN}${BOLD}Installation complete!${RESET} Open the HTTPS URL above to get started."
+  # "the HTTPS URL" was hardcoded, so a --no-tls install — which prints only an
+  # http:// address a few lines up, and warns that there is no HTTPS — closed by
+  # telling the operator to open a URL it had just said did not exist.
+  if [[ "$NO_TLS" == "true" ]]; then
+    echo -e "  ${GREEN}${BOLD}Installation complete!${RESET} Open the URL above to get started."
+  else
+    echo -e "  ${GREEN}${BOLD}Installation complete!${RESET} Open the HTTPS URL above to get started."
+  fi
   echo ""
 }
 
@@ -1802,7 +1830,7 @@ stage2_dependencies() {
     curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 https://www.postgresql.org/media/keys/ACCC4CF8.asc \
       | gpg --yes --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg \
       || cb_fail "Could not fetch the PostgreSQL signing key from postgresql.org" \
-                 "Transient network failure, or the host is unreachable. Check: curl -I https://www.postgresql.org — then re-run" 
+                 "Transient network failure, or the host is unreachable. Check: curl -I https://www.postgresql.org — then re-run"
     echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
     $PKG_MGR update -y -q >> "$LOG_FILE" 2>&1
     $PKG_MGR install -y -q postgresql-15 postgresql-client-15 >> "$LOG_FILE" 2>&1
