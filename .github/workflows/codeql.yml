@@ -1,3 +1,4 @@
+# scheduled-ref: default-branch-intentional
 name: CodeQL
 
 on:

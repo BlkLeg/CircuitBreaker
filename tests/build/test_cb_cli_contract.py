@@ -181,6 +181,11 @@ def _harness(tmp_path: Path, *, healthy: bool) -> tuple[Path, dict[str, str]]:
     (stubs / "redis-cli").write_text(
         "#!/bin/sh\necho PONG\n" if healthy else "#!/bin/sh\nexit 1\n"
     )
+    (stubs / "circuit-breaker").write_text(
+        "#!/bin/sh\necho 'selftest OK'\nexit 0\n"
+        if healthy
+        else "#!/bin/sh\necho 'selftest FAILED'\nexit 1\n"
+    )
     (stubs / "getenforce").write_text("#!/bin/sh\necho Disabled\n")
     if healthy:
         (stubs / "firewall-cmd").write_text('#!/bin/sh\necho "443/tcp"\n')
@@ -203,6 +208,8 @@ def _harness(tmp_path: Path, *, healthy: bool) -> tuple[Path, dict[str, str]]:
         "PATH": ":".join(ordered),
         "HOME": str(tmp_path / "home"),
         "CB_DOCTOR_LINES": "5",
+        "CB_BINARY": str(stubs / "circuit-breaker"),
+        "CB_NATIVE_BIN": str(stubs / "circuit-breaker"),
     }
     return stubs, env
 
@@ -296,3 +303,30 @@ def test_doctor_does_not_use_eval():
     assert "eval \"" not in body
     assert "eval '" not in body
     assert "eval $" not in body
+
+
+@pytest.mark.parametrize("script", [ROOT_CLI, NATIVE_CLI], ids=["root", "native"])
+def test_doctor_runs_artifact_selftest(tmp_path: Path, script: Path):
+    """cb doctor must run the artifact self-test and report its result."""
+    _, env = _harness(tmp_path, healthy=True)
+    identity = tmp_path / "install-identity.json"
+    (tmp_path / "data").mkdir()
+    identity.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "mode": "native",
+                "version": "0.4.2",
+                "data_dir": str(tmp_path / "data"),
+                "cli_path": "/usr/local/bin/cb",
+                "health_url": "http://127.0.0.1:8000/api/v1/readyz",
+                "installed_at": "2026-09-16T12:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    env = {**env, "CB_IDENTITY_PATH": str(identity)}
+    result = _run(script, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "selftest" in result.stdout
+

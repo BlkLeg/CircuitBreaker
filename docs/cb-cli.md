@@ -55,7 +55,7 @@ Schema: [`specs/install/identity.schema.json`](../specs/install/identity.schema.
 
 | Command | Native | Mono (Docker/Compose) | Package (advanced) |
 |---|---|---|---|
-| `info`, `status`, `doctor`, `setup`, `setup-token`, `logs`, `restart`, `backup`, `restore`, `config validate`, `version`, `uninstall` | ✅ | ✅ | ✅ |
+| `info`, `status`, `doctor`, `diag bundle`, `setup`, `setup-token`, `logs`, `restart`, `backup`, `restore`, `config validate`, `version`, `uninstall` | ✅ | ✅ | ✅ |
 | `migrate`, `token`, `user`, `agent` | ✅ | ✅ | ✅ |
 | `update` | ✅ (via installer guidance) | ✅ | ✅ |
 | `vault-recover` | ✅ | ✅ | ✅ |
@@ -136,6 +136,26 @@ liveness stays process-only; readiness stays dependency-aware.
 | `backend` fail | Inspect logs: `cb logs` |
 | `storage` warn | Free space under 1 GiB — prune backups or grow volume |
 | `workers` fail/warn | Restart workers; check `*.healthy` under the data dir |
+
+### `cb diag bundle`
+
+```bash
+cb diag bundle [--output <path>]
+```
+
+Collects `install.log`, `cb doctor --json`, the `circuit-breaker --selftest`
+output, unit status, journal output, the install identity, and the redacted
+env file into one `.tar.gz` — one file to attach to an issue instead of
+copy-pasting several. Every file it collects has, at some point, held a JWT
+secret, a Fernet vault key, or a database password, so every source is passed
+through the same redaction that already masks secrets and connection-string
+credentials, with no truncation — a 500-line log stays a 500-line log, fully
+redacted, not a 500-character fragment.
+
+It fails closed: without `python3` on `PATH` it refuses to produce a bundle at
+all and exits non-zero, rather than ship anything unredacted. It never uploads
+anything — it writes the archive and prints its path; where that file goes
+from there is up to you.
 
 ---
 

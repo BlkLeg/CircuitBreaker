@@ -12,6 +12,13 @@ Installs Circuit Breaker directly on your Linux host as a **systemd service**. N
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | bash
 ```
 
+> **What is verified about this path.** Every release builds this tarball, and
+> the release gate unpacks it, checks the bundle layout, and asserts the binary
+> can load the application it serves. See
+> [ADR 0005 — Verification tiers and platform support](../adr/0005-verification-tiers-and-platform-support.md)
+> for exactly which guarantees are in force today. Packages (`.deb`, `.rpm`)
+> carry the strongest guarantees.
+
 **What it does:**
 
 - Downloads a prebuilt release bundle and installs it to `/opt/circuitbreaker`

@@ -57,6 +57,21 @@ socket.socketpair = _safe_socketpair
 
 import uvicorn  # noqa: E402
 
+# The ASGI application this binary serves, as uvicorn's import string.
+#
+# Duplicated deliberately rather than passed as a variable to uvicorn.run
+# below: scripts/build_native_release.py::_collect_asgi_target_hidden_imports
+# parses this file's AST and requires that call's first argument to be a string
+# literal, raising SystemExit otherwise, because PyInstaller's static import
+# graph cannot see a module named by a variable any more than by a string.
+#
+# The duplication is safe because it is pinned:
+# tests/build/test_selftest_targets_match_runtime.py fails if this constant and
+# that literal ever disagree. Both are needed — the literal so the build can
+# find the module, this constant so --selftest can load it at runtime, where
+# there is no source tree to parse.
+ASGI_TARGET = "app.main:app"
+
 from app.core.config import resolve_app_version  # noqa: E402
 
 
@@ -141,6 +156,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ssl-certfile", help="Path to the TLS certificate file.")
     parser.add_argument("--ssl-keyfile", help="Path to the TLS private key file.")
     parser.add_argument("--version", action="store_true", help="Print the app version and exit.")
+    parser.add_argument(
+        "--selftest",
+        action="store_true",
+        help=(
+            "Verify this binary contains the application it serves, then exit. "
+            "Imports the ASGI target, every worker module and the migration "
+            "entrypoint. Touches no database, broker or network."
+        ),
+    )
     parser.add_argument(
         "--worker-type",
         help=(
@@ -322,6 +346,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.version:
         print(resolve_app_version())
         return 0
+
+    # Before configure_runtime, deliberately. --selftest runs inside the build
+    # container and on a freshly installed host, where no config file, database
+    # URL or data directory exists yet. Anything that reads configuration would
+    # make the check need the very environment it exists to be independent of.
+    if args.selftest:
+        from app.startup.selftest import format_result, run_selftest
+
+        result = run_selftest()
+        line = format_result(result)
+        if result.ok:
+            print(line)
+            return 0
+        print(line, file=sys.stderr)
+        return 1
 
     # Worker mode: dispatch to background worker instead of API server
     if args.worker_type:

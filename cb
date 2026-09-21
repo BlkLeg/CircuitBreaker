@@ -9,6 +9,7 @@
 # Commands:
 #   status        Show service / container status
 #   doctor        Run health checks and diagnose issues
+#   diag bundle   Write one redacted .tar.gz to hand over for an issue
 #   logs [-f]     Show (or follow) logs
 #   restart       Restart Circuit Breaker
 #   update        Pull latest image and restart  (docker mode only)
@@ -49,6 +50,12 @@ do
   fi
 done
 
+# Test seam only — real installs never set this. It prefixes the absolute
+# filesystem paths `cb diag bundle` reads (the env file, the install log) so
+# tests can point the CLI at a fixture tree instead of the real root. Nothing
+# else in this script honours it; do not use it to sandbox any other command.
+CB_ROOT_PREFIX="${CB_ROOT_PREFIX:-}"
+
 CB_CONFIG_DIR="${CB_CONFIG_DIR:-$HOME/.circuit-breaker}"
 _CONF="$CB_CONFIG_DIR/install.conf"
 if [[ ! -f "$_CONF" && -f /etc/circuit-breaker/install.conf ]]; then
@@ -69,19 +76,52 @@ _info() { echo -e "${GR}[${R}${G} INFO ${R}${GR}]${R} $*" >&2; }
 _warn() { echo -e "${GR}[${R}${Y}NOTICE${R}${GR}]${R} $*" >&2; }
 _fail() { echo -e "${GR}[${R}${RED}ERROR${R}${GR}]${R} $*" >&2; exit 1; }
 
-_redact_evidence() {
-  # Bound + redact operator-facing evidence for doctor JSON/human tails.
-  local text="${1:-}"
-  if command -v python3 >/dev/null 2>&1; then
-    CB_EVIDENCE_IN="$text" python3 -c '
-import os, re
-text = os.environ.get("CB_EVIDENCE_IN") or ""
-text = re.sub(r"(?i)(PASSWORD|TOKEN|SECRET|VAULT_KEY|JWT)=\S+", r"\1=[REDACTED]", text)
+# Single source of truth for the substitution patterns _redact_stream and
+# _redact_evidence both apply. Emits Python source that operates on a
+# variable named `text` already bound in the caller's scope — never define
+# these regexes a third time inline; add or change a pattern here only.
+# test_redact_functions_share_pattern_set (tests/build/test_diag_bundle_redaction.py)
+# asserts both functions embed exactly this output, so a future edit to one
+# and not the other fails the build instead of shipping a silent gap.
+_redact_pattern_source() {
+  cat <<'PY'
+# Key pattern: unanchored, full identifier ([A-Za-z0-9_]* on both sides of the
+# alternation) so CB_REDIS_PASSWORD, CB_JWT_SECRET and an inline
+# "... CB_JWT_SECRET=x" occurrence in a log line all match — not just a
+# key that is exactly one of the listed words. Over-redaction (e.g. a
+# variable that merely contains KEY) is accepted; missing a real secret is
+# not.
 text = re.sub(
-    r"(?i)(postgresql|mysql|redis|nats)://([^:/@]+):([^@/\s]+)@",
-    r"\1://\2:[REDACTED]@",
+    r"(?i)([A-Za-z0-9_]*(?:SECRET|PASSWORD|PASSWD|TOKEN|KEY|CREDENTIAL)[A-Za-z0-9_]*)=\S+",
+    r"\1=[REDACTED]",
     text,
 )
+# URL pattern: scheme-agnostic (any "word://", not a fixed list — this is
+# what missed http/https entirely) and empty-userinfo tolerant (`*` on the
+# userinfo class, not `+` — this is what missed "redis://:pw@", which is
+# exactly what deploy/setup.sh writes for CB_REDIS_URL). Also handles a
+# compound scheme like "postgresql+asyncpg://", which the async session DSN
+# is rewritten to and which a fixed alternation of scheme names cannot
+# match. Both the userinfo and the password are redacted.
+text = re.sub(
+    r"(?i)([a-z][a-z0-9+.\-]*://)([^:/@\s]*):([^@/\s]+)@",
+    r"\1[REDACTED]:[REDACTED]@",
+    text,
+)
+PY
+}
+
+_redact_evidence() {
+  # Bound + redact operator-facing evidence for doctor JSON/human tails.
+  # Uses the exact same substitution patterns as _redact_stream, via
+  # _redact_pattern_source — only the 500-character truncation below is
+  # unique to this function, deliberately, for short doctor evidence tails.
+  local text="${1:-}"
+  if command -v python3 >/dev/null 2>&1; then
+    CB_EVIDENCE_IN="$text" CB_REDACT_PATTERNS="$(_redact_pattern_source)" python3 -c '
+import os, re
+text = os.environ.get("CB_EVIDENCE_IN") or ""
+exec(os.environ["CB_REDACT_PATTERNS"])
 for key in ("CB_VAULT_KEY", "CB_JWT_SECRET", "CB_DB_PASSWORD", "NATS_AUTH_TOKEN"):
     val = os.environ.get(key) or ""
     if len(val) >= 4 and val in text:
@@ -91,6 +131,41 @@ print(text[:500], end="")
   else
     printf '%s' "${text:0:500}"
   fi
+}
+
+# Everything here is written to be pasted into a public issue, so every source
+# goes through the redaction that source already has — cb_env_redacted for the
+# env file, the CLI's own masking for doctor output — and nothing is added
+# without a matching assertion in tests/build/test_diag_bundle_redaction.py.
+#
+# Never uploads. The air-gap contract forbids an outbound call, and an operator
+# handing over a file should be the one who decides where it goes.
+_redact_stream() {
+  # Same substitution patterns as _redact_evidence, via _redact_pattern_source
+  # — but reading stdin to stdout whole, with NO truncation. _redact_evidence
+  # exists for short doctor evidence tails and cuts everything to 500
+  # characters; install.log and journal.txt run to hundreds of lines, and
+  # piping either through that would ship the first 500 characters as
+  # "redacted" while the rest — including any secret past that point — goes
+  # out verbatim.
+  #
+  # Fails closed: if python3 is unavailable, nothing is written to stdout and
+  # this returns non-zero. The caller MUST treat that as fatal to the whole
+  # bundle. A missing interpreter must never degrade into shipping a stream
+  # unredacted — that is exactly the failure `cb diag bundle` exists to avoid.
+  if ! command -v python3 >/dev/null 2>&1; then
+    return 1
+  fi
+  CB_REDACT_PATTERNS="$(_redact_pattern_source)" python3 -c '
+import os, re, sys
+text = sys.stdin.read()
+exec(os.environ["CB_REDACT_PATTERNS"])
+for key in ("CB_VAULT_KEY", "CB_JWT_SECRET", "CB_DB_PASSWORD", "NATS_AUTH_TOKEN"):
+    val = os.environ.get(key) or ""
+    if len(val) >= 4 and val in text:
+        text = text.replace(val, "[REDACTED]")
+sys.stdout.write(text)
+'
 }
 
 _doctor_emit_json() {
@@ -281,7 +356,7 @@ _require_identity_or_fail() {
 }
 
 # Commands allowed without identity.
-_CB_IDENTITY_OPTIONAL_CMDS="info help version doctor setup setup-token"
+_CB_IDENTITY_OPTIONAL_CMDS="info help version doctor setup setup-token diag"
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 _require_docker() {
@@ -592,16 +667,23 @@ print(json.dumps({
     docker exec "$1" sh -c '[ -n "$CB_VAULT_KEY" ] || grep -qs "^CB_VAULT_KEY=" "'"$2"'/.env"'
   }
   _probe_psql_url() { psql "$1" -tAc 'SELECT 1' >/dev/null; }
+  _probe_selftest() { [[ -x "$1" ]] && "$1" --selftest; }
 
   # $1=name $2=hint $3=component $4=diag_cmd_or_empty; remaining argv = probe
   _run_check() {
     local name=$1 hint=$2 component=$3 diag=${4:-}
     shift 4
-    if "$@" &>/dev/null; then
+    local out=""
+    if out="$("$@" 2>&1)"; then
       if [[ "$as_json" -eq 0 ]]; then
         printf "  ${G}✓${R}  %-30s OK\n" "$name"
       fi
-      _doctor_add "$component" "$name" pass info "ok" "" true
+      # Redacted the same way the fail branch below redacts its diag output —
+      # a passing probe's stdout/stderr is just as likely to echo a
+      # connection string or an env var back (e.g. a DB ping printing the DSN
+      # it connected with), and this evidence lands in doctor.json, which
+      # cmd_diag_bundle copies into the bundle verbatim.
+      _doctor_add "$component" "$name" pass info "$(_redact_evidence "${out:-ok}")" "" true
     else
       if [[ "$as_json" -eq 0 ]]; then
         printf "  ${RED}✗${R}  %-30s FAILED\n" "$name"
@@ -624,17 +706,30 @@ print(json.dumps({
   if [[ -z "$CB_MODE" ]]; then
     _doctor_add identity present fail critical "install-identity.json not found" \
       "Re-run the installer so install-identity.json is written, then: cb info" true
+    if [[ "$as_json" -eq 0 ]]; then
+      echo ""
+      echo -e "$LINE"
+      echo -e " ${B}Circuit Breaker — Health Check${R}"
+      echo -e "$LINE"
+      echo ""
+      printf "  ${RED}✗${R}  %-30s FAILED\n" "Install identity"
+      echo "     → Re-run the installer so install-identity.json is written, then: cb info"
+    fi
+    local bin="${CB_BINARY:-/usr/local/bin/circuit-breaker}"
+    [[ -x "$bin" ]] || bin="${CB_NATIVE_BIN:-/opt/circuitbreaker/bin/circuit-breaker}"
+    # The same assertion the release gate runs. v0.4.2 shipped a binary with no
+    # application in it and every gate was green, because the only thing any of them
+    # executed was --version. An operator who can run this gets the answer in one
+    # command instead of a support thread.
+    _run_check "selftest" \
+      "The installed binary cannot load its application — run '$bin --selftest' for the traceback." \
+      binary \
+      "$bin --selftest" \
+      _probe_selftest "$bin"
     if [[ "$as_json" -eq 1 ]]; then
       _doctor_emit_json
       return 1
     fi
-    echo ""
-    echo -e "$LINE"
-    echo -e " ${B}Circuit Breaker — Health Check${R}"
-    echo -e "$LINE"
-    echo ""
-    printf "  ${RED}✗${R}  %-30s FAILED\n" "Install identity"
-    echo "     → Re-run the installer so install-identity.json is written, then: cb info"
     echo ""
     return 1
   fi
@@ -736,6 +831,17 @@ print(json.dumps({
       ;;
 
     binary)
+      # The same assertion the release gate runs. v0.4.2 shipped a binary with no
+      # application in it and every gate was green, because the only thing any of them
+      # executed was --version. An operator who can run this gets the answer in one
+      # command instead of a support thread.
+      local bin="${CB_BINARY:-/usr/local/bin/circuit-breaker}"
+      _run_check "selftest" \
+        "The installed binary cannot load its application — run '$bin --selftest' for the traceback." \
+        binary \
+        "$bin --selftest" \
+        _probe_selftest "$bin"
+
       _run_check "systemd unit" \
         "Start it: sudo systemctl start circuit-breaker" \
         service \
@@ -782,6 +888,17 @@ print(json.dumps({
       ;;
 
     native)
+      # The same assertion the release gate runs. v0.4.2 shipped a binary with no
+      # application in it and every gate was green, because the only thing any of them
+      # executed was --version. An operator who can run this gets the answer in one
+      # command instead of a support thread.
+      local bin="${CB_NATIVE_BIN:-/opt/circuitbreaker/bin/circuit-breaker}"
+      _run_check "selftest" \
+        "The installed binary cannot load its application — run '$bin --selftest' for the traceback." \
+        native \
+        "$bin --selftest" \
+        _probe_selftest "$bin"
+
       local svc
       for svc in circuitbreaker-postgres circuitbreaker-redis circuitbreaker-nats circuitbreaker-backend; do
         _run_check "systemd ${svc}" \
@@ -1862,6 +1979,184 @@ cmd_uninstall() {
   fi
 }
 
+# ── diag ─────────────────────────────────────────────────────────────────────
+#
+# cmd_diag_bundle is the highest-risk command in this file: its whole purpose
+# is to be pasted into a public GitHub issue. Everything it collects —
+# /etc/circuitbreaker/.env, journal output, the install log — has held a JWT
+# secret, a Fernet vault key or a database password at some point. See the
+# comment above _redact_stream for the redaction contract this leans on.
+_CB_DIAG_BUNDLE_FILES=(
+  install.log
+  doctor.json
+  selftest.txt
+  units.txt
+  journal.txt
+  identity.json
+  env.redacted
+  manifest.txt
+)
+
+cmd_diag_bundle() {
+  local output=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --output) [[ $# -ge 2 ]] || _fail "--output requires a path"; output="$2"; shift 2 ;;
+      --output=*) output="${1#--output=}"; shift ;;
+      *) _fail "Unknown option for 'cb diag bundle': $1 (expected: --output <path>)" ;;
+    esac
+  done
+
+  # Fail closed. _redact_stream can only redact with python3, and this command
+  # exists precisely so nothing it collects ever leaves this host unredacted —
+  # refuse outright rather than let any collector below silently ship a
+  # secret because the one thing that masks it wasn't there.
+  command -v python3 >/dev/null 2>&1 || _fail "$(printf '%s\n' \
+    "python3 is required to redact secrets before writing a diagnostic bundle." \
+    "  Refusing to produce a bundle — it would ship the JWT secret, the vault key" \
+    "  and any database password in the env file and logs unredacted." \
+    "  Install python3 and retry: cb diag bundle")"
+
+  local root="$CB_ROOT_PREFIX"
+  local stamp
+  stamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null)" || stamp="unknown"
+  [[ -n "$output" ]] || output="./cb-diag-${stamp}.tar.gz"
+
+  local work
+  work="$(mktemp -d "${TMPDIR:-/tmp}/cb-diag.XXXXXX")" || _fail "Could not create a temporary directory."
+  trap 'rm -rf "$work"' EXIT
+
+  _info "Collecting diagnostics…"
+
+  # ── install.log — tail 500, then through _redact_stream (no further
+  # truncation; the 500-*line* tail here is not the 500-*character* bug this
+  # command exists to avoid) ──
+  local install_log="" candidate
+  for candidate in \
+    "${root}${CB_DATA_DIR:-}/logs/install.log" \
+    "${root}/var/lib/circuitbreaker/logs/install.log" \
+    "${root}/var/lib/circuit-breaker/logs/install.log" \
+    "${root}/data/logs/install.log"
+  do
+    [[ -n "$candidate" && -f "$candidate" ]] || continue
+    install_log="$candidate"
+    break
+  done
+  if [[ -n "$install_log" ]]; then
+    tail -n 500 "$install_log" | _redact_stream > "${work}/install.log" \
+      || _fail "Redaction failed while collecting install.log — refusing to bundle it unredacted."
+  else
+    echo "(install.log not found)" > "${work}/install.log"
+  fi
+
+  # ── doctor.json — cb doctor redacts every evidence field it writes via
+  # _redact_evidence, both the pass branch and the fail branch, so this is
+  # taken as-is ──
+  bash "${BASH_SOURCE[0]}" doctor --json > "${work}/doctor.json" 2>/dev/null || true
+  [[ -s "${work}/doctor.json" ]] || echo '[]' > "${work}/doctor.json"
+
+  # ── selftest.txt ──
+  local bin="${CB_BINARY:-/usr/local/bin/circuit-breaker}"
+  [[ -x "$bin" ]] || bin="${CB_NATIVE_BIN:-/opt/circuitbreaker/bin/circuit-breaker}"
+  {
+    if [[ -x "$bin" ]]; then
+      echo "\$ ${bin} --selftest"
+      "$bin" --selftest 2>&1
+      echo "exit: $?"
+    else
+      echo "(binary not found: ${bin})"
+    fi
+  } | _redact_stream > "${work}/selftest.txt" \
+    || _fail "Redaction failed while collecting selftest.txt — refusing to bundle it unredacted."
+
+  # ── units.txt ──
+  {
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl status 'circuitbreaker-*' --no-pager -l 2>&1 || true
+    else
+      echo "(systemctl not found)"
+    fi
+  } | _redact_stream > "${work}/units.txt" \
+    || _fail "Redaction failed while collecting units.txt — refusing to bundle it unredacted."
+
+  # ── journal.txt — by far the longest input here, and the other one (besides
+  # install.log) that the redaction test plants a secret past character 500 of ──
+  {
+    if command -v journalctl >/dev/null 2>&1; then
+      journalctl -u 'circuitbreaker-*' -n 500 --no-pager 2>&1 || true
+    else
+      echo "(journalctl not found)"
+    fi
+  } | _redact_stream > "${work}/journal.txt" \
+    || _fail "Redaction failed while collecting journal.txt — refusing to bundle it unredacted."
+
+  # ── identity.json ──
+  if [[ "$CB_IDENTITY_LOADED" -eq 1 ]]; then
+    printf '%s' "$CB_IDENTITY_JSON" | _redact_stream > "${work}/identity.json" \
+      || _fail "Redaction failed while collecting identity.json — refusing to bundle it unredacted."
+  else
+    echo '{"note":"no install identity found on this host"}' > "${work}/identity.json"
+  fi
+
+  # ── env.redacted — the file most likely to hold the JWT secret, the vault
+  # key and the database password, all three at once ──
+  local env_file="" env_candidate
+  for env_candidate in \
+    "${root}/etc/circuitbreaker/.env" \
+    "${root}${CB_BINARY_ENV_FILE:-}" \
+    "${root}${CB_DATA_DIR:-}/.env"
+  do
+    [[ -n "$env_candidate" && -f "$env_candidate" ]] || continue
+    env_file="$env_candidate"
+    break
+  done
+  if [[ -n "$env_file" ]]; then
+    _redact_stream < "$env_file" > "${work}/env.redacted" \
+      || _fail "Redaction failed while collecting env.redacted — refusing to bundle it unredacted."
+  else
+    echo "(no env file found)" > "${work}/env.redacted"
+  fi
+
+  # ── manifest.txt ──
+  local version
+  version="$(cmd_version 2>/dev/null)" || version="unknown"
+  {
+    echo "Circuit Breaker diagnostic bundle"
+    echo "generated (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
+    echo "version: ${version:-unknown}"
+    echo "os: $(uname -s 2>/dev/null || echo unknown)"
+    echo "arch: $(uname -m 2>/dev/null || echo unknown)"
+    echo "mode: ${CB_MODE:-unknown}"
+    echo ""
+    echo "files:"
+    printf '  %s\n' "${_CB_DIAG_BUNDLE_FILES[@]}"
+  } > "${work}/manifest.txt"
+
+  local outdir
+  outdir="$(dirname -- "$output")"
+  [[ -n "$outdir" ]] && mkdir -p "$outdir" 2>/dev/null
+
+  tar -czf "$output" -C "$work" "${_CB_DIAG_BUNDLE_FILES[@]}" \
+    || _fail "Could not write the bundle to ${output}."
+  chmod 600 "$output" 2>/dev/null || true
+
+  _ok "Diagnostic bundle written to ${output}"
+  echo -e "  ${GR}Every file in it has been redacted — review it yourself before sharing it.${R}"
+  echo -e "  ${GR}Nothing here is ever uploaded; where this file goes is your call.${R}"
+}
+
+cmd_diag() {
+  case "${1:-}" in
+    bundle) shift; cmd_diag_bundle "$@" ;;
+    ""|help|-h|--help)
+      echo "Usage: cb diag bundle [--output <path>]"
+      echo "  Collect a redacted diagnostic bundle (.tar.gz) you can attach to an issue."
+      echo "  Never uploads anything — writes the file and prints its path."
+      ;;
+    *) _fail "Unknown 'cb diag' subcommand: '$1' (expected: bundle)" ;;
+  esac
+}
+
 ###############################################################################
 # USAGE
 ###############################################################################
@@ -1876,6 +2171,7 @@ usage() {
   echo -e "    info [--json]       Show install identity (mode, paths, health URL)"
   echo -e "    status              Show container / service status"
   echo -e "    doctor [--json]     Run health checks and diagnose issues"
+  echo -e "    diag bundle         Write one redacted .tar.gz to hand over for an issue"
   echo -e "    setup               Report first-run / bootstrap status"
   echo -e "    setup-token         Print the one-time setup token (not for logs)"
   echo -e "    logs [-f]           Show logs  (${GR}-f${R} to follow in real-time)"
@@ -1909,6 +2205,7 @@ case "${1:-help}" in
   info)            cmd_info "${2:-}" ;;
   status)          cmd_status ;;
   doctor)          cmd_doctor "${2:-}" ;;
+  diag)            cmd_diag "${@:2}" ;;
   setup)           cmd_setup ;;
   setup-token)     cmd_setup_token ;;
   logs)            cmd_logs "${2:-}" ;;

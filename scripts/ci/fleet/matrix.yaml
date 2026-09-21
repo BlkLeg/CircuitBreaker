@@ -102,3 +102,30 @@
   cloud_init: debian.user-data
   image_url: "https://cloud.debian.org/images/cloud/bookworm/20260821-2577/debian-12-genericcloud-amd64-20260821-2577.qcow2"
   image_sha512: "c602f42a374c097bafcbc77c2d034fb06cb8a831d791bcbaa5d043f029874b0c32d41cb72ba8b6d50ccfd64c9b4b0dc9ade5b6e4065712f3eb152338e532721f"
+
+# The format `curl ... install.sh | bash` actually installs. Tier 3 today: the
+# row's existence does not move ADR 0005's table, which is updated only by the
+# commit that records a passing run.
+- id: debian-tarball-amd64
+  distro: debian-12
+  format: tarball
+  arch: amd64
+  runner: local/qemu
+  tier: 3
+  mode: install
+  ssh_user: debian
+  cloud_init: debian.user-data
+  image_url: "https://cloud.debian.org/images/cloud/bookworm/20260821-2577/debian-12-genericcloud-amd64-20260821-2577.qcow2"
+  image_sha512: "c602f42a374c097bafcbc77c2d034fb06cb8a831d791bcbaa5d043f029874b0c32d41cb72ba8b6d50ccfd64c9b4b0dc9ade5b6e4065712f3eb152338e532721f"
+
+- id: debian-tarball-amd64-upgrade
+  distro: debian-12
+  format: tarball
+  arch: amd64
+  runner: local/qemu
+  tier: 3
+  mode: upgrade
+  ssh_user: debian
+  cloud_init: debian.user-data
+  image_url: "https://cloud.debian.org/images/cloud/bookworm/20260821-2577/debian-12-genericcloud-amd64-20260821-2577.qcow2"
+  image_sha512: "c602f42a374c097bafcbc77c2d034fb06cb8a831d791bcbaa5d043f029874b0c32d41cb72ba8b6d50ccfd64c9b4b0dc9ade5b6e4065712f3eb152338e532721f"

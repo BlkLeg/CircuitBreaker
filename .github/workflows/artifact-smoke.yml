@@ -1,22 +1,99 @@
 name: Artifact Smoke
-
-# GOV-20 / ACC-17: a package is not publishable until it has been installed on
-# a clean host from the exact built candidate — not from a source checkout.
-# Nothing in the pipeline did this: release.yml downloaded the build artifacts
-# and uploaded them straight to a GitHub Release.
 on:
   workflow_call:
     inputs:
       version:
         required: true
         type: string
-
 permissions:
   contents: read
-
 jobs:
   deb-install:
     name: Install .deb (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: ubuntu-22.04
+          arch: amd64
+        - os: ubuntu-22.04-arm
+          arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+    - name: Download candidate packages
+      uses: actions/download-artifact@v5
+      with:
+        name: packages-${{ matrix.arch }}
+        path: dist/
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Install the candidate .deb on a clean host
+      run: |
+        # Absolute paths throughout: that is what makes apt treat these as
+        # files to install rather than as names to look up in a repository.
+
+        APP_DEB=$(find "$PWD/dist" -name 'circuit-breaker_*.deb' | head -1)
+
+        [ -n "${APP_DEB}" ] || { echo "::error::no application .deb in packages-${{ matrix.arch }}"; exit 1; }
+
+        echo "Application package: ${APP_DEB}"
+
+        echo "Installing the full candidate set:"
+
+        find "$PWD/dist" -name '*.deb' -print
+
+        sudo apt-get update
+
+        find "$PWD/dist" -name '*.deb' -print0 | xargs -0 sudo apt-get install -y
+    - name: Assert the installed binary reports the candidate version
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        INSTALLED=$(/usr/local/bin/circuit-breaker --version)
+        echo "installed binary reports: ${INSTALLED}"
+        [ "${INSTALLED}" = "${VERSION}" ] || { echo "::error::binary reports '${INSTALLED}', expected '${VERSION}'"; exit 1; }
+
+        SHIPPED=$(cat /usr/local/share/circuit-breaker/VERSION)
+        echo "shipped VERSION file reports: ${SHIPPED}"
+        [ "${SHIPPED}" = "${VERSION}" ] || { echo "::error::shipped VERSION is '${SHIPPED}', expected '${VERSION}'"; exit 1; }
+    - name: Assert the installed binary can load the application it serves
+      run: |
+        # ADR 0005: a gate may not pass by not asking. Every assertion above is an
+        # identity check — they all pass on a binary with no application in it,
+        # because `--version` resolves from an embedded VERSION file and exits
+        # before `app.main` is ever imported. That is exactly how v0.4.2 shipped:
+        # signed, attested, SBOM'd, version-parity-checked, and empty.
+        #
+        # This is the cheapest execution that can disprove publishability. No
+        # database, no broker, no network, seconds of runtime, and it runs on both
+        # the amd64 and the ubuntu-22.04-arm legs of this matrix.
+        /usr/local/bin/circuit-breaker --selftest
+    - name: Assert the package shipped its unit and support files
+      run: |
+        for path in \
+          /lib/systemd/system/circuit-breaker.service \
+          /usr/local/share/circuit-breaker/frontend \
+          /usr/local/share/circuit-breaker/backend; do
+          [ -e "${path}" ] || { echo "::error::package did not install ${path}"; exit 1; }
+        done
+        echo "package contents present"
+    - name: Assert the install resolved a message broker
+      run: |
+        command -v nats-server >/dev/null 2>&1 \
+          || { echo "::error::no nats-server on PATH after install; the broker dependency resolved to nothing and the service would refuse to start"; exit 1; }
+        echo "broker present: $(command -v nats-server)"
+    - name: Assert uninstall removes what it installed
+      run: |
+        sudo apt-get remove -y circuit-breaker circuit-breaker-nats
+        for path in \
+          /usr/local/bin/circuit-breaker \
+          /usr/local/bin/nats-server \
+          /lib/systemd/system/circuit-breaker.service; do
+          [ ! -e "${path}" ] || { echo "::error::uninstall left ${path} behind"; exit 1; }
+        done
+        echo "uninstall clean"
+
+  tarball-smoke:
+    name: Smoke the tarball (${{ matrix.arch }})
     strategy:
       fail-fast: false
       matrix:
@@ -34,78 +111,210 @@ jobs:
           path: dist/
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # The candidate SET, not one file out of it. Two things made the old
-      # `find dist -name '*.deb' | head -1` wrong once the release started
-      # shipping a companion broker deb: it picks whichever name sorts first,
-      # which is `circuit-breaker-nats`, so the gate would have asserted the
-      # application's version against a package that is not the application.
-      #
-      # And installing the application deb alone is not what a user gets. It
-      # depends on `nats-server | circuit-breaker-nats`; these runners are
-      # ubuntu-22.04, which packages no nats-server in any component, so apt can
-      # satisfy that only from the companion shipped beside it. That is exactly
-      # how v0.4.0 failed here — after every package and image had been built.
-      #
-      # On a distro that does package a broker (Debian 12, Ubuntu 24.04) apt
-      # prefers the distro's copy when it is not handed ours on the command
-      # line, which is the arrangement nfpm.yaml explains and wants.
-      - name: Install the candidate .deb on a clean host
-        run: |
-          # Absolute paths throughout: that is what makes apt treat these as
-          # files to install rather than as names to look up in a repository.
-          APP_DEB=$(find "$PWD/dist" -name 'circuit-breaker_*.deb' | head -1)
-          [ -n "${APP_DEB}" ] || { echo "::error::no application .deb in packages-${{ matrix.arch }}"; exit 1; }
-          echo "Application package: ${APP_DEB}"
-          echo "Installing the full candidate set:"
-          find "$PWD/dist" -name '*.deb' -print
-          sudo apt-get update
-          find "$PWD/dist" -name '*.deb' -print0 | xargs -0 sudo apt-get install -y
-
-      # GOV-09 parity, measured at the far end of the pipeline: the artifact a
-      # user receives must identify itself as the version being released.
-      # Paths come from nfpm.yaml, not from assumption.
-      - name: Assert the installed binary reports the candidate version
+      # The tarball is what `curl ... install.sh | bash` installs. It is the
+      # path quick-install.md leads with, and until this job existed it was
+      # verified by nothing at any tier: artifact-smoke tested only the .deb,
+      # and matrix.yaml's four rows are all deb or rpm.
+      - name: Unpack the candidate tarball
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          INSTALLED=$(/usr/local/bin/circuit-breaker --version)
-          echo "installed binary reports: ${INSTALLED}"
-          [ "${INSTALLED}" = "${VERSION}" ] \
-            || { echo "::error::binary reports '${INSTALLED}', expected '${VERSION}'"; exit 1; }
+          set -euo pipefail
+          TARBALL="dist/circuit-breaker_${VERSION}_linux_${{ matrix.arch }}.tar.gz"
+          [ -f "${TARBALL}" ] || {
+            echo "::error::no tarball at ${TARBALL}"
+            find dist -name '*.tar.gz' -print
+            exit 1
+          }
+          mkdir -p unpacked
+          tar -xzf "${TARBALL}" -C unpacked
+          if [ -f "unpacked/circuit-breaker" ]; then
+            echo "BUNDLE=$PWD/unpacked" >> "$GITHUB_ENV"
+          else
+            echo "BUNDLE=$(find "$PWD/unpacked" -maxdepth 1 -mindepth 1 -type d | head -1)" >> "$GITHUB_ENV"
+          fi
 
-          SHIPPED=$(cat /usr/local/share/circuit-breaker/VERSION)
-          echo "shipped VERSION file reports: ${SHIPPED}"
+      # install.sh reads exactly these paths out of the bundle. A layout change
+      # that breaks them breaks every curl|bash install, and does so after
+      # publication, because nothing else looks.
+      - name: Assert the bundle layout install.sh depends on
+        run: |
+          set -euo pipefail
+          for path in \
+            circuit-breaker \
+            deploy/setup.sh \
+            share/VERSION \
+            manifest.json; do
+            [ -e "${BUNDLE}/${path}" ] || {
+              echo "::error::bundle is missing ${path}; install.sh reads it"
+              exit 1
+            }
+          done
+          echo "bundle layout OK"
+
+      - name: Assert the shipped VERSION matches the candidate
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          SHIPPED="$(cat "${BUNDLE}/share/VERSION")"
           [ "${SHIPPED}" = "${VERSION}" ] \
-            || { echo "::error::shipped VERSION is '${SHIPPED}', expected '${VERSION}'"; exit 1; }
+            || { echo "::error::bundle VERSION is '${SHIPPED}', expected '${VERSION}'"; exit 1; }
 
-      - name: Assert the package shipped its unit and support files
+      # The assertion v0.4.2 needed. Every check above is satisfied by a bundle
+      # whose binary contains no application.
+      - name: Assert the bundled binary can load the application it serves
         run: |
-          for path in \
-            /lib/systemd/system/circuit-breaker.service \
-            /usr/local/share/circuit-breaker/frontend \
-            /usr/local/share/circuit-breaker/backend; do
-            [ -e "${path}" ] || { echo "::error::package did not install ${path}"; exit 1; }
+          set -euo pipefail
+          "${BUNDLE}/circuit-breaker" --selftest
+
+  deb-boot:
+    name: Boot the .deb (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: amd64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+
+    # ADR 0005's Tier 2 promise is "install and boot". Until this job existed
+    # that row read "not in force" with the reason recorded in the ADR itself:
+    # "That job still asserts only that the binary prints a version." A
+    # self-test proves the application imports; it does not prove the service
+    # starts, migrations apply, or the broker is reachable.
+    #
+    # A subset of scripts/ci/tier3-artifact.sh's contract, on a hosted runner:
+    # start, wait for /livez, wait for /readyz. The dependencies are service
+    # containers rather than the packaged units, because this gate is about the
+    # application booting, not about the vendored Postgres layout — which the
+    # fleet tier already covers.
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: circuitbreaker
+          POSTGRES_DB: circuitbreaker
+          POSTGRES_PASSWORD: ${{ env.CB_DB_PASSWORD }}
+        options: >-
+          --health-cmd "pg_isready -U circuitbreaker"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+        ports:
+          - 6379:6379
+
+    steps:
+      # Ephemeral, per-run, never stored. ::add-mask:: is registered before any
+      # value is written anywhere, so a later step dumping the environment is
+      # redacted rather than leaked. Same idiom as dev-ci.yml's smoke run.
+      - name: Mint ephemeral secrets for the boot run
+        run: |
+          set -euo pipefail
+          hexgen() { python3 -c 'import secrets; print(secrets.token_hex(32))'; }
+          DB_PASSWORD="$(hexgen)"
+          JWT_SECRET="$(hexgen)"
+          NATS_TOKEN="$(hexgen)"
+          VAULT_KEY="$(python3 -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
+          for secret in "${DB_PASSWORD}" "${JWT_SECRET}" "${NATS_TOKEN}" "${VAULT_KEY}"; do
+            echo "::add-mask::${secret}"
           done
-          echo "package contents present"
+          {
+            echo "CB_DB_PASSWORD=${DB_PASSWORD}"
+            echo "CB_JWT_SECRET=${JWT_SECRET}"
+            echo "CB_NATS_TOKEN=${NATS_TOKEN}"
+            echo "CB_VAULT_KEY=${VAULT_KEY}"
+          } >> "$GITHUB_ENV"
 
-      # The dependency, asserted as the property rather than as a package name.
-      # `validate_core_dependencies` refuses to start without a broker, so an
-      # install that resolved without one is an install that cannot boot — and
-      # which of the two alternatives satisfied it is the distro's business, not
-      # this gate's.
-      - name: Assert the install resolved a message broker
-        run: |
-          command -v nats-server >/dev/null 2>&1 \
-            || { echo "::error::no nats-server on PATH after install; the broker dependency resolved to nothing and the service would refuse to start"; exit 1; }
-          echo "broker present: $(command -v nats-server)"
+      - name: Download candidate packages
+        uses: actions/download-artifact@v5
+        with:
+          name: packages-${{ matrix.arch }}
+          path: dist/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Assert uninstall removes what it installed
+      - name: Install the candidate set
         run: |
-          sudo apt-get remove -y circuit-breaker circuit-breaker-nats
-          for path in \
-            /usr/local/bin/circuit-breaker \
-            /usr/local/bin/nats-server \
-            /lib/systemd/system/circuit-breaker.service; do
-            [ ! -e "${path}" ] || { echo "::error::uninstall left ${path} behind"; exit 1; }
+          set -euo pipefail
+          sudo apt-get update
+          find "$PWD/dist" -name '*.deb' -print0 | xargs -0 sudo apt-get install -y
+
+      # circuit-breaker.service and circuit-breaker-nats.service share this one
+      # EnvironmentFile (see packaging/circuit-breaker.service and
+      # packaging/circuit-breaker-nats.service), so NATS_AUTH_TOKEN has to be
+      # the same value the broker is told to require *and* the value the app
+      # authenticates with — one line serves both units.
+      - name: Point the service at the ephemeral dependencies
+        run: |
+          set -euo pipefail
+          sudo install -d -m 0750 /etc/circuit-breaker
+          sudo tee /etc/circuit-breaker/circuit-breaker.env >/dev/null <<EOF
+          CB_DB_URL=postgresql://circuitbreaker:${CB_DB_PASSWORD}@127.0.0.1:5432/circuitbreaker
+          CB_REDIS_URL=redis://127.0.0.1:6379/0
+          CB_JWT_SECRET=${CB_JWT_SECRET}
+          CB_VAULT_KEY=${CB_VAULT_KEY}
+          NATS_AUTH_TOKEN=${CB_NATS_TOKEN}
+          EOF
+          sudo chmod 0640 /etc/circuit-breaker/circuit-breaker.env
+
+      # Neither postinstall script starts anything — both only `enable`. And
+      # /readyz (apps/backend/src/app/api/health.py) is 200 only when Postgres,
+      # Redis AND NATS all report "ok", so the broker has to be up before the
+      # application unit is, or /readyz would spend its whole budget waiting on
+      # a dependency that was never going to come up on its own.
+      - name: Start the service
+        run: |
+          set -euo pipefail
+          sudo systemctl daemon-reload
+          sudo systemctl start circuit-breaker-nats
+          sudo systemctl start circuit-breaker
+
+      - name: Wait for /livez
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8080/api/v1/livez >/dev/null 2>&1 && break
+            sleep 2
           done
-          echo "uninstall clean"
+          curl -fsS http://127.0.0.1:8080/api/v1/livez
+
+      # The half that catches a failed migration, an unreachable dependency or
+      # a bad config — all of which leave the unit "active" and the service
+      # useless.
+      - name: Wait for /readyz
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 90); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/readyz)"
+            [ "${code}" = "200" ] && break
+            sleep 2
+          done
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/readyz)"
+          if [ "${code}" != "200" ]; then
+            echo "::error::service never became ready (last /readyz was ${code})"
+            curl -s http://127.0.0.1:8080/api/v1/readyz || true
+            sudo journalctl -u circuit-breaker --no-pager -n 100
+            sudo journalctl -u circuit-breaker-nats --no-pager -n 100
+            exit 1
+          fi
+          curl -fsS http://127.0.0.1:8080/api/v1/readyz
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        run: |
+          sudo systemctl status circuit-breaker --no-pager -l || true
+          sudo systemctl status circuit-breaker-nats --no-pager -l || true
+          sudo journalctl -u circuit-breaker --no-pager -n 200 || true
+          sudo journalctl -u circuit-breaker-nats --no-pager -n 200 || true
+

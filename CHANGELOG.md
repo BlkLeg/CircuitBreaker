@@ -15,21 +15,78 @@ cut and is *not yet* released — when it actually ships, that heading takes
 the release date and a fresh `[Unreleased]` section opens above it for the
 next round.
 
-## [0.4.2] — unreleased
+## [0.4.3] — unreleased
 
-`v0.4.0` (tagged 2026-08-31) is still the newest tag and the last version
-actually cut on `main` — `git show origin/main:VERSION` reads `0.4.0`, and
-`main` has no commits since that tag. `VERSION` in this tree was moved to
-0.4.2 by `ef729552`, ahead of an actual release; nothing below has shipped
-yet, and this heading records what will ship in the next cut, not a past one.
-A large agent/production-readiness effort has also been landing on `dev`
-since v0.4.0, but the project's own tracking
-(`docs/evidence/2026-08-30-production-readiness-route.md`) carries much of it
-as "fixed in working tree, release evidence pending" or "gated, not fixed",
-and aims its own next milestone at 0.5.0 — so it is not listed here to avoid
-claiming a shipped state that isn't backed by release evidence yet. This entry
-covers only the commits below, which are complete, self-contained, and
-directly verifiable in this tree.
+Fixes the defect that made 0.4.2 unusable, and closes the gap in the release
+pipeline that let it ship.
+
+`v0.4.2`'s native binary did not contain the application. PyInstaller builds
+from a static import graph, and `app.main` was reached only through the string
+`"app.main:app"` handed to `uvicorn.run`, so it was silently dropped. Every
+release gate was green, because the only thing any of them executed was
+`--version` — which `start.py` resolves from an embedded file and returns on
+before the application is ever imported. The artifact was signed, attested,
+SBOM'd, scanned and version-parity-checked, and empty.
+
+### Fixed
+
+- The native binary contains the application again. Verified by archive
+  inspection: 3,630 modules with `app.main` present, against 3,261 without it
+  in the published 0.4.2.
+- PostgreSQL now starts on Arch. `pacman`'s `postgresql` package never creates
+  `/run/postgresql`, unlike apt's `postgresql-common` and the PGDG dnf
+  packages, so the server died immediately on its socket lock file. The
+  directory is now this project's responsibility on every distro.
+- nginx configuration is applied on Arch. Arch's `nginx` package ships neither
+  `conf.d/` nor an include for it, so the installer's config was written to a
+  directory that did not exist — and where the include was missing it would
+  have been silently ignored rather than failing loudly.
+- The installer's progress display no longer erases real output. The upgrade
+  path's success banner, including the URL block, was being truncated.
+- The remaining time estimate no longer reports "taking longer than expected"
+  around three seconds into every run.
+- The pre-flight phase is written to the install log. It previously reached no
+  file at all, so a failure there named a log that did not exist.
+
+### Added
+
+- `circuit-breaker --selftest` resolves the ASGI target the way uvicorn does
+  and imports every worker module and the migration entrypoint. It needs no
+  database, broker or network. The build refuses to stage a binary that fails
+  it, the release gate runs it on the installed artifact, and `cb doctor`
+  exposes it to operators.
+- A redesigned install experience: seven phase headlines with durations, a
+  themed progress bar, and elapsed and remaining time. `--verbose` restores the
+  previous per-step output, and non-interactive installs get plain timestamped
+  lines. Every detail line still reaches the install log in all three modes,
+  and a failed install now prints a phase ledger and replays the log tail
+  before its diagnostics.
+- `cb diag bundle` collects the install log, doctor output, self-test result,
+  unit states, journal and redacted configuration into one file for reporting
+  problems. It fails closed rather than emitting anything unredacted.
+- Release verification: the tarball is smoked, the installed package is booted
+  and probed at `/readyz`, the published release is re-downloaded and verified
+  from its own URLs, and a release-readiness checklist blocks publication.
+- The installer is now executed end to end in CI, across Ubuntu, Debian,
+  Fedora, Arch and Rocky.
+
+### Security
+
+- `cb diag bundle` and `cb doctor` no longer emit credentials. Four shapes this
+  codebase actually writes were escaping redaction: empty-userinfo URLs
+  (`redis://:password@…`), driver-qualified schemes
+  (`postgresql+asyncpg://…`), `http(s)://user:password@…`, and key names such
+  as `CB_REDIS_PASSWORD`. Doctor evidence was also stored unredacted on its
+  success path.
+
+## [0.4.2] — 2026-09-20
+
+> **This release is defective. Use 0.4.3.** The `v0.4.2` native binary was built
+> without `app.main` in it, so every native install fails at startup with
+> `Error loading ASGI app. Could not import module "app.main"`. Verified against
+> the published artifact: its PyInstaller archive carries 3,261 modules and
+> `app.main` is not among them. The cause and the gates that now prevent it are
+> described under 0.4.3.
 
 ### Added
 

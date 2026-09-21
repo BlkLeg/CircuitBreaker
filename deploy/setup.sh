@@ -11,6 +11,13 @@ export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 export NEEDRESTART_SUSPEND=1
 
+# install.sh already sourced this, but setup.sh is also sourced directly by the
+# upgrade path. The library guards against double-sourcing with _CB_UI_LOADED.
+if [[ -r /opt/circuitbreaker/deploy/lib/ui.sh ]]; then
+  # shellcheck source=lib/ui.sh
+  source /opt/circuitbreaker/deploy/lib/ui.sh
+fi
+
 cb_resolve_env_template() {
   local setup_dir
   setup_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -331,14 +338,67 @@ stage1_bootstrap() {
     set -u
   fi
 
-  # Detect Redis user (Arch uses 'redis', Debian uses 'redis', some RHEL might use '_redis')
+  # Detect the Redis service account. Arch and Debian use 'redis'; some RHEL
+  # builds use '_redis'; RHEL/Rocky/Alma 10 ship Valkey instead of Redis (Redis
+  # was relicensed away from OSI terms in 2024 and Red Hat replaced it), whose
+  # package creates a 'valkey' account.
   export CB_REDIS_USER="redis"
   if id redis &>/dev/null; then
     CB_REDIS_USER="redis"
   elif id _redis &>/dev/null; then
     CB_REDIS_USER="_redis"
+  elif id valkey &>/dev/null; then
+    CB_REDIS_USER="valkey"
   fi
+
+  # The server and client binaries, resolved the same way and for the same
+  # reason. Valkey is a fork of Redis 7.2 and is wire- and config-compatible, so
+  # the rendered redis.conf and every redis-cli call below work unchanged against
+  # it — only the executable names differ. Exported because
+  # deploy/systemd/circuitbreaker-redis.service renders ${CB_REDIS_SERVER_BIN}.
+  # pgbouncer and docker live in different directories per distro, and both are
+  # named by absolute path in their systemd units. Debian and Arch ship
+  # pgbouncer in /usr/sbin; Fedora and RHEL/Rocky/Alma ship it in /usr/bin, so a
+  # hardcoded /usr/sbin/pgbouncer dies with "Failed at step EXEC ... 203/EXEC"
+  # — the unit starts, systemd cannot find the binary, and the only symptom the
+  # installer sees is "pgbouncer not listening on port 6432".
+  #
+  # Resolved rather than guessed, and defaulted to the historical path so a
+  # distro that ships neither still renders a unit whose failure names a real
+  # location. Exported because the units render ${CB_PGBOUNCER_BIN} and
+  # ${CB_DOCKER_BIN}.
+  export CB_PGBOUNCER_BIN CB_DOCKER_BIN
+  CB_PGBOUNCER_BIN="$(command -v pgbouncer 2>/dev/null || echo /usr/sbin/pgbouncer)"
+  CB_DOCKER_BIN="$(command -v docker 2>/dev/null || echo /usr/bin/docker)"
+
+  export CB_REDIS_SERVER_BIN CB_REDIS_CLI_BIN
+  CB_REDIS_SERVER_BIN="$(command -v redis-server 2>/dev/null || command -v valkey-server 2>/dev/null || echo /usr/bin/redis-server)"
+  CB_REDIS_CLI_BIN="$(command -v redis-cli 2>/dev/null || command -v valkey-cli 2>/dev/null || echo redis-cli)"
   export CB_DATA_DIR
+}
+
+# Total RAM in MiB, without depending on free(1).
+#
+# free(1) ships in procps-ng, which minimal Fedora, Rocky and AlmaLinux images do
+# NOT install — and nothing in this installer's dependency lists pulls it in. Two
+# call sites used it, and they failed differently, which is why only one was ever
+# visible: the pre-flight check assigns with `local ram_mb=$(free -m ...)`, and a
+# `local` declaration's exit status is the declaration's, not the command
+# substitution's, so `set -e` let it through and merely printed
+# "Low RAM detected: MB (< 1GB)" with an empty value. The Redis sizing call was a
+# bare assignment, so `set -e` saw the 127 and aborted the whole install at
+# "Services and networking".
+#
+# /proc/meminfo is part of procfs, present on every Linux the installer supports,
+# and needs no package. Falls back to 0 rather than empty so the numeric
+# comparisons at the call sites can never be fed a non-integer.
+cb_total_ram_mb() {
+  local kb=""
+  if [[ -r /proc/meminfo ]]; then
+    kb="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || true)"
+  fi
+  [[ "$kb" =~ ^[0-9]+$ ]] || kb=0
+  printf '%s' "$(( kb / 1024 ))"
 }
 
 stage0_preflight() {
@@ -418,7 +478,8 @@ stage0_preflight() {
   fi
   cb_ok "Disk space: ${free_disk_gb}GB free"
   
-  local ram_mb=$(free -m | awk '/^Mem:/{print $2}')
+  local ram_mb
+  ram_mb="$(cb_total_ram_mb)"
   if [[ "$ram_mb" -lt 1024 ]]; then
     cb_warn "Low RAM detected: ${ram_mb}MB (< 1GB). Performance may be limited."
   else
@@ -434,7 +495,13 @@ stage0_preflight() {
     cb_ok "No existing installation — fresh install"
   fi
 
-  # Initialize log directory early
+  # Initialize log directory early. install.sh's caller-side merge step
+  # ("Merge bootstrap log into final install log", right after this function
+  # returns) appends /tmp/cb-bootstrap.log — where the "preflight" phase
+  # logged before this permanent file existed — onto what gets written here,
+  # so truncating this file is safe: nothing durable has been written to it
+  # yet, and the bootstrap phase's own records live at the other path until
+  # that merge step runs.
   mkdir -p "${CB_DATA_DIR}/logs"
   LOG_FILE="${CB_DATA_DIR}/logs/install.log"
   echo "=== Circuit Breaker Installation Log ===" > "$LOG_FILE"
@@ -707,7 +774,7 @@ stage3_configure_redis() {
   mkdir -p /etc/redis
 
   local ram_mb
-  ram_mb=$(free -m | awk '/^Mem:/{print $2}')
+  ram_mb="$(cb_total_ram_mb)"
   local redis_maxmem="256mb"
   [[ "$ram_mb" -lt 2048 ]] && redis_maxmem="128mb"
 
@@ -737,7 +804,7 @@ stage3_configure_redis() {
   
   # Verify Redis
   cb_step "Verifying Redis connection"
-  if ! redis-cli -a "$CB_REDIS_PASSWORD" --no-auth-warning PING 2>/dev/null | grep -q PONG; then
+  if ! "$CB_REDIS_CLI_BIN" -a "$CB_REDIS_PASSWORD" --no-auth-warning PING 2>/dev/null | grep -q PONG; then
     cb_fail "Redis not responding" "Check: journalctl -u circuitbreaker-redis -n 50"
   fi
   cb_ok "Redis connection verified"
@@ -896,6 +963,21 @@ stage3_configure_nginx() {
 
   # Write Nginx configuration
   cb_step "Writing Nginx configuration"
+
+  # Debian's and the PGDG/dnf-family nginx packages both create /etc/nginx/conf.d
+  # and ship a stock nginx.conf that already `include`s it, so this has never been
+  # needed on those branches. Arch's pacman nginx package does neither — its
+  # /etc/nginx/nginx.conf hardcodes one inline `server {}` block and never
+  # mentions conf.d at all — so cb_render_template below fails outright ("No such
+  # file or directory") the first time this runs on Arch, and even a pre-created
+  # directory would leave the rendered file silently unread by nginx. Make both
+  # true unconditionally rather than assuming the package did it: harmless where
+  # it already holds (Debian/Fedora/RHEL family), load-bearing on Arch.
+  mkdir -p /etc/nginx/conf.d
+  if [[ -f /etc/nginx/nginx.conf ]] \
+     && ! grep -q 'conf\.d/\*\.conf' /etc/nginx/nginx.conf; then
+    sed -i '/^http[[:space:]]*{/a\    include /etc/nginx/conf.d/*.conf;' /etc/nginx/nginx.conf
+  fi
 
   # Build server_name directive
   local server_name="${CB_FQDN:-_}"
@@ -1133,6 +1215,12 @@ stage4_write_systemd_units() {
     CB_REDIS_USER="redis"
   elif id _redis &>/dev/null; then
     CB_REDIS_USER="_redis"
+  elif id valkey &>/dev/null; then
+    # RHEL 10 and its rebuilds ship Valkey in place of Redis; its package creates
+    # a 'valkey' account. Checked before the self-heal below so those distros do
+    # not get a warning about a "partially installed" package that is in fact
+    # correctly installed under a different name.
+    CB_REDIS_USER="valkey"
   else
     cb_warn "Redis system user missing (redis-server may be only partially installed) — creating it"
     useradd -r -s /usr/sbin/nologin -d /nonexistent -c "Redis" redis >> "$LOG_FILE" 2>&1 || true
@@ -1384,6 +1472,12 @@ stage9_write_install_identity() {
 }
 
 stage10_final_output() {
+  # Defensive: this is reachable from more than one path (fresh install and
+  # upgrade), and both are expected to call it after the enclosing phase has
+  # already ended — but the caller is what enforces that ordering, not this
+  # function, so tear the live region down here too rather than trust every
+  # call site forever.
+  declare -f cb_ui_teardown >/dev/null 2>&1 && cb_ui_teardown
   source /etc/circuitbreaker/.env
   local detected_ip=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[^ ]+' || echo "localhost")
   local version=$(cat /opt/circuitbreaker/share/VERSION 2>/dev/null || echo "unknown")
@@ -1556,9 +1650,11 @@ cb_airgap_verify_dependencies() {
   # Services. nats-server has no distro package on Ubuntu 22.04 or Fedora, which
   # is exactly why the circuit-breaker-nats companion package is published beside
   # the tarball — name it explicitly rather than leaving the operator to guess.
-  for tool in pgbouncer redis-server nginx nmap nats-server; do
+  for tool in pgbouncer nginx nmap nats-server; do
     command -v "$tool" &>/dev/null || missing+=("$tool")
   done
+  command -v redis-server &>/dev/null || command -v valkey-server &>/dev/null \
+    || missing+=("redis-server (or valkey-server on RHEL 10+)")
 
   if ! PG_BIN_DIR="$(cb_airgap_find_pg_bin_dir)"; then
     PG_BIN_DIR=""
@@ -1753,17 +1849,41 @@ stage2_dependencies() {
   elif [[ "$PKG_MGR" == "pacman" ]]; then
     pacman -S --noconfirm --needed pgbouncer redis nginx >> "$LOG_FILE" 2>&1
   else
-    $PKG_MGR install -y -q pgbouncer redis nginx >> "$LOG_FILE" 2>&1
+    # RHEL/Rocky/AlmaLinux 10 dropped the redis package for valkey, so asking
+    # for redis there fails with "Unable to find a match: redis" and takes the
+    # whole install down. Try redis first (8/9 still have it), fall back to
+    # valkey, and only fail if neither exists.
+    if ! $PKG_MGR install -y -q pgbouncer redis nginx >> "$LOG_FILE" 2>&1; then
+      cb_detail "redis unavailable from ${PKG_MGR}; trying valkey (RHEL 10+ ships it instead)"
+      $PKG_MGR install -y -q pgbouncer valkey nginx >> "$LOG_FILE" 2>&1 \
+        || cb_fail "Could not install pgbouncer, Redis/Valkey and Nginx" \
+                   "Check: tail -40 ${LOG_FILE}"
+    fi
+  fi
+
+  # Re-resolve now that the packages are on disk: the binaries did not exist when
+  # stage0_preflight first looked.
+  CB_PGBOUNCER_BIN="$(command -v pgbouncer 2>/dev/null || echo /usr/sbin/pgbouncer)"
+  CB_DOCKER_BIN="$(command -v docker 2>/dev/null || echo /usr/bin/docker)"
+  CB_REDIS_SERVER_BIN="$(command -v redis-server 2>/dev/null || command -v valkey-server 2>/dev/null || echo /usr/bin/redis-server)"
+  CB_REDIS_CLI_BIN="$(command -v redis-cli 2>/dev/null || command -v valkey-cli 2>/dev/null || echo redis-cli)"
+  if id valkey &>/dev/null && ! id redis &>/dev/null; then
+    CB_REDIS_USER="valkey"
   fi
 
   # Stop nginx immediately — package auto-starts with default config
   systemctl stop nginx >> "$LOG_FILE" 2>&1 || true
 
-  for bin in pgbouncer redis-server redis-cli nginx; do
-    if ! command -v "$bin" &>/dev/null && ! command -v "${bin%-*}" &>/dev/null; then
+  for bin in pgbouncer nginx; do
+    if ! command -v "$bin" &>/dev/null; then
       cb_fail "$bin not found after install" "Check: $PKG_MGR install logs"
     fi
   done
+  # Redis or Valkey, whichever this distro ships — see CB_REDIS_SERVER_BIN.
+  command -v redis-server &>/dev/null || command -v valkey-server &>/dev/null \
+    || cb_fail "no redis-server or valkey-server found after install" "Check: $PKG_MGR install logs"
+  command -v redis-cli &>/dev/null || command -v valkey-cli &>/dev/null \
+    || cb_fail "no redis-cli or valkey-cli found after install" "Check: $PKG_MGR install logs"
   cb_ok "pgbouncer, Redis, Nginx installed"
 
   # Group 5: NATS Server binary
@@ -1832,15 +1952,21 @@ stage2_dependencies() {
 }
 
 run_upgrade() {
+  cb_phase_begin upgrade_check "Pre-flight checks"
+
   cb_header
   cb_section "Upgrade Mode"
   cb_ok "Detected existing installation"
-  
+
   # Source environment variables
   source /etc/circuitbreaker/.env
 
   ensure_hosts_entry
-  
+
+  cb_phase_end upgrade_check
+
+  cb_phase_begin backup "Creating pre-upgrade backup"
+
   # Backup before upgrade (while services are still running)
   cb_step "Creating pre-upgrade backup"
   local backup_file="${CB_DATA_DIR}/backups/pre-upgrade-$(date +%Y%m%d-%H%M%S).sql"
@@ -1891,7 +2017,11 @@ run_upgrade() {
   else
     cb_warn "Database not running - skipping backup"
   fi
-  
+
+  cb_phase_end backup
+
+  cb_phase_begin apply_bundle "Installing new version"
+
   # Stop services after backup
   cb_step "Stopping services"
   systemctl stop circuitbreaker.target >> "$LOG_FILE" 2>&1 || true
@@ -1977,6 +2107,10 @@ run_upgrade() {
   fi
   rm -f /etc/caddy/Caddyfile 2>/dev/null || true
 
+  cb_phase_end apply_bundle
+
+  cb_phase_begin apply "Applying configuration and migrations"
+
   # Self-heal: (re)configure and verify each backing service rather than
   # assuming a prior install that reached this point fully configured
   # them. Each stage is internally idempotent (initdb/config-write skip
@@ -1998,6 +2132,10 @@ run_upgrade() {
   # Restart services
   stage9_install_cb_cli
 
+  cb_phase_end apply
+
+  cb_phase_begin start "Restarting Circuit Breaker"
+
   # Reuse the fresh-install startup routine — required-file preflight,
   # docker-proxy, backend + health wait, per-worker start, nginx
   # restart+verify — instead of a blanket target-start that can silently
@@ -2008,5 +2146,15 @@ run_upgrade() {
   CB_STAGE_DIAGS=()
 
   stage9_write_install_identity
+
+  # cb_phase_end must close the "start" phase before stage10_final_output
+  # prints the success banner: cb_phase_end re-arms the live region (it ends
+  # with _cb_live_draw), so a raw echo/printf after it — never before — is
+  # safe from _cb_live_clear's blind two-line rewind. install.sh's
+  # equivalent sequence follows the same order; see the comment on
+  # _cb_live_clear in deploy/lib/ui.sh for why the renderer itself cannot
+  # enforce this.
+  cb_phase_end start
+
   stage10_final_output
 }

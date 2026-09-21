@@ -19,6 +19,28 @@ _TYPE_MAP = {
     "8": "integration",
 }
 
+# The module each worker type loads, as data rather than as control flow.
+#
+# `_dispatch` below is an if-chain, so the mapping it encodes cannot be
+# enumerated by anything else — and `--selftest` has to enumerate it, because a
+# worker module missing from the frozen binary fails at dispatch time on a
+# customer's host rather than in the build. Keeping this beside _TYPE_MAP and
+# pinning the two together in
+# tests/build/test_selftest_targets_match_runtime.py means a new worker cannot
+# be added to one and forgotten in the other.
+#
+# Keys are the resolved type names _dispatch compares against — not _TYPE_MAP's
+# numeric aliases, which resolve to these before dispatch.
+WORKER_MODULES: dict[str, str] = {
+    "discovery": "app.workers.discovery",
+    "notification": "app.workers.notification_worker",
+    "telemetry": "app.workers.telemetry_collector",
+    "integration": "app.workers.integration_worker",
+    "monitor_scheduler": "app.workers.monitor_scheduler",
+    "monitor_poll": "app.workers.monitor_poll_worker",
+    "monitor_probe_dispatch": "app.workers.monitor_probe_dispatch",
+}
+
 
 async def _run_discovery() -> None:
     from app.workers import discovery as discovery_worker

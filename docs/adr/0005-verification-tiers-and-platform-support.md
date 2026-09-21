@@ -60,9 +60,17 @@ which of them are in force today and which are not:
   GitHub's native `ubuntu-22.04-arm` runners.
 - **Tier 3** — guaranteed to build only: apk, AppImage, tarball, `pkg.tar.zst`.
 
-Three further rules apply repo-wide: a gate may not pass by not running; test
-configuration that changes semantics must be branch-invariant; and evidence collection is
-part of the gate, not an optional trailing step.
+Four further rules apply repo-wide: a gate may not pass by not running; a gate may not
+pass by not asking; test configuration that changes semantics must be branch-invariant;
+and evidence collection is part of the gate, not an optional trailing step.
+
+**A gate may not pass by not asking.** A gate must execute the property it claims to
+verify. Version parity is an identity check and is evidence of identity only — never
+evidence that an artifact functions. v0.4.2 shipped a binary containing no application
+and passed every blocking gate, because the only execution any gate performed was
+`--version`, which `start.py` resolves from an embedded file and exits on before the
+application is imported. The rule above ("not running") would not have caught it: that
+gate ran.
 
 ### Tier guarantees: when they take effect
 

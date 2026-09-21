@@ -64,6 +64,29 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Delete the work directory before building.",
     )
+    parser.add_argument(
+        "--packaging",
+        choices=["onefile", "onedir", "pbs"],
+        default="onefile",
+        help=(
+            "PyInstaller packaging mode. 'onefile' (default) is today's single "
+            "self-extracting executable that re-extracts itself on every "
+            "process start. 'onedir' emits a directory with the binary and its "
+            "dependencies alongside it, so no extraction happens at run time. "
+            "'pbs' (python-build-standalone) is not implemented yet: it is "
+            "gated on the benchmark this flag exists to support."
+        ),
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=REPO_ROOT / "dist" / "native",
+        help=(
+            "Directory to write the archive, checksums, manifest, and any "
+            "Linux packages into. Defaults to dist/native, the existing "
+            "location, so callers that do not pass this flag are unaffected."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -183,6 +206,63 @@ def _collect_migration_hidden_imports() -> list[str]:
     return sorted(found)
 
 
+def _collect_asgi_target_hidden_imports() -> list[str]:
+    """The API server is named in a string, so nothing imports it.
+
+    `start.py` ends in `uvicorn.run("app.main:app", ...)`. uvicorn resolves that
+    with `importlib.import_module`, which PyInstaller's static graph cannot see,
+    so `app.main` — the entire application — only ever entered the frozen binary
+    because a line above it happened to read `from app.main import
+    run_alembic_upgrade`. Splitting that helper out into `app.startup.schema`
+    removed the last static reference and 0.4.2 shipped a binary with no
+    application in it: migrations ran, then every native install died on
+
+        ERROR: Error loading ASGI app. Could not import module "app.main".
+
+    Reading the name back out of the call keeps the hidden import tied to what
+    the entrypoint actually serves, so a future rename of `main.py` moves it
+    instead of silently emptying the binary again.
+    """
+    tree = ast.parse(
+        BACKEND_ENTRYPOINT.read_text(encoding="utf-8"), filename=str(BACKEND_ENTRYPOINT)
+    )
+    found: set[str] = set()
+    launches = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        func = node.func
+        if not (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "uvicorn"
+            and func.attr in {"run", "Config"}
+        ):
+            continue
+        launches += 1
+        target = node.args[0]
+        if not (isinstance(target, ast.Constant) and isinstance(target.value, str)):
+            # An application object rather than an import string: whatever
+            # defines it is reached by the static graph already.
+            continue
+        module_str, separator, _ = target.value.partition(":")
+        if not separator or not module_str:
+            raise SystemExit(
+                f"{BACKEND_ENTRYPOINT.name} passes uvicorn the ASGI target "
+                f"{target.value!r}, which is not in uvicorn's required "
+                '"<module>:<attribute>" form. The binary would fail to boot.'
+            )
+        found.add(module_str)
+    if not launches:
+        raise SystemExit(
+            f"Found no uvicorn launch in {BACKEND_ENTRYPOINT.name}, so the ASGI "
+            "application it serves cannot be declared as a hidden import. "
+            "PyInstaller drops modules named only in strings; a binary that boots "
+            "straight into ImportFromStringError is worse than no binary."
+        )
+    return sorted(found)
+
+
 # Third-party packages that reach part of themselves through a runtime string
 # rather than an `import` statement. PyInstaller builds its bundle from a static
 # import graph, so anything named only by a string is invisible to it and gets
@@ -242,7 +322,57 @@ def _collect_dynamic_import_hidden_imports() -> list[str]:
     return sorted(set(found))
 
 
-def build_binary(target_os: str, work_dir: Path) -> Path:
+def assert_binary_contains_application(binary_path: Path) -> None:
+    """Refuse to stage a binary that cannot import the application it serves.
+
+    PyInstaller builds from a static import graph, so a module reached only
+    through a runtime string is dropped silently. The three collectors above
+    exist to re-declare the ones we know about; this asserts the outcome rather
+    than trusting the inputs, which is the difference between a mitigation and
+    a gate.
+
+    v0.4.2 is what its absence costs: a binary with no `app.main` inside it was
+    signed, attested, SBOM'd, version-parity-checked and published, and died on
+    every native install. `--version` — the only thing any gate executed —
+    resolves from an embedded VERSION file and returns before the application is
+    imported, so it cannot observe the defect by construction.
+
+    Runs in seconds, needs no services, and gates every package format at once:
+    the tarball, deb, rpm, apk, AppImage and pkg.tar.zst all wrap this binary.
+
+    Raises:
+        SystemExit: if the binary reports a self-test failure or cannot be run.
+    """
+    print(f"Verifying {binary_path.name} contains its application...")
+    completed = subprocess.run(
+        [str(binary_path), "--selftest"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+        env={**os.environ, "CB_DB_URL": "postgresql://fake:fake@localhost/fake"},
+    )
+    output = (completed.stdout + completed.stderr).strip()
+    if completed.returncode != 0:
+        raise SystemExit(
+            f"{binary_path.name} failed its self-test (exit {completed.returncode}).\n"
+            f"{output}\n\n"
+            "The frozen binary cannot import something it needs at runtime — "
+            "almost always a module named only by a string, which PyInstaller's "
+            "static import graph cannot see. Add it to hidden_imports in "
+            "build_binary(), or to the collector that should have found it.\n"
+            "Refusing to stage a bundle that would fail on every install."
+        )
+    print(f"  {output}")
+
+def build_binary(target_os: str, work_dir: Path, packaging_mode: str = "onefile") -> Path:
+    if packaging_mode == "pbs":
+        raise SystemExit(
+            "--packaging pbs is not implemented yet. It lands with Task 3b of "
+            "plans/2026-09-20-step4-packaging-toolchain.md, which is executed "
+            "only if the benchmark's decision rule selects it."
+        )
+
     dist_dir = work_dir / "pyinstaller-dist"
     build_dir = work_dir / "pyinstaller-build"
     spec_dir = work_dir / "pyinstaller-spec"
@@ -259,6 +389,7 @@ def build_binary(target_os: str, work_dir: Path) -> Path:
         "app.workers.telemetry_collector",
         "app.workers.monitor_scheduler",
         "app.workers.monitor_poll_worker",
+        *_collect_asgi_target_hidden_imports(),
         *_collect_migration_hidden_imports(),
         *_collect_dynamic_import_hidden_imports(),
     ]
@@ -268,8 +399,17 @@ def build_binary(target_os: str, work_dir: Path) -> Path:
             sys.executable,
             "-m",
             "PyInstaller",
-            "--onefile",
+            "--onedir" if packaging_mode == "onedir" else "--onefile",
             "--clean",
+            # --clean wipes the WORK directory, not the dist directory. Without
+            # --noconfirm, a dist path left behind by a different packaging mode
+            # stops the build dead: an --onedir run creates
+            # pyinstaller-dist/circuit-breaker as a DIRECTORY, and the next
+            # --onefile build then fails with "The output directory ... is not
+            # empty" because it wants to write a FILE of that name. Found by
+            # running a normal build in a tree where the packaging benchmark had
+            # run once — which is every developer's tree after step 4.
+            "--noconfirm",
             "--distpath",
             str(dist_dir),
             "--workpath",
@@ -295,9 +435,14 @@ def build_binary(target_os: str, work_dir: Path) -> Path:
             str(BACKEND_ENTRYPOINT),
         ]
     )
-    binary_path = dist_dir / binary_name(target_os)
+    if packaging_mode == "onedir":
+        # PyInstaller emits dist/<name>/<name> plus dist/<name>/_internal/.
+        binary_path = dist_dir / binary_name(target_os) / binary_name(target_os)
+    else:
+        binary_path = dist_dir / binary_name(target_os)
     if not binary_path.exists():
         raise SystemExit(f"Expected PyInstaller output missing: {binary_path}")
+    assert_binary_contains_application(binary_path)
     return binary_path
 
 
@@ -461,6 +606,7 @@ def stage_bundle(
     target_arch: str,
     frontend_dir: Path,
     work_dir: Path,
+    packaging_mode: str = "onefile",
 ) -> tuple[Path, dict[str, object]]:
     bundle_dir = work_dir / f"bundle-{target_os}-{target_arch}"
     if bundle_dir.exists():
@@ -471,7 +617,19 @@ def stage_bundle(
     bundle_dir.mkdir(parents=True, exist_ok=True)
     backend_share.mkdir(parents=True, exist_ok=True)
 
-    shutil.copy2(binary_path, bundle_dir / binary_path.name)
+    if packaging_mode == "onedir":
+        # PyInstaller's onedir output is binary_path's parent directory: the
+        # executable plus _internal/ beside it. Both must land at the bundle
+        # root together — the executable cannot run with _internal/ missing —
+        # so the whole directory is copied rather than just the binary file.
+        for item in binary_path.parent.iterdir():
+            destination = bundle_dir / item.name
+            if item.is_dir():
+                shutil.copytree(item, destination, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, destination)
+    else:
+        shutil.copy2(binary_path, bundle_dir / binary_path.name)
     shutil.copy2(VERSION_FILE, share_dir / "VERSION")
     _write_build_info(share_dir, version, target_os, target_arch)
     shutil.copy2(DOCS_SEED_FILE, share_dir / "DocsPage.md")
@@ -888,7 +1046,7 @@ def main() -> int:
     args = parse_args()
     target_os, target_arch = detect_target()
     version = sanitize_version(args.version)
-    output_dir = REPO_ROOT / "dist" / "native"
+    output_dir = args.output_dir
     work_dir = REPO_ROOT / "build" / "native-release" / f"{target_os}-{target_arch}"
     frontend_dir = FRONTEND_DIST
 
@@ -901,7 +1059,7 @@ def main() -> int:
     if target_os == "linux":
         ensure_go_available()
         build_agent_binaries(version, work_dir)
-    binary_path = build_binary(target_os, work_dir)
+    binary_path = build_binary(target_os, work_dir, args.packaging)
     bundle_dir, manifest = stage_bundle(
         binary_path=binary_path,
         version=version,
@@ -909,6 +1067,7 @@ def main() -> int:
         target_arch=target_arch,
         frontend_dir=frontend_dir,
         work_dir=work_dir,
+        packaging_mode=args.packaging,
     )
     archive_path = create_archive(bundle_dir, version, target_os, target_arch, output_dir)
     write_metadata(output_dir, manifest, archive_path)

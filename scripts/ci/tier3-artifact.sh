@@ -79,13 +79,110 @@ capture() {
 # script a .deb IS a deb row, and a mismatch between the row and the artifact
 # becomes a visible failure here instead of a plausible-looking dnf error.
 case "$PACKAGE" in
-    *.rpm) PKG_FORMAT=rpm ;;
-    *.deb) PKG_FORMAT=deb ;;
-    *)     fail "unsupported candidate format: $PACKAGE (this tier installs .rpm and .deb)" ;;
+    *.rpm)     PKG_FORMAT=rpm ;;
+    *.deb)     PKG_FORMAT=deb ;;
+    # The format `curl ... install.sh | bash` actually installs. Matched before a
+    # bare `${VAR##*.}` comparison would see it: that idiom strips only the LAST
+    # dot, which turns "circuit-breaker_0.4.2_linux_amd64.tar.gz" into "gz" rather
+    # than "tar.gz" and is why the PREVIOUS check below re-derives the format with
+    # this same case rather than reusing that shorthand.
+    *.tar.gz)  PKG_FORMAT=tarball ;;
+    *)     fail "unsupported candidate format: $PACKAGE (this tier installs .rpm, .deb and .tar.gz)" ;;
 esac
-if [ -n "$PREVIOUS" ] && [ "${PREVIOUS##*.}" != "$PKG_FORMAT" ]; then
-    fail "candidate is .$PKG_FORMAT but previous is .${PREVIOUS##*.} — an upgrade across package formats is not a thing"
+if [ -n "$PREVIOUS" ]; then
+    case "$PREVIOUS" in
+        *.rpm)    PREVIOUS_FORMAT=rpm ;;
+        *.deb)    PREVIOUS_FORMAT=deb ;;
+        *.tar.gz) PREVIOUS_FORMAT=tarball ;;
+        *)        fail "unsupported previous-package format: $PREVIOUS" ;;
+    esac
+    [ "$PREVIOUS_FORMAT" = "$PKG_FORMAT" ] \
+        || fail "candidate is .$PKG_FORMAT but previous is .$PREVIOUS_FORMAT — an upgrade across package formats is not a thing"
 fi
+
+# ── layout differs by format, not just the package manager ─────────────────
+# rpm/deb install under /usr/local (nfpm.yaml) and run a single `circuit-breaker`
+# unit with no reverse proxy — BASE_URL above (:8080) is that layout's port, and
+# it stays untouched here on purpose. install.sh lays out /opt/circuitbreaker,
+# writes /etc/circuitbreaker/.env at 0640 (not the packaged env's 0600), fronts
+# the backend (:8000) with nginx on :8088 in --no-tls mode
+# (deploy/nginx/*.conf), and starts circuitbreaker-* units (plural) rather than
+# nfpm.yaml's single circuit-breaker.service. Resolved once, here, rather than
+# edited into the constants every rpm/deb assertion already depends on.
+BIN_PATH=/usr/local/bin/circuit-breaker
+SHARE_DIR=/usr/local/share/circuit-breaker
+SERVICE_UNIT=circuit-breaker
+UNIT_PREFIX=circuit-breaker
+UNIT_FILE_DIR=/lib/systemd/system
+ENV_MODE=600
+IDENTITY_PATH=/etc/circuit-breaker/install-identity.json
+EXPECTED_CLI_MODE=package
+RESTORE_SCRIPT="$SHARE_DIR/deploy/scripts/restore.sh"
+ROLLBACK_BIN=/usr/local/bin/circuit-breaker-rollback
+ROLLBACK_USAGE_RC=2
+DATA_DIR=/var/lib/circuit-breaker
+MONITOR_PORT=8080
+if [ "$PKG_FORMAT" = "tarball" ]; then
+    BASE_URL="http://127.0.0.1:8088/api/v1"
+    ENV_FILE=/etc/circuitbreaker/.env
+    BIN_PATH=/opt/circuitbreaker/bin/circuit-breaker
+    SHARE_DIR=/opt/circuitbreaker/share
+    SERVICE_UNIT=circuitbreaker-backend
+    UNIT_PREFIX=circuitbreaker
+    UNIT_FILE_DIR=/etc/systemd/system
+    ENV_MODE=640
+    IDENTITY_PATH=/etc/circuitbreaker/install-identity.json
+    EXPECTED_CLI_MODE=native
+    RESTORE_SCRIPT=/opt/circuitbreaker/deploy/scripts/restore.sh
+    # restore.sh's own defaults (CB_ENV_FILE, CB_SERVICE_UNIT=circuitbreaker.target,
+    # CB_DATA_DIR=/var/lib/circuitbreaker, ...) already ARE this layout's paths —
+    # packaging/rollback.sh exists only to override them for the OTHER layout. So
+    # the tarball path calls restore.sh directly and sets nothing.
+    ROLLBACK_BIN="$RESTORE_SCRIPT"
+    ROLLBACK_USAGE_RC=1
+    DATA_DIR=/var/lib/circuitbreaker
+    # The backend's own bound port (circuitbreaker-backend.service), not the
+    # nginx front door — the monitor pipeline only needs something to actually
+    # be listening, and 8080 is unbound on this layout (nginx owns it instead).
+    MONITOR_PORT=8000
+fi
+BACKUP_GLOB="$DATA_DIR/backups/pre-upgrade-*.sql"
+WORKER_UNIT_TEMPLATE="${UNIT_PREFIX}-worker@.service"
+WORKER_UNIT_SHOW="${UNIT_PREFIX}-worker@*.service"
+WORKER_UNIT_JOURNAL="${UNIT_PREFIX}-worker@*"
+# packaging/circuit-breaker-discovery.service is its own dedicated unit and its
+# own file on the rpm/deb layout (nfpm.yaml). install.sh ships no such file —
+# discovery there is one instance of the same worker@ template as every other
+# worker (deploy/setup.sh's WantedBy list), so DISCOVERY_UNIT_FILE stays unset
+# and t3::assert_installed_paths does not go looking for a file that was never
+# meant to exist.
+if [ "$PKG_FORMAT" = "tarball" ]; then
+    DISCOVERY_UNIT="${UNIT_PREFIX}-worker@discovery.service"
+    DISCOVERY_UNIT_FILE=""
+else
+    DISCOVERY_UNIT="${UNIT_PREFIX}-discovery.service"
+    DISCOVERY_UNIT_FILE="$UNIT_FILE_DIR/$DISCOVERY_UNIT"
+fi
+
+# install.sh ships inside its own bundle -- scripts/build_native_release.py
+# copies the repo's install.sh into bundle_dir before the tarball is archived --
+# so extracting the candidate is what makes the installer available at all.
+# dispatch.sh pushes only the tarball and this file, never a repo checkout (P1),
+# and this is what keeps that true for the tarball format too.
+t3::tarball_installer_install() {
+    local tarball=$1
+    local stage
+    stage="$(mktemp -d /root/cb-tier3-installer.XXXXXX)"
+    tar -xzf "$tarball" -C "$stage" install.sh \
+        || fail "$tarball carries no install.sh — scripts/build_native_release.py must have stopped bundling it"
+    # Auto-detects upgrade vs fresh install from what is already on the host
+    # (deploy/setup.sh:437), so this one call is both pkg::install_dir's install
+    # and pkg::downgrade_to's "downgrade" -- reinstalling the older bundle's
+    # binary and assets over the newer one, exactly what apt/dnf's downgrade does
+    # for the other two formats.
+    bash "$stage/install.sh" --local-bundle "$tarball" --unattended --no-tls
+    rm -rf -- "$stage"
+}
 
 pkg::install_dir() {
     # Every package in the directory, not just the named candidate. On a real
@@ -103,6 +200,17 @@ pkg::install_dir() {
         # avoid. The paths are absolute, which is what makes apt treat them as
         # files rather than as package names.
         deb) DEBIAN_FRONTEND=noninteractive apt-get install -y --install-recommends "$1"/*.deb ;;
+        # dispatch.sh pushes exactly one tarball into this directory (the
+        # candidate, or the N-1 fixture under previous/) -- there is no
+        # companion-package concept for a self-contained bundle.
+        tarball)
+            local found="" f
+            for f in "$1"/*.tar.gz; do
+                [ -f "$f" ] && found="$f"
+            done
+            [ -n "$found" ] || fail "no .tar.gz candidate found in $1"
+            t3::tarball_installer_install "$found"
+            ;;
     esac
 }
 
@@ -119,6 +227,9 @@ pkg::downgrade_to() {
         # which would leave the new binary in place and let the rollback
         # assertion fail somewhere far away from the cause.
         deb) DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades "$1" ;;
+        # $1 here is the previous tarball's own path (dispatch.sh's GUEST_PREVIOUS),
+        # not a directory -- unlike the install case above.
+        tarball) t3::tarball_installer_install "$1" ;;
     esac
 }
 
@@ -126,6 +237,9 @@ pkg::list_contents() {
     case "$PKG_FORMAT" in
         rpm) rpm -ql circuit-breaker ;;
         deb) dpkg -L circuit-breaker ;;
+        # No package database to query; the installed tree is the closest
+        # equivalent, and this is informational evidence, not an assertion.
+        tarball) find /opt/circuitbreaker -type f 2>/dev/null ;;
     esac
 }
 
@@ -163,7 +277,7 @@ t3::install_set() {
 # afterwards which kind of run they are looking at.
 t3::assert_candidate_provenance() {
     local label=$1
-    local info=/usr/local/share/circuit-breaker/build-info.json
+    local info="$SHARE_DIR/build-info.json"
     section "Record what kind of artifact this is ($label)"
 
     if [ ! -f "$info" ]; then
@@ -197,23 +311,31 @@ t3::assert_candidate_provenance() {
 t3::assert_installed_paths() {
     section "Assert the package installed what it claims"
     for path in \
-        /usr/local/bin/circuit-breaker \
+        "$BIN_PATH" \
         /usr/local/bin/cb \
-        /usr/local/share/circuit-breaker/VERSION \
-        /usr/local/share/circuit-breaker/frontend \
-        /usr/local/share/circuit-breaker/backend \
-        /lib/systemd/system/circuit-breaker.service \
-        /lib/systemd/system/circuit-breaker-worker@.service \
-        /lib/systemd/system/circuit-breaker-discovery.service \
-        /etc/circuit-breaker/circuit-breaker.env; do
+        "$SHARE_DIR/VERSION" \
+        "$SHARE_DIR/frontend" \
+        "$SHARE_DIR/backend" \
+        "$UNIT_FILE_DIR/$SERVICE_UNIT.service" \
+        "$UNIT_FILE_DIR/$WORKER_UNIT_TEMPLATE" \
+        "$ENV_FILE"; do
         [ -e "$path" ] || fail "package did not install $path"
     done
-    # postinstall.sh generates this env with a fresh CB_VAULT_KEY and NATS token, so
-    # it must not be world-readable. Checked here rather than trusted: it is created
-    # by a shell script at install time, which is exactly where a mode gets missed.
+    # Only the rpm/deb layout ships discovery as its own unit file; on the
+    # tarball layout it is an instance of the worker@ template already checked
+    # above, and DISCOVERY_UNIT_FILE is left unset for exactly that reason.
+    if [ -n "$DISCOVERY_UNIT_FILE" ]; then
+        [ -e "$DISCOVERY_UNIT_FILE" ] || fail "package did not install $DISCOVERY_UNIT_FILE"
+    fi
+    # postinstall.sh (rpm/deb) generates its env at 0600 with a fresh CB_VAULT_KEY
+    # and NATS token; install.sh (tarball) generates its own at 0640, root:breaker
+    # (deploy/setup.sh), which is the wider mode $ENV_MODE expects for that format.
+    # Either way it must not be world-readable, and it is checked here rather than
+    # trusted: it is created by a shell script at install time, which is exactly
+    # where a mode gets missed.
     local mode
     mode="$(stat -c '%a' "$ENV_FILE")"
-    [ "$mode" = "600" ] || fail "env file mode is $mode, expected 600"
+    [ "$mode" = "$ENV_MODE" ] || fail "env file mode is $mode, expected $ENV_MODE"
     cp "$ENV_FILE" "$EVIDENCE/installed.env.redacted"
     sed -i 's/=.*/=<redacted>/' "$EVIDENCE/installed.env.redacted"
 }
@@ -227,19 +349,23 @@ t3::assert_rollback_tooling_is_shipped() {
     # CLI below -- because a Tier 1 row claims rollback works, and a rollback whose
     # tool is missing is not a gap in coverage, it is the claim being false.
     section "Assert the rollback tooling is shipped"
-    for path in \
-        /usr/local/bin/circuit-breaker-rollback \
-        /usr/local/share/circuit-breaker/deploy/scripts/restore.sh; do
-        [ -x "$path" ] || fail "package did not install an executable $path"
-    done
-    # Not capture(): the wrapper exits 2 when called with no argument, which is
-    # its documented "here is what you can restore" behaviour rather than a
-    # collection failure. Recording it as one would put a warning in the log
-    # dispatch.sh prints on a passing run, and a warnings file that cries wolf
-    # is a warnings file nobody reads.
+    # rpm/deb ship a wrapper (packaging/rollback.sh -> circuit-breaker-rollback)
+    # that sets that layout's paths before calling restore.sh; the tarball layout
+    # has no such wrapper because restore.sh's own bare defaults already ARE its
+    # paths (deploy/scripts/restore.sh's header), so $ROLLBACK_BIN and
+    # $RESTORE_SCRIPT are the same file there.
+    if [ "$ROLLBACK_BIN" != "$RESTORE_SCRIPT" ]; then
+        [ -x "$ROLLBACK_BIN" ] || fail "package did not install an executable $ROLLBACK_BIN"
+    fi
+    [ -x "$RESTORE_SCRIPT" ] || fail "package did not install an executable $RESTORE_SCRIPT"
+    # Not capture(): the wrapper's no-argument exit is its documented "here is
+    # what you can restore" behaviour rather than a collection failure. Recording
+    # it as one would put a warning in the log dispatch.sh prints on a passing
+    # run, and a warnings file that cries wolf is a warnings file nobody reads.
     local rc=0
-    /usr/local/bin/circuit-breaker-rollback > "$EVIDENCE/rollback-usage.txt" 2>&1 || rc=$?
-    [ "$rc" = "2" ] || fail "circuit-breaker-rollback with no argument exited $rc, expected 2 (usage)"
+    "$ROLLBACK_BIN" > "$EVIDENCE/rollback-usage.txt" 2>&1 || rc=$?
+    [ "$rc" = "$ROLLBACK_USAGE_RC" ] \
+        || fail "$ROLLBACK_BIN with no argument exited $rc, expected $ROLLBACK_USAGE_RC (usage)"
 }
 
 # severity: `fatal` where the subject is the artifact under test, `tolerate`
@@ -255,8 +381,8 @@ t3::assert_version_matches() {
     local label=$1 severity=${2:-fatal}
     section "Assert the installed binary reports the shipped version ($label)"
     local shipped reported
-    shipped="$(cat /usr/local/share/circuit-breaker/VERSION)"
-    reported="$(/usr/local/bin/circuit-breaker --version)"
+    shipped="$(cat "$SHARE_DIR/VERSION")"
+    reported="$("$BIN_PATH" --version)"
     printf 'shipped=%s reported=%s\n' "$shipped" "$reported" | tee "$EVIDENCE/version-$label.txt"
     if [ "$shipped" != "$reported" ]; then
         if [ "$severity" = "fatal" ]; then
@@ -273,14 +399,14 @@ t3::record_cb_cli() {
     /usr/local/bin/cb --help > "$EVIDENCE/cb-help.txt" 2>&1
 
     # Install identity + parseable doctor JSON (install-diagnosis simplification).
-    [ -f /etc/circuit-breaker/install-identity.json ] \
-        || fail "package postinstall did not write /etc/circuit-breaker/install-identity.json"
+    [ -f "$IDENTITY_PATH" ] \
+        || fail "package postinstall did not write $IDENTITY_PATH"
     /usr/local/bin/cb info --json > "$EVIDENCE/cb-info.json" 2>"$EVIDENCE/cb-info.err" \
         || fail "cb info --json failed"
-    python3 - "$EVIDENCE/cb-info.json" <<'PY' || fail "cb info --json is not valid JSON / wrong mode"
-import json, sys
+    EXPECTED_CLI_MODE="$EXPECTED_CLI_MODE" python3 - "$EVIDENCE/cb-info.json" <<'PY' || fail "cb info --json is not valid JSON / wrong mode"
+import json, os, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
-assert data.get("mode") == "package", data
+assert data.get("mode") == os.environ["EXPECTED_CLI_MODE"], data
 assert data.get("schema_version") == 1, data
 PY
     # Doctor may exit non-zero when deps are incomplete; stdout must still parse.
@@ -299,7 +425,7 @@ t3::start_and_wait_ready() {
     local label=$1
     section "Start the service ($label)"
     systemctl daemon-reload
-    systemctl start circuit-breaker
+    systemctl start "$SERVICE_UNIT"
 
     # Liveness first: it is the weaker claim, and separating the two makes the
     # failure legible. "Alive but never ready" is a database or migration problem;
@@ -309,7 +435,7 @@ t3::start_and_wait_ready() {
     local deadline=$(( SECONDS + 120 ))
     until curl -fsS "$BASE_URL/livez" >/dev/null 2>&1; do
         if [ "$SECONDS" -ge "$deadline" ]; then
-            capture "$EVIDENCE/journal-$label.log" journalctl -u circuit-breaker --no-pager -n 200
+            capture "$EVIDENCE/journal-$label.log" journalctl -u "$SERVICE_UNIT" --no-pager -n 200
             fail "[$label] service never became live within 120s"
         fi
         sleep 2
@@ -324,7 +450,7 @@ t3::start_and_wait_ready() {
     until [ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/readyz")" = "200" ]; do
         if [ "$SECONDS" -ge "$deadline" ]; then
             capture "$EVIDENCE/readyz-$label.json" curl -s "$BASE_URL/readyz"
-            capture "$EVIDENCE/journal-$label.log" journalctl -u circuit-breaker --no-pager -n 200
+            capture "$EVIDENCE/journal-$label.log" journalctl -u "$SERVICE_UNIT" --no-pager -n 200
             fail "[$label] service never became ready within 180s — see readyz-$label.json and journal-$label.log"
         fi
         sleep 3
@@ -369,7 +495,7 @@ t3::exercise_scheduled_monitor() {
     status="$(curl -fsS "$BASE_URL/bootstrap/status")"
     if python3 -c 'import json,sys; raise SystemExit(not json.load(sys.stdin)["needs_bootstrap"])' <<<"$status"; then
         data_dir="$(sed -n 's/^CB_DATA_DIR=//p' "$ENV_FILE" | tail -n1)"
-        [ -n "$data_dir" ] || data_dir=/var/lib/circuit-breaker
+        [ -n "$data_dir" ] || data_dir="$DATA_DIR"
         setup_token="$(tr -d '\r\n' < "$data_dir/bootstrap-setup-token")"
         token="$(curl -fsS -H 'Content-Type: application/json' \
           -d "{\"setup_token\":\"$setup_token\",\"email\":\"$email\",\"password\":\"$password\",\"theme_preset\":\"gruvbox-dark\"}" \
@@ -380,7 +506,7 @@ t3::exercise_scheduled_monitor() {
           | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
     fi
     monitor="$(curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
-      -d '{"name":"tier3-scheduled-tcp-'"$label"'","check_type":"tcp","host":"127.0.0.1","config":{"port":8080},"interval_secs":10,"max_retries":0}' \
+      -d '{"name":"tier3-scheduled-tcp-'"$label"'","check_type":"tcp","host":"127.0.0.1","config":{"port":'"$MONITOR_PORT"'},"interval_secs":10,"max_retries":0}' \
       "$BASE_URL/monitors")"
     printf '%s\n' "$monitor" > "$EVIDENCE/monitor-$label.json"
     id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$monitor")"
@@ -395,10 +521,10 @@ t3::exercise_scheduled_monitor() {
         sleep 2
     done
     capture "$EVIDENCE/worker-units-$label.txt" systemctl show \
-      circuit-breaker-discovery.service 'circuit-breaker-worker@*.service' \
+      "$DISCOVERY_UNIT" "$WORKER_UNIT_SHOW" \
       -p Id -p ActiveState -p SubState
     capture "$EVIDENCE/worker-journal-$label.log" journalctl \
-      -u circuit-breaker-discovery.service -u 'circuit-breaker-worker@*' --no-pager -n 300
+      -u "$DISCOVERY_UNIT" -u "$WORKER_UNIT_JOURNAL" --no-pager -n 300
 }
 
 # ── the encrypted off-host backup contract (B3) ─────────────────────────────
@@ -519,7 +645,7 @@ t3::exercise_encrypted_snapshot_roundtrip() {
     until [ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/readyz")" = "200" ]; do
         if [ "$SECONDS" -ge "$deadline" ]; then
             capture "$EVIDENCE/readyz-encrypted-restore.json" curl -s "$BASE_URL/readyz"
-            capture "$EVIDENCE/journal-encrypted-restore.log" journalctl -u circuit-breaker --no-pager -n 300
+            capture "$EVIDENCE/journal-encrypted-restore.log" journalctl -u "$SERVICE_UNIT" --no-pager -n 300
             fail "the service never became ready within 180s after restoring the encrypted snapshot"
         fi
         sleep 3
@@ -600,9 +726,9 @@ t3::latest_backup() {
 t3::collect() {
     local label=$1
     section "Collect evidence ($label)"
-    capture "$EVIDENCE/journal-$label.log" journalctl -u circuit-breaker --no-pager -n 500
-    capture "$EVIDENCE/unit-state-$label.txt" systemctl show circuit-breaker -p ActiveState -p SubState -p UnitFileState -p ExecMainStatus
-    capture "$EVIDENCE/data-dir-$label.txt" ls -la /var/lib/circuit-breaker
+    capture "$EVIDENCE/journal-$label.log" journalctl -u "$SERVICE_UNIT" --no-pager -n 500
+    capture "$EVIDENCE/unit-state-$label.txt" systemctl show "$SERVICE_UNIT" -p ActiveState -p SubState -p UnitFileState -p ExecMainStatus
+    capture "$EVIDENCE/data-dir-$label.txt" ls -la "$DATA_DIR"
     capture "$EVIDENCE/package-contents-$label.txt" pkg::list_contents
 }
 
@@ -624,7 +750,7 @@ t3::assert_candidate_provenance "$START_LABEL"
 # an upgrade row, so the severity follows the same branch the label does.
 if [ -n "$PREVIOUS" ]; then START_SEVERITY=tolerate; else START_SEVERITY=fatal; fi
 t3::assert_version_matches "$START_LABEL" "$START_SEVERITY"
-VERSION_AT_START="$(cat /usr/local/share/circuit-breaker/VERSION)"
+VERSION_AT_START="$(cat "$SHARE_DIR/VERSION")"
 t3::record_cb_cli
 t3::start_and_wait_ready "$START_LABEL"
 
@@ -700,13 +826,13 @@ section "Assert the upgrade left the service running and enabled"
 # service stopped and disabled, and no reboot brought it back. Nothing in the
 # pipeline had ever upgraded a packaged service, so nothing saw it.
 capture "$EVIDENCE/unit-state-upgraded.txt" \
-    systemctl show circuit-breaker -p ActiveState -p SubState -p UnitFileState
-systemctl is-enabled --quiet circuit-breaker \
+    systemctl show "$SERVICE_UNIT" -p ActiveState -p SubState -p UnitFileState
+systemctl is-enabled --quiet "$SERVICE_UNIT" \
     || fail "service is not enabled after the upgrade — preremove ran on an upgrade transaction"
-systemctl is-active --quiet circuit-breaker \
+systemctl is-active --quiet "$SERVICE_UNIT" \
     || fail "service is not running after the upgrade — postinstall did not restart it, or preremove stopped it"
 
-VERSION_AFTER="$(cat /usr/local/share/circuit-breaker/VERSION)"
+VERSION_AFTER="$(cat "$SHARE_DIR/VERSION")"
 [ "$VERSION_AFTER" != "$VERSION_AT_START" ] \
     || fail "shipped VERSION is still $VERSION_AT_START after upgrading with $CANDIDATE_VERSION_EXPECTED — the candidate must be a different version from the previous package"
 
@@ -718,7 +844,7 @@ deadline=$(( SECONDS + 180 ))
 until [ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/readyz")" = "200" ]; do
     if [ "$SECONDS" -ge "$deadline" ]; then
         capture "$EVIDENCE/readyz-upgraded.json" curl -s "$BASE_URL/readyz"
-        capture "$EVIDENCE/journal-upgraded.log" journalctl -u circuit-breaker --no-pager -n 300
+        capture "$EVIDENCE/journal-upgraded.log" journalctl -u "$SERVICE_UNIT" --no-pager -n 300
         fail "upgraded service never became ready within 180s"
     fi
     sleep 3
@@ -753,30 +879,35 @@ t3::collect upgraded
 # would silently undo itself.
 
 section "Roll back: stop the service"
-systemctl stop circuit-breaker
+systemctl stop "$SERVICE_UNIT"
 
 section "Roll back: reinstall the previous package"
 pkg::downgrade_to "$PREVIOUS" 2>&1 | tee "$EVIDENCE/downgrade.log"
-VERSION_ROLLED_BACK="$(cat /usr/local/share/circuit-breaker/VERSION)"
+VERSION_ROLLED_BACK="$(cat "$SHARE_DIR/VERSION")"
 [ "$VERSION_ROLLED_BACK" = "$VERSION_AT_START" ] \
     || fail "after downgrade the shipped VERSION is $VERSION_ROLLED_BACK, expected $VERSION_AT_START"
 
 section "Roll back: restore the pre-upgrade backup"
-# Through the shipped wrapper, exactly as an operator would. Calling restore.sh
-# directly would test a code path the docs do not name and would skip the layout
-# variables the wrapper exists to supply.
+# Through the documented recovery tool, exactly as an operator would.
 # CB_ASSUME_YES because this runs over ssh with no TTY. restore.sh prompts
 # before it drops anything, and an unanswered prompt correctly aborts -- so
 # without consent given in advance the row stops at the banner and evidences
 # nothing about the rollback.
-CB_ASSUME_YES=1 /usr/local/bin/circuit-breaker-rollback "$BACKUP" 2>&1 | tee "$EVIDENCE/rollback.log"
+if [ "$PKG_FORMAT" = "tarball" ]; then
+    # No wrapper on this layout: restore.sh's own bare defaults already are
+    # its paths (deploy/scripts/restore.sh's header), so $ROLLBACK_BIN IS
+    # restore.sh here and needs nothing set around it.
+    CB_ASSUME_YES=1 "$ROLLBACK_BIN" "$BACKUP" 2>&1 | tee "$EVIDENCE/rollback.log"
+else
+    CB_ASSUME_YES=1 /usr/local/bin/circuit-breaker-rollback "$BACKUP" 2>&1 | tee "$EVIDENCE/rollback.log"
+fi
 
 section "Wait for the rolled-back service to become ready"
 deadline=$(( SECONDS + 180 ))
 until [ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/readyz")" = "200" ]; do
     if [ "$SECONDS" -ge "$deadline" ]; then
         capture "$EVIDENCE/readyz-rolledback.json" curl -s "$BASE_URL/readyz"
-        capture "$EVIDENCE/journal-rolledback.log" journalctl -u circuit-breaker --no-pager -n 300
+        capture "$EVIDENCE/journal-rolledback.log" journalctl -u "$SERVICE_UNIT" --no-pager -n 300
         fail "service never became ready within 180s after the rollback"
     fi
     sleep 3

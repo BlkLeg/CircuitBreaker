@@ -17,6 +17,21 @@ carries a status column.
 - **Superseded** — a later plan replaced it.
 - **Reference** — never a work item; a review, an index, or a deferred-item list.
 
+## Installer revamp and release verification (2026-09-20)
+
+Eight-step programme implementing the install experience and release verification design ([`docs/design/2026-09-20-install-experience-and-release-verification.md`](../docs/design/2026-09-20-install-experience-and-release-verification.md)).
+
+| Plan | Date | Status |
+|---|---|---|
+| [Step 0 — signal trust](./2026-09-20-step0-signal-trust.md) | 2026-09-20 | **Complete** — quarantine register and expiry enforcement (`5322e73d`), scheduled-workflow ref guard (`2c225c0b`), verification rules 2 and 6 plus ADR 0005 update (`5784882b`). |
+| [Step 1 — artifact self-test](./2026-09-20-step1-artifact-selftest.md) | 2026-09-20 | **Complete** — `WORKER_MODULES` data enumeration (`4be3c8c7`), `ASGI_TARGET` constant pinning (`b2cdfe6b`), `run_selftest()` implementation (`0a846b0e`, `ff7b9ef0`), entrypoint `--selftest` flag (`b6004d5d`), build script staging refusal (`5e46352a`), `artifact-smoke.yml` gate (`779e8e16`), and `cb doctor` selftest check (`399e0bfa`). |
+| [Step 2 — tarball and post-publish verification](./2026-09-20-step2-tarball-and-post-publish-verification.md) | 2026-09-20 | **Active** — tarball-smoke gate, post-publish release verification job, and CLAUDE.md coverage table update. |
+| [Step 3 — Tier 2 and release control](./2026-09-20-step3-tier2-and-release-control.md) | 2026-09-20 | **Active** — deb-boot candidate verification job, pre-publish release checklist, quick-install documentation update. |
+| [Step 4 — packaging toolchain](./2026-09-20-step4-packaging-toolchain.md) | 2026-09-20 | **Active** — PyInstaller benchmark (onefile vs onedir vs python-build-standalone), toolchain selection and migration. |
+| [Step 5 — installer progress UI](./2026-09-20-step5-installer-progress-ui.md) | 2026-09-20 | **Active** — terminal rendering library (`deploy/lib/ui.sh`), phase model, progress updates in `install.sh` and `deploy/setup.sh`. |
+| [Step 6 — upgrade, uninstall, and diagnostic bundle](./2026-09-20-step6-upgrade-uninstall-diag-bundle.md) | 2026-09-20 | **Active** — phase models for upgrade and uninstall flows, `cb diag bundle` command. |
+| [Step 7 — installer journey CI](./2026-09-20-step7-installer-journey-ci.md) | 2026-09-20 | **Active** — installer journey test suite, CI dispatch for Tier 3 fleet, tarball matrix rows. |
+
 ## Technical debt cleanup (2026-09-07)
 
 | Plan | Date | Status |
