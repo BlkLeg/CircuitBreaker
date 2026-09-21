@@ -331,6 +331,71 @@ design), then uninstalls and asserts the port is free.
 
 ---
 
+## What the gate found on its first real run
+
+Dev CI run 35615123469, the first execution of `artifact-smoke.yml` on a hosted
+runner. Everything else in the pipeline was green — `Install .deb (amd64)`,
+`Smoke the tarball (amd64)`, both Browser E2E shards, all four backend shards, the
+Docker smoke, the coverage gate. `Boot the .deb (amd64)` failed at `Wait for /livez`,
+and it found two things.
+
+**The gate was failing the artifact for a condition the gate created.** The boot step
+ran `install -d -m 0750 /etc/circuit-breaker`, and `install -d` does not merely create a
+missing directory — it rewrites the mode of an existing one. `packaging/postinstall.sh`
+deliberately sets that directory to `0755`, because the service runs as
+`circuitbreaker` and has to traverse it. At `0750 root:root` it could not, and the unit
+crash-looped:
+
+```
+circuit-breaker[3850]: PermissionError: [Errno 13] Permission denied:
+  '/etc/circuit-breaker/config.yaml'
+circuit-breaker[3850]: [PYI-3850:ERROR] Failed to execute script 'start'
+systemd[1]: circuit-breaker.service: Main process exited, code=exited, status=1/FAILURE
+```
+
+That is worse than a gate not running: it would have sent someone looking for a
+packaging defect that is not there. The step now asserts the packaged directory rather
+than creating it — if the package stops making it traversable, *that* is what surfaces —
+and writes its env file as `root:circuitbreaker 0640`, matching what postinstall gives
+`config.toml`.
+
+**And a real product defect underneath it.** `configure_runtime` probed its default
+config path with a bare `Path(...).exists()`. That call is not total: it answers False
+for a missing file and *raises* when the filesystem refuses to answer. The packaged
+layout has no `config.yaml` at all — it uses `config.toml` — so the probe was asking
+about a file that is expected to be absent, and any hardened `/etc/circuit-breaker`
+turned that question into an unhandled traceback at line one of startup. An operator who
+tightened permissions on their own config directory would get a crash-looping service
+and a Python stack trace.
+
+The probe now distinguishes three outcomes: present, definitively absent, and
+undeterminable — and for the last one it refuses only when the operator actually asked
+for that file (`--config` or `CB_CONFIG_PATH`), because continuing would run with
+settings they believe are applied. For the built-in default it warns and continues.
+
+The version split is why this survived: CPython 3.12, which the release binary is frozen
+from, lets EACCES out of `Path.exists()`; CPython 3.14, which a developer machine is as
+likely to run, returns False for it. The defect is real in the artifact and invisible on
+a laptop. `apps/backend/tests/test_native_config_probe.py` therefore raises from
+`Path.exists()` directly rather than building real permissions, so it asserts the shipped
+interpreter's behaviour on any interpreter — and its last case exercises
+`configure_runtime` rather than the helper, because every other case stays green if the
+wiring is reverted. Mutation-tested: restoring the old expression fails that one test
+with the production `PermissionError`.
+
+**Separately, the Docs link check went red** on the same push, in the third-party
+`lycheeverse/lychee-action`'s own setup step: `curl -sfLO` exited 22 fetching the pinned
+lychee binary. Proven transient rather than assumed — the pinned asset is present in the
+release (`gh release view lychee-v0.24.2`), the exact URL answers 200, and a re-run with
+no code change passed in 8s.
+
+It does expose a gap worth naming: that job's blocking pass documents itself as
+`--offline` so that "a docs PR can be turned red by this repo and by nothing else — no
+rate limit, no third-party outage, no flake". The link *checking* is offline; the action's
+binary *download* is not, and it carries no retry. The guarantee in that comment is
+therefore not the one the mechanism delivers. Left as a recorded gap rather than fixed in
+the same change as a boot-gate fix.
+
 ## One thing this change cannot do from the repository: make the new gates blocking
 
 Branch protection here is a ruleset, not the legacy `branches/main/protection` API, and

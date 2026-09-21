@@ -318,7 +318,37 @@ jobs:
       - name: Point the service at the ephemeral dependencies
         run: |
           set -euo pipefail
-          sudo install -d -m 0750 /etc/circuit-breaker
+
+          # The directory the PACKAGE made, at the mode the package gave it.
+          #
+          # This step used to run `install -d -m 0750 /etc/circuit-breaker`,
+          # which does not merely create a missing directory — it rewrites the
+          # mode of the existing one. packaging/postinstall.sh deliberately sets
+          # 0755 there, because the service runs as `circuitbreaker` and has to
+          # traverse it; 0750 root:root took that away, and the first thing
+          # start.py does is probe /etc/circuit-breaker/config.yaml. The probe
+          # raised PermissionError, the binary died with a traceback, and the
+          # unit crash-looped:
+          #
+          #   PermissionError: [Errno 13] Permission denied:
+          #     '/etc/circuit-breaker/config.yaml'
+          #
+          # So the gate was failing the artifact for a condition the gate itself
+          # created, which is worse than not running: it would have sent someone
+          # looking for a packaging defect that is not there.
+          #
+          # Asserted rather than created. If the package stops making this
+          # directory, or stops making it traversable, that IS a packaging
+          # defect and this is where it should surface.
+          [ -d /etc/circuit-breaker ] || {
+            echo "::error::the package did not create /etc/circuit-breaker"
+            exit 1
+          }
+          if ! sudo -u circuitbreaker test -x /etc/circuit-breaker; then
+            echo "::error::/etc/circuit-breaker is not traversable by the circuitbreaker service account ($(stat -c '%a %U:%G' /etc/circuit-breaker)); the service cannot read its own configuration"
+            exit 1
+          fi
+
           sudo tee /etc/circuit-breaker/circuit-breaker.env >/dev/null <<EOF
           CB_DB_URL=postgresql://circuitbreaker:${CB_DB_PASSWORD}@127.0.0.1:5432/circuitbreaker
           CB_REDIS_URL=redis://127.0.0.1:6379/0
@@ -327,6 +357,13 @@ jobs:
           NATS_AUTH_TOKEN=${CB_NATS_TOKEN}
           CB_SETUP_TOKEN=${CB_SETUP_TOKEN}
           EOF
+          # root:circuitbreaker 0640 — the same ownership packaging/
+          # postinstall.sh gives config.toml, which is the other file in here
+          # that carries secrets. systemd reads EnvironmentFile= as root before
+          # dropping privileges, so the service account never needs to read it;
+          # matching the packaged convention keeps this gate from asserting a
+          # layout no real install has.
+          sudo chown root:circuitbreaker /etc/circuit-breaker/circuit-breaker.env
           sudo chmod 0640 /etc/circuit-breaker/circuit-breaker.env
 
       # Neither postinstall script starts anything — both only `enable`. And
