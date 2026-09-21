@@ -431,7 +431,11 @@ cmd_info() {
     echo -e "  ${GR}Mode${R}       : ${CB_IDENTITY_MODE}"
     echo -e "  ${GR}Version${R}    : $(_cb_json_get version)"
     echo -e "  ${GR}Data dir${R}   : ${CB_DATA_DIR:-—}"
-    echo -e "  ${GR}Config/env${R} : $(_cb_json_get env_file)$(_cb_json_get config_path)"
+    # Two separate identity fields, printed with a separator. They used to be
+    # concatenated with nothing between them, so a native install — where both
+    # resolve to /etc/circuitbreaker/.env — rendered the path twice, run
+    # together, as if it were one nonsense path.
+    echo -e "  ${GR}Config/env${R} : $(_cb_identity_paths)"
     echo -e "  ${GR}Container${R}  : ${CB_CONTAINER:-—}"
     echo -e "  ${GR}Compose${R}    : ${CB_COMPOSE_FILE:-—}"
     echo -e "  ${GR}Health URL${R} : ${CB_HEALTH_URL:-—}"
@@ -472,7 +476,27 @@ print(json.dumps({
   return 1
 }
 
-cmd_setup() {
+_cb_identity_paths() {
+  # env_file and config_path are distinct identity fields that often agree.
+  # Print one when they do, both when they differ, and an em dash when the
+  # identity carries neither.
+  local env_file config_path
+  env_file="$(_cb_json_get env_file)"
+  config_path="$(_cb_json_get config_path)"
+  if [[ -n "$env_file" && -n "$config_path" && "$env_file" != "$config_path" ]]; then
+    printf '%s, %s' "$env_file" "$config_path"
+  elif [[ -n "$env_file" ]]; then
+    printf '%s' "$env_file"
+  elif [[ -n "$config_path" ]]; then
+    printf '%s' "$config_path"
+  else
+    printf '%s' "—"
+  fi
+}
+
+_cb_bootstrap_status_url() {
+  # Derived from the identity's health URL so it follows a non-default port,
+  # exactly as cmd_setup did inline before this was shared with cmd_setup_token.
   local health="${CB_HEALTH_URL:-}"
   if [[ -z "$health" && -n "$CB_PORT" ]]; then
     health="http://127.0.0.1:${CB_PORT}/api/v1/readyz"
@@ -487,6 +511,12 @@ cmd_setup() {
   else
     status_url="http://127.0.0.1:8080/api/v1/bootstrap/status"
   fi
+  printf '%s' "$status_url"
+}
+
+cmd_setup() {
+  local status_url
+  status_url="$(_cb_bootstrap_status_url)"
 
   echo ""
   echo -e "$LINE"
@@ -542,12 +572,54 @@ cmd_setup_token() {
           _warn "Printing setup token once. Do not paste into logs or doctor output."
           docker exec "$CB_BACKEND_CONTAINER" sh -c "umask 077; cat '$remote_path'; chmod 600 '$remote_path' 2>/dev/null || true"
           echo ""
-          _info "Regenerate: restart the app so bootstrap issues a new token, or set CB_SETUP_TOKEN."
+          # Not "restart the app": ensure_bootstrap_token re-issues only when the
+          # stored hash is absent, used or expired, and no startup path calls it.
+          # CB_SETUP_TOKEN is what actually replaces a live token.
+          _info "Replace this token: set CB_SETUP_TOKEN (16+ chars) and restart the app. A restart alone does not re-issue."
           return 0
         fi
       fi
     fi
-    _fail "Setup token not found at ${token_path}. Setup may be complete, or the file was removed. See docs/installation/first-run.md"
+    # The token is issued lazily, not at install time: the backend writes it the
+    # first time anything asks for bootstrap status (ensure_bootstrap_token,
+    # reached from GET /api/v1/bootstrap/status). Straight after an install
+    # nobody has opened the web UI yet, so the file genuinely does not exist —
+    # and the message here used to say "Setup may be complete", which is the
+    # opposite of the truth at the one moment install.sh's closing screen tells
+    # the operator to run this command. Ask the backend instead: the same call
+    # answers the question and issues the token.
+    if command -v curl >/dev/null 2>&1; then
+      local status_url status_body
+      status_url="$(_cb_bootstrap_status_url)"
+      status_body="$(curl -sf --max-time 5 "$status_url" 2>/dev/null || true)"
+      if [[ "$status_body" == *'"needs_bootstrap":true'* || "$status_body" == *'"needs_bootstrap": true'* ]]; then
+        if [[ ! -f "$token_path" ]]; then
+          # Bootstrap is pending, yet asking for status did not produce a file.
+          # That means a token was already issued for this install and its file
+          # has since been removed: ensure_bootstrap_token only re-issues when
+          # the stored hash is absent, used or expired, so neither deleting the
+          # file nor restarting the backend brings it back. Supplying
+          # CB_SETUP_TOKEN does, and is the only route that does.
+          _fail "$(printf '%s\n' \
+            "Bootstrap is still pending, but no token file is at ${token_path}." \
+            "  A token was already issued for this install and its file has since been removed;" \
+            "  re-reading status does not re-issue one, and neither does restarting the backend." \
+            "  Set CB_SETUP_TOKEN (16 characters or more) in the backend's environment and restart" \
+            "  it to adopt a token you choose. If you did not remove the file, check that" \
+            "  the data directory is writable by the service user: cb logs backend")"
+        fi
+      elif [[ -n "$status_body" ]]; then
+        _fail "$(printf '%s\n' \
+          "Bootstrap is already complete — there is no setup token to print." \
+          "  Sign in at the web UI, or see docs/installation/first-run.md")"
+      else
+        _fail "$(printf '%s\n' \
+          "No setup token at ${token_path}, and ${status_url} did not answer." \
+          "  Start the stack first (cb status), then re-run. See docs/installation/first-run.md")"
+      fi
+    else
+      _fail "Setup token not found at ${token_path}, and curl is unavailable to ask the backend for one. See docs/installation/first-run.md"
+    fi
   fi
 
   local mode
@@ -560,7 +632,11 @@ cmd_setup_token() {
   _warn "Printing setup token once. Do not include this value in cb doctor or support bundles."
   cat "$token_path"
   echo ""
-  _info "Regenerate: remove ${token_path} and restart the backend so a new token is issued, or set CB_SETUP_TOKEN."
+  # Removing the file does not re-issue anything — the hash lives in the
+  # database and ensure_bootstrap_token replaces it only when it is absent,
+  # used or expired. Deleting the file just loses the copy you can read.
+  _info "Replace this token: set CB_SETUP_TOKEN (16+ chars) in the environment and restart the backend."
+  _info "Deleting ${token_path} does not issue a new one — it only removes your copy."
 }
 
 cmd_status() {

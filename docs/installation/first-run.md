@@ -40,12 +40,24 @@ Circuit Breaker accepts the token from one of two places:
 
 The token is never returned by the public status API or shown in the browser. It expires after 24 hours by default. To change the lifetime before setup, set `CB_SETUP_TOKEN_TTL_HOURS` to a value from `1` to `168`.
 
-If the generated token expires or is lost before setup completes, restart the backend
-so a fresh private token file is issued, then retrieve it with:
+The token is issued lazily, not at install time: the backend writes the file the
+first time anything asks it for bootstrap status. Straight after an install
+nobody has opened the wizard yet, so the file does not exist. `cb setup-token`
+asks on your behalf, so it works from the moment the services are up:
 
 ```bash
 cb setup-token
 ```
+
+If the token **expires** before setup completes, the next look at bootstrap
+status issues a fresh one, and `cb setup-token` triggers that look — no restart
+needed.
+
+If the token file is **lost** while the token itself is still valid (you deleted
+it, say), nothing re-issues it: the hash lives in the database, and it is
+replaced only when it is absent, used or expired. Restarting the backend does
+not help. Set `CB_SETUP_TOKEN` to a value of your own (16 characters or more)
+and restart the backend to adopt it.
 
 Do not paste the token into `cb doctor`, logs, or support bundles. After bootstrap
 succeeds, the token is consumed and cannot be replayed.
