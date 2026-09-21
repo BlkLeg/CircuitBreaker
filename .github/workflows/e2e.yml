@@ -40,13 +40,13 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 75
     steps:
-      # `schedule` only fires on the default branch, and `main` trails the
-      # integration branch, so the nightly would otherwise test frozen code.
-      # Only the scheduled run is redirected: tag pushes, `workflow_dispatch`
-      # and `workflow_call` must keep testing the ref that triggered them.
+      # `schedule` only fires on the default branch. Keep that explicit so this
+      # job still checks out a valid ref if the default branch name changes.
+      # Tag pushes, `workflow_dispatch` and `workflow_call` keep testing the
+      # ref that triggered them.
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}
+          ref: ${{ github.event_name == 'schedule' && github.event.repository.default_branch || '' }}
 
       - uses: actions/setup-python@v6
         with:
