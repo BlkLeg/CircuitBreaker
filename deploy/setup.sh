@@ -1578,7 +1578,7 @@ cb_try_install_docker_ce() {
   if [[ "$PKG_MGR" == "apt-get" ]]; then
     local docker_distro="$OS_ID"
     rm -f /usr/share/keyrings/docker-archive-keyring.gpg
-    curl -fsSL "https://download.docker.com/linux/${docker_distro}/gpg" 2>>"$LOG_FILE" \
+    curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 "https://download.docker.com/linux/${docker_distro}/gpg" 2>>"$LOG_FILE" \
       | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg >> "$LOG_FILE" 2>&1 \
       || return 1
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
@@ -1792,7 +1792,17 @@ stage2_dependencies() {
   # Group 3: PostgreSQL 15 from PGDG
   cb_step "Installing PostgreSQL 15 from official PGDG repository"
   if [[ "$PKG_MGR" == "apt-get" ]]; then
-    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc 2>/dev/null | gpg --yes --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg 2>/dev/null
+    # Retried, and no longer silenced. This is the same URL and the same
+    # third-party host whose transient reset killed the v0.4.3 release build
+    # ("curl: (35) Recv failure: Connection reset by peer"). Here the stakes are
+    # higher: this runs on a user's machine, and with both streams sent to
+    # /dev/null a reset wrote an EMPTY keyring and the install carried on to
+    # fail later at `apt-get update` with a signature error that names nothing
+    # about the real cause. Fail at the fetch, say so, and retry first.
+    curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+      | gpg --yes --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg \
+      || cb_fail "Could not fetch the PostgreSQL signing key from postgresql.org" \
+                 "Transient network failure, or the host is unreachable. Check: curl -I https://www.postgresql.org — then re-run" 
     echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
     $PKG_MGR update -y -q >> "$LOG_FILE" 2>&1
     $PKG_MGR install -y -q postgresql-15 postgresql-client-15 >> "$LOG_FILE" 2>&1
@@ -1916,7 +1926,7 @@ stage2_dependencies() {
   local nats_url="https://github.com/nats-io/nats-server/releases/download/v${nats_version}/${nats_tarball}"
 
   cd /tmp
-  curl -fsSL -o "$nats_tarball" "$nats_url" >> "$LOG_FILE" 2>&1 || cb_fail "Failed to download NATS" "$nats_url"
+  curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 -o "$nats_tarball" "$nats_url" >> "$LOG_FILE" 2>&1 || cb_fail "Failed to download NATS" "$nats_url"
   echo "${nats_sha}  ${nats_tarball}" | sha256sum --check --status \
     || cb_fail "NATS checksum mismatch" "expected ${nats_sha} for ${nats_tarball}"
   tar -xzf "$nats_tarball" >> "$LOG_FILE" 2>&1

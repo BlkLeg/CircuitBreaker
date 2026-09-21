@@ -154,12 +154,26 @@ RUN apt-get update && apt-get upgrade -y --no-install-recommends && apt-get inst
 # PGDG repo is added here so postgresql-15 >= 15.17 is available; Debian bookworm default
 # ships 15.16 which is too old to satisfy timescaledb's dependency. apt will upgrade
 # postgresql-15 automatically when resolving the timescaledb install.
+# --retry on both key fetches. These reach postgresql.org and packagecloud.io
+# over the public internet from a GitHub runner, and a single unretried curl is
+# a coin-flip on every release: v0.4.3's first attempt died here with
+#
+#     curl: (35) Recv failure: Connection reset by peer
+#     gpg: no valid OpenPGP data found.
+#
+# after Derive Version and the Tier 0 gate had already passed. A transient reset
+# on a third-party host should cost seconds, not a whole release run — and
+# because `curl -f` exits non-zero into a pipe, the only symptom downstream was
+# gpg refusing empty input.
+#
+# --retry-all-errors is what makes this cover a reset: plain --retry only retries
+# transient HTTP codes and timeouts, not a connection torn down mid-transfer.
 # hadolint ignore=DL3008,DL3005,DL4006
-RUN curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+RUN curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors https://www.postgresql.org/media/keys/ACCC4CF8.asc \
          | gpg --dearmor -o /usr/share/keyrings/postgresql.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
          > /etc/apt/sources.list.d/pgdg.list \
-    && curl -fsSL https://packagecloud.io/timescale/timescaledb/gpgkey \
+    && curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors https://packagecloud.io/timescale/timescaledb/gpgkey \
          | gpg --dearmor -o /usr/share/keyrings/timescaledb.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/timescaledb.gpg] https://packagecloud.io/timescale/timescaledb/debian/ bookworm main" \
          > /etc/apt/sources.list.d/timescaledb.list \
