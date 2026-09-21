@@ -1205,7 +1205,8 @@ stage_configure_helper() {
     return 0
   fi
 
-  mkdir -p /run/circuitbreaker
+  # /run/circuitbreaker is created by stage4_write_systemd_units via
+  # tmpfiles.d; do not re-create it here with a different owner or mode.
   local breaker_uid
   breaker_uid="$(id -u breaker)"
 
@@ -1327,6 +1328,25 @@ stage4_write_systemd_units() {
     export CB_DOCKER_BIN
     cb_render_template "/opt/circuitbreaker/deploy/systemd/circuitbreaker-docker-proxy.service" "/etc/systemd/system/circuitbreaker-docker-proxy.service"
   fi
+
+  # /run/circuitbreaker — owned by tmpfiles, not by any unit's RuntimeDirectory.
+  #
+  # The backend, the five workers and cb-helperd all use this directory, and
+  # systemd removes a runtime directory when any single declaring unit stops.
+  # See deploy/misc/circuitbreaker.tmpfiles.conf for the full reasoning.
+  #
+  # Created directly as well as declared: tmpfiles.d covers every boot from here
+  # on, and the mkdir covers this boot, which is already running and will not
+  # replay tmpfiles.d on its own if systemd-tmpfiles is missing or refuses.
+  mkdir -p /usr/lib/tmpfiles.d
+  install -m 0644 "/opt/circuitbreaker/deploy/misc/circuitbreaker.tmpfiles.conf" \
+    /usr/lib/tmpfiles.d/circuitbreaker.conf
+  if command -v systemd-tmpfiles >/dev/null 2>&1; then
+    systemd-tmpfiles --create /usr/lib/tmpfiles.d/circuitbreaker.conf >> "$LOG_FILE" 2>&1 || true
+  fi
+  mkdir -p /run/circuitbreaker
+  chown breaker:breaker /run/circuitbreaker >> "$LOG_FILE" 2>&1 || true
+  chmod 0750 /run/circuitbreaker
 
   systemctl daemon-reload >> "$LOG_FILE" 2>&1
   systemctl enable circuitbreaker.target >> "$LOG_FILE" 2>&1

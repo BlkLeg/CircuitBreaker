@@ -41,6 +41,27 @@ CB_UNITS=(
   circuitbreaker-backend
 )
 
+# The worker instances install.sh enables. Kept apart from CB_UNITS because they
+# are instances of one template unit, so the uninstall assertion's per-unit file
+# check does not apply to them.
+#
+# Nothing here used to look at them at all, and their absence is invisible from
+# the outside: the API serves, /readyz passes, migrations run and bootstrap
+# succeeds with all five dead. On Arch every one of them exits at startup, and
+# the only reason that ever surfaced was a side effect — the workers declared
+# the same RuntimeDirectory as the backend, so their exit deleted
+# /run/circuitbreaker, and the journey failed on the missing directory three
+# assertions later. Fixing that would have made Arch green with the whole
+# background tier dead, which is the exact shape of the v0.4.2 failure: a fully
+# green pipeline attesting nothing.
+CB_WORKER_UNITS=(
+  circuitbreaker-worker@discovery
+  circuitbreaker-worker@notification
+  circuitbreaker-worker@telemetry
+  circuitbreaker-worker@monitor_scheduler
+  circuitbreaker-worker@monitor_poll
+)
+
 mkdir -p "$EVIDENCE"
 
 section() { printf '\n=== %s ===\n' "$1"; }
@@ -311,10 +332,24 @@ getcap /opt/circuitbreaker/bin/circuit-breaker | grep -q 'cap_net_raw' \
 [ "$(stat -c '%U' "$DATA_DIR")" = "breaker" ] \
   || fail "$DATA_DIR is not owned by breaker (found $(stat -c '%U' "$DATA_DIR"))"
 
-# RuntimeDirectory=circuitbreaker is what creates /run/circuitbreaker with the
-# right mode; the backend writes the vault key into it at every start.
+# /run/circuitbreaker holds the vault key the backend reads at every start and
+# the socket cb-helperd binds. It is created by
+# /usr/lib/tmpfiles.d/circuitbreaker.conf rather than by any unit's
+# RuntimeDirectory=, because systemd removes a runtime directory when any one
+# declaring unit stops — which used to let a worker exit delete it from under
+# the running backend.
 [ -d /run/circuitbreaker ] \
-  || fail "/run/circuitbreaker was not created — the unit's RuntimeDirectory did not take effect"
+  || fail "/run/circuitbreaker was not created — /usr/lib/tmpfiles.d/circuitbreaker.conf did not take effect"
+
+# Every background worker has to be running, not merely enabled. A worker that
+# exits at startup takes discovery, telemetry, notifications and monitoring with
+# it while every foreground check above still passes.
+for unit in "${CB_WORKER_UNITS[@]}"; do
+  systemctl is-active --quiet "$unit" || fail \
+    "$unit is not running (Result=$(systemctl show -p Result --value "$unit" 2>/dev/null)); \
+background work — discovery, telemetry, notifications, monitoring — is dead while the API looks healthy"
+done
+echo "all ${#CB_WORKER_UNITS[@]} workers running"
 
 # Ordering: the backend must come after its dependencies, or a reboot races it
 # against a database that has not started.
