@@ -458,9 +458,33 @@ done
 
 # The port has to be free again. A listener that outlives the uninstall is the
 # symptom operators actually report: "I removed it and it is still there."
-if curl -sS --max-time 5 "${BASE}/livez" >/dev/null 2>&1; then
-  fail "something is still serving :${PORT} after uninstall"
-fi
+#
+# Waited for, not sampled once. uninstall.sh removes the nginx site and calls
+# `systemctl reload nginx`, which returns as soon as nginx's master accepts the
+# SIGHUP — the master then reconfigures and retires its old workers on its own
+# schedule, so the listening socket on this port outlives the reload by a short,
+# variable interval. Probing immediately therefore fails or passes depending on
+# timing: debian12 failed this exact assertion on one run and passed it on a
+# re-run of the identical commit, while every other distro passed both times.
+#
+# A real leak is still caught, and is still the point: what an operator reports
+# is a listener that is still there minutes later, not one that is still there
+# for two hundred milliseconds. Anything answering after the budget below is
+# that leak.
+#
+# curl deliberately has no -f: a 502 from an nginx that is still listening but
+# has nothing to proxy to is exactly the state being looked for, so any HTTP
+# response counts as "still serving", not only a healthy one.
+# Overridable so the repo-policy test can exercise the leak path without
+# waiting out the real budget; the journey itself never sets it.
+uninstall_port_wait="${CB_JOURNEY_UNINSTALL_WAIT:-30}"
+uninstall_port_deadline=$(( SECONDS + uninstall_port_wait ))
+while curl -sS --max-time 5 "${BASE}/livez" >/dev/null 2>&1; do
+  if [ "$SECONDS" -ge "$uninstall_port_deadline" ]; then
+    fail "something is still serving :${PORT} ${uninstall_port_wait}s after uninstall"
+  fi
+  sleep 1
+done
 echo "uninstall clean"
 
 section "Journey complete"
