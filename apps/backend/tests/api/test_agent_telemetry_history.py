@@ -21,6 +21,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import event, insert
 
+import app.api.agents as agents_api
 from app.core.time import utcnow
 from app.db.models import AgentHostSample
 
@@ -318,7 +319,7 @@ async def test_history_returns_empty_points_for_agent_with_no_samples(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("range_name", _RANGES)
 async def test_limit_truncates_the_boundary_bucket_for_every_range(
-    client, db_session, factories, viewer_headers, range_name
+    client, db_session, factories, viewer_headers, monkeypatch, range_name
 ):
     """The SQL `LIMIT` is load-bearing on every range, not just `1h`.
 
@@ -339,7 +340,29 @@ async def test_limit_truncates_the_boundary_bucket_for_every_range(
     agent = factories.agent(status="active")
     width = _BUCKET_SECONDS[range_name]
     cap = _MAX_POINTS[range_name]
-    anchor = _grid(utcnow(), width)
+
+    # The endpoint has to measure the window this data was built against.
+    #
+    # `start` is `utcnow() - duration` evaluated when the request runs, while
+    # the grid below is anchored at `utcnow()` here — separated by 121 inserts
+    # and an HTTP round trip. This case is deliberately built with no slack at
+    # the old edge (that is the boundary it exists to pin), so the oldest
+    # seeded bucket clears `start` only while the elapsed time stays under
+    # `width - (utcnow() mod width)`. That remainder is uniform over the
+    # bucket, so on `1h` — 30 s wide — a loaded shard slides the window one
+    # bucket past the data and the response comes back one point short:
+    #
+    #     AssertionError: assert 119 == 120
+    #
+    # Pinning the endpoint's clock to the instant the grid was built keeps
+    # this measuring the SQL `LIMIT`, which is the contract, instead of how
+    # long the seeding took. The other test that seeds a full window buys the
+    # same safety by anchoring one bucket into the future; that is not
+    # available here, because the zero-slack edge IS the case under test.
+    now = utcnow()
+    monkeypatch.setattr(agents_api, "utcnow", lambda: now)
+
+    anchor = _grid(now, width)
     specs = [(anchor - timedelta(seconds=width * i), {"cpu_pct": float(i)}) for i in range(cap)]
     # One more sample, one bucket further back, placed at the very end of that
     # bucket so it still clears `start`.
