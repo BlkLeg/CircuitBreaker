@@ -1312,8 +1312,20 @@ stage4_write_systemd_units() {
   # circuitbreaker-docker-proxy.service — only written when Docker is present
   # is required by tecnativa/docker-socket-proxy to bind to the Docker socket.
   # Port 2375 is bound to 127.0.0.1 only — never 0.0.0.0 (unauthenticated Docker API).
+  #
+  # Rendered, not copied. The unit names ${CB_DOCKER_BIN} because docker lives in
+  # a different directory per distro, and systemd does not expand variables in
+  # the executable half of ExecStart — a copied unit asks the kernel to run a
+  # program literally called "${CB_DOCKER_BIN}" and dies with 203/EXEC.
   if [[ "$DOCKER_AVAILABLE" == "true" ]]; then
-    cp "/opt/circuitbreaker/deploy/systemd/circuitbreaker-docker-proxy.service" "/etc/systemd/system/circuitbreaker-docker-proxy.service"
+    # Resolve here rather than trusting the value stage0_preflight guessed: on a
+    # fresh install Docker is installed at the *end* of stage2_dependencies,
+    # after that stage's own re-resolution ran, so every earlier lookup fell
+    # back to /usr/bin/docker. This is the first point where docker is known to
+    # exist, which is the only point where asking is worth anything.
+    CB_DOCKER_BIN="$(command -v docker 2>/dev/null || echo /usr/bin/docker)"
+    export CB_DOCKER_BIN
+    cb_render_template "/opt/circuitbreaker/deploy/systemd/circuitbreaker-docker-proxy.service" "/etc/systemd/system/circuitbreaker-docker-proxy.service"
   fi
 
   systemctl daemon-reload >> "$LOG_FILE" 2>&1
